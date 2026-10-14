@@ -60,6 +60,35 @@ test('ignores links inside fenced examples and external references', async () =>
   });
 });
 
+test('keeps shorter and info-string fence runs inside longer fenced examples', async () => {
+  await withFixture(async (root) => {
+    await writeFile(path.join(root, 'index.md'), [
+      '````markdown',
+      '[ignored before short run](missing-before.md)',
+      '```',
+      '[ignored after short run](missing-after.md)',
+      '````js',
+      '[ignored after info string](missing-info.md)',
+      '````',
+      '',
+    ].join('\n'));
+    assert.deepEqual(await validateLinks(root), []);
+  });
+});
+
+test('preserves underscores in heading anchors', async () => {
+  await withFixture(async (root) => {
+    await writeFile(path.join(root, 'guide.md'), '## max_retries\n');
+    await writeFile(path.join(root, 'index.md'), [
+      '[valid underscore anchor](guide.md#max_retries)',
+      '[invalid missing underscore](guide.md#maxretries)',
+    ].join('\n'));
+    const failures = await validateLinks(root);
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], /missing heading #maxretries/);
+  });
+});
+
 test('does not scan private or generated directories', async () => {
   await withFixture(async (root) => {
     await writeFile(path.join(root, 'index.md'), '# Public docs\n');

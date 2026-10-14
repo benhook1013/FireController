@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The standalone review engine is not implemented. Existing FireMUD code and tests establish the inherited behaviors catalogued in [source evidence](inherited-evidence.md). This document defines the intended portable boundaries; provider-specific limits and project policy are configuration rather than universal constants.
+The standalone review engine is not implemented. Existing source code and tests establish the inherited behaviors catalogued in [source evidence](inherited-evidence.md). This document defines the intended portable boundaries; provider-specific limits and project policy are configuration rather than universal constants.
 
 ## Review identity
 
@@ -26,7 +26,9 @@ Required-check authority comes from the provider's applicable branch/repository 
 
 ## Admission and execution
 
-Create a durable attempt and exclusive reservation before an external side effect. Project-scoped target reservations prevent duplicate actions, while provider-account scheduling coordinates shared quota. Updating reservations and state uses database transactions; waiting for a provider happens outside them.
+The initial [project contract](architecture.md#projects-and-actors) rejects duplicate repository bindings within an instance. External-action admission additionally creates a durable project-owned attempt and reserves the target by provider, canonical repository identity, PR, and action class. The admitted head and operation identity are reservation data, not a way to bypass an active reservation by changing heads or configuration. A conflict does not expose another principal's private attempt details. Different action classes may overlap only when their adapter's admission contract explicitly permits it.
+
+Provider-account scheduling coordinates shared quota; it does not replace duplicate-action exclusion. Reservations survive uncertain outcomes and are released only by a proven safe terminal/recovery transition. Updating reservations and state uses database transactions; waiting for a provider happens outside them. This guards clients of one supported service instance, not arbitrary independent installations or manual provider actors; current provider activity must also be checked where the action requires it.
 
 Model attempts as prepared, posting/running, active, completed, failed, cancelled, or uncertain with retained transition history. The provider adapter records exact request and response identifiers. A disconnect or crash after a possible post leaves an uncertain attempt for observation-based recovery, not an automatic retry that might post twice.
 
@@ -56,4 +58,4 @@ Provider limits are observed/configured constraints, not hardcoded product truth
 
 Every provider-bearing operation reports its selected PR and anchor, refresh scope, provider-call count, time spent selecting versus waiting, and retained operation ID. Expose cache hit/coalescing and completeness diagnostics without credentials or private capture contents in ordinary logs. This evidence makes unexpected whole-queue work detectable.
 
-The original proof inventory is a regression source, not an instruction to reproduce FireMUD's legacy JSON/SQLite bridges, path names, public marker format, or historical repair commands. Migration from those records is a separately reviewed adapter after the new engine's native behavior is proven.
+The original proof inventory is a regression source, not an instruction to reproduce historical JSON/SQLite bridges, path names, public marker format, or historical repair commands. Migration from those records is a separately reviewed adapter after the new engine's native behavior is proven.

@@ -16,6 +16,8 @@ Server configuration selects listen addresses, private data directory, credentia
 
 Every stored project-owned resource has a project identifier. Names are unique only within their documented project scope. Worker identity is `(project_id, worker_id)`; connection identity is a separate `(instance_id, session_id)` used for delivery and attribution. Concurrent sessions for one worker share its inbox and job assignments, not its transport cursor.
 
+For the initial GitHub integration, one project binds one repository and a repository may belong to only one project within an instance. Creation/binding verifies GitHub's stable repository ID and atomically enforces that uniqueness; a renamed repository or alternate remote URL cannot bypass it. A duplicate returns `repository_already_configured` with the existing project reference when the caller may see it, otherwise an opaque conflict. An interrupted or concurrent binding must not leave two owners. Separate service instances are independent; GitHub Projects boards do not define this application boundary. Broader repository groupings require a separately reviewed design.
+
 Credentials bind an authenticated principal to allowed projects and operations. A supplied worker name is attribution metadata, not permission. Project creation, access management, provider credentials, and project policy changes require administrative permission. The initial access model supports instance administrators and project-scoped read/write clients; additional roles require their own reviewed contract.
 
 Every read, write, pagination cursor, review task, and event subscription validates project scope at the server. Cross-project references are rejected before mutation. The first release does not route messages across projects; `Overseer` resolves only within the selected project. A future cross-project route must state both destination project and authorization explicitly.
@@ -47,6 +49,8 @@ An observation records provider, repository, object identity, observed head or a
 Ordinary views return stored observations immediately and show age, missing fields, and last refresh errors. They do not implicitly enqueue provider work. A refresh is explicit or scheduled by the service according to active work. Scheduling backs off when a project is idle or a provider is rate limited.
 
 Coalesce concurrent refreshes only when their project, provider, repository, target, and required fact set agree. Coordinate account-wide quotas across projects using the same provider account without exposing one project's data to another. Provider deadlines and concurrency limits prevent one busy project from starving another.
+
+Shared external-action reservations are instance-wide coordination records, distinct from project-owned attempt payloads. [Review admission](reviews.md) owns their identity and conflict semantics. Project isolation must not allow two projects to duplicate an action on the same external target, nor reveal another project's private records when returning a conflict.
 
 Consequential review operations declare their required fresh facts in [review orchestration](reviews.md). Refresh the selected PR and proven dependencies rather than the entire queue. A changed anchor invalidates only evidence whose meaning depends on that anchor. Durable completed captures are not downloaded again merely to display them.
 

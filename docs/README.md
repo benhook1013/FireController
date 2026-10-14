@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The standalone service is not implemented. The design is being prepared for the first reviewed PR. FireMUD continues to use its own installed controller. The development bootstrap uses separate private state and does not establish production readiness.
+The standalone service is not implemented. The initial design is under review in [PR #1](https://github.com/benhook1013/FireController/pull/1). Temporary development tooling uses separate private state and does not establish production readiness.
 
 ## Documents
 

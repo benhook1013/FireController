@@ -12,7 +12,7 @@ Initial views include project selection, worker lanes and history, job detail wi
 
 ## Project presentation
 
-Each project owns its display name, page and section headings, theme colors, and branding configuration. Headings and colors are data-driven settings, not FireMUD constants in the frontend. A profile's project selection does not modify another project's appearance.
+Each project owns its display name, page and section headings, theme colors, and branding configuration. Headings and colors are data-driven settings, not constants tied to an originating project. A profile's project selection does not modify another project's appearance.
 
 Store a versioned, revision-guarded presentation record with semantic theme tokens such as background, surface, text, accent, and status colors. Validate supported values and length bounds; do not accept arbitrary CSS, JavaScript, or HTML. Render names and headings as text. Preserve visible focus, readable contrast, and non-color status labels when customizing colors.
 

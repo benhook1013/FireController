@@ -11,15 +11,15 @@ A private named profile selects service address, expected instance ID, project I
 Illustrative commands are:
 
 ```sh
-fc --profile firemud-overseer inbox list
-fc --profile firecontroller-overseer inbox list
+fc --profile alpha-overseer inbox list
+fc --profile beta-overseer inbox list
 ```
 
 A generated launcher can bind one profile on every invocation:
 
 ```sh
-fc-firemud-overseer inbox list
-fc-firecontroller-overseer inbox list
+fc-alpha-overseer inbox list
+fc-beta-overseer inbox list
 ```
 
 Both profiles may select a worker displayed as `Overseer`, but their project IDs differ. Concurrent chats acting as one project's Overseer share that worker's assignment and inbox; distinct session IDs attribute connection activity. A named profile must never silently change another agent's current project or worker.
@@ -30,7 +30,7 @@ Profile files are parsed configuration, never shell code. Credential references 
 
 ## Native tools
 
-A native-tool adapter uses the same service API. If a host provides isolated connections with authenticated profile bindings, the visible call can be `inbox_list()` in both projects. If a connection is shared across agents or projects, calls require an explicit selector such as `inbox_list(profile="firecontroller-overseer")`.
+A native-tool adapter uses the same service API. If a host provides isolated connections with authenticated profile bindings, the visible call can be `inbox_list()` in both projects. If a connection is shared across agents or projects, calls require an explicit selector such as `inbox_list(profile="beta-overseer")`.
 
 Binding is scoped to the authenticated client session and survives only through a verified reconnect. It must not be a server-global variable. Never infer project from the current working directory, a remembered worker name, or an unverified chat identifier. Where host metadata cannot distinguish callers, retain an explicit selector rather than guess.
 

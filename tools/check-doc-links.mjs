@@ -9,11 +9,20 @@ function stripCodeFences(markdown) {
   return markdown
     .split('\n')
     .map((line) => {
-      const match = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-      if (match) {
-        const marker = match[1][0];
-        if (fence === null) fence = marker;
-        else if (fence === marker) fence = null;
+      const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+      if (match && fence === null) {
+        const marker = match[1];
+        const info = match[2];
+        if (marker[0] !== '`' || !info.includes('`')) {
+          fence = { character: marker[0], length: marker.length };
+        }
+        return '';
+      }
+      if (match && fence !== null) {
+        const [marker, info] = [match[1], match[2]];
+        if (marker[0] === fence.character && marker.length >= fence.length && /^\s*$/.test(info)) {
+          fence = null;
+        }
         return '';
       }
       return fence === null ? line : '';
@@ -40,8 +49,8 @@ function slugHeading(heading) {
   return heading
     .trim()
     .toLowerCase()
-    .replace(/[`*_~]/g, '')
-    .replace(/[^\p{L}\p{N}\s-]/gu, '')
+    .replace(/[`*~]/g, '')
+    .replace(/[^\p{L}\p{N}\s_-]/gu, '')
     .replace(/\s+/g, '-');
 }
 

@@ -23,12 +23,14 @@ CodeRabbit is a defect reviewer. Human design disposition and its source must be
 | D11 | Start with minimal scoped access and loopback credentials | Permit network-host deployment later through TLS without designing hostile public SaaS tenancy now. | [Architecture](architecture.md) |
 | D12 | Calibrate concurrency, output, and latency before release budgets | Make throughput claims measurable and expose provider interference; candidate numbers are not gates before measured review. | [Acceptance](acceptance.md) |
 | D13 | One optional primary job as resume focus | Preserve convenient authoritative context selection while allowing multiple concurrent active jobs. | [Product](product.md) |
+| D14 | Canonical repository binding and external-action exclusion | One project owns a GitHub repository within an instance; action-class reservations also prevent concurrent duplicate posts and survive uncertain outcomes. | [Architecture](architecture.md), [review contract](reviews.md) |
 
 ## Confirmed project choices
 
-- Public repository `benhook1013/FireController`, independent WSL checkout, and Apache-2.0 for new material were authorized in this conversation. Apache-2.0 was recommended after the human selected broad open reuse and no financial goal. Historical FireMUD material retains its original license unless a separate rights decision establishes otherwise.
+- Public repository `benhook1013/FireController`, independent WSL checkout, and Apache-2.0 for new material were authorized in this conversation. Apache-2.0 was recommended after the human selected broad open reuse and no financial goal. Historical source material retains its original license unless a separate rights decision establishes otherwise.
 - Require PRs to `main`, disable force pushes and deletion, enforce conversation resolution, and use deliberately requested CodeRabbit reviews. AI workers never merge.
-- Preserve FireMUD runtime selection and state while developing the standalone service. Its migration is later work, not an implicit consequence of publishing this repository.
+- Existing deployments require explicit migration and cutover; publishing this repository does not change their installed versions or private state.
+- The October 15 discussion confirmed the initial one-project/one-GitHub-repository boundary, with duplicate bindings rejected inside an instance and stable repository identity across renames. GitHub Projects boards are separate from this identity.
 
 ## Open questions
 

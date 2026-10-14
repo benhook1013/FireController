@@ -12,14 +12,15 @@ AI workers are the primary clients. Human browser convenience is secondary to ac
 
 ## Agreed requirements
 
-- One installation supports multiple projects. Project-scoped workers with the same name are distinct; `FireMUD / Overseer` and `FireController / Overseer` never share state implicitly.
+- One installation supports multiple projects. Project-scoped workers with the same name are distinct; `Project Alpha / Overseer` and `Project Beta / Overseer` never share state implicitly.
+- Initially each project binds one GitHub repository. Within an instance, duplicate repository binding is rejected using stable provider identity, including renamed repositories and concurrent creation. Onboarding can connect authorized callers to the existing project.
 - The CLI is a thin client to the service. The browser and native agent tools use the same application contracts. Ordinary job and message operations do not call GitHub or inspect unrelated review state.
 - The service owns provider observations and refresh decisions. Stored views return promptly with freshness, errors, and scope visible. Consequential actions refresh only the facts their admission contract requires.
 - Agents select project and worker through private profiles. Native tools can omit those arguments only when the host provides a safely bound connection. Shared connections require an explicit profile selector. A global mutable current worker or project is forbidden.
 - Orchestrators can keep a quiet asynchronous wait pending while working. A relevant message completes the wait; the client then rearms. Host support and delivery timing must be measured rather than assumed. No polling, empty heartbeat output, or pretend wakeup guarantees are required from the model.
 - The live browser replaces rebuild-dependent private pages. It reads current service state, subscribes to changes, and supports jobs, inbox conversations, project maps, and review details. Public status publishing is an optional filtered feature.
 - Dependable restart, retry, backup, restore, cancellation, isolation, and bounded resource use take priority over framework preference. Throughput claims require measured proof.
-- Keep FireMUD's installed tool and private data untouched during the rebuild. Use an isolated legacy controller for this project's development until the replacement is proven. FireMUD migration and removal of its copy are a later, separately reviewed cutover.
+- Keep temporary development tooling isolated from the new service. Migration of any existing installation requires a separately reviewed import and cutover after the replacement is proven.
 - Publish the standalone repository and use CodeRabbit from the initial design PR. Preserve source provenance and inheritance decisions rather than blindly copying tests or quirks.
 - Examine the private website's remaining disk JSON. Mutable application state belongs to the service; operator configuration and editorial material need explicit ownership and import/export rules. Do not assume every JSON file is obsolete.
 - Provide AI-guided onboarding for another repository: configure or connect a service, create isolated project/worker profiles, help choose historical import scope, preview the project map and retained history, then verify the resulting workflow. An optional packaged skill teaches the supported process rather than inventing its own migration machinery.
@@ -36,4 +37,4 @@ Multiple service replicas, distributed review execution, automatic agent-host wa
 
 ## Licensing
 
-New FireController project material uses Apache-2.0. References to historical FireMUD code do not change its PolyForm Noncommercial license. The temporary copied legacy runtime is private development tooling, retains its source notices, and is not distributed as the rebuilt product. Any later imported code needs a recorded rights and attribution decision.
+New FireController project material uses Apache-2.0. Referenced historical source retains its original license. The temporary copied legacy runtime is private development tooling, retains its source notices, and is not distributed as the rebuilt product. Any later imported code needs a recorded rights and attribution decision.

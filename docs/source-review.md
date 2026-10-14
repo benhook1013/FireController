@@ -16,7 +16,7 @@ The public source census contains 33 Python modules and 30 test files with 1,601
 | Accurate review execution | Exact target/parent identity, complete evidence, duplicate prevention, retained uncertain posts, explicit finding decisions/fix proof | Per-command whole-queue investigations, arbitrary inherited round numbers, or a giant combined controller object |
 | Durable operation | Consistent backup/restore, explicit version compatibility, recovery without data loss or duplicate external actions | Old JSON/SQLite bridges, fixed schema versions, SFTP scripts, or copied repair machinery |
 | Low-friction AI use | Compact receipts, deliberate context reads, no provider work for everyday coordination, quiet host-supported completion | Repeated inbox metadata, full archives after writes, mandatory receipt/poll loops, or human-first formatting |
-| Live project presentation | Explicit public allowlist, safe rendering, per-project settings and current data | Static private refresh/render/publish cycles or fixed FireMUD theme and labels |
+| Live project presentation | Explicit public allowlist, safe rendering, per-project settings and current data | Static private refresh/render/publish cycles or fixed originating-project theme and labels |
 
 ## Adjudicated discrepancies
 

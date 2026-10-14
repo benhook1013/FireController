@@ -57,6 +57,8 @@ No standalone service behavior has been tested or benchmarked yet. Inherited tes
 | R12 | Stack parent movement: only affected evidence is invalidated, with unknown applicability held. |
 | R13 | Required-check authority is missing, a same-named foreign app succeeds, or an obsolete retry passes: none can satisfy the exact candidate's current required CI. |
 | R14 | Review coverage is complete but mergeability is conflicting or unknown: show review completion separately and hold merge readiness. |
+| R15 | Concurrent actions target the same provider/repository/PR/action class, including changed heads: one external action and no exposure of another principal's private attempt state. |
+| P06 | Two project creations bind the same GitHub repository concurrently or via renamed/alternate URLs: one owner, explicit duplicate error, and an existing-project pointer only for authorized callers. |
 | O01 | Fresh install and restart with committed activity: startup, private state, profiles, and durable receipts work as documented. |
 | O02 | Backup while writing, restore to new destination: integrity, references, all project state, and retained artifacts validate. |
 | O03 | Unsupported newer schema or failed migration: refuse readiness without partial writes or silently rewriting live state. |
