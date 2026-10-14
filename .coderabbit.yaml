@@ -13,7 +13,7 @@ reviews:
     Distinguish proposed contracts from implemented or measured behavior.
   review_status: true
   auto_review:
-    enabled: true
+    enabled: false
     auto_incremental_review: false
     drafts: false
     base_branches:

@@ -1,0 +1,59 @@
+# Review Orchestration
+
+## Implementation status
+
+The standalone review engine is not implemented. Existing FireMUD code and tests establish the inherited behaviors catalogued in [source evidence](inherited-evidence.md). This document defines the intended portable boundaries; provider-specific limits and project policy are configuration rather than universal constants.
+
+## Review identity
+
+A review target binds project, provider repository, PR, exact candidate head, selected base or effective parent, relevant parent head, merge base, and canonical patch identity. Evidence may count only when its capture and publication can be attributed to that target and the applicable reviewed scope. Unknown ancestry or identity is a hold, not permission to fall back to a different PR.
+
+The project may choose independent PRs or an ordered stack. In stacked mode, the nearest preceding unmerged PR is the effective parent; the first unmerged PR uses the configured repository default base. Parent movement requires re-evaluation of affected descendants. An explicit expected PR asserts selection; it never forces a different target past admission policy.
+
+Use deterministic Git diff options to calculate patch identity. History-only change, identical patch, candidate movement, parent movement, and actual scope change remain distinct classifications. Reuse of evidence across any boundary requires an explicit proven applicability rule rather than comparing counts or choosing the latest-looking result.
+
+## Observations versus authorization
+
+Read-only review pages and status commands show stored evidence, operation state, and freshness without provider calls. Explicit refresh retrieves only the selected target and the dependency facts required by the requested scope. The [architecture](architecture.md) owns observation storage, completeness, coalescing, and quota scheduling.
+
+Starting a review requires sufficiently current PR identity and lifecycle, exact selected anchor, relevant active-provider activity, admission policy, and applicable account quota facts. The action records which observations and revisions supported that decision. Freshness is a predicate over required facts, not one whole-repository cache TTL.
+
+Recheck exact identity at the last provider-action boundary. GitHub offers no transaction with the local service: the head can still move after that check. Capture the admitted identity and classify later results against it; a moved head cannot turn into evidence for the new head silently.
+
+Review completion establishes attributable coverage and finding disposition; it does not itself establish mergeability. A separate merge-readiness assessment combines applicable review evidence, required CI, unresolved current and outdated threads, accepted finding obligations, applicable stops, and current mergeability. Unknown or conflicting mergeability cannot produce a ready verdict. A cached dashboard can show its last result but cannot present it as a fresh verified merge gate. Humans perform merges.
+
+Required-check authority comes from the provider's applicable branch/repository rules, supplemented by stricter project expectations. A project cannot silently weaken provider-required checks. Match results to the exact candidate, required context, expected provider-app identity, and applicable latest run/attempt; a same-named foreign check or obsolete successful retry cannot satisfy the requirement. Missing authority, incomplete inventory, and ambiguous check identity remain holds rather than an empty passing gate.
+
+## Admission and execution
+
+Create a durable attempt and exclusive reservation before an external side effect. Project-scoped target reservations prevent duplicate actions, while provider-account scheduling coordinates shared quota. Updating reservations and state uses database transactions; waiting for a provider happens outside them.
+
+Model attempts as prepared, posting/running, active, completed, failed, cancelled, or uncertain with retained transition history. The provider adapter records exact request and response identifiers. A disconnect or crash after a possible post leaves an uncertain attempt for observation-based recovery, not an automatic retry that might post twice.
+
+Hosted review and local CLI execution are separate adapters. A local executor receives an explicit project, allowed workspace, immutable target, operation ID, and policy. The server never adopts a client's current working directory as a global setting. The initial executor runs on the server machine; remote executors are deferred until authentication, leasing, and artifact-transfer contracts are proven.
+
+Cancellation requests distinguish queued work, safe-to-cancel execution, and already-posted provider work. Terminating a process does not erase a reservation, recover quota, or establish that a provider action never happened. Timeouts preserve diagnostic evidence and return an operation state that explains whether recovery is needed.
+
+## Evidence and findings
+
+Persist original captures privately with checksums and durable provider/run identities. Completed, attributable, scope-applicable reviews are eligible for policy credit. Failed, incomplete, provisional, ambiguous, and rate-limited attempts remain inspectable but cannot masquerade as completed review coverage.
+
+Finding decisions distinguish accepted, routed, and rejected, with reasons and source identities. Finalized source counts are immutable. A routed finding has independent receiving-project/PR disposition only when an explicit authorized route exists; the first release restricts routes to the same project. Receiving decisions cannot rewrite source review counts.
+
+Accepted findings require recorded fix evidence tied to the exact run and finding. Corrections append an audited change guarded by the expected current value. Correcting a transcription or adjudication preserves prior records and does not manufacture review credit. Reusing a finding count with replaced finding text must be rejected as conflicting evidence.
+
+Private source finalization and any public checkpoint publication are separate operations. Record a publication intent with exact semantic identity before posting. Recover uncertain publication through provider history and the intent; repeated requests do not create duplicate checkpoints. A checkpoint parser may accept neutral formatting edits only when semantic identity, attribution, counts, and linkage remain provable.
+
+## Project policy
+
+The first native review delivery supports explicit provider/channel selection, provider ceilings, operator stops, queue mode, required CI, and accepted-finding obligations. Store policy changes with revisions and actor attribution. A policy change does not rewrite historical admitted attempts or prior decisions.
+
+Legacy minimum/maximum rounds, useful-finding taper, scoped allocations, review-credit periods, and cross-channel policy interactions are retained in the source inventory as an optional later policy layer. They are not prerequisites for delivering reliable native review execution. If enabled later, an accepted useful correction resets its applicable dry streak, while optional style, invalid findings, and already-fixed duplication do not. Exhausted budget and human stop remain distinct from taper completion, and neither clears accepted findings or required CI.
+
+Provider limits are observed/configured constraints, not hardcoded product truths. Refuse an oversized review before consuming provider work where the limit is known. Unknown CLI ceilings remain unknown.
+
+## Inspection and diagnostics
+
+Every provider-bearing operation reports its selected PR and anchor, refresh scope, provider-call count, time spent selecting versus waiting, and retained operation ID. Expose cache hit/coalescing and completeness diagnostics without credentials or private capture contents in ordinary logs. This evidence makes unexpected whole-queue work detectable.
+
+The original proof inventory is a regression source, not an instruction to reproduce FireMUD's legacy JSON/SQLite bridges, path names, public marker format, or historical repair commands. Migration from those records is a separately reviewed adapter after the new engine's native behavior is proven.

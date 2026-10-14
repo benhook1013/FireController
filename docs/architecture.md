@@ -1,0 +1,71 @@
+# Service Architecture
+
+## Implementation status
+
+This document owns the proposed service contract. None of the application endpoints or storage described here is implemented yet. Technology choices and consequential review decisions are recorded in [decisions](decisions.md).
+
+## Boundaries
+
+One Go service hosts the application API, event transport, and browser assets. A Go CLI and optional agent-tool adapter call that API. SQLite is the initial local storage engine. Provider refresh and review execution run as supervised background work with bounded concurrency; no network operation or review subprocess may occupy a database transaction while waiting.
+
+Application domains are projects and access, workers and jobs, messaging, project maps and appearance, observations, and reviews. They share a transaction facility where a real invariant spans domains, but job or message reads do not construct a review controller, deserialize the full review state, or call providers. Provider adapters cannot call back into unrelated domains to build a response.
+
+Server configuration selects listen addresses, private data directory, credentials, and worker limits. Project configuration and editorial content are persisted application records. Clients do not open the server's database directly. Each service instance has a durable instance identifier; profile selection includes that instance as well as the project.
+
+## Projects and actors
+
+Every stored project-owned resource has a project identifier. Names are unique only within their documented project scope. Worker identity is `(project_id, worker_id)`; connection identity is a separate `(instance_id, session_id)` used for delivery and attribution. Concurrent sessions for one worker share its inbox and job assignments, not its transport cursor.
+
+Credentials bind an authenticated principal to allowed projects and operations. A supplied worker name is attribution metadata, not permission. Project creation, access management, provider credentials, and project policy changes require administrative permission. The initial access model supports instance administrators and project-scoped read/write clients; additional roles require their own reviewed contract.
+
+Every read, write, pagination cursor, review task, and event subscription validates project scope at the server. Cross-project references are rejected before mutation. The first release does not route messages across projects; `Overseer` resolves only within the selected project. A future cross-project route must state both destination project and authorization explicitly.
+
+Local use binds to loopback by default and still uses a credential. Remote use requires scoped authentication and TLS, commonly provided by a reverse proxy. Client profiles contain credential references rather than secrets in command arguments. Shared filesystem access is not a security boundary between agents; independent credentials and server checks establish the application access boundary.
+
+## Transactions and retries
+
+Current-state edits use an expected resource revision. A stale edit returns a conflict containing the current revision and does not overwrite concurrent work. History and events are appended in the same transaction as the state change they describe.
+
+Creation and appended actions accept an idempotency key scoped to principal, project, operation, and target. Repeating the same key and request returns the original receipt; changing the request under that key returns a conflict. The service stores the normalized request fingerprint and receipt. The initial contract retains mutation keys until explicit project deletion, so a delayed client retry never silently becomes a new action. Provider-action keys and evidence identities are never pruned independently of their reviewed retention policy.
+
+Commit succeeds before a mutation is acknowledged or an event is exposed. A disconnect after commit is recovered by retrying the same key. Revisions, transaction isolation, and uniqueness constraints remain the authority; a process-local mutex is not sufficient proof of correctness.
+
+## Events and subscriptions
+
+Domain changes append durable events in the same transaction. Events have a monotonic server sequence, project scope, event type, resource identity, resource revision, and commit time. The API filters delivery by the authenticated principal, project, and selected worker. A sequence gap caused by filtered events is valid and is not evidence of loss.
+
+Delivery is at least once. Clients deduplicate event IDs and resume from the last processed cursor. A cursor never marks a message seen or handled. Revocation is checked on reconnect and before delivery; an existing connection cannot retain access indefinitely after permission changes.
+
+Keep an initial seven-day event replay window. Events reference durable resources; they are not the only copy of messages or jobs. A cursor outside that window receives an explicit `resync_required` response. The client obtains a scoped snapshot with a cursor taken from the same database read transaction, then subscribes after it. Changes occurring during snapshot retrieval remain reachable through replay.
+
+Subscriber buffers, connection counts, request bodies, and event batches are bounded. A slow subscriber is disconnected with its last confirmed cursor rather than causing unbounded buffering or blocking writes. Transport heartbeats stay below the model-facing tool layer. The API supports a bounded wait for events as well as a browser event stream; the [client contract](agent-client.md) owns model-facing behavior.
+
+## Provider observations and refresh
+
+An observation records provider, repository, object identity, observed head or anchor where relevant, fetched time, completeness, error, and the provider identifiers needed for attribution. A stored observation is a fact with a time, not a promise that the external world has not changed.
+
+Ordinary views return stored observations immediately and show age, missing fields, and last refresh errors. They do not implicitly enqueue provider work. A refresh is explicit or scheduled by the service according to active work. Scheduling backs off when a project is idle or a provider is rate limited.
+
+Coalesce concurrent refreshes only when their project, provider, repository, target, and required fact set agree. Coordinate account-wide quotas across projects using the same provider account without exposing one project's data to another. Provider deadlines and concurrency limits prevent one busy project from starving another.
+
+Consequential review operations declare their required fresh facts in [review orchestration](reviews.md). Refresh the selected PR and proven dependencies rather than the entire queue. A changed anchor invalidates only evidence whose meaning depends on that anchor. Durable completed captures are not downloaded again merely to display them.
+
+GitHub pagination must prove completeness for every collection used in an admission decision. Cursor loops, missing pages, partial identity batches, ambiguous provider responses, and incomplete evidence remain explicit errors or holds. A failed refresh preserves the prior observation and does not make it current.
+
+## API shape
+
+Use an HTTP JSON API under `/api/v1`, with project-owned paths under `/api/v1/projects/{project_id}`. Resource IDs are stable opaque identifiers. Display names are selectors resolved within project scope. Responses expose resource revisions, request IDs, and relevant freshness metadata. Errors have a stable code, concise message, request ID, and structured conflict or retry details.
+
+Proposed error codes include `unauthorized`, `forbidden`, `not_found`, `revision_conflict`, `idempotency_conflict`, `validation_failed`, `provider_unavailable`, `review_held`, `resync_required`, and `overloaded`. Absence and forbidden access must not disclose another project's resource contents. List responses use bounded cursor pagination; page cursors are bound to project, principal scope, filter, and order.
+
+Request cancellation stops waiting and cancels work that is safe to cancel. It does not roll back an already committed action or imply a provider request was not posted. Long review and refresh requests establish a durable operation and return its identity to the client adapter. The adapter may subscribe and deliver a final asynchronous tool result without making the model track that identity or poll. Explicit detach, recovery, and diagnosis expose the receipt. [AI usability](ai-usability.md) owns the model-facing interaction.
+
+## Storage, operations, and growth
+
+SQLite lives on the server's local filesystem, never on a shared network mount. Keep write transactions short, use indexes for scoped reads, and measure concurrency with the chosen driver. Versioned migrations run under an exclusive startup maintenance boundary before accepting requests. Startup refuses unknown newer schemas and reports recovery instructions without modifying them.
+
+Backup captures a consistent database snapshot and an inventory of referenced immutable artifacts. Restore validates integrity, schema compatibility, references, and privacy in a new destination. Messages, job history, receipts, observation state, and review evidence must survive the complete restore. Retention and project deletion are explicit maintenance operations, not side effects of a read.
+
+The binary embeds the built browser assets and exposes health and readiness separately from provider availability. A provider outage does not fail basic service readiness while local coordination remains usable. A stopped database or failed required migration does. Structured logs record request scope, timings, provider-call counts, and error codes without message bodies or credentials by default.
+
+One service replica is the initial supported deployment. Project-scoped storage interfaces, durable operation IDs, and replayable events permit later PostgreSQL and distributed executors. Multiple active replicas would additionally require cross-process admission, operation leasing, and shared event delivery; it is not a supported configuration merely because the API uses HTTP.
