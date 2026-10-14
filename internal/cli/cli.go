@@ -52,6 +52,7 @@ type invocation struct {
 	subcommand string
 	position   []string
 	limit      int
+	waitMS     int
 	cursor     string
 	worker     string
 	status     string
@@ -149,6 +150,10 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value, err = service.JobHistory(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "inbox" && call.subcommand == "list":
 		value, err = service.Inbox(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack})
+	case call.command == "inbox" && call.subcommand == "snapshot":
+		value, err = service.InboxSnapshot(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack})
+	case call.command == "inbox" && call.subcommand == "events":
+		value, err = service.MessageEvents(requestCtx, call.cursor, call.limit, call.waitMS)
 	case call.command == "inbox" && call.subcommand == "thread":
 		value, err = service.Conversation(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	default:
@@ -219,6 +224,10 @@ func parseInvocation(args []string) (invocation, bool) {
 		allowed["--limit"], allowed["--cursor"], allowed["--status"] = true, true, true
 	case "inbox list":
 		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"] = true, true, true, true
+	case "inbox snapshot":
+		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"] = true, true, true, true
+	case "inbox events":
+		allowed["--cursor"], allowed["--limit"], allowed["--wait-ms"] = true, true, true
 	case "jobs read":
 	default:
 		return call, false
@@ -264,8 +273,17 @@ func parseInvocation(args []string) (invocation, bool) {
 					return call, false
 				}
 				call.limit = limit
+			case "--wait-ms":
+				waitMS, err := strconv.Atoi(value)
+				if err != nil || waitMS < 0 || waitMS > 4000 {
+					return call, false
+				}
+				call.waitMS = waitMS
 			case "--cursor":
 				if len(value) > 4096 || !utf8.ValidString(value) {
+					return call, false
+				}
+				if call.command == "inbox" && call.subcommand == "events" && (value != strings.TrimSpace(value) || strings.IndexFunc(value, unicode.IsControl) >= 0) {
 					return call, false
 				}
 				call.cursor = value
@@ -293,6 +311,9 @@ func parseInvocation(args []string) (invocation, bool) {
 		return call, false
 	}
 	if call.command == "jobs" && call.subcommand == "assigned" && call.worker != "" {
+		return call, false
+	}
+	if call.command == "inbox" && call.subcommand == "events" && !seen["--cursor"] {
 		return call, false
 	}
 	return call, true

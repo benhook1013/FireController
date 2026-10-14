@@ -146,11 +146,15 @@ func (c *Client) Inbox(ctx context.Context, options PageOptions, filter InboxFil
 		return Page[InboxItem]{}, invalidResponse()
 	}
 	for _, item := range value.Items {
-		if !validID(item.ID) || !validID(item.ConversationID) || !validID(item.SenderWorkerID) || item.RecipientWorkerID != c.identity.WorkerID || utf8.RuneCountInString(item.Preview) > 160 || item.Acknowledged && !item.Seen || !cleanText(item.CreatedAt, 64) || filter.Unread && item.Seen || filter.Unacknowledged && item.Acknowledged {
+		if !c.validInboxItem(item, filter) {
 			return Page[InboxItem]{}, invalidResponse()
 		}
 	}
 	return value, nil
+}
+
+func (c *Client) validInboxItem(item InboxItem, filter InboxFilter) bool {
+	return validID(item.ID) && validID(item.ConversationID) && validID(item.SenderWorkerID) && item.RecipientWorkerID == c.identity.WorkerID && utf8.RuneCountInString(item.Preview) <= 160 && !(item.Acknowledged && !item.Seen) && cleanText(item.CreatedAt, 64) && (!filter.Unread || !item.Seen) && (!filter.Unacknowledged || !item.Acknowledged)
 }
 func (c *Client) Conversation(ctx context.Context, id string, options PageOptions) (ConversationPage, error) {
 	q, err := pageQuery(options)

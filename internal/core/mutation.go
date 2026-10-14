@@ -23,6 +23,8 @@ func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(con
 	}
 	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
 	defer cancel()
+	changes := &eventChanges{topics: make(map[messageTopic]struct{})}
+	ctx = context.WithValue(ctx, eventChangesKey{}, changes)
 	select {
 	case s.admission <- struct{}{}:
 		defer func() { <-s.admission }()
@@ -67,6 +69,7 @@ func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(con
 	if err = tx.Commit(); err != nil {
 		return nil, mutationError(ctx, err)
 	}
+	s.notifyEvents(changes)
 	return encoded, nil
 }
 
@@ -144,6 +147,19 @@ func AppendEvent(ctx context.Context, tx *sql.Tx, scope Scope, eventType, resour
 	_, err = tx.ExecContext(ctx, "INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at) VALUES(?,?,?,?,?,?,?)", scope.ProjectID, eventType, resourceID, revision, scope.PrincipalID, string(data), time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return storageError(err)
+	}
+	if changes, ok := ctx.Value(eventChangesKey{}).(*eventChanges); ok {
+		if eventType == "credentials.revoked" {
+			changes.revoked = true
+		}
+		if eventType == "message.sent" || eventType == "message.seen" || eventType == "message.acknowledged" {
+			var recipient struct {
+				Worker string `json:"recipient_worker_id"`
+			}
+			if json.Unmarshal(data, &recipient) == nil && recipient.Worker != "" {
+				changes.topics[messageTopic{scope.ProjectID, recipient.Worker}] = struct{}{}
+			}
+		}
 	}
 	return nil
 }

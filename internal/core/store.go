@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -20,11 +21,15 @@ import (
 const schemaVersion = 1
 
 type Store struct {
-	db         *sql.DB
-	writer     *sql.DB
-	admission  chan struct{}
-	instanceID string
-	signingKey []byte
+	db               *sql.DB
+	writer           *sql.DB
+	admission        chan struct{}
+	instanceID       string
+	signingKey       []byte
+	eventMu          sync.Mutex
+	eventGroups      map[messageTopic]map[*messageWaiter]struct{}
+	eventCount       int
+	principalWaiters map[string]int
 }
 
 func (s *Store) InstanceID() string { return s.instanceID }

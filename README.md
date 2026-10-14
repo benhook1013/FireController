@@ -11,7 +11,7 @@ AI workers are the primary clients. Everyday commands return concise, useful inf
 
 The standalone application is under development. [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the design and repository validation. [PR #2](https://github.com/benhook1013/FireController/pull/2) combines the first local CLI commands, `fc version` and `fc context`, private profile validation, and the durable coordination service.
 
-The coordination slice implements a loopback service API, scoped projects/workers and access grants, basic jobs with guarded edits/history, and durable message reads and explicit seen/ack actions. See the [local API](docs/local-api.md). Live event transport, onboarding commands, provider review orchestration, backups, advanced jobs and the new browser remain unimplemented. The capabilities below describe the selected product design. [Delivery and proof status](docs/delivery.md) records what has actually been built and checked.
+The coordination slice implements a loopback service API, scoped projects/workers and access grants, basic jobs with guarded edits/history, and durable message reads and explicit seen/ack actions. See the [local API](docs/local-api.md). The standalone browser, onboarding commands, provider review orchestration, backups, advanced jobs and the new browser remain unimplemented. The capabilities below describe the selected product design. [Delivery and proof status](docs/delivery.md) records what has actually been built and checked.
 
 ## What FireController provides
 
@@ -33,7 +33,7 @@ fc jobs assigned
 fc inbox list
 ```
 
-The current CLI supports these compact reads plus verified `doctor`, workers, explicit job detail/history and conversation pages. `version` and `context` remain local. Explicit-key job/message mutations also return compact receipts with safe retry guidance. The [stdio MCP adapter](docs/mcp.md) exposes nine bound read tools and five explicit-key mutations through the official Go SDK. Live subscriptions remain to be implemented. Profiles belong to the individual client process or connection, without a shared workspace-wide active identity.
+The current CLI supports these compact reads plus verified `doctor`, workers, explicit job detail/history and conversation pages. `version` and `context` remain local. Explicit-key job/message mutations also return compact receipts with safe retry guidance. The [stdio MCP adapter](docs/mcp.md) exposes nine bound read tools and five explicit-key mutations through the official Go SDK. Persistent CLI/MCP subscriptions remain to be implemented; the [HTTP message feed](docs/message-events.md) already supports snapshot, replay and SSE. Profiles belong to the individual client process or connection, without a shared workspace-wide active identity.
 
 The CLI and MCP adapter use the same API as the browser. Results are structured and bounded, errors give a useful next action, and full context or archives are explicit reads. Long operations retain durable receipts internally; capable adapters deliver completion while the agent continues other work. Host support for concurrent tools and result delivery is verified rather than assumed.
 
