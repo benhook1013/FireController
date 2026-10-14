@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -89,7 +88,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return report(stderr, ExitConfig, "profile_required", "A profile name is required without surrounding whitespace.", "Set --profile NAME or FC_PROFILE.")
 	}
 	if !call.hasProfilesFile {
-		directory := userConfigDir(env)
+		directory := profile.ConfigDirectory(env)
 		if directory == "" || !filepath.IsAbs(directory) {
 			return report(stderr, ExitConfig, "config_directory_unavailable", "The user configuration directory could not be determined.", "Provide --profiles-file PATH or configure the user environment.")
 		}
@@ -369,44 +368,6 @@ func reportDetails(stderr io.Writer, exitCode int, value diagnostic) int {
 		Error diagnostic `json:"error"`
 	}{value})
 	return exitCode
-}
-
-func userConfigDir(env map[string]string) string {
-	switch runtime.GOOS {
-	case "windows":
-		if value, ok := env["APPDATA"]; ok {
-			return value
-		}
-		// Embedded callers may provide conflicting case variants that cannot
-		// coexist in an ordinary Windows process environment. Choose a stable
-		// spelling rather than depending on map iteration order.
-		selected := ""
-		for key := range env {
-			if strings.EqualFold(key, "APPDATA") && (selected == "" || key < selected) {
-				selected = key
-			}
-		}
-		return env[selected]
-	case "darwin", "ios":
-		if env["HOME"] != "" {
-			return filepath.Join(env["HOME"], "Library", "Application Support")
-		}
-	case "plan9":
-		if env["home"] != "" {
-			return filepath.Join(env["home"], "lib")
-		}
-	default:
-		if env["XDG_CONFIG_HOME"] != "" {
-			if !filepath.IsAbs(env["XDG_CONFIG_HOME"]) {
-				return ""
-			}
-			return env["XDG_CONFIG_HOME"]
-		}
-		if env["HOME"] != "" {
-			return filepath.Join(env["HOME"], ".config")
-		}
-	}
-	return ""
 }
 
 func emit(stdout, stderr io.Writer, value any) int {

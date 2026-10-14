@@ -19,7 +19,7 @@ make check build
 
 ## Private profile file
 
-The default file is `firecontroller/profiles.json` under the OS user configuration directory. Linux honors an absolute `XDG_CONFIG_HOME`, otherwise `$HOME/.config`. Windows uses `APPDATA`; macOS uses `$HOME/Library/Application Support`. An unavailable or relative default directory fails rather than selecting a file from the working directory. An explicit `--profiles-file PATH` overrides the file location.
+The default file is `firecontroller/profiles.json` under the OS user configuration directory. Linux honors an absolute `XDG_CONFIG_HOME`, otherwise `$HOME/.config`. Windows uses `APPDATA`; macOS uses `$HOME/Library/Application Support`. An unavailable or relative default directory fails rather than selecting a file from the working directory. An explicit `--profiles-file PATH` overrides the file location. CLI and MCP use one shared resolver. Windows prefers the exact `APPDATA` spelling and selects a stable case variant only when it is absent; neither interface depends on map iteration order. The shared resolver table passed on Linux and in a native Windows Go test executable; this is focused path-selection proof, not a new claim about Windows filesystem isolation.
 
 Store this file outside the tracked checkout with permissions suitable for private configuration:
 
