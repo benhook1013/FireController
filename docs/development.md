@@ -95,3 +95,4 @@ The parser rejects incomplete, repeated, oversized and malformed arguments befor
 
 A disconnected, timed-out or canceled write can already have committed. Such diagnostics include `outcome_unknown: true` and instruct the caller to recover with the same key, request and instance/worker binding. Invalid receipts and failures writing a successful receipt to stdout also preserve that uncertainty. Pre-dispatch cancellation and validated request refusals do not claim an uncertain commit. Never turn an unknown outcome into a new action by creating another key. The server remains the authority for receipt replay and access.
 
+This slice does not persist a client retry journal. Callers retain the key, request and originating binding; changing a profile or rebinding to a restored instance is not recovery of that pending action.
