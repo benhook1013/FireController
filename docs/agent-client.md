@@ -2,27 +2,22 @@
 
 ## Implementation status
 
-Profiles, native tools, CLI aliases, and subscriptions described here are proposed. The temporary legacy bootstrap is documented separately in [delivery](delivery.md). Codex host behavior has not yet been established by the application proof.
+The service-backed profiles, native tools, generated CLI aliases, and subscriptions described here are not implemented on this branch. The temporary legacy bootstrap is documented separately in [delivery](delivery.md). Codex host behavior has not yet been established by the application proof.
 
 ## Profiles and identity
 
 A private named profile selects service address, expected instance ID, project ID, worker ID, and credential reference. Optional defaults include output format and timeout. Profile names are local selectors, not server identities or permissions. Stable project and worker IDs survive display-name changes.
 
-Illustrative commands are:
+Configure the agent host to provide this agent's private profile through its process environment, for example `FC_PROFILE=project-builder`. Routine calls then omit project and worker flags:
 
 ```sh
-fc --profile alpha-overseer inbox list
-fc --profile beta-overseer inbox list
+fc inbox list
+fc jobs assigned
 ```
 
-A generated launcher can bind one profile on every invocation:
+When the host cannot provide a repeatable per-agent environment, a generated launcher can bind the profile on every invocation, for example `fc-builder inbox list`. Explicit `fc --profile project-builder inbox list` remains available for deliberate selection or diagnosis. These are target-interface examples; the implemented CLI boundary is described above.
 
-```sh
-fc-alpha-overseer inbox list
-fc-beta-overseer inbox list
-```
-
-Both profiles may select a worker displayed as `Overseer`, but their project IDs differ. Concurrent chats acting as one project's Overseer share that worker's assignment and inbox; distinct session IDs attribute connection activity. A named profile must never silently change another agent's current project or worker.
+The binding belongs to that agent's client process or connection, never to a workspace-wide active profile. Two projects can each have a worker named `Overseer`; their bound project IDs keep the same-looking calls separate. Concurrent chats using one project's worker share its assignments and inbox, with distinct session IDs for connection attribution. A named profile must never silently change another agent's current project or worker.
 
 Profile selection comes from an explicit `--profile`, or a per-process `FC_PROFILE` default. The CLI does not persist a global active profile. An explicit flag can override the process default; a generated bound launcher rejects a conflicting profile override. Unknown profiles, expected-instance mismatches, missing identity, and unauthorized project selection fail before sending a mutation.
 

@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-This is the target for the standalone rebuild, not a claim about existing functionality. These requirements were selected in the October 14, 2026 discussion; technical decisions remain subject to the design review recorded in [decisions](decisions.md).
+This document defines the product requirements. The [design decisions](decisions.md) define the technical direction; [delivery](delivery.md) tracks implemented capabilities and proof.
 
 ## Mission
 
@@ -10,7 +10,7 @@ Provide dependable self-hosted coordination for humans and AI workers across mul
 
 AI workers are the primary clients. Human browser convenience is secondary to accurate, compact agent context, predictable commands, minimal incidental output, and fast everyday operations. The product must not require agents to repeatedly reconstruct context, manage needless flags, or poll long work solely because the service internally uses operation records.
 
-## Agreed requirements
+## Requirements
 
 - One installation supports multiple projects. Project-scoped workers with the same name are distinct; `Project Alpha / Overseer` and `Project Beta / Overseer` never share state implicitly.
 - Initially each project binds one GitHub repository. Within an instance, duplicate repository binding is rejected using stable provider identity, including renamed repositories and concurrent creation. Onboarding can connect authorized callers to the existing project.
