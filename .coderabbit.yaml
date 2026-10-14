@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+early_access: false
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  high_level_summary_instructions: |
+    Describe the concrete problem and resulting behavior for FireController users.
+    Identify changes to project isolation, message delivery, review identity,
+    provider refresh, persistence, installation, and validation where relevant.
+    Distinguish proposed contracts from implemented or measured behavior.
+  review_status: true
+  auto_review:
+    enabled: true
+    auto_incremental_review: false
+    drafts: false
+    base_branches:
+      - main
+  path_instructions:
+    - path: docs/**
+      instructions: |
+        Check contracts for inconsistent authority, missing failure modes,
+        project or actor ambiguity, and untestable performance promises.
+        Referenced legacy behavior is evidence, not automatically a requirement.
+        Do not request copying normative rules into multiple documents.
+    - path: '**/*.go'
+      instructions: |
+        Prioritize correctness, isolation, bounded concurrency, idempotency,
+        cancellation, persistence, and observable error behavior over style.
+    - path: .github/workflows/**
+      instructions: |
+        Check permissions, untrusted inputs, dependency pinning, and whether
+        validation covers the changed contracts without unnecessary CI work.
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - AGENTS.md
+chat:
+  auto_reply: true
