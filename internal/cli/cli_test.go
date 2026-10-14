@@ -287,6 +287,58 @@ func TestMalformedUTF8CannotRepairIdentityBytes(t *testing.T) {
 	}
 }
 
+func TestUnicodeEscapesCannotRepairIdentityText(t *testing.T) {
+	valid := string(encode(t, profiles()))
+	fields := []struct{ name, value string }{
+		{"profile", "alpha-overseer"}, {"instance_id", "instance-a"},
+		{"project_id", "alpha-project"}, {"worker_id", "overseer"},
+	}
+	for _, field := range fields {
+		t.Run(field.name, func(t *testing.T) {
+			for _, malformed := range []string{
+				`\ud800`, `\uDBFF`, `\udc00`, `\uDFFF`,
+				`\ud800\u0041`, `\ud800\ud800`, `\udc00\ud800`,
+				`\ud800\\udc00`, `\ud800雪`, `\ud800\n`,
+			} {
+				t.Run(malformed, func(t *testing.T) {
+					data := strings.Replace(valid, `"`+field.value+`"`, `"broken-`+malformed+`"`, 1)
+					path := fixture(t, []byte(data))
+					selected := "alpha-overseer"
+					if field.name == "profile" {
+						// A repaired lone surrogate must not become selectable.
+						selected = "broken-�"
+					}
+					failure(t, []string{"context", "--profile", selected, "--profiles-file", path}, nil, cli.ExitConfig, "profiles_invalid_encoding")
+				})
+			}
+			for _, tc := range []struct{ name, raw, want string }{
+				{"paired supplementary character", `value-\ud83d\uDE80`, "value-🚀"},
+				{"paired endpoints", `value-\ud800\udc00\uDBFF\uDFFF`, "value-𐀀\U0010ffff"},
+				{"literal escape text", `value-\\uD800`, `value-\uD800`},
+				{"literal low surrogate text", `value-\\udfff`, `value-\udfff`},
+				{"escaped backslash before pair", `value-\\\ud83d\ude80`, "value-\\🚀"},
+				{"literal replacement character", `value-�`, "value-�"},
+				{"escaped replacement character", `value-\ufffd`, "value-�"},
+				{"Unicode literals", `value-雪🚀`, "value-雪🚀"},
+				{"normal escapes", `value-\"\\\/\b\f\n\r\t-end`, "value-\"\\/\b\f\n\r\t-end"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					data := strings.Replace(valid, `"`+field.value+`"`, `"`+tc.raw+`"`, 1)
+					path := fixture(t, []byte(data))
+					selected := "alpha-overseer"
+					if field.name == "profile" {
+						selected = tc.want
+					}
+					code, stdout, stderr := run([]string{"context", "--profile", selected, "--profiles-file", path}, nil)
+					if got := response(t, code, stdout, stderr); got[field.name] != tc.want {
+						t.Fatalf("valid Unicode or escape text changed: got %q, want %q", got[field.name], tc.want)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestContextRejectsDirectoriesAsConfiguration(t *testing.T) {
 	failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", t.TempDir()}, nil, cli.ExitConfig, "profiles_not_regular")
 }

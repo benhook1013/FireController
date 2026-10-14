@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -88,7 +89,13 @@ func Load(path, name string) (Context, *Error) {
 		return result, failure("profiles_too_large", "The profiles configuration exceeds the 1 MiB limit.", "Reduce the configuration size.")
 	}
 	if !utf8.Valid(data) {
-		return result, failure("profiles_invalid_encoding", "The profiles configuration must contain valid UTF-8 bytes.", "Save the configuration as UTF-8 without malformed byte sequences.")
+		return result, invalidEncoding()
+	}
+	if !json.Valid(data) {
+		return result, invalidJSON()
+	}
+	if !pairedUnicodeEscapes(data) {
+		return result, invalidEncoding()
 	}
 	// The normal JSON decoder permits duplicate keys; reject them first because
 	// a repeated profile or identity must never silently replace another value.
@@ -135,6 +142,48 @@ func notRegularFile() *Error {
 
 func invalidJSON() *Error {
 	return failure("profiles_invalid_json", "The profiles configuration must be one strict JSON object with known fields and unique keys.", "Correct malformed, trailing, duplicate, or unknown fields in the version 1 configuration.")
+}
+
+func invalidEncoding() *Error {
+	return failure("profiles_invalid_encoding", "The profiles configuration must contain valid UTF-8 bytes and Unicode escapes.", "Save valid UTF-8 and pair each high surrogate escape with a low surrogate escape.")
+}
+
+// json.Valid must succeed first: it checks string syntax and escape lengths,
+// but permits lone UTF-16 surrogates that decoding would replace with U+FFFD.
+// Inspect the original escapes in one bounded pass, skipping escaped quotes
+// and backslashes so literal text such as \\uD800 remains unchanged.
+func pairedUnicodeEscapes(data []byte) bool {
+	inString := false
+	for i := 0; i < len(data); {
+		switch data[i] {
+		case '"':
+			inString = !inString
+			i++
+		case '\\':
+			if !inString || data[i+1] != 'u' {
+				i += 2
+				continue
+			}
+			unit, _ := strconv.ParseUint(string(data[i+2:i+6]), 16, 16)
+			i += 6
+			if unit >= 0xdc00 && unit <= 0xdfff {
+				return false
+			}
+			if unit >= 0xd800 && unit <= 0xdbff {
+				if i+6 > len(data) || data[i] != '\\' || data[i+1] != 'u' {
+					return false
+				}
+				low, _ := strconv.ParseUint(string(data[i+2:i+6]), 16, 16)
+				if low < 0xdc00 || low > 0xdfff {
+					return false
+				}
+				i += 6
+			}
+		default:
+			i++
+		}
+	}
+	return true
 }
 
 // encoding/json also matches struct fields without regard to case. Enforce the
