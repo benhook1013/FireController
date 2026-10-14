@@ -28,7 +28,7 @@ Onboarding reads only selected repository sources and scoped provider data. It m
 
 ## Optional agent skill
 
-Distribute a versioned onboarding/usage skill alongside the supported release. It describes discovery, questions, preview/apply, profile binding, quiet tool use, resume and end-of-work, and verification using actual documented commands. A skill is guidance; it does not replace API validation, add hidden quotas, perform automatic external messaging, or imply permission beyond the user's request.
+Distribute a versioned onboarding/usage skill alongside the supported release. It describes discovery, questions, preview/apply, profile binding, quiet tool use, the optional [agent workflow](agent-workflow.md), and verification using actual documented commands. Clearly separate required tool semantics from recommended working habits. A skill is guidance; it does not replace API validation, impose checkpoint cadence, add hidden quotas, perform automatic external messaging, or imply permission beyond the user's request.
 
 Installation into an agent host is optional and explicit. CLI onboarding works without a particular host or model. Host capability detection identifies whether native tools, asynchronous results, and isolated connection binding are supported. Generated guidance must name limitations instead of promising unsupported wakeups.
 

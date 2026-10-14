@@ -7,9 +7,10 @@ The standalone service is not implemented. The initial design is under review in
 ## Documents
 
 - [Development](development.md): implemented CLI/profile boundary, build/check commands, and current proof limits.
+- [Suggested agent workflow](agent-workflow.md): optional working practices for project instructions and a usage skill, separate from tool contracts.
 - [Product scope and conversation agreements](product.md) records the requirements selected with the human.
 - [Architecture](architecture.md) owns service boundaries, project isolation, storage, and provider observation rules.
-- [Agent and client contract](agent-client.md) owns profiles, tool calls, subscriptions, and end-of-work behavior.
+- [Agent and client contract](agent-client.md) owns profiles, tool calls, subscriptions, cancellation and reconnect semantics.
 - [AI usability](ai-usability.md) owns output budgets, agent interaction patterns, and attention-cost proof.
 - [Onboarding](onboarding.md) owns AI-guided project setup and historical import.
 - [Review orchestration](reviews.md) owns reusable review invariants and configurable policy.

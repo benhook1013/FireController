@@ -24,6 +24,7 @@ CodeRabbit is a defect reviewer. Human design disposition and its source must be
 | D12 | Calibrate concurrency, output, and latency before release budgets | Make throughput claims measurable and expose provider interference; candidate numbers are not gates before measured review. | [Acceptance](acceptance.md) |
 | D13 | One optional primary job as resume focus | Preserve convenient authoritative context selection while allowing multiple concurrent active jobs. | [Product](product.md) |
 | D14 | Canonical repository binding and external-action exclusion | One project owns a GitHub repository within an instance; action-class reservations also prevent concurrent duplicate posts and survive uncertain outcomes. | [Architecture](architecture.md), [review contract](reviews.md) |
+| D15 | SDK-backed MCP interface alongside CLI and browser | A packaged local adapter uses the service API; remote MCP can follow without duplicating behavior. Verify supported protocol versions, caller isolation and host completion capabilities. | [Client contract](agent-client.md) |
 
 ## Confirmed project choices
 

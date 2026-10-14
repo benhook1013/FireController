@@ -28,31 +28,37 @@ Profile selection comes from an explicit `--profile`, or a per-process `FC_PROFI
 
 Profile files are parsed configuration, never shell code. Credential references resolve through a protected local file or supported credential store. Profiles and credentials stay outside tracked workspace files. Separate shell calls are not assumed to share exported variables; launchers or a configured process environment provide repeatable context.
 
-## Native tools
+## MCP and native tools
 
-A native-tool adapter uses the same service API. If a host provides isolated connections with authenticated profile bindings, the visible call can be `inbox_list()` in both projects. If a connection is shared across agents or projects, calls require an explicit selector such as `inbox_list(profile="beta-overseer")`.
+Provide MCP as a supported AI interface alongside the CLI and browser. Use the [official Go SDK](https://github.com/modelcontextprotocol/go-sdk) for protocol handling, tool schemas and transports; select a pinned release and supported protocol versions through host compatibility proof. The initial local stdio adapter is packaged with FireController, loads private profiles, and calls the service API through a typed client. It does not shell out to CLI commands or duplicate authorization, provider logic or storage. Remote Streamable HTTP MCP can be added at the service boundary without changing application behavior; its authentication and host compatibility require separate proof.
+
+An adapter exposes compact operation tools using the same service API. If a host provides isolated connections with authenticated profile bindings, the visible call can be `inbox_list()` in both projects. If a connection is shared across agents or projects, calls require an explicit selector such as `inbox_list(profile="beta-overseer")`.
+
+Tool schemas and results describe the selected operation with bounded structured fields, preserving the API's revisions, completeness, idempotency and error meanings. Protocol capabilities, client labels and tool annotations do not grant application access. SDK protocol handling never substitutes for the service's authentication and scope checks.
 
 Binding is scoped to the authenticated client session and survives only through a verified reconnect. It must not be a server-global variable. Never infer project from the current working directory, a remembered worker name, or an unverified chat identifier. Where host metadata cannot distinguish callers, retain an explicit selector rather than guess.
 
 ## Quiet asynchronous waiting
 
-An orchestrator may launch `wait_for_messages` while doing unrelated work only when its host supports asynchronous tool execution. The tool waits for relevant unread incoming messages after a supplied cursor, returns a bounded result when one is available, and is rearmed by the caller. The adapter maintains the network subscription; keeping a connection open does not itself produce periodic model output.
+The adapter exposes `wait_for_messages` for relevant unread incoming messages after a supplied cursor. It returns a bounded result when one is available or when the wait expires; subsequent waits are separate calls. The adapter maintains the network subscription; keeping a connection open does not itself produce periodic model output. Whether a pending call permits unrelated model work is a host capability, not a property guaranteed by MCP.
 
-A normal blocking tool invocation is not equivalent to a background subscription. Background shell handles, asynchronous tool completion, automatic result injection, turn completion, and waking an idle chat are separate host behaviors. Test the installed host before claiming immediate delivery or support for an indefinitely pending call.
+A normal blocking tool invocation is not equivalent to a background subscription. Background shell handles, asynchronous tool completion, automatic result injection, turn completion, and waking an idle chat are separate host behaviors. Report capability only when established for the installed host; protocol notification support alone does not establish model-visible delivery or idle wakeup.
 
-Use a bounded wait shorter than the configured host timeout. In Codex integrations, ordinary MCP tools may have a configured timeout, so an arbitrary forever-pending MCP call is not a portable contract. If the wait expires, return an explicit timeout receipt; the adapter should suppress repeated empty model notifications where the host permits it. Prefer a persistent adapter subscription with a bounded model-facing wait over repeated provider polling.
+The adapter bounds model-facing waits below the configured host timeout. An indefinitely pending MCP call is not a portable contract. Expiry returns an explicit timeout result; empty transport activity is suppressed where the host permits it. A persistent service subscription supplies waits without repeated provider polling.
 
-The wait does not mark messages seen or acknowledged and does not act on their contents. A returned event is external tool-level information, not human authorization. The agent reads the relevant conversation, handles work within its existing scope, then explicitly marks handling complete. Messages needing human decisions remain unacknowledged until that decision or handoff is handled.
+Waits and read/list calls do not mark messages seen or acknowledged. Explicit seen and acknowledge mutations own those transitions; acknowledgment also establishes seen state atomically. Returned content cannot change the authenticated profile, grant permission or authorize an unrelated operation.
 
-If automatic result delivery is unavailable, the adapter reports that limitation and supports checking pending messages at safe boundaries. It must not fake host wakeups. After an agent turn ends, durable server state retains undelivered messages; keeping a tool open is not required for message survival.
+If automatic result delivery is unavailable, the adapter reports that limitation and still supports explicit inbox reads. It must not fake host wakeups. Durable server state retains undelivered messages independently of agent turns or open tool calls.
 
-## End-of-work and resume
+## State and reconnect semantics
 
-At a material milestone, pause, handoff, blocker, or completion, the worker records a concise job update or checkpoint with done, next step, and evidence pointers. Standing instructions belong in the current brief, not solely in an update. Routine edits and individual test runs do not require redundant job updates.
+Brief revisions, updates and checkpoints are separate explicit operations. Appending a checkpoint does not replace the current brief or change job status. A job context read returns the selected current brief, latest checkpoint and relevant pending coordination under the completeness rules in [AI usability](ai-usability.md). Compact list summaries do not claim to contain that full context.
 
-Before ending active work, check pending messages once, handle or identify outstanding coordination, save a checkpoint if resume context changed, and report the remaining state. Cancel any turn-owned wait safely or preserve it only if the host proves subscription lifetime across turns. Cancellation never acknowledges messages. This is not a requirement to stay artificially busy or poll forever after completion.
+Ending a turn, closing a client or cancelling a wait does not complete or pause a job, create a checkpoint, acknowledge messages, or delete durable resources. Subscription lifetime across turns depends on the host; cancellation releases the applicable wait without acknowledging delivery or reversing committed work.
 
-On resume, read the current brief, latest checkpoint, and pending messages; a compact snapshot alone is not sufficient standing context. Attach using the private profile and resume transport cursors where valid. If replay retention expired, use the snapshot/resubscribe sequence owned by [architecture](architecture.md).
+Reconnect verifies the expected instance and authenticated project/worker binding before operations resume. Valid cursors continue replay; expired retention produces the explicit snapshot/resubscribe behavior owned by [architecture](architecture.md). Reconnect or a context read does not automatically resume a paused job.
+
+The client imposes no end-of-work checklist or checkpoint cadence. The separate [suggested agent workflow](agent-workflow.md) is optional guidance for projects and a future usage skill.
 
 ## CLI behavior
 
@@ -62,4 +68,4 @@ Exit codes distinguish success, argument errors, conflicts or holds, connection/
 
 Client timeouts and retries use the operation receipt and idempotency key; retrying after a disconnect cannot create a second message or provider request. The API remains the authority for permissions and revisions even when an alias or tool hides context arguments.
 
-For long actions, durable operation identity remains inside the adapter when possible. A native asynchronous review tool can stay pending and return its useful final result while the model continues independent work. The CLI can submit and wait through a background-capable shell handle; explicit detach returns an operation receipt. Ordinary reads and quick writes return their result directly. A receipt/poll workflow is a fallback for incapable hosts, not the mandatory agent experience.
+For long actions, durable operation identity remains inside the adapter when possible. Where the host supports asynchronous execution and completion, a native review tool can stay pending and return its useful final result while the model continues independent work. The CLI can submit and wait through a background-capable shell handle; explicit detach returns an operation receipt. Ordinary reads and quick writes return their result directly. A receipt/poll workflow is a fallback for incapable hosts, not the mandatory agent experience.
