@@ -77,7 +77,7 @@ Service reads share one five-second command budget across the initial authentica
 
 The integrated Linux/WSL binaries passed 17 hands-on checks using a real loopback service and read-only GitHub repository verification for two projects. The checks cover profile interleaving, private relative credentials, compact and explicit reads, scoped pagination, unchanged read state, restart, malformed expected-instance rejection, redirect/privacy failures, Ctrl-C cancellation and the total five-second command deadline. Public unit/race tests and vet provide complementary failure-path evidence; successful cross-compilation is not native execution.
 
-Profile/credential errors and local command results remain separate from service authentication errors. Linux ordinary private-file controls do not establish hostile same-user filesystem isolation. Basic native Windows CLI/profile and MCP stdio smoke passed; native Windows service-backed CLI operations, platform access-control guarantees, native macOS execution and real host asynchronous delivery remain unproven.
+Profile/credential errors and local command results remain separate from service authentication errors. Linux ordinary private-file controls do not establish hostile same-user filesystem isolation. Native Windows CLI/profile and MCP stdio smoke passed. Fifteen additional native Windows service-backed groups passed for doctor, scoped job/message reads and mutations, original-key replay, recipient seen/ack, MCP reads and job-create/replay, and service restart retaining instance identity and receipts. Platform access-control strength, native macOS execution and real host asynchronous delivery remain unproven.
 
 ## Explicit agent mutations
 
