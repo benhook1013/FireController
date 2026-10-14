@@ -20,7 +20,7 @@ For the initial GitHub integration, one project binds one repository and a repos
 
 Credentials bind an authenticated principal to allowed projects and operations. A supplied worker name is attribution metadata, not permission. Project creation, access management, provider credentials, and project policy changes require administrative permission. The initial access model supports instance administrators and project-scoped read/write clients; additional roles require their own reviewed contract.
 
-Every read, write, pagination cursor, review task, and event subscription validates project scope at the server. Cross-project references are rejected before mutation. The first release does not route messages across projects; `Overseer` resolves only within the selected project. A future cross-project route must state both destination project and authorization explicitly.
+Every read, write, pagination cursor, review task, and event subscription validates project scope at the server. Cross-project references are rejected before mutation. The first release does not route messages across projects; Recipient names resolve only within the selected project. A future cross-project route must state both destination project and authorization explicitly.
 
 Local use binds to loopback by default and still uses a credential. Remote use requires scoped authentication and TLS, commonly provided by a reverse proxy. Client profiles contain credential references rather than secrets in command arguments. Shared filesystem access is not a security boundary between agents; independent credentials and server checks establish the application access boundary.
 

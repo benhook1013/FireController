@@ -8,7 +8,7 @@ No standalone service behavior has been tested or benchmarked yet. Inherited tes
 
 | ID | Scenario and required result |
 | --- | --- |
-| P01 | Two projects each have an Overseer: lists, writes, aliases, and conversations resolve only within the selected project. |
+| P01 | Two projects have identically named workers: lists, writes, aliases, and conversations resolve only within the selected project. |
 | P02 | Guess another project's resource or pagination cursor: no contents or mutation are exposed. |
 | P03 | Revoke a credential during subscription: delivery stops and reconnect is refused. |
 | P04 | Two agents share a checkout and different profiles: interleaved commands keep the correct project and worker. |
