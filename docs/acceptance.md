@@ -49,7 +49,7 @@ No standalone service behavior has been tested or benchmarked yet. Inherited tes
 | R04 | Crash at each pre-post/post/capture/publication boundary: recover original attempt or retain uncertainty without duplicate posts. |
 | R05 | Provider pagination is partial or loops: evidence is incomplete and cannot authorize review/readiness. |
 | R06 | Inspect status repeatedly: zero provider calls; explicit refresh is bounded to selected target/dependencies and coalesced. |
-| R07 | Provider rate limit or GitHub outage: coordination still works; retry scheduling honors account-wide limits across projects. |
+| R07 | Provider rate limit or GitHub outage: coordination still works; retry scheduling honors account-wide limits across projects. A channel-specific cooldown or active attempt does not block an independently admissible other channel; shared quota or executor exclusion blocks only affected actions. |
 | R08 | Incomplete/failed/rate-limited evidence: no completed review coverage; if optional policy credit is later enabled, these results still cannot count as completed rounds. |
 | R09 | Stop a review, or exhaust an optional configured channel budget: accepted finding obligations and CI requirements remain enforced. |
 | R10 | Correct a finding decision or fix proof: immutable source identity, revision guard, and audited prior values survive. |
