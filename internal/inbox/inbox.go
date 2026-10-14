@@ -229,7 +229,7 @@ func (h *handler) snapshot(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, core.Fail("forbidden", "Select this inbox recipient with X-FC-Worker.", http.StatusForbidden))
 		return
 	}
-	if err := queryKeys(r, "limit", "cursor", "unread", "unacknowledged"); err != nil {
+	if _, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "unread", "unacknowledged"); err != nil {
 		core.WriteError(w, err)
 		return
 	}
