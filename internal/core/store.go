@@ -59,7 +59,7 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 	if err != nil {
 		return nil, Fail("storage_unavailable", "The database location is invalid.", 500)
 	}
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}
+	u := databaseURL(absolute)
 	q := url.Values{"_pragma": {"foreign_keys(1)", "synchronous(FULL)", "busy_timeout(0)"}, "_txlock": {"immediate"}}
 	u.RawQuery = q.Encode()
 	writer, err := sql.Open("sqlite", u.String())
@@ -85,6 +85,17 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		return nil, storageError(err)
 	}
 	return s, nil
+}
+
+// A Windows drive path needs a leading slash in a file URI. Without it,
+// net/url serializes C:/... as the authority in file://C:/..., which SQLite
+// rejects. Keep filename punctuation escaped as path data on every platform.
+func databaseURL(absolute string) url.URL {
+	path := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return url.URL{Scheme: "file", Path: path}
 }
 
 func (s *Store) initialize(ctx context.Context, dir string) error {
