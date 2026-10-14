@@ -3,6 +3,7 @@ import type { FormEvent, ReactNode } from 'react';
 import { Link, NavLink, Route, Routes, useMatch, useNavigate, useParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Api, ApiError } from './api';
+import { refreshEventQueries } from './queries';
 import type { InboxItem, JobSummary, LiveStatus, Page, Project, Worker } from './types';
 
 const pageSize = 20;
@@ -124,28 +125,20 @@ function Workspace({ session, selectWorker, disconnect, fail }: { session: Sessi
     const signal = signalFor(session, controller.signal);
     let active = true;
     setLive('connecting'); setFeedError(null);
-    async function refreshRead(queryKey: readonly unknown[], skipFirstPage = false) {
-      const predicate = (query: { queryKey: readonly unknown[] }) => !skipFirstPage || query.queryKey.at(-1) !== '';
-      // A first read has no cached data, so invalidation alone can reuse a
-      // pre-event request. Cancel it before requiring a fresh durable read.
-      await queryClient.cancelQueries({ queryKey, predicate, type: 'active' });
-      if (!active || signal.aborted) return;
-      await queryClient.invalidateQueries({ queryKey, predicate, refetchType: 'active' }, { throwOnError: true });
-    }
     void session.api.watchMessages(session.worker.id, { limit: pageSize }, {
       snapshot: async value => {
         if (!active || signal.aborted) return;
         queryClient.setQueryData([...key, 'inbox', ''], value.inbox);
         setReady(true);
-        await refreshRead([...key, 'inbox'], true);
-        await refreshRead([...key, 'thread']);
+        await refreshEventQueries(queryClient, [...key, 'inbox'], signal, true);
+        await refreshEventQueries(queryClient, [...key, 'thread'], signal);
       },
       events: async value => {
         if (!active || signal.aborted || value.items.length === 0) return;
-        await refreshRead([...key, 'inbox']);
+        await refreshEventQueries(queryClient, [...key, 'inbox'], signal);
         for (const conversation of new Set(value.items.map(item => item.payload.conversation_id))) {
           if (!active || signal.aborted) return;
-          await refreshRead([...key, 'thread', conversation]);
+          await refreshEventQueries(queryClient, [...key, 'thread', conversation], signal);
         }
       },
       status: value => { if (active && !signal.aborted) setLive(value); },
