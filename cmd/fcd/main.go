@@ -69,7 +69,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		diagnostic(stderr, "listen_failed", "The loopback listener could not be started.")
 		return 3
 	}
-	srv := &http.Server{Handler: mux, BaseContext: func(net.Listener) context.Context { return ctx }, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+	srv := newHTTPServer(ctx, mux)
 	_ = json.NewEncoder(stdout).Encode(map[string]string{"event": "listening", "address": listener.Addr().String(), "instance_id": store.InstanceID()})
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(listener) }()
@@ -80,16 +80,27 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 3
 		}
 	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err = srv.Shutdown(shutdown); err != nil {
-			_ = srv.Close()
+		if err = shutdownHTTPServer(srv, 5*time.Second); err != nil {
 			diagnostic(stderr, "shutdown_failed", "The HTTP service required forced shutdown.")
 			return 3
 		}
 		<-done
 	}
 	return 0
+}
+
+func newHTTPServer(signalContext context.Context, handler http.Handler) *http.Server {
+	return &http.Server{Handler: handler, BaseContext: func(net.Listener) context.Context { return context.WithoutCancel(signalContext) }, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+}
+
+func shutdownHTTPServer(srv *http.Server, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		_ = srv.Close()
+		return err
+	}
+	return nil
 }
 
 func loopback(address string) bool {
