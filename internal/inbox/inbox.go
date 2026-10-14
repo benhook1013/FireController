@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -96,7 +95,7 @@ func (h *handler) send(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, core.Fail("validation_failed", "Select a sender with X-FC-Worker.", http.StatusBadRequest))
 		return
 	}
-	if err := queryKeys(r); err != nil {
+	if _, err := core.QueryKeys(r, "validation_failed"); err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -179,7 +178,7 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if err := queryKeys(r, "limit", "cursor", "unread", "unacknowledged"); err != nil {
+	if _, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "unread", "unacknowledged"); err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -267,7 +266,7 @@ func (h *handler) conversation(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if err := queryKeys(r, "limit", "cursor"); err != nil {
+	if _, err := core.QueryKeys(r, "validation_failed", "limit", "cursor"); err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -322,7 +321,7 @@ func (h *handler) transition(w http.ResponseWriter, r *http.Request, ack bool) {
 		core.WriteError(w, core.Fail("validation_failed", "Select the recipient with X-FC-Worker.", http.StatusBadRequest))
 		return
 	}
-	if err := queryKeys(r); err != nil {
+	if _, err := core.QueryKeys(r, "validation_failed"); err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -397,10 +396,7 @@ func cleanID(value string) bool {
 }
 
 func mutationKey(r *http.Request) (string, error) {
-	if len(r.Header.Values("Idempotency-Key")) != 1 {
-		return "", core.Fail("validation_failed", "Select one Idempotency-Key for this mutation.", http.StatusBadRequest)
-	}
-	return r.Header.Get("Idempotency-Key"), nil
+	return core.IdempotencyKey(r, "validation_failed")
 }
 
 func missing(err error) error {
@@ -416,26 +412,6 @@ func preview(body string) (string, bool) {
 		return string(runes[:PreviewRunes]), true
 	}
 	return body, false
-}
-
-func queryKeys(r *http.Request, allowed ...string) error {
-	query, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		return core.Fail("validation_failed", "Use valid URL query encoding.", http.StatusBadRequest)
-	}
-	for key, values := range query {
-		known := false
-		for _, candidate := range allowed {
-			if candidate == key {
-				known = true
-				break
-			}
-		}
-		if !known || len(values) != 1 {
-			return core.Fail("validation_failed", "Use supported query fields once each.", http.StatusBadRequest)
-		}
-	}
-	return nil
 }
 
 func boolFilter(r *http.Request, key string) (bool, error) {

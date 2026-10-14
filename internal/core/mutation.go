@@ -9,7 +9,6 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -85,7 +84,7 @@ func mutationError(ctx context.Context, err error) error {
 }
 
 func mutationFingerprint(scope Scope, m Mutation) (string, error) {
-	if m.Key == "" || len(m.Key) > 128 || strings.TrimSpace(m.Key) != m.Key || strings.ContainsAny(m.Key, "\r\n\x00") || m.Operation == "" || m.Target == "" {
+	if !validIdempotencyKey(m.Key) || m.Operation == "" || m.Target == "" {
 		return "", Fail("validation_failed", "A bounded Idempotency-Key, operation and target are required.", 400)
 	}
 	data, err := json.Marshal(struct {
