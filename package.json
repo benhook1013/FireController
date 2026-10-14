@@ -2,7 +2,7 @@
   "name": "firecontroller-docs-validation",
   "private": true,
   "engines": {
-    "node": ">=22"
+    "node": ">=22.22"
   },
   "scripts": {
     "docs:check": "markdownlint-cli2 \"**/*.md\" \"!**/.git/**\" \"!**/.local/**\" \"!**/bin/**\" \"!**/dist/**\" \"!**/node_modules/**\" && node --test tools/check-doc-links.test.mjs && node tools/check-doc-links.mjs"

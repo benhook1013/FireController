@@ -18,6 +18,7 @@ import (
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/server"
+	"github.com/benhook1013/FireController/internal/webui"
 )
 
 func main() {
@@ -61,7 +62,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		diagnosticError(stderr, err)
 		return 3
 	}
-	mux := server.New(store, server.WithRepositoryResolver(resolver))
+	mux := server.New(store, server.WithRepositoryResolver(resolver), server.WithBrowser(webui.Handler()))
 	jobs.Register(mux, store)
 	inbox.Register(mux, store)
 	listener, err := net.Listen("tcp", *listen)

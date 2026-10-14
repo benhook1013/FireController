@@ -1,0 +1,335 @@
+import type {
+  ConversationPage, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions,
+  JobSummary, Message, MessageEvent, MessageEventPage, Page, PageOptions,
+  Project, WatchCallbacks, Worker,
+} from './types';
+import { runMessageWatch, type MessageWatchSource } from './events';
+
+const maxBytes = 1 << 20;
+const maxItems = 100;
+const idPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const jobStatuses = new Set(['active', 'parked', 'blocked', 'completed']);
+const serverErrorCodes = new Set([
+  'bootstrap_failed', 'configuration_invalid', 'credential_already_configured', 'empty_edit', 'forbidden',
+  'idempotency_conflict', 'idempotency_key_required', 'instance_mismatch', 'internal_error', 'invalid_brief',
+  'invalid_cursor', 'invalid_filter', 'invalid_query', 'invalid_revision', 'invalid_status', 'invalid_title',
+  'method_not_allowed', 'not_found', 'overloaded', 'provider_unavailable', 'resync_required', 'schema_invalid',
+  'schema_unsupported', 'storage_unavailable', 'stream_failed', 'stream_frame_too_large', 'stream_unavailable',
+  'unauthorized', 'validation_failed', 'worker_already_configured',
+]);
+
+export class ApiError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(code: string, message: string, status = 0) {
+    super(message);
+    this.name = 'ApiError';
+    this.code = code;
+    this.status = status;
+  }
+}
+
+type RequestBudget = { signal: AbortSignal; expired: () => boolean; close: () => void };
+function requestBudget(parents: Array<AbortSignal | undefined>, milliseconds: number): RequestBudget {
+  const controller = new AbortController();
+  let expired = false;
+  const links = parents.filter((parent): parent is AbortSignal => parent !== undefined).map((parent) => {
+    const abort = () => controller.abort();
+    if (parent.aborted) controller.abort();
+    else parent.addEventListener('abort', abort, { once: true });
+    return { parent, abort };
+  });
+  const timer = setTimeout(() => { expired = true; controller.abort(); }, milliseconds);
+  return { signal: controller.signal, expired: () => expired, close: () => { clearTimeout(timer); for (const link of links) link.parent.removeEventListener('abort', link.abort); } };
+}
+
+function origin(): string {
+  const value = globalThis.location?.origin;
+  if (!value || !/^https?:\/\//i.test(value)) throw new ApiError('browser_origin_unavailable', 'Open the browser from the service origin.');
+  return value;
+}
+function urlFor(path: string): string {
+  const base = origin();
+  const url = new URL(path, base);
+  if (url.origin !== base || url.username || url.password) throw new ApiError('invalid_request', 'The service request is invalid.');
+  return url.toString();
+}
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+function keys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
+  return required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
+}
+function text(value: unknown, max: number, empty = false): value is string {
+  return typeof value === 'string' && (empty || value.length > 0) && new TextEncoder().encode(value).byteLength <= max && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value);
+}
+function id(value: unknown): value is string { return typeof value === 'string' && idPattern.test(value); }
+function cursor(value: unknown, optional = false): value is string | undefined {
+  return optional && value === undefined || typeof value === 'string' && value.length > 0 && value.length <= 4096 && value.trim() === value && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+function timestamp(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 64 && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/u.test(value) && Number.isFinite(Date.parse(value));
+}
+function pageOptions(options: PageOptions = {}): URLSearchParams {
+  if (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > maxItems)) throw new ApiError('invalid_request', 'Choose a page limit from 1 to 100.');
+  if (options.cursor !== undefined && !cursor(options.cursor)) throw new ApiError('invalid_request', 'The page cursor is invalid.');
+  const query = new URLSearchParams();
+  if (options.limit !== undefined) query.set('limit', String(options.limit));
+  if (options.cursor !== undefined) query.set('cursor', options.cursor);
+  return query;
+}
+function withQuery(path: string, query: URLSearchParams): string { const value = query.toString(); return value ? `${path}?${value}` : path; }
+function validPage(value: unknown, limit: number): value is Record<string, unknown> & { items: unknown[]; has_more: boolean; cursor?: string } {
+  if (!record(value) || !keys(value, ['items', 'has_more'], ['cursor']) || !Array.isArray(value.items) || value.items.length > limit || typeof value.has_more !== 'boolean') return false;
+  if (value.cursor !== undefined && (typeof value.cursor !== 'string' || value.cursor.length > 4096 || value.cursor.trim() !== value.cursor || /[\u0000-\u001f\u007f]/u.test(value.cursor))) return false;
+  return !value.has_more || (!!value.cursor && value.items.length > 0);
+}
+function defaultLimit(options: PageOptions): number { return options.limit ?? 20; }
+
+async function readJson(response: Response, signal: AbortSignal): Promise<unknown> {
+  const declared = response.headers.get('content-length');
+  if (declared && Number.isFinite(Number(declared)) && Number(declared) > maxBytes) {
+    void response.body?.cancel().catch(() => {});
+    throw new ApiError('response_too_large', 'The service response exceeded the supported size.', response.status);
+  }
+  if (response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== 'application/json' || !response.body) throw new ApiError('invalid_response', 'The service returned an invalid response.', response.status);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) throw new ApiError('response_too_large', 'The service response exceeded the supported size.', response.status);
+      chunks.push(value);
+    }
+  } catch (error) {
+    try { await reader.cancel(); } catch { /* the response may already be aborted */ }
+    throw error;
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown; }
+  catch { throw new ApiError('invalid_response', 'The service returned invalid JSON.', response.status); }
+}
+function serverError(value: unknown, status: number): ApiError {
+  if (record(value) && record(value.error)) {
+    const code = text(value.error.code, 64) && serverErrorCodes.has(value.error.code) ? value.error.code : 'service_error';
+    return new ApiError(code, `The service request failed (${code}).`, status);
+  }
+  return new ApiError('service_error', 'The service request failed.', status);
+}
+async function readFailure(response: Response, signal: AbortSignal): Promise<ApiError> {
+  try { return serverError(await readJson(response, signal), response.status); }
+  catch (error) {
+    if (signal.aborted) throw error;
+    return error instanceof ApiError ? error : new ApiError('service_error', 'The service request failed.', response.status);
+  }
+}
+
+function validProject(value: unknown, expected: string): value is Project {
+  return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository']) && value.id === expected && text(value.name, 200) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
+}
+function validWorker(value: unknown, projectId: string): value is Worker {
+  return record(value) && keys(value, ['id', 'project_id', 'name']) && id(value.id) && value.project_id === projectId && text(value.name, 200);
+}
+function validSummary(value: unknown): value is JobSummary {
+  return record(value) && keys(value, ['id', 'title', 'worker_id', 'status', 'revision']) && id(value.id) && text(value.title, 240) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0;
+}
+function validJob(value: unknown, projectId: string): value is Job {
+  return record(value) && keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at']) && value.project_id === projectId && id(value.id) && text(value.title, 240) && text(value.brief, 32768, true) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && timestamp(value.created_at) && timestamp(value.updated_at);
+}
+function validInboxItem(value: unknown, worker: string): value is InboxItem {
+  return record(value) && keys(value, ['id', 'conversation_id', 'sender_worker_id', 'recipient_worker_id', 'preview', 'preview_truncated', 'seen', 'acknowledged', 'created_at']) && id(value.id) && id(value.conversation_id) && id(value.sender_worker_id) && value.recipient_worker_id === worker && text(value.preview, 1024, true) && [...value.preview].length <= 160 && typeof value.preview_truncated === 'boolean' && typeof value.seen === 'boolean' && typeof value.acknowledged === 'boolean' && (!value.acknowledged || value.seen) && timestamp(value.created_at);
+}
+function validMessage(value: unknown, conversation: string): value is Message {
+  return record(value) && keys(value, ['id', 'conversation_id', 'sender_worker_id', 'recipient_worker_id', 'body', 'created_at'], ['reply_to_message_id']) && id(value.id) && value.conversation_id === conversation && id(value.sender_worker_id) && id(value.recipient_worker_id) && (value.reply_to_message_id === undefined || id(value.reply_to_message_id)) && text(value.body, 16384) && timestamp(value.created_at);
+}
+function validEvent(value: unknown, project: string, worker: string): value is MessageEvent {
+  if (!record(value) || !keys(value, ['sequence', 'project_id', 'type', 'resource_id', 'revision', 'actor_id', 'payload', 'created_at']) || !Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1 || value.project_id !== project || !id(value.resource_id) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || !id(value.actor_id) || !timestamp(value.created_at) || !record(value.payload)) return false;
+  if (value.type === 'message.sent') return keys(value.payload, ['conversation_id', 'recipient_worker_id', 'sender_worker_id']) && id(value.payload.conversation_id) && value.payload.recipient_worker_id === worker && id(value.payload.sender_worker_id);
+  if (value.type === 'message.seen' || value.type === 'message.acknowledged') return keys(value.payload, ['conversation_id', 'recipient_worker_id']) && id(value.payload.conversation_id) && value.payload.recipient_worker_id === worker;
+  return false;
+}
+export function validateMessageEventPage(value: unknown, project: string, worker: string, limit: number): value is MessageEventPage {
+  if (!record(value) || !keys(value, ['items', 'cursor', 'has_more', 'timed_out']) || !Array.isArray(value.items) || value.items.length > limit || !cursor(value.cursor) || typeof value.has_more !== 'boolean' || typeof value.timed_out !== 'boolean' || value.has_more && value.items.length === 0 || value.timed_out && (value.items.length > 0 || value.has_more)) return false;
+  let previous = 0;
+  for (const event of value.items) { if (!validEvent(event, project, worker) || event.sequence <= previous) return false; previous = event.sequence; }
+  return true;
+}
+
+export class Api {
+  readonly projectId: string;
+  private token: string;
+  private readonly session = new AbortController();
+  private closed = false;
+  private verifiedInstanceId?: string;
+  private activeWatch?: AbortController;
+
+  constructor(token: string, projectId: string) {
+    if (!text(token, 4096) || !id(projectId)) throw new ApiError('invalid_binding', 'Select a valid project and credential.');
+    this.token = token;
+    this.projectId = projectId;
+  }
+  get instanceId(): string | undefined { return this.verifiedInstanceId; }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.verifiedInstanceId = undefined;
+    this.token = '';
+    this.session.abort();
+    this.activeWatch?.abort();
+  }
+
+  async connect(signal?: AbortSignal): Promise<Project> {
+    this.ensureOpen();
+    const budget = requestBudget([signal, this.session.signal], 5000);
+    this.verifiedInstanceId = undefined;
+    try {
+      const value = await this.getJson('/api/v1/instance', undefined, budget.signal);
+      if (!record(value) || !keys(value, ['instance_id']) || !id(value.instance_id)) throw new ApiError('invalid_response', 'The service returned an invalid instance identity.');
+      const project = await this.getJson(this.projectRoute(''), value.instance_id, budget.signal);
+      if (!validProject(project, this.projectId)) throw new ApiError('invalid_response', 'The service returned a project outside this binding.');
+      this.verifiedInstanceId = value.instance_id;
+      return project;
+    } catch (error) { throw this.transportError(error, budget.expired(), budget.signal); }
+    finally { budget.close(); }
+  }
+
+  async workers(options: PageOptions = {}, signal?: AbortSignal): Promise<Page<Worker>> {
+    const value = await this.finiteGet(withQuery(this.projectRoute('workers'), pageOptions(options)), signal);
+    if (!validPage(value, defaultLimit(options)) || !value.items.every((item) => validWorker(item, this.projectId))) throw new ApiError('invalid_response', 'The service returned an invalid worker page.');
+    return value as Page<Worker>;
+  }
+  async jobs(options: JobOptions = {}, signal?: AbortSignal): Promise<Page<JobSummary>> {
+    const query = pageOptions(options);
+    if (options.worker_id !== undefined) { if (!id(options.worker_id)) throw new ApiError('invalid_request', 'The worker filter is invalid.'); query.set('worker_id', options.worker_id); }
+    if (options.status !== undefined) { if (!jobStatuses.has(options.status)) throw new ApiError('invalid_request', 'The job status filter is invalid.'); query.set('status', options.status); }
+    const value = await this.finiteGet(withQuery(this.projectRoute('jobs'), query), signal);
+    if (!validPage(value, defaultLimit(options)) || !value.items.every(validSummary)) throw new ApiError('invalid_response', 'The service returned an invalid job page.');
+    return value as Page<JobSummary>;
+  }
+  async job(jobId: string, signal?: AbortSignal): Promise<Job> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}`), signal);
+    if (!validJob(value, this.projectId) || value.id !== jobId) throw new ApiError('invalid_response', 'The service returned a job outside this binding.');
+    return value;
+  }
+  async inbox(worker: string, options: InboxOptions = {}, signal?: AbortSignal): Promise<Page<InboxItem>> {
+    if (!id(worker)) throw new ApiError('invalid_request', 'The inbox worker is invalid.');
+    const query = pageOptions(options);
+    if (options.unread !== undefined) { if (typeof options.unread !== 'boolean') throw new ApiError('invalid_request', 'The inbox filter is invalid.'); if (options.unread) query.set('unread', 'true'); }
+    if (options.unacknowledged !== undefined) { if (typeof options.unacknowledged !== 'boolean') throw new ApiError('invalid_request', 'The inbox filter is invalid.'); if (options.unacknowledged) query.set('unacknowledged', 'true'); }
+    const value = await this.finiteGet(withQuery(this.projectRoute(`inbox/${encodeURIComponent(worker)}`), query), signal, worker);
+    if (!validPage(value, defaultLimit(options)) || !value.items.every((item) => validInboxItem(item, worker))) throw new ApiError('invalid_response', 'The service returned an invalid inbox page.');
+    return value as Page<InboxItem>;
+  }
+  async thread(conversationId: string, options: PageOptions = {}, signal?: AbortSignal): Promise<ConversationPage> {
+    if (!id(conversationId)) throw new ApiError('invalid_request', 'The conversation identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`conversations/${encodeURIComponent(conversationId)}`), pageOptions(options)), signal);
+    if (!record(value) || !keys(value, ['conversation_id', 'root_message_id', 'items', 'has_more'], ['cursor']) || value.conversation_id !== conversationId || !id(value.root_message_id) || !validPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, defaultLimit(options)) || !Array.isArray(value.items) || !value.items.every((item) => validMessage(item, conversationId))) throw new ApiError('invalid_response', 'The service returned an invalid conversation page.');
+    return value as unknown as ConversationPage;
+  }
+  async snapshot(worker: string, options: InboxOptions = {}, signal?: AbortSignal): Promise<InboxSnapshot> {
+    if (!id(worker)) throw new ApiError('invalid_request', 'The inbox worker is invalid.');
+    const query = pageOptions(options);
+    if (options.unread !== undefined) { if (typeof options.unread !== 'boolean') throw new ApiError('invalid_request', 'The inbox filter is invalid.'); if (options.unread) query.set('unread', 'true'); }
+    if (options.unacknowledged !== undefined) { if (typeof options.unacknowledged !== 'boolean') throw new ApiError('invalid_request', 'The inbox filter is invalid.'); if (options.unacknowledged) query.set('unacknowledged', 'true'); }
+    const value = await this.finiteGet(withQuery(this.projectRoute(`inbox/${encodeURIComponent(worker)}/snapshot`), query), signal, worker);
+    if (!record(value) || !keys(value, ['inbox', 'event_cursor']) || !cursor(value.event_cursor) || !validPage(value.inbox, defaultLimit(options)) || !value.inbox.items.every((item) => validInboxItem(item, worker))) throw new ApiError('invalid_response', 'The service returned an invalid inbox snapshot.');
+    return value as unknown as InboxSnapshot;
+  }
+
+  async watchMessages(worker: string, options: InboxOptions, callbacks: WatchCallbacks, signal: AbortSignal): Promise<void> {
+    this.ensureOpen();
+    if (!id(worker)) throw new ApiError('invalid_request', 'The inbox worker is invalid.');
+    pageOptions(options);
+    if (options.unread !== undefined && typeof options.unread !== 'boolean' || options.unacknowledged !== undefined && typeof options.unacknowledged !== 'boolean') throw new ApiError('invalid_request', 'The inbox filter is invalid.');
+    if (signal.aborted || this.session.signal.aborted) return;
+    this.activeWatch?.abort();
+    const controller = new AbortController();
+    this.activeWatch = controller;
+    const abort = () => controller.abort();
+    if (signal.aborted || this.session.signal.aborted) controller.abort();
+    else {
+      signal.addEventListener('abort', abort, { once: true });
+      this.session.signal.addEventListener('abort', abort, { once: true });
+    }
+    const source: MessageWatchSource = {
+      projectId: this.projectId,
+      snapshot: (target, page, selectedSignal) => this.snapshot(target, page, selectedSignal),
+      openStream: (target, after, limit, selectedSignal) => this.openStream(target, after, limit, selectedSignal),
+      readFailure: async (response, selectedSignal) => {
+        const request = requestBudget([selectedSignal], 5000);
+        try { return await readFailure(response, request.signal); }
+        catch (error) { throw this.transportError(error, request.expired(), request.signal); }
+        finally { request.close(); }
+      },
+      validatePage: (value, target, limit) => validateMessageEventPage(value, this.projectId, target, limit),
+      parseStreamError: (data) => { try { return serverError(JSON.parse(data) as unknown, 0); } catch { return new ApiError('invalid_response', 'The event stream returned an invalid error.'); } },
+    };
+    try {
+      if (!this.verifiedInstanceId) await this.connect(controller.signal);
+      await runMessageWatch(source, worker, options, callbacks, controller.signal);
+    } finally {
+      signal.removeEventListener('abort', abort);
+      this.session.signal.removeEventListener('abort', abort);
+      if (this.activeWatch === controller) this.activeWatch = undefined;
+    }
+  }
+
+  private projectRoute(suffix: string): string { return `/api/v1/projects/${encodeURIComponent(this.projectId)}${suffix ? `/${suffix}` : ''}`; }
+  private async finiteGet(path: string, signal?: AbortSignal, worker?: string): Promise<unknown> {
+    this.ensureOpen();
+    const request = requestBudget([signal, this.session.signal], 5000);
+    try {
+      if (!this.verifiedInstanceId) throw new ApiError('not_connected', 'Connect to the selected project before reading data.');
+      return await this.getJson(path, this.verifiedInstanceId, request.signal, worker);
+    } catch (error) { throw this.transportError(error, request.expired(), request.signal); }
+    finally { request.close(); }
+  }
+  private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string): Promise<unknown> {
+    const response = await fetch(urlFor(path), { method: 'GET', headers: this.headers(instanceId, worker), redirect: 'error', credentials: 'omit', cache: 'no-store', signal });
+    if (!response.ok) throw await readFailure(response, signal);
+    return readJson(response, signal);
+  }
+  private headers(instanceId?: string, worker?: string): Headers {
+    const value = new Headers({ Authorization: `Bearer ${this.token}`, Accept: 'application/json' });
+    if (instanceId) value.set('X-FC-Instance', instanceId);
+    if (worker) value.set('X-FC-Worker', worker);
+    return value;
+  }
+  private async openStream(worker: string, after: string, limit: number, signal: AbortSignal): Promise<{ response: Response; close: () => void }> {
+    if (!id(worker) || !cursor(after) || !Number.isInteger(limit) || limit < 1 || limit > maxItems) throw new ApiError('invalid_request', 'The event stream request is invalid.');
+    if (!this.verifiedInstanceId) throw new ApiError('not_connected', 'Connect to the selected project before watching messages.');
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (signal.aborted) controller.abort(); else signal.addEventListener('abort', abort, { once: true });
+    let expired = false;
+    const timer = setTimeout(() => { expired = true; controller.abort(); }, 5000);
+    try {
+      const query = new URLSearchParams({ cursor: after, limit: String(limit) });
+      const response = await fetch(urlFor(`${this.projectRoute('message-events/stream')}?${query}`), { method: 'GET', headers: this.headers(this.verifiedInstanceId, worker), redirect: 'error', credentials: 'omit', cache: 'no-store', signal: controller.signal });
+      clearTimeout(timer);
+      return { response, close: () => { signal.removeEventListener('abort', abort); controller.abort(); } };
+    } catch (error) {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+      throw this.transportError(error, expired, controller.signal);
+    }
+  }
+  private transportError(error: unknown, timedOut: boolean, signal: AbortSignal): ApiError {
+    if (error instanceof ApiError) return error;
+    if (timedOut) return new ApiError('deadline_exceeded', 'The service request exceeded its five-second deadline.');
+    if (signal.aborted) return new ApiError('cancelled', 'The service request was cancelled.');
+    return new ApiError('connection_failed', 'The service could not be reached.');
+  }
+  private ensureOpen(): void {
+    if (this.closed) throw new ApiError('cancelled', 'This service session is closed.');
+  }
+}

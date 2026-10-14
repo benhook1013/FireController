@@ -9,9 +9,9 @@ AI workers are the primary clients. Everyday commands return concise, useful inf
 
 ## Current status
 
-The standalone application is under development. [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the design and repository validation. [PR #2](https://github.com/benhook1013/FireController/pull/2) combines the first local CLI commands, `fc version` and `fc context`, private profile validation, and the durable coordination service.
+The standalone application is under development. The merged [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the design and repository validation. [PR #2](https://github.com/benhook1013/FireController/pull/2) combines the first local CLI commands, `fc version` and `fc context`, private profile validation, and the durable coordination service.
 
-The coordination slice implements a loopback service API, scoped projects/workers and access grants, basic jobs with guarded edits/history, and durable message reads and explicit seen/ack actions. See the [local API](docs/local-api.md). The standalone browser, onboarding commands, provider review orchestration, backups, advanced jobs and the new browser remain unimplemented. The capabilities below describe the selected product design. [Delivery and proof status](docs/delivery.md) records what has actually been built and checked.
+The coordination slice implements a loopback service API, scoped projects/workers and access grants, basic jobs with guarded edits/history, and durable message reads and explicit seen/ack actions. See the [local API](docs/local-api.md). An embedded read-only browser displays jobs, workers and live incoming conversations; open the service address and connect with a project credential. The [browser guide](docs/browser-guide.md) describes its current scope. Onboarding commands, provider review orchestration, backups, advanced jobs and project appearance settings remain unimplemented. The capabilities below describe the selected product design. [Delivery and proof status](docs/delivery.md) records what has actually been built and checked.
 
 ## What FireController provides
 
@@ -47,7 +47,7 @@ Start with one service on a single computer or a network host. One instance serv
 | --- | --- |
 | Service and CLI | Go |
 | Durable state | SQLite on local storage; one active service replica |
-| Browser | TypeScript assets embedded in the service binary |
+| Browser | React, TypeScript, React Router and TanStack Query; Vite builds assets embedded in the service binary |
 | Native AI interface | Packaged MCP adapter using the official Go SDK |
 | Checks and review | GitHub Actions, focused functional tests, documentation validation, and CodeRabbit |
 
@@ -75,18 +75,20 @@ The [onboarding guide](docs/onboarding.md) defines this flow. Its application co
 
 ## Development and contribution
 
-For the documentation scaffold, use Node.js 22 or newer:
+For documentation checks, use Node.js 22.22 or newer:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
 npm run docs:check
 ```
 
-The check runs Markdown lint, focused link-checker tests, and repository-link validation. For the local CLI, install Go 1.27 and Make, then run:
+The check runs Markdown lint, focused link-checker tests, and repository-link validation. For the service, CLI and embedded browser, install Go 1.27 and Make, then run:
 
 ```sh
+npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
 make check build
 ./bin/fc version
+./bin/fcd --data-dir /private/firecontroller --listen 127.0.0.1:8080
 ```
 
 The [development guide](docs/development.md) documents private profiles, implemented commands, build checks and proof limits.

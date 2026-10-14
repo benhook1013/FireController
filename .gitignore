@@ -10,3 +10,5 @@
 .env.*
 !.env.example
 *.log
+
+/webapp/node_modules/

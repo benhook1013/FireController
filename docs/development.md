@@ -2,20 +2,21 @@
 
 ## Implemented boundary
 
-`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The new browser, live subscriptions, provider review engine, backups, and advanced job features remain unimplemented.
+`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The embedded [read-only browser](browser-guide.md) consumes the same API and persistent message stream. CLI/MCP persistent subscriptions, provider review execution, backups and advanced job features remain unimplemented.
 
 ## Build and checks
 
-Use Go 1.27, Node.js 22 or newer, and Make on Linux/WSL:
+Use Go 1.27, Node.js 22.22 or newer, and Make on Linux/WSL:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
+npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
 make check build
 ./bin/fc version
 ./bin/fcd --data-dir /private/firecontroller --listen 127.0.0.1:8080
 ```
 
-`make check` verifies Go formatting, runs Go tests with the race detector and `go vet`, and checks documentation. `make build` produces CGO-free `fc`, `fcd` and `fcmcp` binaries. The [MCP guide](mcp.md) describes its local stdio tool interface. CI also cross-compiles Windows amd64 and macOS arm64; compilation is not proof that those platforms' configuration or runtime behavior works. Go's `GO` and `GOFMT` Make variables can select a locally installed toolchain.
+`make check` type-checks the browser, runs its focused API/SSE tests, verifies Go formatting, runs Go tests with the race detector and `go vet`, and checks documentation. `make build` regenerates the embedded browser assets and produces CGO-free `fc`, `fcd` and `fcmcp` binaries. The [MCP guide](mcp.md) describes its local stdio tool interface. CI also cross-compiles Windows amd64 and macOS arm64; compilation is not proof that those platforms' configuration or runtime behavior works. Go's `GO` and `GOFMT` Make variables can select a locally installed toolchain. The browser guide documents committed asset verification and direct Go builds without Node.
 
 ## Private profile file
 

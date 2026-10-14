@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The standalone browser is not implemented. This contract replaces the legacy private refresh/render/publish cycle after a separately reviewed migration.
+The service embeds a read-only browser for project connection, workers, basic jobs/full briefs and incoming conversations with live message updates. The [browser guide](browser-guide.md) records its implemented boundary, build and proof limits. Project settings, maps, reviews and browser mutations remain later slices. This contract replaces the legacy private refresh/render/publish cycle after a separately reviewed migration.
 
 ## Live application
 

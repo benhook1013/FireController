@@ -2,10 +2,11 @@
 
 ## Implementation status
 
-The coordination slice implements a loopback service with scoped projects/workers, basic jobs and durable messages; see the [local API](local-api.md). The standalone browser and remaining orchestration features are not implemented. The initial design is under review in [PR #1](https://github.com/benhook1013/FireController/pull/1). Temporary development tooling uses separate private state and does not establish production readiness.
+The coordination slice implements a loopback service with scoped projects/workers, basic jobs and durable messages; see the [local API](local-api.md). The embedded browser provides read-only jobs, workers and live incoming conversations; see the [browser guide](browser-guide.md). Remaining orchestration features are not implemented. The initial design was merged in [PR #1](https://github.com/benhook1013/FireController/pull/1). Temporary development tooling uses separate private state and does not establish production readiness.
 
 ## Documents
 
+- [Browser guide](browser-guide.md): embedded UI, connection privacy and build/proof limits.
 - [Development](development.md): implemented profile-bound CLI reads/mutations, build/check commands, and current proof limits.
 - [Incoming message events](message-events.md): scoped inbox snapshots, replay and bounded waits.
 - [Local MCP tools](mcp.md): bound read/write stdio tools and protocol/host proof limits.

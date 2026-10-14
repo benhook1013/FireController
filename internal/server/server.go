@@ -22,10 +22,16 @@ type Option func(*api)
 type api struct {
 	store    *core.Store
 	resolver RepositoryResolver
+	browser  http.Handler
 }
 
 func WithRepositoryResolver(resolver RepositoryResolver) Option {
 	return func(a *api) { a.resolver = resolver }
+}
+
+// WithBrowser installs the embedded browser without changing scoped API routes.
+func WithBrowser(handler http.Handler) Option {
+	return func(a *api) { a.browser = handler }
 }
 
 func New(store *core.Store, options ...Option) *http.ServeMux {
@@ -61,9 +67,13 @@ func New(store *core.Store, options ...Option) *http.ServeMux {
 	RegisterMessageStream(mux, store)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/credentials", a.grant)
 	mux.HandleFunc("DELETE /api/v1/projects/{project_id}/credentials/{credential_id}", a.revoke)
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		core.WriteError(w, core.Fail("not_found", "This API capability is unavailable.", 404))
-	})
+	if a.browser != nil {
+		mux.Handle("/", a.browser)
+	} else {
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			core.WriteError(w, core.Fail("not_found", "This API capability is unavailable.", 404))
+		})
+	}
 	return mux
 }
 

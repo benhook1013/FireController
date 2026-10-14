@@ -4,7 +4,7 @@
 
 The public repository and Apache-2.0 baseline exist. [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the design and repository validation scaffold. Repeated deliberately requested hosted and CLI reviews have produced recorded corrections; current-head coverage and outstanding obligations belong to the PR's review evidence, rather than a fixed round count in this document. Three serial Sol high whole-PR direction passes support the core design; the first two identified narrow contracts now incorporated, and the third found no new material gap. Implementation arrives in stacked PRs, with executed proof and remaining limits recorded in each owning contract. The temporary controller remains the development runtime until replacement proof and explicit cutover.
 
-[PR #2](https://github.com/benhook1013/FireController/pull/2) combines the local CLI/profile foundation with the loopback service, scoped projects/workers, basic jobs and durable messages. Its implemented contract and proof limits are in the [local API](local-api.md) and [development guide](development.md). The new browser and later orchestration features remain unimplemented.
+[PR #2](https://github.com/benhook1013/FireController/pull/2) combines the local CLI/profile foundation with the loopback service, scoped projects/workers, basic jobs and durable messages. Its implemented contract and proof limits are in the [local API](local-api.md) and [development guide](development.md). The embedded browser provides read-only project jobs, workers and live incoming conversations. Later orchestration features remain unimplemented; see the [browser guide](browser-guide.md) for the current UI boundary.
 
 ## Development bootstrap
 
@@ -27,7 +27,7 @@ The temporary runtime is not shipped as the product and does not implement the n
 
 | Boundary | Current evidence | Remaining proof |
 | --- | --- | --- |
-| Public project | Repository creation and visibility verified; PR #1 published; documentation `validate` passed; per-head coverage is recorded in PR evidence | Design PR merge and validation of every later head |
+| Public project | Repository creation and visibility verified; PR #1 merged by the human; documentation `validate` passed; per-head coverage is recorded in PR evidence | Validation and review of every later head |
 | Main protection | PR requirement, admin enforcement, conversation resolution, no force/deletion; strict required `validate` check attributed to GitHub Actions | Ongoing enforcement as validation expands |
 | CodeRabbit configuration | CLI configuration smoke, doctor, and v2 schema passed; GitHub App and CLI completed deliberately requested reviews; independent channel cycles and observed quotas | Fresh provider coverage after corrections; automatic and incremental reviews remain disabled |
 | Inherited behavior | Two bounded inventories plus two independent source/test-body passes and main-worker adjudication; pinned census hashes/counts verified | Legacy suite was not executed; fresh rebuild scenario implementation and execution |
@@ -35,6 +35,6 @@ The temporary runtime is not shipped as the product and does not implement the n
 | Design validation | Markdown lint, local links, and focused checker tests passed, including nested badge and reference-definition targets; first CLI missing-lockfile claim rejected against committed source/CI | Every later head needs validation; these checks do not prove standalone runtime behavior |
 | Local CLI foundation | PR #2 has local profile/version commands and passing Go/CI proof | Malformed UTF-8/FIFO corrections and focused native Windows service/client integration passed; native macOS and broader platform/access-control guarantees remain unproven |
 | Coordination service | Scoped project/access/worker APIs, guarded jobs/history, durable message/thread/inbox/seen/ack, atomic receipts/events; combined race/vet/docs, packaged Linux restart/domain-route proof and CGO-free Windows/macOS cross-builds passed | Published PR/CI and provider review coverage, native Windows/macOS execution, performance calibration and remaining [acceptance](acceptance.md) scenarios |
-| Standalone browser | None; the temporary private legacy dashboard remains operational with this project's own worker/review state | New live browser and event transport |
+| Standalone browser | Embedded read-only React browser, strict scoped API reads and live incoming-message transport; focused TypeScript/API/SSE/Go asset checks | Actual browser proof recorded in the [browser guide](browser-guide.md); project appearance, maps, reviews and browser mutations remain later slices. The private legacy dashboard remains the development runtime |
 
 Record proof in the owning slice and PR; do not silently turn planned commands into passing evidence. Main-branch merge remains a human action.

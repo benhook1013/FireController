@@ -1,9 +1,9 @@
 GO ?= go
 GOFMT ?= gofmt
 
-.PHONY: check fmt-check test build docs-check
+.PHONY: check fmt-check test build docs-check browser-check browser-build
 
-check: fmt-check test docs-check
+check: browser-check fmt-check test docs-check
 
 fmt-check:
 	@files="$$($(GOFMT) -l cmd internal)" || exit $$?; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi
@@ -12,10 +12,16 @@ test:
 	$(GO) test -race ./...
 	$(GO) vet ./...
 
-build:
+build: browser-build
 	CGO_ENABLED=0 $(GO) build -trimpath -o bin/fc ./cmd/fc
 	CGO_ENABLED=0 $(GO) build -trimpath -o bin/fcd ./cmd/fcd
 	CGO_ENABLED=0 $(GO) build -trimpath -o bin/fcmcp ./cmd/fcmcp
 
 docs-check:
 	npm run docs:check
+
+browser-check:
+	npm --prefix webapp run check
+
+browser-build:
+	npm --prefix webapp run build
