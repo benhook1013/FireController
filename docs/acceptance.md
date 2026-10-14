@@ -45,7 +45,7 @@ No standalone service behavior has been tested or benchmarked yet. Inherited tes
 | --- | --- |
 | R01 | Change child or parent head during admission: hold/reselect before posting; never silently target a different PR. |
 | R02 | Change head immediately after final identity read: capture remains attached to admitted target, not the new head. |
-| R03 | Concurrent callers request one review: one reservation/provider action; all callers can inspect the same operation. |
+| R03 | Concurrent callers request one review: one reservation/provider action; authorized callers can inspect the shared operation, while callers without inspection permission receive an opaque conflict with no private attempt details. |
 | R04 | Crash at each pre-post/post/capture/publication boundary: recover original attempt or retain uncertainty without duplicate posts. |
 | R05 | Provider pagination is partial or loops: evidence is incomplete and cannot authorize review/readiness. |
 | R06 | Inspect status repeatedly: zero provider calls; explicit refresh is bounded to selected target/dependencies and coalesced. |
