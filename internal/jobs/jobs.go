@@ -120,9 +120,9 @@ func createJob(store *core.Store) http.HandlerFunc {
 		}
 		result, err := store.Mutate(r.Context(), scope, core.Mutation{
 			Operation: "jobs.create", Target: "jobs", Key: r.Header.Get("Idempotency-Key"), Request: req,
-		}, func(tx *sql.Tx) (any, error) {
+		}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 			if req.WorkerID != "" {
-				if err := core.CheckWorker(r.Context(), tx, scope.ProjectID, req.WorkerID); err != nil {
+				if err := core.CheckWorker(ctx, tx, scope.ProjectID, req.WorkerID); err != nil {
 					return nil, err
 				}
 			}
@@ -130,16 +130,16 @@ func createJob(store *core.Store) http.HandlerFunc {
 			created := job{ID: core.NewID("job"), ProjectID: scope.ProjectID, Title: req.Title,
 				Brief: req.Brief, WorkerID: req.WorkerID, Status: req.Status, Revision: 1,
 				CreatedAt: now, UpdatedAt: now}
-			if _, err := tx.ExecContext(r.Context(), `INSERT INTO jobs
+			if _, err := tx.ExecContext(ctx, `INSERT INTO jobs
 				(project_id,id,title,brief,worker_id,status,revision,created_at,updated_at)
 				VALUES(?,?,?,?,NULLIF(?,''),?,1,?,?)`, created.ProjectID, created.ID, created.Title,
 				created.Brief, created.WorkerID, created.Status, now, now); err != nil {
 				return nil, err
 			}
-			if err := appendHistory(r.Context(), tx, scope, created); err != nil {
+			if err := appendHistory(ctx, tx, scope, created); err != nil {
 				return nil, err
 			}
-			if err := core.AppendEvent(r.Context(), tx, scope, "job.created", created.ID, 1,
+			if err := core.AppendEvent(ctx, tx, scope, "job.created", created.ID, 1,
 				map[string]string{"status": created.Status, "worker_id": created.WorkerID}); err != nil {
 				return nil, err
 			}
@@ -270,8 +270,8 @@ func editJob(store *core.Store) http.HandlerFunc {
 		jobID := r.PathValue("job_id")
 		result, err := store.Mutate(r.Context(), scope, core.Mutation{
 			Operation: "jobs.edit", Target: jobID, Key: r.Header.Get("Idempotency-Key"), Request: req,
-		}, func(tx *sql.Tx) (any, error) {
-			current, err := readJob(r.Context(), tx, scope.ProjectID, jobID)
+		}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+			current, err := readJob(ctx, tx, scope.ProjectID, jobID)
 			if err != nil {
 				return nil, err
 			}
@@ -292,13 +292,13 @@ func editJob(store *core.Store) http.HandlerFunc {
 				next.Status = *req.Status
 			}
 			if next.WorkerID != "" {
-				if err := core.CheckWorker(r.Context(), tx, scope.ProjectID, next.WorkerID); err != nil {
+				if err := core.CheckWorker(ctx, tx, scope.ProjectID, next.WorkerID); err != nil {
 					return nil, err
 				}
 			}
 			next.Revision++
 			next.UpdatedAt = timestamp()
-			res, err := tx.ExecContext(r.Context(), `UPDATE jobs SET title=?,brief=?,worker_id=NULLIF(?,''),status=?,revision=?,updated_at=?
+			res, err := tx.ExecContext(ctx, `UPDATE jobs SET title=?,brief=?,worker_id=NULLIF(?,''),status=?,revision=?,updated_at=?
 				WHERE project_id=? AND id=? AND revision=?`, next.Title, next.Brief, next.WorkerID, next.Status,
 				next.Revision, next.UpdatedAt, scope.ProjectID, jobID, current.Revision)
 			if err != nil {
@@ -309,16 +309,16 @@ func editJob(store *core.Store) http.HandlerFunc {
 				return nil, err
 			}
 			if n != 1 {
-				latest, err := readJob(r.Context(), tx, scope.ProjectID, jobID)
+				latest, err := readJob(ctx, tx, scope.ProjectID, jobID)
 				if err != nil {
 					return nil, err
 				}
 				return nil, revisionConflict(latest.Revision)
 			}
-			if err := appendHistory(r.Context(), tx, scope, next); err != nil {
+			if err := appendHistory(ctx, tx, scope, next); err != nil {
 				return nil, err
 			}
-			if err := core.AppendEvent(r.Context(), tx, scope, "job.updated", next.ID, next.Revision,
+			if err := core.AppendEvent(ctx, tx, scope, "job.updated", next.ID, next.Revision,
 				map[string]string{"status": next.Status, "worker_id": next.WorkerID}); err != nil {
 				return nil, err
 			}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -415,11 +416,11 @@ func TestStartupMigrationAndMutationFailuresRollback(t *testing.T) {
 	}
 	beforeEvents, beforeReceipts := count(t, f.store, "events"), count(t, f.store, "receipts")
 	for _, encodeFailure := range []bool{false, true} {
-		_, err = f.store.Mutate(context.Background(), scope, core.Mutation{Operation: "proof.fail", Target: "workers", Key: core.NewID("key"), Request: struct{}{}}, func(tx *sql.Tx) (any, error) {
-			if _, err := tx.Exec("INSERT INTO workers(project_id,id,name) VALUES(?,?,?)", p, core.NewID("worker"), "rollback"); err != nil {
+		_, err = f.store.Mutate(context.Background(), scope, core.Mutation{Operation: "proof.fail", Target: "workers", Key: core.NewID("key"), Request: struct{}{}}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO workers(project_id,id,name) VALUES(?,?,?)", p, core.NewID("worker"), "rollback"); err != nil {
 				return nil, err
 			}
-			if err := core.AppendEvent(context.Background(), tx, scope, "proof.failed", "rollback", 1, struct{}{}); err != nil {
+			if err := core.AppendEvent(ctx, tx, scope, "proof.failed", "rollback", 1, struct{}{}); err != nil {
 				return nil, err
 			}
 			if encodeFailure {
@@ -434,7 +435,7 @@ func TestStartupMigrationAndMutationFailuresRollback(t *testing.T) {
 	if count(t, f.store, "workers") != 0 || count(t, f.store, "events") != beforeEvents || count(t, f.store, "receipts") != beforeReceipts {
 		t.Fatal("failure left partial state/event/receipt")
 	}
-	_, err = f.store.Mutate(context.Background(), core.Scope{PrincipalID: scope.PrincipalID, ProjectID: p}, core.Mutation{Operation: "proof.forged", Target: "workers", Key: "forged", Request: struct{}{}}, func(*sql.Tx) (any, error) { t.Fatal("forged scope callback"); return nil, nil })
+	_, err = f.store.Mutate(context.Background(), core.Scope{PrincipalID: scope.PrincipalID, ProjectID: p}, core.Mutation{Operation: "proof.forged", Target: "workers", Key: "forged", Request: struct{}{}}, func(context.Context, *sql.Tx) (any, error) { t.Fatal("forged scope callback"); return nil, nil })
 	if err == nil {
 		t.Fatal("forged unauthenticated scope accepted")
 	}
@@ -481,7 +482,7 @@ func TestAdmissionCancellationAndCursorFilterBinding(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		_, err := f.store.Mutate(context.Background(), scope, core.Mutation{Operation: "proof.hold", Target: "probe", Key: "hold", Request: struct{}{}}, func(*sql.Tx) (any, error) { close(entered); <-release; return struct{}{}, nil })
+		_, err := f.store.Mutate(context.Background(), scope, core.Mutation{Operation: "proof.hold", Target: "probe", Key: "hold", Request: struct{}{}}, func(context.Context, *sql.Tx) (any, error) { close(entered); <-release; return struct{}{}, nil })
 		done <- err
 	}()
 	defer func() {
@@ -500,7 +501,10 @@ func TestAdmissionCancellationAndCursorFilterBinding(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err = f.store.Mutate(ctx, scope, core.Mutation{Operation: "proof.cancel", Target: "probe", Key: "cancel", Request: struct{}{}}, func(*sql.Tx) (any, error) { t.Error("cancelled admission called callback"); return nil, nil })
+	_, err = f.store.Mutate(ctx, scope, core.Mutation{Operation: "proof.cancel", Target: "probe", Key: "cancel", Request: struct{}{}}, func(context.Context, *sql.Tx) (any, error) {
+		t.Error("cancelled admission called callback")
+		return nil, nil
+	})
 	var failure *core.Error
 	if !errors.As(err, &failure) || failure.Code != "overloaded" || time.Since(start) > time.Second {
 		t.Fatalf("admission cancellation: %v", err)
@@ -512,4 +516,141 @@ func TestAdmissionCancellationAndCursorFilterBinding(t *testing.T) {
 	if value, err := f.store.ParseCursor(scope, "proof.cursor", cursor); err != nil || value != "after-id" {
 		t.Fatal("cursor did not round trip")
 	}
+}
+
+func TestWriteDeadlineInterruptsStagedSQLiteAndKeepsKeyRetryable(t *testing.T) {
+	// Run the expensive statement only in an externally bounded child. Losing
+	// propagation to SQLite must fail this proof, never hang the parent suite.
+	if len(os.Args) == 0 || os.Args[len(os.Args)-1] != "--write-deadline-child" {
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		child := exec.CommandContext(ctx, executable, "-test.run=^TestWriteDeadlineInterruptsStagedSQLiteAndKeepsKeyRetryable$", "-test.timeout=8s", "--", "--write-deadline-child")
+		child.WaitDelay = time.Second
+		if output, err := child.CombinedOutput(); err != nil {
+			t.Fatalf("bounded write deadline child failed: %v: %s", err, output)
+		}
+		return
+	}
+	f := setup(t)
+	project := f.project(t, "owner/one")
+	calls := f.calls.Load()
+	for _, shortParent := range []bool{false, true} {
+		// workers.create stages its worker first, then AppendEvent executes this
+		// trigger. Both staged domain and event work must disappear on expiry.
+		if err := f.store.EnsureSchema(context.Background(), `CREATE TRIGGER deadline_probe AFTER INSERT ON events WHEN NEW.event_type='workers.created' BEGIN
+SELECT sum(x) FROM (WITH RECURSIVE counter(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM counter WHERE x<1000000000) SELECT x FROM counter);
+END`); err != nil {
+			t.Fatal(err)
+		}
+		beforeWorkers, beforeEvents, beforeReceipts := count(t, f.store, "workers"), count(t, f.store, "events"), count(t, f.store, "receipts")
+		key := core.NewID("key")
+		body := `{"name":"` + key + `"}`
+		path := "/api/v1/projects/" + project + "/workers"
+		r := httptest.NewRequest("POST", path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+f.admin)
+		r.Header.Set("Idempotency-Key", key)
+		ctx := context.Background()
+		cancel := func() {}
+		if shortParent {
+			ctx, cancel = context.WithTimeout(ctx, 25*time.Millisecond)
+		}
+		r = r.WithContext(ctx)
+		response := httptest.NewRecorder()
+		start := time.Now()
+		f.handler.ServeHTTP(response, r)
+		elapsed := time.Since(start)
+		cancel()
+		value := require(t, response, 503)
+		if value["error"].(map[string]any)["code"] != "overloaded" || elapsed > 4*time.Second || shortParent && elapsed > time.Second {
+			t.Fatalf("write deadline did not return a prompt safe overload: %s", response.Body.String())
+		}
+		if !shortParent && elapsed < time.Second {
+			t.Fatal("default deadline proof did not exercise the two-second write budget")
+		}
+		if count(t, f.store, "workers") != beforeWorkers || count(t, f.store, "events") != beforeEvents || count(t, f.store, "receipts") != beforeReceipts {
+			t.Fatal("expired write left domain state, event or receipt")
+		}
+		if err := f.store.EnsureSchema(context.Background(), "DROP TRIGGER deadline_probe"); err != nil {
+			t.Fatal(err)
+		}
+		first := request(f.handler, "POST", path, f.admin, key, "", body)
+		require(t, first, 200)
+		replayed := request(f.handler, "POST", path, f.admin, key, "", body)
+		require(t, replayed, 200)
+		if first.Body.String() != replayed.Body.String() || count(t, f.store, "workers") != beforeWorkers+1 || count(t, f.store, "events") != beforeEvents+1 || count(t, f.store, "receipts") != beforeReceipts+1 {
+			t.Fatal("same-key retry after expiry duplicated or lost atomic state")
+		}
+	}
+	if f.calls.Load() != calls {
+		t.Fatal("deadline/retry proof performed provider work")
+	}
+}
+
+func TestCanceledCallbacksAndRealStorageFailureStayDistinct(t *testing.T) {
+	f := setup(t)
+	project := f.project(t, "owner/one")
+	r := httptest.NewRequest("POST", "/", nil)
+	r.SetPathValue("project_id", project)
+	r.Header.Set("Authorization", "Bearer "+f.admin)
+	scope, err := f.store.Scope(r, "write")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation := core.Mutation{Operation: "proof.deadline", Target: "workers", Key: "cancel-before", Request: struct{}{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = f.store.Mutate(ctx, scope, mutation, func(context.Context, *sql.Tx) (any, error) {
+		t.Fatal("pre-canceled mutation called callback")
+		return nil, nil
+	})
+	assert := func(err error, code string, status int) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		core.WriteError(response, err)
+		value := require(t, response, status)
+		if value["error"].(map[string]any)["code"] != code || strings.Contains(response.Body.String(), "PRIVATE_SQL") {
+			t.Fatalf("unsafe/wrong failure class: %s", response.Body.String())
+		}
+	}
+	assert(err, "overloaded", 503)
+	for _, returnError := range []bool{false, true} {
+		beforeWorkers, beforeEvents, beforeReceipts := count(t, f.store, "workers"), count(t, f.store, "events"), count(t, f.store, "receipts")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		mutation.Key = core.NewID("key")
+		_, err = f.store.Mutate(ctx, scope, mutation, func(ctx context.Context, tx *sql.Tx) (any, error) {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO workers(project_id,id,name) VALUES(?,?,?)", project, core.NewID("worker"), mutation.Key); err != nil {
+				return nil, err
+			}
+			if err := core.AppendEvent(ctx, tx, scope, "proof.staged", "worker", 1, struct{}{}); err != nil {
+				return nil, err
+			}
+			<-ctx.Done()
+			if returnError {
+				return nil, sql.ErrTxDone
+			}
+			return struct{}{}, nil
+		})
+		cancel()
+		assert(err, "overloaded", 503)
+		if count(t, f.store, "workers") != beforeWorkers || count(t, f.store, "events") != beforeEvents || count(t, f.store, "receipts") != beforeReceipts {
+			t.Fatal("callback expiry left partial state")
+		}
+		_, err = f.store.Mutate(context.Background(), scope, mutation, func(context.Context, *sql.Tx) (any, error) { return struct{}{}, nil })
+		if err != nil {
+			t.Fatalf("expired key could not retry: %v", err)
+		}
+	}
+	mutation.Key = "real-storage-failure"
+	_, err = f.store.Mutate(context.Background(), scope, mutation, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		_, err := tx.ExecContext(ctx, "INSERT INTO PRIVATE_SQL_missing_table(id) VALUES(1)")
+		return nil, err
+	})
+	assert(err, "storage_unavailable", 500)
+	mutation.Key = "unexpected-completed-transaction"
+	_, err = f.store.Mutate(context.Background(), scope, mutation, func(context.Context, *sql.Tx) (any, error) { return nil, sql.ErrTxDone })
+	assert(err, "storage_unavailable", 500)
 }

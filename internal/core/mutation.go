@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(*sql.Tx) (any, error)) (json.RawMessage, error) {
+func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(context.Context, *sql.Tx) (any, error)) (json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, storageError(err)
+	}
 	fingerprint, err := mutationFingerprint(scope, m)
 	if err != nil {
 		return nil, err
@@ -28,22 +31,27 @@ func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(*sq
 	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, storageError(err)
+		return nil, mutationError(ctx, err)
 	}
 	defer tx.Rollback()
 	response, found, err := s.replay(ctx, tx, scope, m, fingerprint)
+	if ctx.Err() != nil {
+		return nil, storageError(ctx.Err())
+	}
 	if err != nil || found {
 		return response, err
 	}
-	value, err := fn(tx)
+	value, err := fn(ctx, tx)
+	if ctx.Err() != nil {
+		return nil, storageError(ctx.Err())
+	}
 	if err != nil {
-		var coded interface{ Code() int }
-		if errors.As(err, &coded) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, storageError(err)
-		}
-		return nil, err
+		return nil, mutationError(ctx, err)
 	}
 	encoded, err := json.Marshal(value)
+	if ctx.Err() != nil {
+		return nil, storageError(ctx.Err())
+	}
 	if err != nil {
 		return nil, Fail("internal_error", "The mutation receipt could not be encoded.", 500)
 	}
@@ -51,12 +59,29 @@ func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(*sq
 		return nil, Fail("internal_error", "The mutation receipt exceeds its bounded size.", 500)
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO receipts(principal_id,project_id,operation,target,key,fingerprint,response_json) VALUES(?,?,?,?,?,?,?)", scope.PrincipalID, scope.ProjectID, m.Operation, m.Target, m.Key, fingerprint, string(encoded)); err != nil {
-		return nil, storageError(err)
+		return nil, mutationError(ctx, err)
+	}
+	if ctx.Err() != nil {
+		return nil, storageError(ctx.Err())
 	}
 	if err = tx.Commit(); err != nil {
-		return nil, storageError(err)
+		return nil, mutationError(ctx, err)
 	}
 	return encoded, nil
+}
+
+// The transaction deadline is authoritative even when the driver reports an
+// interrupt or database/sql has already completed its cancellation rollback.
+// Without cancellation, genuine storage failures retain their failure class.
+func mutationError(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return storageError(ctx.Err())
+	}
+	var coded interface{ Code() int }
+	if errors.As(err, &coded) || errors.Is(err, sql.ErrTxDone) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return storageError(err)
+	}
+	return err
 }
 
 func mutationFingerprint(scope Scope, m Mutation) (string, error) {

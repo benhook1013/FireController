@@ -114,21 +114,21 @@ func (h *handler) send(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	result, err := h.store.Mutate(r.Context(), scope, core.Mutation{Operation: "messages.send", Target: "collection", Key: key, Request: request}, func(tx *sql.Tx) (any, error) {
-		if err := core.CheckWorker(r.Context(), tx, scope.ProjectID, scope.WorkerID); err != nil {
+	result, err := h.store.Mutate(r.Context(), scope, core.Mutation{Operation: "messages.send", Target: "collection", Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		if err := core.CheckWorker(ctx, tx, scope.ProjectID, scope.WorkerID); err != nil {
 			return nil, err
 		}
-		if err := core.CheckWorker(r.Context(), tx, scope.ProjectID, request.RecipientWorkerID); err != nil {
+		if err := core.CheckWorker(ctx, tx, scope.ProjectID, request.RecipientWorkerID); err != nil {
 			return nil, err
 		}
 		id := core.NewID("msg")
 		conversationID := core.NewID("conv")
 		if request.ReplyToMessageID != "" {
-			if err := tx.QueryRowContext(r.Context(), "SELECT conversation_id FROM inbox_messages WHERE project_id=? AND id=?", scope.ProjectID, request.ReplyToMessageID).Scan(&conversationID); err != nil {
+			if err := tx.QueryRowContext(ctx, "SELECT conversation_id FROM inbox_messages WHERE project_id=? AND id=?", scope.ProjectID, request.ReplyToMessageID).Scan(&conversationID); err != nil {
 				return nil, missing(err)
 			}
 		} else {
-			if _, err := tx.ExecContext(r.Context(), "INSERT INTO inbox_conversations(project_id,id,root_message_id) VALUES(?,?,?)", scope.ProjectID, conversationID, id); err != nil {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO inbox_conversations(project_id,id,root_message_id) VALUES(?,?,?)", scope.ProjectID, conversationID, id); err != nil {
 				return nil, err
 			}
 		}
@@ -136,13 +136,13 @@ func (h *handler) send(w http.ResponseWriter, r *http.Request) {
 		if request.ReplyToMessageID != "" {
 			reply = request.ReplyToMessageID
 		}
-		if _, err := tx.ExecContext(r.Context(), "INSERT INTO inbox_messages(project_id,id,conversation_id,sender_worker_id,recipient_worker_id,reply_to_message_id,body,created_at) VALUES(?,?,?,?,?,?,?,?)", scope.ProjectID, id, conversationID, scope.WorkerID, request.RecipientWorkerID, reply, request.Body, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO inbox_messages(project_id,id,conversation_id,sender_worker_id,recipient_worker_id,reply_to_message_id,body,created_at) VALUES(?,?,?,?,?,?,?,?)", scope.ProjectID, id, conversationID, scope.WorkerID, request.RecipientWorkerID, reply, request.Body, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(r.Context(), "INSERT INTO inbox_recipient_state(project_id,message_id,worker_id) VALUES(?,?,?)", scope.ProjectID, id, request.RecipientWorkerID); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO inbox_recipient_state(project_id,message_id,worker_id) VALUES(?,?,?)", scope.ProjectID, id, request.RecipientWorkerID); err != nil {
 			return nil, err
 		}
-		if err := core.AppendEvent(r.Context(), tx, scope, "message.sent", id, 1, map[string]string{"conversation_id": conversationID, "sender_worker_id": scope.WorkerID, "recipient_worker_id": request.RecipientWorkerID}); err != nil {
+		if err := core.AppendEvent(ctx, tx, scope, "message.sent", id, 1, map[string]string{"conversation_id": conversationID, "sender_worker_id": scope.WorkerID, "recipient_worker_id": request.RecipientWorkerID}); err != nil {
 			return nil, err
 		}
 		return receipt{ID: id, ConversationID: conversationID, Outcome: "sent"}, nil
@@ -341,9 +341,9 @@ func (h *handler) transition(w http.ResponseWriter, r *http.Request, ack bool) {
 		core.WriteError(w, err)
 		return
 	}
-	result, err := h.store.Mutate(r.Context(), scope, core.Mutation{Operation: operation, Target: id, Key: key, Request: request}, func(tx *sql.Tx) (any, error) {
+	result, err := h.store.Mutate(r.Context(), scope, core.Mutation{Operation: operation, Target: id, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		var conversationID, recipient string
-		if err := tx.QueryRowContext(r.Context(), "SELECT conversation_id,recipient_worker_id FROM inbox_messages WHERE project_id=? AND id=?", scope.ProjectID, id).Scan(&conversationID, &recipient); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT conversation_id,recipient_worker_id FROM inbox_messages WHERE project_id=? AND id=?", scope.ProjectID, id).Scan(&conversationID, &recipient); err != nil {
 			return nil, missing(err)
 		}
 		if recipient != scope.WorkerID {
@@ -351,17 +351,17 @@ func (h *handler) transition(w http.ResponseWriter, r *http.Request, ack bool) {
 		}
 		var seen, acknowledged bool
 		var revision int64
-		if err := tx.QueryRowContext(r.Context(), "SELECT seen,acknowledged,revision FROM inbox_recipient_state WHERE project_id=? AND message_id=? AND worker_id=?", scope.ProjectID, id, scope.WorkerID).Scan(&seen, &acknowledged, &revision); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT seen,acknowledged,revision FROM inbox_recipient_state WHERE project_id=? AND message_id=? AND worker_id=?", scope.ProjectID, id, scope.WorkerID).Scan(&seen, &acknowledged, &revision); err != nil {
 			return nil, err
 		}
 		if (ack && acknowledged) || (!ack && seen) {
 			return receipt{ID: id, ConversationID: conversationID, Outcome: "unchanged"}, nil
 		}
 		acknowledged = acknowledged || ack
-		if _, err := tx.ExecContext(r.Context(), "UPDATE inbox_recipient_state SET seen=1,acknowledged=?,revision=revision+1 WHERE project_id=? AND message_id=? AND worker_id=?", acknowledged, scope.ProjectID, id, scope.WorkerID); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE inbox_recipient_state SET seen=1,acknowledged=?,revision=revision+1 WHERE project_id=? AND message_id=? AND worker_id=?", acknowledged, scope.ProjectID, id, scope.WorkerID); err != nil {
 			return nil, err
 		}
-		if err := core.AppendEvent(r.Context(), tx, scope, "message."+outcome, id, revision+1, map[string]string{"conversation_id": conversationID, "recipient_worker_id": scope.WorkerID}); err != nil {
+		if err := core.AppendEvent(ctx, tx, scope, "message."+outcome, id, revision+1, map[string]string{"conversation_id": conversationID, "recipient_worker_id": scope.WorkerID}); err != nil {
 			return nil, err
 		}
 		return receipt{ID: id, ConversationID: conversationID, Outcome: outcome}, nil

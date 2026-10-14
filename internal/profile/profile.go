@@ -3,8 +3,6 @@
 package profile
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -89,19 +87,11 @@ func Load(path, name string) (Context, *Error) {
 	if len(data) > MaxConfigBytes {
 		return result, failure("profiles_too_large", "The profiles configuration exceeds the 1 MiB limit.", "Reduce the configuration size.")
 	}
-	if err := strictjson.Validate(data); err != nil {
+	var config configuration
+	if err := strictjson.Decode(data, &config); err != nil {
 		if errors.Is(err, strictjson.ErrEncoding) {
 			return result, invalidEncoding()
 		}
-		return result, invalidJSON()
-	}
-	if !exactFields(data) {
-		return result, invalidJSON()
-	}
-	var config configuration
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&config); err != nil {
 		return result, invalidJSON()
 	}
 	if config.Version != 1 {
@@ -135,41 +125,6 @@ func invalidJSON() *Error {
 
 func invalidEncoding() *Error {
 	return failure("profiles_invalid_encoding", "The profiles configuration must contain valid UTF-8 bytes and Unicode escapes.", "Save valid UTF-8 and pair each high surrogate escape with a low surrogate escape.")
-}
-
-// encoding/json also matches struct fields without regard to case. Enforce the
-// documented keys exactly so differently cased identity keys cannot override
-// one another or act as undocumented aliases.
-func exactFields(data []byte) bool {
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(data, &root); err != nil || root == nil {
-		return false
-	}
-	for key := range root {
-		if key != "version" && key != "profiles" {
-			return false
-		}
-	}
-	if raw, present := root["profiles"]; present {
-		var profiles map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &profiles); err != nil {
-			return false
-		}
-		for _, rawEntry := range profiles {
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal(rawEntry, &fields); err != nil {
-				return false
-			}
-			for key := range fields {
-				switch key {
-				case "server_url", "instance_id", "project_id", "worker_id", "credential_file":
-				default:
-					return false
-				}
-			}
-		}
-	}
-	return true
 }
 
 func cleanValue(value string) bool {
