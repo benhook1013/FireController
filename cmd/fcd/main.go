@@ -64,6 +64,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	mux := server.New(store, server.WithRepositoryResolver(resolver))
 	jobs.Register(mux, store)
 	inbox.Register(mux, store)
+	server.RegisterMessageStream(mux, store, ctx)
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		diagnostic(stderr, "listen_failed", "The loopback listener could not be started.")
