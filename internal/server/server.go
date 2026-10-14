@@ -155,9 +155,9 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, core.Fail("provider_unavailable", "GitHub repository identity could not be verified.", 503))
 		return
 	}
-	result, err := a.store.Mutate(r.Context(), scope, mutation, func(tx *sql.Tx) (any, error) {
+	result, err := a.store.Mutate(r.Context(), scope, mutation, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		var existing string
-		err := tx.QueryRowContext(r.Context(), "SELECT id FROM projects WHERE github_repository_id=?", identity.ID).Scan(&existing)
+		err := tx.QueryRowContext(ctx, "SELECT id FROM projects WHERE github_repository_id=?", identity.ID).Scan(&existing)
 		if err == nil {
 			return nil, &core.Error{Code: "repository_already_configured", Message: "This repository already belongs to a project.", Status: 409, Details: map[string]string{"project_id": existing}}
 		}
@@ -165,12 +165,12 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		id := core.NewID("project")
-		if _, err = tx.ExecContext(r.Context(), "INSERT INTO projects(id,name,github_repository_id,repository) VALUES(?,?,?,?)", id, request.Name, identity.ID, identity.FullName); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO projects(id,name,github_repository_id,repository) VALUES(?,?,?,?)", id, request.Name, identity.ID, identity.FullName); err != nil {
 			return nil, err
 		}
 		eventScope := scope
 		eventScope.ProjectID = id
-		if err = core.AppendEvent(r.Context(), tx, eventScope, "projects.created", id, 1, map[string]string{"id": id}); err != nil {
+		if err = core.AppendEvent(ctx, tx, eventScope, "projects.created", id, 1, map[string]string{"id": id}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"id": id, "revision": 1, "outcome": "created"}, nil
@@ -260,9 +260,9 @@ func (a *api) createWorker(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	result, err := a.store.Mutate(r.Context(), scope, core.Mutation{Operation: "workers.create", Target: "workers", Key: k, Request: request}, func(tx *sql.Tx) (any, error) {
+	result, err := a.store.Mutate(r.Context(), scope, core.Mutation{Operation: "workers.create", Target: "workers", Key: k, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		var exists int
-		err := tx.QueryRowContext(r.Context(), "SELECT 1 FROM workers WHERE project_id=? AND name=?", scope.ProjectID, request.Name).Scan(&exists)
+		err := tx.QueryRowContext(ctx, "SELECT 1 FROM workers WHERE project_id=? AND name=?", scope.ProjectID, request.Name).Scan(&exists)
 		if err == nil {
 			return nil, core.Fail("worker_already_configured", "A worker with this name already exists in the selected project.", 409)
 		}
@@ -270,10 +270,10 @@ func (a *api) createWorker(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		id := core.NewID("worker")
-		if _, err = tx.ExecContext(r.Context(), "INSERT INTO workers(project_id,id,name) VALUES(?,?,?)", scope.ProjectID, id, request.Name); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO workers(project_id,id,name) VALUES(?,?,?)", scope.ProjectID, id, request.Name); err != nil {
 			return nil, err
 		}
-		if err = core.AppendEvent(r.Context(), tx, scope, "workers.created", id, 1, map[string]string{"id": id}); err != nil {
+		if err = core.AppendEvent(ctx, tx, scope, "workers.created", id, 1, map[string]string{"id": id}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"id": id, "revision": 1, "outcome": "created"}, nil

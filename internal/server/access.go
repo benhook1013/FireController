@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -64,9 +65,9 @@ func (a *api) grant(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	result, err := a.store.Mutate(r.Context(), scope, core.Mutation{Operation: "credentials.grant", Target: "credentials", Key: k, Request: request}, func(tx *sql.Tx) (any, error) {
+	result, err := a.store.Mutate(r.Context(), scope, core.Mutation{Operation: "credentials.grant", Target: "credentials", Key: k, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		var existing string
-		err := tx.QueryRowContext(r.Context(), "SELECT id FROM credentials WHERE token_sha256=?", request.TokenSHA256).Scan(&existing)
+		err := tx.QueryRowContext(ctx, "SELECT id FROM credentials WHERE token_sha256=?", request.TokenSHA256).Scan(&existing)
 		if err == nil {
 			return nil, core.Fail("credential_already_configured", "Use a distinct client credential for a new grant.", 409)
 		}
@@ -74,13 +75,13 @@ func (a *api) grant(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		id, principal := core.NewID("credential"), core.NewID("principal")
-		if _, err = tx.ExecContext(r.Context(), "INSERT INTO credentials(id,principal_id,token_sha256,is_admin,revoked) VALUES(?,?,?,0,0)", id, principal, request.TokenSHA256); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO credentials(id,principal_id,token_sha256,is_admin,revoked) VALUES(?,?,?,0,0)", id, principal, request.TokenSHA256); err != nil {
 			return nil, err
 		}
-		if _, err = tx.ExecContext(r.Context(), "INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES(?,?,?,?)", id, scope.ProjectID, read, write); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES(?,?,?,?)", id, scope.ProjectID, read, write); err != nil {
 			return nil, err
 		}
-		if err = core.AppendEvent(r.Context(), tx, scope, "credentials.granted", id, 1, map[string]string{"id": id, "principal_id": principal}); err != nil {
+		if err = core.AppendEvent(ctx, tx, scope, "credentials.granted", id, 1, map[string]string{"id": id, "principal_id": principal}); err != nil {
 			return nil, err
 		}
 		return map[string]string{"id": id, "principal_id": principal, "project_id": scope.ProjectID, "outcome": "granted"}, nil
@@ -100,9 +101,9 @@ func (a *api) revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("credential_id")
-	result, err := a.store.Mutate(r.Context(), scope, core.Mutation{Operation: "credentials.revoke", Target: id, Key: k, Request: struct{}{}}, func(tx *sql.Tx) (any, error) {
+	result, err := a.store.Mutate(r.Context(), scope, core.Mutation{Operation: "credentials.revoke", Target: id, Key: k, Request: struct{}{}}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		var revoked int
-		err := tx.QueryRowContext(r.Context(), "SELECT c.revoked FROM credentials c JOIN grants g ON g.credential_id=c.id WHERE c.id=? AND g.project_id=? AND c.is_admin=0", id, scope.ProjectID).Scan(&revoked)
+		err := tx.QueryRowContext(ctx, "SELECT c.revoked FROM credentials c JOIN grants g ON g.credential_id=c.id WHERE c.id=? AND g.project_id=? AND c.is_admin=0", id, scope.ProjectID).Scan(&revoked)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, core.Fail("not_found", "The credential is unavailable in this project.", 404)
 		}
@@ -110,10 +111,10 @@ func (a *api) revoke(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		if revoked == 0 {
-			if _, err = tx.ExecContext(r.Context(), "UPDATE credentials SET revoked=1 WHERE id=?", id); err != nil {
+			if _, err = tx.ExecContext(ctx, "UPDATE credentials SET revoked=1 WHERE id=?", id); err != nil {
 				return nil, err
 			}
-			if err = core.AppendEvent(r.Context(), tx, scope, "credentials.revoked", id, 1, map[string]string{"id": id}); err != nil {
+			if err = core.AppendEvent(ctx, tx, scope, "credentials.revoked", id, 1, map[string]string{"id": id}); err != nil {
 				return nil, err
 			}
 		}
