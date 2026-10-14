@@ -25,7 +25,7 @@ The temporary runtime is not shipped as the product and does not implement the n
 
 | Boundary | Current evidence | Remaining proof |
 | --- | --- | --- |
-| Public project | Repository creation and visibility verified; PR #1 published; documentation `validate` passed at `0a87c0e` and earlier updated heads | Design PR merge and validation of every later head |
+| Public project | Repository creation and visibility verified; PR #1 published; documentation `validate` passed; per-head coverage is recorded in PR evidence | Design PR merge and validation of every later head |
 | Main protection | PR requirement, admin enforcement, conversation resolution, no force/deletion; strict required `validate` check attributed to GitHub Actions | Ongoing enforcement as validation expands |
 | CodeRabbit configuration | CLI configuration smoke, doctor, and v2 schema passed; GitHub App and CLI completed deliberately requested reviews; independent channel cycles and observed quotas | Fresh provider coverage after corrections; automatic and incremental reviews remain disabled |
 | Inherited behavior | Two bounded inventories plus two independent source/test-body passes and main-worker adjudication; pinned census hashes/counts verified | Legacy suite was not executed; fresh rebuild scenario implementation and execution |
