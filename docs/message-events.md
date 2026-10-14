@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-The loopback API provides a selected worker's compact inbox snapshot and durable incoming-message event replay, with a bounded wait or persistent SSE stream. The CLI exposes finite snapshot/replay and bounded wait calls. MCP subscriptions, idle-chat wakeup and job/project event feeds remain unimplemented. The [architecture](architecture.md#events-and-subscriptions) owns the broader delivery contract.
+The loopback API provides a selected worker's compact inbox snapshot and durable incoming-message event replay, with a bounded wait or persistent SSE stream. CLI and MCP expose finite snapshot/replay and bounded wait calls. Persistent MCP subscriptions, idle-chat wakeup and job/project event feeds remain unimplemented. The [architecture](architecture.md#events-and-subscriptions) owns the broader delivery contract.
 
 ## Snapshot and replay
 
@@ -16,7 +16,7 @@ Items contain sequence, project ID, type, resource ID, revision, principal actor
 
 Cursors are signed against instance, principal, project and selected-worker feed. Other bindings or malformed/ahead positions fail. A cursor older than the seven-day replay floor returns `resync_required`; obtain a fresh scoped inbox snapshot and explicitly retrieve remaining pages. Durable messages and receipt state remain available. This slice enforces replay eligibility without physically pruning old event rows.
 
-## Agent CLI
+## Agent CLI and MCP
 
 The private profile fixes instance, project and recipient worker for these calls:
 
@@ -24,6 +24,8 @@ The private profile fixes instance, project and recipient worker for these calls
 fc inbox snapshot --unread
 fc inbox events --cursor CURSOR --wait-ms 4000
 ```
+
+MCP provides `inbox_snapshot` with the same filters/page fields and `inbox_events` with required cursor plus optional limit/wait_ms. Both use the shared typed client and bound worker; invalid tool arguments fail before credential/network work. These are finite explicit reads, not automatic polling or a subscription. See the [MCP guide](mcp.md).
 
 Snapshot accepts the existing inbox filters and page options. Events requires an explicit snapshot/replay cursor and accepts limit plus wait-ms. One call returns one bounded page; no cursor is saved and no automatic polling, seen or acknowledgment occurs. A five-second total budget covers identity verification and the request. The typed client rejects incomplete or mis-scoped event pages, unexpected payload fields, invalid ordering and inconsistent timeout/page state.
 
@@ -49,6 +51,6 @@ Focused race tests cover scoped cursors, filtered gaps, pagination, expiry, comm
 
 An isolated SQLite probe with one million synthetic project events measured a current-cursor store replay median of 0.092 ms after replacing the full-history retention aggregate (370.838 ms before). Replaying a large recent backlog still cost 161.588 ms in that probe. These are store-call measurements on one machine, excluding HTTP/client costs; they do not establish fleet throughput.
 
-Six packaged CLI groups also passed, including twelve invalid-flag cases with zero HTTP, scope/filter/paging/restart replay, cancellation and a measured 5.005-second shared deadline. Four actual `fcd` SSE groups passed for readiness/commit delivery, replay reconnect, revocation/error/EOF and prompt HEAD rejection. Public stream tests additionally cover shutdown cancellation, unchanged recipient state and replay after reattachment, idle write-timeout override, a non-reading native socket, frame bounds and shared capacity.
+Seven packaged MCP event groups passed for discovery, strict arguments, scoped snapshot/replay, filtered paging, concurrent pending wait, cancellation, shared deadline and revocation; see the [MCP proof](mcp.md#proof-and-limitations). Six packaged CLI groups also passed, including twelve invalid-flag cases with zero HTTP, scope/filter/paging/restart replay, cancellation and a measured 5.005-second shared deadline. Four actual `fcd` SSE groups passed for readiness/commit delivery, replay reconnect, revocation/error/EOF and prompt HEAD rejection. Public stream tests additionally cover shutdown cancellation, unchanged recipient state and replay after reattachment, idle write-timeout override, a non-reading native socket, frame bounds and shared capacity.
 
 The embedded browser now consumes this stream; its separate [browser proof](browser-guide.md#proof-and-limits) includes real restart and resumed delivery. These checks do not establish fleet throughput, physical event retention, persistent CLI/MCP adapters, network/TLS deployment or native agent-host wakeup. The performance acceptance scenarios remain required before those capabilities are claimed.

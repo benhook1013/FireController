@@ -1,4 +1,4 @@
-// Package mcpadapter exposes bound read-only tools over the official MCP SDK.
+// Package mcpadapter exposes bound coordination tools over the official MCP SDK.
 package mcpadapter
 
 import (
@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/profile"
@@ -63,7 +62,7 @@ func New(args []string, env map[string]string) (*mcp.Server, error) {
 		return nil, diagnostic("profile_required", "A profile name is required without surrounding whitespace.", "Set --profile NAME or FC_PROFILE.")
 	}
 	if !seen["--profiles-file"] {
-		directory := configDir(env)
+		directory := profile.ConfigDirectory(env)
 		if directory == "" || !filepath.IsAbs(directory) {
 			return nil, diagnostic("config_directory_unavailable", "The user configuration directory could not be determined.", "Provide --profiles-file PATH or configure the user environment.")
 		}
@@ -74,36 +73,6 @@ func New(args []string, env map[string]string) (*mcp.Server, error) {
 		return nil, &Diagnostic{Code: err.Code, Message: err.Message, Action: err.Action}
 	}
 	return boundServer(binding), nil
-}
-
-func configDir(env map[string]string) string {
-	switch runtime.GOOS {
-	case "windows":
-		for key, value := range env {
-			if strings.EqualFold(key, "AppData") {
-				return value
-			}
-		}
-	case "darwin", "ios":
-		if env["HOME"] != "" {
-			return filepath.Join(env["HOME"], "Library", "Application Support")
-		}
-	case "plan9":
-		if env["home"] != "" {
-			return filepath.Join(env["home"], "lib")
-		}
-	default:
-		if env["XDG_CONFIG_HOME"] != "" {
-			if !filepath.IsAbs(env["XDG_CONFIG_HOME"]) {
-				return ""
-			}
-			return env["XDG_CONFIG_HOME"]
-		}
-		if env["HOME"] != "" {
-			return filepath.Join(env["HOME"], ".config")
-		}
-	}
-	return ""
 }
 
 type writerCloser struct{ io.Writer }

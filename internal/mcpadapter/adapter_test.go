@@ -139,10 +139,10 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(tools.Tools) != 14 || tools.NextCursor != "" {
+			if len(tools.Tools) != 16 || tools.NextCursor != "" {
 				t.Fatal("tool discovery incomplete")
 			}
-			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_thread": true, "jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
+			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_snapshot": true, "inbox_events": true, "inbox_thread": true, "jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
 			writes := map[string]bool{"jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
 			for _, tool := range tools.Tools {
 				if !expected[tool.Name] {
@@ -178,7 +178,7 @@ func TestStrictArgumentsFailBeforeCredentialOrHTTP(t *testing.T) {
 	path := profiles(t, map[string]profile.Context{"alpha": c}, "never-open-token")
 	cs := connect(t, adapter(t, path, "alpha"), "")
 	cases := []struct{ name, raw string }{
-		{"doctor", `{"profile":"other"}`}, {"context", `{"project_id":"other"}`}, {"workers_list", `{"limit":1,"limit":2}`}, {"workers_list", `{"Limit":1}`}, {"workers_list", `{"limit":null}`}, {"workers_list", `null`}, {"workers_list", `[]`}, {"workers_list", `{"limit":0}`}, {"workers_list", `{"limit":101}`}, {"workers_list", `{"limit":1.2}`}, {"workers_list", `{"cursor":""}`}, {"jobs_list", `{"worker_id":"../escape"}`}, {"jobs_list", `{"status":"ready"}`}, {"jobs_assigned", `{"worker_id":"other"}`}, {"job_read", `{}`}, {"job_read", `{"job_id":"a/b"}`}, {"job_read", `{"job_id":"bad\ud800"}`}, {"job_history", `{"job_id":"good","cursor":null}`}, {"inbox_list", `{"unread":"true"}`}, {"inbox_list", `{"unread":null}`}, {"inbox_thread", `{"conversation_id":".."}`}, {"workers_list", `{"cursor":"` + strings.Repeat("x", 4097) + `"}`}, {"job_read", `{"job_id":"` + strings.Repeat("x", 129) + `"}`},
+		{"doctor", `{"profile":"other"}`}, {"context", `{"project_id":"other"}`}, {"workers_list", `{"limit":1,"limit":2}`}, {"workers_list", `{"Limit":1}`}, {"workers_list", `{"limit":null}`}, {"workers_list", `null`}, {"workers_list", `[]`}, {"workers_list", `{"limit":0}`}, {"workers_list", `{"limit":101}`}, {"workers_list", `{"limit":1.2}`}, {"workers_list", `{"cursor":""}`}, {"jobs_list", `{"worker_id":"../escape"}`}, {"jobs_list", `{"status":"ready"}`}, {"jobs_assigned", `{"worker_id":"other"}`}, {"job_read", `{}`}, {"job_read", `{"job_id":"a/b"}`}, {"job_read", `{"job_id":"bad\ud800"}`}, {"job_history", `{"job_id":"good","cursor":null}`}, {"inbox_list", `{"unread":"true"}`}, {"inbox_list", `{"unread":null}`}, {"inbox_thread", `{"conversation_id":".."}`}, {"inbox_snapshot", `{"unread":"true"}`}, {"inbox_snapshot", `{"cursor":""}`}, {"inbox_snapshot", `{"unacknowledged":null}`}, {"inbox_events", `{}`}, {"inbox_events", `{"cursor":""}`}, {"inbox_events", `{"cursor":null}`}, {"inbox_events", `{"cursor":" padded "}`}, {"inbox_events", `{"cursor":"bad\ncursor"}`}, {"inbox_events", `{"cursor":"cursor","limit":0}`}, {"inbox_events", `{"cursor":"cursor","limit":101}`}, {"inbox_events", `{"cursor":"cursor","wait_ms":-1}`}, {"inbox_events", `{"cursor":"cursor","wait_ms":4001}`}, {"inbox_events", `{"cursor":"cursor","wait_ms":1.2}`}, {"inbox_events", `{"cursor":"cursor","wait_ms":null}`}, {"inbox_events", `{"cursor":"cursor","cursor":"other"}`}, {"workers_list", `{"cursor":"` + strings.Repeat("x", 4097) + `"}`}, {"job_read", `{"job_id":"` + strings.Repeat("x", 129) + `"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+tc.raw[:min(len(tc.raw), 40)], func(t *testing.T) {

@@ -81,14 +81,7 @@ func boundedText(value string, max int) bool {
 }
 
 func key(r *http.Request) (string, error) {
-	if len(r.Header.Values("Idempotency-Key")) != 1 {
-		return "", core.Fail("validation_failed", "Select one Idempotency-Key for this mutation.", 400)
-	}
-	value := r.Header.Get("Idempotency-Key")
-	if !boundedText(value, 128) || strings.ContainsAny(value, "\r\n\x00") {
-		return "", core.Fail("validation_failed", "A bounded Idempotency-Key is required.", 400)
-	}
-	return value, nil
+	return core.IdempotencyKey(r, "validation_failed")
 }
 
 func complete(w http.ResponseWriter, result any, err error) {
@@ -104,16 +97,7 @@ func listQuery(r *http.Request) (url.Values, error) {
 	if len(r.URL.RawQuery) > 16<<10 {
 		return nil, invalid
 	}
-	query, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		return nil, invalid
-	}
-	for name, values := range query {
-		if (name != "limit" && name != "cursor") || len(values) != 1 {
-			return nil, invalid
-		}
-	}
-	return query, nil
+	return core.QueryKeys(r, "validation_failed", "limit", "cursor")
 }
 
 type projectValue struct {
