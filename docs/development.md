@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The embedded [read-only browser](browser-guide.md) consumes the same API and persistent message stream. CLI/MCP persistent subscriptions, provider review execution, backups and advanced job features remain unimplemented.
+`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The embedded [read-only browser](browser-guide.md) consumes the same API and persistent message stream. [Job checkpoints](job-checkpoints.md) implement guarded progress records, latest reads and explicit archives. CLI/MCP persistent subscriptions, provider review execution, backups and the remaining advanced job features are unimplemented.
 
 ## Build and checks
 
@@ -69,6 +69,8 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc jobs assigned` | One compact page filtered to the bound worker; optional status filter. |
 | `fc jobs read ID` | Explicit full job detail and brief. |
 | `fc jobs history ID` | Explicit bounded revision-history page. |
+| `fc jobs checkpoint-latest ID` | Explicit latest checkpoint with current job revision, or an explicit null checkpoint. |
+| `fc jobs checkpoints ID` | Explicit newest-first checkpoint archive page. |
 | `fc inbox list` | Bound worker's compact message previews; optional unread/unacknowledged filters. |
 | `fc inbox thread ID` | Explicit bounded conversation page with full bodies. |
 
@@ -88,6 +90,7 @@ Mutations use the same private profile and one five-second command budget. They 
 | --- | --- |
 | `fc jobs create --key KEY --title TITLE` | Optional `--brief TEXT`, `--worker ID`, `--status STATUS`; defaults to active. |
 | `fc jobs edit ID --key KEY --expect-revision N` | At least one of `--title`, `--brief`, `--worker`, `--status`; empty brief or worker explicitly clears that field. |
+| `fc jobs checkpoint ID --key KEY --expect-revision N --done TEXT --next TEXT` | Optional `--blocker TEXT`, repeatable `--evidence REF`; append immutable progress without editing the job. |
 | `fc inbox send --key KEY --to WORKER_ID --body TEXT` | Optional `--reply-to MESSAGE_ID`; the bound worker is the sender. |
 | `fc inbox seen MESSAGE_ID --key KEY` | Only the bound actual recipient can change seen state. |
 | `fc inbox ack MESSAGE_ID --key KEY` | Only the bound actual recipient can acknowledge; acknowledgment also establishes seen state. |

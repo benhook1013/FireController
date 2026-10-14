@@ -31,6 +31,9 @@ func Register(mux *http.ServeMux, store *core.Store) {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}", getJob(store))
 	mux.HandleFunc("PATCH /api/v1/projects/{project_id}/jobs/{job_id}", editJob(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/history", jobHistory(store))
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints", appendCheckpoint(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints/latest", latestCheckpoint(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints", checkpointHistory(store))
 }
 
 type job struct {
