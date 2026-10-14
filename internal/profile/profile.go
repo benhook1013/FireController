@@ -9,8 +9,8 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 const MaxConfigBytes = 1 << 20
@@ -51,7 +51,7 @@ func failure(code, message, action string) *Error {
 	return &Error{Code: code, Message: message, Action: action}
 }
 
-// Load resolves one explicitly named profile without reading its credential
+// Load validates one explicitly named profile without reading its credential
 // reference or modifying configuration. All entries must be valid so selection
 // cannot hide malformed or ambiguous configuration.
 func Load(path, name string) (Context, *Error) {
@@ -59,17 +59,36 @@ func Load(path, name string) (Context, *Error) {
 	if !cleanValue(name) {
 		return result, failure("profile_required", "A profile name is required without surrounding whitespace.", "Set --profile NAME or FC_PROFILE.")
 	}
+	// Check the path before opening so accidental FIFO/device inputs cannot
+	// block the local command. This is not a hostile filesystem-race defense.
+	info, err := os.Stat(path)
+	if err != nil {
+		return result, failure("profiles_unreadable", "The profiles configuration could not be inspected.", "Check --profiles-file and its read permissions.")
+	}
+	if !info.Mode().IsRegular() {
+		return result, notRegularFile()
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return result, failure("profiles_unreadable", "The profiles configuration could not be opened.", "Check --profiles-file and its read permissions.")
 	}
 	defer f.Close()
+	info, err = f.Stat()
+	if err != nil {
+		return result, failure("profiles_unreadable", "The opened profiles configuration could not be inspected.", "Check --profiles-file and its read permissions.")
+	}
+	if !info.Mode().IsRegular() {
+		return result, notRegularFile()
+	}
 	data, err := io.ReadAll(io.LimitReader(f, MaxConfigBytes+1))
 	if err != nil {
 		return result, failure("profiles_unreadable", "The profiles configuration could not be read.", "Check --profiles-file and its read permissions.")
 	}
 	if len(data) > MaxConfigBytes {
 		return result, failure("profiles_too_large", "The profiles configuration exceeds the 1 MiB limit.", "Reduce the configuration size.")
+	}
+	if !utf8.Valid(data) {
+		return result, failure("profiles_invalid_encoding", "The profiles configuration must contain valid UTF-8 bytes.", "Save the configuration as UTF-8 without malformed byte sequences.")
 	}
 	// The normal JSON decoder permits duplicate keys; reject them first because
 	// a repeated profile or identity must never silently replace another value.
@@ -102,14 +121,16 @@ func Load(path, name string) (Context, *Error) {
 		if !safeURL(candidate.ServerURL) {
 			return result, failure("profiles_unsafe_url", "Each server URL must use HTTP or HTTPS without user information, a query, or a fragment; remote hosts require HTTPS.", "Correct the server URL in the profiles configuration.")
 		}
-		candidate.CredentialFile = resolveCredential(path, candidate.CredentialFile)
-		config.Profiles[profileName] = candidate
 	}
 	selected, ok := config.Profiles[name]
 	if !ok {
 		return result, failure("profile_not_found", "The selected profile does not exist.", "Select a configured name with --profile or FC_PROFILE.")
 	}
 	return Context{Profile: name, ServerURL: selected.ServerURL, InstanceID: selected.InstanceID, ProjectID: selected.ProjectID, WorkerID: selected.WorkerID}, nil
+}
+
+func notRegularFile() *Error {
+	return failure("profiles_not_regular", "The profiles configuration must be a regular file.", "Select a regular configuration file with --profiles-file.")
 }
 
 func invalidJSON() *Error {
@@ -171,13 +192,6 @@ func safeURL(value string) bool {
 	}
 	host := u.Hostname()
 	return strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()
-}
-
-func resolveCredential(configPath, reference string) string {
-	if filepath.IsAbs(reference) {
-		return filepath.Clean(reference)
-	}
-	return filepath.Join(filepath.Dir(configPath), reference)
 }
 
 func uniqueValue(decoder *json.Decoder, depth int) bool {

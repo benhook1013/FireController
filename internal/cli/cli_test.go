@@ -2,12 +2,15 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/cli"
 )
@@ -128,6 +131,28 @@ func TestInterleavedProfilesDoNotChangeIdentityOrConfiguration(t *testing.T) {
 	}
 }
 
+func TestInterleavedProjectsOnOneInstanceKeepWorkerScope(t *testing.T) {
+	config := profiles()
+	entries := config["profiles"].(map[string]any)
+	alpha := entries["alpha-overseer"].(map[string]any)
+	beta := entries["beta-overseer"].(map[string]any)
+	beta["instance_id"], beta["server_url"] = alpha["instance_id"], alpha["server_url"]
+	data := encode(t, config)
+	path := fixture(t, data)
+	for _, name := range []string{"alpha-overseer", "beta-overseer", "alpha-overseer", "beta-overseer"} {
+		code, stdout, stderr := run([]string{"context", "--profile", name, "--profiles-file", path}, nil)
+		got := response(t, code, stdout, stderr)
+		want := entries[name].(map[string]any)
+		if got["profile"] != name || got["instance_id"] != "instance-a" || got["server_url"] != alpha["server_url"] || got["worker_id"] != "overseer" || got["project_id"] != want["project_id"] {
+			t.Fatalf("wrong same-instance project identity: %v", got)
+		}
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(data, after) {
+		t.Fatalf("configuration changed: err=%v", err)
+	}
+}
+
 func TestProfilePrecedenceAndFlagsOnEitherSideOfCommand(t *testing.T) {
 	path := fixture(t, encode(t, profiles()))
 	env := map[string]string{"FC_PROFILE": "beta-overseer"}
@@ -235,6 +260,69 @@ func TestStrictConfigurationFailures(t *testing.T) {
 			path := fixture(t, []byte(tc.data))
 			failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", path}, nil, cli.ExitConfig, tc.code)
 		})
+	}
+}
+
+func TestMalformedUTF8CannotRepairIdentityBytes(t *testing.T) {
+	valid := encode(t, profiles())
+	for _, field := range []struct{ name, value string }{
+		{"instance_id", "instance-a"}, {"project_id", "alpha-project"}, {"worker_id", "overseer"},
+	} {
+		for _, malformed := range [][]byte{{0xff}, {0xc3}, {0xc0, 0xaf}, {0xed, 0xa0, 0x80}} {
+			original := []byte(`"` + field.name + `":"` + field.value + `"`)
+			replacement := append([]byte(`"`+field.name+`":"broken-`), malformed...)
+			replacement = append(replacement, '"')
+			data := bytes.Replace(valid, original, replacement, 1)
+			path := fixture(t, data)
+			failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", path}, nil, cli.ExitConfig, "profiles_invalid_encoding")
+		}
+	}
+	// Valid multibyte identity text must retain its exact configured value.
+	config := profiles()
+	config["profiles"].(map[string]any)["alpha-overseer"].(map[string]any)["project_id"] = "alpha-project-雪"
+	path := fixture(t, encode(t, config))
+	code, stdout, stderr := run([]string{"context", "--profile", "alpha-overseer", "--profiles-file", path}, nil)
+	if got := response(t, code, stdout, stderr); got["project_id"] != "alpha-project-雪" {
+		t.Fatalf("valid UTF-8 identity changed: %v", got)
+	}
+}
+
+func TestContextRejectsDirectoriesAsConfiguration(t *testing.T) {
+	failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", t.TempDir()}, nil, cli.ExitConfig, "profiles_not_regular")
+}
+
+func TestContextRejectsFIFOWithoutBlocking(t *testing.T) {
+	// Run a potential blocking load only in the deadline-bounded child below.
+	// No process-global environment changes are needed to identify that child.
+	if len(os.Args) >= 2 && os.Args[len(os.Args)-2] == "--fifo-config-child" {
+		failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", os.Args[len(os.Args)-1]}, nil, cli.ExitConfig, "profiles_not_regular")
+		return
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux named-pipe failure proof")
+	}
+	mkfifo, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Skip("mkfifo is required for the Linux named-pipe fixture")
+	}
+	path := filepath.Join(t.TempDir(), "profiles.fifo")
+	setupContext, cancelSetup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelSetup()
+	setup := exec.CommandContext(setupContext, mkfifo, path)
+	setup.WaitDelay = time.Second
+	if output, err := setup.CombinedOutput(); err != nil {
+		t.Fatalf("create named-pipe fixture: %v: %s", err, output)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	childContext, cancelChild := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelChild()
+	child := exec.CommandContext(childContext, executable, "-test.run=^TestContextRejectsFIFOWithoutBlocking$", "-test.timeout=4s", "--", "--fifo-config-child", path)
+	child.WaitDelay = time.Second
+	if output, err := child.CombinedOutput(); err != nil {
+		t.Fatalf("named-pipe configuration must fail promptly with a safe JSON error: %v: %s", err, output)
 	}
 }
 
