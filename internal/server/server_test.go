@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -276,6 +277,72 @@ func TestStrictRequestsAndScopedPagination(t *testing.T) {
 	require(t, request(f.handler, "GET", path+"?limit=101", f.admin, "", "", ""), 400)
 	require(t, request(f.handler, "GET", path+"?limit=1&limit=2", f.admin, "", "", ""), 400)
 	require(t, request(f.handler, "GET", path+"?cursor="+cursor, f.admin, "", "", ""), 200)
+}
+
+func TestProjectAndWorkerListsShareExactPaginationContract(t *testing.T) {
+	f := setup(t)
+	p, q := f.project(t, "owner/one"), f.project(t, "owner/two")
+	w1, w2 := f.worker(t, p, "one"), f.worker(t, p, "two")
+	f.worker(t, q, "other-project")
+	calls := f.calls.Load()
+	events, receipts := count(t, f.store, "events"), count(t, f.store, "receipts")
+	for _, tc := range []struct {
+		name, path string
+		ids        []string
+	}{
+		{"projects", "/api/v1/projects", []string{p, q}},
+		{"workers", "/api/v1/projects/" + p + "/workers", []string{w1, w2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := slices.Clone(tc.ids)
+			slices.Sort(want)
+			cursor := ""
+			for page := range 2 {
+				path := tc.path + "?limit=1"
+				if cursor != "" {
+					path += "&cursor=" + cursor
+				}
+				value := require(t, request(f.handler, "GET", path, f.admin, "", "", ""), 200)
+				if len(value) != 3 {
+					t.Fatalf("pagination response has extra or missing fields: %v", value)
+				}
+				items, ok := value["items"].([]any)
+				if !ok || len(items) != 1 {
+					t.Fatalf("expected one item on page %d: %v", page, value)
+				}
+				item := items[0].(map[string]any)
+				if item["id"] != want[page] {
+					t.Fatalf("item skipped, duplicated or out of order: %v", item)
+				}
+				if tc.name == "workers" && (item["project_id"] != p || (item["name"] != "one" && item["name"] != "two")) {
+					t.Fatalf("worker list escaped selected project: %v", item)
+				}
+				if tc.name == "projects" && (item["name"] != "project" || (item["repository"] != "owner/one" && item["repository"] != "owner/two")) {
+					t.Fatalf("project item lost metadata: %v", item)
+				}
+				cursor, ok = value["cursor"].(string)
+				if !ok {
+					t.Fatal("cursor is not a string")
+				}
+				if value["has_more"] != (page == 0) || (page == 0 && cursor == "") || (page == 1 && cursor != "") {
+					t.Fatalf("incorrect continuation on page %d: %v", page, value)
+				}
+			}
+			for _, query := range []string{
+				"status=active", "worker_id=unknown", "unknown=PRIVATE_FILTER", "limit=1&limit=2", "limit=1&limit=1",
+				"cursor=&cursor=", "cursor=first&cursor=second", "cursor=&%63ursor=", "limit=1&%6cimit=2",
+				"cursor=%zz", "limit=1;cursor=", "cursor=" + strings.Repeat("a", 4097), "cursor=" + strings.Repeat("a", (16<<10)+1),
+			} {
+				value := require(t, request(f.handler, "GET", tc.path+"?"+query, f.admin, "", "", ""), 400)
+				if value["error"].(map[string]any)["code"] != "validation_failed" {
+					t.Fatalf("unexpected query error: %v", value)
+				}
+			}
+		})
+	}
+	if f.calls.Load() != calls || count(t, f.store, "events") != events || count(t, f.store, "receipts") != receipts {
+		t.Fatal("list/pagination/query failures invoked provider or changed durable state")
+	}
 }
 
 func TestConcurrentKeysAndRepositoryBindingAreAtomic(t *testing.T) {

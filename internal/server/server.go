@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 
@@ -85,6 +86,23 @@ func complete(w http.ResponseWriter, result any, err error) {
 		return
 	}
 	core.WriteJSON(w, 200, result)
+}
+
+func listQuery(r *http.Request) (url.Values, error) {
+	invalid := core.Fail("validation_failed", "Use only one limit and one cursor query parameter.", 400)
+	if len(r.URL.RawQuery) > 16<<10 {
+		return nil, invalid
+	}
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return nil, invalid
+	}
+	for name, values := range query {
+		if (name != "limit" && name != "cursor") || len(values) != 1 {
+			return nil, invalid
+		}
+	}
+	return query, nil
 }
 
 type projectValue struct {
@@ -177,12 +195,17 @@ func (a *api) listProjects(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	query, err := listQuery(r)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
 	limit, err := core.PageLimit(r)
 	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	after, err := a.store.ParseCursor(scope, "projects", r.URL.Query().Get("cursor"))
+	after, err := a.store.ParseCursor(scope, "projects", query.Get("cursor"))
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -212,7 +235,7 @@ func (a *api) listProjects(w http.ResponseWriter, r *http.Request) {
 		values = values[:limit]
 		cursor = a.store.Cursor(scope, "projects", values[len(values)-1].ID)
 	}
-	core.WriteJSON(w, 200, map[string]any{"projects": values, "has_more": more, "cursor": cursor})
+	core.WriteJSON(w, 200, map[string]any{"items": values, "has_more": more, "cursor": cursor})
 }
 
 func (a *api) createWorker(w http.ResponseWriter, r *http.Request) {
@@ -264,13 +287,18 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	query, err := listQuery(r)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
 	limit, err := core.PageLimit(r)
 	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
 	filter := "workers"
-	after, err := a.store.ParseCursor(scope, filter, r.URL.Query().Get("cursor"))
+	after, err := a.store.ParseCursor(scope, filter, query.Get("cursor"))
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -300,7 +328,7 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		values = values[:limit]
 		cursor = a.store.Cursor(scope, filter, values[len(values)-1].ID)
 	}
-	core.WriteJSON(w, 200, map[string]any{"workers": values, "has_more": more, "cursor": cursor})
+	core.WriteJSON(w, 200, map[string]any{"items": values, "has_more": more, "cursor": cursor})
 }
 
 func (a *api) worker(w http.ResponseWriter, r *http.Request) {
