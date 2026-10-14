@@ -101,3 +101,9 @@ This slice does not persist a client retry journal. Callers retain the key, requ
 ## Incoming message replay
 
 `fc inbox snapshot` and `fc inbox events` expose the scoped [message-event API](message-events.md). Snapshot includes a compact inbox page and its same-transaction event cursor. Events replays one page or waits up to four seconds for a relevant change, within the normal five-second command budget. Full message bodies and explicit seen/ack actions remain separate calls.
+
+## Combined client, transport and browser proof
+
+The combined implementation checkpoint passed `make check build` and reproducible embedded-asset checks, followed by seven actual browser groups and seven actual MCP groups against the same packaged service. Both suites preserved source and binary hashes and cleaned their owned processes/state. The browser run also inspected seven desktop/phone screenshots, observed zero browser writes and zero JSON polling during a 16.2-second idle window, and exercised the first-read/live-reply race and real service restart.
+
+The combined 64-file Go/module digest was `a894280351e85316561b1850d18c4a776411be59c99454f288960bc7f76f5bf2`; the 83-file manifest including browser source/config/locks/embedded assets was `f33e653c8bac544fa6dff0052cfd06af825003e5e185d8bab17881c6b64a6a2f`. These identify the tested bytes rather than imply proof for subsequent edits. The earlier detailed [MCP](mcp.md#proof-and-limitations) and [browser](browser-guide.md#proof-and-limits) scenarios and platform/host limitations still apply. Browser testing used the available Chromium 153 headless shell with Playwright 1.64.1; local stdio concurrency does not establish installed-host wakeup behavior.
