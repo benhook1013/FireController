@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -115,12 +114,13 @@ func createJob(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		if err := checkIdempotencyKey(r); err != nil {
+		key, err := core.IdempotencyKey(r, "idempotency_key_required")
+		if err != nil {
 			core.WriteError(w, err)
 			return
 		}
 		result, err := store.Mutate(r.Context(), scope, core.Mutation{
-			Operation: "jobs.create", Target: "jobs", Key: r.Header.Get("Idempotency-Key"), Request: req,
+			Operation: "jobs.create", Target: "jobs", Key: key, Request: req,
 		}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 			if req.WorkerID != "" {
 				if err := core.CheckWorker(ctx, tx, scope.ProjectID, req.WorkerID); err != nil {
@@ -161,7 +161,7 @@ func listJobs(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		if err := queryKeys(r, "limit", "cursor", "worker_id", "status"); err != nil {
+		if _, err := core.QueryKeys(r, "invalid_query", "limit", "cursor", "worker_id", "status"); err != nil {
 			core.WriteError(w, err)
 			return
 		}
@@ -264,13 +264,14 @@ func editJob(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		if err := checkIdempotencyKey(r); err != nil {
+		key, err := core.IdempotencyKey(r, "idempotency_key_required")
+		if err != nil {
 			core.WriteError(w, err)
 			return
 		}
 		jobID := r.PathValue("job_id")
 		result, err := store.Mutate(r.Context(), scope, core.Mutation{
-			Operation: "jobs.edit", Target: jobID, Key: r.Header.Get("Idempotency-Key"), Request: req,
+			Operation: "jobs.edit", Target: jobID, Key: key, Request: req,
 		}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 			current, err := readJob(ctx, tx, scope.ProjectID, jobID)
 			if err != nil {
@@ -340,7 +341,7 @@ func jobHistory(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		if err := queryKeys(r, "limit", "cursor"); err != nil {
+		if _, err := core.QueryKeys(r, "invalid_query", "limit", "cursor"); err != nil {
 			core.WriteError(w, err)
 			return
 		}
@@ -484,38 +485,6 @@ func normalizeEdit(req *editRequest) {
 		value := strings.TrimSpace(*req.WorkerID)
 		req.WorkerID = &value
 	}
-}
-
-func checkIdempotencyKey(r *http.Request) error {
-	values := r.Header.Values("Idempotency-Key")
-	if len(values) != 1 {
-		return core.Fail("idempotency_key_required", "Idempotency-Key header is required", http.StatusBadRequest)
-	}
-	value := values[0]
-	if value == "" || len(value) > 128 || strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\x00") {
-		return core.Fail("idempotency_key_required", "Use one bounded Idempotency-Key without surrounding whitespace.", http.StatusBadRequest)
-	}
-	return nil
-}
-
-func queryKeys(r *http.Request, allowed ...string) error {
-	query, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		return core.Fail("invalid_query", "Use valid URL query encoding.", http.StatusBadRequest)
-	}
-	for key, values := range query {
-		known := false
-		for _, candidate := range allowed {
-			if key == candidate {
-				known = true
-				break
-			}
-		}
-		if !known || len(values) != 1 {
-			return core.Fail("invalid_query", "Use supported query fields once each.", http.StatusBadRequest)
-		}
-	}
-	return nil
 }
 
 func timestamp() string { return time.Now().UTC().Format(time.RFC3339Nano) }
