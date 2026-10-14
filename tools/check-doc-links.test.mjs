@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { validateLinks } from './check-doc-links.mjs';
+import { headingAnchors, validateLinks } from './check-doc-links.mjs';
 
 async function withFixture(run) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'firecontroller-doc-links-'));
@@ -29,6 +29,87 @@ test('accepts local links, heading fragments, and percent-escaped paths', async 
   });
 });
 
+test('parses multiline links and reference definitions with source-line diagnostics', async () => {
+  await withFixture(async (root) => {
+    await writeFile(path.join(root, 'guide.md'), '# max_retries\n');
+    await writeFile(path.join(root, 'index.md'), [
+      '[wrapped label',
+      'across lines]( ',
+      ' guide.md#max_retries',
+      ')',
+      '',
+      '[missing label',
+      'across lines](',
+      ' absent.md',
+      ')',
+      '',
+      '[missing reference]:',
+      ' <absent-reference.md>',
+      '',
+    ].join('\n'));
+
+    const failures = await validateLinks(root);
+    assert.equal(failures.length, 2);
+    assert.match(failures[0], /^index\.md:6: missing local target absent\.md$/);
+    assert.match(failures[1], /^index\.md:11: missing local target absent-reference\.md$/);
+  });
+});
+
+test('parses GFM footnotes without treating prose as a reference link', async () => {
+  await withFixture(async (root) => {
+    await writeFile(path.join(root, 'index.md'), [
+      'See the [plain note][^plain] and [linked note][^linked].',
+      '',
+      '[^plain]: explanatory prose that is not a link destination.',
+      '',
+      '[^linked]: explanatory prose with a [real link](missing-from-footnote.md).',
+      '',
+    ].join('\n'));
+
+    const failures = await validateLinks(root);
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], /^index\.md:5: missing local target missing-from-footnote\.md$/);
+  });
+});
+
+test('uses parsed heading text and GitHub duplicate-heading suffixes', async () => {
+  await withFixture(async (root) => {
+    await writeFile(path.join(root, 'guide.md'), [
+      '# **Rendered** `heading` & more',
+      '',
+      'Setext *heading*',
+      '===============',
+      '',
+      '## Repeat',
+      '## Repeat',
+      '',
+    ].join('\n'));
+    await writeFile(path.join(root, 'index.md'), [
+      '[formatted](guide.md#rendered-heading--more)',
+      '[setext](guide.md#setext-heading)',
+      '[first](guide.md#repeat)',
+      '[second](guide.md#repeat-1)',
+      '',
+    ].join('\n'));
+
+    assert.deepEqual(headingAnchors(await readFile(path.join(root, 'guide.md'), 'utf8')), new Set([
+      'rendered-heading--more',
+      'setext-heading',
+      'repeat',
+      'repeat-1',
+    ]));
+    assert.deepEqual(await validateLinks(root), []);
+  });
+});
+
+test('accepts parser-decoded escaped punctuation in destinations', async () => {
+  await withFixture(async (root) => {
+    await writeFile(path.join(root, 'page(one).md'), '# Parentheses\n');
+    await writeFile(path.join(root, 'index.md'), '[escaped punctuation](page\\(one\\).md)\n');
+    assert.deepEqual(await validateLinks(root), []);
+  });
+});
+
 test('checks both destinations in links wrapping badge images', async () => {
   await withFixture(async (root) => {
     await writeFile(path.join(root, 'badge.svg'), '<svg></svg>\n');
@@ -40,13 +121,13 @@ test('checks both destinations in links wrapping badge images', async () => {
   });
 });
 
-test('checks nested image links with escaped paths while ignoring code-span examples', async () => {
+test('checks nested image links with angle-delimited paths while ignoring code-span examples', async () => {
   await withFixture(async (root) => {
     await writeFile(path.join(root, 'badge image.svg'), '<svg></svg>\n');
     await writeFile(path.join(root, 'outer target.md'), '# Target\n');
     await writeFile(path.join(root, 'index.md'), [
-      '[![Badge `![ignored](fake.svg)`](badge\\ image.svg)](outer\\ target.md)',
-      '[![Missing image](missing\\ badge.svg)](missing\\ outer.md)',
+      '[![Badge `![ignored](fake.svg)`](<badge image.svg>)](<outer target.md>)',
+      '[![Missing image](<missing badge.svg>)](<missing outer.md>)',
       '',
     ].join('\n'));
 
@@ -80,10 +161,15 @@ test('accepts local reference definitions with fragments and escaped paths', asy
     await writeFile(path.join(root, 'guide notes', 'escaped page.md'), '# Escaped\n');
     await writeFile(path.join(root, 'index.md'), [
       '[guide][setup]',
+      '',
       '[setup]: <guide notes/setup.md#shared-heading> "the setup guide"',
+      '',
       '[escaped][escaped]',
-      "[escaped]: guide\\ notes/escaped\\ page.md 'escaped title'",
+      '',
+      "[escaped]: <guide notes/escaped page.md> 'escaped title'",
+      '',
       '[external][site]',
+      '',
       '[site]: https://example.test/guide "external guide"',
       '`[inline]: missing-inline.md`',
       '```md',
@@ -96,21 +182,23 @@ test('accepts local reference definitions with fragments and escaped paths', asy
 
     await writeFile(path.join(root, 'index.md'), [
       '[guide][setup]',
+      '',
       '[setup]: <guide notes/setup.md#missing-heading> "the setup guide"',
       '',
     ].join('\n'));
     const badHeading = await validateLinks(root);
     assert.equal(badHeading.length, 1);
-    assert.match(badHeading[0], /^index\.md:2: missing heading #missing-heading in guide notes\/setup\.md$/);
+    assert.match(badHeading[0], /^index\.md:3: missing heading #missing-heading in guide notes\/setup\.md$/);
 
     await writeFile(path.join(root, 'index.md'), [
       '[escaped][escaped]',
-      "[escaped]: missing\\ escaped.md 'escaped title'",
+      '',
+      "[escaped]: <missing escaped.md> 'escaped title'",
       '',
     ].join('\n'));
     const missingEscapedPath = await validateLinks(root);
     assert.equal(missingEscapedPath.length, 1);
-    assert.match(missingEscapedPath[0], /^index\.md:2: missing local target missing escaped\.md$/);
+    assert.match(missingEscapedPath[0], /^index\.md:3: missing local target missing escaped\.md$/);
   });
 });
 
