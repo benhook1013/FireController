@@ -139,18 +139,19 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(tools.Tools) != 9 || tools.NextCursor != "" {
+			if len(tools.Tools) != 14 || tools.NextCursor != "" {
 				t.Fatal("tool discovery incomplete")
 			}
-			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_thread": true}
+			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_thread": true, "jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
+			writes := map[string]bool{"jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
 			for _, tool := range tools.Tools {
 				if !expected[tool.Name] {
 					t.Fatal("unexpected tool")
 				}
 				delete(expected, tool.Name)
 				a := tool.Annotations
-				if a == nil || !a.ReadOnlyHint || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint {
-					t.Fatal("untruthful read annotation")
+				if a == nil || a.ReadOnlyHint == writes[tool.Name] || a.IdempotentHint == writes[tool.Name] || a.DestructiveHint == nil || *a.DestructiveHint != writes[tool.Name] {
+					t.Fatal("untruthful operation annotation")
 				}
 				data, _ := json.Marshal(tool.InputSchema)
 				if strings.Contains(string(data), "profile") || strings.Contains(string(data), "project_id") {

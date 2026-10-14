@@ -17,11 +17,12 @@ import (
 const Version = "0.1.0-dev"
 
 type Diagnostic struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Action    string `json:"action"`
-	Details   any    `json:"details,omitempty"`
-	RequestID string `json:"request_id,omitempty"`
+	Code           string `json:"code"`
+	Message        string `json:"message"`
+	Action         string `json:"action"`
+	Details        any    `json:"details,omitempty"`
+	RequestID      string `json:"request_id,omitempty"`
+	OutcomeUnknown bool   `json:"outcome_unknown,omitempty"`
 }
 
 func (d *Diagnostic) Error() string { return d.Message }

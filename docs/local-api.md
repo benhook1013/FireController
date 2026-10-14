@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fcd` serves scoped projects, workers, access grants, basic jobs and durable messages. The CLI implements local `version`/`context` and the profile-bound [read commands](development.md#read-only-agent-commands). The [explicit-key CLI mutations](development.md#explicit-agent-mutations) create/edit jobs and send/seen/ack messages. The [stdio MCP adapter](mcp.md) exposes read-only tools against these same endpoints. There is no standalone browser, live event stream, review executor, backup API, primary-job selection, checklist, checkpoint or deferred-note API in this slice.
+`fcd` serves scoped projects, workers, access grants, basic jobs and durable messages. The CLI implements local `version`/`context` and the profile-bound [read commands](development.md#read-only-agent-commands). The [explicit-key CLI mutations](development.md#explicit-agent-mutations) create/edit jobs and send/seen/ack messages. The [stdio MCP adapter](mcp.md) exposes read and explicit-key mutation tools against these same endpoints. There is no standalone browser, live event stream, review executor, backup API, primary-job selection, checklist, checkpoint or deferred-note API in this slice.
 
 The [architecture](architecture.md) owns target behavior. This page describes the current implementation and its limits.
 

@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The [local CLI foundation](development.md) implements version output, explicit profile selection and local context inspection. The [local API](local-api.md) implements service authentication and instance inspection, scoped projects/workers, basic jobs and durable messages. The typed client and CLI verify the expected instance, authenticate scoped reads and explicit-key job/message mutations, and reject instance replacement on subsequent requests. The [stdio MCP adapter](mcp.md) exposes bound read-only tools through the same typed client. Generated aliases and subscriptions remain unimplemented. The temporary legacy bootstrap is documented separately in [delivery](delivery.md). Codex host behavior has not yet been established by the application proof.
+The [local CLI foundation](development.md) implements version output, explicit profile selection and local context inspection. The [local API](local-api.md) implements service authentication and instance inspection, scoped projects/workers, basic jobs and durable messages. The typed client and CLI verify the expected instance, authenticate scoped reads and explicit-key job/message mutations, and reject instance replacement on subsequent requests. The [stdio MCP adapter](mcp.md) exposes bound reads and explicit-key job/message mutations through the same typed client. Generated aliases and subscriptions remain unimplemented. The temporary legacy bootstrap is documented separately in [delivery](delivery.md). Codex host behavior has not yet been established by the application proof.
 
 ## Profiles and identity
 

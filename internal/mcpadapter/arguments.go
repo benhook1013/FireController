@@ -3,10 +3,12 @@ package mcpadapter
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -46,7 +48,7 @@ type threadInput struct {
 }
 
 func invalidArguments() *Diagnostic {
-	return diagnostic("invalid_arguments", "Use only the declared tool fields with valid bounded IDs, filters and page options.", "Check this tool's input schema; the startup binding cannot be overridden.")
+	return diagnostic("invalid_arguments", "Use only the declared tool fields with valid bounded values and required keys or revisions.", "Check this tool's input schema; the startup binding cannot be overridden.")
 }
 
 func parseArguments(name string, data json.RawMessage) (arguments, error) {
@@ -54,7 +56,11 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if len(data) == 0 {
 		data = []byte("{}")
 	}
-	if len(data) > 16<<10 || strictjson.Validate(data) != nil {
+	bound := 16 << 10
+	if mutationTool(name) {
+		bound = 256 << 10
+	}
+	if len(data) > bound || strictjson.Validate(data) != nil {
 		return args, invalidArguments()
 	}
 	var fields map[string]json.RawMessage
@@ -65,6 +71,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 			return args, invalidArguments()
 		}
+	}
+	if mutationTool(name) {
+		return mutationArguments(name, data)
 	}
 	var limit *int
 	var dst any
@@ -131,6 +140,123 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	}
 	return args, nil
 }
+
+func mutationTool(name string) bool {
+	switch name {
+	case "jobs_create", "job_edit", "inbox_send", "inbox_seen", "inbox_ack":
+		return true
+	}
+	return false
+}
+
+func validKey(value string) bool {
+	if value == "" || len(value) > 128 || value != strings.TrimSpace(value) {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+func validStatus(value string) bool {
+	return value == "active" || value == "parked" || value == "blocked" || value == "completed"
+}
+func validTitle(value string) bool {
+	return value != "" && utf8.ValidString(value) && len(value) <= 240
+}
+
+// These transport guards run before client construction. The typed client and
+// service still own authorization, normalization, receipts and mutation rules.
+func mutationArguments(name string, data json.RawMessage) (arguments, error) {
+	var args arguments
+	switch name {
+	case "jobs_create":
+		var input struct {
+			Key    string `json:"idempotency_key"`
+			Title  string `json:"title"`
+			Brief  string `json:"brief,omitempty"`
+			Worker string `json:"worker_id,omitempty"`
+			Status string `json:"status,omitempty"`
+		}
+		if strictjson.Decode(data, &input) != nil {
+			return args, invalidArguments()
+		}
+		input.Title = strings.TrimSpace(input.Title)
+		input.Worker = strings.TrimSpace(input.Worker)
+		if input.Status == "" {
+			input.Status = "active"
+		}
+		if !validTitle(input.Title) || !utf8.ValidString(input.Brief) || len(input.Brief) > 32<<10 || input.Worker != "" && !validID(input.Worker) || !validStatus(input.Status) {
+			return args, invalidArguments()
+		}
+		args.key = input.Key
+		args.create = client.CreateJobRequest{Title: input.Title, Brief: input.Brief, WorkerID: input.Worker, Status: input.Status}
+	case "job_edit":
+		var input struct {
+			Key      string  `json:"idempotency_key"`
+			ID       string  `json:"job_id"`
+			Revision int64   `json:"expected_revision"`
+			Title    *string `json:"title,omitempty"`
+			Brief    *string `json:"brief,omitempty"`
+			Worker   *string `json:"worker_id,omitempty"`
+			Status   *string `json:"status,omitempty"`
+		}
+		if strictjson.Decode(data, &input) != nil || !validID(input.ID) || input.Revision < 1 || input.Revision == math.MaxInt64 || input.Title == nil && input.Brief == nil && input.Worker == nil && input.Status == nil {
+			return args, invalidArguments()
+		}
+		if input.Title != nil {
+			v := strings.TrimSpace(*input.Title)
+			if !validTitle(v) {
+				return args, invalidArguments()
+			}
+			input.Title = &v
+		}
+		if input.Brief != nil && (!utf8.ValidString(*input.Brief) || len(*input.Brief) > 32<<10) {
+			return args, invalidArguments()
+		}
+		if input.Worker != nil {
+			v := strings.TrimSpace(*input.Worker)
+			if v != "" && !validID(v) {
+				return args, invalidArguments()
+			}
+			input.Worker = &v
+		}
+		if input.Status != nil && !validStatus(*input.Status) {
+			return args, invalidArguments()
+		}
+		args.key = input.Key
+		args.id = input.ID
+		args.edit = client.EditJobRequest{ExpectedRevision: input.Revision, Title: input.Title, Brief: input.Brief, WorkerID: input.Worker, Status: input.Status}
+	case "inbox_send":
+		var input struct {
+			Key       string `json:"idempotency_key"`
+			Recipient string `json:"recipient_worker_id"`
+			Body      string `json:"body"`
+			Reply     string `json:"reply_to_message_id,omitempty"`
+		}
+		if strictjson.Decode(data, &input) != nil || !validID(input.Recipient) || input.Reply != "" && !validID(input.Reply) || !utf8.ValidString(input.Body) || strings.TrimSpace(input.Body) == "" || len(input.Body) > 16<<10 {
+			return args, invalidArguments()
+		}
+		args.key = input.Key
+		args.send = client.SendMessageRequest{RecipientWorkerID: input.Recipient, Body: input.Body, ReplyToMessageID: input.Reply}
+	case "inbox_seen", "inbox_ack":
+		var input struct {
+			Key string `json:"idempotency_key"`
+			ID  string `json:"message_id"`
+		}
+		if strictjson.Decode(data, &input) != nil || !validID(input.ID) {
+			return args, invalidArguments()
+		}
+		args.key = input.Key
+		args.id = input.ID
+	}
+	if !validKey(args.key) {
+		return args, invalidArguments()
+	}
+	return args, nil
+}
 func validID(value string) bool {
 	if value == "" || len(value) > 128 || !utf8.ValidString(value) || value != strings.TrimSpace(value) || value == "." || value == ".." || strings.ContainsAny(value, "/\\%?#") {
 		return false
@@ -148,12 +274,22 @@ func toolDefinitions() []definition {
 	cursor := map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Continuation cursor from this scoped read."}
 	id := map[string]any{"type": "string", "minLength": 1, "maxLength": 128}
 	status := map[string]any{"type": "string", "enum": []string{"active", "parked", "blocked", "completed"}}
+	key := map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "Explicit printable ASCII idempotency key; retain the same key and request after an unknown outcome. Never generated or automatically retried."}
+	title := map[string]any{"type": "string", "minLength": 1, "maxLength": 240, "description": "Nonblank UTF-8 title, at most 240 bytes after trimming surrounding whitespace."}
+	brief := map[string]any{"type": "string", "maxLength": 32 << 10, "description": "Explicit UTF-8 brief, at most 32 KiB; empty clears it on edit."}
+	workerEdit := map[string]any{"type": "string", "maxLength": 128, "description": "Worker in the bound project; empty clears assignment."}
+	workerCreate := map[string]any{"type": "string", "maxLength": 128, "description": "Worker in the bound project; omission or empty leaves the job unassigned."}
 	schema := func(props map[string]any, required ...string) map[string]any {
 		v := map[string]any{"type": "object", "properties": props, "additionalProperties": false}
 		if len(required) > 0 {
 			v["required"] = required
 		}
 		return v
+	}
+	editSchema := schema(map[string]any{"idempotency_key": key, "job_id": id, "expected_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}, "title": title, "brief": brief, "worker_id": workerEdit, "status": status}, "idempotency_key", "job_id", "expected_revision")
+	editSchema["anyOf"] = []any{
+		map[string]any{"required": []string{"title"}}, map[string]any{"required": []string{"brief"}},
+		map[string]any{"required": []string{"worker_id"}}, map[string]any{"required": []string{"status"}},
 	}
 	return []definition{
 		{"context", "Inspect the immutable local profile configuration; no service verification or credential read.", schema(map[string]any{})},
@@ -165,5 +301,10 @@ func toolDefinitions() []definition {
 		{"job_history", "Read one explicit bounded full-state history page for a job.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
 		{"inbox_list", "Read one compact preview page for the bound worker; never mark seen or acknowledged.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
 		{"inbox_thread", "Read one explicit conversation page with full immutable bodies; no receipt-state change.", schema(map[string]any{"conversation_id": id, "limit": limit, "cursor": cursor}, "conversation_id")},
+		{"jobs_create", "Create a job in the bound project using an explicit key; return a compact receipt, without rereading brief/history.", schema(map[string]any{"idempotency_key": key, "title": title, "brief": brief, "worker_id": workerCreate, "status": status}, "idempotency_key", "title")},
+		{"job_edit", "Edit selected job fields with an explicit key and expected revision; empty brief/worker clears those fields. No automatic retry.", editSchema},
+		{"inbox_send", "Send an immutable message as the bound worker with an explicit key, optionally replying to a message; return a compact receipt.", schema(map[string]any{"idempotency_key": key, "recipient_worker_id": id, "body": map[string]any{"type": "string", "minLength": 1, "maxLength": 16 << 10}, "reply_to_message_id": id}, "idempotency_key", "recipient_worker_id", "body")},
+		{"inbox_seen", "Explicitly mark a message seen as its bound recipient worker using the supplied key.", schema(map[string]any{"idempotency_key": key, "message_id": id}, "idempotency_key", "message_id")},
+		{"inbox_ack", "Explicitly acknowledge a message as its bound recipient worker, also establishing seen, using the supplied key.", schema(map[string]any{"idempotency_key": key, "message_id": id}, "idempotency_key", "message_id")},
 	}
 }

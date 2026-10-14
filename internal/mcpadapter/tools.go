@@ -18,6 +18,10 @@ type arguments struct {
 	limit                      int
 	cursor, worker, status, id string
 	unread, unack              bool
+	key                        string
+	create                     client.CreateJobRequest
+	edit                       client.EditJobRequest
+	send                       client.SendMessageRequest
 }
 type definition struct {
 	name, description string
@@ -30,9 +34,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	known := make(map[string]bool)
 	for _, tool := range definitions {
 		known[tool.name] = true
-		no := false
+		write := mutationTool(tool.name)
 		openWorld := tool.name != "context"
-		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: &no, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: !write, DestructiveHint: &write, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, err := parseArguments(tool.name, request.Params.Arguments)
 			if err != nil {
 				return resultFailure(err), nil
@@ -71,6 +75,16 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack})
 			case "inbox_thread":
 				value, err = service.Conversation(ctx, args.id, options)
+			case "jobs_create":
+				value, err = service.CreateJob(ctx, args.key, args.create)
+			case "job_edit":
+				value, err = service.EditJob(ctx, args.key, args.id, args.edit)
+			case "inbox_send":
+				value, err = service.SendMessage(ctx, args.key, args.send)
+			case "inbox_seen":
+				value, err = service.MarkSeen(ctx, args.key, args.id)
+			case "inbox_ack":
+				value, err = service.Acknowledge(ctx, args.key, args.id)
 			}
 			if err != nil {
 				return resultFailure(err), nil
@@ -100,11 +114,11 @@ func result(value any, isError bool) *mcp.CallToolResult {
 	return &mcp.CallToolResult{StructuredContent: value, Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}, IsError: isError}
 }
 func resultFailure(err error) *mcp.CallToolResult {
-	d := diagnostic("service_unavailable", "The scoped read could not be completed.", "Check the configured service and current access.")
+	d := diagnostic("service_unavailable", "The scoped operation could not be completed.", "Check the configured service and current access.")
 	var failure *client.Error
 	var local *Diagnostic
 	if errors.As(err, &failure) {
-		d = &Diagnostic{Code: failure.Code, Message: failure.Message, Action: failure.Action, Details: failure.Details, RequestID: failure.RequestID}
+		d = &Diagnostic{Code: failure.Code, Message: failure.Message, Action: failure.Action, Details: failure.Details, RequestID: failure.RequestID, OutcomeUnknown: failure.OutcomeUnknown}
 	} else if errors.As(err, &local) {
 		d = local
 	}
