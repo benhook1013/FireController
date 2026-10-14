@@ -6,6 +6,7 @@ The standalone service is not implemented. The initial design is under review in
 
 ## Documents
 
+- [Suggested agent workflow](agent-workflow.md): optional working practices for project instructions and a usage skill, separate from tool contracts.
 - [Product scope and conversation agreements](product.md) records the requirements selected with the human.
 - [Architecture](architecture.md) owns service boundaries, project isolation, storage, and provider observation rules.
 - [Agent and client contract](agent-client.md) owns profiles, tool calls, subscriptions, and end-of-work behavior.

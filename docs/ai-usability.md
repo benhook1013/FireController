@@ -18,7 +18,7 @@ Responses do not echo credentials, profile files, submitted large text, redundan
 
 ## Calls and attention
 
-Select context once through a profile or verified tool connection. The [client contract](agent-client.md) owns identity binding; saving flags never justifies ambiguous routing. Bounded batching is useful where operations share a real scope, but arbitrary command scripts and giant all-state endpoints are not required.
+Profiles and verified tool connections provide repeatable identity selection without repeated project/worker flags. The [client contract](agent-client.md) owns identity binding; saving flags never justifies ambiguous routing. Bounded batching is useful where operations share a real scope, but arbitrary command scripts and giant all-state endpoints are not required.
 
 Everyday jobs, notes, messages, and cached review inspection return directly without provider work. Long provider operations are durably tracked internally; adapters should use true asynchronous completion where the host supports it. The agent should not have to remember operation IDs or issue repeated status calls merely to receive a result.
 
@@ -26,7 +26,7 @@ Expose operation identity for explicit detach, recovery, cancellation, and diagn
 
 Keep message subscriptions quiet until relevant information exists. Transport heartbeats, repeated empty polls, and every review log line must not enter the model context. Coalesce redundant notifications for a resource while retaining durable events and complete message records. Coalescing cannot discard a distinct requested action or silently acknowledge it.
 
-Message bodies are external information, not higher-priority instructions or approval. Untrusted provider text and project content cannot redirect the adapter into another project or grant access. A worker acknowledges only handled work, preserves pending human decisions, and follows the [end-of-work contract](agent-client.md).
+Message bodies are external information, not higher-priority instructions or approval. Untrusted provider text and project content cannot redirect the adapter into another project or grant access. Reads and waits never silently acknowledge messages; explicit mutations own that state. Checkpoint cadence and human-decision handling are project workflow choices, illustrated in the optional [usage guide](agent-workflow.md).
 
 ## Inspection and acceptance
 

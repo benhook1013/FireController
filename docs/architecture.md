@@ -6,7 +6,7 @@ This document owns the proposed service contract. None of the application endpoi
 
 ## Boundaries
 
-One Go service hosts the application API, event transport, and browser assets. A Go CLI and optional agent-tool adapter call that API. SQLite is the initial local storage engine. Provider refresh and review execution run as supervised background work with bounded concurrency; no network operation or review subprocess may occupy a database transaction while waiting.
+One Go service hosts the application API, event transport, and browser assets. A Go CLI and packaged MCP adapter call that API; the [client contract](agent-client.md) owns their supported transports and identity binding. Using MCP is optional for installations, while its integration is part of the AI-facing product scope. SQLite is the initial local storage engine. Provider refresh and review execution run as supervised background work with bounded concurrency; no network operation or review subprocess may occupy a database transaction while waiting.
 
 Application domains are projects and access, workers and jobs, messaging, project maps and appearance, observations, and reviews. They share a transaction facility where a real invariant spans domains, but job or message reads do not construct a review controller, deserialize the full review state, or call providers. Provider adapters cannot call back into unrelated domains to build a response.
 
