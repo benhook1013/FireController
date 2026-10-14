@@ -2,7 +2,7 @@
 
 ## Current state
 
-The public repository and Apache-2.0 project baseline exist. [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the proposed design and validation scaffold. Its first explicitly requested hosted CodeRabbit review completed with four accepted findings; the design and checker corrections are included in the updated PR. Fresh hosted coverage of those corrections remains pending. No service or browser runtime exists; a separate local branch is preparing the first CLI/profile implementation.
+The public repository and Apache-2.0 project baseline exist. [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the proposed design and validation scaffold. Two explicitly requested hosted reviews and three full CLI reviews have completed; valid findings are being corrected and independently adjudicated. Updated-head documentation CI passes are confirmed, and every later head needs its own validation. No standalone service or browser runtime exists. [PR #2](https://github.com/benhook1013/FireController/pull/2), stacked on the design branch, implements the first local CLI/profile commands; its Go race tests, vet, build, documentation checks and cross-compilation passed, including GitHub Actions validation.
 
 ## Development bootstrap
 
@@ -16,7 +16,7 @@ The temporary runtime is not shipped as the product and does not implement the n
 
 1. Complete feature/test inventory, target contracts, decision record, source provenance, and repo validation. Publish one design/scaffold PR well below the discussed hosted file ceiling and request CodeRabbit explicitly.
 2. While that hosted review runs, prepare a separate local implementation branch for dependency-safe work. Do not publish changes to the reviewed head until the review completes. Avoid implementing disputed architecture assumptions.
-3. Deliver server/CLI boot, explicit profiles, scoped projects/workers, migrations, and packaging proof. Then deliver jobs, durable messaging/events, reconnect behavior, and the native adapter capability experiment.
+3. Deliver server/CLI boot, explicit profiles, scoped projects/workers, migrations, and packaging proof. Run a small actual-host adapter capability experiment alongside the foundation before depending on asynchronous completion. Then deliver jobs, durable messaging/events and reconnect behavior.
 4. Deliver live browser and project appearance/editorial settings against the same API. Add provider observations, scoped refresh, and attributable review execution in coherent reviewed slices.
 5. Measure concurrency, provider isolation, failure recovery, and complete backup/restore. Only after native capability is proven, migrate this project's development controller.
 6. Inventory and preview existing installation and website migrations separately. Human-reviewed cutover selects the replacement and verifies preserved state before legacy source or installation retirement.
@@ -25,12 +25,13 @@ The temporary runtime is not shipped as the product and does not implement the n
 
 | Boundary | Current evidence | Remaining proof |
 | --- | --- | --- |
-| Public project | Repository creation and visibility verified; PR #1 published; documentation CI passed on its initial head | Human design review and CI on subsequent heads |
+| Public project | Repository creation and visibility verified; PR #1 published; documentation `validate` passed on reviewed head `c250149` and earlier updated heads | Human design disposition and validation of every later head |
 | Main protection | PR requirement, admin enforcement, conversation resolution, no force/deletion; strict required `validate` check attributed to GitHub Actions | Ongoing enforcement as validation expands |
-| CodeRabbit configuration | CLI configuration smoke, doctor, and v2 schema passed; GitHub App performed an explicitly requested substantive hosted review | Fresh review of corrected head, subject to provider quota; automatic and incremental reviews remain disabled |
+| CodeRabbit configuration | CLI configuration smoke, doctor, and v2 schema passed; GitHub App completed two deliberately requested hosted reviews; three full CLI reviews completed | Current findings, independent direction reviews, and fresh coverage after corrections; automatic and incremental reviews remain disabled |
 | Inherited behavior | Two bounded inventories plus two independent source/test-body passes and main-worker adjudication; pinned census hashes/counts verified | Legacy suite was not executed; fresh rebuild scenario implementation and execution |
 | Temporary project controller | Separate private pinned runtime/context; independent SQLite bootstrap; job create/read and combined snapshot/restore passed; stack registration, hosted request/capture and CLI run recorded | Replacement by the native service after its proof |
-| Design validation | Markdown lint, local links, and seven focused checker tests passed; initial full CLI review reported one missing-lockfile finding, rejected against the committed lockfile and successful CI | These checks do not prove standalone runtime behavior |
-| Standalone runtime | None on the design branch; local CLI foundation is under separate inspection | All runtime scenarios in [acceptance](acceptance.md) |
+| Design validation | Markdown lint, local links, and nine focused checker tests passed on `c250149`; first CLI missing-lockfile claim rejected against committed source/CI | Tests for later checker corrections; these checks do not prove standalone runtime behavior |
+| Local CLI foundation | PR #2 has local profile/version commands and passing Go/CI proof | Local failure-case inspection and corrections; native Windows/macOS execution and service integration remain unproven |
+| Standalone service/browser | None; the temporary private legacy dashboard is operational and visually checked with this project's own worker/review state | Runtime scenarios in [acceptance](acceptance.md) |
 
 Record proof in the owning slice and PR; do not silently turn planned commands into passing evidence. Main-branch merge remains a human action.

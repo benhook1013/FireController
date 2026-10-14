@@ -58,12 +58,16 @@ No standalone service behavior has been tested or benchmarked yet. Inherited tes
 | R13 | Required-check authority is missing, a same-named foreign app succeeds, or an obsolete retry passes: none can satisfy the exact candidate's current required CI. |
 | R14 | Review coverage is complete but mergeability is conflicting or unknown: show review completion separately and hold merge readiness. |
 | R15 | Concurrent actions target the same provider/repository/PR/action class, including changed heads: one external action and no exposure of another principal's private attempt state. |
+| R16 | A developer switches branches or edits their checkout while a local review runs: its verified service-owned tree/comparison and captured evidence remain unchanged; missing server source produces an explicit capability hold. |
+| R17 | Review-channel requirements are absent, or only one of two required channels has complete current-target evidence: aggregate review sufficiency remains held despite completed individual attempts or green CI. |
 | P06 | Two project creations bind the same GitHub repository concurrently or via renamed/alternate URLs: one owner, explicit duplicate error, and an existing-project pointer only for authorized callers. |
+| C06 | An MCP caller names a local profile outside its authorized set: reject before loading its credential or making a service call. Shared indistinguishable callers cannot claim separate grants or impersonate identity through labels. |
 | O01 | Fresh install and restart with committed activity: startup, private state, profiles, and durable receipts work as documented. |
 | O02 | Backup while writing, restore to new destination: integrity, references, all project state, and retained artifacts validate. |
 | O03 | Unsupported newer schema or failed migration: refuse readiness without partial writes or silently rewriting live state. |
 | O04 | Cancel or shut down during busy provider tasks: reservations and coordination data remain recoverable. |
 | O05 | Windows/Linux packaged smoke: embedded UI and CLI need no source checkout; provider executor requirements remain explicit. |
+| O06 | Restore a backup after later events, receipts, credential revocations and provider posts: predecessor profiles/cursors/retries cannot continue silently; revoked grants are not revived, lost-window effects are uncertain, and provider mutations remain held until recovery. |
 
 ## Performance proof
 

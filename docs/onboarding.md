@@ -32,6 +32,8 @@ Distribute a versioned onboarding/usage skill alongside the supported release. I
 
 Installation into an agent host is optional and explicit. CLI onboarding works without a particular host or model. Host capability detection identifies whether native tools, asynchronous results, and isolated connection binding are supported. Generated guidance must name limitations instead of promising unsupported wakeups.
 
+Local review execution additionally needs administrator-configured source availability on the server, as owned by [review execution](reviews.md#admission-and-execution). Onboarding reports that capability separately from connecting a client checkout. Required review channels are selected explicitly before aggregate sufficiency can be reported; a jobs/messaging-only project needs no provider setup.
+
 ## Acceptance scenarios
 
 - Add a second project with an identically named Overseer; the first project's profiles, messages, map, and settings remain unchanged.
