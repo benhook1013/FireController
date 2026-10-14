@@ -5,13 +5,14 @@ package profile
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
-	"unicode/utf8"
+
+	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 const MaxConfigBytes = 1 << 20
@@ -88,29 +89,17 @@ func Load(path, name string) (Context, *Error) {
 	if len(data) > MaxConfigBytes {
 		return result, failure("profiles_too_large", "The profiles configuration exceeds the 1 MiB limit.", "Reduce the configuration size.")
 	}
-	if !utf8.Valid(data) {
-		return result, invalidEncoding()
-	}
-	if !json.Valid(data) {
-		return result, invalidJSON()
-	}
-	if !pairedUnicodeEscapes(data) {
-		return result, invalidEncoding()
-	}
-	// The normal JSON decoder permits duplicate keys; reject them first because
-	// a repeated profile or identity must never silently replace another value.
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	if !uniqueValue(decoder, 0) {
-		return result, invalidJSON()
-	}
-	if _, err := decoder.Token(); err != io.EOF {
+	if err := strictjson.Validate(data); err != nil {
+		if errors.Is(err, strictjson.ErrEncoding) {
+			return result, invalidEncoding()
+		}
 		return result, invalidJSON()
 	}
 	if !exactFields(data) {
 		return result, invalidJSON()
 	}
 	var config configuration
-	decoder = json.NewDecoder(bytes.NewReader(data))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&config); err != nil {
 		return result, invalidJSON()
@@ -146,44 +135,6 @@ func invalidJSON() *Error {
 
 func invalidEncoding() *Error {
 	return failure("profiles_invalid_encoding", "The profiles configuration must contain valid UTF-8 bytes and Unicode escapes.", "Save valid UTF-8 and pair each high surrogate escape with a low surrogate escape.")
-}
-
-// json.Valid must succeed first: it checks string syntax and escape lengths,
-// but permits lone UTF-16 surrogates that decoding would replace with U+FFFD.
-// Inspect the original escapes in one bounded pass, skipping escaped quotes
-// and backslashes so literal text such as \\uD800 remains unchanged.
-func pairedUnicodeEscapes(data []byte) bool {
-	inString := false
-	for i := 0; i < len(data); {
-		switch data[i] {
-		case '"':
-			inString = !inString
-			i++
-		case '\\':
-			if !inString || data[i+1] != 'u' {
-				i += 2
-				continue
-			}
-			unit, _ := strconv.ParseUint(string(data[i+2:i+6]), 16, 16)
-			i += 6
-			if unit >= 0xdc00 && unit <= 0xdfff {
-				return false
-			}
-			if unit >= 0xd800 && unit <= 0xdbff {
-				if i+6 > len(data) || data[i] != '\\' || data[i+1] != 'u' {
-					return false
-				}
-				low, _ := strconv.ParseUint(string(data[i+2:i+6]), 16, 16)
-				if low < 0xdc00 || low > 0xdfff {
-					return false
-				}
-				i += 6
-			}
-		default:
-			i++
-		}
-	}
-	return true
 }
 
 // encoding/json also matches struct fields without regard to case. Enforce the
@@ -241,43 +192,4 @@ func safeURL(value string) bool {
 	}
 	host := u.Hostname()
 	return strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()
-}
-
-func uniqueValue(decoder *json.Decoder, depth int) bool {
-	if depth > 64 {
-		return false
-	}
-	token, err := decoder.Token()
-	if err != nil {
-		return false
-	}
-	delimiter, nested := token.(json.Delim)
-	if !nested {
-		return true
-	}
-	switch delimiter {
-	case '{':
-		keys := make(map[string]bool)
-		for decoder.More() {
-			key, err := decoder.Token()
-			if err != nil {
-				return false
-			}
-			name, ok := key.(string)
-			if !ok || keys[name] || !uniqueValue(decoder, depth+1) {
-				return false
-			}
-			keys[name] = true
-		}
-	case '[':
-		for decoder.More() {
-			if !uniqueValue(decoder, depth+1) {
-				return false
-			}
-		}
-	default:
-		return false
-	}
-	end, err := decoder.Token()
-	return err == nil && (delimiter == '{' && end == json.Delim('}') || delimiter == '[' && end == json.Delim(']'))
 }

@@ -13,7 +13,8 @@ test:
 	$(GO) vet ./...
 
 build:
-	$(GO) build -trimpath -o bin/fc ./cmd/fc
+	CGO_ENABLED=0 $(GO) build -trimpath -o bin/fc ./cmd/fc
+	CGO_ENABLED=0 $(GO) build -trimpath -o bin/fcd ./cmd/fcd
 
 docs-check:
 	npm run docs:check

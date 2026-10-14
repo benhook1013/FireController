@@ -1,8 +1,8 @@
-# Development and CLI Foundation
+# Development
 
 ## Implemented boundary
 
-The first Go slice implements `fc version` and `fc context`. These are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. Jobs, messaging, the API, and the browser remain unimplemented.
+The first Go slice implements `fc version` and `fc context`. These are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md); the CLI still has no service commands. The new browser, live subscriptions, provider review engine, MCP adapter, backups, and advanced job features remain unimplemented.
 
 ## Build and checks
 
@@ -12,9 +12,10 @@ Use Go 1.27, Node.js 22 or newer, and Make on Linux/WSL:
 npm ci --ignore-scripts --no-audit --no-fund
 make check build
 ./bin/fc version
+./bin/fcd --data-dir /private/firecontroller --listen 127.0.0.1:8080
 ```
 
-`make check` verifies Go formatting, runs Go tests with the race detector and `go vet`, and checks documentation. `make build` produces the standalone CLI. CI also cross-compiles Windows amd64 and macOS arm64; compilation is not proof that those platforms' configuration or runtime behavior works. Go's `GO` and `GOFMT` Make variables can select a locally installed toolchain.
+`make check` verifies Go formatting, runs Go tests with the race detector and `go vet`, and checks documentation. `make build` produces CGO-free `fc` and `fcd` binaries. CI also cross-compiles Windows amd64 and macOS arm64; compilation is not proof that those platforms' configuration or runtime behavior works. Go's `GO` and `GOFMT` Make variables can select a locally installed toolchain.
 
 ## Private profile file
 
@@ -48,3 +49,9 @@ An explicit profile overrides the per-process `FC_PROFILE` default. There is no 
 ## Proof and limits
 
 Focused tests cover interleaved project identities with the same worker name on both shared and distinct service instances, explicit flag precedence, unchanged configuration/environment, absent credential files, strict malformed/ambiguous configuration, malformed raw UTF-8 identity bytes, unpaired surrogate escapes in identities and profile names, preservation of valid Unicode and escape text, unsafe URLs, relative default directories, non-regular configuration paths, and concise errors without private values. Linux tests exercise default-path behavior and FIFO rejection through a deadline-bounded child process, so a missing file-kind guard cannot hang the suite. The file-kind checks address accidental unsupported inputs; they do not protect against hostile same-user filesystem replacement races or establish a deadline for arbitrary filesystem I/O. Other OS mappings require native execution before claiming support. The [agent contract](agent-client.md) owns the broader target, including instance verification and authenticated mutations.
+
+## Coordination service proof
+
+Public HTTP tests exercise bootstrap/restart identity, private credentials, project grants and revocation, stable verified repository binding, strict request parsing, project/principal/filter cursor isolation, retained idempotency receipts, revision races, and atomic domain/history/event writes. Basic job and message operations perform no provider work. A repository resolver is injected for those tests; live GitHub behavior is not claimed by the offline suite. Packaged Linux startup and shutdown checks cover readiness, authenticated instance inspection and domain route registration.
+
+SQLite uses WAL, FULL synchronization and foreign keys on local storage. Write admission is bounded to two seconds, busy timeout is zero, and contention returns `overloaded` without an automatic retry. Explicit project creation verifies GitHub identity outside transactions with a five-second provider deadline; exact retained retries avoid that call. These bounds and focused tests do not establish fleet throughput or a production latency budget. Native Windows/macOS execution, power-loss durability, backup/restore and hostile same-user filesystem isolation remain unproven.

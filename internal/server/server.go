@@ -1,0 +1,318 @@
+// Package server exposes the bounded private coordination API.
+package server
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"net/http"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/benhook1013/FireController/internal/core"
+)
+
+type RepositoryIdentity struct {
+	ID       int64
+	FullName string
+}
+type RepositoryResolver func(context.Context, string) (RepositoryIdentity, error)
+type Option func(*api)
+type api struct {
+	store    *core.Store
+	resolver RepositoryResolver
+}
+
+func WithRepositoryResolver(resolver RepositoryResolver) Option {
+	return func(a *api) { a.resolver = resolver }
+}
+
+func New(store *core.Store, options ...Option) *http.ServeMux {
+	a := &api{store: store}
+	for _, option := range options {
+		option(a)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		core.WriteJSON(w, 200, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if err := store.DB().PingContext(r.Context()); err != nil {
+			core.WriteError(w, core.Fail("storage_unavailable", "Local storage is unavailable.", 503))
+			return
+		}
+		core.WriteJSON(w, 200, map[string]string{"status": "ready"})
+	})
+	mux.HandleFunc("GET /api/v1/instance", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := store.Authenticate(r); err != nil {
+			core.WriteError(w, err)
+			return
+		}
+		core.WriteJSON(w, 200, map[string]string{"instance_id": store.InstanceID()})
+	})
+	mux.HandleFunc("POST /api/v1/projects", a.createProject)
+	mux.HandleFunc("GET /api/v1/projects", a.listProjects)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}", a.project)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/workers", a.createWorker)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers", a.listWorkers)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}", a.worker)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/credentials", a.grant)
+	mux.HandleFunc("DELETE /api/v1/projects/{project_id}/credentials/{credential_id}", a.revoke)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		core.WriteError(w, core.Fail("not_found", "This API capability is unavailable.", 404))
+	})
+	return mux
+}
+
+func boundedText(value string, max int) bool {
+	return value != "" && value == strings.TrimSpace(value) && len(value) <= max && utf8.ValidString(value)
+}
+
+func key(r *http.Request) (string, error) {
+	if len(r.Header.Values("Idempotency-Key")) != 1 {
+		return "", core.Fail("validation_failed", "Select one Idempotency-Key for this mutation.", 400)
+	}
+	value := r.Header.Get("Idempotency-Key")
+	if !boundedText(value, 128) || strings.ContainsAny(value, "\r\n\x00") {
+		return "", core.Fail("validation_failed", "A bounded Idempotency-Key is required.", 400)
+	}
+	return value, nil
+}
+
+func complete(w http.ResponseWriter, result any, err error) {
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, 200, result)
+}
+
+type projectValue struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	RepositoryID int64  `json:"github_repository_id"`
+	Repository   string `json:"repository"`
+}
+type workerValue struct {
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+	Name      string `json:"name"`
+}
+
+func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
+	scope, err := a.store.AdminScope(r)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	var request struct {
+		Name       string `json:"name"`
+		Repository string `json:"repository"`
+	}
+	if err = core.ReadJSON(w, r, &request); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if !boundedText(request.Name, 200) || !validRepository(request.Repository) {
+		core.WriteError(w, core.Fail("validation_failed", "Provide a bounded project name and an owner/repository GitHub reference.", 400))
+		return
+	}
+	k, err := key(r)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	mutation := core.Mutation{Operation: "projects.create", Target: "projects", Key: k, Request: request}
+	if receipt, found, err := a.store.Replay(r.Context(), scope, mutation); err != nil || found {
+		complete(w, receipt, err)
+		return
+	}
+	if a.resolver == nil {
+		core.WriteError(w, core.Fail("provider_unavailable", "Repository verification is not configured.", 503))
+		return
+	}
+	// Network identity verification is explicit and never occupies a transaction.
+	identity, err := a.resolver(r.Context(), request.Repository)
+	if err != nil || identity.ID <= 0 || !validRepository(identity.FullName) {
+		core.WriteError(w, core.Fail("provider_unavailable", "GitHub repository identity could not be verified.", 503))
+		return
+	}
+	result, err := a.store.Mutate(r.Context(), scope, mutation, func(tx *sql.Tx) (any, error) {
+		var existing string
+		err := tx.QueryRowContext(r.Context(), "SELECT id FROM projects WHERE github_repository_id=?", identity.ID).Scan(&existing)
+		if err == nil {
+			return nil, &core.Error{Code: "repository_already_configured", Message: "This repository already belongs to a project.", Status: 409, Details: map[string]string{"project_id": existing}}
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		id := core.NewID("project")
+		if _, err = tx.ExecContext(r.Context(), "INSERT INTO projects(id,name,github_repository_id,repository) VALUES(?,?,?,?)", id, request.Name, identity.ID, identity.FullName); err != nil {
+			return nil, err
+		}
+		eventScope := scope
+		eventScope.ProjectID = id
+		if err = core.AppendEvent(r.Context(), tx, eventScope, "projects.created", id, 1, map[string]string{"id": id}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"id": id, "revision": 1, "outcome": "created"}, nil
+	})
+	complete(w, result, err)
+}
+
+func (a *api) project(w http.ResponseWriter, r *http.Request) {
+	scope, err := a.store.Scope(r, "read")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	var value projectValue
+	err = a.store.DB().QueryRowContext(r.Context(), "SELECT id,name,github_repository_id,repository FROM projects WHERE id=?", scope.ProjectID).Scan(&value.ID, &value.Name, &value.RepositoryID, &value.Repository)
+	complete(w, value, err)
+}
+
+func (a *api) listProjects(w http.ResponseWriter, r *http.Request) {
+	scope, err := a.store.AdminScope(r)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	limit, err := core.PageLimit(r)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	after, err := a.store.ParseCursor(scope, "projects", r.URL.Query().Get("cursor"))
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	rows, err := a.store.DB().QueryContext(r.Context(), "SELECT id,name,github_repository_id,repository FROM projects WHERE id>? ORDER BY id LIMIT ?", after, limit+1)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	defer rows.Close()
+	values := make([]projectValue, 0, limit+1)
+	for rows.Next() {
+		var value projectValue
+		if err = rows.Scan(&value.ID, &value.Name, &value.RepositoryID, &value.Repository); err != nil {
+			core.WriteError(w, err)
+			return
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	more := len(values) > limit
+	cursor := ""
+	if more {
+		values = values[:limit]
+		cursor = a.store.Cursor(scope, "projects", values[len(values)-1].ID)
+	}
+	core.WriteJSON(w, 200, map[string]any{"projects": values, "has_more": more, "cursor": cursor})
+}
+
+func (a *api) createWorker(w http.ResponseWriter, r *http.Request) {
+	scope, err := a.store.Scope(r, "write")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	var request struct {
+		Name string `json:"name"`
+	}
+	if err = core.ReadJSON(w, r, &request); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if !boundedText(request.Name, 200) {
+		core.WriteError(w, core.Fail("validation_failed", "Provide a bounded worker name without surrounding whitespace.", 400))
+		return
+	}
+	k, err := key(r)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	result, err := a.store.Mutate(r.Context(), scope, core.Mutation{Operation: "workers.create", Target: "workers", Key: k, Request: request}, func(tx *sql.Tx) (any, error) {
+		var exists int
+		err := tx.QueryRowContext(r.Context(), "SELECT 1 FROM workers WHERE project_id=? AND name=?", scope.ProjectID, request.Name).Scan(&exists)
+		if err == nil {
+			return nil, core.Fail("worker_already_configured", "A worker with this name already exists in the selected project.", 409)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		id := core.NewID("worker")
+		if _, err = tx.ExecContext(r.Context(), "INSERT INTO workers(project_id,id,name) VALUES(?,?,?)", scope.ProjectID, id, request.Name); err != nil {
+			return nil, err
+		}
+		if err = core.AppendEvent(r.Context(), tx, scope, "workers.created", id, 1, map[string]string{"id": id}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"id": id, "revision": 1, "outcome": "created"}, nil
+	})
+	complete(w, result, err)
+}
+
+func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
+	scope, err := a.store.Scope(r, "read")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	limit, err := core.PageLimit(r)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	filter := "workers"
+	after, err := a.store.ParseCursor(scope, filter, r.URL.Query().Get("cursor"))
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	rows, err := a.store.DB().QueryContext(r.Context(), "SELECT id,project_id,name FROM workers WHERE project_id=? AND id>? ORDER BY id LIMIT ?", scope.ProjectID, after, limit+1)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	defer rows.Close()
+	values := make([]workerValue, 0, limit+1)
+	for rows.Next() {
+		var value workerValue
+		if err = rows.Scan(&value.ID, &value.ProjectID, &value.Name); err != nil {
+			core.WriteError(w, err)
+			return
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	more := len(values) > limit
+	cursor := ""
+	if more {
+		values = values[:limit]
+		cursor = a.store.Cursor(scope, filter, values[len(values)-1].ID)
+	}
+	core.WriteJSON(w, 200, map[string]any{"workers": values, "has_more": more, "cursor": cursor})
+}
+
+func (a *api) worker(w http.ResponseWriter, r *http.Request) {
+	scope, err := a.store.Scope(r, "read")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	var value workerValue
+	err = a.store.DB().QueryRowContext(r.Context(), "SELECT id,project_id,name FROM workers WHERE project_id=? AND id=?", scope.ProjectID, r.PathValue("worker_id")).Scan(&value.ID, &value.ProjectID, &value.Name)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = core.Fail("not_found", "The worker is unavailable in this project.", 404)
+	}
+	complete(w, value, err)
+}
