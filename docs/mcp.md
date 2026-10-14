@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fcmcp` exposes nine read tools and five explicit mutations over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc` or performs provider work. Both CLI and MCP job/message mutations use the same typed client and API. Subscriptions, remote MCP and automatic chat wakeups remain unimplemented.
+`fcmcp` exposes eleven read tools and five explicit mutations over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc` or performs provider work. Both CLI and MCP job/message mutations use the same typed client and API. Subscriptions, remote MCP and automatic chat wakeups remain unimplemented.
 
 ## Configure one agent binding
 
@@ -29,13 +29,15 @@ Startup validates configuration without opening the credential or contacting the
 | `job_history` | Required job_id and optional limit/cursor; explicit full-state history page. |
 | `inbox_list` | Optional unread/unacknowledged/limit/cursor; bound worker's compact preview page. |
 | `inbox_thread` | Required conversation_id and optional limit/cursor; explicit full-body conversation page. |
+| `inbox_snapshot` | Optional unread/unacknowledged/limit/cursor; one inbox page plus its atomic incoming-event watermark. |
+| `inbox_events` | Required event cursor; optional limit and wait_ms 0–4000; one bounded incoming-event page. |
 | `jobs_create` | Required idempotency_key/title; optional brief/worker_id/status; compact job receipt. |
 | `job_edit` | Required idempotency_key/job_id/expected_revision plus selected title/brief/worker_id/status fields; compact receipt. |
 | `inbox_send` | Required idempotency_key/recipient_worker_id/body; optional reply_to_message_id; compact message receipt. |
 | `inbox_seen` | Required idempotency_key/message_id; explicit recipient seen transition. |
 | `inbox_ack` | Required idempotency_key/message_id; explicit recipient acknowledgment, also establishing seen. |
 
-Limits use the API default when omitted and accept explicit values from 1 to 100. Reads never advance seen/ack state, change a job or write a checkpoint. Assigned jobs do not claim to contain primary-job or full resume context. Invalid, unknown, duplicate, exactly mis-cased, null or oversized tool fields fail before service work. Profile selectors cannot be supplied as tool arguments.
+Limits use the API default when omitted and accept explicit values from 1 to 100. Reads never advance seen/ack state, change a job or write a checkpoint. Assigned jobs do not claim to contain primary-job or full resume context. Snapshot and event cursors have different scopes. Event reads retain no cursor and never automatically poll or resubscribe; an explicitly requested bounded wait can return an empty `timed_out` page. These recovery/read operations are not a quiet background subscription or an idle-agent wakeup interface. Invalid, unknown, duplicate, exactly mis-cased, null or oversized tool fields fail before service work. Profile selectors cannot be supplied as tool arguments.
 
 Mutations require the caller to retain an explicit key and request; the adapter never generates a replacement key or automatically retries. Job edits require the current expected revision; empty brief or worker clears that field. A dispatched write with a lost, canceled or invalid response returns `outcome_unknown` when a tool result can be delivered. Host cancellation may suppress that result, so absence of a reply is never proof of rollback. Recover using the original request, key and binding. The [MCP annotations](https://modelcontextprotocol.io/specification/2025-11-25/schema#toolannotations) distinguish reads from writes. Repeating identical arguments retains the same explicit key and has no additional effect; job edits can replace current fields, while creation/send/receipt transitions add records or handling state. These tools operate within the configured service and perform no external provider work. The [CLI recovery rules](development.md#explicit-agent-mutations) also apply.
 

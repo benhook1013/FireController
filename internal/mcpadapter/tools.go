@@ -16,6 +16,7 @@ import (
 
 type arguments struct {
 	limit                      int
+	waitMS                     int
 	cursor, worker, status, id string
 	unread, unack              bool
 	key                        string
@@ -74,6 +75,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.JobHistory(ctx, args.id, options)
 			case "inbox_list":
 				value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack})
+			case "inbox_snapshot":
+				value, err = service.InboxSnapshot(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack})
+			case "inbox_events":
+				value, err = service.MessageEvents(ctx, args.cursor, args.limit, args.waitMS)
 			case "inbox_thread":
 				value, err = service.Conversation(ctx, args.id, options)
 			case "jobs_create":

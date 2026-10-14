@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-The loopback API provides a selected worker's compact inbox snapshot and durable incoming-message event replay, with a bounded wait or persistent SSE stream. The CLI exposes finite snapshot/replay and bounded wait calls. MCP subscriptions, idle-chat wakeup and job/project event feeds remain unimplemented. The [architecture](architecture.md#events-and-subscriptions) owns the broader delivery contract.
+The loopback API provides a selected worker's compact inbox snapshot and durable incoming-message event replay, with a bounded wait or persistent SSE stream. CLI and MCP expose finite snapshot/replay and bounded wait calls. Persistent MCP subscriptions, idle-chat wakeup and job/project event feeds remain unimplemented. The [architecture](architecture.md#events-and-subscriptions) owns the broader delivery contract.
 
 ## Snapshot and replay
 
@@ -16,7 +16,7 @@ Items contain sequence, project ID, type, resource ID, revision, principal actor
 
 Cursors are signed against instance, principal, project and selected-worker feed. Other bindings or malformed/ahead positions fail. A cursor older than the seven-day replay floor returns `resync_required`; obtain a fresh scoped inbox snapshot and explicitly retrieve remaining pages. Durable messages and receipt state remain available. This slice enforces replay eligibility without physically pruning old event rows.
 
-## Agent CLI
+## Agent CLI and MCP
 
 The private profile fixes instance, project and recipient worker for these calls:
 
@@ -24,6 +24,8 @@ The private profile fixes instance, project and recipient worker for these calls
 fc inbox snapshot --unread
 fc inbox events --cursor CURSOR --wait-ms 4000
 ```
+
+MCP provides `inbox_snapshot` with the same filters/page fields and `inbox_events` with required cursor plus optional limit/wait_ms. Both use the shared typed client and bound worker; invalid tool arguments fail before credential/network work. These are finite explicit reads, not automatic polling or a subscription. See the [MCP guide](mcp.md).
 
 Snapshot accepts the existing inbox filters and page options. Events requires an explicit snapshot/replay cursor and accepts limit plus wait-ms. One call returns one bounded page; no cursor is saved and no automatic polling, seen or acknowledgment occurs. A five-second total budget covers identity verification and the request. The typed client rejects incomplete or mis-scoped event pages, unexpected payload fields, invalid ordering and inconsistent timeout/page state.
 

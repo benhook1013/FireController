@@ -41,6 +41,11 @@ type inboxInput struct {
 	Unread         bool   `json:"unread,omitempty"`
 	Unacknowledged bool   `json:"unacknowledged,omitempty"`
 }
+type inboxEventsInput struct {
+	Cursor string `json:"cursor"`
+	Limit  *int   `json:"limit,omitempty"`
+	WaitMS *int   `json:"wait_ms,omitempty"`
+}
 type threadInput struct {
 	ConversationID string `json:"conversation_id"`
 	Limit          *int   `json:"limit,omitempty"`
@@ -76,6 +81,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		return mutationArguments(name, data)
 	}
 	var limit *int
+	var waitMS *int
 	var dst any
 	switch name {
 	case "context", "doctor":
@@ -92,6 +98,10 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		dst = new(historyInput)
 	case "inbox_list":
 		dst = new(inboxInput)
+	case "inbox_snapshot":
+		dst = new(inboxInput)
+	case "inbox_events":
+		dst = new(inboxEventsInput)
 	case "inbox_thread":
 		dst = new(threadInput)
 	default:
@@ -113,6 +123,8 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		limit, args.cursor, args.id = v.Limit, v.Cursor, v.JobID
 	case *inboxInput:
 		limit, args.cursor, args.unread, args.unack = v.Limit, v.Cursor, v.Unread, v.Unacknowledged
+	case *inboxEventsInput:
+		limit, args.cursor, waitMS = v.Limit, v.Cursor, v.WaitMS
 	case *threadInput:
 		limit, args.cursor, args.id = v.Limit, v.Cursor, v.ConversationID
 	}
@@ -125,6 +137,17 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if _, ok := fields["cursor"]; ok {
 		if args.cursor == "" || len(args.cursor) > 4096 || !utf8.ValidString(args.cursor) {
 			return args, invalidArguments()
+		}
+	}
+	if name == "inbox_events" {
+		if _, ok := fields["cursor"]; !ok || !validEventCursor(args.cursor) {
+			return args, invalidArguments()
+		}
+		if waitMS != nil {
+			if *waitMS < 0 || *waitMS > 4000 {
+				return args, invalidArguments()
+			}
+			args.waitMS = *waitMS
 		}
 	}
 	if _, ok := fields["worker_id"]; ok && !validID(args.worker) {
@@ -269,6 +292,18 @@ func validID(value string) bool {
 	return true
 }
 
+func validEventCursor(value string) bool {
+	if value == "" || len(value) > 4096 || !utf8.ValidString(value) || value != strings.TrimSpace(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
 func toolDefinitions() []definition {
 	limit := map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "description": "Items in this explicit page; omission uses the service default."}
 	cursor := map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Continuation cursor from this scoped read."}
@@ -300,6 +335,8 @@ func toolDefinitions() []definition {
 		{"job_read", "Read explicit full detail and brief for one job.", schema(map[string]any{"job_id": id}, "job_id")},
 		{"job_history", "Read one explicit bounded full-state history page for a job.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
 		{"inbox_list", "Read one compact preview page for the bound worker; never mark seen or acknowledged.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
+		{"inbox_snapshot", "Read one bounded compact inbox page and its explicit scoped event cursor; no cursor is saved, no messages are marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
+		{"inbox_events", "Read one bounded incoming-message event page after an explicit cursor, optionally waiting up to 4000 ms. No cursor is saved, no automatic polling or subscription occurs, messages are never marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Required explicit cursor from a scoped snapshot or replay page."}, "limit": limit, "wait_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 4000, "description": "One bounded wait; omission returns immediately."}}, "cursor")},
 		{"inbox_thread", "Read one explicit conversation page with full immutable bodies; no receipt-state change.", schema(map[string]any{"conversation_id": id, "limit": limit, "cursor": cursor}, "conversation_id")},
 		{"jobs_create", "Create a job in the bound project using an explicit key; return a compact receipt, without rereading brief/history.", schema(map[string]any{"idempotency_key": key, "title": title, "brief": brief, "worker_id": workerCreate, "status": status}, "idempotency_key", "title")},
 		{"job_edit", "Edit selected job fields with an explicit key and expected revision; empty brief/worker clears those fields. No automatic retry.", editSchema},
