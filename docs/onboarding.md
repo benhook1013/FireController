@@ -36,7 +36,7 @@ Local review execution additionally needs administrator-configured source availa
 
 ## Acceptance scenarios
 
-- Add a second project with an identically named Overseer; the first project's profiles, messages, map, and settings remain unchanged.
+- Add a second project with an identically named worker; the first project's profiles, messages, map, and settings remain unchanged.
 - Select open work only or a bounded historical range; collection and imported projections honor that scope, including provider pagination and rate limits.
 - Preview without applying, revise the map, and apply twice; one resulting import retains provenance and creates no duplicate job/message/review.
 - Interrupt collection or application and resume; retained scope and idempotency keys prevent duplication or silent widening.

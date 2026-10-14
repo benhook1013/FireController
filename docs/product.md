@@ -12,7 +12,7 @@ AI workers are the primary clients. Human browser convenience is secondary to ac
 
 ## Requirements
 
-- One installation supports multiple projects. Project-scoped workers with the same name are distinct; `Project Alpha / Overseer` and `Project Beta / Overseer` never share state implicitly.
+- One installation supports multiple projects. Worker names, assignments, inboxes and other resources are scoped to the selected project.
 - Initially each project binds one GitHub repository. Within an instance, duplicate repository binding is rejected using stable provider identity, including renamed repositories and concurrent creation. Onboarding can connect authorized callers to the existing project.
 - The CLI is a thin client to the service. The browser and native agent tools use the same application contracts. Ordinary job and message operations do not call GitHub or inspect unrelated review state.
 - The service owns provider observations and refresh decisions. Stored views return promptly with freshness, errors, and scope visible. Consequential actions refresh only the facts their admission contract requires.
