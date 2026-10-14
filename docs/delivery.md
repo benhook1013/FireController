@@ -2,7 +2,7 @@
 
 ## Current state
 
-The public repository and Apache-2.0 project baseline exist. [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the proposed design and validation scaffold. Two explicitly requested hosted reviews and three full CLI reviews have completed; valid findings are being corrected and independently adjudicated. Updated-head documentation CI passes are confirmed, and every later head needs its own validation. No standalone service or browser runtime exists. [PR #2](https://github.com/benhook1013/FireController/pull/2), stacked on the design branch, implements the first local CLI/profile commands; its Go race tests, vet, build, documentation checks and cross-compilation passed, including GitHub Actions validation.
+The public repository and Apache-2.0 project baseline exist. [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the proposed design and validation scaffold. Two explicitly requested hosted reviews and three full CLI reviews have completed; their accepted findings are corrected and recorded. Three serial Sol high whole-PR direction passes support the core design; the first two identified narrow contracts now incorporated, and the third found no new material gap. Updated-head documentation CI passes are confirmed, and every later head needs its own validation. No standalone service or browser runtime exists. [PR #2](https://github.com/benhook1013/FireController/pull/2), stacked on the design branch, implements the first local CLI/profile commands; its Go race tests, vet, build, documentation checks and cross-compilation passed, including GitHub Actions validation.
 
 ## Development bootstrap
 
@@ -25,13 +25,13 @@ The temporary runtime is not shipped as the product and does not implement the n
 
 | Boundary | Current evidence | Remaining proof |
 | --- | --- | --- |
-| Public project | Repository creation and visibility verified; PR #1 published; documentation `validate` passed on reviewed head `c250149` and earlier updated heads | Human design disposition and validation of every later head |
+| Public project | Repository creation and visibility verified; PR #1 published; documentation `validate` passed at `12380dc` and earlier updated heads | Human design disposition and validation of every later head |
 | Main protection | PR requirement, admin enforcement, conversation resolution, no force/deletion; strict required `validate` check attributed to GitHub Actions | Ongoing enforcement as validation expands |
-| CodeRabbit configuration | CLI configuration smoke, doctor, and v2 schema passed; GitHub App completed two deliberately requested hosted reviews; three full CLI reviews completed | Current findings, independent direction reviews, and fresh coverage after corrections; automatic and incremental reviews remain disabled |
+| CodeRabbit configuration | CLI configuration smoke, doctor, and v2 schema passed; GitHub App completed two deliberately requested hosted reviews; three full CLI reviews completed | Fresh provider coverage after corrections; automatic and incremental reviews remain disabled |
 | Inherited behavior | Two bounded inventories plus two independent source/test-body passes and main-worker adjudication; pinned census hashes/counts verified | Legacy suite was not executed; fresh rebuild scenario implementation and execution |
-| Temporary project controller | Separate private pinned runtime/context; independent SQLite bootstrap; job create/read and combined snapshot/restore passed; stack registration, hosted request/capture and CLI run recorded | Replacement by the native service after its proof |
-| Design validation | Markdown lint, local links, and nine focused checker tests passed on `c250149`; first CLI missing-lockfile claim rejected against committed source/CI | Tests for later checker corrections; these checks do not prove standalone runtime behavior |
-| Local CLI foundation | PR #2 has local profile/version commands and passing Go/CI proof | Local failure-case inspection and corrections; native Windows/macOS execution and service integration remain unproven |
+| Temporary project controller | Separate private native runtime/context; own SQLite bootstrap and combined snapshot/restore passed; queue/review records and worker lane verified; copied site has 198 passing tests and desktop/mobile route proof | Replacement by the native service after its proof |
+| Design validation | Markdown lint, local links, and 11 focused checker tests passed; first CLI missing-lockfile claim rejected against committed source/CI | Every later head needs validation; these checks do not prove standalone runtime behavior |
+| Local CLI foundation | PR #2 has local profile/version commands and passing Go/CI proof | Malformed UTF-8 and FIFO corrections tested and published; native Windows/macOS execution and service integration remain unproven |
 | Standalone service/browser | None; the temporary private legacy dashboard is operational and visually checked with this project's own worker/review state | Runtime scenarios in [acceptance](acceptance.md) |
 
 Record proof in the owning slice and PR; do not silently turn planned commands into passing evidence. Main-branch merge remains a human action.

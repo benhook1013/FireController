@@ -68,6 +68,7 @@ No standalone service behavior has been tested or benchmarked yet. Inherited tes
 | O04 | Cancel or shut down during busy provider tasks: reservations and coordination data remain recoverable. |
 | O05 | Windows/Linux packaged smoke: embedded UI and CLI need no source checkout; provider executor requirements remain explicit. |
 | O06 | Restore a backup after later events, receipts, credential revocations and provider posts: predecessor profiles/cursors/retries cannot continue silently; revoked grants are not revived, lost-window effects are uncertain, and provider mutations remain held until recovery. |
+| O07 | A scheduled backup fails, or its optional destination transfer times out or reports unverified success: show last usable backup and failure/uncertainty, preserve the bundle, and do not present transfer status as restore proof. |
 
 ## Performance proof
 

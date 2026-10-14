@@ -29,6 +29,8 @@ CodeRabbit is a defect reviewer. Human design disposition and its source must be
 | D17 | Service-owned immutable workspaces for local reviews | Configure server sources administratively and prove the executor reads the admitted tree independently of developer changes. | [Review execution](reviews.md) |
 | D18 | Explicit required channels for initial review sufficiency | One complete applicable capture per selected channel, with finding obligations met; missing policy never means success. | [Review policy](reviews.md) |
 
+Backup direction from the continuing discussion is application-owned scheduling, retention and visible outcomes. A managed local destination is initial scope; cloud adapters and a trusted custom command are optional later destinations sharing the backup format. Specific providers and hook execution details remain implementation decisions.
+
 ## Confirmed project choices
 
 - Public repository `benhook1013/FireController`, independent WSL checkout, and Apache-2.0 for new material were authorized in this conversation. Apache-2.0 was recommended after the human selected broad open reuse and no financial goal. Historical source material retains its original license unless a separate rights decision establishes otherwise.
