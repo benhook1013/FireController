@@ -331,7 +331,7 @@ func TestProjectAndWorkerListsShareExactPaginationContract(t *testing.T) {
 					path += "&cursor=" + cursor
 				}
 				value := require(t, request(f.handler, "GET", path, f.admin, "", "", ""), 200)
-				if len(value) != 3 {
+				if (page == 0 && len(value) != 3) || (page == 1 && len(value) != 2) {
 					t.Fatalf("pagination response has extra or missing fields: %v", value)
 				}
 				items, ok := value["items"].([]any)
@@ -349,8 +349,8 @@ func TestProjectAndWorkerListsShareExactPaginationContract(t *testing.T) {
 					t.Fatalf("project item lost metadata: %v", item)
 				}
 				cursor, ok = value["cursor"].(string)
-				if !ok {
-					t.Fatal("cursor is not a string")
+				if (page == 0 && !ok) || (page == 1 && value["cursor"] != nil) {
+					t.Fatal("cursor must be present only when another page is available")
 				}
 				if value["has_more"] != (page == 0) || (page == 0 && cursor == "") || (page == 1 && cursor != "") {
 					t.Fatalf("incorrect continuation on page %d: %v", page, value)
