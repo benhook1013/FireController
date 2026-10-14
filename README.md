@@ -9,7 +9,7 @@ AI workers are the primary clients. Everyday commands return concise, useful inf
 
 ## Current status
 
-The standalone application is under development. The merged [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the design and repository validation. [PR #2](https://github.com/benhook1013/FireController/pull/2) combines the first local CLI commands, `fc version` and `fc context`, private profile validation, and the durable coordination service.
+The standalone application is under development. The merged [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the design and repository validation. [PR #2](https://github.com/benhook1013/FireController/pull/2) combines the first local CLI commands, `fc version` and `fc context`, private profile validation, and the durable coordination service. [PR #4](https://github.com/benhook1013/FireController/pull/4) brings together the agent clients, live message transport and embedded browser.
 
 The coordination slice implements a loopback service API, scoped projects/workers and access grants, basic jobs with guarded edits/history, and durable message reads and explicit seen/ack actions. See the [local API](docs/local-api.md). An embedded read-only browser displays jobs, workers and live incoming conversations; open the service address and connect with a project credential. The [browser guide](docs/browser-guide.md) describes its current scope. Onboarding commands, provider review orchestration, backups, advanced jobs and project appearance settings remain unimplemented. The capabilities below describe the selected product design. [Delivery and proof status](docs/delivery.md) records what has actually been built and checked.
 
