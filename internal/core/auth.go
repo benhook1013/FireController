@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 type querier interface {
@@ -62,6 +64,13 @@ func (s *Store) authenticate(r *http.Request) (Scope, error) {
 	}
 	if err != nil {
 		return Scope{}, storageError(err)
+	}
+	expected := r.Header.Values("X-FC-Instance")
+	if len(expected) > 1 || len(expected) == 1 && (expected[0] == "" || len(expected[0]) > 128 || strings.TrimSpace(expected[0]) != expected[0] || !utf8.ValidString(expected[0]) || strings.IndexFunc(expected[0], func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0) {
+		return Scope{}, Fail("validation_failed", "Select at most one valid expected instance identity.", 400)
+	}
+	if len(expected) == 1 && expected[0] != s.instanceID {
+		return Scope{}, Fail("instance_mismatch", "The service instance differs from the bound profile; explicitly rebind before continuing.", 409)
 	}
 	if len(r.Header.Values("X-FC-Worker")) > 1 || len(scope.WorkerID) > 128 {
 		return Scope{}, Fail("validation_failed", "Select at most one valid worker identity.", 400)

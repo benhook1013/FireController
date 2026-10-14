@@ -6,7 +6,7 @@ The coordination slice implements a loopback service with scoped projects/worker
 
 ## Documents
 
-- [Development](development.md): implemented CLI/service boundary, build/check commands, and current proof limits.
+- [Development](development.md): implemented profile-bound CLI/service reads, build/check commands, and current proof limits.
 - [Local API](local-api.md): implemented coordination endpoints, bootstrap and limits.
 - [Suggested agent workflow](agent-workflow.md): optional working practices for project instructions and a usage skill, separate from tool contracts.
 - [Product scope](product.md) defines the requirements.

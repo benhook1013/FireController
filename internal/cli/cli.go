@@ -1,115 +1,338 @@
-// Package cli provides the side-effect-free version and local context commands.
+// Package cli provides local identity commands and bounded, read-only service
+// commands for the explicitly selected profile.
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/profile"
 )
 
 const (
-	ExitSuccess = 0
-	ExitUsage   = 2
-	ExitConfig  = 3
-	Version     = "0.1.0-dev"
+	ExitSuccess    = 0
+	ExitUsage      = 2
+	ExitConfig     = 3
+	ExitConflict   = 4
+	ExitService    = 5
+	ExitCancelled  = 6
+	Version        = "0.1.0-dev"
+	serviceTimeout = 5 * time.Second
 )
 
 type diagnostic struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Action  string `json:"action"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Action    string `json:"action"`
+	Details   any    `json:"details,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
 }
 
 type options struct {
-	command         string
 	profile         string
 	profilesFile    string
 	hasProfile      bool
 	hasProfilesFile bool
 }
 
-// Run reads only the provided environment map. It never changes process-global
-// environment, selects a global current profile, or contacts a service.
+type invocation struct {
+	options
+	command    string
+	subcommand string
+	position   []string
+	limit      int
+	cursor     string
+	worker     string
+	status     string
+	unread     bool
+	unack      bool
+}
+
+// Run preserves the original embedding API while RunContext adds caller
+// cancellation for the executable and new service commands.
 func Run(args []string, env map[string]string, stdout, stderr io.Writer) int {
-	opt, ok := parse(args)
+	return RunContext(context.Background(), args, env, stdout, stderr)
+}
+
+// RunContext executes local commands without service I/O and service commands
+// under one five-second budget covering identity verification and the read.
+func RunContext(ctx context.Context, args []string, env map[string]string, stdout, stderr io.Writer) int {
+	call, ok := parseInvocation(args)
 	if !ok {
-		return report(stderr, ExitUsage, "invalid_arguments", "Expected version or context and supported options.", "Use fc version or fc [--profile NAME] [--profiles-file PATH] context.")
+		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", "Use fc version, fc context, fc doctor, or a documented read command.")
 	}
-	if opt.command == "version" {
-		if opt.hasProfile || opt.hasProfilesFile {
+	if call.command == "version" {
+		if call.hasProfile || call.hasProfilesFile {
 			return report(stderr, ExitUsage, "invalid_arguments", "The version command does not accept profile options.", "Use fc version.")
 		}
 		return emit(stdout, stderr, struct {
 			Version string `json:"version"`
 		}{Version})
 	}
-	if !opt.hasProfile {
-		opt.profile = env["FC_PROFILE"]
+	if !call.hasProfile {
+		call.profile = env["FC_PROFILE"]
 	}
-	if opt.profile == "" || opt.profile != strings.TrimSpace(opt.profile) {
+	if call.profile == "" || call.profile != strings.TrimSpace(call.profile) {
 		return report(stderr, ExitConfig, "profile_required", "A profile name is required without surrounding whitespace.", "Set --profile NAME or FC_PROFILE.")
 	}
-	if !opt.hasProfilesFile {
+	if !call.hasProfilesFile {
 		directory := userConfigDir(env)
 		if directory == "" || !filepath.IsAbs(directory) {
 			return report(stderr, ExitConfig, "config_directory_unavailable", "The user configuration directory could not be determined.", "Provide --profiles-file PATH or configure the user environment.")
 		}
-		opt.profilesFile = filepath.Join(directory, "firecontroller", "profiles.json")
+		call.profilesFile = filepath.Join(directory, "firecontroller", "profiles.json")
 	}
-	context, err := profile.Load(opt.profilesFile, opt.profile)
+	if call.command == "context" {
+		identity, err := profile.Load(call.profilesFile, call.profile)
+		if err != nil {
+			return report(stderr, ExitConfig, err.Code, err.Message, err.Action)
+		}
+		return emit(stdout, stderr, identity)
+	}
+
+	binding, profileErr := profile.LoadBinding(call.profilesFile, call.profile)
+	if profileErr != nil {
+		return report(stderr, ExitConfig, profileErr.Code, profileErr.Message, profileErr.Action)
+	}
+	if err := ctx.Err(); err != nil {
+		return report(stderr, ExitCancelled, "cancelled", "The command was cancelled before connecting.", "Retry the read when cancellation is no longer requested.")
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, serviceTimeout)
+	defer cancel()
+	service, err := client.New(requestCtx, binding)
 	if err != nil {
-		return report(stderr, ExitConfig, err.Code, err.Message, err.Action)
+		return reportClientError(stderr, err, ctx)
 	}
-	return emit(stdout, stderr, context)
+	defer service.Close()
+	var value any
+	switch {
+	case call.command == "doctor":
+		identity := service.Identity()
+		if _, err = service.Worker(requestCtx); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+		value = struct {
+			profile.Context
+			Verified bool `json:"verified"`
+		}{identity, true}
+	case call.command == "workers":
+		value, err = service.Workers(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+	case call.command == "jobs" && call.subcommand == "list":
+		value, err = service.Jobs(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.JobFilter{WorkerID: call.worker, Status: call.status})
+	case call.command == "jobs" && call.subcommand == "assigned":
+		value, err = service.Jobs(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.JobFilter{WorkerID: binding.Context.WorkerID, Status: call.status})
+	case call.command == "jobs" && call.subcommand == "read":
+		value, err = service.Job(requestCtx, call.position[0])
+	case call.command == "jobs" && call.subcommand == "history":
+		value, err = service.JobHistory(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+	case call.command == "inbox" && call.subcommand == "list":
+		value, err = service.Inbox(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack})
+	case call.command == "inbox" && call.subcommand == "thread":
+		value, err = service.Conversation(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+	default:
+		return report(stderr, ExitUsage, "invalid_arguments", "The command is not supported.", "Use a documented read command.")
+	}
+	if err != nil {
+		return reportClientError(stderr, err, ctx)
+	}
+	return emit(stdout, stderr, value)
 }
 
-func parse(args []string) (options, bool) {
-	var opt options
+func parseInvocation(args []string) (invocation, bool) {
+	var call invocation
+	remaining := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		argument := args[i]
-		if !strings.HasPrefix(argument, "-") {
-			if opt.command != "" || argument != "version" && argument != "context" {
-				return opt, false
-			}
-			opt.command = argument
-			continue
-		}
 		flag, value, assigned := strings.Cut(argument, "=")
 		if flag != "--profile" && flag != "--profiles-file" {
-			return opt, false
+			remaining = append(remaining, argument)
+			continue
 		}
 		if !assigned {
 			i++
 			if i >= len(args) || strings.HasPrefix(args[i], "--") {
-				return opt, false
+				return call, false
 			}
 			value = args[i]
 		}
 		if value == "" {
-			return opt, false
+			return call, false
 		}
 		if flag == "--profile" {
-			if opt.hasProfile {
-				return opt, false
+			if call.hasProfile {
+				return call, false
 			}
-			opt.profile, opt.hasProfile = value, true
+			call.profile, call.hasProfile = value, true
 		} else {
-			if opt.hasProfilesFile {
-				return opt, false
+			if call.hasProfilesFile {
+				return call, false
 			}
-			opt.profilesFile, opt.hasProfilesFile = value, true
+			call.profilesFile, call.hasProfilesFile = value, true
 		}
 	}
-	return opt, opt.command != ""
+	if len(remaining) == 0 {
+		return call, false
+	}
+	call.command = remaining[0]
+	if call.command == "version" || call.command == "context" || call.command == "doctor" {
+		return call, len(remaining) == 1
+	}
+	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" || len(remaining) < 2 {
+		return call, false
+	}
+	call.subcommand = remaining[1]
+	operationArgs := remaining[2:]
+	allowed := map[string]bool{}
+	switch call.command + " " + call.subcommand {
+	case "workers list", "jobs history", "inbox thread":
+		allowed["--limit"], allowed["--cursor"] = true, true
+	case "jobs list":
+		allowed["--limit"], allowed["--cursor"], allowed["--worker"], allowed["--status"] = true, true, true, true
+	case "jobs assigned":
+		allowed["--limit"], allowed["--cursor"], allowed["--status"] = true, true, true
+	case "inbox list":
+		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"] = true, true, true, true
+	case "jobs read":
+	default:
+		return call, false
+	}
+	seen := make(map[string]bool)
+	for i := 0; i < len(operationArgs); i++ {
+		argument := operationArgs[i]
+		if !strings.HasPrefix(argument, "-") {
+			call.position = append(call.position, argument)
+			continue
+		}
+		flag, value, assigned := strings.Cut(argument, "=")
+		if !allowed[flag] || seen[flag] {
+			return call, false
+		}
+		seen[flag] = true
+		switch flag {
+		case "--unread":
+			if assigned {
+				return call, false
+			}
+			call.unread = true
+		case "--unacknowledged":
+			if assigned {
+				return call, false
+			}
+			call.unack = true
+		default:
+			if !assigned {
+				i++
+				if i >= len(operationArgs) || strings.HasPrefix(operationArgs[i], "-") {
+					return call, false
+				}
+				value = operationArgs[i]
+			}
+			if value == "" {
+				return call, false
+			}
+			switch flag {
+			case "--limit":
+				limit, err := strconv.Atoi(value)
+				if err != nil || limit < 1 || limit > 100 {
+					return call, false
+				}
+				call.limit = limit
+			case "--cursor":
+				if len(value) > 4096 || !utf8.ValidString(value) {
+					return call, false
+				}
+				call.cursor = value
+			case "--worker":
+				call.worker = value
+			case "--status":
+				if !validStatus(value) {
+					return call, false
+				}
+				call.status = value
+			}
+		}
+	}
+	expected := 0
+	if call.command == "jobs" && (call.subcommand == "read" || call.subcommand == "history") || call.command == "inbox" && call.subcommand == "thread" {
+		expected = 1
+	}
+	if len(call.position) != expected {
+		return call, false
+	}
+	if expected == 1 && !validResourceID(call.position[0]) {
+		return call, false
+	}
+	if call.worker != "" && !validResourceID(call.worker) {
+		return call, false
+	}
+	if call.command == "jobs" && call.subcommand == "assigned" && call.worker != "" {
+		return call, false
+	}
+	return call, true
 }
 
-// This follows os.UserConfigDir's platform rules using the explicit process
-// environment supplied to Run, so tests and embedded callers need no global
-// environment mutation.
+func validStatus(status string) bool {
+	switch status {
+	case "active", "parked", "blocked", "completed":
+		return true
+	default:
+		return false
+	}
+}
+
+func validResourceID(value string) bool {
+	if value == "" || len(value) > 128 || !utf8.ValidString(value) || value != strings.TrimSpace(value) || value == "." || value == ".." || strings.ContainsAny(value, "/\\%?#") {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func reportClientError(stderr io.Writer, err error, parent context.Context) int {
+	var failure *client.Error
+	if errors.As(err, &failure) {
+		code := ExitService
+		if parent.Err() != nil {
+			code = ExitCancelled
+		} else if failure.Code == "binding_invalid" || failure.Code == "credential_unreadable" || failure.Code == "credential_invalid" {
+			code = ExitConfig
+		} else if failure.Code == "instance_mismatch" || failure.Status == 409 {
+			code = ExitConflict
+		} else if failure.Status == 400 {
+			code = ExitUsage
+		}
+		return reportDetails(stderr, code, diagnostic{Code: failure.Code, Message: failure.Message, Action: failure.Action, Details: failure.Details, RequestID: failure.RequestID})
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if parent.Err() == nil {
+			return report(stderr, ExitService, "request_timeout", "The service did not complete the read before its deadline.", "Retry the read when the service is responsive.")
+		}
+		return report(stderr, ExitCancelled, "cancelled", "The command was cancelled.", "Retry the read when cancellation is no longer requested.")
+	}
+	return report(stderr, ExitService, "service_unavailable", "The service read could not be completed.", "Check the configured service and try again.")
+}
+
+func reportDetails(stderr io.Writer, exitCode int, value diagnostic) int {
+	_ = json.NewEncoder(stderr).Encode(struct {
+		Error diagnostic `json:"error"`
+	}{value})
+	return exitCode
+}
+
 func userConfigDir(env map[string]string) string {
 	switch runtime.GOOS {
 	case "windows":
@@ -149,8 +372,5 @@ func emit(stdout, stderr io.Writer, value any) int {
 }
 
 func report(stderr io.Writer, exitCode int, code, message, action string) int {
-	_ = json.NewEncoder(stderr).Encode(struct {
-		Error diagnostic `json:"error"`
-	}{diagnostic{Code: code, Message: message, Action: action}})
-	return exitCode
+	return reportDetails(stderr, exitCode, diagnostic{Code: code, Message: message, Action: action})
 }

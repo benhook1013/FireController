@@ -1,0 +1,275 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"runtime"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/benhook1013/FireController/internal/profile"
+	"github.com/benhook1013/FireController/internal/strictjson"
+)
+
+const maxResponseBytes = 4 << 20
+const requestTimeout = 5 * time.Second
+
+type Client struct {
+	identity              profile.Context
+	base                  *url.URL
+	token, credentialFile string
+	http                  *http.Client
+	transport             *http.Transport
+}
+
+func New(ctx context.Context, binding profile.Binding) (*Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, contextError(err)
+	}
+	base, err := url.Parse(binding.Context.ServerURL)
+	identity := binding.Context
+	if err != nil || !safeURL(base, binding.Context.ServerURL) || !cleanText(identity.Profile, 256) || !validID(identity.InstanceID) || !validID(identity.ProjectID) || !validID(identity.WorkerID) || binding.CredentialFile == "" {
+		return nil, fail("binding_invalid", "The service profile must contain a safe URL and explicit bounded identities.", "Correct the selected private profile.", 0)
+	}
+	token, err := readCredential(binding.CredentialFile)
+	if err != nil {
+		return nil, err
+	}
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, IdleConnTimeout: 90 * time.Second, ExpectContinueTimeout: time.Second}
+	transport.DialContext = (&net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}).DialContext
+	transport.ResponseHeaderTimeout = requestTimeout
+	transport.TLSHandshakeTimeout = requestTimeout
+	transport.MaxConnsPerHost = 4
+	transport.MaxIdleConns = 4
+	transport.DisableCompression = true
+	c := &Client{identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	var instance struct {
+		InstanceID string `json:"instance_id"`
+	}
+	if err = c.get(ctx, []string{"api", "v1", "instance"}, nil, false, &instance); err != nil {
+		c.Close()
+		return nil, err
+	}
+	if instance.InstanceID != identity.InstanceID {
+		c.Close()
+		return nil, fail("instance_mismatch", "The service instance does not match the selected profile.", "Verify the service and explicitly update the private profile if its identity changed.", 409)
+	}
+	return c, nil
+}
+
+func (c *Client) Close()                    { c.transport.CloseIdleConnections() }
+func (c *Client) Identity() profile.Context { return c.identity }
+
+func fail(code, message, action string, status int) *Error {
+	return &Error{Code: code, Message: message, Action: action, Status: status}
+}
+func invalidResponse() *Error {
+	return fail("invalid_response", "The service returned an invalid or oversized JSON response.", "Check service compatibility and retry the read after correcting the response.", 0)
+}
+func validation() *Error {
+	return fail("validation_failed", "The read requires valid bounded identities, filters and pagination options.", "Use explicit resource IDs and a limit from 1 to 100.", 400)
+}
+func contextError(err error) *Error {
+	if errors.Is(err, context.Canceled) {
+		return fail("canceled", "The service read was canceled.", "Retry the read when needed; no mutation was requested.", 0)
+	}
+	return fail("deadline_exceeded", "The service read deadline expired.", "Check the service connection and retry the read when needed.", 0)
+}
+
+func cleanText(value string, max int) bool {
+	return value != "" && len(value) <= max && value == strings.TrimSpace(value) && utf8.ValidString(value)
+}
+func validID(value string) bool {
+	if !cleanText(value, 128) || value == "." || value == ".." || strings.ContainsAny(value, "/\\%?#") {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+func safeURL(u *url.URL, raw string) bool {
+	if u == nil || !cleanText(raw, 4096) || strings.Contains(raw, "#") || u.Hostname() == "" || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	return u.Scheme == "http" && (strings.EqualFold(u.Hostname(), "localhost") || net.ParseIP(u.Hostname()).IsLoopback())
+}
+
+func readCredential(path string) (string, error) {
+	invalid := fail("credential_invalid", "The credential must be a private regular file containing one bounded bearer token.", "Use an owner-private credential file referenced by the selected profile.", 0)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fail("credential_unreadable", "The referenced credential file is unavailable.", "Check the private credential reference and its read permissions.", 0)
+	}
+	if !privateFile(info) {
+		return "", invalid
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fail("credential_unreadable", "The referenced credential file could not be opened.", "Check the private credential reference and its read permissions.", 0)
+	}
+	defer f.Close()
+	info, err = f.Stat()
+	if err != nil || !privateFile(info) {
+		return "", invalid
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 4097))
+	if err != nil || len(data) > 4096 {
+		return "", invalid
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" || len(token) > 256 {
+		return "", invalid
+	}
+	for _, r := range token {
+		if r < 33 || r > 126 {
+			return "", invalid
+		}
+	}
+	return token, nil
+}
+func privateFile(info os.FileInfo) bool {
+	return info.Mode().IsRegular() && info.Size() <= 4096 && (runtime.GOOS == "windows" || info.Mode().Perm()&0077 == 0)
+}
+
+func (c *Client) get(ctx context.Context, segments []string, query url.Values, scoped bool, dst any) error {
+	if err := ctx.Err(); err != nil {
+		return contextError(err)
+	}
+	u := *c.base
+	escaped := strings.TrimRight(u.EscapedPath(), "/")
+	for _, segment := range segments {
+		escaped += "/" + url.PathEscape(segment)
+	}
+	u.Path, _ = url.PathUnescape(escaped)
+	u.RawPath = escaped
+	u.RawQuery = query.Encode()
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	r, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		return validation()
+	}
+	r.Header.Set("Accept", "application/json")
+	r.Header.Set("Authorization", "Bearer "+c.token)
+	r.Header.Set("X-FC-Instance", c.identity.InstanceID)
+	if scoped {
+		r.Header.Set("X-FC-Worker", c.identity.WorkerID)
+	}
+	response, err := c.http.Do(r)
+	if err != nil {
+		if ctx.Err() != nil {
+			return contextError(ctx.Err())
+		}
+		return fail("connection_failed", "The service connection failed.", "Check the configured service address and transport.", 0)
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= 300 && response.StatusCode < 400 {
+		return fail("redirect_rejected", "The service attempted an unsupported redirect.", "Configure the final service address; credentials are not forwarded through redirects.", response.StatusCode)
+	}
+	media, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || media != "application/json" || response.Header.Get("Content-Encoding") != "" {
+		return invalidResponse()
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil {
+		if ctx.Err() != nil {
+			return contextError(ctx.Err())
+		}
+		return invalidResponse()
+	}
+	if len(data) > maxResponseBytes {
+		return invalidResponse()
+	}
+	if response.StatusCode != http.StatusOK {
+		return c.serviceError(data, response.StatusCode)
+	}
+	if strictjson.Decode(data, dst) != nil || !completeShape(data, dst) || c.hasSensitive(dst) {
+		return invalidResponse()
+	}
+	return nil
+}
+
+type serviceFailure struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Details any    `json:"details,omitempty"`
+	} `json:"error"`
+	RequestID string `json:"request_id"`
+}
+
+func (c *Client) serviceError(data []byte, status int) error {
+	var value serviceFailure
+	if len(data) > 64<<10 || strictjson.Decode(data, &value) != nil || !completeShape(data, &value) || !safeCode(value.Error.Code) || len(value.Error.Message) > 512 || !validID(value.RequestID) {
+		return invalidResponse()
+	}
+	details, err := json.Marshal(value.Error.Details)
+	if err != nil || len(details) > 4096 || c.hasSensitive(&value) {
+		return invalidResponse()
+	}
+	result := fail(value.Error.Code, "The service refused this scoped read.", "Check the selected instance, project, worker and current access.", status)
+	result.RequestID = value.RequestID
+	result.Details = c.safeDetails(value.Error.Details)
+	if result.Code == "instance_mismatch" {
+		result.Message = "The service instance does not match the selected profile."
+		result.Action = "Verify the service and explicitly update the private profile if its identity changed."
+	}
+	return result
+}
+
+func safeCode(value string) bool {
+	if len(value) < 1 || len(value) > 64 {
+		return false
+	}
+	for i, r := range value {
+		if r >= 'a' && r <= 'z' || i > 0 && (r >= '0' && r <= '9' || r == '_') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+func (c *Client) sensitive(value string) bool {
+	return strings.Contains(value, c.token) || strings.Contains(value, c.credentialFile)
+}
+func (c *Client) safeDetails(value any) any {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	result := make(map[string]any)
+	for key, item := range object {
+		switch key {
+		case "current_revision":
+			if n, ok := item.(float64); ok && n >= 1 && n == float64(int64(n)) && n < 1<<53 {
+				result[key] = int64(n)
+			}
+		case "project_id":
+			if id, ok := item.(string); ok && validID(id) && !c.sensitive(id) {
+				result[key] = id
+			}
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// Required DTO fields cannot silently become zero values. Optional cursor and
+// reply fields carry omitempty tags; all JSON validation stays bounded upstream.
