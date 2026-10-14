@@ -244,7 +244,11 @@ func (a *api) listProjects(w http.ResponseWriter, r *http.Request) {
 		values = values[:limit]
 		cursor = a.store.Cursor(scope, "projects", values[len(values)-1].ID)
 	}
-	core.WriteJSON(w, 200, map[string]any{"items": values, "has_more": more, "cursor": cursor})
+	core.WriteJSON(w, 200, struct {
+		Items   []projectValue `json:"items"`
+		Cursor  string         `json:"cursor,omitempty"`
+		HasMore bool           `json:"has_more"`
+	}{values, cursor, more})
 }
 
 func (a *api) createWorker(w http.ResponseWriter, r *http.Request) {
@@ -337,7 +341,11 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		values = values[:limit]
 		cursor = a.store.Cursor(scope, filter, values[len(values)-1].ID)
 	}
-	core.WriteJSON(w, 200, map[string]any{"items": values, "has_more": more, "cursor": cursor})
+	core.WriteJSON(w, 200, struct {
+		Items   []workerValue `json:"items"`
+		Cursor  string        `json:"cursor,omitempty"`
+		HasMore bool          `json:"has_more"`
+	}{values, cursor, more})
 }
 
 func (a *api) worker(w http.ResponseWriter, r *http.Request) {
