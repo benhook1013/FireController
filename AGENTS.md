@@ -11,6 +11,7 @@
 ## Reviews and publication
 
 - Publish coherent PRs autonomously within the authorized scope. AI workers never merge PRs or enable auto-merge. An obsolete or superseded PR may be closed after verifying its replacement preserves the intended work and recording that replacement; other closures require a clear human instruction.
+- Run hands-on checks of changed executable behavior before requesting CodeRabbit. Keep implementation moving while completed slices are reviewed. Select review targets from the head of the stack independently for CLI and hosted channels; one channel's cooldown does not block the other.
 - During an active hosted review, prepare fixes locally and publish them only after the review completes. Read all paginated current and outdated unresolved threads and the latest completed summary before evaluating CI.
 - Verify summary-only and outside-diff findings. Fix valid findings before resolving their threads. Request another full CodeRabbit review only at a meaningful checkpoint with current findings handled and no active review or rate limit.
 - Use proportionate validation. Report what ran and what remains unproven. New behavior needs focused contract and failure-mode proof, rather than tests that only mirror implementation.
