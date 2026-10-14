@@ -16,8 +16,22 @@ import (
 const maxMessageStreamFrame = 1 << 20
 
 // RegisterMessageStream registers only the selected-worker incoming feed.
-func RegisterMessageStream(mux *http.ServeMux, store *core.Store) {
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/message-events/stream", (&api{store: store}).messageEventStream)
+// The shutdown signal cancels persistent streams without interrupting ordinary
+// requests that are draining gracefully.
+func RegisterMessageStream(mux *http.ServeMux, store *core.Store, shutdownContext context.Context) {
+	a := &api{store: store}
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/message-events/stream", func(w http.ResponseWriter, r *http.Request) {
+		streamContext, cancel := context.WithCancel(r.Context())
+		stop := context.AfterFunc(shutdownContext, cancel)
+		if shutdownContext.Err() != nil {
+			cancel()
+		}
+		defer func() {
+			stop()
+			cancel()
+		}()
+		a.messageEventStream(w, r.WithContext(streamContext))
+	})
 }
 
 func (a *api) messageEventStream(w http.ResponseWriter, r *http.Request) {

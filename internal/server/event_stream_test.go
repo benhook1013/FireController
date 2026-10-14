@@ -41,11 +41,11 @@ func nextStreamFrame(reader *bufio.Reader) (streamFrame, error) {
 		}
 	}
 }
-func streamServer(t *testing.T, f *fixture) *httptest.Server {
+func streamServer(t *testing.T, f *fixture, shutdownContext context.Context) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.Handle("/", f.handler)
-	server.RegisterMessageStream(mux, f.store)
+	server.RegisterMessageStream(mux, f.store, shutdownContext)
 	s := httptest.NewUnstartedServer(mux)
 	s.Config.WriteTimeout = 50 * time.Millisecond
 	s.Start()
@@ -82,7 +82,7 @@ func readPage(t *testing.T, reader *bufio.Reader) core.EventPage {
 func TestMessageStreamActualHTTPReadyCommitReplayAndIdleWriteTimeout(t *testing.T) {
 	f, project, sender, recipient, _ := messageSetup(t)
 	cursor := snapshotRequest(t, f, project, recipient)
-	s := streamServer(t, f)
+	s := streamServer(t, f, context.Background())
 	response, cancel := openStream(t, s, project, recipient, cursor)
 	if response.StatusCode != 200 || response.Header.Get("Content-Type") != "text/event-stream" || response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("X-Accel-Buffering") != "no" {
 		t.Fatal("stream headers")
@@ -113,10 +113,63 @@ func TestMessageStreamActualHTTPReadyCommitReplayAndIdleWriteTimeout(t *testing.
 	}
 }
 
+func TestMessageStreamStopsOnServiceShutdownWithoutAcknowledgingAndReplaysAfterReconnect(t *testing.T) {
+	f, project, sender, recipient, _ := messageSetup(t)
+	cursor := snapshotRequest(t, f, project, recipient)
+	shutdownContext, stopService := context.WithCancel(context.Background())
+	s := streamServer(t, f, shutdownContext)
+	response, _ := openStream(t, s, project, recipient, cursor)
+	reader := bufio.NewReader(response.Body)
+	initial := readPage(t, reader)
+	if len(initial.Items) != 0 || initial.Cursor != cursor {
+		t.Fatal("initial stream page")
+	}
+
+	stopService()
+	closed := make(chan error, 1)
+	go func() {
+		_, err := reader.ReadByte()
+		closed <- err
+	}()
+	select {
+	case err := <-closed:
+		if err != io.EOF {
+			t.Fatalf("shutdown stream read: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("service shutdown left the persistent stream open")
+	}
+	_ = response.Body.Close()
+
+	receipt := sendMessage(t, f, project, sender, recipient, "reconnect-safe body", "shutdown-stream-message")
+	assertUnreadUnacknowledged := func() {
+		t.Helper()
+		page := require(t, request(f.handler, http.MethodGet, "/api/v1/projects/"+project+"/inbox/"+recipient, eventClientToken, "", recipient, ""), http.StatusOK)
+		items, ok := page["items"].([]any)
+		if !ok || len(items) != 1 {
+			t.Fatalf("inbox after stream close: %#v", page)
+		}
+		item := items[0].(map[string]any)
+		if item["id"] != receipt.ID || item["seen"] != false || item["acknowledged"] != false {
+			t.Fatalf("stream changed recipient state: %#v", item)
+		}
+	}
+	assertUnreadUnacknowledged()
+
+	reconnectServer := streamServer(t, f, context.Background())
+	replay, _ := openStream(t, reconnectServer, project, recipient, cursor)
+	page := readPage(t, bufio.NewReader(replay.Body))
+	if len(page.Items) != 1 || page.Items[0].ResourceID != receipt.ID || strings.Contains(string(page.Items[0].Payload), "reconnect-safe body") {
+		t.Fatalf("reconnect did not replay the committed compact event: %+v", page)
+	}
+	assertUnreadUnacknowledged()
+	_ = replay.Body.Close()
+}
+
 func TestMessageStreamValidationAndUnsupportedTransportStayJSON(t *testing.T) {
 	f, project, _, recipient, other := messageSetup(t)
 	cursor := snapshotRequest(t, f, project, recipient)
-	s := streamServer(t, f)
+	s := streamServer(t, f, context.Background())
 	for _, query := range []string{"", "cursor=", "cursor=" + url.QueryEscape(cursor) + "&unknown=1", "cursor=" + url.QueryEscape(cursor) + "&cursor=" + url.QueryEscape(cursor), "cursor=" + url.QueryEscape(cursor) + "&limit=1&limit=2", "cursor=" + url.QueryEscape(cursor) + "&wait_ms=1", "cursor=" + url.QueryEscape(cursor) + "&limit=0", "cursor=invalid"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		r, _ := http.NewRequestWithContext(ctx, "GET", s.URL+"/api/v1/projects/"+project+"/message-events/stream?"+query, nil)
@@ -152,7 +205,7 @@ func TestMessageStreamRevocationSendsOneSafeErrorThenCloses(t *testing.T) {
 	token := "synthetic-revocable-stream-token-12345"
 	id := f.grant(t, project, token, false)
 	cursor := snapshotCursorFor(t, f, project, recipient, token)
-	s := streamServer(t, f)
+	s := streamServer(t, f, context.Background())
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	r, _ := http.NewRequestWithContext(ctx, "GET", s.URL+"/api/v1/projects/"+project+"/message-events/stream?cursor="+url.QueryEscape(cursor), nil)
@@ -190,7 +243,7 @@ func TestMessageStreamBoundsFrameBeforeInitialHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := streamServer(t, f)
+	s := streamServer(t, f, context.Background())
 	response, _ := openStream(t, s, project, recipient, cursor)
 	data, _ := io.ReadAll(response.Body)
 	if response.StatusCode != 503 || response.Header.Get("Content-Type") != "application/json" || !strings.Contains(string(data), "stream_frame_too_large") {
@@ -208,7 +261,7 @@ func TestMessageStreamSlowNativeSocketWriteHasDeadline(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/", f.handler)
-	server.RegisterMessageStream(mux, f.store)
+	server.RegisterMessageStream(mux, f.store, context.Background())
 	var status atomic.Int32
 	var attempted atomic.Int64
 	done := make(chan struct{}, 1)
@@ -260,7 +313,7 @@ func (w *observedStreamWriter) Write(data []byte) (int, error) {
 
 func TestMessageStreamHEADReturnsPromptlyWithoutSubscription(t *testing.T) {
 	f, project, _, recipient, _ := messageSetup(t)
-	s := streamServer(t, f)
+	s := streamServer(t, f, context.Background())
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	r, _ := http.NewRequestWithContext(ctx, http.MethodHead, s.URL+"/api/v1/projects/"+project+"/message-events/stream", nil)

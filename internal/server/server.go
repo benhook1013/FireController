@@ -64,7 +64,6 @@ func New(store *core.Store, options ...Option) *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers", a.listWorkers)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}", a.worker)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/message-events", a.messageEvents)
-	RegisterMessageStream(mux, store)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/credentials", a.grant)
 	mux.HandleFunc("DELETE /api/v1/projects/{project_id}/credentials/{credential_id}", a.revoke)
 	if a.browser != nil {
@@ -163,7 +162,16 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	// Network identity verification is explicit and never occupies a transaction.
 	identity, err := a.resolver(r.Context(), request.Repository)
-	if err != nil || identity.ID <= 0 || !validRepository(identity.FullName) {
+	if err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Code == "repository_not_found" && failure.Status == http.StatusNotFound {
+			core.WriteError(w, core.Fail("repository_not_found", "The requested GitHub repository was not found.", http.StatusNotFound))
+			return
+		}
+		core.WriteError(w, core.Fail("provider_unavailable", "GitHub repository identity could not be verified.", 503))
+		return
+	}
+	if identity.ID <= 0 || !validRepository(identity.FullName) {
 		core.WriteError(w, core.Fail("provider_unavailable", "GitHub repository identity could not be verified.", 503))
 		return
 	}
@@ -247,7 +255,11 @@ func (a *api) listProjects(w http.ResponseWriter, r *http.Request) {
 		values = values[:limit]
 		cursor = a.store.Cursor(scope, "projects", values[len(values)-1].ID)
 	}
-	core.WriteJSON(w, 200, map[string]any{"items": values, "has_more": more, "cursor": cursor})
+	core.WriteJSON(w, 200, struct {
+		Items   []projectValue `json:"items"`
+		Cursor  string         `json:"cursor,omitempty"`
+		HasMore bool           `json:"has_more"`
+	}{values, cursor, more})
 }
 
 func (a *api) createWorker(w http.ResponseWriter, r *http.Request) {
@@ -340,7 +352,11 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		values = values[:limit]
 		cursor = a.store.Cursor(scope, filter, values[len(values)-1].ID)
 	}
-	core.WriteJSON(w, 200, map[string]any{"items": values, "has_more": more, "cursor": cursor})
+	core.WriteJSON(w, 200, struct {
+		Items   []workerValue `json:"items"`
+		Cursor  string        `json:"cursor,omitempty"`
+		HasMore bool          `json:"has_more"`
+	}{values, cursor, more})
 }
 
 func (a *api) worker(w http.ResponseWriter, r *http.Request) {

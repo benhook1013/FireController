@@ -216,6 +216,33 @@ func TestProjectCreationAuthenticatesAndReplaysBeforeProvider(t *testing.T) {
 	require(t, request(server.New(f.store), "POST", "/api/v1/projects", f.admin, "missing", "", body), 503)
 }
 
+func TestProjectCreationPreservesOnlyTypedRepositoryNotFound(t *testing.T) {
+	f := setup(t)
+	const privateDetail = "private-resolver-detail"
+	missing := server.New(f.store, server.WithRepositoryResolver(func(context.Context, string) (server.RepositoryIdentity, error) {
+		return server.RepositoryIdentity{}, &core.Error{Code: "repository_not_found", Message: privateDetail, Status: http.StatusNotFound, Details: map[string]string{"secret": "must-not-escape"}}
+	}))
+	response := request(missing, "POST", "/api/v1/projects", f.admin, "missing-project", "", `{"name":"missing","repository":"owner/missing"}`)
+	value := require(t, response, http.StatusNotFound)
+	if value["error"].(map[string]any)["code"] != "repository_not_found" || strings.Contains(response.Body.String(), privateDetail) || strings.Contains(response.Body.String(), "must-not-escape") {
+		t.Fatalf("unsafe or incorrect not-found response: %s", response.Body.String())
+	}
+	if count(t, f.store, "projects") != 0 || count(t, f.store, "events") != 0 || count(t, f.store, "receipts") != 0 {
+		t.Fatal("not-found resolver wrote project state")
+	}
+	transient := server.New(f.store, server.WithRepositoryResolver(func(context.Context, string) (server.RepositoryIdentity, error) {
+		return server.RepositoryIdentity{}, &core.Error{Code: "provider_rate_limited", Message: privateDetail, Status: http.StatusTooManyRequests}
+	}))
+	response = request(transient, "POST", "/api/v1/projects", f.admin, "transient-project", "", `{"name":"retry","repository":"owner/retry"}`)
+	value = require(t, response, http.StatusServiceUnavailable)
+	if value["error"].(map[string]any)["code"] != "provider_unavailable" || strings.Contains(response.Body.String(), privateDetail) {
+		t.Fatalf("transient resolver failure was not safely normalized: %s", response.Body.String())
+	}
+	if count(t, f.store, "projects") != 0 || count(t, f.store, "events") != 0 || count(t, f.store, "receipts") != 0 {
+		t.Fatal("transient resolver failure wrote project state")
+	}
+}
+
 func TestProjectClientsWorkersAttributionAndRevocation(t *testing.T) {
 	f := setup(t)
 	p, q := f.project(t, "owner/one"), f.project(t, "owner/two")
@@ -304,7 +331,7 @@ func TestProjectAndWorkerListsShareExactPaginationContract(t *testing.T) {
 					path += "&cursor=" + cursor
 				}
 				value := require(t, request(f.handler, "GET", path, f.admin, "", "", ""), 200)
-				if len(value) != 3 {
+				if (page == 0 && len(value) != 3) || (page == 1 && len(value) != 2) {
 					t.Fatalf("pagination response has extra or missing fields: %v", value)
 				}
 				items, ok := value["items"].([]any)
@@ -322,8 +349,8 @@ func TestProjectAndWorkerListsShareExactPaginationContract(t *testing.T) {
 					t.Fatalf("project item lost metadata: %v", item)
 				}
 				cursor, ok = value["cursor"].(string)
-				if !ok {
-					t.Fatal("cursor is not a string")
+				if (page == 0 && !ok) || (page == 1 && value["cursor"] != nil) {
+					t.Fatal("cursor must be present only when another page is available")
 				}
 				if value["has_more"] != (page == 0) || (page == 0 && cursor == "") || (page == 1 && cursor != "") {
 					t.Fatalf("incorrect continuation on page %d: %v", page, value)

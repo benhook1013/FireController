@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -498,7 +499,11 @@ func checkIdempotencyKey(r *http.Request) error {
 }
 
 func queryKeys(r *http.Request, allowed ...string) error {
-	for key, values := range r.URL.Query() {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return core.Fail("invalid_query", "Use valid URL query encoding.", http.StatusBadRequest)
+	}
+	for key, values := range query {
 		known := false
 		for _, candidate := range allowed {
 			if key == candidate {
