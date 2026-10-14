@@ -26,12 +26,12 @@ Store this file outside the tracked checkout with permissions suitable for priva
 {
   "version": 1,
   "profiles": {
-    "alpha-overseer": {
+    "project-builder": {
       "server_url": "http://127.0.0.1:8080",
-      "instance_id": "instance-a",
-      "project_id": "project-alpha",
-      "worker_id": "overseer",
-      "credential_file": "credentials/alpha.token"
+      "instance_id": "instance-local",
+      "project_id": "project-example",
+      "worker_id": "builder",
+      "credential_file": "credentials/builder.token"
     }
   }
 }
@@ -40,7 +40,7 @@ Store this file outside the tracked checkout with permissions suitable for priva
 The configuration must be a regular file containing valid UTF-8 and strict JSON with known, exactly cased fields and unique keys, at most 1 MiB. The CLI checks file kind before opening and again before reading; FIFO, device, and directory inputs fail with `profiles_not_regular`. Malformed UTF-8 bytes and unpaired Unicode surrogate escapes fail with `profiles_invalid_encoding` before JSON decoding can repair identity text. Valid surrogate pairs, Unicode literals (including U+FFFD), and escaped-backslash literal text remain valid. All configured profiles currently require valid nonempty identity fields and a credential-file reference. Remote URLs require HTTPS; HTTP is restricted to literal loopback addresses or `localhost`. URLs cannot contain embedded credentials, queries, or fragments. This command validates the credential reference as required text but never resolves or opens it; credential loading remains outside this slice.
 
 ```sh
-fc --profiles-file /private/profiles.json --profile alpha-overseer context
+fc --profiles-file /private/profiles.json --profile project-builder context
 ```
 
 An explicit profile overrides the per-process `FC_PROFILE` default. There is no persisted active profile. The response contains only `profile`, `server_url`, `instance_id`, `project_id`, and `worker_id`; these are local configuration, not verified server facts. Success uses compact JSON on stdout. Failures use a stable code, message, and next action as JSON on stderr with clean stdout. Current exit codes are 0 for success, 2 for arguments, and 3 for configuration/output failures; network and mutation outcomes are outside this slice.
