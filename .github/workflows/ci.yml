@@ -33,3 +33,5 @@ jobs:
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fc-macos ./cmd/fc
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fcd-windows.exe ./cmd/fcd
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fcd-macos ./cmd/fcd
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fcmcp-windows.exe ./cmd/fcmcp
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fcmcp-macos ./cmd/fcmcp

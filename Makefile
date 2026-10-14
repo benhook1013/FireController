@@ -15,6 +15,7 @@ test:
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -o bin/fc ./cmd/fc
 	CGO_ENABLED=0 $(GO) build -trimpath -o bin/fcd ./cmd/fcd
+	CGO_ENABLED=0 $(GO) build -trimpath -o bin/fcmcp ./cmd/fcmcp
 
 docs-check:
 	npm run docs:check

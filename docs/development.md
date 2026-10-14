@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The new browser, live subscriptions, provider review engine, MCP adapter, backups, and advanced job features remain unimplemented.
+`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The new browser, live subscriptions, provider review engine, backups, and advanced job features remain unimplemented.
 
 ## Build and checks
 
@@ -15,7 +15,7 @@ make check build
 ./bin/fcd --data-dir /private/firecontroller --listen 127.0.0.1:8080
 ```
 
-`make check` verifies Go formatting, runs Go tests with the race detector and `go vet`, and checks documentation. `make build` produces CGO-free `fc` and `fcd` binaries. CI also cross-compiles Windows amd64 and macOS arm64; compilation is not proof that those platforms' configuration or runtime behavior works. Go's `GO` and `GOFMT` Make variables can select a locally installed toolchain.
+`make check` verifies Go formatting, runs Go tests with the race detector and `go vet`, and checks documentation. `make build` produces CGO-free `fc`, `fcd` and `fcmcp` binaries. The [MCP guide](mcp.md) describes its local stdio tool interface. CI also cross-compiles Windows amd64 and macOS arm64; compilation is not proof that those platforms' configuration or runtime behavior works. Go's `GO` and `GOFMT` Make variables can select a locally installed toolchain.
 
 ## Private profile file
 
@@ -48,7 +48,7 @@ An explicit profile overrides the per-process `FC_PROFILE` default. There is no 
 
 ## Proof and limits
 
-Focused tests cover interleaved project identities with the same worker name on both shared and distinct service instances, explicit flag precedence, unchanged configuration/environment, absent credential files, strict malformed/ambiguous configuration, malformed raw UTF-8 identity bytes, unpaired surrogate escapes in identities and profile names, preservation of valid Unicode and escape text, unsafe URLs, relative default directories, non-regular configuration paths, and concise errors without private values. Linux tests exercise default-path behavior and FIFO rejection through a deadline-bounded child process, so a missing file-kind guard cannot hang the suite. The file-kind checks address accidental unsupported inputs; they do not protect against hostile same-user filesystem replacement races or establish a deadline for arbitrary filesystem I/O. Other OS mappings require native execution before claiming support. The [agent contract](agent-client.md) owns the broader target, including instance verification and authenticated mutations.
+Focused tests cover interleaved project identities with the same worker name on both shared and distinct service instances, explicit flag precedence, unchanged configuration/environment, absent credential files, strict malformed/ambiguous configuration, malformed raw UTF-8 identity bytes, unpaired surrogate escapes in identities and profile names, preservation of valid Unicode and escape text, unsafe URLs, relative default directories, non-regular configuration paths, and concise errors without private values. Linux tests exercise default-path behavior and FIFO rejection through a deadline-bounded child process, so a missing file-kind guard cannot hang the suite. The file-kind checks address accidental unsupported inputs; they do not protect against hostile same-user filesystem replacement races or establish a deadline for arbitrary filesystem I/O. Native Windows explicit/default APPDATA profile lookup, valid Unicode and quiet configuration errors passed; broader platform/filesystem guarantees remain outside this proof. The [agent contract](agent-client.md) owns the broader target, including instance verification and authenticated mutations.
 
 ## Coordination service proof
 
@@ -77,7 +77,7 @@ Service reads share one five-second command budget across the initial authentica
 
 The integrated Linux/WSL binaries passed 17 hands-on checks using a real loopback service and read-only GitHub repository verification for two projects. The checks cover profile interleaving, private relative credentials, compact and explicit reads, scoped pagination, unchanged read state, restart, malformed expected-instance rejection, redirect/privacy failures, Ctrl-C cancellation and the total five-second command deadline. Public unit/race tests and vet provide complementary failure-path evidence; successful cross-compilation is not native execution.
 
-Profile/credential errors and local command results remain separate from service authentication errors. Linux ordinary private-file controls do not establish hostile same-user filesystem isolation. Native Windows/macOS execution and real host asynchronous delivery remain unproven.
+Profile/credential errors and local command results remain separate from service authentication errors. Linux ordinary private-file controls do not establish hostile same-user filesystem isolation. Basic native Windows CLI/profile and MCP stdio smoke passed; native Windows service-backed CLI operations, platform access-control guarantees, native macOS execution and real host asynchronous delivery remain unproven.
 
 ## Explicit agent mutations
 
