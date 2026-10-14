@@ -35,8 +35,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	for _, tool := range definitions {
 		known[tool.name] = true
 		write := mutationTool(tool.name)
-		openWorld := tool.name != "context"
-		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: !write, DestructiveHint: &write, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		openWorld := false
+		destructive := tool.name == "job_edit"
+		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, err := parseArguments(tool.name, request.Params.Arguments)
 			if err != nil {
 				return resultFailure(err), nil
