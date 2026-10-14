@@ -82,26 +82,73 @@ function stripInlineCodeSpans(markdown) {
   return characters.join('');
 }
 
+function isEscaped(source, index) {
+  let precedingBackslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) {
+    precedingBackslashes += 1;
+  }
+  return precedingBackslashes % 2 === 1;
+}
+
+function unescapeDestination(destination) {
+  if (destination.startsWith('<') && destination.endsWith('>')) {
+    destination = destination.slice(1, -1);
+  }
+  return destination.replace(/\\([\\()[\]<> ])/g, '$1');
+}
+
+function nestedImageDestinations(source) {
+  const destinations = [];
+  const destinationPattern = /^\(\s*(<[^>]*>|(?:\\.|[^\s()])+)(?:\s+[^)]*)?\)/;
+
+  for (let opening = 0; opening < source.length; opening += 1) {
+    if (source[opening] !== '[' || isEscaped(source, opening)) continue;
+
+    let depth = 1;
+    let closing = -1;
+    let hasNestedImage = false;
+    for (let cursor = opening + 1; cursor < source.length; cursor += 1) {
+      if (source[cursor] === '\\') {
+        cursor += 1;
+      } else if (source[cursor] === '[') {
+        if (source[cursor - 1] === '!' && !isEscaped(source, cursor - 1)) hasNestedImage = true;
+        depth += 1;
+      } else if (source[cursor] === ']') {
+        depth -= 1;
+        if (depth === 0) {
+          closing = cursor;
+          break;
+        }
+      }
+    }
+
+    if (!hasNestedImage || closing < 0 || source[closing + 1] !== '(') continue;
+    const match = source.slice(closing + 1).match(destinationPattern);
+    if (match) destinations.push(unescapeDestination(match[1]));
+  }
+
+  return destinations;
+}
+
+function referenceDefinitionDestinations(source) {
+  const destinations = [];
+  const pattern = /^[ \t]{0,3}\[[^\]]+\]:[ \t]*(<[^>]*>|(?:\\.|[^\s()])+)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$/gm;
+  for (const match of source.matchAll(pattern)) {
+    destinations.push(unescapeDestination(match[1]));
+  }
+  return destinations;
+}
+
 function markdownDestinations(markdown) {
   const source = stripInlineCodeSpans(stripCodeFences(markdown));
   const destinations = [];
   const pattern = /!?(?:\[[^\]]*\])\(\s*(<[^>]*>|(?:\\.|[^\s()])+)(?:\s+[^)]*)?\)/g;
   for (const match of source.matchAll(pattern)) {
     const openingBracket = match.index + match[0].indexOf('[');
-    let precedingBackslashes = 0;
-    for (let cursor = openingBracket - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) {
-      precedingBackslashes += 1;
-    }
-    if (precedingBackslashes % 2 === 1) continue;
-
-    let destination = match[1];
-    if (destination.startsWith('<') && destination.endsWith('>')) {
-      destination = destination.slice(1, -1);
-    }
-    destination = destination.replace(/\\([\\()[\]<> ])/g, '$1');
-    destinations.push(destination);
+    if (isEscaped(source, openingBracket)) continue;
+    destinations.push(unescapeDestination(match[1]));
   }
-  return destinations;
+  return [...destinations, ...nestedImageDestinations(source), ...referenceDefinitionDestinations(source)];
 }
 
 function slugHeading(heading) {
