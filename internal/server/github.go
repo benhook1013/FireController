@@ -62,6 +62,10 @@ func GitHubResolver(tokenFile string) (RepositoryResolver, error) {
 		}
 		return nil
 	}}
+	return githubResolver(token, client), nil
+}
+
+func githubResolver(token string, client *http.Client) RepositoryResolver {
 	return func(ctx context.Context, repository string) (RepositoryIdentity, error) {
 		if !validRepository(repository) {
 			return RepositoryIdentity{}, core.Fail("validation_failed", "Use an owner/repository GitHub reference.", 400)
@@ -85,6 +89,9 @@ func GitHubResolver(tokenFile string) (RepositoryResolver, error) {
 		}
 		defer response.Body.Close()
 		if response.StatusCode != 200 {
+			if response.StatusCode == http.StatusNotFound {
+				return RepositoryIdentity{}, core.Fail("repository_not_found", "The requested GitHub repository was not found.", http.StatusNotFound)
+			}
 			return RepositoryIdentity{}, core.Fail("provider_unavailable", "GitHub repository verification failed.", 503)
 		}
 		data, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
@@ -99,5 +106,5 @@ func GitHubResolver(tokenFile string) (RepositoryResolver, error) {
 			return RepositoryIdentity{}, core.Fail("provider_unavailable", "GitHub returned an invalid repository identity.", 503)
 		}
 		return RepositoryIdentity{result.ID, result.FullName}, nil
-	}, nil
+	}
 }

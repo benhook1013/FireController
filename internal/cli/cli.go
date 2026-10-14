@@ -113,12 +113,19 @@ func parse(args []string) (options, bool) {
 func userConfigDir(env map[string]string) string {
 	switch runtime.GOOS {
 	case "windows":
-		for key, value := range env {
-			if strings.EqualFold(key, "AppData") {
-				return value
+		if value, ok := env["APPDATA"]; ok {
+			return value
+		}
+		// Embedded callers may provide conflicting case variants that cannot
+		// coexist in an ordinary Windows process environment. Choose a stable
+		// spelling rather than depending on map iteration order.
+		selected := ""
+		for key := range env {
+			if strings.EqualFold(key, "APPDATA") && (selected == "" || key < selected) {
+				selected = key
 			}
 		}
-		return ""
+		return env[selected]
 	case "darwin", "ios":
 		if env["HOME"] != "" {
 			return filepath.Join(env["HOME"], "Library", "Application Support")

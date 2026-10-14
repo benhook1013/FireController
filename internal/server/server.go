@@ -151,7 +151,16 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	// Network identity verification is explicit and never occupies a transaction.
 	identity, err := a.resolver(r.Context(), request.Repository)
-	if err != nil || identity.ID <= 0 || !validRepository(identity.FullName) {
+	if err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Code == "repository_not_found" && failure.Status == http.StatusNotFound {
+			core.WriteError(w, core.Fail("repository_not_found", "The requested GitHub repository was not found.", http.StatusNotFound))
+			return
+		}
+		core.WriteError(w, core.Fail("provider_unavailable", "GitHub repository identity could not be verified.", 503))
+		return
+	}
+	if identity.ID <= 0 || !validRepository(identity.FullName) {
 		core.WriteError(w, core.Fail("provider_unavailable", "GitHub repository identity could not be verified.", 503))
 		return
 	}
