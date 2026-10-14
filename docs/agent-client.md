@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Profiles, native tools, CLI aliases, and subscriptions described here are proposed. The temporary legacy bootstrap is documented separately in [delivery](delivery.md). Codex host behavior has not yet been established by the application proof.
+The [local CLI foundation](development.md) implements version output, explicit profile selection and local context inspection. Server identity verification, authentication, native tools, generated aliases and subscriptions remain proposed. The temporary legacy bootstrap is documented separately in [delivery](delivery.md). Codex host behavior has not yet been established by the application proof.
 
 ## Profiles and identity
 

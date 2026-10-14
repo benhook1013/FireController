@@ -2,7 +2,7 @@
 
 ## Current state
 
-The public repository and Apache-2.0 project baseline exist. [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the proposed design and validation scaffold. Its first explicitly requested hosted CodeRabbit review completed with four accepted findings; the design and checker corrections are included in the updated PR. Fresh hosted coverage of those corrections remains pending. No service or browser runtime exists; a separate local branch is preparing the first CLI/profile implementation.
+The public repository and Apache-2.0 project baseline exist. [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the proposed design and validation scaffold. Its first explicitly requested hosted CodeRabbit review completed with four accepted findings; the design and checker corrections are included in the updated PR. Fresh hosted coverage of those corrections remains pending. No standalone service or browser runtime exists. The CLI foundation implements local version/context commands, with its boundary and proof limits recorded in [development](development.md).
 
 ## Development bootstrap
 
@@ -31,6 +31,7 @@ The temporary runtime is not shipped as the product and does not implement the n
 | Inherited behavior | Two bounded inventories plus two independent source/test-body passes and main-worker adjudication; pinned census hashes/counts verified | Legacy suite was not executed; fresh rebuild scenario implementation and execution |
 | Temporary project controller | Separate private pinned runtime/context; independent SQLite bootstrap; job create/read and combined snapshot/restore passed; stack registration, hosted request/capture and CLI run recorded | Replacement by the native service after its proof |
 | Design validation | Markdown lint, local links, and seven focused checker tests passed; initial full CLI review reported one missing-lockfile finding, rejected against the committed lockfile and successful CI | These checks do not prove standalone runtime behavior |
-| Standalone runtime | None on the design branch; local CLI foundation is under separate inspection | All runtime scenarios in [acceptance](acceptance.md) |
+| Local CLI foundation | Go race tests and vet passed for profile isolation, strict configuration, unchanged state, credential exclusion, and concise errors | Native Windows/macOS execution, service identity verification, authentication, and API commands |
+| Standalone service/browser | None | Runtime scenarios in [acceptance](acceptance.md) |
 
 Record proof in the owning slice and PR; do not silently turn planned commands into passing evidence. Main-branch merge remains a human action.

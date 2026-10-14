@@ -6,6 +6,7 @@ The standalone service is not implemented. The initial design is under review in
 
 ## Documents
 
+- [Development](development.md): implemented CLI/profile boundary, build/check commands, and current proof limits.
 - [Product scope and conversation agreements](product.md) records the requirements selected with the human.
 - [Architecture](architecture.md) owns service boundaries, project isolation, storage, and provider observation rules.
 - [Agent and client contract](agent-client.md) owns profiles, tool calls, subscriptions, and end-of-work behavior.

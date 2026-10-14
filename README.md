@@ -2,7 +2,7 @@
 
 FireController is a self-hosted coordination service for projects and their human and AI workers: jobs, durable messaging, review orchestration, and a live browser interface.
 
-This repository currently contains the proposed design and validation scaffold. The application runtime is not implemented yet.
+This repository contains the proposed design, validation scaffold, and the first local CLI/profile commands. The service and browser runtime are not implemented yet. See [development](docs/development.md) for the implemented boundary, build commands, and private profile format.
 
 The initial design and implementation are proposed through pull requests and reviewed with CodeRabbit. See [the design index](docs/README.md) for the AI-first scope, source evidence, decisions, onboarding, and acceptance scenarios.
 
