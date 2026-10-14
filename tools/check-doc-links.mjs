@@ -1,176 +1,55 @@
 import { realpath, readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import GithubSlugger from 'github-slugger';
+import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import { gfm } from 'micromark-extension-gfm';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-function stripCodeFences(markdown) {
-  let fence = null;
-  return markdown
-    .split('\n')
-    .map((line) => {
-      const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-      if (match && fence === null) {
-        const marker = match[1];
-        const info = match[2];
-        if (marker[0] !== '`' || !info.includes('`')) {
-          fence = { character: marker[0], length: marker.length };
-        }
-        return '';
-      }
-      if (match && fence !== null) {
-        const [marker, info] = [match[1], match[2]];
-        if (marker[0] === fence.character && marker.length >= fence.length && /^\s*$/.test(info)) {
-          fence = null;
-        }
-        return '';
-      }
-      return fence === null ? line : '';
-    })
-    .join('\n');
+function visit(node, callback) {
+  for (const child of node.children ?? []) visit(child, callback);
+  callback(node);
 }
 
-function stripInlineCodeSpans(markdown) {
-  const characters = Array.from(markdown);
-  let index = 0;
-
-  while (index < characters.length) {
-    if (characters[index] !== '`') {
-      index += 1;
-      continue;
-    }
-
-    let precedingBackslashes = 0;
-    for (let cursor = index - 1; cursor >= 0 && characters[cursor] === '\\'; cursor -= 1) {
-      precedingBackslashes += 1;
-    }
-    if (precedingBackslashes % 2 === 1) {
-      index += 1;
-      continue;
-    }
-
-    let openingEnd = index + 1;
-    while (characters[openingEnd] === '`') openingEnd += 1;
-    const delimiterLength = openingEnd - index;
-    let closingStart = openingEnd;
-
-    while (closingStart < characters.length) {
-      if (characters[closingStart] !== '`') {
-        closingStart += 1;
-        continue;
-      }
-
-      let closingEnd = closingStart + 1;
-      while (characters[closingEnd] === '`') closingEnd += 1;
-      if (closingEnd - closingStart === delimiterLength) break;
-      closingStart = closingEnd;
-    }
-
-    if (closingStart >= characters.length) {
-      // An unmatched delimiter is literal Markdown, so links after it remain visible.
-      index = openingEnd;
-      continue;
-    }
-
-    let closingEnd = closingStart + delimiterLength;
-    for (let cursor = index; cursor < closingEnd; cursor += 1) {
-      if (characters[cursor] !== '\n' && characters[cursor] !== '\r') characters[cursor] = ' ';
-    }
-    index = closingEnd;
-  }
-
-  return characters.join('');
+function markdownNodes(markdown) {
+  return fromMarkdown(markdown, {
+    extensions: [gfm()],
+    mdastExtensions: [gfmFromMarkdown()],
+  });
 }
 
-function isEscaped(source, index) {
-  let precedingBackslashes = 0;
-  for (let cursor = index - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) {
-    precedingBackslashes += 1;
-  }
-  return precedingBackslashes % 2 === 1;
-}
-
-function unescapeDestination(destination) {
-  if (destination.startsWith('<') && destination.endsWith('>')) {
-    destination = destination.slice(1, -1);
-  }
-  return destination.replace(/\\([\\()[\]<> ])/g, '$1');
-}
-
-function nestedImageDestinations(source) {
+function markdownLinks(markdown) {
   const destinations = [];
-  const destinationPattern = /^\(\s*(<[^>]*>|(?:\\.|[^\s()])+)(?:\s+[^)]*)?\)/;
-
-  for (let opening = 0; opening < source.length; opening += 1) {
-    if (source[opening] !== '[' || isEscaped(source, opening)) continue;
-
-    let depth = 1;
-    let closing = -1;
-    let hasNestedImage = false;
-    for (let cursor = opening + 1; cursor < source.length; cursor += 1) {
-      if (source[cursor] === '\\') {
-        cursor += 1;
-      } else if (source[cursor] === '[') {
-        if (source[cursor - 1] === '!' && !isEscaped(source, cursor - 1)) hasNestedImage = true;
-        depth += 1;
-      } else if (source[cursor] === ']') {
-        depth -= 1;
-        if (depth === 0) {
-          closing = cursor;
-          break;
-        }
+  visit(markdownNodes(markdown), (node) => {
+    if (node.type === 'link' || node.type === 'image' || node.type === 'definition') {
+      if (typeof node.url === 'string') {
+        destinations.push({ destination: node.url, line: node.position?.start.line ?? 1 });
       }
     }
-
-    if (!hasNestedImage || closing < 0 || source[closing + 1] !== '(') continue;
-    const match = source.slice(closing + 1).match(destinationPattern);
-    if (match) destinations.push(unescapeDestination(match[1]));
-  }
-
-  return destinations;
-}
-
-function referenceDefinitionDestinations(source) {
-  const destinations = [];
-  const pattern = /^[ \t]{0,3}\[[^\]]+\]:[ \t]*(<[^>]*>|(?:\\.|[^\s()])+)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$/gm;
-  for (const match of source.matchAll(pattern)) {
-    destinations.push(unescapeDestination(match[1]));
-  }
+  });
   return destinations;
 }
 
 function markdownDestinations(markdown) {
-  const source = stripInlineCodeSpans(stripCodeFences(markdown));
-  const destinations = [];
-  const pattern = /!?(?:\[[^\]]*\])\(\s*(<[^>]*>|(?:\\.|[^\s()])+)(?:\s+[^)]*)?\)/g;
-  for (const match of source.matchAll(pattern)) {
-    const openingBracket = match.index + match[0].indexOf('[');
-    if (isEscaped(source, openingBracket)) continue;
-    destinations.push(unescapeDestination(match[1]));
-  }
-  return [...destinations, ...nestedImageDestinations(source), ...referenceDefinitionDestinations(source)];
+  return markdownLinks(markdown).map(({ destination }) => destination);
 }
 
-function slugHeading(heading) {
-  return heading
-    .trim()
-    .toLowerCase()
-    .replace(/[`*~]/g, '')
-    .replace(/[^\p{L}\p{N}\s_-]/gu, '')
-    .replace(/\s+/g, '-');
+function headingText(node) {
+  if (node.type === 'text' || node.type === 'inlineCode') return node.value;
+  if (node.type === 'image') return node.alt ?? '';
+  if (node.type === 'break') return ' ';
+  if (node.type === 'html') return node.value.replace(/<[^>]*>/g, '');
+  return (node.children ?? []).map(headingText).join('');
 }
 
 function headingAnchors(markdown) {
   const anchors = new Set();
-  const counts = new Map();
-  for (const line of stripCodeFences(markdown).split('\n')) {
-    const match = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/);
-    if (!match) continue;
-    const base = slugHeading(match[1]);
-    const count = counts.get(base) ?? 0;
-    counts.set(base, count + 1);
-    anchors.add(count === 0 ? base : `${base}-${count}`);
-  }
+  const slugger = new GithubSlugger();
+  visit(markdownNodes(markdown), (node) => {
+    if (node.type === 'heading') anchors.add(slugger.slug(headingText(node)));
+  });
   return anchors;
 }
 
@@ -185,66 +64,65 @@ async function markdownFiles(directory) {
   return files;
 }
 
+function insideRoot(root, target) {
+  const relative = path.relative(root, target);
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
 async function validateLinks(root) {
   const failures = [];
   const absoluteRoot = await realpath(path.resolve(root));
   for (const sourcePath of await markdownFiles(absoluteRoot)) {
     const source = await readFile(sourcePath, 'utf8');
-    const lines = stripInlineCodeSpans(stripCodeFences(source)).split('\n');
-    let lineNumber = 0;
-    for (const line of lines) {
-      lineNumber += 1;
-      for (const destination of markdownDestinations(line)) {
-        if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(destination)) continue;
-        const hashAt = destination.indexOf('#');
-        const queryAt = destination.indexOf('?');
-        const cutAt = [hashAt, queryAt].filter((index) => index >= 0).reduce((a, b) => Math.min(a, b), destination.length);
-        const rawTarget = destination.slice(0, cutAt);
-        const fragment = hashAt < 0 ? '' : destination.slice(hashAt + 1).split('?')[0];
-        let target;
+    for (const { destination, line } of markdownLinks(source)) {
+      if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(destination)) continue;
+      const hashAt = destination.indexOf('#');
+      const queryAt = destination.indexOf('?');
+      const cutAt = [hashAt, queryAt].filter((index) => index >= 0).reduce((a, b) => Math.min(a, b), destination.length);
+      const rawTarget = destination.slice(0, cutAt);
+      const fragment = hashAt < 0 ? '' : destination.slice(hashAt + 1).split('?')[0];
+      let target;
+      try {
+        // Normalize raw separators before URL decoding; encoded backslashes
+        // retain the path semantics of the host platform.
+        target = decodeURIComponent(rawTarget.replace(/\\/g, '/'));
+      } catch {
+        failures.push(`${path.relative(absoluteRoot, sourcePath)}:${line}: malformed escaped path in ${destination}`);
+        continue;
+      }
+      const resolved = path.resolve(path.dirname(sourcePath), target || path.basename(sourcePath));
+      if (!insideRoot(absoluteRoot, resolved)) {
+        failures.push(`${path.relative(absoluteRoot, sourcePath)}:${line}: local target escapes repository root: ${destination}`);
+        continue;
+      }
+      let targetStat;
+      try {
+        targetStat = await stat(resolved);
+      } catch {
+        failures.push(`${path.relative(absoluteRoot, sourcePath)}:${line}: missing local target ${destination}`);
+        continue;
+      }
+      try {
+        const canonicalTarget = await realpath(resolved);
+        if (!insideRoot(absoluteRoot, canonicalTarget)) {
+          failures.push(`${path.relative(absoluteRoot, sourcePath)}:${line}: local target escapes repository root: ${destination}`);
+          continue;
+        }
+      } catch {
+        failures.push(`${path.relative(absoluteRoot, sourcePath)}:${line}: cannot resolve local target ${destination}`);
+        continue;
+      }
+      if (fragment && targetStat.isFile() && resolved.toLowerCase().endsWith('.md')) {
+        const targetMarkdown = await readFile(resolved, 'utf8');
+        const anchors = headingAnchors(targetMarkdown);
+        let decodedFragment;
         try {
-          target = decodeURIComponent(rawTarget.replace(/\\/g, '/'));
+          decodedFragment = decodeURIComponent(fragment).toLowerCase();
         } catch {
-          failures.push(`${path.relative(root, sourcePath)}:${lineNumber}: malformed escaped path in ${destination}`);
-          continue;
+          decodedFragment = fragment.toLowerCase();
         }
-        const resolved = path.resolve(path.dirname(sourcePath), target || path.basename(sourcePath));
-        const relativeTarget = path.relative(absoluteRoot, resolved);
-        if (relativeTarget === '..' || relativeTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeTarget)) {
-          failures.push(`${path.relative(absoluteRoot, sourcePath)}:${lineNumber}: local target escapes repository root: ${destination}`);
-          continue;
-        }
-        let targetStat;
-        try {
-          targetStat = await stat(resolved);
-        } catch {
-          failures.push(`${path.relative(root, sourcePath)}:${lineNumber}: missing local target ${destination}`);
-          continue;
-        }
-        try {
-          const canonicalTarget = await realpath(resolved);
-          const canonicalRelative = path.relative(absoluteRoot, canonicalTarget);
-          if (canonicalRelative === '..' || canonicalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(canonicalRelative)) {
-            failures.push(`${path.relative(absoluteRoot, sourcePath)}:${lineNumber}: local target escapes repository root: ${destination}`);
-            continue;
-          }
-        } catch {
-          // The stat above already confirmed the target; report a canonicalization failure as a missing local target.
-          failures.push(`${path.relative(absoluteRoot, sourcePath)}:${lineNumber}: cannot resolve local target ${destination}`);
-          continue;
-        }
-        if (fragment && targetStat.isFile() && resolved.toLowerCase().endsWith('.md')) {
-          const targetMarkdown = await readFile(resolved, 'utf8');
-          const anchors = headingAnchors(targetMarkdown);
-          let decodedFragment;
-          try {
-            decodedFragment = decodeURIComponent(fragment).toLowerCase();
-          } catch {
-            decodedFragment = fragment.toLowerCase();
-          }
-          if (!anchors.has(decodedFragment)) {
-            failures.push(`${path.relative(root, sourcePath)}:${lineNumber}: missing heading #${fragment} in ${path.relative(root, resolved)}`);
-          }
+        if (!anchors.has(decodedFragment)) {
+          failures.push(`${path.relative(absoluteRoot, sourcePath)}:${line}: missing heading #${fragment} in ${path.relative(absoluteRoot, resolved)}`);
         }
       }
     }
@@ -262,4 +140,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
 }
 
-export { headingAnchors, markdownDestinations, stripCodeFences, validateLinks };
+export { headingAnchors, markdownDestinations, validateLinks };
