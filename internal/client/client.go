@@ -85,6 +85,57 @@ func contextError(err error) *Error {
 	return fail("deadline_exceeded", "The service read deadline expired.", "Check the service connection and retry the read when needed.", 0)
 }
 
+func mutationContextError(err error, operation string, unknown bool) *Error {
+	code := "deadline_exceeded"
+	message := "The " + operation + " request deadline expired."
+	if errors.Is(err, context.Canceled) {
+		code = "canceled"
+		message = "The " + operation + " request was canceled."
+	}
+	result := fail(code, message, mutationAction(), 0)
+	result.OutcomeUnknown = unknown
+	return result
+}
+
+func mutationAction() string {
+	return "Check the service, then retry with the exact same idempotency key, request body and selected binding."
+}
+
+func unknownMutation(code, message string, status int) *Error {
+	result := fail(code, message, mutationAction(), status)
+	result.OutcomeUnknown = true
+	return result
+}
+
+func unknownRequest(code, operation, reason string, status int) *Error {
+	return unknownMutation(code, "The "+operation+" "+reason+"; its outcome is unknown.", status)
+}
+
+func requestOperation(method string, segments []string) string {
+	if len(segments) < 5 {
+		return "service mutation"
+	}
+	resource := segments[4:]
+	if len(resource) == 1 && resource[0] == "jobs" {
+		return "job creation"
+	}
+	if len(resource) == 2 && resource[0] == "jobs" && method == http.MethodPatch {
+		return "job edit"
+	}
+	if len(resource) == 1 && resource[0] == "messages" {
+		return "message send"
+	}
+	if len(resource) == 3 && resource[0] == "messages" {
+		if resource[2] == "seen" {
+			return "message seen update"
+		}
+		if resource[2] == "ack" {
+			return "message acknowledgment"
+		}
+	}
+	return "service mutation"
+}
+
 func cleanText(value string, max int) bool {
 	return value != "" && len(value) <= max && value == strings.TrimSpace(value) && utf8.ValidString(value)
 }
@@ -147,7 +198,15 @@ func privateFile(info os.FileInfo) bool {
 }
 
 func (c *Client) get(ctx context.Context, segments []string, query url.Values, scoped bool, dst any) error {
+	return c.request(ctx, http.MethodGet, segments, query, scoped, "", nil, http.StatusOK, false, dst)
+}
+
+func (c *Client) request(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any) error {
+	operation := requestOperation(method, segments)
 	if err := ctx.Err(); err != nil {
+		if mutation {
+			return mutationContextError(err, operation, false)
+		}
 		return contextError(err)
 	}
 	u := *c.base
@@ -160,45 +219,94 @@ func (c *Client) get(ctx context.Context, segments []string, query url.Values, s
 	u.RawQuery = query.Encode()
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	r, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	r, err := http.NewRequestWithContext(ctx, method, u.String(), strings.NewReader(string(body)))
 	if err != nil {
 		return validation()
+	}
+	if mutation {
+		// Go's transport can replay requests carrying Idempotency-Key when
+		// GetBody is available. Only the caller may retry after an uncertain
+		// outcome, so keep the body single-shot.
+		r.GetBody = nil
 	}
 	r.Header.Set("Accept", "application/json")
 	r.Header.Set("Authorization", "Bearer "+c.token)
 	r.Header.Set("X-FC-Instance", c.identity.InstanceID)
+	if mutation {
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Idempotency-Key", key)
+	}
 	if scoped {
 		r.Header.Set("X-FC-Worker", c.identity.WorkerID)
+	}
+	if err := ctx.Err(); err != nil {
+		if mutation {
+			return mutationContextError(err, operation, false)
+		}
+		return contextError(err)
 	}
 	response, err := c.http.Do(r)
 	if err != nil {
 		if ctx.Err() != nil {
+			if mutation {
+				return mutationContextError(ctx.Err(), operation, true)
+			}
 			return contextError(ctx.Err())
+		}
+		if mutation {
+			return unknownRequest("connection_failed", operation, "request connection failed", 0)
 		}
 		return fail("connection_failed", "The service connection failed.", "Check the configured service address and transport.", 0)
 	}
 	defer response.Body.Close()
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
+		if mutation {
+			return unknownRequest("redirect_rejected", operation, "request was redirected", response.StatusCode)
+		}
 		return fail("redirect_rejected", "The service attempted an unsupported redirect.", "Configure the final service address; credentials are not forwarded through redirects.", response.StatusCode)
 	}
 	media, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" || response.Header.Get("Content-Encoding") != "" {
+		if mutation {
+			return unknownRequest("invalid_response", operation, "response was invalid", response.StatusCode)
+		}
 		return invalidResponse()
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
 		if ctx.Err() != nil {
+			if mutation {
+				return mutationContextError(ctx.Err(), operation, true)
+			}
 			return contextError(ctx.Err())
+		}
+		if mutation {
+			return unknownRequest("invalid_response", operation, "response could not be read", response.StatusCode)
 		}
 		return invalidResponse()
 	}
 	if len(data) > maxResponseBytes {
+		if mutation {
+			return unknownRequest("invalid_response", operation, "response was oversized", response.StatusCode)
+		}
 		return invalidResponse()
 	}
-	if response.StatusCode != http.StatusOK {
-		return c.serviceError(data, response.StatusCode)
+	if response.StatusCode != expectedStatus {
+		if mutation && response.StatusCode >= 400 && response.StatusCode < 500 {
+			if refusal, valid := c.serviceError(data, response.StatusCode); valid {
+				return refusal
+			}
+		}
+		if mutation {
+			return unknownRequest("unexpected_status", operation, "returned an unexpected status", response.StatusCode)
+		}
+		failure, _ := c.serviceError(data, response.StatusCode)
+		return failure
 	}
 	if strictjson.Decode(data, dst) != nil || !completeShape(data, dst) || c.hasSensitive(dst) {
+		if mutation {
+			return unknownRequest("invalid_response", operation, "receipt was invalid", response.StatusCode)
+		}
 		return invalidResponse()
 	}
 	return nil
@@ -213,23 +321,23 @@ type serviceFailure struct {
 	RequestID string `json:"request_id"`
 }
 
-func (c *Client) serviceError(data []byte, status int) error {
+func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	var value serviceFailure
 	if len(data) > 64<<10 || strictjson.Decode(data, &value) != nil || !completeShape(data, &value) || !safeCode(value.Error.Code) || len(value.Error.Message) > 512 || !validID(value.RequestID) {
-		return invalidResponse()
+		return invalidResponse(), false
 	}
 	details, err := json.Marshal(value.Error.Details)
 	if err != nil || len(details) > 4096 || c.hasSensitive(&value) {
-		return invalidResponse()
+		return invalidResponse(), false
 	}
-	result := fail(value.Error.Code, "The service refused this scoped read.", "Check the selected instance, project, worker and current access.", status)
+	result := fail(value.Error.Code, "The service refused this scoped request.", "Check the selected instance, project, worker and current access.", status)
 	result.RequestID = value.RequestID
 	result.Details = c.safeDetails(value.Error.Details)
 	if result.Code == "instance_mismatch" {
 		result.Message = "The service instance does not match the selected profile."
 		result.Action = "Verify the service and explicitly update the private profile if its identity changed."
 	}
-	return result
+	return result, true
 }
 
 func safeCode(value string) bool {

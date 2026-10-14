@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands below; mutating CLI commands remain unimplemented. The new browser, live subscriptions, provider review engine, MCP adapter, backups, and advanced job features remain unimplemented.
+`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The new browser, live subscriptions, provider review engine, MCP adapter, backups, and advanced job features remain unimplemented.
 
 ## Build and checks
 
@@ -44,7 +44,7 @@ The configuration must be a regular file containing valid UTF-8 and strict JSON 
 fc --profiles-file /private/profiles.json --profile project-builder context
 ```
 
-An explicit profile overrides the per-process `FC_PROFILE` default. There is no persisted active profile. The response contains only `profile`, `server_url`, `instance_id`, `project_id`, and `worker_id`; these are local configuration, not verified server facts. Success uses compact JSON on stdout. Failures use a stable code, message, and next action as JSON on stderr with clean stdout. Exit codes are 0 for success, 2 for arguments or invalid read options, 3 for local configuration/credential/output failures, 4 for instance mismatch or conflicts, 5 for connection/service failure or the service deadline, and 6 for explicit caller/signal cancellation. Mutating CLI commands remain unsupported.
+An explicit profile overrides the per-process `FC_PROFILE` default. There is no persisted active profile. The response contains only `profile`, `server_url`, `instance_id`, `project_id`, and `worker_id`; these are local configuration, not verified server facts. Success uses compact JSON on stdout. Failures use a stable code, message, and next action as JSON on stderr with clean stdout. Exit codes are 0 for success, 2 for arguments or invalid operation options, 3 for local configuration/credential/output failures, 4 for instance mismatch or conflicts, 5 for connection/service failure or the service deadline, and 6 for explicit caller/signal cancellation. Mutation recovery uses the caller's explicit idempotency key.
 
 ## Proof and limits
 
@@ -71,10 +71,26 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc inbox list` | Bound worker's compact message previews; optional unread/unacknowledged filters. |
 | `fc inbox thread ID` | Explicit bounded conversation page with full bodies. |
 
-List/history/thread reads accept `--limit` and `--cursor`; jobs accept `--status`, and `jobs list` also accepts `--worker`. Assigned jobs are a compact assignment list, without primary-job, checkpoint or full resume-context claims. Reads never change seen/ack state, job status or configuration. Unknown flags, repeated options and unimplemented mutations fail before credential loading or network work.
+List/history/thread reads accept `--limit` and `--cursor`; jobs accept `--status`, and `jobs list` also accepts `--worker`. Assigned jobs are a compact assignment list, without primary-job, checkpoint or full resume-context claims. Reads never change seen/ack state, job status or configuration. Unknown flags, repeated options and unsupported commands fail before credential loading or network work.
 
 Service reads share one five-second command budget across the initial authenticated instance check and the requested read. Each scoped request carries the expected instance and bound worker; the server rejects a replacement instance before exposing data. The reusable typed client rejects redirects, invalid Unicode/duplicate or incomplete JSON, contradictory pagination and oversized responses. Explicit detail/history limits are larger than compact lists; errors have a separate small budget and preserve safe codes, current revision and request identity without dumping raw responses.
 
 The integrated Linux/WSL binaries passed 17 hands-on checks using a real loopback service and read-only GitHub repository verification for two projects. The checks cover profile interleaving, private relative credentials, compact and explicit reads, scoped pagination, unchanged read state, restart, malformed expected-instance rejection, redirect/privacy failures, Ctrl-C cancellation and the total five-second command deadline. Public unit/race tests and vet provide complementary failure-path evidence; successful cross-compilation is not native execution.
 
 Profile/credential errors and local command results remain separate from service authentication errors. Linux ordinary private-file controls do not establish hostile same-user filesystem isolation. Native Windows/macOS execution and real host asynchronous delivery remain unproven.
+
+## Explicit agent mutations
+
+Mutations use the same private profile and one five-second command budget. They send one request and return a compact receipt; they do not reread full history. Each invocation requires an explicit `--key` of at most 128 printable ASCII bytes without surrounding whitespace. Use a distinct key for each intended action and preserve it with the exact normalized request and binding for recovery. No command silently generates a replacement key or retries after a transport failure.
+
+| Command | Required and optional request fields |
+| --- | --- |
+| `fc jobs create --key KEY --title TITLE` | Optional `--brief TEXT`, `--worker ID`, `--status STATUS`; defaults to active. |
+| `fc jobs edit ID --key KEY --expect-revision N` | At least one of `--title`, `--brief`, `--worker`, `--status`; empty brief or worker explicitly clears that field. |
+| `fc inbox send --key KEY --to WORKER_ID --body TEXT` | Optional `--reply-to MESSAGE_ID`; the bound worker is the sender. |
+| `fc inbox seen MESSAGE_ID --key KEY` | Only the bound actual recipient can change seen state. |
+| `fc inbox ack MESSAGE_ID --key KEY` | Only the bound actual recipient can acknowledge; acknowledgment also establishes seen state. |
+
+The parser rejects incomplete, repeated, oversized and malformed arguments before opening profiles or credentials or contacting the service. Brief and body text remain exact UTF-8; selected title/assignment normalization follows the API. Omitted edit fields stay unchanged. Guarded edits return the current revision on conflict. A retained key replays the original receipt after current authorization; it never overwrites a newer revision.
+
+A disconnected, timed-out or canceled write can already have committed. Such diagnostics include `outcome_unknown: true` and instruct the caller to recover with the same key, request and instance/worker binding. Invalid receipts and failures writing a successful receipt to stdout also preserve that uncertainty. Pre-dispatch cancellation and validated request refusals do not claim an uncertain commit. Never turn an unknown outcome into a new action by creating another key. The server remains the authority for receipt replay and access.

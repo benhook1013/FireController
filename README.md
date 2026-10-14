@@ -33,7 +33,7 @@ fc jobs assigned
 fc inbox list
 ```
 
-The current CLI supports these compact reads plus verified `doctor`, workers, explicit job detail/history and conversation pages. `version` and `context` remain local. Mutating CLI commands, subscriptions and MCP are still to be implemented. Profiles belong to the individual client process or connection, without a shared workspace-wide active identity.
+The current CLI supports these compact reads plus verified `doctor`, workers, explicit job detail/history and conversation pages. `version` and `context` remain local. Explicit-key job/message mutations also return compact receipts with safe retry guidance. Subscriptions and MCP are still to be implemented. Profiles belong to the individual client process or connection, without a shared workspace-wide active identity.
 
 The CLI and MCP adapter use the same API as the browser. Results are structured and bounded, errors give a useful next action, and full context or archives are explicit reads. Long operations retain durable receipts internally; capable adapters deliver completion while the agent continues other work. Host support for concurrent tools and result delivery is verified rather than assumed.
 

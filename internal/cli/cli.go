@@ -1,4 +1,4 @@
-// Package cli provides local identity commands and bounded, read-only service
+// Package cli provides local identity commands and bounded service
 // commands for the explicitly selected profile.
 package cli
 
@@ -31,11 +31,12 @@ const (
 )
 
 type diagnostic struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Action    string `json:"action"`
-	Details   any    `json:"details,omitempty"`
-	RequestID string `json:"request_id,omitempty"`
+	Code           string `json:"code"`
+	Message        string `json:"message"`
+	Action         string `json:"action"`
+	Details        any    `json:"details,omitempty"`
+	RequestID      string `json:"request_id,omitempty"`
+	OutcomeUnknown bool   `json:"outcome_unknown,omitempty"`
 }
 
 type options struct {
@@ -56,6 +57,7 @@ type invocation struct {
 	status     string
 	unread     bool
 	unack      bool
+	mutation   *mutationInvocation
 }
 
 // Run preserves the original embedding API while RunContext adds caller
@@ -65,11 +67,11 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer) int {
 }
 
 // RunContext executes local commands without service I/O and service commands
-// under one five-second budget covering identity verification and the read.
+// under one five-second budget covering identity verification and the operation.
 func RunContext(ctx context.Context, args []string, env map[string]string, stdout, stderr io.Writer) int {
 	call, ok := parseInvocation(args)
 	if !ok {
-		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", "Use fc version, fc context, fc doctor, or a documented read command.")
+		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", "Use fc version, fc context, fc doctor, or a documented service command.")
 	}
 	if call.command == "version" {
 		if call.hasProfile || call.hasProfilesFile {
@@ -105,7 +107,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return report(stderr, ExitConfig, profileErr.Code, profileErr.Message, profileErr.Action)
 	}
 	if err := ctx.Err(); err != nil {
-		return report(stderr, ExitCancelled, "cancelled", "The command was cancelled before connecting.", "Retry the read when cancellation is no longer requested.")
+		return report(stderr, ExitCancelled, "cancelled", "The command was cancelled before connecting.", "No service operation was sent; retry when cancellation is no longer requested.")
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, serviceTimeout)
 	defer cancel()
@@ -114,6 +116,16 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.mutation != nil {
+		value, err := executeMutation(requestCtx, service, call.mutation)
+		if err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+		if err := json.NewEncoder(stdout).Encode(value); err != nil {
+			return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The mutation receipt could not be written.", Action: "Recover by retrying the exact same key, request and bound instance; do not create a replacement key.", OutcomeUnknown: true})
+		}
+		return ExitSuccess
+	}
 	var value any
 	switch {
 	case call.command == "doctor":
@@ -192,6 +204,11 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if isMutation(call.command, call.subcommand) {
+		mutation, valid := parseMutation(call.command, call.subcommand, operationArgs)
+		call.mutation = mutation
+		return call, valid
+	}
 	allowed := map[string]bool{}
 	switch call.command + " " + call.subcommand {
 	case "workers list", "jobs history", "inbox thread":
@@ -315,7 +332,7 @@ func reportClientError(stderr io.Writer, err error, parent context.Context) int 
 		} else if failure.Status == 400 {
 			code = ExitUsage
 		}
-		return reportDetails(stderr, code, diagnostic{Code: failure.Code, Message: failure.Message, Action: failure.Action, Details: failure.Details, RequestID: failure.RequestID})
+		return reportDetails(stderr, code, diagnostic{Code: failure.Code, Message: failure.Message, Action: failure.Action, Details: failure.Details, RequestID: failure.RequestID, OutcomeUnknown: failure.OutcomeUnknown})
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		if parent.Err() == nil {

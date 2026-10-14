@@ -1,16 +1,50 @@
-// Package client provides explicitly bound read-only service calls.
+// Package client provides explicitly bound service calls.
 package client
 
 type Error struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Action    string `json:"action"`
-	Details   any    `json:"details,omitempty"`
-	RequestID string `json:"request_id,omitempty"`
-	Status    int    `json:"-"`
+	Code           string `json:"code"`
+	Message        string `json:"message"`
+	Action         string `json:"action"`
+	Details        any    `json:"details,omitempty"`
+	RequestID      string `json:"request_id,omitempty"`
+	OutcomeUnknown bool   `json:"outcome_unknown,omitempty"`
+	Status         int    `json:"-"`
 }
 
 func (e *Error) Error() string { return e.Message }
+
+type CreateJobRequest struct {
+	Title    string `json:"title"`
+	Brief    string `json:"brief"`
+	WorkerID string `json:"worker_id"`
+	Status   string `json:"status"`
+}
+
+type EditJobRequest struct {
+	ExpectedRevision int64   `json:"expected_revision"`
+	Title            *string `json:"title,omitempty"`
+	Brief            *string `json:"brief,omitempty"`
+	WorkerID         *string `json:"worker_id,omitempty"`
+	Status           *string `json:"status,omitempty"`
+}
+
+type SendMessageRequest struct {
+	RecipientWorkerID string `json:"recipient_worker_id"`
+	Body              string `json:"body"`
+	ReplyToMessageID  string `json:"reply_to_message_id,omitempty"`
+}
+
+type JobReceipt struct {
+	ID       string `json:"id"`
+	Outcome  string `json:"outcome"`
+	Revision int64  `json:"revision"`
+}
+
+type MessageReceipt struct {
+	ID             string `json:"id"`
+	ConversationID string `json:"conversation_id"`
+	Outcome        string `json:"outcome"`
+}
 
 type PageOptions struct {
 	Limit  int
