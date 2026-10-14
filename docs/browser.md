@@ -8,7 +8,7 @@ The standalone browser is not implemented. This contract replaces the legacy pri
 
 The service serves embedded application assets. The browser reads the same project-scoped API as agents and subscribes to authorized changes. Job, conversation, map, and PR detail routes render from service records rather than generated per-PR HTML files. Opening or refreshing a page does not silently call GitHub or sync provider captures.
 
-Initial views include project selection, worker lanes and history, job detail with current brief and checkpoint, inbox conversations and individual handling actions, project maps, review queue and PR evidence details, and project settings. Loading, disconnected, stale-observation, provider-error, permission, and empty states are explicit. Server-confirmed mutations update the view; a optimistic display cannot claim successful persistence before the receipt.
+Initial views include project selection, worker lanes and history, job detail with current brief and checkpoint, inbox conversations and individual handling actions, project maps, review queue and PR evidence details, and project settings. Loading, disconnected, stale-observation, provider-error, permission, and empty states are explicit. Server-confirmed mutations update the view; an optimistic display cannot claim successful persistence before the receipt.
 
 ## Project presentation
 

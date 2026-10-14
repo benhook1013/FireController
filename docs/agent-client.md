@@ -15,7 +15,7 @@ fc inbox list
 fc jobs assigned
 ```
 
-When the host cannot provide a repeatable per-agent environment, a generated launcher can bind the profile on every invocation, for example `fc-builder inbox list`. Explicit `fc --profile project-builder inbox list` remains available for deliberate selection or diagnosis. These are target-interface examples; the implemented CLI boundary is described above.
+When the host cannot provide a repeatable per-agent environment, a generated launcher can bind the profile on every invocation, for example `fc-builder inbox list`. Explicit `fc --profile project-builder inbox list` remains available for deliberate selection or diagnosis. These are target-interface examples; [delivery](delivery.md) records the implemented CLI boundary.
 
 The binding belongs to that agent's client process or connection, never to a workspace-wide active profile. Worker names resolve within the bound project. Concurrent chats using one project's worker share its assignments and inbox, with distinct session IDs for connection attribution. A named profile must never silently change another agent's current project or worker.
 
