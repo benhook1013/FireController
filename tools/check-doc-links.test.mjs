@@ -58,6 +58,62 @@ test('checks nested image links with escaped paths while ignoring code-span exam
   });
 });
 
+test('reports missing reference-definition targets at the definition line', async () => {
+  await withFixture(async (root) => {
+    await writeFile(path.join(root, 'index.md'), [
+      '[guide][setup]',
+      '',
+      '[setup]: missing.md',
+      '',
+    ].join('\n'));
+
+    const failures = await validateLinks(root);
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], /^index\.md:3: missing local target missing\.md$/);
+  });
+});
+
+test('accepts local reference definitions with fragments and escaped paths', async () => {
+  await withFixture(async (root) => {
+    await mkdir(path.join(root, 'guide notes'));
+    await writeFile(path.join(root, 'guide notes', 'setup.md'), '## Shared Heading\n');
+    await writeFile(path.join(root, 'guide notes', 'escaped page.md'), '# Escaped\n');
+    await writeFile(path.join(root, 'index.md'), [
+      '[guide][setup]',
+      '[setup]: <guide notes/setup.md#shared-heading> "the setup guide"',
+      '[escaped][escaped]',
+      "[escaped]: guide\\ notes/escaped\\ page.md 'escaped title'",
+      '[external][site]',
+      '[site]: https://example.test/guide "external guide"',
+      '`[inline]: missing-inline.md`',
+      '```md',
+      '[fenced]: missing-fenced.md',
+      '```',
+      '',
+    ].join('\n'));
+
+    assert.deepEqual(await validateLinks(root), []);
+
+    await writeFile(path.join(root, 'index.md'), [
+      '[guide][setup]',
+      '[setup]: <guide notes/setup.md#missing-heading> "the setup guide"',
+      '',
+    ].join('\n'));
+    const badHeading = await validateLinks(root);
+    assert.equal(badHeading.length, 1);
+    assert.match(badHeading[0], /^index\.md:2: missing heading #missing-heading in guide notes\/setup\.md$/);
+
+    await writeFile(path.join(root, 'index.md'), [
+      '[escaped][escaped]',
+      "[escaped]: missing\\ escaped.md 'escaped title'",
+      '',
+    ].join('\n'));
+    const missingEscapedPath = await validateLinks(root);
+    assert.equal(missingEscapedPath.length, 1);
+    assert.match(missingEscapedPath[0], /^index\.md:2: missing local target missing escaped\.md$/);
+  });
+});
+
 test('reports missing local targets and heading fragments', async () => {
   await withFixture(async (root) => {
     await writeFile(path.join(root, 'index.md'), [

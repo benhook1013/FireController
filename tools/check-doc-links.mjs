@@ -130,6 +130,15 @@ function nestedImageDestinations(source) {
   return destinations;
 }
 
+function referenceDefinitionDestinations(source) {
+  const destinations = [];
+  const pattern = /^[ \t]{0,3}\[[^\]]+\]:[ \t]*(<[^>]*>|(?:\\.|[^\s()])+)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$/gm;
+  for (const match of source.matchAll(pattern)) {
+    destinations.push(unescapeDestination(match[1]));
+  }
+  return destinations;
+}
+
 function markdownDestinations(markdown) {
   const source = stripInlineCodeSpans(stripCodeFences(markdown));
   const destinations = [];
@@ -139,7 +148,7 @@ function markdownDestinations(markdown) {
     if (isEscaped(source, openingBracket)) continue;
     destinations.push(unescapeDestination(match[1]));
   }
-  return [...destinations, ...nestedImageDestinations(source)];
+  return [...destinations, ...nestedImageDestinations(source), ...referenceDefinitionDestinations(source)];
 }
 
 function slugHeading(heading) {
