@@ -8,7 +8,7 @@ The standalone service is not implemented. The initial design is under review in
 
 - [Development](development.md): implemented CLI/profile boundary, build/check commands, and current proof limits.
 - [Suggested agent workflow](agent-workflow.md): optional working practices for project instructions and a usage skill, separate from tool contracts.
-- [Product scope and conversation agreements](product.md) records the requirements selected with the human.
+- [Product scope](product.md) defines the requirements.
 - [Architecture](architecture.md) owns service boundaries, project isolation, storage, and provider observation rules.
 - [Agent and client contract](agent-client.md) owns profiles, tool calls, subscriptions, cancellation and reconnect semantics.
 - [AI usability](ai-usability.md) owns output budgets, agent interaction patterns, and attention-cost proof.
@@ -17,7 +17,7 @@ The standalone service is not implemented. The initial design is under review in
 - [Acceptance and performance](acceptance.md) defines observable proof requirements.
 - [Inherited evidence](inherited-evidence.md) records source provenance and disposition of existing behavior and tests.
 - [Source-pass adjudication](source-review.md) records independent extraction coverage and the main worker's evidence-backed decisions.
-- [Decision record](decisions.md) records proposed technical decisions and unresolved choices.
+- [Design decisions](decisions.md) records the selected technical direction and remaining implementation selection work.
 - [Delivery plan](delivery.md) records implementation sequence and actual validation status.
 
 Public documentation must not contain live messages, private job briefs, credentials, installed user paths, or provider captures. Historical code references use the pinned public source snapshot.

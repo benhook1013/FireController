@@ -1,14 +1,10 @@
-# Decision Record
+# Design Decisions
 
-## Status and authority
+These decisions define FireController’s target design. The [product scope](product.md) defines its requirements, and the linked owning documents specify the detailed contracts. Design changes are reviewed through pull requests; implementation and proof status are tracked in [delivery](delivery.md).
 
-Status: **Proposed - Pending Human Review** for technical decisions below. The human approved the independent public rebuild, multi-project scope, explicit per-agent context, live browser, and prioritizing dependable operation in the October 14, 2026 conversation. That approval defines the initial requirements in [product scope](product.md); it is not a fabricated review of this written architecture.
+## Selected design
 
-CodeRabbit is a defect reviewer. Human design disposition and its source must be recorded explicitly before marking a consequential decision accepted. No proposed decision overrides a contrary existing accepted contract.
-
-## Decisions to review
-
-| ID | Proposed choice | Reason and consequence | Owner |
+| ID | Decision | Reason and consequence | Owner |
 | --- | --- | --- | --- |
 | D01 | Go service and CLI, embedded TypeScript UI | Simple executable deployment; build tooling stays separate from user runtime. Validate SQLite-driver and cross-platform packaging before finalizing dependencies. | [Architecture](architecture.md) |
 | D02 | One instance supports multiple isolated projects | Avoid multiple servers for hobby projects; project scope must exist throughout storage, access, cursors, subscriptions, and provider operations. | [Architecture](architecture.md) |
@@ -28,18 +24,10 @@ CodeRabbit is a defect reviewer. Human design disposition and its source must be
 | D16 | New instance identity and held provider recovery after disaster restore | Separate restart from rollback; require explicit rebind/resync, credential re-establishment and reconciliation of possible post-backup effects. | [Architecture](architecture.md) |
 | D17 | Service-owned immutable workspaces for local reviews | Configure server sources administratively and prove the executor reads the admitted tree independently of developer changes. | [Review execution](reviews.md) |
 | D18 | Explicit required channels for initial review sufficiency | One complete applicable capture per selected channel, with finding obligations met; missing policy never means success. | [Review policy](reviews.md) |
+| D19 | Managed backups with optional destination adapters | Own scheduling, retention and failure status; start locally and preserve one restore format for later cloud or trusted custom-command destinations. | [Backup and recovery](architecture.md#storage-operations-and-growth) |
 
-Backup direction from the continuing discussion is application-owned scheduling, retention and visible outcomes. A managed local destination is initial scope; cloud adapters and a trusted custom command are optional later destinations sharing the backup format. Specific providers and hook execution details remain implementation decisions.
+## Implementation selection and migration work
 
-## Confirmed project choices
-
-- Public repository `benhook1013/FireController`, independent WSL checkout, and Apache-2.0 for new material were authorized in this conversation. Apache-2.0 was recommended after the human selected broad open reuse and no financial goal. Historical source material retains its original license unless a separate rights decision establishes otherwise.
-- Require PRs to `main`, disable force pushes and deletion, enforce conversation resolution, and use deliberately requested CodeRabbit reviews. AI workers never merge.
-- Existing deployments require explicit migration and cutover; publishing this repository does not change their installed versions or private state.
-- The October 15 discussion (Pacific/Auckland local date; October 14 UTC) confirmed the initial one-project/one-GitHub-repository boundary, with duplicate bindings rejected inside an instance and stable repository identity across renames. GitHub Projects boards are separate from this identity.
-
-## Open questions
-
-Select the SQLite driver only after packaging, concurrent workload, and crash/restart proof. Select browser and API schema libraries for small dependency footprint and maintainability, not framework popularity. Native agent adapter capabilities must be verified against actual hosts before documenting zero-argument tools or automatic delivery as supported.
+Select the SQLite driver only after packaging, concurrent workload, and crash/restart proof. Select browser and API schema libraries for small dependency footprint and maintainability, not framework popularity. Native agent adapter capabilities must be verified against actual hosts before enabling zero-argument tools or automatic delivery for an installation.
 
 Legacy private website content and rights have not been exhaustively inspected. Retained JSON/editorial state, theme settings, provider captures, and historical migration requirements need an explicit migration inventory. No live legacy files are imported during design work.

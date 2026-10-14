@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-This document owns the proposed service contract. None of the application endpoints or storage described here is implemented yet. Technology choices and consequential review decisions are recorded in [decisions](decisions.md).
+This document owns the service contract. None of the application endpoints or storage described here is implemented yet. Design decisions are recorded in [decisions](decisions.md).
 
 ## Boundaries
 
@@ -60,7 +60,7 @@ GitHub pagination must prove completeness for every collection used in an admiss
 
 Use an HTTP JSON API under `/api/v1`, with project-owned paths under `/api/v1/projects/{project_id}`. Resource IDs are stable opaque identifiers. Display names are selectors resolved within project scope. Responses expose resource revisions, request IDs, and relevant freshness metadata. Errors have a stable code, concise message, request ID, and structured conflict or retry details.
 
-Proposed error codes include `unauthorized`, `forbidden`, `not_found`, `revision_conflict`, `idempotency_conflict`, `validation_failed`, `provider_unavailable`, `review_held`, `resync_required`, and `overloaded`. Absence and forbidden access must not disclose another project's resource contents. List responses use bounded cursor pagination; page cursors are bound to project, principal scope, filter, and order.
+Stable error codes include `unauthorized`, `forbidden`, `not_found`, `revision_conflict`, `idempotency_conflict`, `validation_failed`, `provider_unavailable`, `review_held`, `resync_required`, and `overloaded`. Absence and forbidden access must not disclose another project's resource contents. List responses use bounded cursor pagination; page cursors are bound to project, principal scope, filter, and order.
 
 Request cancellation stops waiting and cancels work that is safe to cancel. It does not roll back an already committed action or imply a provider request was not posted. Long review and refresh requests establish a durable operation and return its identity to the client adapter. The adapter may subscribe and deliver a final asynchronous tool result without making the model track that identity or poll. Explicit detach, recovery, and diagnosis expose the receipt. [AI usability](ai-usability.md) owns the model-facing interaction.
 

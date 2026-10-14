@@ -23,6 +23,6 @@
 
 ## Documentation
 
-- Write target-state contracts at one owner and link to them from secondary documents. Keep implemented versus proposed status explicit.
-- Record consequential design decisions for human review. Conversation agreements establish the initial scope; CodeRabbit provides defect review and does not supply human approval.
+- Write target-state contracts at one owner and link to them from secondary documents. Keep implemented versus unimplemented status explicit.
+- State the selected design directly. Pull-request review and merge record design acceptance; do not add conversation authorization ledgers or repeated pending-approval labels to product documents. CodeRabbit provides defect review.
 - Do not manually hard-wrap prose. Use repository-relative Markdown links and no emojis in headings.
