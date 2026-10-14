@@ -100,6 +100,53 @@ test('reports invalid links outside and after inline code spans with original li
   });
 });
 
+test('ignores odd escaped link openers but validates even runs and escaped image markers', async () => {
+  await withFixture(async (root) => {
+    await writeFile(path.join(root, 'index.md'), [
+      '# Links',
+      '\\[odd](missing-odd.md)',
+      '\\\\[even](missing-even.md)',
+      '\\![escaped image marker](missing-image-link.md)',
+      '',
+    ].join('\n'));
+
+    const failures = await validateLinks(root);
+    assert.equal(failures.length, 2);
+    assert.match(failures[0], /^index\.md:3: missing local target missing-even\.md$/);
+    assert.match(failures[1], /^index\.md:4: missing local target missing-image-link\.md$/);
+  });
+});
+
+test('normalizes unencoded backslash separators before percent decoding', async () => {
+  await withFixture(async (root) => {
+    await mkdir(path.join(root, 'nested'));
+    await writeFile(path.join(root, 'nested', 'page.md'), '# Nested\n');
+    await mkdir(path.join(root, 'rawconcat'));
+    await writeFile(path.join(root, 'rawconcat', 'page.md'), '# Concatenated decoy\n');
+
+    const encodedBackslashFile = path.sep === '\\'
+      ? path.join(root, 'encoded', 'backslash.md')
+      : path.join(root, 'encoded\\backslash.md');
+    await mkdir(path.dirname(encodedBackslashFile), { recursive: true });
+    await writeFile(encodedBackslashFile, '# Encoded backslash\n');
+
+    const links = [
+      '[valid separator](nested\\page.md)',
+      '[encoded backslash](encoded%5Cbackslash.md)',
+      '[wrong concatenated target](raw\\concat/page.md)',
+    ];
+    if (path.sep === '/') links.push('[raw separator differs from encoded backslash](encoded\\backslash.md)');
+    await writeFile(path.join(root, 'index.md'), links.join('\n'));
+
+    const failures = await validateLinks(root);
+    assert.equal(failures.length, path.sep === '/' ? 2 : 1);
+    assert.match(failures[0], /^index\.md:3: missing local target raw\\concat\/page\.md$/);
+    if (path.sep === '/') {
+      assert.match(failures[1], /^index\.md:4: missing local target encoded\\backslash\.md$/);
+    }
+  });
+});
+
 test('keeps shorter and info-string fence runs inside longer fenced examples', async () => {
   await withFixture(async (root) => {
     await writeFile(path.join(root, 'index.md'), [

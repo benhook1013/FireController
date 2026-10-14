@@ -34,6 +34,10 @@ Model attempts as prepared, posting/running, active, completed, failed, cancelle
 
 Hosted review and local CLI execution are separate adapters. A local executor receives an explicit project, allowed workspace, immutable target, operation ID, and policy. The server never adopts a client's current working directory as a global setting. The initial executor runs on the server machine; remote executors are deferred until authentication, leasing, and artifact-transfer contracts are proven.
 
+A project administrator configures the server's repository source and local executor capability. The service obtains and verifies the candidate/base objects from that source, then creates a service-owned operation workspace containing the admitted target tree and comparison objects. Its lifetime is independent of the developer's mutable checkout; neither another client nor a later branch switch can change what the executor reads. A remote client's filesystem path cannot substitute for server source provisioning. Missing source or executor capability is reported explicitly without blocking coordination or hosted reviews.
+
+Local execution is an operator-trusted capability, not a hostile multi-customer sandbox. The executor receives an explicit argument/environment allowlist and only its required credentials, rather than the service's full environment or other projects' credentials. Source preparation does not run repository build/install hooks implicitly. Retained evidence identifies the verified workspace tree and admitted comparison even if the provider head changes during execution.
+
 Cancellation requests distinguish queued work, safe-to-cancel execution, and already-posted provider work. Terminating a process does not erase a reservation, recover quota, or establish that a provider action never happened. Timeouts preserve diagnostic evidence and return an operation state that explains whether recovery is needed.
 
 ## Evidence and findings
@@ -49,6 +53,8 @@ Private source finalization and any public checkpoint publication are separate o
 ## Project policy
 
 The first native review delivery supports explicit provider/channel selection, provider ceilings, operator stops, queue mode, required CI, and accepted-finding obligations. Store policy changes with revisions and actor attribution. A policy change does not rewrite historical admitted attempts or prior decisions.
+
+Initial aggregate review sufficiency requires an explicit nonempty set of required review channels. Each selected channel needs at least one completed, attributable, complete capture applicable to the current target and comparison, with every finding adjudicated and its accepted/routed obligations satisfied. Enabling an executor does not automatically make its channel required. Missing requirements produce a policy hold, not vacuous success. A project using coordination without automated reviews remains usable, with review sufficiency shown as unconfigured. Per-attempt completion, aggregate review sufficiency, and merge readiness are distinct states; this initial rule does not implement legacy taper or round budgets.
 
 Legacy minimum/maximum rounds, useful-finding taper, scoped allocations, review-credit periods, and cross-channel policy interactions are retained in the source inventory as an optional later policy layer. They are not prerequisites for delivering reliable native review execution. If enabled later, an accepted useful correction resets its applicable dry streak, while optional style, invalid findings, and already-fixed duplication do not. Exhausted budget and human stop remain distinct from taper completion, and neither clears accepted findings or required CI.
 

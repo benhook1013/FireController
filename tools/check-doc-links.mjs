@@ -87,6 +87,13 @@ function markdownDestinations(markdown) {
   const destinations = [];
   const pattern = /!?(?:\[[^\]]*\])\(\s*(<[^>]*>|(?:\\.|[^\s()])+)(?:\s+[^)]*)?\)/g;
   for (const match of source.matchAll(pattern)) {
+    const openingBracket = match.index + match[0].indexOf('[');
+    let precedingBackslashes = 0;
+    for (let cursor = openingBracket - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) {
+      precedingBackslashes += 1;
+    }
+    if (precedingBackslashes % 2 === 1) continue;
+
     let destination = match[1];
     if (destination.startsWith('<') && destination.endsWith('>')) {
       destination = destination.slice(1, -1);
@@ -149,7 +156,7 @@ async function validateLinks(root) {
         const fragment = hashAt < 0 ? '' : destination.slice(hashAt + 1).split('?')[0];
         let target;
         try {
-          target = decodeURIComponent(rawTarget.replace(/\\/g, ''));
+          target = decodeURIComponent(rawTarget.replace(/\\/g, '/'));
         } catch {
           failures.push(`${path.relative(root, sourcePath)}:${lineNumber}: malformed escaped path in ${destination}`);
           continue;
