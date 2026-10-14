@@ -1,6 +1,7 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: en-US
 early_access: false
+tone_instructions: Write concise, factual findings. Avoid praise, jokes, poems, ASCII art, and unrelated suggestions.
 reviews:
   profile: assertive
   request_changes_workflow: false
@@ -12,8 +13,20 @@ reviews:
     provider refresh, persistence, installation, and validation where relevant.
     Distinguish proposed contracts from implemented or measured behavior.
   review_status: true
+  in_progress_fortune: false
+  poem: false
+  pre_merge_checks:
+    docstrings:
+      mode: 'off'
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
   auto_review:
-    enabled: true
+    enabled: false
     auto_incremental_review: false
     drafts: false
     base_branches:
@@ -40,3 +53,4 @@ knowledge_base:
       - AGENTS.md
 chat:
   auto_reply: true
+  art: false
