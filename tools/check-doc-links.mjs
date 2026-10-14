@@ -30,8 +30,60 @@ function stripCodeFences(markdown) {
     .join('\n');
 }
 
+function stripInlineCodeSpans(markdown) {
+  const characters = Array.from(markdown);
+  let index = 0;
+
+  while (index < characters.length) {
+    if (characters[index] !== '`') {
+      index += 1;
+      continue;
+    }
+
+    let precedingBackslashes = 0;
+    for (let cursor = index - 1; cursor >= 0 && characters[cursor] === '\\'; cursor -= 1) {
+      precedingBackslashes += 1;
+    }
+    if (precedingBackslashes % 2 === 1) {
+      index += 1;
+      continue;
+    }
+
+    let openingEnd = index + 1;
+    while (characters[openingEnd] === '`') openingEnd += 1;
+    const delimiterLength = openingEnd - index;
+    let closingStart = openingEnd;
+
+    while (closingStart < characters.length) {
+      if (characters[closingStart] !== '`') {
+        closingStart += 1;
+        continue;
+      }
+
+      let closingEnd = closingStart + 1;
+      while (characters[closingEnd] === '`') closingEnd += 1;
+      if (closingEnd - closingStart === delimiterLength) break;
+      closingStart = closingEnd;
+    }
+
+    if (closingStart >= characters.length) {
+      // An unmatched delimiter is literal Markdown, so links after it remain visible.
+      index = openingEnd;
+      continue;
+    }
+
+    let closingEnd = closingStart + delimiterLength;
+    for (let cursor = index; cursor < closingEnd; cursor += 1) {
+      if (characters[cursor] !== '\n' && characters[cursor] !== '\r') characters[cursor] = ' ';
+    }
+    index = closingEnd;
+  }
+
+  return characters.join('');
+}
+
 function markdownDestinations(markdown) {
-  const source = stripCodeFences(markdown);
+  const source = stripInlineCodeSpans(stripCodeFences(markdown));
   const destinations = [];
   const pattern = /!?(?:\[[^\]]*\])\(\s*(<[^>]*>|(?:\\.|[^\s()])+)(?:\s+[^)]*)?\)/g;
   for (const match of source.matchAll(pattern)) {
@@ -84,7 +136,7 @@ async function validateLinks(root) {
   const absoluteRoot = await realpath(path.resolve(root));
   for (const sourcePath of await markdownFiles(absoluteRoot)) {
     const source = await readFile(sourcePath, 'utf8');
-    const lines = stripCodeFences(source).split('\n');
+    const lines = stripInlineCodeSpans(stripCodeFences(source)).split('\n');
     let lineNumber = 0;
     for (const line of lines) {
       lineNumber += 1;

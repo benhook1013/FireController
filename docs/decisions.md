@@ -30,7 +30,7 @@ CodeRabbit is a defect reviewer. Human design disposition and its source must be
 - Public repository `benhook1013/FireController`, independent WSL checkout, and Apache-2.0 for new material were authorized in this conversation. Apache-2.0 was recommended after the human selected broad open reuse and no financial goal. Historical source material retains its original license unless a separate rights decision establishes otherwise.
 - Require PRs to `main`, disable force pushes and deletion, enforce conversation resolution, and use deliberately requested CodeRabbit reviews. AI workers never merge.
 - Existing deployments require explicit migration and cutover; publishing this repository does not change their installed versions or private state.
-- The October 15 discussion confirmed the initial one-project/one-GitHub-repository boundary, with duplicate bindings rejected inside an instance and stable repository identity across renames. GitHub Projects boards are separate from this identity.
+- The October 15 discussion (Pacific/Auckland local date; October 14 UTC) confirmed the initial one-project/one-GitHub-repository boundary, with duplicate bindings rejected inside an instance and stable repository identity across renames. GitHub Projects boards are separate from this identity.
 
 ## Open questions
 

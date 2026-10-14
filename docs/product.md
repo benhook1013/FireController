@@ -29,7 +29,7 @@ AI workers are the primary clients. Human browser convenience is secondary to ac
 
 Serve a person or small team operating multiple projects from one machine or one network host. Each project has isolated workers, jobs, messages, map content, review evidence, and provider configuration. Local and remote clients use the same API. Remote access requires scoped authentication and encrypted transport; the first release is not a hostile public multi-customer SaaS platform.
 
-Jobs retain briefs, updates, checkpoints, checklist state, pause/block/completion, and deferred notes. A worker can designate one optional primary job as its resume focus while keeping other jobs active. Messages retain conversations and separate seen and handled states. Review management supports hosted and local executors, attributable evidence, finding decisions, and exact-target safety. The [inherited evidence inventory](inherited-evidence.md) decides which detailed legacy behaviors are retained or revised.
+Jobs retain briefs, updates, checkpoints, checklist state, pause/block/completion, and deferred notes. A worker can designate one optional primary job as its resume focus while keeping other jobs active. Messages retain conversations and separate seen and handled states. Review management supports hosted and local executors, attributable evidence, finding decisions, and exact-target safety. The [inherited evidence inventory](inherited-evidence.md) records the legacy dispositions selected by the owning designs.
 
 ## Deferred capabilities
 

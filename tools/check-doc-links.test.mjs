@@ -60,6 +60,46 @@ test('ignores links inside fenced examples and external references', async () =>
   });
 });
 
+test('ignores links inside matched inline code spans including multiline spans', async () => {
+  await withFixture(async (root) => {
+    await writeFile(path.join(root, 'present.md'), '# Present\n');
+    await writeFile(path.join(root, 'index.md'), [
+      '# Links',
+      'Inline `[missing](missing-inline.md)` should be ignored.',
+      'Long delimiter ```contains ``two ticks`` and `one` plus [missing](missing-long.md)``` should be ignored.',
+      'Multiline ``starts here',
+      '[missing](missing-multiline.md)',
+      'ends here`` and [valid](present.md).',
+      '',
+    ].join('\n'));
+    assert.deepEqual(await validateLinks(root), []);
+  });
+});
+
+test('reports invalid links outside and after inline code spans with original line numbers', async () => {
+  await withFixture(async (root) => {
+    await writeFile(path.join(root, 'index.md'), [
+      '# Links',
+      'Inline `[hidden](inside.md)` then [broken](absent.md).',
+      'Long code ```contains ``two ticks`` and `ticks` plus [hidden](inside-long.md)``` then [broken](after-long.md).',
+      'Escaped opener \\` leaves [broken](after-escaped.md) visible.',
+      '`unmatched opener leaves [broken](after-unmatched.md) visible.',
+      'Multiline ``starts here',
+      '[hidden](inside-multiline.md)',
+      'ends here`` then [broken](after-multiline.md).',
+      '',
+    ].join('\n'));
+
+    const failures = await validateLinks(root);
+    assert.equal(failures.length, 5);
+    assert.match(failures[0], /^index\.md:2: missing local target absent\.md$/);
+    assert.match(failures[1], /^index\.md:3: missing local target after-long\.md$/);
+    assert.match(failures[2], /^index\.md:4: missing local target after-escaped\.md$/);
+    assert.match(failures[3], /^index\.md:5: missing local target after-unmatched\.md$/);
+    assert.match(failures[4], /^index\.md:8: missing local target after-multiline\.md$/);
+  });
+});
+
 test('keeps shorter and info-string fence runs inside longer fenced examples', async () => {
   await withFixture(async (root) => {
     await writeFile(path.join(root, 'index.md'), [
