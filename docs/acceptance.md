@@ -14,7 +14,7 @@ No standalone service behavior has been tested or benchmarked yet. Inherited tes
 | P04 | Two agents share a checkout and different profiles: interleaved commands keep the correct project and worker. |
 | P05 | Import or create project work without public opt-in: no imported content is emitted through public projections, events, or exports. |
 | J01 | Race two guarded brief edits: exactly one succeeds, the other conflicts without changing history. |
-| J02 | Repeat a creation/update key after losing the receipt: one durable action and the original receipt result. |
+| J02 | Lose a successful creation or guarded-edit response, then retry its exact key/body after another edit: return the original receipt without extra history/event; a new key with the stale revision still conflicts. |
 | J03 | Reuse a key with a different body: conflict without additional write or event. |
 | J04 | Change a checklist, pause, block, or complete work: current state and history agree; one optional primary identifies resume focus without restricting other concurrent active jobs. |
 | J05 | Append checkpoints and change note scope/status: current brief stays authoritative and earlier attribution remains available. |
@@ -68,6 +68,7 @@ No standalone service behavior has been tested or benchmarked yet. Inherited tes
 | O04 | Cancel or shut down during busy provider tasks: reservations and coordination data remain recoverable. |
 | O05 | Windows/Linux packaged smoke: embedded UI and CLI need no source checkout; provider executor requirements remain explicit. |
 | O06 | Restore a backup after later events, receipts, credential revocations and provider posts: predecessor profiles/cursors/retries cannot continue silently; revoked grants are not revived, lost-window effects are uncertain, and provider mutations remain held until recovery. |
+| O07 | A scheduled backup fails, or its optional destination transfer times out or reports unverified success: show last usable backup and failure/uncertainty, preserve the bundle, and do not present transfer status as restore proof. |
 
 ## Performance proof
 
