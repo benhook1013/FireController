@@ -352,3 +352,25 @@ func decodeResponse(t *testing.T, response *httptest.ResponseRecorder, target an
 		t.Fatalf("invalid response JSON: %v body=%s", err, response.Body.String())
 	}
 }
+
+func TestMalformedJobQueryEncodingIsRejectedBeforeReturningData(t *testing.T) {
+	a := setupAPI(t)
+	project := a.createProject("query-proof", "example/query-proof")
+	created := a.call(http.MethodPost, "/api/v1/projects/"+project+"/jobs", a.admin, "create", map[string]any{"title": "Synthetic job"})
+	var job receipt
+	decodeResponse(t, created, &job)
+	before := a.lookups
+	for _, path := range []string{"/jobs", "/jobs/" + job.ID + "/history"} {
+		for _, query := range []string{"status=%zz", "cursor=%zz", "limit=1;status=blocked", "%zz=value", "status=blocked&ignored=%zz"} {
+			response := a.call(http.MethodGet, "/api/v1/projects/"+project+path+"?"+query, a.admin, "", nil)
+			var value struct{ Error struct{ Code string } }
+			decodeResponse(t, response, &value)
+			if response.Code != http.StatusBadRequest || value.Error.Code != "invalid_query" {
+				t.Fatalf("malformed query returned data: %s?%s: %d %s", path, query, response.Code, response.Body.String())
+			}
+		}
+	}
+	if a.lookups != before {
+		t.Fatal("invalid local query performed provider work")
+	}
+}
