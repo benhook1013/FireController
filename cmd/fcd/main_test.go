@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -136,4 +138,112 @@ func TestConfigurationRejectsNonLoopbackBeforeCreatingState(t *testing.T) {
 			t.Fatal("invalid configuration created state")
 		}
 	}
+}
+
+func TestHTTPShutdownDrainsRequestsBeforeForcedClose(t *testing.T) {
+	t.Run("request survives signal cancellation while draining", func(t *testing.T) {
+		signalContext, cancelSignal := context.WithCancel(context.Background())
+		defer cancelSignal()
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		requestCanceled := make(chan struct{})
+		srv := newHTTPServer(signalContext, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(entered)
+			select {
+			case <-release:
+				w.WriteHeader(http.StatusOK)
+			case <-r.Context().Done():
+				close(requestCanceled)
+			}
+		}))
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- srv.Serve(listener) }()
+		responseDone := make(chan error, 1)
+		go func() {
+			response, requestErr := http.Get("http://" + listener.Addr().String())
+			if requestErr == nil {
+				_ = response.Body.Close()
+			}
+			responseDone <- requestErr
+		}()
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("request did not enter handler")
+		}
+		cancelSignal()
+		select {
+		case <-requestCanceled:
+			t.Fatal("signal cancellation aborted the in-flight request")
+		default:
+		}
+		shutdownDone := make(chan error, 1)
+		go func() { shutdownDone <- shutdownHTTPServer(srv, time.Second) }()
+		select {
+		case err := <-shutdownDone:
+			t.Fatalf("shutdown did not wait for in-flight request: %v", err)
+		case <-time.After(25 * time.Millisecond):
+		}
+		close(release)
+		select {
+		case err := <-shutdownDone:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("graceful drain did not finish")
+		}
+		if err := <-responseDone; err != nil {
+			t.Fatal(err)
+		}
+		if err := <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("serve result: %v", err)
+		}
+	})
+
+	t.Run("deadline forces close", func(t *testing.T) {
+		signalContext, cancelSignal := context.WithCancel(context.Background())
+		defer cancelSignal()
+		entered := make(chan struct{})
+		requestCanceled := make(chan struct{})
+		srv := newHTTPServer(signalContext, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			close(entered)
+			<-r.Context().Done()
+			close(requestCanceled)
+		}))
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() { _ = srv.Serve(listener) }()
+		go func() {
+			response, requestErr := http.Get("http://" + listener.Addr().String())
+			if requestErr == nil {
+				_, _ = io.Copy(io.Discard, response.Body)
+				_ = response.Body.Close()
+			}
+		}()
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("request did not enter handler")
+		}
+		cancelSignal()
+		started := time.Now()
+		if err := shutdownHTTPServer(srv, 40*time.Millisecond); err == nil {
+			t.Fatal("expected bounded shutdown to force-close stuck handler")
+		}
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("bounded shutdown took too long: %s", elapsed)
+		}
+		select {
+		case <-requestCanceled:
+		case <-time.After(time.Second):
+			t.Fatal("forced close did not cancel request")
+		}
+	})
 }

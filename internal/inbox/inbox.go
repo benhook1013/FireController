@@ -170,7 +170,7 @@ type inboxItem struct {
 
 type inboxPage struct {
 	Items   []inboxItem `json:"items"`
-	Cursor  string      `json:"cursor"`
+	Cursor  string      `json:"cursor,omitempty"`
 	HasMore bool        `json:"has_more"`
 }
 
@@ -336,7 +336,7 @@ type conversationPage struct {
 	ConversationID string    `json:"conversation_id"`
 	RootMessageID  string    `json:"root_message_id"`
 	Items          []message `json:"items"`
-	Cursor         string    `json:"cursor"`
+	Cursor         string    `json:"cursor,omitempty"`
 	HasMore        bool      `json:"has_more"`
 }
 

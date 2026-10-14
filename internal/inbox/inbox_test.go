@@ -564,3 +564,42 @@ func TestConcurrentSameKeySendAndSeenAckKeepOneDurableOutcome(t *testing.T) {
 		t.Fatal("concurrent coordination called provider")
 	}
 }
+
+func TestInvalidKeysCannotCreateMessageReceiptsOrTransitions(t *testing.T) {
+	f := setup(t)
+	sent := f.send(f.a, f.clientA, f.sender, f.recipient, "synthetic key validation", "", "valid-send")
+	before := f.eventCount(f.a)
+	for _, action := range []string{"send", "seen", "ack"} {
+		for _, key := range []string{"", " padded", "padded ", strings.Repeat("x", 129)} {
+			t.Run(action+"/"+key, func(t *testing.T) {
+				path, worker, body := f.path(f.a, "messages/"+sent.ID+"/"+action), f.recipient, `{}`
+				if action == "send" {
+					path, worker, body = f.path(f.a, "messages"), f.sender, `{"recipient_worker_id":"`+f.recipient+`","body":"must not be stored"}`
+				}
+				r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+				r.Header.Set("Authorization", "Bearer "+f.clientA)
+				r.Header.Set("X-FC-Worker", worker)
+				r.Header.Set("Content-Type", "application/json")
+				r.Header.Set("Idempotency-Key", key) // Keep the explicitly empty header present.
+				w := httptest.NewRecorder()
+				f.mux.ServeHTTP(w, r)
+				errorCode(t, w, http.StatusBadRequest, "validation_failed")
+			})
+		}
+	}
+	if f.eventCount(f.a) != before {
+		t.Fatal("invalid key committed message state/events")
+	}
+	page := f.inbox(f.a, f.clientA, f.recipient, "")
+	if len(page.Items) != 1 || page.Items[0].Seen || page.Items[0].Acknowledged {
+		t.Fatal("invalid key changed recipient state")
+	}
+	for _, route := range []string{"inbox/" + f.recipient, "conversations/" + sent.ConversationID} {
+		w := f.request("GET", f.path(f.a, route), f.clientA, "", "", nil)
+		var result map[string]any
+		decode(t, w, http.StatusOK, &result)
+		if _, present := result["cursor"]; present || result["has_more"] != false {
+			t.Fatal("final page must omit the continuation cursor")
+		}
+	}
+}
