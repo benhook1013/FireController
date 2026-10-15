@@ -1,0 +1,357 @@
+package reviewexec
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/benhook1013/FireController/internal/core"
+)
+
+func admissionPolicy(t *testing.T, f *attemptFixture, previous int64, paused ...string) {
+	t.Helper()
+	input := policyInput(previous)
+	input.PausedChannels = append([]string{}, paused...)
+	policyConfigure(t, f, f.scope(t, attemptProject, f.admin, true), "admission-policy-"+strconv.FormatInt(previous, 10), input)
+}
+
+func TestPolicyAdmissionEnqueueRequiresPolicyAndRetainsKeyedRevision(t *testing.T) {
+	f := newAttemptFixtureWithPolicy(t, false)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	scope := f.scope(t, attemptProject, f.writer, false)
+	request := Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)}
+	before := policyState(t, f)
+	_, err := f.e.Enqueue(t.Context(), scope, "missing-policy", request)
+	attemptCode(t, err, "reviews_policy_unconfigured")
+	if policyState(t, f) != before || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+		t.Fatal("missing policy allocated request effects")
+	}
+	// Required channels describe sufficiency, not which channel may run. An
+	// optional CLI request remains independent of an explicitly paused hosted lane.
+	input := policyInput(0)
+	input.RequiredChannels = []string{"hosted"}
+	input.PausedChannels = []string{"hosted"}
+	policyConfigure(t, f, f.scope(t, attemptProject, f.admin, true), "explicit-policy", input)
+	before = policyState(t, f)
+	hosted := request
+	hosted.Channel = "hosted"
+	_, err = f.e.Enqueue(t.Context(), scope, "paused-hosted", hosted)
+	attemptCode(t, err, "reviews_paused")
+	if policyState(t, f) != before || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+		t.Fatal("paused channel allocated request effects")
+	}
+	original, err := f.e.Enqueue(t.Context(), scope, "cli-key", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt Receipt
+	if json.Unmarshal(original, &receipt) != nil {
+		t.Fatal("invalid receipt")
+	}
+	operation, err := f.e.ReadOperation(t.Context(), scope, receipt.ID)
+	if err != nil || operation.PolicyRevision != 1 {
+		t.Fatal("request did not bind policy revision", operation, err)
+	}
+	prepared := f.start(t, attemptProject, receipt)
+	active, err := f.e.Admit(t.Context(), attemptProject, prepared.ID, prepared.Revision, attemptAnchor(attemptProject, 2), "")
+	if err != nil {
+		t.Fatal("hosted pause blocked CLI admission", err)
+	}
+	if err := f.e.VerifyAction(t.Context(), attemptProject, active.ID, active.Revision); err != nil {
+		t.Fatal("hosted pause blocked CLI final check", err)
+	}
+	operation, err = f.e.ReadOperation(t.Context(), scope, receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admissionPolicy(t, f, 1, "cli")
+	before = policyState(t, f)
+	replay, err := f.e.Enqueue(t.Context(), scope, "cli-key", request)
+	if err != nil || !bytes.Equal(original, replay) || policyState(t, f) != before {
+		t.Fatal("policy update changed exact keyed recovery", err)
+	}
+	retained, err := f.e.ReadOperation(t.Context(), scope, receipt.ID)
+	if err != nil || !reflect.DeepEqual(operation, retained) {
+		t.Fatal("replay silently adopted new policy", retained, err)
+	}
+	_, err = f.e.Enqueue(t.Context(), scope, "new-paused-key", request)
+	attemptCode(t, err, "reviews_paused")
+	if policyState(t, f) != before || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
+		t.Fatal("paused new key changed journal")
+	}
+	if _, err = f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.e.Enqueue(t.Context(), scope, "cli-key", request)
+	attemptCode(t, err, "unauthorized")
+}
+
+func TestPolicyAdmissionStartHoldsWithoutPreparingOrDispatch(t *testing.T) {
+	for _, state := range []string{"changed", "paused", "missing", "legacy-unbound"} {
+		t.Run(state, func(t *testing.T) {
+			f := newAttemptFixture(t)
+			f.configure(t, attemptProject, "test-capability", 0, false)
+			receipt := f.enqueue(t, attemptProject, "queued", "cli", 2, 1)
+			reason := "policy_changed"
+			switch state {
+			case "changed":
+				admissionPolicy(t, f, 1)
+			case "paused":
+				admissionPolicy(t, f, 1, "cli")
+				reason = "policy_paused"
+			case "missing":
+				if _, err := f.store.DB().Exec(`DELETE FROM review_policy_config WHERE project_id=?`, attemptProject); err != nil {
+					t.Fatal(err)
+				}
+				reason = "policy_unconfigured"
+			case "legacy-unbound":
+				if _, err := f.store.DB().Exec(`UPDATE review_operations SET policy_revision=0 WHERE id=?`, receipt.ID); err != nil {
+					t.Fatal(err)
+				}
+				reason = "policy_unbound"
+			}
+			driver := &controlledDriver{}
+			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
+				t.Fatal(err)
+			}
+			operation, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), receipt.ID)
+			if err != nil || operation.State != "held" || operation.Reason != reason || operation.AttemptID != "" {
+				t.Fatal("policy did not durably hold request", operation, err)
+			}
+			if driver.prepares.Load() != 0 || driver.calls.Load() != 0 {
+				t.Fatal("held request reached driver")
+			}
+			for _, table := range []string{"review_execution_attempts", "review_execution_reservations", "review_execution_transitions"} {
+				if attemptCount(t, f.store, "SELECT count(*) FROM "+table) != 0 {
+					t.Fatal("held request created attempt state", table)
+				}
+			}
+		})
+	}
+}
+
+func TestPolicyAdmissionBetweenPreparationAndAdmitIsReadOnlyFailure(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		t.Run(map[bool]string{false: "revision", true: "pause"}[paused], func(t *testing.T) {
+			f := newAttemptFixture(t)
+			f.configure(t, attemptProject, "test-capability", 0, false)
+			a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "queued", "cli", 2, 1))
+			current, err := f.e.ExecutionContext(t.Context(), attemptProject, a.OperationID)
+			if err != nil || current.Operation.PolicyRevision != 1 || current.Policy.Revision != 1 || current.RepositoryID != 801 || current.Configuration.CapabilityID != "test-capability" {
+				t.Fatal("preparation context did not expose exact binding", current, err)
+			}
+			if paused {
+				admissionPolicy(t, f, 1, "cli")
+			} else {
+				admissionPolicy(t, f, 1)
+			}
+			before := attemptState(t, f, a)
+			_, err = f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, attemptAnchor(attemptProject, 2), "")
+			attemptCode(t, err, "review_conflict")
+			if attemptState(t, f, a) != before {
+				t.Fatal("failed policy admission changed attempt, reservation or transition")
+			}
+			current, err = f.e.ExecutionContext(t.Context(), attemptProject, a.OperationID)
+			attemptCode(t, err, "review_conflict")
+			if !reflect.DeepEqual(current, ExecutionContext{}) || attemptState(t, f, a) != before {
+				t.Fatal("failed preparation context returned partial facts or effects")
+			}
+		})
+	}
+}
+
+func TestVerifyActionCurrentBindingsAndReservation(t *testing.T) {
+	for _, test := range []struct {
+		name, code string
+		change     func(*testing.T, *attemptFixture, Attempt)
+	}{
+		{"unchanged", "", nil},
+		{"policy-changed", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) { admissionPolicy(t, f, 1) }},
+		{"policy-paused", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) { admissionPolicy(t, f, 1, "cli") }},
+		{"policy-unbound", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) {
+			admissionSQL(t, f, `UPDATE review_operations SET policy_revision=0 WHERE id=?`, a.OperationID)
+		}},
+		{"config-changed", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) {
+			f.configure(t, attemptProject, "test-capability", 1, false)
+		}},
+		{"capability-changed", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) {
+			var err error
+			f.e, err = New(f.store, []Capability{{ID: "test-capability", Provider: "coderabbit", Account: "test-account", Channels: []string{"cli", "hosted"}, Fingerprint: strings.Repeat("f", 64)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"actor-revoked", "forbidden", func(t *testing.T, f *attemptFixture, a Attempt) {
+			admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
+		}},
+		{"worker-removed", "forbidden", func(t *testing.T, f *attemptFixture, a Attempt) {
+			admissionSQL(t, f, `DELETE FROM workers WHERE project_id=? AND id='admission-worker'`, attemptProject)
+		}},
+		{"reservation-missing", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) {
+			admissionSQL(t, f, `DELETE FROM review_execution_reservations WHERE attempt_id=?`, a.ID)
+		}},
+		{"reservation-wrong", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) {
+			admissionSQL(t, f, `UPDATE review_execution_reservations SET pull_number=4 WHERE attempt_id=?`, a.ID)
+		}},
+		{"uncertain", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) {
+			_, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "uncertain", "test_uncertain", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"terminal", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) {
+			_, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "test_complete", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newAttemptFixture(t)
+			f.configure(t, attemptProject, "test-capability", 0, false)
+			admissionSQL(t, f, `INSERT INTO workers(project_id,id,name) VALUES(?,'admission-worker','Builder')`, attemptProject)
+			scope := f.scope(t, attemptProject, f.writer, false)
+			scope.WorkerID = "admission-worker"
+			body, err := f.e.Enqueue(t.Context(), scope, "worker-request", Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+			var r Receipt
+			if err != nil || json.Unmarshal(body, &r) != nil {
+				t.Fatal(err)
+			}
+			prepared := f.start(t, attemptProject, r)
+			a, err := f.e.Admit(t.Context(), attemptProject, prepared.ID, prepared.Revision, attemptAnchor(attemptProject, 2), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.change != nil {
+				test.change(t, f, a)
+			}
+			before := attemptState(t, f, a)
+			journal := policyState(t, f)
+			// Use the current revision to prove terminal/uncertain state is rejected in
+			// its own right, rather than merely because the old revision is stale.
+			var revision int64
+			if err := f.store.DB().QueryRow(`SELECT revision FROM review_execution_attempts WHERE id=?`, a.ID).Scan(&revision); err != nil {
+				t.Fatal(err)
+			}
+			err = f.e.VerifyAction(t.Context(), attemptProject, a.ID, revision)
+			if test.code == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				attemptCode(t, err, test.code)
+			}
+			if attemptState(t, f, a) != before || policyState(t, f) != journal {
+				t.Fatal("final local verification changed journal")
+			}
+			if test.change == nil {
+				attemptCode(t, f.e.VerifyAction(t.Context(), otherAttemptProject, a.ID, revision), "not_found")
+				attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, a.ID, revision+1), "review_conflict")
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				start := time.Now()
+				if f.e.VerifyAction(ctx, attemptProject, a.ID, revision) == nil || time.Since(start) > time.Second {
+					t.Fatal("cancelled guard did not fail promptly")
+				}
+			}
+		})
+	}
+}
+
+func admissionSQL(t *testing.T, f *attemptFixture, query string, args ...any) {
+	t.Helper()
+	if _, err := f.store.DB().Exec(query, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifyActionHostedPostingOnly(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "hosted-request", "hosted", 2, 1))
+	a, err := f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, attemptAnchor(attemptProject, 2), "exact-hosted-intent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := attemptState(t, f, a)
+	if err := f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision); err != nil || before != attemptState(t, f, a) {
+		t.Fatal("posting hosted action was not verifiable", err)
+	}
+	a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "active", "posted", "comment123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision), "review_conflict")
+}
+
+func TestPolicyAdmissionVersionTwoMigrationRetainsUnboundJournal(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	scope := f.scope(t, attemptProject, f.writer, false)
+	request := Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)}
+	body, err := f.e.Enqueue(t.Context(), scope, "pre-policy-key", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt Receipt
+	if json.Unmarshal(body, &receipt) != nil {
+		t.Fatal("receipt")
+	}
+	before, err := f.e.ReadOperation(t.Context(), scope, receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admissionSQL(t, f, `DROP INDEX review_operations_coverage`)
+	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN policy_revision`)
+	admissionSQL(t, f, `UPDATE metadata SET value='2' WHERE key='schema:review_execution'`)
+	var sequence int
+	var name, path string
+	if err := f.store.DB().QueryRow(`PRAGMA database_list`).Scan(&sequence, &name, &path); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := core.Open(t.Context(), filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	f.store = store
+	if err := EnsureSchema(t.Context(), store); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureSchema(t.Context(), store); err != nil {
+		t.Fatal(err)
+	}
+	f.e, err = New(store, attemptCapabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := f.e.ReadOperation(t.Context(), scope, receipt.ID)
+	before.PolicyRevision = 0
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatal("policy migration rewrote retained fields", after, err)
+	}
+	replay, err := f.e.Enqueue(t.Context(), scope, "pre-policy-key", request)
+	if err != nil || !bytes.Equal(body, replay) {
+		t.Fatal("migration lost exact receipt", err)
+	}
+	a, err := f.e.StartAttempt(t.Context(), attemptProject, receipt.ID)
+	if err != nil || a.ID != "" {
+		t.Fatal("unbound operation started", a, err)
+	}
+	after, err = f.e.ReadOperation(t.Context(), scope, receipt.ID)
+	if err != nil || after.State != "held" || after.Reason != "policy_unbound" || after.PolicyRevision != 0 {
+		t.Fatal("legacy policy binding did not hold", after, err)
+	}
+	if attemptCount(t, store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+		t.Fatal("migration hold created work")
+	}
+}

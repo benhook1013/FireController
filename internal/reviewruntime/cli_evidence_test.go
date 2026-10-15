@@ -66,6 +66,11 @@ func newCLIEvidenceFixture(t *testing.T) *cliEvidenceFixture {
 	}
 	f.addCredential(t, "runtime-evidence-writer", "runtime-evidence-writer-principal", f.writer, true)
 	f.addCredential(t, "runtime-evidence-reader", "runtime-evidence-reader-principal", f.reader, false)
+	// This capture fixture starts with an explicit synthetic administrator policy;
+	// policy configuration events and receipts belong to their dedicated tests.
+	if _, err := store.DB().Exec(`INSERT INTO review_policy_config(project_id,revision,body_json,actor_id,created_at) VALUES(?,1,?,'synthetic-runtime-admin',?)`, f.project, `{"required_channels":["cli","hosted"],"paused_channels":[],"max_review_files":0}`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
 	f.engine, err = reviewexec.New(store, []reviewexec.Capability{{ID: "runtime-capability", Provider: "coderabbit", Account: "runtime-account", Channels: []string{"cli", "hosted"}}})
 	if err != nil {
 		t.Fatal(err)

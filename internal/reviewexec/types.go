@@ -69,6 +69,7 @@ type Operation struct {
 	ActorID               string `json:"actor_id"`
 	WorkerID              string `json:"worker_id"`
 	ConfigurationRevision int64  `json:"configuration_revision"`
+	PolicyRevision        int64  `json:"policy_revision"`
 	CapabilityFingerprint string `json:"capability_fingerprint"`
 	PullNumber            int64  `json:"pull_number"`
 	Channel               string `json:"channel"`
@@ -100,6 +101,7 @@ type Engine struct {
 	wake                chan struct{}
 	running             atomic.Bool
 	publishAdjudication func(context.Context, *sql.Tx, core.Scope, CLIAdjudication) error
+	publishAttempt      func(context.Context, *sql.Tx, Attempt) error
 }
 
 // EngineOption composes trusted application integrations before an engine is

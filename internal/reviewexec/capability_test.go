@@ -204,6 +204,12 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 	before := bindingOperation(t, f, scope, oldReceipt.ID)
 	instance := f.store.InstanceID()
 	// Reconstruct the actual version1 table shape only in this owned fixture.
+	if _, err := f.store.DB().Exec(`DROP INDEX review_operations_coverage`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().Exec(`ALTER TABLE review_operations DROP COLUMN policy_revision`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.store.DB().Exec(`ALTER TABLE review_operations DROP COLUMN capability_fingerprint`); err != nil {
 		t.Fatal(err)
 	}
@@ -231,11 +237,11 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := EnsureSchema(context.Background(), reopened); err != nil {
-		t.Fatal("second version2 startup was not idempotent", err)
+		t.Fatal("second version3 startup was not idempotent", err)
 	}
 	bindEngine(t, f, bindingCapability())
 	var version, title, brief, worker string
-	if err := reopened.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "2" {
+	if err := reopened.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "3" {
 		t.Fatal("migration did not advance only the domain version", err)
 	}
 	if err := reopened.DB().QueryRow(`SELECT title,brief,worker_id FROM jobs WHERE id='retained-job'`).Scan(&title, &brief, &worker); err != nil || title != "Retained title" || brief != "Retained exact brief" || worker != "retained-worker" {
@@ -243,6 +249,7 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 	}
 	upgraded := bindingOperation(t, f, scope, oldReceipt.ID)
 	before.CapabilityFingerprint = ""
+	before.PolicyRevision = 0
 	if !reflect.DeepEqual(before, upgraded) {
 		t.Fatal("upgrade rewrote operation instead of leaving an explicitly unbound assertion", upgraded)
 	}

@@ -9,12 +9,15 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-// WithNativeProjection connects authoritative adjudication changes to an
-// already published native browser run in the same transaction. The owner must
-// install the reviews schema before accepting requests. Isolated journal users
+// WithNativeProjection connects journal transitions and adjudication changes
+// to the native browser projection in the same transaction. The owner must
+// install the reviews and evidence schemas before accepting requests. Isolated journal users
 // need not install a browser projection.
 func WithNativeProjection() EngineOption {
-	return func(e *Engine) { e.publishAdjudication = publishCLIAdjudication }
+	return func(e *Engine) {
+		e.publishAdjudication = publishCLIAdjudication
+		e.publishAttempt = publishAttemptTransition
+	}
 }
 
 func cliProjectionFindingID(evidenceID string, finding int64) string {

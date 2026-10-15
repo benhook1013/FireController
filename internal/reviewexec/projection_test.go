@@ -137,6 +137,10 @@ func TestCLIProjectionAdjudicationPreservesFrozenSourceAndHistory(t *testing.T) 
 	if w.Code != 200 && w.Code != 201 {
 		t.Fatalf("historical import: %d %s", w.Code, w.Body.String())
 	}
+	// Establish the terminal attempt before the baseline; this test isolates
+	// subsequent adjudication projection changes. Lifecycle publication has
+	// its own transition and rollback proof.
+	adjudicationComplete(t, f, a)
 	run := projectionRun(evidence)
 	projectionPublish(t, f, reviews.NativePublication{Pull: projectionPull(2), Run: &run})
 	current := projectionPull(2)
@@ -176,7 +180,6 @@ func TestCLIProjectionAdjudicationPreservesFrozenSourceAndHistory(t *testing.T) 
 	if decided.Run.Accepted != 1 || decided.Run.Finalized || decided.Findings[1].Disposition != "rejected" {
 		t.Fatal("authoritative decisions not projected", decided)
 	}
-	adjudicationComplete(t, f, a)
 	journal := attemptState(t, f, a)
 	scope := f.scope(t, attemptProject, f.writer, false)
 	body, err := f.e.FinalizeCLI(ctx, scope, "projection-finalize", evidence.ID, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(2)})

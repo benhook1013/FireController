@@ -316,6 +316,95 @@ func TestReviewReadsDefaultToCurrentSnapshotAndKeepHistoricalCounts(t *testing.T
 	}
 }
 
+func TestReviewAttemptProgressStatesSurviveStoredQueueAndPullReads(t *testing.T) {
+	f := newReviewClientFixture(t)
+	states := []string{"preparing", "held", "prepared"}
+	f.importSnapshot(t, func(req *domain.ObservationRequest) {
+		req.Queue[0].Attempts = nil
+		for i, state := range states {
+			req.Queue[0].Attempts = append(req.Queue[0].Attempts, domain.Attempt{SourceAttemptID: "attempt-" + state, Channel: []string{"cli", "hosted", "manual"}[i], HeadSHA: strings.Repeat("a", 40), State: state, StartedAt: "2026-10-15T12:00:00Z"})
+		}
+	})
+	queue, err := f.client.ReviewQueue(context.Background(), client.PageOptions{})
+	if err != nil || len(queue.Items) != 1 || len(queue.Items[0].LatestAttempts) != len(states) {
+		t.Fatalf("queue progress states missing: %+v %v", queue, err)
+	}
+	pull, err := f.client.ReviewPull(context.Background(), 1, "")
+	if err != nil || len(pull.Attempts) != len(states) {
+		t.Fatalf("pull progress states missing: %+v %v", pull, err)
+	}
+	queueStates := make(map[string]string)
+	for _, attempt := range queue.Items[0].LatestAttempts {
+		queueStates[attempt.SourceAttemptID] = attempt.State
+	}
+	for i, state := range states {
+		if queueStates["attempt-"+state] != state || pull.Attempts[i].State != state {
+			t.Fatal("native progress state was normalized or legacy prepared was lost")
+		}
+	}
+}
+
+func TestReviewProgressStatesDoNotWeakenAttemptOrRunValidation(t *testing.T) {
+	snapshot := "review_snapshot_" + strings.Repeat("b", 32)
+	timestamp := "2026-10-15T12:00:00Z"
+	meta := map[string]any{"project_id": "project-one", "revision": 1, "snapshot_id": snapshot, "source": "native-executor", "observed_at": timestamp, "recorded_at": timestamp}
+	attempt := client.ReviewAttempt{SourceAttemptID: "attempt", Channel: "cli", State: "prepared"}
+	run := client.ReviewRunSummary{Source: "native-executor", ID: "review_run_" + strings.Repeat("a", 32), PullNumber: 1, SourceRunID: "run", Channel: "cli", Scope: "stored", Outcome: "unknown", CoverageLimits: []string{}}
+	invoke := func(kind, state, outcome string) error {
+		t.Helper()
+		currentAttempt, currentRun := attempt, run
+		currentAttempt.State, currentRun.Outcome = state, outcome
+		pull := client.ReviewPullSummary{Number: 1, Title: "PR", State: "open", CIState: "unknown", Mergeability: "unknown", RunCount: 1, AttemptCount: 1, RecentRuns: []client.ReviewRunSummary{currentRun}, LatestAttempts: []client.ReviewAttempt{currentAttempt}}
+		body := map[string]any{}
+		for key, value := range meta {
+			body[key] = value
+		}
+		path := "/api/v1/projects/project-one/reviews"
+		switch kind {
+		case "queue":
+			path += "/queue"
+			body["configured"], body["items"], body["has_more"] = true, []client.ReviewPullSummary{pull}, false
+		case "pull":
+			path += "/pulls/1"
+			body["pull"], body["attempts"] = pull, []client.ReviewAttempt{currentAttempt}
+		case "runs":
+			path += "/pulls/1/runs"
+			body["items"], body["has_more"] = []client.ReviewRunSummary{currentRun}, false
+		case "detail":
+			path += "/runs/" + run.ID
+			body["pull_number"], body["run"], body["findings"] = 1, currentRun, []client.ReviewFinding{}
+		}
+		encoded, _ := json.Marshal(body)
+		f := newReviewMock(t, string(encoded), path)
+		var err error
+		switch kind {
+		case "queue":
+			_, err = f.client.ReviewQueue(context.Background(), client.PageOptions{})
+		case "pull":
+			_, err = f.client.ReviewPull(context.Background(), 1, "")
+		case "runs":
+			_, err = f.client.ReviewRuns(context.Background(), 1, client.ReviewRunOptions{})
+		case "detail":
+			_, err = f.client.ReviewRun(context.Background(), run.ID, "")
+		}
+		return err
+	}
+	for _, state := range []string{"queued", "HELD", "preparing ", "", "hold"} {
+		for _, kind := range []string{"queue", "pull"} {
+			t.Run(kind+"/invalid-attempt/"+state, func(t *testing.T) {
+				checkError(t, invoke(kind, state, "unknown"), "invalid_response")
+			})
+		}
+	}
+	for _, outcome := range []string{"preparing", "held"} {
+		for _, kind := range []string{"queue", "pull", "runs", "detail"} {
+			t.Run(kind+"/attempt-only-outcome/"+outcome, func(t *testing.T) {
+				checkError(t, invoke(kind, "prepared", outcome), "invalid_response")
+			})
+		}
+	}
+}
+
 func TestReviewClientRequiresRunOriginAndKeepsMixedProducerIdentity(t *testing.T) {
 	run := client.ReviewRunSummary{Source: " original producer ", ID: "review_run_" + strings.Repeat("a", 32), PullNumber: 1, SourceRunID: "same-external-id", Channel: "manual", Scope: "stored", Outcome: "unknown", CoverageLimits: []string{}}
 	meta := map[string]any{"project_id": "project-one", "revision": 1, "snapshot_id": "review_snapshot_" + strings.Repeat("b", 32), "source": "native snapshot publisher", "observed_at": "2026-10-15T12:00:00Z", "recorded_at": "2026-10-15T12:01:00Z"}

@@ -123,6 +123,13 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 		if !slices.Contains(c.Queue, r.PullNumber) || !slices.Contains(c.Channels, r.Channel) {
 			return nil, core.Fail("review_not_configured", "The selected PR or channel is not configured.", 409)
 		}
+		policy, err := readPolicy(ctx, tx, scope.ProjectID)
+		if err != nil {
+			return nil, err
+		}
+		if slices.Contains(policy.Policy.PausedChannels, r.Channel) {
+			return nil, core.Fail("reviews_paused", "Review execution is paused for this channel.", 409)
+		}
 		var local, total int
 		if err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN project_id=? THEN 1 ELSE 0 END),0) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain')`, scope.ProjectID).Scan(&total, &local); err != nil {
 			return nil, err
@@ -131,7 +138,7 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 			return nil, core.Fail("overloaded", "Review request capacity is occupied; recover or finish existing operations.", 503)
 		}
 		id, at := core.NewID("review_operation"), stamp()
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'queued',1,'','',?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, revision, e.capabilities[c.CapabilityID].Fingerprint, r.PullNumber, r.Channel, r.HeadSHA, at, at); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',1,'','',?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, revision, policy.Revision, e.capabilities[c.CapabilityID].Fingerprint, r.PullNumber, r.Channel, r.HeadSHA, at, at); err != nil {
 			return nil, err
 		}
 		if err = core.AppendEvent(ctx, tx, scope, "review.requested", id, 1, map[string]any{"pull_number": r.PullNumber, "channel": r.Channel}); err != nil {
@@ -150,7 +157,7 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 
 func readOperation(ctx context.Context, tx *sql.Tx, project, id string) (Operation, error) {
 	var o Operation
-	err := tx.QueryRowContext(ctx, `SELECT id,project_id,actor_id,worker_id,configuration_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at FROM review_operations WHERE project_id=? AND id=?`, project, id).Scan(&o.ID, &o.ProjectID, &o.ActorID, &o.WorkerID, &o.ConfigurationRevision, &o.CapabilityFingerprint, &o.PullNumber, &o.Channel, &o.HeadSHA, &o.State, &o.Revision, &o.Reason, &o.AttemptID, &o.CreatedAt, &o.UpdatedAt)
+	err := tx.QueryRowContext(ctx, `SELECT id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at FROM review_operations WHERE project_id=? AND id=?`, project, id).Scan(&o.ID, &o.ProjectID, &o.ActorID, &o.WorkerID, &o.ConfigurationRevision, &o.PolicyRevision, &o.CapabilityFingerprint, &o.PullNumber, &o.Channel, &o.HeadSHA, &o.State, &o.Revision, &o.Reason, &o.AttemptID, &o.CreatedAt, &o.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return o, core.Fail("not_found", "The review operation is unavailable in this project.", 404)
 	}

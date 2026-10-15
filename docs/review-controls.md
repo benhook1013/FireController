@@ -34,7 +34,7 @@ When a native run has already been published to the stored review workspace, a d
 
 The native run's original source identity and zero-based finding indexes bind that update. It preserves captured finding text, historical snapshots, imported runs, merged queue history and current PR facts. Finalized source counts remain the original counts even when a later audited correction changes an effective decision or fix. Updating a decision does not claim a fresh provider observation for other PRs.
 
-Evidence without an initial native workspace publication remains usable through the ledger controls. A decision does not invent a browser run or convert imported historical evidence into native execution. Initial publication from real provider execution remains part of the driver integration.
+Evidence without an initial native workspace publication remains usable through the ledger controls. A decision does not invent a browser run or convert imported historical evidence into native execution. Trusted initial publication from retained evidence is implemented internally; invoking it from real provider execution remains part of the driver integration.
 
 ## Explicit project policy
 
@@ -42,7 +42,7 @@ Evidence without an initial native workspace publication remains usable through 
 
 `POST` to that path requires administrator permission, an explicit idempotency key and four non-null JSON fields: `expected_revision`, `required_channels`, `paused_channels` and `max_review_files`. Initial revision is zero. Required channels are an explicit nonempty unique subset of `cli` and `hosted`; paused channels are an explicit unique subset and may be empty. `max_review_files` is zero for no additional project ceiling, or 1–100000 for a project ceiling. It neither asserts a provider's actual limit nor bypasses one. Unknown fields and query parameters are rejected.
 
-Successful configuration returns `{id,state:"policy_configured",revision}` with HTTP 200. Changes retain immutable administrator-attributed revisions and a compact event; same-key recovery and stale-revision rejection follow the other guarded writes. Policy currently has storage and API controls only. Admission, aggregate sufficiency and merge-readiness assessment do not yet consume it; no policy CLI/MCP tools are exposed in this slice.
+Successful configuration returns `{id,state:"policy_configured",revision}` with HTTP 200. Changes retain immutable administrator-attributed revisions and a compact event; same-key recovery and stale-revision rejection follow the other guarded writes. New review requests bind the current policy revision without adding a per-call policy flag. Paused channels refuse new requests. Before preparation and admission, a missing, changed, unbound or paused policy holds the original work rather than silently adopting another revision. The final local action guard repeats those checks with current actor, configuration, capability and reservation binding. Exact request-key replay retains its original receipt after policy changes. The project file ceiling still needs the concrete driver's fresh source/file check; aggregate sufficiency and merge-readiness assessment remain separate work. No policy CLI/MCP tools are exposed in this slice.
 
 ## Bound CLI and MCP
 

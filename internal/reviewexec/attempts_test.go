@@ -32,7 +32,12 @@ type attemptFixture struct {
 
 func newAttemptFixture(t *testing.T) *attemptFixture {
 	t.Helper()
-	f := &attemptFixture{httpFixture: newHTTPFixture(t)}
+	return newAttemptFixtureWithPolicy(t, true)
+}
+
+func newAttemptFixtureWithPolicy(t *testing.T, configured bool) *attemptFixture {
+	t.Helper()
+	f := &attemptFixture{httpFixture: newHTTPFixtureWithPolicy(t, configured)}
 	var err error
 	f.e, err = New(f.store, attemptCapabilities)
 	if err != nil {

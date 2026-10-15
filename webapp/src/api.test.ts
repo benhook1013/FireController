@@ -260,6 +260,49 @@ describe('Api stored review workspace', () => {
     }
   });
 
+  it.each(['preparing', 'held', 'prepared'])('preserves the distinct %s attempt state in queue and pull reads', async (state) => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const attempt = { ...reviewAttempt, state, finished_at: '', duration_seconds: null };
+    const pull = { ...reviewPull, latest_attempts: [attempt] };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] })));
+    expect((await client.reviewQueue()).items[0].latest_attempts[0].state).toBe(state);
+    expect((await client.reviewPull(1)).attempts[0].state).toBe(state);
+    client.close();
+  });
+
+  it('rejects malformed attempt states and keeps preparing/held out of run outcomes', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    for (const state of ['queued', 'HELD', 'preparing ', '', 1, null]) {
+      const attempt = { ...reviewAttempt, state };
+      const pull = { ...reviewPull, latest_attempts: [attempt] };
+      vi.stubGlobal('fetch', vi.fn()
+        .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
+        .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] })));
+      await expect(client.reviewQueue()).rejects.toMatchObject({ code: 'invalid_response' });
+      await expect(client.reviewPull(1)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    for (const outcome of ['preparing', 'held']) {
+      const run = { ...reviewRun, outcome };
+      const pull = { ...reviewPull, recent_runs: [run] };
+      vi.stubGlobal('fetch', vi.fn()
+        .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
+        .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [reviewAttempt] }))
+        .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [run], has_more: false }))
+        .mockResolvedValueOnce(json({ ...reviewDetail, run })));
+      await expect(client.reviewQueue()).rejects.toMatchObject({ code: 'invalid_response' });
+      await expect(client.reviewPull(1)).rejects.toMatchObject({ code: 'invalid_response' });
+      await expect(client.reviewRuns(1)).rejects.toMatchObject({ code: 'invalid_response' });
+      await expect(client.reviewRun(run.id)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    client.close();
+  });
+
   it('rejects invalid review selectors and paging before any request', async () => {
     setupLocation();
     const client = api();

@@ -45,9 +45,25 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if !allowed {
 			return holdOperation(ctx, tx, o, "authorization_changed")
 		}
+		_, reason, err := boundPolicy(ctx, tx, o)
+		if err != nil {
+			return err
+		}
+		if reason != "" {
+			return holdOperation(ctx, tx, o, reason)
+		}
 		var repositoryID int64
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
+		}
+		if e.publishAttempt != nil {
+			available, err := attemptProjectionCapacity(ctx, tx, o)
+			if err != nil {
+				return err
+			}
+			if !available {
+				return holdOperation(ctx, tx, o, "projection_capacity")
+			}
 		}
 		var busy int
 		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_reservations WHERE provider=? AND action_class=? AND (account=? OR (repository_id=? AND pull_number=?))`, capability.Provider, o.Channel, capability.Account, repositoryID, o.PullNumber).Scan(&busy); err != nil {
@@ -56,6 +72,7 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if busy != 0 {
 			return core.Fail("review_busy", "A review reservation is already occupied; no external action was started.", 409)
 		}
+
 		result = Attempt{ID: core.NewID("review_attempt"), OperationID: o.ID, ProjectID: project, Provider: capability.Provider, Account: capability.Account, State: "preparing", Revision: 1}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO review_execution_attempts(id,operation_id,project_id,provider,account,state,revision,anchor_json,intent,external_id) VALUES(?,?,?,?,?,'preparing',1,'null','','')`, result.ID, o.ID, project, result.Provider, result.Account); err != nil {
 			return err
@@ -66,7 +83,7 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state='preparing',attempt_id=?,revision=revision+1,updated_at=? WHERE id=?`, result.ID, stamp(), o.ID); err != nil {
 			return err
 		}
-		return transitionRow(ctx, tx, result, "preparing")
+		return e.transitionRow(ctx, tx, result, "preparing")
 	})
 	return result, err
 }
@@ -134,6 +151,13 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if !ok || e.validateConfiguration(c) != nil || capability.Provider != a.Provider || capability.Account != a.Account || capability.Fingerprint != o.CapabilityFingerprint {
 			return conflict()
 		}
+		_, reason, err := boundPolicy(ctx, tx, o)
+		if err != nil {
+			return err
+		}
+		if reason != "" {
+			return policyAdmissionConflict()
+		}
 		state := "active"
 		if o.Channel == "hosted" {
 			state = "posting"
@@ -153,7 +177,7 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,updated_at=? WHERE id=?`, state, stamp(), o.ID); err != nil {
 			return err
 		}
-		if err = transitionRow(ctx, tx, a, "admitted"); err != nil {
+		if err = e.transitionRow(ctx, tx, a, "admitted"); err != nil {
 			return err
 		}
 		result = a
@@ -174,8 +198,11 @@ func safeText(s string, max int) bool {
 	return true
 }
 
-func transitionRow(ctx context.Context, tx *sql.Tx, a Attempt, reason string) error {
+func (e *Engine) transitionRow(ctx context.Context, tx *sql.Tx, a Attempt, reason string) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO review_execution_transitions(attempt_id,revision,state,reason,external_id,created_at) VALUES(?,?,?,?,?,?)`, a.ID, a.Revision, a.State, reason, a.ExternalID, stamp())
+	if err == nil && e.publishAttempt != nil {
+		return e.publishAttempt(ctx, tx, a)
+	}
 	return err
 }
 
@@ -216,7 +243,7 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 				return err
 			}
 		}
-		if err = transitionRow(ctx, tx, a, reason); err != nil {
+		if err = e.transitionRow(ctx, tx, a, reason); err != nil {
 			return err
 		}
 		result = a
@@ -285,7 +312,7 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 					return err
 				}
 			}
-			if err = transitionRow(ctx, tx, a, "supervisor_interrupted"); err != nil {
+			if err = e.transitionRow(ctx, tx, a, "supervisor_interrupted"); err != nil {
 				return err
 			}
 		}

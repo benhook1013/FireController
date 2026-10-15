@@ -17,7 +17,7 @@ import (
 
 func policyFixture(t *testing.T) *attemptFixture {
 	t.Helper()
-	f := newAttemptFixture(t)
+	f := newAttemptFixtureWithPolicy(t, false)
 	if err := EnsurePolicySchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}

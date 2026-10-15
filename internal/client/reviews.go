@@ -354,7 +354,7 @@ func validReviewRunSummary(value ReviewRunSummary) bool {
 
 func validReviewAttempt(value ReviewAttempt) bool {
 	if !cleanReviewText(value.SourceAttemptID, 256, true) || !oneReviewOf(value.Channel, "cli", "hosted", "manual", "subagent") ||
-		!validReviewSHA(value.HeadSHA) || !oneReviewOf(value.State, "prepared", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "unknown") ||
+		!validReviewSHA(value.HeadSHA) || !oneReviewOf(value.State, "prepared", "preparing", "held", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "unknown") ||
 		!cleanReviewText(value.SourceRunID, 256, false) || !cleanReviewText(value.TriggerID, 128, false) || !cleanReviewText(value.ProviderReviewID, 128, false) {
 		return false
 	}
