@@ -72,7 +72,7 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 		return reviews.Receipt{}, publicationConflict()
 	}
 	if metadata != nil && metadata.Number != operation.PullNumber {
-		return reviews.Receipt{}, cliPublicationConflict()
+		return reviews.Receipt{}, publicationConflict()
 	}
 	pull, err := currentReviewPull(ctx, tx, attempt.ProjectID, operation.PullNumber)
 	if missingCurrentPull(err) && metadata != nil {
