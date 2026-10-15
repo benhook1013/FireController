@@ -6,7 +6,7 @@
 
 ## Build and checks
 
-Use Go 1.27, Node.js 22.22 or newer, and Make on Linux/WSL:
+Use Go 1.27, Node.js 22.22 or newer, Make and a C compiler such as `gcc` on Linux/WSL. The race-enabled `make check` requires cgo enabled; CGO-free `make build` needs no C compiler:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
