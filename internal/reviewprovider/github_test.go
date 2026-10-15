@@ -347,6 +347,10 @@ func TestNextPageRejectsAmbiguityAndPageBounds(t *testing.T) {
 		"<https://api.github.com/repos/o/r/issues/1/comments?page=2&per_page=100>; rel=next, <https://api.github.com/repos/o/r/issues/1/comments?page=3&per_page=100>; rel=next",
 		"<https://api.github.com/repos/o/r/issues/1/comments?page=1&per_page=100>; rel=next",
 		"<https://api.github.com/repos/o/r/issues/1/comments?page=101&per_page=100>; rel=next",
+		"<https://api.github.com/repos/o/r/issues/1/comments?page=3&per_page=100>; rel=next",
+		"<https://api.github.com/repos/o/r/issues/1/comments?page=0&per_page=100>; rel=next",
+		"<https://api.github.com/repos/o/r/issues/1/comments?page=-1&per_page=100>; rel=next",
+		"<https://api.github.com/repos/o/r/issues/1/comments?page=9223372036854775808&per_page=100>; rel=next",
 		"<https://api.github.com/repos/o/r/issues/1/comments?page=2&per_page=50>; rel=next",
 		"<https://api.github.com/repos/o/r/issues/1/comments?page=2&per_page=100&access_token=x>; rel=next",
 		"malformed rel=next",
@@ -782,5 +786,86 @@ func TestGitHubNumericRepositoryLinkNeverFetchesForeignOrigin(t *testing.T) {
 				t.Fatal("foreign numeric Link fetched or partial collection returned", bodies, requests.Load(), foreignRequests.Load(), err)
 			}
 		})
+	}
+}
+
+func TestGitHubPaginationRejectsSkippedPageWithoutReturningPartialCollection(t *testing.T) {
+	for _, kind := range []string{"issues", "reviews", "review-comments"} {
+		for _, numeric := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/numeric=%v", kind, numeric), func(t *testing.T) {
+				suffix := numericPaginationSuffix(kind)
+				path := "/repos/owner/repo/" + suffix
+				var requests atomic.Int64
+				var requestedPageThree atomic.Bool
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					if r.Method != http.MethodGet || r.URL.Path != path || r.URL.RawPath != "" || r.URL.Query().Get("per_page") != "100" || r.Header.Get("Authorization") != "Bearer synthetic-pagination-token" {
+						t.Errorf("unexpected collection request: %s %s", r.Method, r.URL.String())
+						http.NotFound(w, r)
+						return
+					}
+					switch r.URL.Query().Get("page") {
+					case "1":
+						targetPath := path
+						if numeric {
+							targetPath = "/repositories/1418705294/" + suffix
+						}
+						w.Header().Set("Link", "<"+serverURL(r)+targetPath+"?page=3&per_page=100>; rel=next")
+						_, _ = ioWriteString(w, "["+numericPaginationItem(kind, 1)+"]")
+					case "3":
+						requestedPageThree.Store(true)
+						_, _ = ioWriteString(w, "["+numericPaginationItem(kind, 3)+"]")
+					default:
+						t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+						http.NotFound(w, r)
+					}
+				}))
+				defer server.Close()
+				bodies, err := readNumericPaginationCollection(t, testGitHub(server, "synthetic-pagination-token"), kind)
+				if !hasCode(err, "provider_invalid_response") || bodies != nil || requests.Load() != 1 || requestedPageThree.Load() {
+					t.Fatalf("skipped page was followed or collection treated as complete: bodies=%v err=%v requests=%d page3=%v", bodies, err, requests.Load(), requestedPageThree.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestGitHubPaginationAcceptsThreeAdjacentPagesOnOriginalCollection(t *testing.T) {
+	for _, kind := range []string{"issues", "reviews", "review-comments"} {
+		for _, numeric := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/numeric=%v", kind, numeric), func(t *testing.T) {
+				suffix := numericPaginationSuffix(kind)
+				path := "/repos/owner/repo/" + suffix
+				var requests atomic.Int64
+				var pages [3]atomic.Int64
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					index := requests.Add(1) - 1
+					page, err := strconv.ParseInt(r.URL.Query().Get("page"), 10, 64)
+					if err != nil || index >= 3 || page < 1 || page > 3 || r.Method != http.MethodGet || r.URL.Path != path || r.URL.RawPath != "" || r.URL.Query().Get("per_page") != "100" || r.Header.Get("Authorization") != "Bearer synthetic-pagination-token" {
+						t.Errorf("unexpected collection request: %s %s", r.Method, r.URL.String())
+						http.NotFound(w, r)
+						return
+					}
+					pages[index].Store(page)
+					if page < 3 {
+						targetPath := path
+						if numeric {
+							targetPath = "/repositories/1418705294/" + suffix
+						}
+						w.Header().Set("Link", fmt.Sprintf("<%s%s?page=%d&per_page=100>; rel=next", serverURL(r), targetPath, page+1))
+					}
+					item := numericPaginationItem(kind, int(page))
+					if page == 3 {
+						item = strings.Replace(item, "page one", "page three", 1)
+					}
+					_, _ = ioWriteString(w, "["+item+"]")
+				}))
+				defer server.Close()
+				bodies, err := readNumericPaginationCollection(t, testGitHub(server, "synthetic-pagination-token"), kind)
+				if err != nil || strings.Join(bodies, ",") != "page one,page two,page three" || requests.Load() != 3 || pages[0].Load() != 1 || pages[1].Load() != 2 || pages[2].Load() != 3 {
+					t.Fatalf("adjacent pagination lost data or fetched alias: bodies=%v err=%v requests=%d pages=%d,%d,%d", bodies, err, requests.Load(), pages[0].Load(), pages[1].Load(), pages[2].Load())
+				}
+			})
+		}
 	}
 }

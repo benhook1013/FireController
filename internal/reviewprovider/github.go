@@ -439,7 +439,7 @@ func nextPage(linkHeaders []string, baseURL, path string, current int64) (int64,
 				return 0, false, errors.New("invalid next query")
 			}
 			page, err := strconv.ParseInt(query.Get("page"), 10, 64)
-			if err != nil || strconv.FormatInt(page, 10) != query.Get("page") || page <= current || page <= 0 || page > githubMaxPages {
+			if err != nil || strconv.FormatInt(page, 10) != query.Get("page") || page != current+1 || page <= 0 || page > githubMaxPages {
 				return 0, false, errors.New("nonadvancing next")
 			}
 			next = page
