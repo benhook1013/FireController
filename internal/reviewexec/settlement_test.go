@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -27,31 +28,92 @@ func settlementWriterLock(ctx context.Context, f *attemptFixture, operation stri
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// The fault belongs to the test, not the adapter: returning from Prepare
-	// or Dispatch must not cancel this separate writer before settlement.
-	ownedCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	tx, err := f.store.DB().BeginTx(ownedCtx, nil)
-	if err != nil {
+	acquireCtx, stopAcquisition := context.WithTimeout(ctx, time.Second)
+	defer stopAcquisition()
+	for {
+		if err := acquireCtx.Err(); err != nil {
+			return nil, fmt.Errorf("acquire owned SQLite writer: %w", err)
+		}
+		// The fault belongs to the test, not the adapter: returning from Prepare
+		// or Dispatch must not cancel this separate writer before settlement.
+		ownedCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		tx, err := f.store.DB().BeginTx(ownedCtx, nil)
+		if err == nil {
+			_, err = tx.ExecContext(acquireCtx, `UPDATE review_operations SET reason=reason WHERE id=?`, operation)
+			if err == nil {
+				return &settlementLock{Tx: tx, cancel: cancel}, nil
+			}
+			_ = tx.Rollback()
+		}
 		cancel()
-		return nil, err
+		// The supervisor can briefly own the writer while starting another
+		// attempt. Retry only SQLite contention, with a fresh transaction;
+		// this is fixture acquisition, not a retry of any adapter action.
+		var coded interface{ Code() int }
+		if !errors.As(err, &coded) || coded.Code()&255 != 5 && coded.Code()&255 != 6 {
+			return nil, err
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-acquireCtx.Done():
+			timer.Stop()
+			return nil, fmt.Errorf("acquire owned SQLite writer after contention: %w", acquireCtx.Err())
+		case <-timer.C:
+		}
 	}
-	if _, err = tx.ExecContext(ownedCtx, `UPDATE review_operations SET reason=reason WHERE id=?`, operation); err != nil {
-		_ = tx.Rollback()
-		cancel()
-		return nil, err
-	}
-	return &settlementLock{Tx: tx, cancel: cancel}, nil
 }
 
-func settlementReceiveLock(t *testing.T, locks <-chan *settlementLock) *settlementLock {
+type settlementLockResult struct {
+	lock *settlementLock
+	err  error
+}
+
+func settlementReceiveLock(t *testing.T, locks <-chan settlementLockResult) *settlementLock {
 	t.Helper()
 	select {
-	case tx := <-locks:
-		t.Cleanup(func() { _ = tx.Rollback() })
-		return tx
+	case result := <-locks:
+		if result.err != nil {
+			t.Fatalf("fake adapter could not acquire its owned SQLite lock: %v", result.err)
+		}
+		t.Cleanup(func() { _ = result.lock.Rollback() })
+		return result.lock
 	case <-time.After(3 * time.Second):
 		t.Fatal("fake adapter did not acquire its owned SQLite lock")
 		return nil
+	}
+}
+
+func TestSettlementWriterLockWaitsForOwnedContention(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	r := f.enqueue(t, attemptProject, "fixture-lock-contention", "cli", 2, 1)
+	first, err := settlementWriterLock(context.Background(), f, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Rollback() })
+	// Force contention rather than depending on the supervisor's timing. The
+	// second acquisition must wait through actual SQLite busy responses.
+	released := make(chan error, 1)
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		released <- first.Rollback()
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	second, err := settlementWriterLock(ctx, f, r.ID)
+	if err != nil {
+		t.Fatal("owned writer did not recover after contention", err)
+	}
+	t.Cleanup(func() { _ = second.Rollback() })
+	if err := <-released; err != nil {
+		t.Fatal(err)
+	}
+	// Returning from the adapter and cancelling its context must leave the
+	// independently owned fault in place for journal settlement to encounter.
+	cancel()
+	if _, err := second.ExecContext(context.Background(), `UPDATE review_operations SET reason=reason WHERE id=?`, r.ID); err != nil {
+		t.Fatal("adapter cancellation released its independently owned lock", err)
 	}
 }
 
@@ -104,26 +166,26 @@ func TestSettlementTransientSQLiteLockRetriesOnlyLocalOutcome(t *testing.T) {
 	for _, phase := range []string{"preparation", "trigger", "finish"} {
 		t.Run(phase, func(t *testing.T) {
 			f := supervisorFixture(t)
-			locks := make(chan *settlementLock, 1)
+			locks := make(chan settlementLockResult, 1)
 			triggerResult := make(chan error, 1)
 			releaseDispatch := make(chan struct{})
 			driver := &controlledDriver{}
 			if phase == "preparation" {
 				driver.prepare = func(ctx context.Context, o Operation, _ Configuration, _ Attempt) (Preparation, error) {
 					tx, err := settlementWriterLock(ctx, f, o.ID)
+					locks <- settlementLockResult{lock: tx, err: err}
 					if err != nil {
 						return Preparation{}, err
 					}
-					locks <- tx
 					return Preparation{}, errors.New("synthetic private preflight failure")
 				}
 			} else {
 				driver.dispatch = func(ctx context.Context, o Operation, _ Attempt, record func(context.Context, string) error) (Result, error) {
 					tx, err := settlementWriterLock(ctx, f, o.ID)
+					locks <- settlementLockResult{lock: tx, err: err}
 					if err != nil {
 						return Result{}, err
 					}
-					locks <- tx
 					if phase == "trigger" {
 						err := record(ctx, "retained_trigger_123")
 						triggerResult <- err
@@ -188,7 +250,7 @@ func TestSettlementTransientSQLiteLockRetriesOnlyLocalOutcome(t *testing.T) {
 
 func TestSettlementPermanentSQLiteFailureStopsSupervisorAndCancelsOtherWork(t *testing.T) {
 	f := supervisorFixture(t)
-	locks := make(chan *settlementLock, 1)
+	locks := make(chan settlementLockResult, 1)
 	otherEntered, otherCancelled := make(chan struct{}), make(chan struct{})
 	driver := &controlledDriver{dispatch: func(ctx context.Context, o Operation, _ Attempt, _ func(context.Context, string) error) (Result, error) {
 		if o.Channel == "hosted" {
@@ -198,10 +260,10 @@ func TestSettlementPermanentSQLiteFailureStopsSupervisorAndCancelsOtherWork(t *t
 			return Result{}, ctx.Err()
 		}
 		tx, err := settlementWriterLock(ctx, f, o.ID)
+		locks <- settlementLockResult{lock: tx, err: err}
 		if err != nil {
 			return Result{}, err
 		}
-		locks <- tx
 		return Result{State: "completed", Reason: "capture_retained"}, nil
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
