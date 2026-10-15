@@ -17,6 +17,8 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
+const catalogHostedSettings = `{"provider_actor_id":101,"provider_login":"coderabbitai[bot]","progress_mode":"commit_status","progress_app_id":0}`
+
 const publicCatalog = `{"version":1,"capabilities":[{"id":"local-review","account":"included-account","organization":"example","channels":["cli"],"git_executable":"git","cli_executable":"coderabbit","authentication_environment":{"HOME":"/private/account"}}]}`
 
 func TestLoadCatalogDisabledAndPrivateValues(t *testing.T) {
@@ -31,7 +33,7 @@ func TestLoadCatalogDisabledAndPrivateValues(t *testing.T) {
 	dir := t.TempDir()
 	token := "synthetic-token-value\n"
 	writePrivate(t, filepath.Join(dir, "github.token"), []byte(token))
-	path := writeCatalog(t, dir, `{"version":1,"capabilities":[{"id":"hosted","account":"account","organization":"example.org","channels":["hosted"],"github_credential_file":"github.token","git_executable":"git"}]}`)
+	path := writeCatalog(t, dir, `{"version":1,"capabilities":[{"id":"hosted","account":"account","organization":"example.org","channels":["hosted"],"hosted":`+catalogHostedSettings+`,"github_credential_file":"github.token","git_executable":"git"}]}`)
 	loaded, err := LoadCatalog(path)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +66,7 @@ func TestCatalogFingerprintCanonicalAndScoped(t *testing.T) {
 	dir := t.TempDir()
 	writePrivate(t, filepath.Join(dir, "one.token"), []byte("one-token"))
 	writePrivate(t, filepath.Join(dir, "two.token"), []byte("two-token"))
-	base := `{"version":1,"capabilities":[{"id":"first","account":"acct","organization":"example","channels":["hosted","cli"],"github_credential_file":"one.token","git_executable":"git","cli_executable":"coderabbit","authentication_environment":{"HOME":"/private/home"}}]}`
+	base := `{"version":1,"capabilities":[{"id":"first","account":"acct","organization":"example","channels":["hosted","cli"],"hosted":` + catalogHostedSettings + `,"github_credential_file":"one.token","git_executable":"git","cli_executable":"coderabbit","authentication_environment":{"HOME":"/private/home"}}]}`
 	firstPath := writeCatalog(t, dir, base)
 	first, err := LoadCatalog(firstPath)
 	if err != nil {
@@ -75,7 +77,7 @@ func TestCatalogFingerprintCanonicalAndScoped(t *testing.T) {
 	}
 
 	canonicalDifferentOrder := `{
-  "capabilities": [{"authentication_environment":{"HOME":"/private/home"},"cli_executable":"coderabbit","git_executable":"git","github_credential_file":"one.token","channels":["cli","hosted"],"organization":"example","account":"acct","id":"first"}],
+  "capabilities": [{"authentication_environment":{"HOME":"/private/home"},"cli_executable":"coderabbit","git_executable":"git","github_credential_file":"one.token","hosted":` + catalogHostedSettings + `,"channels":["cli","hosted"],"organization":"example","account":"acct","id":"first"}],
   "version": 1
 }`
 	second, err := LoadCatalog(writeCatalog(t, dir, canonicalDifferentOrder))
@@ -93,7 +95,7 @@ func TestCatalogFingerprintCanonicalAndScoped(t *testing.T) {
 	if changedToken.Capabilities[0].Fingerprint == first.Capabilities[0].Fingerprint {
 		t.Fatal("credential change did not change fingerprint")
 	}
-	otherRef := `{"version":1,"capabilities":[{"id":"first","account":"acct","organization":"example","channels":["hosted","cli"],"github_credential_file":` + quoteJSON(t, filepath.Join(dir, "one.token")) + `,"git_executable":"git","cli_executable":"coderabbit","authentication_environment":{"HOME":"/private/home"}}]}`
+	otherRef := `{"version":1,"capabilities":[{"id":"first","account":"acct","organization":"example","channels":["hosted","cli"],"hosted":` + catalogHostedSettings + `,"github_credential_file":` + quoteJSON(t, filepath.Join(dir, "one.token")) + `,"git_executable":"git","cli_executable":"coderabbit","authentication_environment":{"HOME":"/private/home"}}]}`
 	otherReference, err := LoadCatalog(writeCatalog(t, dir, otherRef))
 	if err != nil {
 		t.Fatal(err)
@@ -292,7 +294,7 @@ func writePrivate(t *testing.T, path string, data []byte) {
 }
 
 func hostedCatalog(reference string) string {
-	return `{"version":1,"capabilities":[{"id":"hosted","account":"account","organization":"example","channels":["hosted"],"github_credential_file":` + quoteJSON(nil, reference) + `,"git_executable":"git"}]}`
+	return `{"version":1,"capabilities":[{"id":"hosted","account":"account","organization":"example","channels":["hosted"],"hosted":` + catalogHostedSettings + `,"github_credential_file":` + quoteJSON(nil, reference) + `,"git_executable":"git"}]}`
 }
 
 func catalogWithCapabilities(count int) string {
@@ -329,5 +331,159 @@ func TestCatalogFailureIsSafeCoreConfigurationError(t *testing.T) {
 	}
 	if coded.Code != "configuration_invalid" {
 		t.Fatalf("error code = %q", coded.Code)
+	}
+}
+
+func TestCatalogHostedSettingsStrictShapesAndChannelBindings(t *testing.T) {
+	dir := t.TempDir()
+	writePrivate(t, filepath.Join(dir, "token"), []byte("synthetic-hosted-token"))
+	base := hostedCatalog("token")
+	for name, settings := range map[string]string{
+		"missing actor":        `{"provider_login":"coderabbitai[bot]","progress_mode":"commit_status"}`,
+		"null actor":           `{"provider_actor_id":null,"provider_login":"coderabbitai[bot]","progress_mode":"commit_status"}`,
+		"zero actor":           `{"provider_actor_id":0,"provider_login":"coderabbitai[bot]","progress_mode":"commit_status"}`,
+		"negative actor":       `{"provider_actor_id":-1,"provider_login":"coderabbitai[bot]","progress_mode":"commit_status"}`,
+		"fractional actor":     `{"provider_actor_id":1.5,"provider_login":"coderabbitai[bot]","progress_mode":"commit_status"}`,
+		"string actor":         `{"provider_actor_id":"1","provider_login":"coderabbitai[bot]","progress_mode":"commit_status"}`,
+		"overflow actor":       `{"provider_actor_id":9223372036854775808,"provider_login":"coderabbitai[bot]","progress_mode":"commit_status"}`,
+		"missing login":        `{"provider_actor_id":1,"progress_mode":"commit_status"}`,
+		"null login":           `{"provider_actor_id":1,"provider_login":null,"progress_mode":"commit_status"}`,
+		"empty login":          `{"provider_actor_id":1,"provider_login":"","progress_mode":"commit_status"}`,
+		"whitespace login":     `{"provider_actor_id":1,"provider_login":" coderabbitai[bot]","progress_mode":"commit_status"}`,
+		"newline login":        `{"provider_actor_id":1,"provider_login":"coderabbitai\n","progress_mode":"commit_status"}`,
+		"unicode login":        `{"provider_actor_id":1,"provider_login":"cöderabbitai","progress_mode":"commit_status"}`,
+		"malformed bot suffix": `{"provider_actor_id":1,"provider_login":"coderabbitai[Bot]","progress_mode":"commit_status"}`,
+		"suffix only":          `{"provider_actor_id":1,"provider_login":"[bot]","progress_mode":"commit_status"}`,
+		"long login":           `{"provider_actor_id":1,"provider_login":"` + strings.Repeat("a", 101) + `","progress_mode":"commit_status"}`,
+		"missing mode":         `{"provider_actor_id":1,"provider_login":"coderabbitai[bot]"}`,
+		"null mode":            `{"provider_actor_id":1,"provider_login":"coderabbitai[bot]","progress_mode":null}`,
+		"unknown mode":         `{"provider_actor_id":1,"provider_login":"coderabbitai[bot]","progress_mode":"automatic"}`,
+		"mode alias":           `{"provider_actor_id":1,"provider_login":"coderabbitai[bot]","progress_mode":"CHECK_RUN","progress_app_id":2}`,
+		"status with app":      `{"provider_actor_id":1,"provider_login":"coderabbitai[bot]","progress_mode":"commit_status","progress_app_id":2}`,
+		"status negative app":  `{"provider_actor_id":1,"provider_login":"coderabbitai[bot]","progress_mode":"commit_status","progress_app_id":-1}`,
+		"null app":             `{"provider_actor_id":1,"provider_login":"coderabbitai[bot]","progress_mode":"commit_status","progress_app_id":null}`,
+		"check missing app":    `{"provider_actor_id":1,"provider_login":"coderabbitai[bot]","progress_mode":"check_run"}`,
+		"check zero app":       `{"provider_actor_id":1,"provider_login":"coderabbitai[bot]","progress_mode":"check_run","progress_app_id":0}`,
+		"check negative app":   `{"provider_actor_id":1,"provider_login":"coderabbitai[bot]","progress_mode":"check_run","progress_app_id":-1}`,
+		"unknown field":        strings.TrimSuffix(catalogHostedSettings, "}") + `,"provider_kind":"Bot"}`,
+		"case alias":           strings.Replace(catalogHostedSettings, `"provider_actor_id"`, `"Provider_Actor_ID"`, 1),
+		"duplicate field":      strings.TrimSuffix(catalogHostedSettings, "}") + `,"provider_actor_id":101}`,
+		"null settings":        `null`,
+		"array settings":       `[]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := strings.Replace(base, catalogHostedSettings, settings, 1)
+			_, err := LoadCatalog(writeCatalog(t, dir, raw))
+			if err == nil {
+				t.Fatal("invalid hosted settings accepted")
+			}
+			if strings.Contains(err.Error(), raw) || strings.Contains(err.Error(), dir) || strings.Contains(err.Error(), "synthetic-hosted-token") {
+				t.Fatal("invalid settings disclosed private source", err)
+			}
+		})
+	}
+	for name, raw := range map[string]string{
+		"hosted missing settings":   strings.Replace(base, `"hosted":`+catalogHostedSettings+`,`, "", 1),
+		"hosted missing credential": strings.Replace(base, `"github_credential_file":"token",`, "", 1),
+		"CLI only with settings":    strings.Replace(publicCatalog, `"channels":["cli"]`, `"channels":["cli"],"hosted":`+catalogHostedSettings, 1),
+		"hosted field alias":        strings.Replace(base, `"hosted":`, `"Hosted":`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LoadCatalog(writeCatalog(t, dir, raw)); err == nil {
+				t.Fatal("invalid hosted channel binding accepted")
+			}
+		})
+	}
+	if validHostedSettings(nil) {
+		t.Fatal("nil settings accepted by constructor validator")
+	}
+}
+
+func TestCatalogHostedOnlySettingsFingerprintAndPrivateSerialization(t *testing.T) {
+	dir := t.TempDir()
+	writePrivate(t, filepath.Join(dir, "token"), []byte("synthetic-hosted-token"))
+	base := hostedCatalog("token")
+	loaded, err := LoadCatalog(writeCatalog(t, dir, base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := loaded.Capabilities[0]
+	if capability.Hosted == nil || capability.Hosted.ProviderActorID != 101 || capability.Hosted.ProviderLogin != "coderabbitai[bot]" || capability.Hosted.ProgressMode != "commit_status" || capability.Hosted.ProgressAppID != 0 || capability.CLIExecutable != "" || len(capability.AuthenticationEnvironment) != 0 || !validHostedSettings(capability.Hosted) {
+		t.Fatal("hosted-only catalog lost settings or required CLI fields")
+	}
+	absentZero := strings.Replace(base, `,"progress_app_id":0`, "", 1)
+	reordered := strings.Replace(base, catalogHostedSettings, `{"progress_mode":"commit_status","provider_login":"coderabbitai[bot]","provider_actor_id":101}`, 1)
+	for _, raw := range []string{absentZero, reordered} {
+		got, err := LoadCatalog(writeCatalog(t, dir, raw))
+		if err != nil || got.Capabilities[0].Fingerprint != capability.Fingerprint {
+			t.Fatal("equivalent hosted settings changed fingerprint", err)
+		}
+	}
+	for name, settings := range map[string]string{
+		"actor": strings.Replace(catalogHostedSettings, `"provider_actor_id":101`, `"provider_actor_id":102`, 1),
+		"login": strings.Replace(catalogHostedSettings, `coderabbitai[bot]`, `CodeRabbitAI[bot]`, 1),
+		"mode":  `{"provider_actor_id":101,"provider_login":"coderabbitai[bot]","progress_mode":"check_run","progress_app_id":7}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := LoadCatalog(writeCatalog(t, dir, strings.Replace(base, catalogHostedSettings, settings, 1)))
+			if err != nil || got.Capabilities[0].Fingerprint == capability.Fingerprint {
+				t.Fatal("hosted setting failed to bind fingerprint", err)
+			}
+			if name == "login" && got.Capabilities[0].Hosted.ProviderLogin != "CodeRabbitAI[bot]" {
+				t.Fatal("display login silently normalized")
+			}
+			if name == "mode" {
+				changed, err := LoadCatalog(writeCatalog(t, dir, strings.Replace(strings.Replace(base, catalogHostedSettings, settings, 1), `"progress_app_id":7`, `"progress_app_id":8`, 1)))
+				if err != nil || changed.Capabilities[0].Fingerprint == got.Capabilities[0].Fingerprint {
+					t.Fatal("progress app change failed to bind fingerprint", err)
+				}
+			}
+		})
+	}
+	encoded, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	formatted := fmt.Sprintf("%v %+v %#v %#v", loaded, capability, capability, *capability.Hosted)
+	for _, private := range []string{"provider_actor_id", "provider_login", "progress_mode", "progress_app_id", "coderabbitai[bot]", "commit_status", "synthetic-hosted-token", dir} {
+		if strings.Contains(string(encoded), private) || strings.Contains(formatted, private) {
+			t.Fatal("hosted private data leaked through serialization/formatting", private)
+		}
+	}
+}
+
+func TestCatalogCLIOnlyFingerprintUnchangedAndHostedCopiesIndependent(t *testing.T) {
+	loaded, err := LoadCatalog(writeCatalog(t, t.TempDir(), publicCatalog))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This exact value predates the optional hosted fingerprint member. Omitting
+	// nil settings must preserve existing CLI-only operation capability bindings.
+	const beforeHostedSettings = "f7e567144adc2fac285e3217d2a81f009581adf2615cd1f228a5a96a9e6fbf0b"
+	if loaded.Capabilities[0].Hosted != nil || loaded.Capabilities[0].Fingerprint != beforeHostedSettings {
+		t.Fatal("CLI-only fingerprint changed", loaded.Capabilities[0].Fingerprint)
+	}
+	dir := t.TempDir()
+	writePrivate(t, filepath.Join(dir, "token"), []byte("synthetic-hosted-token"))
+	input := capabilityFile{ID: "hosted", Account: "account", Organization: "example", Channels: []string{"hosted"}, GitHubCredentialFile: "token", GitExecutable: "git", Hosted: &HostedSettings{ProviderActorID: 101, ProviderLogin: "coderabbitai[bot]", ProgressMode: "commit_status"}}
+	first, err := loadCapability(input, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := loadCapability(input, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Hosted == input.Hosted || second.Hosted == input.Hosted || first.Hosted == second.Hosted {
+		t.Fatal("loaded settings alias caller or another capability")
+	}
+	first.Hosted.ProviderActorID = 999
+	first.Channels[0] = "changed caller copy"
+	if input.Hosted.ProviderActorID != 101 || second.Hosted.ProviderActorID != 101 || input.Channels[0] != "hosted" || second.Channels[0] != "hosted" {
+		t.Fatal("returned settings or channels changed another owner")
+	}
+	input.Hosted.ProviderLogin = "changed-input"
+	if first.Hosted.ProviderLogin != "coderabbitai[bot]" || second.Hosted.ProviderLogin != "coderabbitai[bot]" {
+		t.Fatal("input settings changed loaded capability")
 	}
 }

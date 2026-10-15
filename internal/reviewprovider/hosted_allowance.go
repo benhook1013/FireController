@@ -14,8 +14,8 @@ type HostedAllowanceSnapshot struct {
 	ObservedAt    time.Time
 }
 
-// HostedAllowanceObservation retains only an attributed cooldown observation.
-// Even cooldown_observed grants no execution, positive capacity or billing proof.
+// HostedAllowanceObservation retains only an attributed provider observation.
+// Neither observed state grants execution, numeric capacity or billing proof.
 // RetryNotBefore includes rounding uncertainty; it is not an exact quota reset.
 type HostedAllowanceObservation struct {
 	State             string
@@ -39,8 +39,10 @@ func HostedAllowanceQueryBody(intent HostedTriggerIntent) (string, error) {
 var hostedAllowanceCooldown = regexp.MustCompile(`^<!-- This is an auto-generated reply by CodeRabbit -->\nYour \[plan\]\(https://docs\.coderabbit\.ai/management/plans#fair-usage-limits-policy\) includes PR reviews subject to \[rate limits\]\(https://docs\.coderabbit\.ai/management/plans#rate-limits\)\. More reviews will be available in ([1-9][0-9]{0,3}) (minute|minutes)\.$`)
 var hostedAllowanceCommand = regexp.MustCompile(`(?i)@coderabbitai(?:[ \t]|$)`)
 
+const hostedAllowanceAvailable = "<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). Reviews are available now."
+
 // ResolveHostedAllowance performs no I/O. It recognizes only the independently
-// observed cooldown reply grammar, never guesses a positive allowance and never
+// observed availability/cooldown grammar, never infers numeric allowance and never
 // adopts an edited query/reply or incomplete history as current provider proof.
 func ResolveHostedAllowance(snapshot HostedAllowanceSnapshot, intent HostedTriggerIntent, postingAuthor, providerAuthor Author, earliestPosting time.Time) (HostedAllowanceObservation, error) {
 	result := HostedAllowanceObservation{State: "unproven", Reason: "allowance_not_proven"}
@@ -103,6 +105,8 @@ func ResolveHostedAllowance(snapshot HostedAllowanceSnapshot, intent HostedTrigg
 		}
 	}
 	var response *IssueComment
+	var responseState string
+	var responseMinutes int64
 	unsupported := false
 	for index := range snapshot.IssueComments {
 		comment := &snapshot.IssueComments[index]
@@ -116,21 +120,26 @@ func ResolveHostedAllowance(snapshot HostedAllowanceSnapshot, intent HostedTrigg
 			unsupported = true
 			continue
 		}
-		match := hostedAllowanceCooldown.FindStringSubmatch(comment.Body)
-		if match == nil {
-			unsupported = true
-			continue
-		}
-		minutes, err := strconv.ParseInt(match[1], 10, 64)
-		if err != nil || minutes < 1 || minutes >= 1440 || (minutes == 1) != (match[2] == "minute") {
-			unsupported = true
-			continue
+		state, minutes := "available_observed", int64(0)
+		if comment.Body != hostedAllowanceAvailable {
+			match := hostedAllowanceCooldown.FindStringSubmatch(comment.Body)
+			if match == nil {
+				unsupported = true
+				continue
+			}
+			minutes, err = strconv.ParseInt(match[1], 10, 64)
+			if err != nil || minutes < 1 || minutes >= 1440 || (minutes == 1) != (match[2] == "minute") {
+				unsupported = true
+				continue
+			}
+			state = "cooldown_observed"
 		}
 		if response != nil {
 			result.State, result.Reason = "ambiguous", "conflicting_allowance_replies"
 			return result, nil
 		}
 		response = comment
+		responseState, responseMinutes = state, minutes
 	}
 	if unsupported {
 		result.Reason = "allowance_reply_unsupported"
@@ -142,14 +151,15 @@ func ResolveHostedAllowance(snapshot HostedAllowanceSnapshot, intent HostedTrigg
 		}
 		return result, nil
 	}
-	match := hostedAllowanceCooldown.FindStringSubmatch(response.Body)
-	minutes, _ := strconv.ParseInt(match[1], 10, 64)
-	retry := response.CreatedAt.Add(time.Duration(minutes+1) * time.Minute)
-	if !hostedTriggerTime(retry) {
-		result.Reason = "allowance_reply_unsupported"
-		return result, nil
+	var retry time.Time
+	if responseState == "cooldown_observed" {
+		retry = response.CreatedAt.Add(time.Duration(responseMinutes+1) * time.Minute)
+		if !hostedTriggerTime(retry) {
+			result.Reason = "allowance_reply_unsupported"
+			return result, nil
+		}
 	}
-	result.State, result.Reason = "cooldown_observed", "provider_cooldown_observed"
+	result.State, result.Reason = responseState, "provider_"+responseState
 	result.ResponseCommentID, result.ResponseCreatedAt, result.RetryNotBefore = response.ID, response.CreatedAt, retry
 	return result, nil
 }

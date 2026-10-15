@@ -31,6 +31,13 @@ type RecoveredHosted struct {
 // evidence before settlement, and can resume those local steps after failure.
 // The caller owns scheduling; this function does not poll, repost or spend.
 func RecoverHosted(ctx context.Context, reader HostedRecoveryReader, captures *HostedCaptureStore, engine *reviewexec.Engine, project, attemptID, capabilityID string, postingActor, providerActor reviewprovider.Author) (RecoveredHosted, error) {
+	return observeHostedAttempt(ctx, reader, captures, engine, project, attemptID, capabilityID, postingActor, providerActor, true)
+}
+
+// A live driver leaves terminal settlement to its supervising journal owner.
+// Restart recovery uses the identical observation and publication path, then
+// settles itself because no live supervisor owns that interrupted dispatch.
+func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, captures *HostedCaptureStore, engine *reviewexec.Engine, project, attemptID, capabilityID string, postingActor, providerActor reviewprovider.Author, settle bool) (RecoveredHosted, error) {
 	if ctx == nil || reader == nil || captures == nil || engine == nil {
 		return RecoveredHosted{}, core.Fail("validation_failed", "Use the configured hosted recovery capability.", 400)
 	}
@@ -46,11 +53,19 @@ func RecoverHosted(ctx context.Context, reader HostedRecoveryReader, captures *H
 		result.Reason = "already_completed"
 		return result, nil
 	}
+	if !settle && attempt.State != "active" {
+		result.Reason = "trigger_recording_pending"
+		return result, core.Fail("review_conflict", "The live hosted trigger has not been recorded by its supervisor.", 409)
+	}
 	finish := func(evidenceID string) (RecoveredHosted, error) {
 		result.EvidenceID = evidenceID
 		if _, err := engine.PublishEvidence(ctx, project, evidenceID, nil); err != nil {
 			result.Reason = "publication_pending"
 			return result, err
+		}
+		if !settle {
+			result.State, result.Reason = "completed", "hosted_evidence_observed"
+			return result, nil
 		}
 		next, err := engine.Advance(ctx, project, attempt.ID, attempt.Revision, "completed", "hosted_evidence_recovered", attempt.ExternalID)
 		if err != nil {

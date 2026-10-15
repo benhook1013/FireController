@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,11 +25,15 @@ func privateTestCatalog(t *testing.T, channels []string) (string, reviewruntime.
 	if err := os.WriteFile(filepath.Join(dir, "provider.token"), []byte("synthetic-private-operator-token\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	data, err := json.Marshal(map[string]any{"version": 1, "capabilities": []any{map[string]any{
+	capability := map[string]any{
 		"id": "local-cli", "account": "included-account", "organization": "test-org", "channels": channels,
 		"git_executable": executable, "cli_executable": executable, "github_credential_file": "provider.token",
 		"authentication_environment": map[string]string{"HOME": filepath.Join(dir, "cli-home")},
-	}}})
+	}
+	if slices.Contains(channels, "hosted") {
+		capability["hosted"] = map[string]any{"provider_actor_id": 20, "provider_login": "synthetic-provider", "progress_mode": "commit_status"}
+	}
+	data, err := json.Marshal(map[string]any{"version": 1, "capabilities": []any{capability}})
 	if err != nil {
 		t.Fatal(err)
 	}

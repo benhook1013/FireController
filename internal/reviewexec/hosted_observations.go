@@ -18,6 +18,7 @@ const hostedObservationInputLimit = 16 << 10
 // HostedObservationInput references immutable private source, never uploaded
 // bodies or a filesystem path. Intent is the complete retained fixed command.
 type HostedObservationInput struct {
+	Kind           string `json:"kind,omitempty"`
 	CaptureID      string `json:"capture_id"`
 	CaptureSHA256  string `json:"capture_sha256"`
 	CaptureBytes   int64  `json:"capture_bytes"`
@@ -67,10 +68,36 @@ func validHostedObservationInput(in HostedObservationInput) bool {
 }
 
 func hostedObservationIdentity(a Attempt, o Operation, in HostedObservationInput) bool {
+	if in.Kind == "allowance_query" {
+		intent, err := reviewprovider.HostedAllowanceQueryBody(reviewprovider.HostedTriggerIntent{OperationID: o.ID, AttemptID: a.ID, HeadSHA: o.HeadSHA})
+		return err == nil && o.Channel == "hosted" && o.AttemptID == a.ID && a.OperationID == o.ID && a.ProjectID == o.ProjectID &&
+			in.ExpectedAnchor.PullNumber == o.PullNumber && in.ExpectedAnchor.CandidateSHA == o.HeadSHA && hash.MatchString(o.CapabilityFingerprint) && identifier.MatchString(a.Provider) && identifier.MatchString(a.Account) && in.Intent == intent
+	}
+	if in.Kind != "" {
+		return false
+	}
 	intent, err := reviewprovider.HostedTriggerBody(reviewprovider.HostedTriggerIntent{OperationID: o.ID, AttemptID: a.ID, HeadSHA: o.HeadSHA})
 	return err == nil && o.Channel == "hosted" && o.AttemptID == a.ID && a.OperationID == o.ID && a.ProjectID == o.ProjectID &&
 		a.Anchor != nil && *a.Anchor == in.ExpectedAnchor && a.Anchor.PullNumber == o.PullNumber && a.Anchor.CandidateSHA == o.HeadSHA &&
 		hash.MatchString(o.CapabilityFingerprint) && identifier.MatchString(a.Provider) && identifier.MatchString(a.Account) && in.Intent == intent && a.Intent == intent
+}
+
+// Query captures precede review admission and retain their own original source
+// anchor. They share the bounded private reference journal, never final credit.
+func hostedObservationQueryBinding(ctx context.Context, tx *sql.Tx, a Attempt, o Operation, in HostedObservationInput) error {
+	if in.Kind != "allowance_query" {
+		return nil
+	}
+	query, err := readHostedQuery(ctx, tx, a, o)
+	if err != nil {
+		return err
+	}
+	start, _ := hostedObservationTime(in.StartedAt)
+	earliest, valid := hostedObservationTime(query.EarliestPosting)
+	if !valid || in.ExpectedAnchor != query.Anchor || in.Intent != query.Intent || start.Before(earliest.Truncate(time.Second)) {
+		return hostedObservationUnavailable()
+	}
+	return nil
 }
 
 func hostedObservationUnavailable() error {
@@ -120,6 +147,9 @@ func (e *Engine) RecordHostedObservation(ctx context.Context, project, attemptID
 		if err != nil {
 			return err
 		}
+		if err := hostedObservationQueryBinding(ctx, tx, a, o, owned); err != nil {
+			return err
+		}
 		var id, rowProject, rowAttempt, rowOperation, body string
 		var position, bytes int64
 		err = tx.QueryRowContext(ctx, `SELECT id,project_id,attempt_id,operation_id,position,capture_bytes,body_json FROM review_hosted_observations WHERE attempt_id=? AND capture_sha256=?`, attemptID, owned.CaptureSHA256).Scan(&id, &rowProject, &rowAttempt, &rowOperation, &position, &bytes, &body)
@@ -140,14 +170,14 @@ func (e *Engine) RecordHostedObservation(ctx context.Context, project, attemptID
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if !hostedObservationIdentity(a, o, owned) || a.State != "posting" && a.State != "active" && a.State != "uncertain" {
+		if !hostedObservationIdentity(a, o, owned) || owned.Kind != "allowance_query" && a.State != "posting" && a.State != "active" && a.State != "uncertain" {
 			return conflict()
 		}
 		var repositoryID int64
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
 		}
-		if repositoryID != a.Anchor.RepositoryID {
+		if repositoryID != owned.ExpectedAnchor.RepositoryID {
 			return conflict()
 		}
 		// An indexed bounded scan detects both overflow and noncontiguous corruption;
@@ -233,6 +263,9 @@ func (e *Engine) ReadHostedObservations(ctx context.Context, project, attemptID 
 			}
 			record, err := decodeHostedObservation(body, id, project, attemptID, o.ID, position, checksum, bytes, a, o)
 			if err != nil {
+				return err
+			}
+			if err := hostedObservationQueryBinding(ctx, tx, a, o, record.Input); err != nil {
 				return err
 			}
 			records = append(records, record)

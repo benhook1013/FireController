@@ -46,7 +46,7 @@ func validCLIAllowance(input CLIAllowanceObservation) bool {
 		input.Remaining >= 1 && input.Limit >= 1 && input.Limit <= 10000 && input.Remaining <= input.Limit && input.FullCapacityInMS >= 0 && input.FullCapacityInMS <= 86400000 && input.RollingWindowMS >= 1 && input.RollingWindowMS <= 86400000 && input.ChangedFiles >= 1 && input.ChangedFiles <= 100000
 }
 
-func freshCLIObservation(value string, now time.Time) bool {
+func freshAllowanceObservation(value string, now time.Time) bool {
 	observed, err := time.Parse(time.RFC3339Nano, value)
 	return err == nil && !observed.Before(now.Add(-time.Minute)) && !observed.After(now.Add(5*time.Second))
 }
@@ -97,7 +97,7 @@ func (e *Engine) RecordCLIAllowance(ctx context.Context, project, attemptID stri
 			return conflict()
 		}
 		now := time.Now()
-		if !freshCLIObservation(input.ObservedAt, now) || !freshCLIObservation(input.Anchor.ObservedAt, now) {
+		if !freshAllowanceObservation(input.ObservedAt, now) || !freshAllowanceObservation(input.Anchor.ObservedAt, now) {
 			return invalid()
 		}
 		if ceiling := current.Policy.Policy.MaxReviewFiles; ceiling > 0 && input.ChangedFiles > ceiling {

@@ -407,6 +407,17 @@ func minInt64(a, b int64) int64 {
 }
 
 func nextPage(linkHeaders []string, baseURL, path string, current int64) (int64, bool, error) {
+	return nextPageWithQuery(linkHeaders, baseURL, path, current, nil)
+}
+
+// Collection-specific fixed selectors must survive pagination exactly; a Link
+// may select only the adjacent page, never change the original request scope.
+func nextPageWithQuery(linkHeaders []string, baseURL, path string, current int64, fixed url.Values) (int64, bool, error) {
+	for key, values := range fixed {
+		if key == "" || key == "page" || key == "per_page" || len(values) != 1 || values[0] == "" {
+			return 0, false, errors.New("invalid fixed query")
+		}
+	}
 	base, err := url.Parse(baseURL)
 	if err != nil {
 		return 0, false, errors.New("invalid base")
@@ -435,8 +446,13 @@ func nextPage(linkHeaders []string, baseURL, path string, current int64) (int64,
 				return 0, false, errors.New("untrusted next")
 			}
 			query, err := url.ParseQuery(target.RawQuery)
-			if err != nil || len(query) != 2 || len(query["page"]) != 1 || len(query["per_page"]) != 1 || query.Get("per_page") != strconv.Itoa(githubPageSize) {
+			if err != nil || len(query) != 2+len(fixed) || len(query["page"]) != 1 || len(query["per_page"]) != 1 || query.Get("per_page") != strconv.Itoa(githubPageSize) {
 				return 0, false, errors.New("invalid next query")
+			}
+			for key, values := range fixed {
+				if len(query[key]) != 1 || query.Get(key) != values[0] {
+					return 0, false, errors.New("changed fixed query")
+				}
 			}
 			page, err := strconv.ParseInt(query.Get("page"), 10, 64)
 			if err != nil || strconv.FormatInt(page, 10) != query.Get("page") || page != current+1 || page <= 0 || page > githubMaxPages {

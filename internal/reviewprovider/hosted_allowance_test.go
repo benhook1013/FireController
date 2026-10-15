@@ -80,6 +80,130 @@ func TestHostedAllowanceExactQueryAndObservedCooldown(t *testing.T) {
 	}
 }
 
+func allowanceAvailableReply() string {
+	return "<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). Reviews are available now."
+}
+
+func TestHostedAllowanceExactAvailableObservation(t *testing.T) {
+	s, intent, poster, bot, earliest := allowanceFixture(t)
+	s.IssueComments[1].Body = allowanceAvailableReply()
+	s.IssueComments[0].Author.Login = "renamed-poster"
+	s.IssueComments[1].Author.Login = "renamed-provider"
+	before := append([]IssueComment(nil), s.IssueComments...)
+	want := HostedAllowanceObservation{State: "available_observed", Reason: "provider_available_observed", QueryCommentID: 91, ResponseCommentID: 92, QueryCreatedAt: s.IssueComments[0].CreatedAt, ResponseCreatedAt: s.IssueComments[1].CreatedAt}
+	for range 2 {
+		got := resolveAllowance(t, s, intent, poster, bot, earliest)
+		if got != want || !reflect.DeepEqual(s.IssueComments, before) {
+			t.Fatalf("available observation changed identity, reset, source or replay: %+v", got)
+		}
+		encoded, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(encoded, &fields) != nil || len(fields) != 7 {
+			t.Fatal("observation gained extra output fields", string(encoded))
+		}
+		for _, private := range []string{s.IssueComments[1].Body, "remaining", "billing", "permission", "grant", "limit"} {
+			if strings.Contains(string(encoded), private) {
+				t.Fatal("availability observation exposes source or inferred authority")
+			}
+		}
+	}
+}
+
+func TestHostedAllowanceAvailableRequiresExactCausalReply(t *testing.T) {
+	cases := map[string]func(*HostedAllowanceSnapshot){
+		"legacy unmarked query": func(s *HostedAllowanceSnapshot) { s.IssueComments[0].Body = "@coderabbitai rate limit" },
+		"incomplete history":    func(s *HostedAllowanceSnapshot) { s.Complete = false },
+		"edited query": func(s *HostedAllowanceSnapshot) {
+			s.IssueComments[0].UpdatedAt = s.IssueComments[0].UpdatedAt.Add(time.Second)
+		},
+		"edited reply": func(s *HostedAllowanceSnapshot) {
+			s.IssueComments[1].UpdatedAt = s.IssueComments[1].UpdatedAt.Add(time.Second)
+		},
+		"foreign numeric actor": func(s *HostedAllowanceSnapshot) { s.IssueComments[1].Author.ID++ },
+		"foreign actor kind":    func(s *HostedAllowanceSnapshot) { s.IssueComments[1].Author.Kind = "User" },
+		"same time reply": func(s *HostedAllowanceSnapshot) {
+			s.IssueComments[1].CreatedAt = s.IssueComments[0].CreatedAt
+			s.IssueComments[1].UpdatedAt = s.IssueComments[1].CreatedAt
+		},
+		"earlier reply": func(s *HostedAllowanceSnapshot) {
+			s.IssueComments[1].CreatedAt = s.IssueComments[0].CreatedAt.Add(-time.Second)
+			s.IssueComments[1].UpdatedAt = s.IssueComments[1].CreatedAt
+		},
+		"future reply": func(s *HostedAllowanceSnapshot) {
+			s.IssueComments[1].CreatedAt = s.ObservedAt.Add(time.Second)
+			s.IssueComments[1].UpdatedAt = s.IssueComments[1].CreatedAt
+		},
+		"competing command": func(s *HostedAllowanceSnapshot) {
+			c := s.IssueComments[0]
+			c.ID = 93
+			c.Body = "@coderabbitai rate limit"
+			c.CreatedAt = c.CreatedAt.Add(time.Second)
+			c.UpdatedAt = c.CreatedAt
+			s.IssueComments = append(s.IssueComments, c)
+		},
+		"removed competing command": func(s *HostedAllowanceSnapshot) {
+			c := s.IssueComments[0]
+			c.ID = 93
+			c.Body = "Command removed."
+			c.CreatedAt = c.CreatedAt.Add(time.Second)
+			c.UpdatedAt = s.IssueComments[1].CreatedAt.Add(time.Second)
+			s.IssueComments = append(s.IssueComments, c)
+		},
+		"unknown alongside available": func(s *HostedAllowanceSnapshot) {
+			c := s.IssueComments[1]
+			c.ID = 93
+			c.Body = "You have 3 reviews available."
+			s.IssueComments = append(s.IssueComments, c)
+		},
+		"edited alongside available": func(s *HostedAllowanceSnapshot) {
+			c := s.IssueComments[1]
+			c.ID = 93
+			c.UpdatedAt = c.UpdatedAt.Add(time.Second)
+			s.IssueComments = append(s.IssueComments, c)
+		},
+	}
+	for name, body := range map[string]string{
+		"unobserved wording": "Reviews available now.",
+		"extra suffix":       allowanceAvailableReply() + "\n",
+		"extra prefix":       "Example:\n" + allowanceAvailableReply(),
+		"quoted reply":       "> " + strings.ReplaceAll(allowanceAvailableReply(), "\n", "\n> "),
+		"fenced reply":       "```text\n" + allowanceAvailableReply() + "\n```",
+		"wrong link":         strings.Replace(allowanceAvailableReply(), "docs.coderabbit.ai", "foreign.invalid", 1),
+	} {
+		cases[name] = func(s *HostedAllowanceSnapshot) { s.IssueComments[1].Body = body }
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			s, intent, poster, bot, earliest := allowanceFixture(t)
+			s.IssueComments[1].Body = allowanceAvailableReply()
+			change(&s)
+			before := append([]IssueComment(nil), s.IssueComments...)
+			got := resolveAllowance(t, s, intent, poster, bot, earliest)
+			if got.State == "available_observed" || got.State == "cooldown_observed" || got.ResponseCommentID != 0 || !got.ResponseCreatedAt.IsZero() || !got.RetryNotBefore.IsZero() || !reflect.DeepEqual(before, s.IssueComments) {
+				t.Fatalf("unproven reply gained authority or mutated source: %+v", got)
+			}
+		})
+	}
+}
+
+func TestHostedAllowanceMultipleRecognizedRepliesAreAmbiguous(t *testing.T) {
+	for _, bodies := range [][2]string{{allowanceAvailableReply(), allowanceAvailableReply()}, {allowanceAvailableReply(), allowanceReply(37)}, {allowanceReply(37), allowanceAvailableReply()}} {
+		s, intent, poster, bot, earliest := allowanceFixture(t)
+		s.IssueComments[1].Body = bodies[0]
+		second := s.IssueComments[1]
+		second.ID++
+		second.Body = bodies[1]
+		s.IssueComments = append(s.IssueComments, second)
+		got := resolveAllowance(t, s, intent, poster, bot, earliest)
+		if got.State != "ambiguous" || got.Reason != "conflicting_allowance_replies" || got.ResponseCommentID != 0 || !got.ResponseCreatedAt.IsZero() || !got.RetryNotBefore.IsZero() {
+			t.Fatalf("multiple provider answers were selected: %+v", got)
+		}
+	}
+}
+
 func TestHostedAllowanceUnknownEvidenceNeverGrantsPositiveCapacity(t *testing.T) {
 	for name, change := range map[string]func(*HostedAllowanceSnapshot){
 		"missing query":             func(s *HostedAllowanceSnapshot) { s.IssueComments = s.IssueComments[1:] },

@@ -135,60 +135,60 @@ func (e *Engine) VerifyAction(ctx context.Context, project, attemptID string, ex
 		return invalid()
 	}
 	return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		attempt, err := readAttempt(ctx, tx, project, attemptID)
-		if err != nil {
-			return err
-		}
-		if attempt.Revision != expectedRevision {
-			return conflict()
-		}
-		operation, err := readOperation(ctx, tx, project, attempt.OperationID)
-		if err != nil {
-			return err
-		}
-		if operation.AttemptID != attempt.ID || operation.State != attempt.State || !(operation.Channel == "cli" && attempt.State == "active" || operation.Channel == "hosted" && attempt.State == "posting") {
-			return conflict()
-		}
-		current, err := e.currentExecutionContext(ctx, tx, operation)
-		if err != nil {
-			return err
-		}
-		capability := e.capabilities[current.Configuration.CapabilityID]
-		if attempt.Provider != capability.Provider || attempt.Account != capability.Account || attempt.Anchor == nil || !validEvidenceAnchor(*attempt.Anchor) || attempt.Anchor.RepositoryID != current.RepositoryID || attempt.Anchor.PullNumber != operation.PullNumber || attempt.Anchor.CandidateSHA != operation.HeadSHA {
-			return conflict()
-		}
-		var reserved int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=? AND provider=? AND repository_id=? AND pull_number=? AND action_class=? AND account=?`, attempt.ID, attempt.Provider, current.RepositoryID, operation.PullNumber, operation.Channel, attempt.Account).Scan(&reserved); err != nil {
-			return err
-		}
-		if reserved != 1 {
-			return conflict()
-		}
-		if operation.Channel != "cli" && len(predecessors) != 0 {
-			return invalid()
-		}
-		if operation.Channel == "cli" {
-			if err := verifyCLIPredecessors(ctx, tx, project, current, predecessors); err != nil {
-				return err
-			}
-			comparison, err := comparison(ctx, tx, project, current.RepositoryID, operation.PullNumber, *attempt.Anchor, "cli")
-			if err != nil {
-				return err
-			}
-			if comparison.Pending {
-				return core.Fail("review_evidence_pending", "Resolve retained native CLI evidence before starting another review.", 409)
-			}
-			if comparison.Covered {
-				return &core.Error{Code: "review_held", Message: "The selected native CLI comparison already has completed coverage.", Status: 409, Details: map[string]string{"reason": "target_already_covered"}}
-			}
-		}
-		return nil
+		return e.verifyAction(ctx, tx, project, attemptID, expectedRevision, predecessors)
 	})
 }
 
-// verifyCLIPredecessors uses the final action's existing SQL snapshot. Fresh
+// verifyAction shares one read snapshot with adapter-specific local proof.
+func (e *Engine) verifyAction(ctx context.Context, tx *sql.Tx, project, attemptID string, expectedRevision int64, predecessors []SourcePlan) error {
+	attempt, err := readAttempt(ctx, tx, project, attemptID)
+	if err != nil {
+		return err
+	}
+	if attempt.Revision != expectedRevision {
+		return conflict()
+	}
+	operation, err := readOperation(ctx, tx, project, attempt.OperationID)
+	if err != nil {
+		return err
+	}
+	if operation.AttemptID != attempt.ID || operation.State != attempt.State || !(operation.Channel == "cli" && attempt.State == "active" || operation.Channel == "hosted" && attempt.State == "posting") {
+		return conflict()
+	}
+	current, err := e.currentExecutionContext(ctx, tx, operation)
+	if err != nil {
+		return err
+	}
+	capability := e.capabilities[current.Configuration.CapabilityID]
+	if attempt.Provider != capability.Provider || attempt.Account != capability.Account || attempt.Anchor == nil || !validEvidenceAnchor(*attempt.Anchor) || attempt.Anchor.RepositoryID != current.RepositoryID || attempt.Anchor.PullNumber != operation.PullNumber || attempt.Anchor.CandidateSHA != operation.HeadSHA {
+		return conflict()
+	}
+	var reserved int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=? AND provider=? AND repository_id=? AND pull_number=? AND action_class=? AND account=?`, attempt.ID, attempt.Provider, current.RepositoryID, operation.PullNumber, operation.Channel, attempt.Account).Scan(&reserved); err != nil {
+		return err
+	}
+	if reserved != 1 {
+		return conflict()
+	}
+	if err := verifyPredecessors(ctx, tx, project, current, predecessors); err != nil {
+		return err
+	}
+	state, err := comparison(ctx, tx, project, current.RepositoryID, operation.PullNumber, *attempt.Anchor, operation.Channel)
+	if err != nil {
+		return err
+	}
+	if state.Pending {
+		return core.Fail("review_evidence_pending", "Resolve retained native evidence in the selected channel before starting another review.", 409)
+	}
+	if state.Covered {
+		return &core.Error{Code: "review_held", Message: "The selected native comparison already has completed coverage in this channel.", Status: 409, Details: map[string]string{"reason": "target_already_covered"}}
+	}
+	return nil
+}
+
+// verifyPredecessors uses the final action's existing SQL snapshot. Fresh
 // provider facts are supplied by the driver; no provider work occurs here.
-func verifyCLIPredecessors(ctx context.Context, tx *sql.Tx, project string, current ExecutionContext, predecessors []SourcePlan) error {
+func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current ExecutionContext, predecessors []SourcePlan) error {
 	if current.Configuration.Mode == "independent" {
 		if len(predecessors) != 0 {
 			return invalid()
@@ -215,7 +215,7 @@ func verifyCLIPredecessors(ctx context.Context, tx *sql.Tx, project string, curr
 			return invalid()
 		}
 		anchor := Anchor{RepositoryID: current.RepositoryID, PullNumber: number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef}
-		comparison, err := comparison(ctx, tx, project, current.RepositoryID, number, anchor, "cli")
+		comparison, err := comparison(ctx, tx, project, current.RepositoryID, number, anchor, current.Operation.Channel)
 		if err != nil {
 			return err
 		}
