@@ -99,7 +99,7 @@ func validateObservation(req *ObservationRequest) error {
 				return validationError("A review run exceeds its bounded coverage limit count.")
 			}
 			for _, coverageLimit := range run.CoverageLimits {
-				if !validText(coverageLimit, 1024, false) {
+				if !validText(coverageLimit, 1024, true) {
 					return validationError("A review run contains an invalid coverage limit.")
 				}
 			}
@@ -129,7 +129,7 @@ func validateObservation(req *ObservationRequest) error {
 					return validationError("source_finding_id values must be unique within a run.")
 				}
 				seenFindings[finding.SourceFindingID] = struct{}{}
-				if finding.FixSHA != "" && finding.Disposition != "accepted" || finding.ResolvedAt != "" && finding.FixSHA == "" {
+				if (finding.FixSHA != "" || finding.ProofNote != "") && finding.Disposition != "accepted" || finding.ResolvedAt != "" && finding.FixSHA == "" {
 					return validationError("Fix evidence must belong to an accepted finding and include its fix SHA.")
 				}
 				if _, err := parseTimestamp(finding.DecidedAt, false); err != nil {
@@ -426,42 +426,30 @@ func validateRetirements(previous []int64, queue []PullInput, retired []RetiredP
 	return nil
 }
 
+const finalizedRunQuery = `SELECT snapshot_id,pull_number,channel,head_sha,reviewer,scope,found,accepted,routed,id FROM review_runs
+ WHERE project_id=? AND source=? AND source_run_id=? AND finalized=1 ORDER BY snapshot_revision DESC LIMIT 1`
+
 func validateFinalizedCounts(ctx context.Context, tx *sql.Tx, projectID, source string, queue []PullInput) error {
 	for _, pull := range queue {
 		for _, run := range pull.Runs {
-			rows, err := tx.QueryContext(ctx, `SELECT snapshot_id,pull_number,channel,head_sha,reviewer,scope,found,accepted,routed,finalized,id FROM review_runs
-				WHERE project_id=? AND source=? AND source_run_id=? AND finalized=1`, projectID, source, run.SourceRunID)
+			var snapshotID, channel, headSHA, reviewer, scope, runID string
+			var pullNumber, found, accepted, routed int64
+			err := tx.QueryRowContext(ctx, finalizedRunQuery, projectID, source, run.SourceRunID).Scan(&snapshotID, &pullNumber, &channel, &headSHA, &reviewer, &scope, &found, &accepted, &routed, &runID)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
 			if err != nil {
 				return err
 			}
-			type previousRun struct {
-				snapshotID, channel, headSHA, reviewer, scope, runID string
-				pullNumber, found, accepted, routed                  int64
+			if found != run.Found || accepted != run.Accepted || routed != run.Routed || !run.Finalized ||
+				pullNumber != pull.Number || channel != run.Channel || headSHA != run.HeadSHA || reviewer != run.Reviewer || scope != run.Scope {
+				return core.Fail("observation_conflict", "Finalized source run identity and counts cannot be changed or reopened.", http.StatusConflict)
 			}
-			previousRuns := make([]previousRun, 0)
-			for rows.Next() {
-				var previous previousRun
-				var finalized int
-				if err = rows.Scan(&previous.snapshotID, &previous.pullNumber, &previous.channel, &previous.headSHA, &previous.reviewer, &previous.scope, &previous.found, &previous.accepted, &previous.routed, &finalized, &previous.runID); err != nil {
-					rows.Close()
-					return err
-				}
-				previousRuns = append(previousRuns, previous)
-			}
-			if err := rows.Err(); err != nil {
-				rows.Close()
+			// Every admitted finalized copy retains all previously known findings.
+			// The latest finalized copy therefore carries their cumulative identity
+			// and text, even when intervening snapshots omitted the run entirely.
+			if err := validateFinalizedFindings(ctx, tx, projectID, snapshotID, pullNumber, runID, run.Findings); err != nil {
 				return err
-			}
-			rows.Close()
-			for _, previous := range previousRuns {
-				if previous.found != run.Found || previous.accepted != run.Accepted || previous.routed != run.Routed || !run.Finalized ||
-					previous.pullNumber != pull.Number || previous.channel != run.Channel || previous.headSHA != run.HeadSHA ||
-					previous.reviewer != run.Reviewer || previous.scope != run.Scope {
-					return core.Fail("observation_conflict", "Finalized source run identity and counts cannot be changed or reopened.", http.StatusConflict)
-				}
-				if err := validateFinalizedFindings(ctx, tx, projectID, previous.snapshotID, previous.pullNumber, previous.runID, run.Findings); err != nil {
-					return err
-				}
 			}
 		}
 	}
@@ -493,6 +481,12 @@ func validateFinalizedFindings(ctx context.Context, tx *sql.Tx, projectID, snaps
 }
 
 func storePull(ctx context.Context, tx *sql.Tx, projectID, snapshotID, source string, position int, pull PullInput) error {
+	var snapshotRevision int64
+	if len(pull.Runs) > 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT revision FROM review_snapshots WHERE project_id=? AND snapshot_id=?`, projectID, snapshotID).Scan(&snapshotRevision); err != nil {
+			return err
+		}
+	}
 	recent := make([]RunSummary, 0, 3)
 	for i := len(pull.Runs) - 1; i >= 0 && len(recent) < 3; i-- {
 		recent = append(recent, summarizeRun(projectID, source, pull.Number, pull.Runs[i]))
@@ -522,8 +516,8 @@ func storePull(ctx context.Context, tx *sql.Tx, projectID, snapshotID, source st
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO review_runs
-			(project_id,snapshot_id,pull_number,run_order,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, snapshotID, pull.Number, order, id, source,
+			(project_id,snapshot_id,snapshot_revision,pull_number,run_order,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, snapshotID, snapshotRevision, pull.Number, order, id, source,
 			run.SourceRunID, run.Channel, run.HeadSHA, run.Reviewer, run.Scope, run.Outcome, run.Attributable, run.Complete,
 			run.StartedAt, run.FinishedAt, run.Found, run.Accepted, run.Routed, run.Finalized, fixed, mustJSON(run.CoverageLimits)); err != nil {
 			return err

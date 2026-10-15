@@ -137,6 +137,10 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 }
 
 func copyNativeSnapshot(ctx context.Context, tx *sql.Tx, project, previous, next string) error {
+	var revision int64
+	if err := tx.QueryRowContext(ctx, `SELECT revision FROM review_snapshots WHERE project_id=? AND snapshot_id=?`, project, next).Scan(&revision); err != nil {
+		return err
+	}
 	for _, table := range []struct{ name, columns string }{
 		{"review_pulls", "position,number,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json"},
 		{"review_runs", "pull_number,run_order,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json"},
@@ -144,7 +148,16 @@ func copyNativeSnapshot(ctx context.Context, tx *sql.Tx, project, previous, next
 		{"review_attempts", "pull_number,position,source,source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id"},
 		{"review_retired_pulls", "position,number,reason"},
 	} {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO `+table.name+`(project_id,snapshot_id,`+table.columns+`) SELECT project_id,?,`+table.columns+` FROM `+table.name+` WHERE project_id=? AND snapshot_id=?`, next, project, previous); err != nil {
+		columns, selection := table.columns, "project_id,?,"+table.columns
+		args := []any{next, project, previous}
+		if table.name == "review_runs" {
+			// A copy belongs to the new snapshot, not the retained source row's
+			// older revision. The original row is never rewritten.
+			columns = "snapshot_revision," + columns
+			selection = "project_id,?,?," + table.columns
+			args = []any{next, revision, project, previous}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO `+table.name+`(project_id,snapshot_id,`+columns+`) SELECT `+selection+` FROM `+table.name+` WHERE project_id=? AND snapshot_id=?`, args...); err != nil {
 			return err
 		}
 	}
@@ -163,8 +176,12 @@ func appendNativeRun(ctx context.Context, tx *sql.Tx, project, snapshot string, 
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(run_order),-1)+1 FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=?`, project, snapshot, number).Scan(&order); err != nil {
 		return err
 	}
+	var revision int64
+	if err := tx.QueryRowContext(ctx, `SELECT revision FROM review_snapshots WHERE project_id=? AND snapshot_id=?`, project, snapshot).Scan(&revision); err != nil {
+		return err
+	}
 	summary := summarizeRun(project, nativeSource, number, run)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO review_runs(project_id,snapshot_id,pull_number,run_order,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, project, snapshot, number, order, summary.ID, nativeSource, run.SourceRunID, run.Channel, run.HeadSHA, run.Reviewer, run.Scope, run.Outcome, run.Attributable, run.Complete, run.StartedAt, run.FinishedAt, run.Found, run.Accepted, run.Routed, run.Finalized, summary.Fixed, mustJSON(run.CoverageLimits)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO review_runs(project_id,snapshot_id,snapshot_revision,pull_number,run_order,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, project, snapshot, revision, number, order, summary.ID, nativeSource, run.SourceRunID, run.Channel, run.HeadSHA, run.Reviewer, run.Scope, run.Outcome, run.Attributable, run.Complete, run.StartedAt, run.FinishedAt, run.Found, run.Accepted, run.Routed, run.Finalized, summary.Fixed, mustJSON(run.CoverageLimits)); err != nil {
 		return err
 	}
 	for i, f := range run.Findings {
