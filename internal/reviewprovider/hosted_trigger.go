@@ -59,8 +59,17 @@ func hostedTriggerTime(value time.Time) bool {
 // loss, even when its current bytes match the intended command.
 func RecoverHostedTrigger(comments []IssueComment, complete bool, intent HostedTriggerIntent, postingAuthor Author, earliestPosting, observedAt time.Time) (HostedTriggerRecovery, error) {
 	body, err := HostedTriggerBody(intent)
+	if err != nil {
+		return HostedTriggerRecovery{}, err
+	}
+	return recoverHostedCommand(comments, complete, intent, postingAuthor, earliestPosting, observedAt, body, "firecontroller-review-trigger")
+}
+
+// recoverHostedCommand shares immutable command identity, source bounds and
+// lost-response recovery between the two fixed application-owned commands.
+func recoverHostedCommand(comments []IssueComment, complete bool, intent HostedTriggerIntent, postingAuthor Author, earliestPosting, observedAt time.Time, body, markerFamily string) (HostedTriggerRecovery, error) {
 	_, actorErr := normalizeActor(githubActor{ID: postingAuthor.ID, Login: postingAuthor.Login, Type: postingAuthor.Kind})
-	if err != nil || actorErr != nil || !hostedTriggerTime(earliestPosting) || !hostedTriggerTime(observedAt) || observedAt.Before(earliestPosting) {
+	if actorErr != nil || !hostedTriggerTime(earliestPosting) || !hostedTriggerTime(observedAt) || observedAt.Before(earliestPosting) {
 		return HostedTriggerRecovery{}, invalidSelector()
 	}
 	uncertain := HostedTriggerRecovery{State: "uncertain", Reason: "trigger_not_proven"}
@@ -88,7 +97,7 @@ func RecoverHostedTrigger(comments []IssueComment, complete bool, intent HostedT
 		seen[comment.ID] = struct{}{}
 		// A quoted, fenced, modified or malformed copy of this owned marker is
 		// conflicting evidence, never a second format accepted for adoption.
-		ownedMarker := strings.Contains(comment.Body, "firecontroller-review-trigger") && (strings.Contains(comment.Body, "operation="+intent.OperationID) || strings.Contains(comment.Body, "attempt="+intent.AttemptID))
+		ownedMarker := strings.Contains(comment.Body, markerFamily) && (strings.Contains(comment.Body, "operation="+intent.OperationID) || strings.Contains(comment.Body, "attempt="+intent.AttemptID))
 		if comment.Body != body && !ownedMarker {
 			continue
 		}

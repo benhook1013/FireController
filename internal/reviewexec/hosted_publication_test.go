@@ -71,8 +71,8 @@ func hostedPublicationComparison(t *testing.T, f *attemptFixture, a Attempt) {
 	anchor := *a.Anchor
 	plan := SourcePlan{Repository: reviewprovider.Repository{ID: anchor.RepositoryID, FullName: anchor.Repository, DefaultBranch: "main"}, Pull: reviewprovider.Pull{Number: anchor.PullNumber, RepositoryID: anchor.RepositoryID, State: "open", HeadSHA: anchor.CandidateSHA, BaseSHA: anchor.BaseSHA, BaseRef: anchor.BaseRef, ChangedFiles: 1}, ParentSHA: anchor.ParentSHA, ObservedAt: stamp()}
 	before := adjudicationState(t, f, a)
-	comparison, err := f.e.CLIComparison(t.Context(), attemptProject, plan)
-	if err != nil || comparison != (CLIComparisonState{}) || adjudicationState(t, f, a) != before {
+	comparison, err := f.e.Comparison(t.Context(), attemptProject, plan, "cli")
+	if err != nil || comparison != (ComparisonState{}) || adjudicationState(t, f, a) != before {
 		t.Fatal("hosted source gained CLI credit/pending state or comparison mutated state", comparison, err)
 	}
 }

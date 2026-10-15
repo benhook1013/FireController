@@ -60,7 +60,7 @@ func coverageFix(t *testing.T, f *attemptFixture, id, key string, revision, find
 func coverageRead(t *testing.T, f *attemptFixture, a Attempt, current SourcePlan, want bool) {
 	t.Helper()
 	before := adjudicationState(t, f, a)
-	got, err := f.e.CLICoverage(t.Context(), attemptProject, current)
+	got, err := f.e.Coverage(t.Context(), attemptProject, current, "cli")
 	if err != nil || got != want {
 		t.Fatalf("coverage got %v want %v: %v", got, want, err)
 	}
@@ -109,7 +109,7 @@ func TestCLICoverageZeroAndIncompleteEvidence(t *testing.T) {
 		f, a, id, current := coverageFixture(t, 1, true)
 		adjudicationDecide(t, f, id, "reject-partial", 0, 0, "rejected")
 		adjudicationComplete(t, f, a)
-		coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
+		coverageComparison(t, f, a, current, ComparisonState{Pending: true})
 	})
 	t.Run("pending", func(t *testing.T) {
 		f, a, id, current := coverageFixture(t, 1, false)
@@ -148,7 +148,7 @@ func TestCLICoverageExactComparisonAndRepositoryRename(t *testing.T) {
 				test.change(&input)
 			}
 			before := adjudicationState(t, f, a)
-			got, err := f.e.CLICoverage(t.Context(), attemptProject, input)
+			got, err := f.e.Coverage(t.Context(), attemptProject, input, "cli")
 			if test.code != "" {
 				attemptCode(t, err, test.code)
 				if got {
@@ -167,7 +167,7 @@ func TestCLICoverageExactComparisonAndRepositoryRename(t *testing.T) {
 	foreign := current
 	foreign.Repository.ID = 802
 	foreign.Pull.RepositoryID = 802
-	got, err := f.e.CLICoverage(t.Context(), otherAttemptProject, foreign)
+	got, err := f.e.Coverage(t.Context(), otherAttemptProject, foreign, "cli")
 	if err != nil || got {
 		t.Fatal("coverage leaked across projects", got, err)
 	}
@@ -190,6 +190,9 @@ func TestCLICoverageImportedWorkspaceDoesNotCreateNativeEvidence(t *testing.T) {
 	}
 	pull := projectionPull(2)
 	pull.Runs = []reviews.RunInput{{SourceRunID: "imported-complete-cli", Channel: "cli", HeadSHA: pull.HeadSHA, Reviewer: "Imported reviewer", Scope: "exact patch", Outcome: "completed", Attributable: true, Complete: true, StartedAt: "2026-01-01T00:00:00Z", FinishedAt: "2026-01-01T00:01:00Z", Finalized: true, Findings: []reviews.Finding{}, CoverageLimits: []string{}}}
+	hosted := pull.Runs[0]
+	hosted.Channel, hosted.SourceRunID = "hosted", "imported-complete-hosted"
+	pull.Runs = append(pull.Runs, hosted)
 	zero := int64(0)
 	request := reviews.ObservationRequest{ExpectedRevision: &zero, RepositoryID: 801, Source: "imported-history", ObservedAt: stamp(), Queue: []reviews.PullInput{pull}}
 	mux := http.NewServeMux()
@@ -204,9 +207,11 @@ func TestCLICoverageImportedWorkspaceDoesNotCreateNativeEvidence(t *testing.T) {
 	}
 	current := SourcePlan{Repository: reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, Pull: reviewprovider.Pull{Number: 2, RepositoryID: 801, State: "open", HeadSHA: pull.HeadSHA, BaseSHA: pull.BaseSHA, BaseRef: pull.BaseRef, ChangedFiles: 1}, ParentSHA: pull.BaseSHA, ObservedAt: stamp()}
 	before := projectionDigest(t, f, "")
-	got, err := f.e.CLICoverage(t.Context(), attemptProject, current)
-	if err != nil || got || projectionDigest(t, f, "") != before || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
-		t.Fatal("import acquired native coverage or read changed state", got, err)
+	for _, channel := range []string{"cli", "hosted"} {
+		got, err := f.e.Comparison(t.Context(), attemptProject, current, channel)
+		if err != nil || got != (ComparisonState{}) || projectionDigest(t, f, "") != before || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+			t.Fatal("import acquired native coverage or read changed state", channel, got, err)
+		}
 	}
 }
 
@@ -241,7 +246,7 @@ func TestCLICoverageMalformedRetainedProofFailsClosed(t *testing.T) {
 			admissionSQL(t, f, `UPDATE review_execution_evidence SET body_json=? WHERE id=?`, encoded(evidence), id)
 			admissionSQL(t, f, `UPDATE review_adjudication_state SET body_json=? WHERE evidence_id=?`, encoded(state), id)
 			before := adjudicationState(t, f, a)
-			got, err := f.e.CLICoverage(t.Context(), attemptProject, current)
+			got, err := f.e.Coverage(t.Context(), attemptProject, current, "cli")
 			attemptCode(t, err, "storage_unavailable")
 			if got || adjudicationState(t, f, a) != before {
 				t.Fatal("malformed retained proof gave credit or changed state")
@@ -274,7 +279,7 @@ func TestCLICoverageCandidateCapacityAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := adjudicationState(t, f, a)
-	got, err := f.e.CLICoverage(t.Context(), attemptProject, current)
+	got, err := f.e.Coverage(t.Context(), attemptProject, current, "cli")
 	attemptCode(t, err, "review_capacity")
 	if got || adjudicationState(t, f, a) != before {
 		t.Fatal("capacity hold changed state or yielded coverage")
@@ -282,7 +287,7 @@ func TestCLICoverageCandidateCapacityAndCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	started := time.Now()
-	got, err = f.e.CLICoverage(ctx, attemptProject, current)
+	got, err = f.e.Coverage(ctx, attemptProject, current, "cli")
 	if err == nil || got || time.Since(started) > time.Second {
 		t.Fatal("cancelled predicate did not stop promptly", got, err)
 	}
@@ -323,12 +328,12 @@ func TestCLICoverageCompletedMissingCaptureBound(t *testing.T) {
 			// The all-head budget also includes completed intents on older heads.
 			admissionSQL(t, f, `UPDATE review_operations SET head_sha=? WHERE state='completed'`, strings.Repeat("9", 40))
 			before := adjudicationState(t, f, a)
-			got, err := f.e.CLICoverage(t.Context(), attemptProject, current)
+			got, err := f.e.Coverage(t.Context(), attemptProject, current, "cli")
 			if count == 100 {
 				if err != nil {
 					t.Fatal("missing captures should provide no coverage", err)
 				}
-				coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
+				coverageComparison(t, f, a, current, ComparisonState{Pending: true})
 			} else {
 				attemptCode(t, err, "review_capacity")
 			}
@@ -344,7 +349,7 @@ func TestCLICoverageCompletedOperationAttemptMismatch(t *testing.T) {
 	coverageFinalize(t, f, a, id, 0)
 	admissionSQL(t, f, `UPDATE review_operations SET attempt_id='different-attempt' WHERE id=?`, a.OperationID)
 	before := adjudicationState(t, f, a)
-	got, err := f.e.CLICoverage(t.Context(), attemptProject, current)
+	got, err := f.e.Coverage(t.Context(), attemptProject, current, "cli")
 	attemptCode(t, err, "storage_unavailable")
 	if got || adjudicationState(t, f, a) != before {
 		t.Fatal("mismatched retained attempt gave credit or changed state", got, err)
@@ -377,10 +382,10 @@ func coverageNextAttempt(t *testing.T, f *attemptFixture, key, channel, head str
 	return a
 }
 
-func coverageComparison(t *testing.T, f *attemptFixture, a Attempt, plan SourcePlan, want CLIComparisonState) {
+func coverageComparison(t *testing.T, f *attemptFixture, a Attempt, plan SourcePlan, want ComparisonState) {
 	t.Helper()
 	before := adjudicationState(t, f, a)
-	got, err := f.e.CLIComparison(t.Context(), attemptProject, plan)
+	got, err := f.e.Comparison(t.Context(), attemptProject, plan, "cli")
 	if err != nil || got != want {
 		t.Fatalf("comparison got %+v want %+v: %v", got, want, err)
 	}
@@ -394,15 +399,15 @@ func TestCLIComparisonOlderHeadPendingUntilClosed(t *testing.T) {
 	f, a, id, current := coverageFixture(t, 1, false)
 	adjudicationComplete(t, f, a)
 	current.Pull.HeadSHA = strings.Repeat("9", 40)
-	coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
+	coverageComparison(t, f, a, current, ComparisonState{Pending: true})
 	adjudicationDecide(t, f, id, "accept-old", 0, 0, "accepted")
-	coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
+	coverageComparison(t, f, a, current, ComparisonState{Pending: true})
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-old", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
 	adjudicationReceipt(t, body, err, id, "finalized", 2)
-	coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
+	coverageComparison(t, f, a, current, ComparisonState{Pending: true})
 	coverageFix(t, f, id, "fix-old", 2, 0, "")
 	// Closing old obligations does not grant coverage for the new comparison.
-	coverageComparison(t, f, a, current, CLIComparisonState{})
+	coverageComparison(t, f, a, current, ComparisonState{})
 }
 
 func TestCLIComparisonReadyRunCannotMaskPendingRun(t *testing.T) {
@@ -420,35 +425,51 @@ func TestCLIComparisonReadyRunCannotMaskPendingRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	adjudicationComplete(t, f, next)
-	coverageComparison(t, f, a, current, CLIComparisonState{Covered: true, Pending: true})
+	coverageComparison(t, f, a, current, ComparisonState{Covered: true, Pending: true})
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "close-second", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
 	adjudicationReceipt(t, body, err, receipt.ID, "finalized", 1)
-	coverageComparison(t, f, a, current, CLIComparisonState{Covered: true})
+	coverageComparison(t, f, a, current, ComparisonState{Covered: true})
 	// A completed intent with no retained capture also dominates ready credit.
 	coverageSeedOperations(t, f, a, 1, "completed")
-	coverageComparison(t, f, a, current, CLIComparisonState{Covered: true, Pending: true})
+	coverageComparison(t, f, a, current, ComparisonState{Covered: true, Pending: true})
 }
 
-func TestCLIComparisonCompletedScanUsesBoundedAllHeadIndex(t *testing.T) {
-	f, _, _, _ := coverageFixture(t, 0, false)
-	rows, err := f.store.DB().Query(`EXPLAIN QUERY PLAN SELECT id,attempt_id FROM review_operations WHERE project_id=? AND pull_number=? AND channel='cli' AND state='completed' ORDER BY id LIMIT 101`, attemptProject, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var plan string
-	for rows.Next() {
-		var id, parent, unused int
-		var detail string
-		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+func TestComparisonCompletedScanUsesBoundedChannelIndex(t *testing.T) {
+	f, a, id, current := coverageFixture(t, 0, false)
+	coverageFinalize(t, f, a, id, 0)
+	// Only selected-channel completed rows enter the budget. Other-channel
+	// completed rows deliberately lack captures and would exceed that budget.
+	coverageSeedOperations(t, f, a, 1536, "failed")
+	admissionSQL(t, f, `UPDATE review_operations SET channel='hosted',state='completed' WHERE id LIKE 'history-operation-%' AND CAST(substr(id,19) AS INTEGER)%3=0`)
+	admissionSQL(t, f, `UPDATE review_operations SET state='cancelled' WHERE id LIKE 'history-operation-%' AND state='failed' AND CAST(substr(id,19) AS INTEGER)%2=0`)
+	coverageRead(t, f, a, current, true)
+	_, err := f.e.Comparison(t.Context(), attemptProject, current, "hosted")
+	attemptCode(t, err, "review_capacity")
+	for _, channel := range []string{"cli", "hosted"} {
+		rows, err := f.store.DB().Query(`EXPLAIN QUERY PLAN SELECT id,attempt_id FROM review_operations WHERE project_id=? AND pull_number=? AND channel=? AND state='completed' ORDER BY id LIMIT 101`, attemptProject, 2, channel)
+		if err != nil {
 			t.Fatal(err)
 		}
-		plan += detail
+		var plan string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			plan += detail
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plan, "SEARCH review_operations USING INDEX review_operations_completed_comparison (project_id=? AND channel=? AND pull_number=?)") || strings.Contains(plan, "TEMP B-TREE") {
+			t.Fatal("completed scan lost channel/index/order bound", channel, plan)
+		}
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(plan, "review_operations_cli_admission") || strings.Contains(plan, "TEMP B-TREE") {
-		t.Fatal("completed scan lost index or order bound", plan)
+	var obsolete int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='index' AND name='review_operations_cli_admission'`).Scan(&obsolete); err != nil || obsolete != 0 {
+		t.Fatal("obsolete index retained", obsolete, err)
 	}
 }

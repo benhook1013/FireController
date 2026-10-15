@@ -22,6 +22,9 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	}, []string{
 		`CREATE TABLE review_cli_preflight(attempt_id TEXT PRIMARY KEY REFERENCES review_execution_attempts(id),project_id TEXT NOT NULL REFERENCES projects(id),body_json TEXT NOT NULL)`,
 		`CREATE INDEX review_operations_cli_admission ON review_operations(project_id,pull_number,channel,state,id)`,
+	}, []string{
+		`CREATE INDEX review_operations_completed_comparison ON review_operations(project_id,channel,pull_number,id) WHERE state='completed'`,
+		`DROP INDEX review_operations_cli_admission`,
 	}); err != nil {
 		return err
 	}

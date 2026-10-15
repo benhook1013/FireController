@@ -142,7 +142,7 @@ func (d *CLIDriver) sourceGate(ctx context.Context, reads *cliSourceReads, repos
 	if err != nil {
 		return plan, nil, err
 	}
-	comparison, err := d.engine.CLIComparison(ctx, operation.ProjectID, plan)
+	comparison, err := d.engine.Comparison(ctx, operation.ProjectID, plan, "cli")
 	if err != nil {
 		return plan, nil, err
 	}
@@ -178,7 +178,7 @@ func (d *CLIDriver) sourceGate(ctx context.Context, reads *cliSourceReads, repos
 		if err != nil {
 			return plan, nil, err
 		}
-		covered, err := d.engine.CLICoverage(ctx, operation.ProjectID, preceding)
+		covered, err := d.engine.Coverage(ctx, operation.ProjectID, preceding, "cli")
 		if err != nil {
 			return plan, nil, err
 		}

@@ -23,37 +23,12 @@ type CapturedHosted struct {
 // free for a later complete capture. It performs no provider work, publication
 // or attempt transition; the journal rechecks the actual retained binding.
 func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *reviewexec.Engine, attempt reviewexec.Attempt, record HostedCaptureRecord) (CapturedHosted, error) {
-	if ctx == nil || captures == nil || engine == nil || attempt.Anchor == nil || !validIdentifier(attempt.ProjectID) {
-		return CapturedHosted{}, core.Fail("validation_failed", "Use the admitted hosted attempt and its scoped capture.", 400)
+	result, retained, err := retainHostedObservation(ctx, captures, engine, attempt, record)
+	if err != nil || result.Reason != "capture_retained" {
+		return result, err
 	}
 	anchor := *attempt.Anchor
-	intent := reviewprovider.HostedTriggerIntent{OperationID: attempt.OperationID, AttemptID: attempt.ID, HeadSHA: anchor.CandidateSHA}
-	if _, err := reviewprovider.HostedTriggerBody(intent); err != nil {
-		return CapturedHosted{}, core.Fail("validation_failed", "Use the admitted hosted attempt and its scoped capture.", 400)
-	}
-	ref, err := captures.Save(ctx, attempt.ID, record)
-	if err != nil {
-		return CapturedHosted{}, err
-	}
-	result := CapturedHosted{Capture: ref, Reason: "capture_retained"}
-	retained, err := captures.Read(ctx, attempt.ID, ref)
-	if err != nil {
-		return result, err
-	}
-	if retained.RepositoryID != anchor.RepositoryID || retained.Repository != anchor.Repository || retained.PullNumber != anchor.PullNumber || retained.Intent != intent {
-		result.Reason = "source_changed"
-		return result, nil
-	}
-	command, _ := reviewprovider.HostedTriggerBody(intent)
-	_, err = engine.RecordHostedObservation(ctx, attempt.ProjectID, attempt.ID, reviewexec.HostedObservationInput{
-		CaptureID: ref.ID, CaptureSHA256: ref.SHA256, CaptureBytes: ref.Bytes,
-		StartedAt: retained.StartedAt.Format(time.RFC3339Nano), FinishedAt: retained.FinishedAt.Format(time.RFC3339Nano), ObservedAt: retained.Snapshot.ObservedAt.Format(time.RFC3339Nano),
-		ExpectedAnchor: anchor, Intent: command,
-	})
-	if err != nil {
-		result.Reason = "observation_unavailable"
-		return result, err
-	}
+	ref := result.Capture
 	inventory, err := reviewprovider.ExtractHostedFindings(retained.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
 	if err != nil {
 		result.Reason = "capture_invalid"
@@ -96,4 +71,41 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 	}
 	result.Complete, result.Reason = true, "capture_recorded"
 	return result, nil
+}
+
+// retainHostedObservation journals immutable raw source before trigger recovery
+// or final interpretation. It never changes the attempt or evidence slot.
+func retainHostedObservation(ctx context.Context, captures *HostedCaptureStore, engine *reviewexec.Engine, attempt reviewexec.Attempt, record HostedCaptureRecord) (CapturedHosted, HostedCaptureRecord, error) {
+	if ctx == nil || captures == nil || engine == nil || attempt.Anchor == nil || !validIdentifier(attempt.ProjectID) {
+		return CapturedHosted{}, HostedCaptureRecord{}, core.Fail("validation_failed", "Use the admitted hosted attempt and its scoped capture.", 400)
+	}
+	anchor := *attempt.Anchor
+	intent := reviewprovider.HostedTriggerIntent{OperationID: attempt.OperationID, AttemptID: attempt.ID, HeadSHA: anchor.CandidateSHA}
+	if _, err := reviewprovider.HostedTriggerBody(intent); err != nil {
+		return CapturedHosted{}, HostedCaptureRecord{}, core.Fail("validation_failed", "Use the admitted hosted attempt and its scoped capture.", 400)
+	}
+	ref, err := captures.Save(ctx, attempt.ID, record)
+	if err != nil {
+		return CapturedHosted{}, HostedCaptureRecord{}, err
+	}
+	result := CapturedHosted{Capture: ref, Reason: "capture_retained"}
+	retained, err := captures.Read(ctx, attempt.ID, ref)
+	if err != nil {
+		return result, HostedCaptureRecord{}, err
+	}
+	if retained.RepositoryID != anchor.RepositoryID || retained.Repository != anchor.Repository || retained.PullNumber != anchor.PullNumber || retained.Intent != intent {
+		result.Reason = "source_changed"
+		return result, retained, nil
+	}
+	command, _ := reviewprovider.HostedTriggerBody(intent)
+	_, err = engine.RecordHostedObservation(ctx, attempt.ProjectID, attempt.ID, reviewexec.HostedObservationInput{
+		CaptureID: ref.ID, CaptureSHA256: ref.SHA256, CaptureBytes: ref.Bytes,
+		StartedAt: retained.StartedAt.Format(time.RFC3339Nano), FinishedAt: retained.FinishedAt.Format(time.RFC3339Nano), ObservedAt: retained.Snapshot.ObservedAt.Format(time.RFC3339Nano),
+		ExpectedAnchor: anchor, Intent: command,
+	})
+	if err != nil {
+		result.Reason = "observation_unavailable"
+		return result, HostedCaptureRecord{}, err
+	}
+	return result, retained, nil
 }
