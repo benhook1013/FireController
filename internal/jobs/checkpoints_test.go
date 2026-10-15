@@ -4,17 +4,22 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	serviceclient "github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/jobs"
+	"github.com/benhook1013/FireController/internal/profile"
 	"github.com/benhook1013/FireController/internal/server"
 )
 
@@ -542,4 +547,244 @@ func checkpointCounts(t *testing.T, a *testAPI, project, job string) [3]int {
 
 func sha256Bytes(data []byte) [32]byte {
 	return sha256.Sum256(data)
+}
+
+func TestCheckpointEquivalentEmptyBlockerCrossClientReplay(t *testing.T) {
+	for _, firstShape := range []string{"omitted", "null", "empty", "typed-client"} {
+		t.Run(firstShape, func(t *testing.T) {
+			a := setupAPI(t)
+			project := a.createProject("checkpoint-equivalent", "example/checkpoint-equivalent")
+			token := a.grant(project, "checkpoint-equivalent-client", "read", "write")
+			worker := a.createWorker(project, "Builder")
+			job := createCheckpointTestJob(t, a, project, token)
+			base := "/api/v1/projects/" + project + "/jobs/" + job.ID
+			providerReads := a.lookups
+			service := httptest.NewServer(a.mux)
+			defer service.Close()
+			credential := filepath.Join(t.TempDir(), "client.token")
+			if err := os.WriteFile(credential, []byte(token), 0600); err != nil {
+				t.Fatal(err)
+			}
+			client, err := serviceclient.New(t.Context(), profile.Binding{Context: profile.Context{Profile: "checkpoint-builder", ServerURL: service.URL, InstanceID: a.store.InstanceID(), ProjectID: project, WorkerID: worker}, CredentialFile: credential})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			request := serviceclient.AppendCheckpointRequest{ExpectedJobRevision: 1, Done: "Exact completed work", Next: "Next explicit step"}
+			body := func(shape string) map[string]any {
+				value := map[string]any{"expected_job_revision": 1, "done": request.Done, "next": request.Next}
+				if shape == "null" {
+					value["blocker"] = nil
+					value["evidence"] = nil
+				}
+				if shape == "empty" {
+					value["blocker"] = ""
+					value["evidence"] = []string{}
+				}
+				return value
+			}
+			const key = "equivalent-checkpoint"
+			var first checkpointReceiptValue
+			if firstShape == "typed-client" {
+				receipt, err := client.AppendCheckpoint(t.Context(), key, job.ID, request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				first = checkpointReceiptValue{receipt.ID, receipt.Sequence, receipt.JobRevision, receipt.Outcome}
+			} else {
+				response := a.callWorker(http.MethodPost, base+"/checkpoints", token, worker, key, body(firstShape))
+				if response.Code != http.StatusCreated {
+					t.Fatalf("initial append status=%d", response.Code)
+				}
+				decodeResponse(t, response, &first)
+			}
+			assertReplay := func() {
+				t.Helper()
+				for _, shape := range []string{"omitted", "null", "empty"} {
+					response := a.callWorker(http.MethodPost, base+"/checkpoints", token, worker, key, body(shape))
+					var got checkpointReceiptValue
+					if response.Code != http.StatusCreated {
+						t.Fatalf("%s equivalent retry status=%d body=%s", shape, response.Code, response.Body.String())
+					}
+					decodeResponse(t, response, &got)
+					if got != first {
+						t.Fatalf("%s retry changed retained receipt", shape)
+					}
+				}
+				got, err := client.AppendCheckpoint(t.Context(), key, job.ID, request)
+				if err != nil || got.ID != first.ID || got.Sequence != first.Sequence || got.JobRevision != first.JobRevision || got.Outcome != first.Outcome {
+					t.Fatalf("typed-client equivalent retry failed: %v", err)
+				}
+				if counts := checkpointCounts(t, a, project, job.ID); counts != [3]int{1, 1, 1} {
+					t.Fatalf("equivalent retries duplicated effects: %v", counts)
+				}
+			}
+			assertReplay()
+			// Replay resolves the retained request before current job-revision checks.
+			edited := a.call(http.MethodPatch, base, token, "advance-equivalent-job", map[string]any{"expected_revision": 1, "brief": "New current brief"})
+			if edited.Code != http.StatusOK {
+				t.Fatal("fixture job did not advance")
+			}
+			assertReplay()
+			for _, blocker := range []string{"blocked", " "} {
+				changed := body("empty")
+				changed["blocker"] = blocker
+				response := a.callWorker(http.MethodPost, base+"/checkpoints", token, worker, key, changed)
+				var failure struct {
+					Error struct {
+						Code string `json:"code"`
+					} `json:"error"`
+				}
+				decodeResponse(t, response, &failure)
+				if response.Code != http.StatusConflict || failure.Error.Code != "idempotency_conflict" {
+					t.Fatalf("changed blocker failed to conflict: %d %s", response.Code, response.Body.String())
+				}
+			}
+			latest := a.call(http.MethodGet, base+"/checkpoints/latest", token, "", nil)
+			var current struct {
+				JobRevision int64              `json:"job_revision"`
+				Checkpoint  checkpointAPIValue `json:"checkpoint"`
+			}
+			decodeResponse(t, latest, &current)
+			if current.JobRevision != 2 || current.Checkpoint.JobRevision != 1 || current.Checkpoint.Blocker != "" || current.Checkpoint.Evidence == nil {
+				t.Fatal("normalization changed stored meaning or captured/current revisions")
+			}
+			if counts := checkpointCounts(t, a, project, job.ID); counts != [3]int{1, 1, 1} {
+				t.Fatal("changed-blocker rejection created effects", counts)
+			}
+			if a.lookups != providerReads {
+				t.Fatal("checkpoint retries performed provider work")
+			}
+		})
+	}
+}
+
+func TestCheckpointHistoricalEmptyBlockerReceiptSurvivesCanonicalRecovery(t *testing.T) {
+	a := setupAPI(t)
+	project := a.createProject("checkpoint-historical", "example/checkpoint-historical")
+	token := a.grant(project, "checkpoint-historical-client", "read", "write")
+	worker := a.createWorker(project, "Builder")
+	job := createCheckpointTestJob(t, a, project, token)
+	base := "/api/v1/projects/" + project + "/jobs/" + job.ID
+	request := httptest.NewRequest(http.MethodPost, base+"/checkpoints", nil)
+	request.SetPathValue("project_id", project)
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("X-FC-Worker", worker)
+	scope, err := a.store.Scope(request, "write")
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := ""
+	// Reconstruct the exact pre-normalization request shape through the actual
+	// core fingerprint/receipt transaction, not an invented fingerprint hash.
+	legacy := struct {
+		ExpectedJobRevision int64    `json:"expected_job_revision"`
+		Done                string   `json:"done"`
+		Next                string   `json:"next"`
+		Blocker             *string  `json:"blocker"`
+		Evidence            []string `json:"evidence"`
+	}{1, "Historical exact work", "Historical next step", &empty, []string{}}
+	const key = "historical-empty-blocker"
+	id := core.NewID("checkpoint")
+	receipt, err := a.store.Mutate(t.Context(), scope, core.Mutation{Operation: "jobs.checkpoint", Target: job.ID, Key: key, Request: legacy}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		var sequence int64
+		if err := tx.QueryRowContext(ctx, `INSERT INTO job_checkpoints (id,project_id,job_id,job_revision,actor_id,worker_id,done,next,blocker,evidence_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING sequence`, id, project, job.ID, 1, scope.PrincipalID, scope.WorkerID, legacy.Done, legacy.Next, "", "[]", time.Now().UTC().Format(time.RFC3339Nano)).Scan(&sequence); err != nil {
+			return nil, err
+		}
+		if err := core.AppendEvent(ctx, tx, scope, "job.checkpointed", id, 1, map[string]any{"job_id": job.ID, "sequence": sequence}); err != nil {
+			return nil, err
+		}
+		return checkpointReceiptValue{id, sequence, 1, "created"}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var originalFingerprint string
+	if err := a.store.DB().QueryRow(`SELECT fingerprint FROM receipts WHERE project_id=? AND operation='jobs.checkpoint' AND target=? AND key=?`, project, job.ID, key).Scan(&originalFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	body := func(shape string) map[string]any {
+		value := map[string]any{"expected_job_revision": 1, "done": legacy.Done, "next": legacy.Next}
+		if shape == "null" {
+			value["blocker"] = nil
+			value["evidence"] = nil
+		}
+		if shape == "empty" {
+			value["blocker"] = ""
+			value["evidence"] = []string{}
+		}
+		return value
+	}
+	assertReplays := func() {
+		t.Helper()
+		for _, shape := range []string{"omitted", "null", "empty"} {
+			response := a.callWorker(http.MethodPost, base+"/checkpoints", token, worker, key, body(shape))
+			if response.Code != http.StatusCreated || !bytes.Equal(bytes.TrimSpace(response.Body.Bytes()), receipt) {
+				t.Fatalf("historical %s recovery failed: %d %s", shape, response.Code, response.Body.String())
+			}
+		}
+		var fingerprint, currentReceipt string
+		if err := a.store.DB().QueryRow(`SELECT fingerprint,response_json FROM receipts WHERE project_id=? AND operation='jobs.checkpoint' AND target=? AND key=?`, project, job.ID, key).Scan(&fingerprint, &currentReceipt); err != nil {
+			t.Fatal(err)
+		}
+		if fingerprint != originalFingerprint || currentReceipt != string(receipt) {
+			t.Fatal("recovery rewrote historical receipt")
+		}
+		if counts := checkpointCounts(t, a, project, job.ID); counts != [3]int{1, 1, 1} {
+			t.Fatal("recovery allocated checkpoint/event/receipt", counts)
+		}
+	}
+	assertReplays()
+	edited := a.call(http.MethodPatch, base, token, "advance-historical-job", map[string]any{"expected_revision": 1, "brief": "Current revision two"})
+	if edited.Code != http.StatusOK {
+		t.Fatal("fixture job did not advance")
+	}
+	assertReplays()
+	var dbPath string
+	if err := a.store.DB().QueryRow(`PRAGMA database_list`).Scan(new(int), new(string), &dbPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := core.Open(t.Context(), filepath.Dir(dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if err := jobs.EnsureSchema(t.Context(), store); err != nil {
+		t.Fatal(err)
+	}
+	a.store = store
+	a.mux = http.NewServeMux()
+	a.mux.Handle("/", server.New(store))
+	jobs.Register(a.mux, store)
+	assertReplays()
+	for _, field := range []string{"done", "next", "blocker", "evidence"} {
+		changed := body("empty")
+		if field == "evidence" {
+			changed[field] = []string{"different-evidence"}
+		} else {
+			changed[field] = "different"
+		}
+		response := a.callWorker(http.MethodPost, base+"/checkpoints", token, worker, key, changed)
+		if response.Code != http.StatusConflict || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"idempotency_conflict"`)) {
+			t.Fatalf("changed %s incorrectly recovered legacy receipt: %d %s", field, response.Code, response.Body.String())
+		}
+	}
+	var credentialID string
+	if err := store.DB().QueryRow(`SELECT id FROM credentials WHERE token_sha256=?`, fmt.Sprintf("%x", sha256.Sum256([]byte(token)))).Scan(&credentialID); err != nil {
+		t.Fatal(err)
+	}
+	revoked := a.call(http.MethodDelete, "/api/v1/projects/"+project+"/credentials/"+credentialID, a.admin, "revoke-historical-client", nil)
+	if revoked.Code != http.StatusOK {
+		t.Fatal("fixture revoke failed")
+	}
+	response := a.callWorker(http.MethodPost, base+"/checkpoints", token, worker, key, body("empty"))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("historical recovery bypassed current authorization: %d", response.Code)
+	}
+	if counts := checkpointCounts(t, a, project, job.ID); counts != [3]int{1, 1, 1} {
+		t.Fatal("recovery refusals created effects", counts)
+	}
 }

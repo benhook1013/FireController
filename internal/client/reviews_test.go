@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -313,5 +314,103 @@ func TestReviewReadsDefaultToCurrentSnapshotAndKeepHistoricalCounts(t *testing.T
 	}
 	if f.calls.Load() != 5 {
 		t.Fatalf("unexpected provider/handshake/retry requests: %d", f.calls.Load())
+	}
+}
+
+func TestReviewClientRejectsBlankCoverageLimitsAcrossViews(t *testing.T) {
+	f := newReviewClientFixture(t)
+	f.importSnapshot(t)
+	queue, err := f.client.ReviewQueue(t.Context(), client.PageOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pull, err := f.client.ReviewPull(t.Context(), 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs, err := f.client.ReviewRuns(t.Context(), 1, client.ReviewRunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := f.client.ReviewRun(t.Context(), runs.Items[0].ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, limit := range []string{"", " \t\r\n"} {
+		for _, view := range []string{"queue", "pull", "runs", "run"} {
+			t.Run(view+"-"+strconv.Itoa(len(limit)), func(t *testing.T) {
+				var body any
+				var path string
+				switch view {
+				case "queue":
+					value := queue
+					value.Items = append([]client.ReviewPullSummary(nil), queue.Items...)
+					value.Items[0].RecentRuns = append([]client.ReviewRunSummary(nil), queue.Items[0].RecentRuns...)
+					value.Items[0].RecentRuns[0].CoverageLimits = []string{limit}
+					body = value
+					path = "/api/v1/projects/project-one/reviews/queue"
+				case "pull":
+					value := pull
+					value.Pull.RecentRuns = append([]client.ReviewRunSummary(nil), pull.Pull.RecentRuns...)
+					value.Pull.RecentRuns[0].CoverageLimits = []string{limit}
+					body = value
+					path = "/api/v1/projects/project-one/reviews/pulls/1"
+				case "runs":
+					value := runs
+					value.Items = append([]client.ReviewRunSummary(nil), runs.Items...)
+					value.Items[0].CoverageLimits = []string{limit}
+					body = value
+					path = "/api/v1/projects/project-one/reviews/pulls/1/runs"
+				case "run":
+					value := detail
+					value.Run.CoverageLimits = []string{limit}
+					body = value
+					path = "/api/v1/projects/project-one/reviews/runs/" + detail.Run.ID
+				}
+				data, _ := json.Marshal(body)
+				mock := newReviewMock(t, string(data), path)
+				switch view {
+				case "queue":
+					_, err = mock.client.ReviewQueue(t.Context(), client.PageOptions{})
+				case "pull":
+					_, err = mock.client.ReviewPull(t.Context(), 1, "")
+				case "runs":
+					_, err = mock.client.ReviewRuns(t.Context(), 1, client.ReviewRunOptions{})
+				case "run":
+					_, err = mock.client.ReviewRun(t.Context(), detail.Run.ID, "")
+				}
+				checkError(t, err, "invalid_response")
+			})
+		}
+	}
+}
+
+func TestReviewClientProofNotesRequireAcceptedDisposition(t *testing.T) {
+	f := newReviewClientFixture(t)
+	f.importSnapshot(t, func(req *domain.ObservationRequest) {
+		finding := &req.Queue[0].Runs[0].Findings[0]
+		finding.FixSHA = ""
+		finding.ResolvedAt = ""
+		finding.ProofNote = "Accepted proof before a known fix SHA"
+		req.Queue[0].Runs[0].CoverageLimits = []string{"  Retained scope limitation\n"}
+	})
+	runs, err := f.client.ReviewRuns(t.Context(), 1, client.ReviewRunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := f.client.ReviewRun(t.Context(), runs.Items[0].ID, "")
+	if err != nil || detail.Findings[0].ProofNote != "Accepted proof before a known fix SHA" || detail.Run.CoverageLimits[0] != "  Retained scope limitation\n" {
+		t.Fatal("accepted source text rejected or normalized", detail, err)
+	}
+	for _, disposition := range []string{"unadjudicated", "routed", "rejected"} {
+		t.Run(disposition, func(t *testing.T) {
+			value := detail
+			value.Findings = append([]client.ReviewFinding(nil), detail.Findings...)
+			value.Findings[0].Disposition = disposition
+			data, _ := json.Marshal(value)
+			mock := newReviewMock(t, string(data), "/api/v1/projects/project-one/reviews/runs/"+value.Run.ID)
+			_, err := mock.client.ReviewRun(t.Context(), value.Run.ID, "")
+			checkError(t, err, "invalid_response")
+		})
 	}
 }

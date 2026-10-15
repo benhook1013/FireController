@@ -80,6 +80,12 @@ func appendCheckpoint(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
+		// Omitted, null and empty blockers all store the same empty string.
+		// Canonicalize before fingerprinting so equivalent clients can recover
+		// the same receipt without changing accepted nonempty text.
+		if req.Blocker != nil && *req.Blocker == "" {
+			req.Blocker = nil
+		}
 		if req.Evidence == nil {
 			req.Evidence = []string{}
 		}
@@ -93,9 +99,8 @@ func appendCheckpoint(store *core.Store) http.HandlerFunc {
 			return
 		}
 		jobID := r.PathValue("job_id")
-		result, err := store.Mutate(r.Context(), scope, core.Mutation{
-			Operation: "jobs.checkpoint", Target: jobID, Key: key, Request: req,
-		}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		mutation := core.Mutation{Operation: "jobs.checkpoint", Target: jobID, Key: key, Request: req}
+		result, err := store.Mutate(r.Context(), scope, mutation, func(ctx context.Context, tx *sql.Tx) (any, error) {
 			current, err := readJob(ctx, tx, scope.ProjectID, jobID)
 			if err != nil {
 				return nil, err
@@ -126,6 +131,25 @@ func appendCheckpoint(store *core.Store) http.HandlerFunc {
 			}
 			return checkpointReceipt{ID: id, Sequence: sequence, JobRevision: current.Revision, Outcome: "created"}, nil
 		})
+		// Older receipts fingerprinted an explicitly empty blocker differently.
+		// Check only that retained representation after a canonical conflict;
+		// never execute the append again or rewrite an immutable receipt.
+		var conflict *core.Error
+		if req.Blocker == nil && errors.As(err, &conflict) && conflict.Code == "idempotency_conflict" {
+			legacy := req
+			empty := ""
+			legacy.Blocker = &empty
+			mutation.Request = legacy
+			replay, found, replayErr := store.Replay(r.Context(), scope, mutation)
+			var legacyConflict *core.Error
+			if replayErr != nil {
+				if !errors.As(replayErr, &legacyConflict) || legacyConflict.Code != "idempotency_conflict" {
+					err = replayErr
+				}
+			} else if found {
+				result, err = replay, nil
+			}
+		}
 		if err != nil {
 			core.WriteError(w, err)
 			return
