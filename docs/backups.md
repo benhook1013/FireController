@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Local operator bundle creation, read-only inspection and inactive restore are implemented. Full checks and five packaged proof groups pass as recorded below. Scheduling, retention, activation and provider reconciliation remain unfinished. This is not yet an installed backup or disaster recovery workflow.
+Local operator bundle creation, read-only inspection and inactive restore are implemented. Full checks and five packaged proof groups pass as recorded below. Managed scheduling, retention and read-only operator status have focused checks; their full integrated and packaged proof are pending. Activation and provider reconciliation remain unfinished. This is not yet an installed backup or disaster recovery workflow.
 
 ## Canonical data and local format
 
@@ -28,15 +28,28 @@ The operator commands are:
 fcd backup --data-dir SOURCE --destination BACKUP_ROOT
 fcd backup-inspect --bundle BUNDLE_DIRECTORY
 fcd restore --bundle BUNDLE_DIRECTORY --data-dir NEW_DESTINATION
+fcd backup-status --data-dir SOURCE
 ```
 
 Each command accepts `--timeout DURATION`, defaults to five minutes and permits a positive duration up to twenty-four hours. Duplicate/unknown flags, positional arguments and invalid durations fail before filesystem work. The operator opens its live source read-only without initialization, migration or writer admission. A backup source must already be a valid private installation; a wrong path cannot silently bootstrap a new database. Restore never overlays an existing destination, including an empty directory.
 
 Commands use explicit local filesystem authority, bounded execution and compact JSON; they never load a provider catalog or make network calls. A caller may retain a long local command in its host background. These are operator actions, not per-worker coordination calls or a reason to return pending receipts for quick local mutations.
 
+Use a short private destination path. The bundled SQLite VFS imposes a smaller database-path limit than the filesystem; generated bundle and database names also consume that space. An unsupported destination remains a reported backup failure rather than a successful backup.
+
+## Managed scheduling and retention
+
+Scheduling is an explicitly configured daemon feature. The operator supplies `--backup-destination`, `--backup-interval` and `--backup-keep` together; no destination or automatic schedule is invented. The interval is one minute through thirty days and the retained count is one through one thousand. Optional `--backup-timeout` defaults to five minutes and accepts the same positive maximum twenty-four hours as the manual command. Invalid or incomplete configuration fails before creating installation state, including destinations whose encoded status could exceed the output budget. One active service replica remains the supported deployment.
+
+The daemon owns one serial backup worker using the existing store's read pool. After an attempt settles, it waits the configured interval; elapsed periods do not build a queue of catch-up work. On restart a due schedule can run immediately, and an interrupted prior attempt remains a failure rather than invented success. Shutdown cancels and joins the worker before closing storage. Destination failures do not stop ordinary coordination or readiness.
+
+A small versioned local ledger retains configuration, last attempted outcome, last verified success and managed bundle identities. A failed attempt preserves the previous success. Retention failure is reported independently of successful creation. `fcd backup-status --data-dir SOURCE` reads compact stored operator facts without snapshotting, hashing all bundles, calling providers or changing state. Stored success identifies a past verification; `backup-inspect` verifies present bytes. Status output is bounded to 16 KiB so long configured destinations and retained success locations remain reportable; manual backup, inspection and restore summaries keep their 4 KiB bound. It is not a per-worker tool or an automatic notice attached to unrelated calls.
+
+Retention runs only after a newly verified managed success and affects only ledger-owned bundles for that source instance and selected destination. Preserve at least the configured count, including the newest verified copy. Manual, foreign-instance, changed, unrecognized or unverified directories are never adopted or deleted. Verify every protected keeper before pruning older copies, then reinspect each deletion candidate against its stored identity and manifest binding. Suspicious or partial remnants remain explicit cleanup failures; a failed backup does not start pruning. Destination transfer and restore activation remain separate boundaries. These scheduling and retention controls are implemented with focused checks; full integrated and packaged proof remain pending at this checkpoint.
+
 ## Functional proof
 
-Prove online SQLite snapshot consistency while writes continue; self-contained reopen after removing the source; complete database/reference/artifact validation; unreferenced final-capture preservation; atomic failed publication and no replacement of existing destinations; privacy/symlink/path/hash/schema failures; source unchanged except intended writes; cancellation; inactive restore with new instance and revoked credentials; original IDs, receipts and source provider intents retained; daemon refusal before listener/worker/provider work. Prove actual packaged commands and ordinary startup independently. These functional goals do not assert fleet throughput, cloud durability, scheduled retention or a completed operational disaster cutover.
+Prove online SQLite snapshot consistency while writes continue; self-contained reopen after removing the source; complete database/reference/artifact validation; unreferenced final-capture preservation; atomic failed publication and no replacement of existing destinations; privacy/symlink/path/hash/schema failures; source unchanged except intended writes; cancellation; inactive restore with new instance and revoked credentials; original IDs, receipts and source provider intents retained; daemon refusal before listener/worker/provider work. Prove actual packaged commands and ordinary startup independently. Also prove serial scheduling and restart without catch-up, separate creation and retention outcomes, read-only status, unchanged ordinary coordination during blocked or failed backup work, and preservation of valid older copies when protected keepers are damaged or missing. These functional goals do not assert fleet throughput, cloud durability or a completed operational disaster cutover.
 
 ## Proof status and limits
 
@@ -48,4 +61,6 @@ The backup command took 91.721 ms while nine coordination mutations completed. N
 
 Two initial private-harness failures were preserved before fixing an eager diagnostic read and a local nanosecond timestamp parser. They required no production change, timeout relaxation or weakened assertion.
 
-This slice addresses the snapshot and inactive-copy portions of O02 and O06 in [acceptance](acceptance.md). It does not satisfy O07 scheduled-backup status or claim active recovery. No daemon schedule, retention policy, destination transfer, activation command, provider reconciliation, browser backup control or extra agent tool is delivered here. Local bundles remain under the operator's filesystem authority and are not encrypted by this format; use storage protection appropriate to the installation. Windows and macOS runtime durability and access-control behavior remain separate proof.
+Focused [scheduler](../internal/backup/managed_scheduler_test.go), [worker isolation](../internal/backup/managed_worker_test.go), [retention](../internal/backup/managed_retention_test.go) and [daemon command](../cmd/fcd/backup_schedule_test.go) checks cover the managed local controls, including real escaped-path output and rejected encoded configurations before state changes. Full combined checks and packaged scheduled-backup proof are pending.
+
+This slice addresses the snapshot and inactive-copy portions of O02 and O06 in [acceptance](acceptance.md). Managed local scheduling and status address the local portion of O07; optional destination-transfer proof and active recovery remain unfinished. No destination transfer, activation command, provider reconciliation, browser backup control or extra agent tool is delivered here. Local bundles remain under the operator's filesystem authority and are not encrypted by this format; use storage protection appropriate to the installation. Windows and macOS runtime durability and access-control behavior remain separate proof.

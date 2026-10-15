@@ -33,7 +33,8 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode int) {
-	if len(args) > 0 && (args[0] == "backup" || args[0] == "backup-inspect" || args[0] == "restore") {
+	stderr = &daemonDiagnosticWriter{writer: stderr}
+	if len(args) > 0 && (args[0] == "backup" || args[0] == "backup-inspect" || args[0] == "backup-status" || args[0] == "restore") {
 		return runBackupCommand(ctx, args[0], args[1:], stdout, stderr)
 	}
 	flags := flag.NewFlagSet("fcd", flag.ContinueOnError)
@@ -42,6 +43,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	listen := flags.String("listen", "127.0.0.1:8080", "loopback HTTP listen address")
 	tokenFile := flags.String("github-token-file", "", "optional private GitHub credential file")
 	reviewCatalog := flags.String("review-catalog", "", "optional private native CLI capability catalog")
+	backupDestination := flags.String("backup-destination", "", "explicit managed backup root")
+	backupInterval := flags.Duration("backup-interval", 0, "managed backup interval, 1m through 720h")
+	backupKeep := flags.Int("backup-keep", 0, "managed verified bundles to retain, 1 through 1000")
+	backupTimeout := flags.Duration("backup-timeout", 0, "managed attempt deadline, default 5m and maximum 24h")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -50,6 +55,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}
 	if flags.NArg() != 0 || *dataDir == "" || !loopback(*listen) {
 		diagnostic(stderr, "configuration_invalid", "Provide --data-dir and a loopback --listen address.")
+		return 2
+	}
+	providedBackupFlags := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { providedBackupFlags[f.Name] = true })
+	hasSchedule := providedBackupFlags["backup-destination"] || providedBackupFlags["backup-interval"] || providedBackupFlags["backup-keep"]
+	if hasSchedule && (!providedBackupFlags["backup-destination"] || !providedBackupFlags["backup-interval"] || !providedBackupFlags["backup-keep"] || *backupDestination == "" || *backupInterval <= 0 || *backupKeep <= 0) || providedBackupFlags["backup-timeout"] && (!hasSchedule || *backupTimeout <= 0) {
+		diagnostic(stderr, "configuration_invalid", "Configure --backup-destination, --backup-interval and --backup-keep together; --backup-timeout requires a schedule and a positive duration.")
+		return 2
+	}
+	schedule, err := backup.ValidateScheduleConfig(*dataDir, backup.ScheduleConfig{Destination: *backupDestination, Interval: *backupInterval, Keep: *backupKeep, Timeout: *backupTimeout})
+	if err != nil {
+		diagnosticError(stderr, err)
 		return 2
 	}
 	if err := backup.CheckDataDirectory(*dataDir); err != nil {
@@ -115,6 +132,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 	}
+	if err = backup.EnsureManagedSchema(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
+	backupManager, err := backup.NewManager(store, *dataDir, schedule)
+	if err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
 	execution, drivers, err := buildReviewExecution(store, *dataDir, catalog)
 	if err != nil {
 		diagnosticError(stderr, err)
@@ -160,6 +186,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
+	backupDone := startBackupWorker(reviewCtx, backupManager, schedule.Destination != "", func(err error) { diagnosticError(stderr, err) })
+	defer func() {
+		cancelReviews()
+		if err := waitBackupWorker(backupDone, 12*time.Second); err != nil {
+			diagnosticError(stderr, err)
+			exitCode = 3
+		}
+	}()
 	srv := newHTTPServer(ctx, mux)
 	_ = json.NewEncoder(stdout).Encode(map[string]string{"event": "listening", "address": listener.Addr().String(), "instance_id": store.InstanceID()})
 	done := make(chan error, 1)
@@ -176,6 +210,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 		<-done
+	case backupErr := <-backupDone:
+		cancelReviews()
+		shutdownErr := shutdownHTTPServer(srv, 5*time.Second)
+		<-done
+		if backupErr != nil {
+			diagnosticError(stderr, backupErr)
+			return 3
+		}
+		if shutdownErr != nil || ctx.Err() == nil {
+			diagnostic(stderr, "backup_worker_stopped", "The managed backup worker stopped unexpectedly.")
+			return 3
+		}
 	case reviewErr := <-reviewDone:
 		cancelReviews()
 		shutdownErr := shutdownHTTPServer(srv, 5*time.Second)
