@@ -129,7 +129,7 @@ func validateObservation(req *ObservationRequest) error {
 					return validationError("source_finding_id values must be unique within a run.")
 				}
 				seenFindings[finding.SourceFindingID] = struct{}{}
-				if (finding.FixSHA != "" || finding.ProofNote != "") && finding.Disposition != "accepted" || finding.ResolvedAt != "" && finding.FixSHA == "" {
+				if ((finding.FixSHA != "" || finding.ProofNote != "") && finding.Disposition != "accepted") || (finding.ResolvedAt != "" && finding.FixSHA == "") {
 					return validationError("Fix evidence must belong to an accepted finding and include its fix SHA.")
 				}
 				if _, err := parseTimestamp(finding.DecidedAt, false); err != nil {
