@@ -600,3 +600,202 @@ func TestGitHubMalformedLinkParametersNeverCompletePartialCollection(t *testing.
 		}
 	}
 }
+
+// Numeric repository links identify the next page only. The adapter must still
+// reconstruct every request with the originally selected owner/repository path.
+func TestGitHubNumericRepositoryPaginationUsesOriginalCollection(t *testing.T) {
+	for _, kind := range []string{"issues", "reviews", "review-comments"} {
+		for _, malformedSecond := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/malformed-second=%v", kind, malformedSecond), func(t *testing.T) {
+				suffix := numericPaginationSuffix(kind)
+				expectedPath := "/repos/owner/repo/" + suffix
+				var requests atomic.Int64
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					if r.Method != http.MethodGet || r.URL.Path != expectedPath || r.URL.RawPath != "" || r.URL.Query().Get("per_page") != "100" || r.Header.Get("Authorization") != "Bearer synthetic-pagination-token" {
+						t.Errorf("unsafe reconstructed request: %s %s", r.Method, r.URL.String())
+						http.NotFound(w, r)
+						return
+					}
+					switch r.URL.Query().Get("page") {
+					case "1":
+						w.Header().Set("Link", "<"+serverURL(r)+"/repositories/1418705294/"+suffix+"?per_page=100&page=2>; rel=next")
+						_, _ = ioWriteString(w, "["+numericPaginationItem(kind, 1)+"]")
+					case "2":
+						if malformedSecond {
+							_, _ = ioWriteString(w, `[{"id":`)
+							return
+						}
+						_, _ = ioWriteString(w, "["+numericPaginationItem(kind, 2)+"]")
+					default:
+						t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+						http.NotFound(w, r)
+					}
+				}))
+				defer server.Close()
+				bodies, err := readNumericPaginationCollection(t, testGitHub(server, "synthetic-pagination-token"), kind)
+				if malformedSecond {
+					if !hasCode(err, "provider_invalid_response") || bodies != nil {
+						t.Fatal("malformed later page returned a partial complete collection", bodies, err)
+					}
+				} else if err != nil || strings.Join(bodies, ",") != "page one,page two" {
+					t.Fatal("numeric Link rejected or source text lost", bodies, err)
+				}
+				if requests.Load() != 2 {
+					t.Fatal("wrong request count or numeric link fetched", requests.Load())
+				}
+			})
+		}
+	}
+}
+
+func numericPaginationSuffix(kind string) string {
+	switch kind {
+	case "issues":
+		return "issues/7/comments"
+	case "reviews":
+		return "pulls/7/reviews"
+	default:
+		return "pulls/7/comments"
+	}
+}
+
+func numericPaginationItem(kind string, page int) string {
+	body := "page one"
+	if page == 2 {
+		body = "page two"
+	}
+	actor := `{"id":8,"login":"synthetic-provider","type":"Bot"}`
+	switch kind {
+	case "issues":
+		return fmt.Sprintf(`{"id":%d,"body":%q,"user":%s,"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}`, page, body, actor)
+	case "reviews":
+		return fmt.Sprintf(`{"id":%d,"body":%q,"state":"commented","commit_id":"%s","user":%s,"submitted_at":"2026-10-01T00:00:00Z"}`, page, body, strings.Repeat("a", 40), actor)
+	default:
+		return fmt.Sprintf(`{"id":%d,"pull_request_review_id":11,"body":%q,"user":%s,"path":"internal/a.go","line":null,"commit_id":"%s","original_commit_id":"%s","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}`, page, body, actor, strings.Repeat("a", 40), strings.Repeat("b", 40))
+	}
+}
+
+func readNumericPaginationCollection(t *testing.T, g *GitHub, kind string) ([]string, error) {
+	t.Helper()
+	bodies := []string{}
+	switch kind {
+	case "issues":
+		items, err := g.IssueComments(t.Context(), "owner/repo", 7)
+		if err != nil {
+			if items != nil {
+				t.Error("issue-comment error returned partial items")
+			}
+			return nil, err
+		}
+		for _, item := range items {
+			bodies = append(bodies, item.Body)
+		}
+	case "reviews":
+		items, err := g.Reviews(t.Context(), "owner/repo", 7)
+		if err != nil {
+			if items != nil {
+				t.Error("review error returned partial items")
+			}
+			return nil, err
+		}
+		for _, item := range items {
+			bodies = append(bodies, item.Body)
+		}
+	default:
+		items, err := g.ReviewComments(t.Context(), "owner/repo", 7)
+		if err != nil {
+			if items != nil {
+				t.Error("review-comment error returned partial items")
+			}
+			return nil, err
+		}
+		for _, item := range items {
+			bodies = append(bodies, item.Body)
+		}
+	}
+	return bodies, nil
+}
+
+func TestNextPageNumericRepositoryLinkScopeAndCanonicalIDs(t *testing.T) {
+	for _, base := range []string{"https://api.github.com", "https://github.example/api/v3", "https://github.example/api/v3/"} {
+		for _, kind := range []string{"issues", "reviews", "review-comments"} {
+			suffix := numericPaginationSuffix(kind)
+			path := "/repos/owner/repo/" + suffix
+			origin := strings.TrimRight(base, "/")
+			linkPath := "/repositories/1418705294/" + suffix
+			accepted := []string{origin + linkPath, origin + "/repositories/1/" + suffix, origin + "/repositories/9223372036854775807/" + suffix, origin + path}
+			for _, target := range accepted {
+				page, found, err := nextPage([]string{"<" + target + "?per_page=100&page=2>; rel=next"}, base, path, 1)
+				if err != nil || !found || page != 2 {
+					t.Errorf("valid canonical path rejected: %s: %d %v %v", target, page, found, err)
+				}
+			}
+			for _, id := range []string{"", "0", "00", "01", "-1", "+1", "1.0", "abc", "9223372036854775808", "%31", "%2F1", "1%2F", "%2531"} {
+				target := origin + "/repositories/" + id + "/" + suffix
+				if _, _, err := nextPage([]string{"<" + target + "?per_page=100&page=2>; rel=next"}, base, path, 1); err == nil {
+					t.Errorf("malformed numeric identity accepted: %q", target)
+				}
+			}
+			invalid := []string{
+				origin + linkPath + "/", origin + linkPath + "/extra", origin + strings.Replace(linkPath, "/7/", "/8/", 1), origin + strings.Replace(linkPath, "repositories", "repos", 1),
+				origin + strings.Replace(linkPath, "/7/", "/%37/", 1), origin + "/repositories/1418705294/pulls/7/reviews/../comments", origin + "/repositories/1418705294/other/7/comments",
+				origin + strings.Replace(linkPath, "/", "//", 1), origin + "/other" + linkPath, "https://foreign.example" + linkPath, "http://api.github.com" + linkPath,
+				origin + linkPath + "#fragment", "https://user@" + strings.TrimPrefix(origin, "https://") + linkPath,
+			}
+			if strings.Contains(base, "/api/v3") {
+				invalid = append(invalid, "https://github.example"+linkPath, "https://github.example/api/v30"+linkPath)
+			}
+			for _, target := range invalid { // Add query before fragment so the fragment remains independently invalid.
+				target = strings.Replace(target, "#fragment", "?per_page=100&page=2#fragment", 1)
+				if !strings.Contains(target, "?") {
+					target += "?per_page=100&page=2"
+				}
+				if _, _, err := nextPage([]string{"<" + target + ">; rel=next"}, base, path, 1); err == nil {
+					t.Errorf("cross-scope numeric link accepted: %q", target)
+				}
+			}
+		}
+	}
+}
+
+func TestGitHubMalformedNumericRepositoryLinkNeverCompletesPartialCollection(t *testing.T) {
+	for _, kind := range []string{"issues", "reviews", "review-comments"} {
+		for _, bad := range []string{"repositories/01/", "repositories/9223372036854775808/", "repositories/%31/", "repositories/1/other/"} {
+			t.Run(kind+"/"+bad, func(t *testing.T) {
+				var requests atomic.Int64
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					w.Header().Set("Link", "<"+serverURL(r)+"/"+bad+numericPaginationSuffix(kind)+"?page=2&per_page=100>; rel=next")
+					_, _ = ioWriteString(w, "["+numericPaginationItem(kind, 1)+"]")
+				}))
+				defer server.Close()
+				bodies, err := readNumericPaginationCollection(t, testGitHub(server, ""), kind)
+				if !hasCode(err, "provider_invalid_response") || bodies != nil || requests.Load() != 1 {
+					t.Fatal("malformed numeric link followed or partial returned", bodies, requests.Load(), err)
+				}
+			})
+		}
+	}
+}
+
+func TestGitHubNumericRepositoryLinkNeverFetchesForeignOrigin(t *testing.T) {
+	var foreignRequests atomic.Int64
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { foreignRequests.Add(1); _, _ = ioWriteString(w, "[]") }))
+	defer foreign.Close()
+	for _, kind := range []string{"issues", "reviews", "review-comments"} {
+		t.Run(kind, func(t *testing.T) {
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Link", "<"+foreign.URL+"/repositories/1418705294/"+numericPaginationSuffix(kind)+"?per_page=100&page=2>; rel=next")
+				_, _ = ioWriteString(w, "["+numericPaginationItem(kind, 1)+"]")
+			}))
+			defer server.Close()
+			bodies, err := readNumericPaginationCollection(t, testGitHub(server, "synthetic-pagination-token"), kind)
+			if !hasCode(err, "provider_invalid_response") || bodies != nil || requests.Load() != 1 || foreignRequests.Load() != 0 {
+				t.Fatal("foreign numeric Link fetched or partial collection returned", bodies, requests.Load(), foreignRequests.Load(), err)
+			}
+		})
+	}
+}
