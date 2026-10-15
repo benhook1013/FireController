@@ -180,7 +180,7 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	if err = checkNativeRunDetail(ctx, tx, scope.ProjectID, id, runID); err != nil {
 		return Receipt{}, false, err
 	}
-	if err = rebuildNativeSummaries(ctx, tx, scope.ProjectID, id); err != nil {
+	if err = rebuildNativeSummaries(ctx, tx, scope.ProjectID, id, number); err != nil {
 		return Receipt{}, false, err
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE review_workspace SET revision=?,snapshot_id=? WHERE project_id=? AND revision=? AND snapshot_id=?`, next, id, scope.ProjectID, revision, previous)

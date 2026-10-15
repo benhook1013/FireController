@@ -114,21 +114,100 @@ func nativeSnapshotBytes(t *testing.T, f *apiFixture, snapshot string) string {
 func TestNativePublicationPreservesUnrelatedPullCompleteness(t *testing.T) {
 	f := newAPIFixture(t)
 	incomplete := nativePull(2)
-	r := nativeRun("complete-run-in-incomplete-observation")
-	incomplete.Runs = []RunInput{r}
+	incomplete.Runs = []RunInput{nativeRun("complete-run-in-incomplete-observation")}
 	knownWithoutRuns := nativePull(4)
 	knownWithoutRuns.Complete = true
-	f.observe(t, reviewRequest(0, []PullInput{incomplete, knownWithoutRuns}), "original-completeness")
-	var before2, before4 PullResponse
-	nativeRead(t, f, "/pulls/2", &before2)
-	nativeRead(t, f, "/pulls/4", &before4)
+	knownWithIncompleteRun := nativePull(6)
+	knownWithIncompleteRun.Complete = true
+	knownWithIncompleteRun.Runs = []RunInput{{SourceRunID: "imported-incomplete-run", Channel: "manual", HeadSHA: knownWithIncompleteRun.HeadSHA, Scope: "Retained partial finding inventory", Outcome: "unknown", Found: 1}}
+	old := f.observe(t, reviewRequest(0, []PullInput{incomplete, knownWithoutRuns, knownWithIncompleteRun}), "original-completeness")["id"].(string)
+	// Rebuilding all compact rows must still repair an older missing source,
+	// without changing this unrelated producer's completeness assertion.
+	var stored string
+	if err := f.store.DB().QueryRow(`SELECT recent_runs_json FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=6`, f.project, old).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	var summaries []map[string]any
+	if json.Unmarshal([]byte(stored), &summaries) != nil || len(summaries) != 1 {
+		t.Fatal("old compact fixture")
+	}
+	delete(summaries[0], "source")
+	data, _ := json.Marshal(summaries)
+	if _, err := f.store.DB().Exec(`UPDATE review_pulls SET recent_runs_json=? WHERE project_id=? AND snapshot_id=? AND number=6`, string(data), f.project, old); err != nil {
+		t.Fatal(err)
+	}
+	oldDigest := nativeSnapshotBytes(t, f, old)
+	before := map[int64]PullResponse{}
+	for _, number := range []int64{2, 4, 6} {
+		var detail PullResponse
+		nativeRead(t, f, fmt.Sprintf("/pulls/%d", number), &detail)
+		before[number] = detail
+	}
 	a := nativeAttempt("targeted-new-pull", "prepared")
-	mustNativePublish(t, f, NativePublication{Pull: nativePull(9), Attempt: &a})
-	var after2, after4 PullResponse
-	nativeRead(t, f, "/pulls/2", &after2)
-	nativeRead(t, f, "/pulls/4", &after4)
-	if !reflect.DeepEqual(before2.Pull, after2.Pull) || !reflect.DeepEqual(before4.Pull, after4.Pull) {
-		t.Fatalf("targeted publication changed unrelated source metadata: PR2 complete %v -> %v; PR4 complete %v -> %v", before2.Pull.Complete, after2.Pull.Complete, before4.Pull.Complete, after4.Pull.Complete)
+	next := mustNativePublish(t, f, NativePublication{Pull: nativePull(9), Attempt: &a})
+	for _, number := range []int64{2, 4, 6} {
+		var after PullResponse
+		nativeRead(t, f, fmt.Sprintf("/pulls/%d", number), &after)
+		if !reflect.DeepEqual(before[number].Pull, after.Pull) {
+			t.Errorf("targeted publication changed unrelated PR%d source metadata: complete %v -> %v", number, before[number].Pull.Complete, after.Pull.Complete)
+		}
+	}
+	if err := f.store.DB().QueryRow(`SELECT recent_runs_json FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=6`, f.project, next.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if json.Unmarshal([]byte(stored), &summaries) != nil || summaries[0]["source"] != "test-import" {
+		t.Fatal("full compact origin repair lost")
+	}
+	if nativeSnapshotBytes(t, f, old) != oldDigest {
+		t.Fatal("publication rewrote retained imported snapshot")
+	}
+}
+
+func TestNativePublicationTargetCompletenessFollowsHeadAndRetainedRuns(t *testing.T) {
+	for _, tc := range []struct {
+		name                                                 string
+		original, incoming, changedHead, incompleteRun, want bool
+	}{
+		{name: "same-head-preserves-complete", original: true, want: true},
+		{name: "same-head-does-not-upgrade-partial", incoming: true},
+		{name: "changed-head-clears-complete", original: true, changedHead: true},
+		{name: "changed-head-does-not-assert-inventory", original: true, incoming: true, changedHead: true},
+		{name: "selected-incomplete-run-clears-complete", original: true, incompleteRun: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAPIFixture(t)
+			original := nativePull(1)
+			original.State = "open"
+			original.Complete = tc.original
+			if tc.incompleteRun {
+				original.Runs = []RunInput{{SourceRunID: "target-partial-run", Channel: "manual", HeadSHA: original.HeadSHA, Scope: "Retained incomplete target inventory", Outcome: "unknown", Found: 1}}
+			}
+			old := f.observe(t, reviewRequest(0, []PullInput{original}), "complete-original")["id"].(string)
+			oldDigest := nativeSnapshotBytes(t, f, old)
+			update := nativePull(1)
+			update.State = "open"
+			update.Title = "New selected metadata"
+			update.Complete = tc.incoming
+			if tc.changedHead {
+				update.HeadSHA = strings.Repeat("d", 40)
+			}
+			attempt := nativeAttempt("target-preparation", "prepared")
+			attempt.HeadSHA = update.HeadSHA
+			mustNativePublish(t, f, NativePublication{Pull: update, Attempt: &attempt})
+			var detail PullResponse
+			nativeRead(t, f, "/pulls/1", &detail)
+			if detail.Pull.Complete != tc.want || detail.Pull.HeadSHA != update.HeadSHA || detail.Pull.Title != update.Title {
+				t.Fatalf("selected metadata has stale/unsupported completeness: got %+v, complete want %v", detail.Pull, tc.want)
+			}
+			var queue QueueResponse
+			nativeRead(t, f, "/queue", &queue)
+			if len(queue.Items) != 1 || queue.Items[0].Complete != tc.want {
+				t.Fatal("queue completeness differs from public pull detail")
+			}
+			if nativeSnapshotBytes(t, f, old) != oldDigest {
+				t.Fatal("target update rewrote historical snapshot")
+			}
+		})
 	}
 }
 
