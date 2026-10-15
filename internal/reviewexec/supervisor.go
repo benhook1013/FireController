@@ -223,7 +223,10 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		// has already checked that this is still the current configuration.
 		c, err := e.configurationRevision(ctx, o.ProjectID, o.ConfigurationRevision)
 		if err != nil {
-			return e.finishPreparation(a, "held", "configuration_unavailable")
+			if ctx.Err() != nil {
+				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
+			}
+			return persistenceFailure()
 		}
 		driver := drivers[c.CapabilityID]
 		if driver == nil {

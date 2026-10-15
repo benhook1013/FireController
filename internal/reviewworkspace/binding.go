@@ -2,7 +2,6 @@ package reviewworkspace
 
 import (
 	"context"
-	"time"
 )
 
 // BindRepository replaces the private cache origin in one owned clone with the
@@ -10,10 +9,10 @@ import (
 // not mistake the cache's local filesystem path for the external identity.
 // The operation performs no network request or source-tree change.
 func (m *Manager) BindRepository(ctx context.Context, w Workspace, canonical string) (Workspace, error) {
-	if !validCanonicalRepository(canonical) {
+	if m == nil || ctx == nil || !validCanonicalRepository(canonical) {
 		return Workspace{}, errInput
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, materializationBudget)
 	defer cancel()
 	if m.verify(ctx, w) != nil {
 		return Workspace{}, errVerification

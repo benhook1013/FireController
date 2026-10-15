@@ -1003,6 +1003,41 @@ func TestSupervisorAdmissionStorageFailureRetainsPreparingAttempt(t *testing.T) 
 	}
 }
 
+func TestSupervisorRetainedConfigurationFailureRetainsPreparingAttempt(t *testing.T) {
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "retained-configuration-failure", "cli", 2, 1)
+	// StartAttempt validates the configuration before inserting its attempt.
+	// Corrupt that exact retained revision only after validation, so the next
+	// configuration read fails after preparation and its reservation commit.
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER corrupt_retained_configuration AFTER INSERT ON review_execution_attempts BEGIN UPDATE review_execution_config SET body_json='synthetic-private-configuration-diagnostic' WHERE project_id=NEW.project_id AND revision=(SELECT configuration_revision FROM review_operations WHERE id=NEW.operation_id); END`); err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+	beforeReceipts := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
+	driver := &controlledDriver{}
+	err := f.e.processNext(context.Background(), map[string]Driver{"test-capability": driver, "other-account": driver})
+	attemptCode(t, err, "review_persistence_failed")
+	if err.Error() != persistenceFailure().Error() {
+		t.Fatal("retained configuration failure exposed private diagnostics", err)
+	}
+	var attemptID, operationState, state, anchor, intent, reason string
+	var operationRevision, revision int64
+	if err := f.store.DB().QueryRow(`SELECT a.id,o.state,o.revision,a.state,a.revision,a.anchor_json,a.intent,o.reason FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id WHERE o.id=?`, receipt.ID).Scan(&attemptID, &operationState, &operationRevision, &state, &revision, &anchor, &intent, &reason); err != nil || attemptID == "" || operationState != "preparing" || operationRevision != 2 || state != "preparing" || revision != 1 || anchor != "null" || intent != "" || reason != "" {
+		t.Fatal("configuration read failure changed original preparation", operationState, operationRevision, state, revision, anchor, intent, reason, err)
+	}
+	var reservedAttempt, transitionState, transitionReason string
+	var transitionRevision int64
+	if err := f.store.DB().QueryRow(`SELECT attempt_id FROM review_execution_reservations`).Scan(&reservedAttempt); err != nil || reservedAttempt != attemptID {
+		t.Fatal("configuration read failure lost original reservation", reservedAttempt, err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT revision,state,reason FROM review_execution_transitions WHERE attempt_id=?`, attemptID).Scan(&transitionRevision, &transitionState, &transitionReason); err != nil || transitionRevision != 1 || transitionState != "preparing" || transitionReason != "preparing" {
+		t.Fatal("configuration read failure rewrote original transition", transitionRevision, transitionState, transitionReason, err)
+	}
+	if driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != beforeReceipts {
+		t.Fatal("configuration failure dispatched, settled or added journal effects")
+	}
+}
+
 func TestSupervisorShutdownAfterSuccessfulPrepareCancelsBeforeAdmission(t *testing.T) {
 	f := supervisorFixture(t)
 	receipt := f.enqueue(t, attemptProject, "shutdown-before-admission", "cli", 2, 1)
