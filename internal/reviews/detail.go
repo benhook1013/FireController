@@ -68,6 +68,45 @@ func encodedRunDetailSize(response RunDetailResponse) (int, error) {
 	return len(body) + 1, err
 }
 
+// Reject an oversized adjudication before copying a snapshot and updating its
+// findings. HTML escaping and nested receiver proof count in the same public
+// encoder budget as the final stored read. The final check remains authoritative.
+func preflightNativeAdjudicationDetail(ctx context.Context, tx *sql.Tx, project, previous, runID string, next snapshotMeta, updates map[string]NativeFindingUpdate, accepted, routed int64, finalized bool, fixed int64) error {
+	meta, found, err := selectSnapshot(ctx, tx, project, previous)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return notFound("The review snapshot is unavailable.")
+	}
+	response, err := readRunDetail(ctx, tx, meta, runID)
+	if err != nil {
+		return err
+	}
+	for i := range response.Findings {
+		finding := &response.Findings[i]
+		update, ok := updates[finding.SourceFindingID]
+		if !ok {
+			return nativeAdjudicationConflict()
+		}
+		finding.Disposition, finding.DecisionReason = update.Disposition, update.DecisionReason
+		finding.Actor, finding.DecidedAt = update.Actor, update.DecidedAt
+		finding.FixSHA, finding.ProofNote, finding.ResolvedAt = update.FixSHA, update.ProofNote, update.ResolvedAt
+		finding.Route = update.Route
+	}
+	setMetaDetail(&response, next)
+	response.Run.Accepted, response.Run.Routed = accepted, routed
+	response.Run.Finalized, response.Run.Fixed = finalized, fixed
+	size, err := encodedRunDetailSize(response)
+	if err != nil {
+		return err
+	}
+	if size > maxRunDetailBytes {
+		return core.Fail("workspace_capacity", "The retained review run exceeds its bounded detail size; no history was dropped.", 409)
+	}
+	return nil
+}
+
 // Only the touched run is loaded; no unrelated run history is scanned.
 func checkNativeRunDetail(ctx context.Context, tx *sql.Tx, project, snapshot, runID string) error {
 	meta, found, err := selectSnapshot(ctx, tx, project, snapshot)
