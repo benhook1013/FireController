@@ -2,9 +2,9 @@
 
 ## Implemented boundary
 
-`fcd` serves a read-only project browser from the same origin as its API. It displays project identity, paginated workers and basic jobs, explicit full job briefs, worker inboxes and explicit conversation pages. Incoming messages update through the persistent [message stream](message-events.md). Reads never mark messages seen or acknowledged, edit jobs or contact GitHub. The existing development dashboard remains separate until replacement and migration proof are complete.
+`fcd` serves a read-only project browser from the same origin as its API. It displays project identity, paginated workers and basic jobs, explicit full job briefs and checkpoint details, worker inboxes and explicit conversation pages. Incoming messages update through the persistent [message stream](message-events.md). Reads never mark messages seen or acknowledged, edit jobs or contact GitHub. The existing development dashboard remains separate until replacement and migration proof are complete.
 
-The [browser design](browser.md) owns the broader target. Maps, review queues, checkpoints, project appearance settings and browser mutations are not implemented by this slice. The default fire palette and dense responsive layout apply until project presentation records are implemented. A small repository attribution remains in the footer.
+The [browser design](browser.md) owns the broader target. Maps, review queues, project appearance settings and browser mutations are not implemented by this slice. Latest checkpoint display and explicit archives passed the focused API tests and actual packaged browser checks described below. The default fire palette and dense responsive layout apply until project presentation records are implemented. A small repository attribution remains in the footer.
 
 ## Connect and navigate
 
@@ -13,6 +13,8 @@ Run `fcd`, open its printed loopback address and enter a project ID and a creden
 The credential lives only in that browser tab's active memory. It is absent from URLs, browser storage and query-cache keys; submitting clears the password field. Disconnect, failed authorization or a changed project route cancels pending requests and removes the prior session's cached data. Reload requires a fresh credential. A canonical project detail link preserves its path when reconnecting to the same project.
 
 Routes are `/projects/{project_id}`, `/projects/{project_id}/jobs/{job_id}`, `/projects/{project_id}/workers`, `/projects/{project_id}/inbox` and `/projects/{project_id}/inbox/{conversation_id}`. Choose a worker to follow its incoming inbox. Worker changes cancel the prior view's requests and subscription and clear its cache; they do not alter credentials, assignments or server state. Project-scoped read access permits conversation reads within that project, as documented by the API.
+
+Job detail reads the latest [checkpoint](job-checkpoints.md), including its captured revision, attribution, done/next/blocker and evidence. No-checkpoint state is explicit. The current brief and latest envelope are separate reads: a revision mismatch prompts refresh rather than implying an atomic combined snapshot. Checkpoint history loads only after opening it and remains cursor-paged; closing it stops that active view. Evidence is escaped plain text rather than an executable or automatically opened link.
 
 “Refresh visible data” rereads only active stored-data queries. There is no timer-based JSON polling, focus-triggered refresh or provider refresh. Jobs and workers update when explicitly refreshed. Only incoming message changes currently have live transport; a connected inbox indicator does not claim that jobs, reviews or maps are live.
 
@@ -53,3 +55,9 @@ The run observed 46 browser requests, 40 API requests and six stream attachments
 The complete 79-file Go/module/browser/config/lock/generated-asset manifest was unchanged before/after this run: SHA-256 `ca9360ee46f1f23be8df1072b7c91f5c2282be9b2aba9f18c35df6e6c2af0075`. The binary hash was `e93015a74d894d5b836331c3e2aaa85513ade64bddca448f45a92ec79c108b05`. This identifies tested source bytes rather than implying proof for later edits. The run used Playwright 1.64.1 with an available Chromium 153.0.8010.12 headless shell; that cached browser differs from the driver's preferred revision. Disposable state and owned processes were removed.
 
 This slice does not establish remote TLS deployment, a public projection, multi-tab identity synchronization, native platform browser coverage, accessibility conformance or fleet throughput. Credentials are private connection material; the application does not install them in the operating system or manage a human login session.
+
+## Checkpoint browser proof
+
+The checkpoint addition passed the full repository checks/build, including twenty-five browser tests, and reproduced its embedded assets. Four actual browser groups then passed against the packaged service with isolated state: explicit no-checkpoint state; an older captured revision beside the unchanged current brief; exact content/evidence/attribution and escaped HTML-like evidence; lazy archive loading with actual 20+1 cursor pages; a separate fixture append followed by manual refresh; and 390px latest/archive layouts. Six screenshots were inspected. Seventeen browser GETs produced zero browser mutations, external requests, page/CSP errors, credential persistence or horizontal overflow. Archive requests remained absent until opened and stopped while closed. Independent database counts matched the single intended fixture append, with current jobs/history/messages unchanged.
+
+The 90-file Go/browser/config/embedded-asset digest was `0816a5eca380d82f9e77d25a4716464cb2d2536829d0dd20a9b1ca97556bd407`; the 71-file Go/module digest was `68910c9b52247f7aa590ee8bd1ec87b35762dfd95e8ce13bfe51c161d52b886a`. These and the actual service executable hash remained unchanged throughout; disposable service/browser/state were cleaned. The held-latest cross-read revision race was not run in this pass, so it does not establish an atomic combined job/checkpoint snapshot. Existing platform, model-host and fleet limitations still apply.

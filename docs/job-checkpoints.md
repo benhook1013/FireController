@@ -42,6 +42,10 @@ MCP provides `job_checkpoint_append`, `job_checkpoint_latest` and `job_checkpoin
 
 CLI and MCP retain the shared five-second identity-and-operation budget and normal cancellation/uncertain-write diagnostics. The service retains its two-second transaction bounds. Suggested checkpoint timing belongs in [optional agent workflow guidance](agent-workflow.md), rather than a tool-enforced end-of-work ritual.
 
+## Browser reads
+
+The [read-only browser](browser-guide.md) displays the latest checkpoint beside the explicit job brief. Checkpoint archives load only on request and page newest first. The browser preserves the 128 KiB latest and 4 MiB archive transport limits, validates parsed shape/scope/content and never writes progress or handling state. It retains the existing JSON parser convention; this does not claim raw duplicate-key rejection. Focused parsed-response tests and [actual packaged browser proof](browser-guide.md#checkpoint-browser-proof) pass, including lazy 20+1 paging and escaped evidence.
+
 ## Proof and limits
 
 Public API tests cover immutable job/history state, attribution, authorization/revocation, stale revision with no effects, exact replay and changed-body conflict, stable archive continuation under a later append, rollback with same-key retry and ordinary restart retention. Boundary tests exercise exact and overflowing aggregate, blocker and evidence limits, control characters, accepted whitespace preservation and optional-field normalization. Client/CLI/MCP tests also exercise malformed receipts, nullable latest responses, complete scoped records and dispatched-write cancellation/uncertainty without automatic retry.
