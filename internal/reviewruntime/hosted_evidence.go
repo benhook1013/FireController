@@ -3,6 +3,7 @@ package reviewruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -79,6 +80,14 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 	}
 	result.Receipt, err = engine.RecordReviewEvidence(ctx, attempt.ProjectID, attempt.ID, input)
 	if err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Code == "validation_failed" {
+			// Provider-shaped source can still fail the stricter ledger contract.
+			// Keep its raw observation inspectable without occupying the final slot.
+			result.Receipt = reviewexec.Receipt{}
+			result.Reason = "capture_invalid"
+			return result, nil
+		}
 		result.Reason = "evidence_unavailable"
 		return result, err
 	}
