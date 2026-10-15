@@ -16,7 +16,7 @@ Build with `make build`, then run:
 
 The service creates an owner-only data directory when absent and stores its database and `bootstrap-admin.token` there. Existing Unix directories and credential files must have owner-only permissions. Startup prints one compact listening record with the address and instance ID; it never prints the credential. Ordinary restart preserves instance identity and retained state. Unknown newer database versions are refused before schema changes.
 
-Only loopback listeners are supported in this slice. Network/TLS deployment needs later proof. SQLite must use local storage, with one active service process; network-mounted databases and multiple active replicas are unsupported.
+The daemon supports only loopback listeners. Remote HTTPS access through deployment-owned reverse proxies has [hosted proof](hosting.md#executed-deployment-proof); the daemon does not terminate TLS itself. SQLite must use local storage, with one active service process; network-mounted databases and multiple active replicas are unsupported.
 
 Clients send `Authorization: Bearer <credential>` on API requests. Administrative project creation, project listing, and access management require the bootstrap administrator. Project clients receive explicit `read` and/or `write` grants. `X-FC-Worker` selects an existing worker in the request's project for attribution; it never grants permission. Sending messages and changing seen/ack state require that worker selection.
 

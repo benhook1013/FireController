@@ -131,16 +131,7 @@ export async function runMessageWatch(source: MessageWatchSource, worker: string
     try {
       connection = await source.openStream(worker, cursor, limit, signal);
       const response = connection.response;
-      if (response.status === 409) {
-        const error = await source.readFailure(response, signal);
-        if (error.code === 'resync_required') {
-          callbacks.status('connecting');
-          cursor = await deliverSnapshot(source, worker, options, callbacks, signal);
-          attempts = 0;
-          continue;
-        }
-        throw error;
-      }
+      if (response.status === 409) throw await source.readFailure(response, signal);
       if (response.status === 401 || response.status === 403) throw await source.readFailure(response, signal);
       if (response.status >= 500 || response.status === 0) throw new ApiError('stream_unavailable', 'The event stream is temporarily unavailable.', response.status);
       if (!response.ok) throw await source.readFailure(response, signal);
@@ -156,9 +147,7 @@ export async function runMessageWatch(source: MessageWatchSource, worker: string
         for (const frame of parser.push(read.value)) {
           if (frame.comment) continue;
           if (frame.event === 'error') {
-            const error = source.parseStreamError(frame.data);
-            if (error.code === 'resync_required') throw error;
-            throw error;
+            throw source.parseStreamError(frame.data);
           }
           if (frame.event !== 'message-events') throw new ApiError('invalid_response', 'The event stream returned an unsupported event.');
           let decoded: unknown;
@@ -185,8 +174,6 @@ export async function runMessageWatch(source: MessageWatchSource, worker: string
         try {
           callbacks.status('connecting');
           cursor = await deliverSnapshot(source, worker, options, callbacks, signal);
-          attempts = 0;
-          continue;
         } catch (snapshotError) {
           if (signal.aborted) break;
           callbacks.status('closed');
