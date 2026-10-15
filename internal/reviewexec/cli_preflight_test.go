@@ -80,7 +80,7 @@ func TestCLIAllowanceVersionThreeMigrationRetainsFactsAndReplayAcrossRestart(t *
 	cliAllowanceReopen(t, f)
 	var version string
 	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "5" || attemptState(t, f, a) != journal {
-		t.Fatal("version4 migration changed retained journal", version, err)
+		t.Fatal("migration changed retained journal", version, err)
 	}
 	receipts := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
 	if err := f.e.RecordCLIAllowance(t.Context(), attemptProject, a.ID, a.Revision, input); err != nil {
