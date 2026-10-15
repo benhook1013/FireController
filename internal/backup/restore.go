@@ -47,17 +47,21 @@ func CheckDataDirectory(dataDir string) error {
 	return nil
 }
 
-// StartupGuard must precede listeners and workers. An ordinary installation has
-// no restore metadata. Restored copies cannot serve, even with unknown state.
+// StartupGuard must precede listeners and workers. Only an ordinary installation
+// or validated coordination-active restore may serve; unknown recovery stays held.
 func StartupGuard(ctx context.Context, store *core.Store) error {
 	if ctx == nil || store == nil || ctx.Err() != nil {
 		return unavailable()
 	}
-	var count int64
-	if err := store.DB().QueryRowContext(ctx, `SELECT count(*) FROM metadata WHERE key GLOB 'restore:*'`).Scan(&count); err != nil {
-		return unavailable()
+	status, err := ReadRecoveryStatus(ctx, store)
+	if err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Code == "backup_invalid" {
+			return inactiveRestore()
+		}
+		return err
 	}
-	if count != 0 {
+	if status.State == "inactive" {
 		return inactiveRestore()
 	}
 	return nil

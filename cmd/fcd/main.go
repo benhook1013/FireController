@@ -34,7 +34,7 @@ func main() {
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode int) {
 	stderr = &daemonDiagnosticWriter{writer: stderr}
-	if len(args) > 0 && (args[0] == "backup" || args[0] == "backup-inspect" || args[0] == "backup-status" || args[0] == "restore") {
+	if len(args) > 0 && (args[0] == "backup" || args[0] == "backup-inspect" || args[0] == "backup-status" || args[0] == "restore" || args[0] == "restore-activate") {
 		return runBackupCommand(ctx, args[0], args[1:], stdout, stderr)
 	}
 	flags := flag.NewFlagSet("fcd", flag.ContinueOnError)
@@ -93,19 +93,35 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnostic(stderr, "storage_unavailable", "The private database file is unavailable or unsafe.")
 		return 3
 	}
-	catalog, err := reviewruntime.LoadCatalog(*reviewCatalog)
-	if err != nil {
-		diagnosticError(stderr, err)
+	var recovery backup.RecoveryStatus
+	if store != nil {
+		recovery, err = backup.ReadRecoveryStatus(ctx, store)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
+	}
+	if recovery.ProvidersHeld && hasSchedule {
+		diagnostic(stderr, "restore_backup_unsupported", "Managed backups of restored installations are not supported; omit backup schedule flags for coordination-only startup and retain the original verified bundles.")
 		return 3
+	}
+	var catalog reviewruntime.Catalog
+	var resolver server.RepositoryResolver
+	if !recovery.ProvidersHeld {
+		catalog, err = reviewruntime.LoadCatalog(*reviewCatalog)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
+		resolver, err = server.GitHubResolver(*tokenFile)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
 	}
 	address := *listen
 	if host, port, _ := net.SplitHostPort(address); host == "localhost" {
 		address = net.JoinHostPort("127.0.0.1", port)
-	}
-	resolver, err := server.GitHubResolver(*tokenFile)
-	if err != nil {
-		diagnosticError(stderr, err)
-		return 3
 	}
 	if store == nil {
 		store, err = openGuardedDaemonStore(ctx, *dataDir)
@@ -132,14 +148,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 	}
-	if err = backup.EnsureManagedSchema(ctx, store); err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	backupManager, err := backup.NewManager(store, *dataDir, schedule)
-	if err != nil {
-		diagnosticError(stderr, err)
-		return 3
+	var backupManager *backup.Manager
+	if !recovery.ProvidersHeld {
+		if err = backup.EnsureManagedSchema(ctx, store); err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
+		backupManager, err = backup.NewManager(store, *dataDir, schedule)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
 	}
 	execution, drivers, err := buildReviewExecution(store, *dataDir, catalog)
 	if err != nil {
@@ -164,7 +183,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}
 	defer listener.Close()
 	reviewCtx, cancelReviews := context.WithCancel(ctx)
-	reviewDone, err := startReviewWorkers(reviewCtx, execution, drivers)
+	var reviewDone <-chan error
+	if !recovery.ProvidersHeld {
+		reviewDone, err = startReviewWorkers(reviewCtx, execution, drivers)
+	}
 	defer func() {
 		cancelReviews()
 		if reviewDone == nil {
@@ -186,7 +208,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
-	backupDone := startBackupWorker(reviewCtx, backupManager, schedule.Destination != "", func(err error) { diagnosticError(stderr, err) })
+	var backupDone <-chan error
+	if !recovery.ProvidersHeld {
+		backupDone = startBackupWorker(reviewCtx, backupManager, schedule.Destination != "", func(err error) { diagnosticError(stderr, err) })
+	}
 	defer func() {
 		cancelReviews()
 		if err := waitBackupWorker(backupDone, 12*time.Second); err != nil {
