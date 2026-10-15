@@ -20,6 +20,8 @@ Routes are `/projects/{project_id}`, `/projects/{project_id}/jobs/{job_id}`, `/p
 
 Job detail reads the latest [checkpoint](job-checkpoints.md), including its captured revision, attribution, done/next/blocker and evidence. No-checkpoint state is explicit. The current brief and latest envelope are separate reads: a revision mismatch prompts refresh rather than implying an atomic combined snapshot. Checkpoint history loads only after opening it and remains cursor-paged; closing it stops that active view. Evidence is escaped plain text rather than an executable or automatically opened link.
 
+Native run details include an explicit **Assess captured comparison** panel for the current local review requirements. Opening it reads the [captured-comparison assessment](review-controls.md#captured-comparison-assessment); closing cancels its request, and reopening reads again. Imported history has no assessment control. The panel shows the returned captured target and observation time separately from policy evaluation; it does not verify current GitHub source, CI or merge readiness. Closed panels and ordinary queue reads perform no assessment request.
+
 “Refresh visible data” rereads only active stored-data queries. There is no timer-based JSON polling, focus-triggered refresh or provider refresh. Jobs and workers update when explicitly refreshed. Only incoming message changes currently have live transport; a connected inbox indicator does not claim that jobs, reviews or maps are live.
 
 ## Live delivery and failures
