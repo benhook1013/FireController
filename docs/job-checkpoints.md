@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The checkpoint API, CLI and MCP tools are implemented in the combined client PR. Focused public tests, the full repository checks/build and six actual packaged CLI/MCP groups pass. This page owns their selected contract. Checkpoints do not provide primary-job selection or a complete resume packet.
+The checkpoint API, CLI and MCP tools are implemented in [PR #7](https://github.com/benhook1013/FireController/pull/7). Focused public tests, the full repository checks/build and six actual packaged CLI/MCP groups pass. This page owns their selected contract. Checkpoints do not provide primary-job selection or a complete resume packet.
 
 ## Record progress without changing the job
 

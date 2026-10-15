@@ -130,7 +130,7 @@ func (e *Engine) ExecutionContext(ctx context.Context, project, operationID stri
 
 // VerifyAction is the final local journal guard. It complements fresh source,
 // allowance and workspace verification; it is not sufficient dispatch authority.
-func (e *Engine) VerifyAction(ctx context.Context, project, attemptID string, expectedRevision int64) error {
+func (e *Engine) VerifyAction(ctx context.Context, project, attemptID string, expectedRevision int64, predecessors ...SourcePlan) error {
 	if !identifier.MatchString(project) || !identifier.MatchString(attemptID) || expectedRevision < 1 {
 		return invalid()
 	}
@@ -164,7 +164,13 @@ func (e *Engine) VerifyAction(ctx context.Context, project, attemptID string, ex
 		if reserved != 1 {
 			return conflict()
 		}
+		if operation.Channel != "cli" && len(predecessors) != 0 {
+			return invalid()
+		}
 		if operation.Channel == "cli" {
+			if err := verifyCLIPredecessors(ctx, tx, project, current, predecessors); err != nil {
+				return err
+			}
 			comparison, err := cliComparison(ctx, tx, project, current.RepositoryID, operation.PullNumber, *attempt.Anchor)
 			if err != nil {
 				return err
@@ -178,4 +184,44 @@ func (e *Engine) VerifyAction(ctx context.Context, project, attemptID string, ex
 		}
 		return nil
 	})
+}
+
+// verifyCLIPredecessors uses the final action's existing SQL snapshot. Fresh
+// provider facts are supplied by the driver; no provider work occurs here.
+func verifyCLIPredecessors(ctx context.Context, tx *sql.Tx, project string, current ExecutionContext, predecessors []SourcePlan) error {
+	if current.Configuration.Mode == "independent" {
+		if len(predecessors) != 0 {
+			return invalid()
+		}
+		return nil
+	}
+	position := slices.Index(current.Configuration.Queue, current.Operation.PullNumber)
+	if position < 0 || len(predecessors) != position {
+		return invalid()
+	}
+	for i, plan := range predecessors {
+		number := current.Configuration.Queue[i]
+		observed, err := time.Parse(time.RFC3339Nano, plan.ObservedAt)
+		if err != nil || observed.IsZero() || plan.Repository.ID != current.RepositoryID || !repository.MatchString(plan.Repository.FullName) || plan.Repository.DefaultBranch == "" || !safeText(plan.Repository.DefaultBranch, 256) || !sameTarget(plan.Pull, current.RepositoryID, number) {
+			return invalid()
+		}
+		if plan.Pull.Merged {
+			if plan.Pull.State != "closed" {
+				return invalid()
+			}
+			continue
+		}
+		if !validCoverageSource(plan) {
+			return invalid()
+		}
+		anchor := Anchor{RepositoryID: current.RepositoryID, PullNumber: number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef}
+		comparison, err := cliComparison(ctx, tx, project, current.RepositoryID, number, anchor)
+		if err != nil {
+			return err
+		}
+		if comparison.Pending || !comparison.Covered {
+			return sourceHold("predecessor_unfinished")
+		}
+	}
+	return nil
 }

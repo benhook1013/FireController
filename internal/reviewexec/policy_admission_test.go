@@ -407,3 +407,93 @@ func TestVerifyActionAlreadyCoveredAndHostedIndependent(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyActionStackedRequiresCompleteOrderedFreshPredecessors(t *testing.T) {
+	f, prior, id, open := coverageFixture(t, 1, false)
+	adjudicationDecide(t, f, id, "reject-predecessor", 0, 0, "rejected")
+	coverageFinalize(t, f, prior, id, 1)
+	previous := int64(1)
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "stack-with-merged", Configuration{ExpectedRevision: &previous, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{2, 3, 4}, Channels: []string{"cli", "hosted"}}); err != nil {
+		t.Fatal(err)
+	}
+	child := f.start(t, attemptProject, f.enqueue(t, attemptProject, "stack-child", "cli", 4, 2))
+	anchor := attemptAnchor(attemptProject, 4)
+	anchor.ParentPullNumber, anchor.ParentSHA, anchor.BaseSHA, anchor.BaseRef = 2, open.Pull.HeadSHA, open.Pull.HeadSHA, "parent-branch"
+	child, err := f.e.Admit(t.Context(), attemptProject, child.ID, child.Revision, anchor, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := open
+	merged.Pull.Number, merged.Pull.Merged, merged.Pull.State = 3, true, "closed"
+	merged.ParentSHA, merged.ParentPullNumber = "", 0
+	dependencies := []SourcePlan{open, merged}
+	before := adjudicationState(t, f, child)
+	if err := f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, dependencies...); err != nil {
+		t.Fatal("valid covered/merged stack failed", err)
+	}
+	for _, test := range []struct {
+		name   string
+		change func([]SourcePlan) []SourcePlan
+	}{
+		{"missing-all", func([]SourcePlan) []SourcePlan { return nil }},
+		{"missing-merged", func(in []SourcePlan) []SourcePlan { return in[:1] }},
+		{"extra", func(in []SourcePlan) []SourcePlan { return append(in, in[0]) }},
+		{"reordered", func(in []SourcePlan) []SourcePlan { return []SourcePlan{in[1], in[0]} }},
+		{"duplicate", func(in []SourcePlan) []SourcePlan { in[1] = in[0]; return in }},
+		{"foreign-repository", func(in []SourcePlan) []SourcePlan { in[0].Repository.ID = 802; return in }},
+		{"foreign-pull-repository", func(in []SourcePlan) []SourcePlan { in[1].Pull.RepositoryID = 802; return in }},
+		{"malformed-merged-head", func(in []SourcePlan) []SourcePlan { in[1].Pull.HeadSHA = "bad"; return in }},
+		{"malformed-merged-lifecycle", func(in []SourcePlan) []SourcePlan { in[1].Pull.State = "open"; return in }},
+		{"malformed-open-parent", func(in []SourcePlan) []SourcePlan { in[0].ParentSHA = strings.Repeat("9", 40); return in }},
+		{"closed-unmerged", func(in []SourcePlan) []SourcePlan { in[1].Pull.Merged = false; return in }},
+		{"missing-observation", func(in []SourcePlan) []SourcePlan { in[1].ObservedAt = ""; return in }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plans := test.change(append([]SourcePlan(nil), dependencies...))
+			attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, plans...), "validation_failed")
+			if adjudicationState(t, f, child) != before {
+				t.Fatal("invalid predecessor proof changed retained state")
+			}
+		})
+	}
+	uncovered := append([]SourcePlan(nil), dependencies...)
+	uncovered[0].Pull.HeadSHA = strings.Repeat("9", 40)
+	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, uncovered...), "review_held")
+	if adjudicationState(t, f, child) != before {
+		t.Fatal("uncovered predecessor refusal changed retained state")
+	}
+	// The proof was ready at preparation, but a real current correction now needs
+	// a fix. The final guard must check predecessors and target in the same read.
+	adjudicationDecide(t, f, id, "late-predecessor-acceptance", 2, 0, "accepted")
+	afterCorrection := adjudicationState(t, f, child)
+	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, dependencies...), "review_held")
+	if adjudicationState(t, f, child) != afterCorrection {
+		t.Fatal("late predecessor refusal mutated state")
+	}
+	coverageFix(t, f, id, "fix-corrected-predecessor", 3, 0, "")
+	if err := f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, dependencies...); err != nil {
+		t.Fatal("fixed predecessor remained held", err)
+	}
+}
+
+func TestVerifyActionIndependentAndHostedRejectUnexpectedCLIPlans(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			f := newAttemptFixture(t)
+			f.configure(t, attemptProject, "test-capability", 0, false)
+			a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "independent-action", channel, 4, 1))
+			intent := ""
+			if channel == "hosted" {
+				intent = "hosted-intent"
+			}
+			a, err := f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, attemptAnchor(attemptProject, 4), intent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+				t.Fatal("zero-dependency caller changed", err)
+			}
+			attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision, SourcePlan{}), "validation_failed")
+		})
+	}
+}
