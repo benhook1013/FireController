@@ -180,14 +180,14 @@ func validateObservation(req *ObservationRequest) error {
 func validateRunTimes(run RunInput) error {
 	start, startErr := parseTimestamp(run.StartedAt, false)
 	finish, finishErr := parseTimestamp(run.FinishedAt, false)
-	if startErr != nil || finishErr != nil {
-		return validationError("Review run timestamps must be empty or RFC3339Nano.")
+	if startErr != nil || finishErr != nil || (run.StartedAt != "" && run.FinishedAt != "" && finish.Before(start)) {
+		return validationError("Review run timestamps must be empty or valid, ordered RFC3339Nano values.")
 	}
 	if run.Outcome == "completed" {
-		if run.StartedAt == "" || run.FinishedAt == "" || finish.Before(start) {
+		if run.StartedAt == "" || run.FinishedAt == "" {
 			return validationError("Completed review runs require ordered start and finish timestamps.")
 		}
-	} else if run.Complete && (run.StartedAt == "" || run.FinishedAt == "" || finish.Before(start)) {
+	} else if run.Complete && (run.StartedAt == "" || run.FinishedAt == "") {
 		return validationError("Complete review runs require ordered start and finish timestamps.")
 	}
 	return nil
