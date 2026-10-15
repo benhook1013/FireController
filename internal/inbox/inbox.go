@@ -22,7 +22,7 @@ const (
 
 // EnsureSchema is called during exclusive startup, before accepting requests.
 func EnsureSchema(ctx context.Context, store *core.Store) error {
-	return store.EnsureSchema(ctx, `
+	return store.EnsureSchema(ctx, "inbox", []string{`
 CREATE TABLE IF NOT EXISTS inbox_conversations (
  project_id TEXT NOT NULL REFERENCES projects(id),
  id TEXT NOT NULL,
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS inbox_recipient_state (
  FOREIGN KEY(project_id,worker_id) REFERENCES workers(project_id,id)
 );`,
 		`CREATE INDEX IF NOT EXISTS inbox_recipient_page ON inbox_messages(project_id,recipient_worker_id,sequence)`,
-		`CREATE INDEX IF NOT EXISTS inbox_conversation_page ON inbox_messages(project_id,conversation_id,sequence)`)
+		`CREATE INDEX IF NOT EXISTS inbox_conversation_page ON inbox_messages(project_id,conversation_id,sequence)`})
 }
 
 // Register adds the messages API to the shared authenticated application mux.

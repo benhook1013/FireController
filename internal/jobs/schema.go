@@ -9,7 +9,7 @@ import (
 // EnsureSchema installs the jobs tables during exclusive startup, before the
 // API begins serving requests. Runtime handlers never perform schema changes.
 func EnsureSchema(ctx context.Context, store *core.Store) error {
-	return store.EnsureSchema(ctx,
+	return store.EnsureSchema(ctx, "jobs", []string{
 		`CREATE TABLE IF NOT EXISTS jobs (
  project_id TEXT NOT NULL,
  id TEXT NOT NULL,
@@ -37,5 +37,5 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
  PRIMARY KEY (project_id, job_id, revision),
  FOREIGN KEY (project_id, job_id) REFERENCES jobs(project_id, id) ON DELETE CASCADE
 );`,
-	)
+	})
 }

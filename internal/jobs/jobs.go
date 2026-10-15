@@ -100,6 +100,10 @@ func createJob(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
+		if _, err := core.QueryKeys(r, "invalid_query"); err != nil {
+			core.WriteError(w, err)
+			return
+		}
 		var req createRequest
 		if err := core.ReadJSON(w, r, &req); err != nil {
 			core.WriteError(w, err)
@@ -238,6 +242,10 @@ func getJob(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
+		if _, err := core.QueryKeys(r, "invalid_query"); err != nil {
+			core.WriteError(w, err)
+			return
+		}
 		item, err := readJob(r.Context(), store.DB(), scope.ProjectID, r.PathValue("job_id"))
 		if err != nil {
 			core.WriteError(w, err)
@@ -251,6 +259,10 @@ func editJob(store *core.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		scope, err := store.Scope(r, "write")
 		if err != nil {
+			core.WriteError(w, err)
+			return
+		}
+		if _, err := core.QueryKeys(r, "invalid_query"); err != nil {
 			core.WriteError(w, err)
 			return
 		}

@@ -1,10 +1,19 @@
 package core
 
-import "context"
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"strconv"
+)
 
-// EnsureSchema is for fixed domain DDL at exclusive startup, before serving.
-// It does not accept client input or run live migrations.
-func (s *Store) EnsureSchema(ctx context.Context, statements ...string) error {
+// EnsureSchema applies ordered, repository-owned domain migrations at exclusive
+// startup, before serving. Each statement group advances one schema version.
+// Previously unversioned domains begin at version zero. Never use client input.
+func (s *Store) EnsureSchema(ctx context.Context, domain string, migrations ...[]string) error {
+	if domain == "" || len(migrations) == 0 {
+		return Fail("schema_invalid", "A domain schema requires an identity and migrations.", 500)
+	}
 	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
 	defer cancel()
 	select {
@@ -27,8 +36,29 @@ func (s *Store) EnsureSchema(ctx context.Context, statements ...string) error {
 			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
-	for _, statement := range statements {
-		if _, err = conn.ExecContext(ctx, statement); err != nil {
+	key := "schema:" + domain
+	var raw string
+	version := 0
+	err = conn.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key=?", key).Scan(&raw)
+	if err == nil {
+		version, err = strconv.Atoi(raw)
+		if err != nil || version < 1 || strconv.Itoa(version) != raw {
+			return Fail("schema_invalid", "Domain schema version metadata is invalid.", 500)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return storageError(err)
+	}
+	if version > len(migrations) {
+		return Fail("schema_unsupported", "A domain schema is newer than this service; use a compatible binary.", 500)
+	}
+	for _, migration := range migrations[version:] {
+		for _, statement := range migration {
+			if _, err = conn.ExecContext(ctx, statement); err != nil {
+				return storageError(err)
+			}
+		}
+		version++
+		if _, err = conn.ExecContext(ctx, "INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, strconv.Itoa(version)); err != nil {
 			return storageError(err)
 		}
 	}
