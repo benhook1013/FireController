@@ -203,7 +203,20 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 			return nil
 		}
 		a, err := e.StartAttempt(ctx, o.ProjectID, o.ID)
-		if err != nil || a.ID == "" {
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			var failure *core.Error
+			if errors.As(err, &failure) {
+				switch failure.Code {
+				case "review_busy", "review_conflict", "overloaded":
+					continue
+				}
+			}
+			return persistenceFailure()
+		}
+		if a.ID == "" {
 			continue
 		}
 		// The operation retained its exact configuration revision; StartAttempt
