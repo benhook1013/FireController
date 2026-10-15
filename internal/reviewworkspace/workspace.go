@@ -107,12 +107,13 @@ func (m *Manager) Prepare(ctx context.Context, repositoryID int64, attemptID, ca
 	if m.layout() != nil || privateDirectory(cache, false) != nil {
 		return Workspace{}, errMaterialize
 	}
-	bare, err := m.output(ctx, cache, "rev-parse", "--is-bare-repository")
+	gitDir := "--git-dir=" + cache
+	bare, err := m.output(ctx, cache, gitDir, "rev-parse", "--is-bare-repository")
 	if err != nil || bare != "true" {
 		return Workspace{}, errMaterialize
 	}
 	for _, sha := range []string{candidateSHA, baseSHA} {
-		commit, err := m.output(ctx, cache, "rev-parse", "--verify", sha+"^{commit}")
+		commit, err := m.output(ctx, cache, gitDir, "rev-parse", "--verify", sha+"^{commit}")
 		if err != nil || commit != sha {
 			return Workspace{}, errMaterialize
 		}
