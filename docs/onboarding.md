@@ -2,7 +2,7 @@
 
 ## Goal and implementation status
 
-Let a user ask their AI to add FireController to an existing project and receive a working, verified setup with clear ownership of the imported information. The onboarding commands and optional packaged skill are not implemented yet. This is a first-release usability requirement; broad importer coverage is delivered incrementally.
+Let a user ask their AI to add FireController to an existing project and receive a working, verified setup with clear ownership of the imported information. Local private profile creation and POSIX bound launcher commands are implemented. Guided project registration, historical import and the optional packaged skill remain unimplemented. This is a first-release usability requirement; broad importer coverage is delivered incrementally.
 
 ## Supported setup flow
 
@@ -15,6 +15,21 @@ Let a user ask their AI to add FireController to an existing project and receive
 7. Apply idempotently through the same authenticated APIs as ordinary clients. Verify project isolation, profile resolution, one job round trip, message delivery, and retained source attribution. Return the useful commands, current assignment pointers, and any unfinished import work.
 
 Onboarding should use a few meaningful questions, not a long setup checklist or repeated permissions for routine reversible steps already authorized. A read-only preview never grants permission to publish private history. Default imported data remains private; enabling public status requires an explicit visibility choice.
+
+## Private agent setup commands
+
+Private client setup is local filesystem work, separate from project registration, historical import and service authorization. The selected commands are:
+
+```sh
+fc --profiles-file /private/agent/profiles.json --profile project-builder profile create --server https://controller.example.com --instance INSTANCE_ID --project PROJECT_ID --worker WORKER_ID --credential-file credentials/worker.token
+fc --profiles-file /private/agent/profiles.json --profile project-builder profile launcher --output /private/bin/fc-builder
+```
+
+`profile create` requires an explicit absolute profile-file path and explicit profile selector. It stores a version-one private configuration containing the supplied binding and credential reference; it never reads the credential, contacts a service or verifies the remote identity. A relative credential reference resolves against that profile file as usual. Use `doctor` for authenticated verification. The command creates a new file atomically and never modifies an existing configuration. A matching existing profile is an idempotent success with no write; a conflicting selection is refused while preserving every existing profile and byte. Use a separate private file for another agent when its desired binding is absent.
+
+`profile launcher` requires an existing selected profile and an explicit absolute output path. On supported POSIX hosts it creates an executable shell launcher that binds the absolute profile file, profile name and current `fc` executable, with an optional explicit `--executable` path. It quotes paths/selectors as literal arguments, forwards caller arguments, and rejects conflicting profile options through the normal duplicate-option guard. Process defaults do not change its binding. Installation never edits PATH, project instructions or another agent's files. Existing identical launcher bytes are an idempotent no-write success; different existing files are refused. Native Windows launcher generation is unsupported in this initial boundary; explicit profiles and per-process `FC_PROFILE` remain available there.
+
+Both commands use compact structured output and safe diagnostics. They publish private files without replacement, preserve unrelated configuration, and report local publication uncertainty instead of removing a file that may already be usable. They create no worker, grant, credential, job, message, review or pending-operation receipt. The broader onboarding and import flow above remains incomplete.
 
 ## Import semantics
 
