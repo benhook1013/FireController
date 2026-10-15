@@ -48,7 +48,7 @@ export default function App() {
   }, [queryClient]);
   useEffect(() => {
     if (current.current && routeProject !== current.current.project.id) clear('Connect to open this project.');
-    if (pending.current && routeProject && routeProject !== pending.current.projectId) clear('Connect to open this project.');
+    if (pending.current && routeProject !== pending.current.projectId) clear('Connect to open this project.');
   }, [routeProject, clear]);
   useEffect(() => () => {
     pending.current?.controller.abort(); pending.current?.api.close();

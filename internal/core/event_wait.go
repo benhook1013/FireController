@@ -117,8 +117,10 @@ func (s *Store) waitMessageEvents(ctx context.Context, scope Scope, after int64,
 		}
 		// Advancing over filtered changes is safe internally; no received or
 		// processed cursor is acknowledged on the caller's behalf.
-		position, _ := s.ParseCursor(scope, messageFeed+scope.WorkerID, page.Cursor)
-		after, _ = strconv.ParseInt(position, 10, 64)
+		after, err = s.messageEventPosition(scope, page.Cursor)
+		if err != nil {
+			return EventPage{}, err
+		}
 		select {
 		case <-ctx.Done():
 			return EventPage{}, storageError(ctx.Err())

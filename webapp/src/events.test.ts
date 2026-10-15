@@ -205,6 +205,7 @@ describe('SSE parser and message watch', () => {
   });
 
   it('takes a fresh snapshot when the server requires resynchronization', async () => {
+    vi.useFakeTimers();
     let snapshots = 0;
     let opened = 0;
     const controller = new AbortController();
@@ -221,10 +222,74 @@ describe('SSE parser and message watch', () => {
     const watch = runMessageWatch(source, workerId, {}, callbacks({ status: (value) => statuses.push(value) }), controller.signal);
     await flushMicrotasks();
     expect(snapshots).toBe(2);
+    expect(opened).toBe(1);
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(opened).toBe(2);
     expect(statuses).toContain('live');
     controller.abort();
     await watch;
+  });
+
+  it.each(['HTTP 409', 'error frame'])('backs off repeated resynchronization from $0 and cancels its pending retry', async (transport) => {
+    vi.useFakeTimers();
+    vi.spyOn(performance, 'now').mockReturnValue(0);
+    const controller = new AbortController();
+    const close = vi.fn();
+    let snapshots = 0;
+    const cursors: string[] = [];
+    const resync = new ApiError('resync_required', 'safe resync', 409);
+    const source = makeSource({
+      snapshot: async () => ({ ...snapshot, event_cursor: `snapshot_${++snapshots}` }),
+      openStream: async (_worker, cursor, _limit, signal) => {
+        cursors.push(cursor);
+        const stream = transport === 'HTTP 409'
+          ? { response: response('', 409, 'application/json'), close: () => undefined }
+          : controlledStream('event: error\ndata: {"code":"resync_required"}\n\n', signal);
+        return { ...stream, close: () => { close(); stream.close(); } };
+      },
+      readFailure: async () => resync,
+      parseStreamError: () => resync,
+    });
+    const watch = runMessageWatch(source, workerId, {}, callbacks(), controller.signal);
+    await flushMicrotasks();
+    expect(cursors).toEqual(['snapshot_1']);
+    expect(snapshots).toBe(2);
+    for (const delay of [1_000, 2_000, 4_000, 10_000, 10_000]) {
+      const before = cursors.length;
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(cursors).toHaveLength(before);
+      expect(snapshots).toBe(before + 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(cursors).toHaveLength(before + 1);
+      expect(cursors.at(-1)).toBe(`snapshot_${before + 1}`);
+      expect(snapshots).toBe(before + 2);
+    }
+    controller.abort();
+    await watch;
+    expect(close).toHaveBeenCalledTimes(cursors.length);
+    expect(vi.getTimerCount()).toBe(0);
+    const stopped = snapshots;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(snapshots).toBe(stopped);
+  });
+
+  it('terminates without retry when access ends during resynchronization', async () => {
+    vi.useFakeTimers();
+    let snapshots = 0;
+    let opened = 0;
+    const source = makeSource({
+      snapshot: async () => {
+        snapshots += 1;
+        if (snapshots > 1) throw new ApiError('forbidden', 'safe forbidden', 403);
+        return snapshot;
+      },
+      openStream: async () => { opened += 1; return { response: response('', 409, 'application/json'), close: () => undefined }; },
+      readFailure: async () => new ApiError('resync_required', 'safe resync', 409),
+    });
+    await expect(runMessageWatch(source, workerId, {}, callbacks(), new AbortController().signal)).rejects.toMatchObject({ code: 'forbidden', status: 403 });
+    expect(opened).toBe(1);
+    expect(snapshots).toBe(2);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('treats authorization revocation as terminal and does not reconnect', async () => {
