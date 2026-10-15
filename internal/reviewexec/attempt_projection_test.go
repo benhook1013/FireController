@@ -84,6 +84,40 @@ func assertProjectedTimes(t *testing.T, f *attemptFixture, a Attempt, value revi
 	}
 }
 
+func TestAttemptProjectionSurvivesLocalClockRollback(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		t.Run(channel, func(t *testing.T) {
+			f := attemptProjectionFixture(t, true)
+			clock := time.Now().UTC().Add(-time.Second)
+			f.e.attemptNow = func() time.Time { return clock }
+			a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "rollback-projection", channel, 2, 1))
+			intent := ""
+			if channel == "hosted" {
+				intent = "exact-owned-intent"
+			}
+			clock = clock.Add(-time.Second)
+			var err error
+			a, err = f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, attemptAnchor(attemptProject, 2), intent)
+			if err != nil {
+				t.Fatal("admission rejected after clock rollback", err)
+			}
+			_, admitted := projectedAttempt(t, f, a)
+			assertProjectedTimes(t, f, a, admitted, false)
+			clock = clock.Add(-time.Second)
+			a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "failed", "synthetic-failure", "")
+			if err != nil {
+				t.Fatal("terminal projection rejected after clock rollback", err)
+			}
+			_, terminal := projectedAttempt(t, f, a)
+			assertProjectedTimes(t, f, a, terminal, true)
+			assertAttemptClock(t, f, a)
+			if *terminal.DurationSeconds < 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != 0 {
+				t.Fatal("projection retained a reservation or negative duration")
+			}
+		})
+	}
+}
+
 func TestAttemptProjectionTransitionsPreserveCurrentFactsAndHistory(t *testing.T) {
 	f := attemptProjectionFixture(t, true)
 	var merged reviews.PullResponse
@@ -234,6 +268,7 @@ func TestAttemptProjectionMissingPRExplicitPublicationAndReplay(t *testing.T) {
 	// Known retained times are provided by this owned fixture before the first
 	// browser publication. Later transitions must never reset this start time.
 	started := time.Now().Add(-3700 * time.Millisecond).UTC().Format(time.RFC3339Nano)
+	admissionSQL(t, f, `UPDATE review_operations SET created_at=?,updated_at=? WHERE id=?`, started, started, a.OperationID)
 	admissionSQL(t, f, `UPDATE review_execution_transitions SET created_at=? WHERE attempt_id=? AND revision=1`, started, a.ID)
 	pull := projectionPull(2)
 	first, err := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, &pull)
