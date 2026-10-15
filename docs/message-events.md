@@ -43,7 +43,7 @@ Credential revocation wakes current waits and causes authorization to be checked
 
 The connection registers once and reads durable changes only on relevant commit notifications. Fifteen-second keepalive comments recheck authorization without scanning message/event history. They stay in the transport layer. A permission, retention or storage failure sends one safe `error` event and closes; cancellation closes quietly. The service shutdown signal closes persistent streams promptly without changing message state, while finite requests retain their bounded graceful drain. Clients reconnect using their last processed cursor after restart. Frames are bounded to 1 MiB, with a two-second deadline covering each write/flush. Idle connections override the normal whole-response write timeout without leaving writes unbounded. A slow consumer cannot block storage transactions or build an unbounded queue.
 
-This endpoint is available to HTTP clients; persistent typed-client, CLI and MCP subscription adapters remain later work. The API does not assert that an installed host can wake an idle agent.
+The browser consumes this endpoint through its own TypeScript fetch client. Persistent typed Go client, CLI and MCP subscription adapters remain later work. The API does not assert that an installed host can wake an idle agent.
 
 ## Proof and limits
 
