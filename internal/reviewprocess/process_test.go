@@ -518,13 +518,7 @@ func TestReviewSourceChangeRetainsCaptureAndDescendantPipeIsBounded(t *testing.T
 	if !outcomeUnknown(err) || time.Since(started) > 4*time.Second {
 		t.Fatalf("inherited pipe was not bounded: duration=%s err=%v", time.Since(started), err)
 	}
-	if raw, readErr := os.ReadFile(pidFile); readErr == nil {
-		if pid, pErr := strconv.Atoi(strings.TrimSpace(string(raw))); pErr == nil {
-			if process, pErr := os.FindProcess(pid); pErr == nil {
-				_ = process.Kill()
-			}
-		}
-	}
+	assertOwnedDescendantExited(t, readOwnedDescendantPID(t, pidFile))
 }
 
 func TestReviewStderrLimitIsApplied(t *testing.T) {
@@ -547,4 +541,158 @@ func errorCode(err error, code string) bool {
 func outcomeUnknown(err error) bool {
 	var typed *Error
 	return errors.As(err, &typed) && typed.OutcomeUnknown
+}
+
+func ownedDescendantRunning(pid int) bool {
+	// A zombie has exited; only its system parent can reap it. Do not mistake
+	// a defunct adopted worker for execution that survived cancellation.
+	output, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	return err == nil && strings.TrimSpace(string(output)) != "" && !strings.HasPrefix(strings.TrimSpace(string(output)), "Z")
+}
+
+func readOwnedDescendantPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(path)
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err == nil && parseErr == nil && pid > 1 && pid != os.Getpid() {
+			t.Cleanup(func() {
+				if ownedDescendantRunning(pid) {
+					// Safety cleanup on failure only, never the success condition.
+					if process, err := os.FindProcess(pid); err == nil {
+						_ = process.Kill()
+					}
+					t.Errorf("owned descendant %d survived its test", pid)
+				}
+			})
+			return pid
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("owned descendant did not record its PID")
+	return 0
+}
+
+func assertOwnedDescendantExited(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !ownedDescendantRunning(pid) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("review descendant survived owned process-group cleanup")
+}
+
+func TestReviewOwnedProcessGroupStopsWorkersAcrossExitModes(t *testing.T) {
+	if !processGroupsSupported {
+		t.Skip("concrete provider execution requires Unix process groups")
+	}
+	if _, err := exec.LookPath("ps"); err != nil {
+		t.Skip("ps required to observe descendant exit")
+	}
+	for _, mode := range []string{"cancel", "timeout", "overflow", "wrapper-exit"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newProcessFixture(t)
+			// This sibling remains in the test's group, outside the owned review
+			// group. Review cancellation must leave it running.
+			unrelated := exec.Command("sleep", "30")
+			if err := unrelated.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = unrelated.Process.Kill(); _ = unrelated.Wait() })
+			pidFile := filepath.Join(f.dir, "owned-worker.pid")
+			// This worker inherits the owned group, but closes all capture pipes.
+			// The wrapper's ordinary exit must still terminate it.
+			body := fmt.Sprintf(`sleep 30 </dev/null >/dev/null 2>&1 &
+echo $! > %q
+`, pidFile)
+			switch mode {
+			case "wrapper-exit":
+				body += "printf 'wrapper capture'; exit 0"
+			case "overflow":
+				body += `while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done`
+			default:
+				body += "wait"
+			}
+			r := f.runner(t, fmt.Sprintf(`if [ "$1" = usage ]; then printf '%%s' %q; else
+%s
+fi`, usageJSON("owner/repo", "owner", 1, 1, 1, 1), body))
+			if _, err := r.Usage(t.Context(), f.workspace, "owner/repo", "owner"); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			if mode == "timeout" {
+				ctx, cancel = context.WithTimeout(t.Context(), 500*time.Millisecond)
+			}
+			defer cancel()
+			type outcome struct {
+				capture Capture
+				err     error
+			}
+			done := make(chan outcome, 1)
+			go func() { capture, err := r.Review(ctx, f.workspace); done <- outcome{capture, err} }()
+			pid := readOwnedDescendantPID(t, pidFile)
+			if mode == "cancel" {
+				cancel()
+			}
+			var result outcome
+			select {
+			case result = <-done:
+			case <-time.After(4 * time.Second):
+				cancel()
+				t.Fatal("owned review group did not stop within bound")
+			}
+			if !result.capture.Started {
+				t.Fatal("fixture never started")
+			}
+			if mode == "wrapper-exit" {
+				if result.err != nil || string(result.capture.Stdout) != "wrapper capture" || result.capture.ExitCode != 0 {
+					t.Fatal("ordinary wrapper result changed", result.err)
+				}
+			} else if !outcomeUnknown(result.err) {
+				t.Fatal("interrupted review was falsely completed", result.err)
+			}
+			assertOwnedDescendantExited(t, pid)
+			if !ownedDescendantRunning(unrelated.Process.Pid) {
+				t.Fatal("review cleanup killed an unrelated sibling process")
+			}
+			if _, err := r.Review(t.Context(), f.workspace); !errorCode(err, "permit_required") {
+				t.Fatal("interruption retained spend permit", err)
+			}
+		})
+	}
+}
+
+func TestOwnedProcessConfigurationRejectsUnsupportedAndStartFailureIsSafe(t *testing.T) {
+	if !processGroupsSupported {
+		if _, err := New(&reviewworkspace.Manager{}, os.Args[0], nil); !errorCode(err, "configuration_invalid") {
+			t.Fatal("unsupported host accepted provider execution", err)
+		}
+		return
+	}
+	command := exec.CommandContext(t.Context(), filepath.Join(t.TempDir(), "absent-executable"))
+	cleanup, err := configureOwnedProcess(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = command.Start(); err == nil {
+		t.Fatal("missing executable started")
+	}
+	if err = cleanup(); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatal("start failure acquired a group", err)
+	}
+	if err = command.Cancel(); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatal("start failure cancellation targeted a process", err)
+	}
+	// No process has been allocated: the ownership checks must never signal
+	// process group zero (the caller) on either cancellation or cleanup.
+	invalid := exec.CommandContext(t.Context(), os.Args[0])
+	invalid.Process = &os.Process{Pid: 0}
+	cleanup, err = configureOwnedProcess(invalid)
+	if !errorCode(err, "configuration_invalid") || cleanup != nil {
+		t.Fatal("preexisting process accepted as a new owned group", err)
+	}
 }

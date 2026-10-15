@@ -166,7 +166,7 @@ func TestCaptureCancellationAndInputBounds(t *testing.T) {
 		requireCaptureError(t, err, "validation_failed")
 	}
 	for _, input := range []reviewprocess.Capture{
-		{Stdout: make([]byte, maxCaptureStdout+1)}, {Stderr: make([]byte, maxCaptureStderr+1)}, {ExitCode: -2}, {ExitCode: 256},
+		{Stdout: make([]byte, maxCaptureStdout+1)}, {Stderr: make([]byte, maxCaptureStderr+1)}, {ExitCode: -2},
 	} {
 		_, err := store.Save(context.Background(), "bad", captureTestRecord(input))
 		requireCaptureError(t, err, "validation_failed")
@@ -202,7 +202,7 @@ func TestCaptureRejectsMalformedRetainedArtifactsWithoutReplacement(t *testing.T
 		strings.Replace(valid, `"attempt_id":"bad"`, `"attempt_id":"other"`, 1),
 		strings.Replace(valid, `"stdout":""`, `"stdout":"\ud800"`, 1),
 		strings.Replace(valid, `"stdout":""`, `"stdout":"not base64"`, 1),
-		strings.Replace(valid, `"exit_code":0`, `"exit_code":256`, 1),
+		strings.Replace(valid, `"exit_code":0`, `"exit_code":4294967296`, 1),
 		strings.Replace(valid, `"capture":{`, `"unknown":true,"capture":{`, 1),
 	}
 	for _, field := range []string{"started_at", "finished_at"} {
