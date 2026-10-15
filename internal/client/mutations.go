@@ -21,6 +21,12 @@ func validMutationKey(key string) bool {
 	return true
 }
 
+// ValidMutationKey checks the canonical explicit-key rules before transport I/O.
+func ValidMutationKey(key string) bool { return validMutationKey(key) }
+
+// ValidStatus admits the current job states without normalization or defaults.
+func ValidStatus(status string) bool { return validStatus(status) }
+
 func mutationValidation() error {
 	return fail("validation_failed", "The mutation requires valid bounded fields and an explicit idempotency key.", "Correct the request and provide one printable ASCII key of at most 128 bytes.", 400)
 }

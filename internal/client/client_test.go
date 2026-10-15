@@ -25,6 +25,41 @@ import (
 
 const testToken = "synthetic-private-bearer-credential-12345"
 
+func TestSharedArgumentValidatorBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		valid bool
+	}{
+		{"job-one", true}, {"job:one", true}, {"é", true}, {strings.Repeat("é", 64), true}, {strings.Repeat("a", 128), true}, {"a.b", true},
+		{"", false}, {".", false}, {"..", false}, {strings.Repeat("a", 129), false}, {strings.Repeat("é", 65), false}, {" padded", false}, {"padded ", false}, {"a b", false}, {"a\u00a0b", false}, {"a\u0085b", false}, {"a\nb", false}, {"a\x00b", false}, {"a/b", false}, {"a\\b", false}, {"a%20b", false}, {"a?b", false}, {"a#b", false}, {string([]byte{255}), false},
+	} {
+		if got := client.ValidID(test.value); got != test.valid {
+			t.Errorf("resource ID %q: got %v, want %v", test.value, got, test.valid)
+		}
+	}
+	for _, status := range []string{"active", "parked", "blocked", "completed"} {
+		if !client.ValidStatus(status) {
+			t.Errorf("valid status refused: %q", status)
+		}
+	}
+	for _, status := range []string{"", "Active", " active", "active ", "unknown", "completed\x00"} {
+		if client.ValidStatus(status) {
+			t.Errorf("invalid status accepted: %q", status)
+		}
+	}
+	for _, test := range []struct {
+		value string
+		valid bool
+	}{
+		{"key", true}, {"a b", true}, {"key:operation-1", true}, {strings.Repeat("k", 128), true}, {"!~", true},
+		{"", false}, {" key", false}, {"key ", false}, {strings.Repeat("k", 129), false}, {"key\nnext", false}, {"key\rnext", false}, {"key\tnext", false}, {"key\x00next", false}, {"key\x7f", false}, {"é", false}, {string([]byte{255}), false},
+	} {
+		if got := client.ValidMutationKey(test.value); got != test.valid {
+			t.Errorf("mutation key %q: got %v, want %v", test.value, got, test.valid)
+		}
+	}
+}
+
 func binding(t *testing.T, base string) profile.Binding {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "private-credential.token")
