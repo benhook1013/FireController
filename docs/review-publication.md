@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The API, CLI, MCP controls, private publication journal, bounded provider worker and observation-only recovery are implemented with focused race and integration proof. Full combined checks and clean packaged-provider proof remain pending for this slice. Native source finalization, local browser publication and observed readiness are independent; a local `PublishEvidence` call is not a GitHub comment.
+The API, CLI, MCP controls, private publication journal, bounded provider worker and observation-only recovery are implemented. Full combined checks and six clean packaged controlled-provider groups pass. Native source finalization, local browser publication and observed readiness are independent; a local `PublishEvidence` call is not a GitHub comment.
 
 ## Source and authority
 
@@ -41,3 +41,15 @@ The CLI commands are `reviews publish EVIDENCE_ID --expect-revision N --key KEY`
 ## Functional proof
 
 Prove strict render/match identity and bounds; malformed, conflicting, copied and duplicate comments; lost successful post responses and malformed success bodies; concurrent/key replay and source revision guards; immutable source counts despite later corrections/receiver changes; access/capability/repository changes at the final action boundary; transaction/event/receipt rollback; restart around intent/post/confirmation; no blind retry and separately authorized proven-unposted retry. Actual packaged API/CLI/official-SDK checks must demonstrate one comment after uncertain recovery, quiet local reads, responsive coordination and retained captures/imported history. Live provider operation and operational cutover remain separate proof.
+
+## Executed proof and limits
+
+Clean runtime checkpoint `bdc820034026138d2f78d11363d5e76a4f363f7e` passed full `make check build`: 175 browser tests, all Go race tests and vet, documentation/link checks, embedded assets and three binaries. Focused tests prove durable transition/receipt/event rollback, original source counts across corrections and receiving proof, final authorization/binding guards, restart, unknown versus known-refused posts, caller cancellation and wait capacity. The per-project capacity test creates sixteen real active publications; the instance-wide sixty-four limit is implemented but was not populated with sixty-four real sources in this proof.
+
+Six actual packaged API/CLI/official-SDK groups passed in 11.416 seconds against an isolated TLS provider fixture with genuine privately seeded finalized native evidence. They used 26 actual `fc` invocations and packaged `fcmcp`, including discovery of all 45 tools. A default quick publication returned useful facts in 28.392 ms; immediate pending acceptance took 10.377 ms. While provider preparation was blocked, jobs and inbox reads took 4.961 and 4.816 ms. Original-key longer waiting completed the same action in 162.295 ms. These are small local samples, not supported latency budgets.
+
+A committed POST with a lost response was recovered after daemon restart and repository rename with exactly one comment and one POST. The confirmed link used the new stable-ID destination and the original intent stayed unchanged. Malformed success, conflicting edits, duplicate attributable comments and foreign-author copies did not grant another write; neutral whitespace and login renames retained identity. A known refusal needed explicit proven-unposted retry. Capability changes, credential revocation and a wrong stable repository response stopped posting. Captures, evidence, imported history and original source counts remained intact; reads/replays did no provider work.
+
+The fixture made 27 controlled provider GETs and six POST attempts: five genuine checkpoint comments and one known refusal. It made zero real external calls, Git or CLI-review invocations, allowance queries or source/CI refreshes. Source and binary hashes stayed unchanged; owned processes, listeners and disposable state were cleaned. The source manifest was SHA-256 `21cde956da90b7580fc06a777cd20b61de520d64ccbec496881f7be7bb87f3a5`; packaged `fcd` was `8a28b3b84ad142cc52c4a6795ae8d465cd66944f2cfb5d7f9fb7b3f62f16a3b5`.
+
+This proves controlled local integration, not live GitHub/CodeRabbit execution, browser or physical-phone behavior, fleet throughput, remote deployment or operational cutover. A local project-repository binding change has focused core proof; there is no public repository-rebinding administration workflow claimed by the packaged pass. Independent source inspection identified and corrected the stale recovery-link issue before the packaged run. Provider/local clock-skew acceptance has focused positive tests without assuming synchronized clocks.
