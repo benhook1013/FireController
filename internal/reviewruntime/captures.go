@@ -58,17 +58,65 @@ type captureWire struct {
 	Started  bool   `json:"started"`
 }
 
-// NewCaptureStore creates missing private directories and rejects symlink ancestors.
+// NewCaptureStore pins existing ancestor aliases to one canonical private root.
 // These checks do not defend against a hostile same-user filesystem race.
 func NewCaptureStore(root string) (*CaptureStore, error) {
 	if root == "" {
 		return nil, captureError("configuration_invalid")
 	}
 	absolute, err := filepath.Abs(root)
-	if err != nil || captureDirectories(absolute, true) != nil {
+	if err != nil {
 		return nil, captureError("configuration_invalid")
 	}
-	return &CaptureStore{root: absolute}, nil
+	canonical, err := canonicalCaptureRoot(absolute)
+	if err != nil {
+		return nil, captureError("configuration_invalid")
+	}
+	return &CaptureStore{root: canonical}, nil
+}
+
+func canonicalCaptureRoot(root string) (string, error) {
+	// The requested root itself cannot be an alias, a file or a public directory.
+	info, err := os.Lstat(root)
+	if err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !captureMode(info, 0700)) {
+		return "", errors.New("directory")
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	// Resolve only the existing parent (or deepest existing ancestor) once.
+	// Newly created components are checked independently and never followed.
+	parent := filepath.Dir(root)
+	missing := []string{filepath.Base(root)}
+	for {
+		if _, err = os.Lstat(parent); err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) || filepath.Dir(parent) == parent {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(parent))
+		parent = filepath.Dir(parent)
+	}
+	canonical, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", err
+	}
+	info, err = os.Lstat(canonical)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("directory")
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		canonical = filepath.Join(canonical, missing[i])
+		if err = os.Mkdir(canonical, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+		info, err = os.Lstat(canonical)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !captureMode(info, 0700) {
+			return "", errors.New("directory")
+		}
+	}
+	return canonical, captureDirectories(canonical, false)
 }
 
 // Save publishes with an atomic no-replace hard link. An unavailable result can
