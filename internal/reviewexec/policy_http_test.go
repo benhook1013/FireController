@@ -120,6 +120,7 @@ func TestPolicyHTTPAuthorizationCookieInstanceAndRevocation(t *testing.T) {
 	}{{"GET", path, "", 200, ""}, {"GET", otherPath, "", 403, "forbidden"}, {"POST", path, policyHTTPInitial, 403, "forbidden"}} {
 		r := httptest.NewRequest(x.method, "http://localhost"+x.path, strings.NewReader(x.body))
 		r.Header.Set("X-FC-Browser-Session", id)
+		r.Header.Set("X-FC-Instance", f.store.InstanceID())
 		r.Header.Set("Idempotency-Key", "cookie-denied")
 		r.AddCookie(cookie)
 		w := httptest.NewRecorder()
