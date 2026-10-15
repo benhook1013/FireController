@@ -212,6 +212,7 @@ func TestEvidenceHTTPAuthorizationInstanceAndReadOnlyCookie(t *testing.T) {
 		r := httptest.NewRequest(x.method, "http://localhost"+path+x.suffix, strings.NewReader(x.body))
 		r.AddCookie(cookie)
 		r.Header.Set("X-FC-Browser-Session", id)
+		r.Header.Set("X-FC-Instance", f.store.InstanceID())
 		r.Header.Set("Idempotency-Key", "cookie-denied")
 		w := httptest.NewRecorder()
 		f.handler.ServeHTTP(w, r)
