@@ -93,6 +93,13 @@ func queue(store *core.Store) http.HandlerFunc {
 				if err := strictStoredJSON(recentJSON, &item.RecentRuns); err != nil {
 					return err
 				}
+				// Pre-mixed snapshots stored one producer in snapshot metadata.
+				// Fill their old compact projection only in the read response.
+				for i := range item.RecentRuns {
+					if item.RecentRuns[i].Source == "" {
+						item.RecentRuns[i].Source = meta.Source
+					}
+				}
 				if err := strictStoredJSON(latestJSON, &item.LatestAttempts); err != nil {
 					return err
 				}
@@ -161,6 +168,11 @@ func pull(store *core.Store) http.HandlerFunc {
 			response.Pull.Complete = complete != 0
 			if err := strictStoredJSON(recentJSON, &response.Pull.RecentRuns); err != nil {
 				return err
+			}
+			for i := range response.Pull.RecentRuns {
+				if response.Pull.RecentRuns[i].Source == "" {
+					response.Pull.RecentRuns[i].Source = meta.Source
+				}
 			}
 			if err := strictStoredJSON(latestJSON, &response.Pull.LatestAttempts); err != nil {
 				return err
@@ -245,7 +257,7 @@ func runs(store *core.Store) http.HandlerFunc {
 			if _, err := pullExists(ctx, tx, scope.ProjectID, meta.SnapshotID, number); err != nil {
 				return err
 			}
-			querySQL := `SELECT id,pull_number,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json,run_order FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=?`
+			querySQL := `SELECT id,pull_number,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json,run_order FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=?`
 			args := []any{scope.ProjectID, meta.SnapshotID, number}
 			if cursorSnapshot != "" {
 				querySQL += ` AND run_order<?`
@@ -264,7 +276,7 @@ func runs(store *core.Store) http.HandlerFunc {
 				var attributable, complete, finalized int
 				var limits string
 				var order int
-				if err := rows.Scan(&item.ID, &item.PullNumber, &item.SourceRunID, &item.Channel, &item.HeadSHA, &item.Reviewer, &item.Scope, &item.Outcome, &attributable, &complete, &item.StartedAt, &item.FinishedAt, &item.Found, &item.Accepted, &item.Routed, &finalized, &item.Fixed, &limits, &order); err != nil {
+				if err := rows.Scan(&item.ID, &item.PullNumber, &item.Source, &item.SourceRunID, &item.Channel, &item.HeadSHA, &item.Reviewer, &item.Scope, &item.Outcome, &attributable, &complete, &item.StartedAt, &item.FinishedAt, &item.Found, &item.Accepted, &item.Routed, &finalized, &item.Fixed, &limits, &order); err != nil {
 					return err
 				}
 				if len(response.Items) == limit {
@@ -333,8 +345,8 @@ func runDetail(store *core.Store) http.HandlerFunc {
 			setMetaDetail(&response, meta)
 			var pullNum, attributable, complete, finalized int
 			var limits string
-			err = tx.QueryRowContext(ctx, `SELECT pull_number,id,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json FROM review_runs WHERE project_id=? AND snapshot_id=? AND id=?`, scope.ProjectID, meta.SnapshotID, runID).Scan(
-				&pullNum, &response.Run.ID, &response.Run.SourceRunID, &response.Run.Channel, &response.Run.HeadSHA, &response.Run.Reviewer, &response.Run.Scope, &response.Run.Outcome, &attributable, &complete, &response.Run.StartedAt, &response.Run.FinishedAt, &response.Run.Found, &response.Run.Accepted, &response.Run.Routed, &finalized, &response.Run.Fixed, &limits)
+			err = tx.QueryRowContext(ctx, `SELECT pull_number,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json FROM review_runs WHERE project_id=? AND snapshot_id=? AND id=?`, scope.ProjectID, meta.SnapshotID, runID).Scan(
+				&pullNum, &response.Run.ID, &response.Run.Source, &response.Run.SourceRunID, &response.Run.Channel, &response.Run.HeadSHA, &response.Run.Reviewer, &response.Run.Scope, &response.Run.Outcome, &attributable, &complete, &response.Run.StartedAt, &response.Run.FinishedAt, &response.Run.Found, &response.Run.Accepted, &response.Run.Routed, &finalized, &response.Run.Fixed, &limits)
 			if errors.Is(err, sql.ErrNoRows) {
 				return notFound("The review run is unavailable in this snapshot.")
 			}

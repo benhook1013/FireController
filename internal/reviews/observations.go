@@ -557,7 +557,7 @@ func summarizeRun(projectID, source string, pullNumber int64, run RunInput) RunS
 			fixed++
 		}
 	}
-	return RunSummary{ID: runOpaqueID(projectID, source, run.SourceRunID), PullNumber: pullNumber,
+	return RunSummary{Source: source, ID: runOpaqueID(projectID, source, run.SourceRunID), PullNumber: pullNumber,
 		SourceRunID: run.SourceRunID, Channel: run.Channel, HeadSHA: run.HeadSHA, Reviewer: run.Reviewer,
 		Scope: run.Scope, Outcome: run.Outcome, Attributable: run.Attributable, Complete: run.Complete,
 		StartedAt: run.StartedAt, FinishedAt: run.FinishedAt, Found: run.Found, Accepted: run.Accepted,

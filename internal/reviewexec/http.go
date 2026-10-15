@@ -1,0 +1,94 @@
+package reviewexec
+
+import (
+	"net/http"
+
+	"github.com/benhook1013/FireController/internal/core"
+)
+
+// Register exposes only the project-scoped execution control and receipt
+// routes. Provider work always runs outside these request handlers.
+func (e *Engine) Register(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/configuration", e.configureHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/requests", e.enqueueHTTP)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/operations/{operation_id}", e.readOperationHTTP)
+}
+
+func (e *Engine) configureHTTP(w http.ResponseWriter, r *http.Request) {
+	scope, err := e.store.AdminScope(r)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if _, err := core.QueryKeys(r, "validation_failed"); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	var request Configuration
+	if err := core.ReadJSON(w, r, &request); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	key, err := core.IdempotencyKey(r, "idempotency_key_required")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	receipt, err := e.Configure(r.Context(), scope, key, request)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusCreated, receipt)
+}
+
+func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
+	scope, err := e.store.Scope(r, "write")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if _, err := core.QueryKeys(r, "validation_failed"); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	var request Request
+	if err := core.ReadJSON(w, r, &request); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	key, err := core.IdempotencyKey(r, "idempotency_key_required")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	receipt, err := e.Enqueue(r.Context(), scope, key, request)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusAccepted, receipt)
+}
+
+func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
+	scope, err := e.store.Scope(r, "read")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if _, err := core.QueryKeys(r, "invalid_query"); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	operationID := r.PathValue("operation_id")
+	if !identifier.MatchString(operationID) {
+		core.WriteError(w, invalid())
+		return
+	}
+	operation, err := e.ReadOperation(r.Context(), scope, operationID)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, operation)
+}

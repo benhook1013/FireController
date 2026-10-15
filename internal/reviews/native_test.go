@@ -1,0 +1,563 @@
+package reviews
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/benhook1013/FireController/internal/core"
+)
+
+func nativePull(number int64) PullInput {
+	p := samplePull(number, fmt.Sprintf("Native fixture PR %d", number))
+	p.HeadSHA, p.BaseSHA = strings.Repeat("a", 40), strings.Repeat("b", 40)
+	p.Complete = false
+	return p
+}
+
+func nativeRun(id string) RunInput {
+	return RunInput{SourceRunID: id, Channel: "cli", HeadSHA: strings.Repeat("a", 40), Reviewer: "Synthetic native reviewer", Scope: "exact patch", Outcome: "completed", Attributable: true, Complete: true,
+		StartedAt: "2026-01-01T00:00:00Z", FinishedAt: "2026-01-01T00:01:00Z", Found: 1, Accepted: 1, Finalized: true, CoverageLimits: []string{"Synthetic source-only limitation"},
+		Findings: []Finding{{SourceFindingID: "finding-" + id, Title: "Literal <b>finding</b>", Detail: "RETAINED_NATIVE_DETAIL", Severity: "high", Disposition: "accepted", DecisionReason: "Retained decision", Actor: "Synthetic adjudicator", DecidedAt: "2026-01-01T00:02:00Z", FixSHA: strings.Repeat("c", 40), ProofNote: "RETAINED_NATIVE_FIX", ResolvedAt: "2026-01-01T00:03:00Z"}}}
+}
+
+func nativeAttempt(id, state string) Attempt {
+	return Attempt{SourceAttemptID: id, Channel: "cli", HeadSHA: strings.Repeat("a", 40), State: state, StartedAt: "2026-01-01T00:00:00Z"}
+}
+
+func nativePublish(f *apiFixture, p NativePublication) (Receipt, error) {
+	var receipt Receipt
+	err := f.store.BackgroundWrite(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		receipt, err = PublishNative(ctx, tx, core.Scope{ProjectID: f.project, PrincipalID: "synthetic-native-publisher"}, p)
+		return err
+	})
+	return receipt, err
+}
+
+func mustNativePublish(t *testing.T, f *apiFixture, p NativePublication) Receipt {
+	t.Helper()
+	receipt, err := nativePublish(f, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receipt
+}
+
+func nativeRead(t *testing.T, f *apiFixture, route string, dst any) []byte {
+	t.Helper()
+	w := f.call(http.MethodGet, "/api/v1/projects/"+f.project+"/reviews"+route, f.readToken, "", nil)
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), dst) != nil {
+		t.Fatalf("native read %s: %d %s", route, w.Code, w.Body.String())
+	}
+	return append([]byte(nil), w.Body.Bytes()...)
+}
+
+func nativeErrorCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var failure *core.Error
+	if !errors.As(err, &failure) || failure.Code != code {
+		t.Fatalf("wanted %s, got %v", code, err)
+	}
+}
+
+func nativeSnapshotBytes(t *testing.T, f *apiFixture, snapshot string) string {
+	t.Helper()
+	hash := sha256.New()
+	for _, table := range []string{"review_snapshots", "review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls"} {
+		rows, err := f.store.DB().Query("SELECT * FROM "+table+" WHERE project_id=? AND snapshot_id=? ORDER BY rowid", f.project, snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		columns, err := rows.Columns()
+		if err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		hash.Write([]byte(table))
+		for rows.Next() {
+			values, pointers := make([]any, len(columns)), make([]any, len(columns))
+			for i := range values {
+				pointers[i] = &values[i]
+			}
+			if err := rows.Scan(pointers...); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(values)
+			if err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			hash.Write(data)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func TestNativePublicationPreservesUnrelatedPullCompleteness(t *testing.T) {
+	f := newAPIFixture(t)
+	incomplete := nativePull(2)
+	r := nativeRun("complete-run-in-incomplete-observation")
+	incomplete.Runs = []RunInput{r}
+	knownWithoutRuns := nativePull(4)
+	knownWithoutRuns.Complete = true
+	f.observe(t, reviewRequest(0, []PullInput{incomplete, knownWithoutRuns}), "original-completeness")
+	var before2, before4 PullResponse
+	nativeRead(t, f, "/pulls/2", &before2)
+	nativeRead(t, f, "/pulls/4", &before4)
+	a := nativeAttempt("targeted-new-pull", "prepared")
+	mustNativePublish(t, f, NativePublication{Pull: nativePull(9), Attempt: &a})
+	var after2, after4 PullResponse
+	nativeRead(t, f, "/pulls/2", &after2)
+	nativeRead(t, f, "/pulls/4", &after4)
+	if !reflect.DeepEqual(before2.Pull, after2.Pull) || !reflect.DeepEqual(before4.Pull, after4.Pull) {
+		t.Fatalf("targeted publication changed unrelated source metadata: PR2 complete %v -> %v; PR4 complete %v -> %v", before2.Pull.Complete, after2.Pull.Complete, before4.Pull.Complete, after4.Pull.Complete)
+	}
+}
+
+func TestNativePreservesImportedOriginEvidenceAndOldBytes(t *testing.T) {
+	f := newAPIFixture(t)
+	imported := nativeRun("shared-external-id")
+	imported.Channel, imported.Reviewer = "manual", "Historical producer"
+	imported.CoverageLimits = []string{"Exact imported coverage limitation"}
+	imported.Findings[0].Detail, imported.Findings[0].ProofNote = "IMPORTED_IMMUTABLE_BODY", "IMPORTED_FIXED_PROOF"
+	pull := nativePull(1)
+	pull.Complete, pull.Runs = true, []RunInput{imported}
+	duration := int64(60)
+	pull.Attempts = []Attempt{{SourceAttemptID: "shared-attempt", Channel: "manual", HeadSHA: pull.HeadSHA, State: "completed", StartedAt: imported.StartedAt, FinishedAt: imported.FinishedAt, DurationSeconds: &duration, SourceRunID: imported.SourceRunID}}
+	request := reviewRequest(0, []PullInput{pull, nativePull(2)})
+	request.Source, request.ObservedAt = " original historical producer ", time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	initial := request
+	initial.Queue = append(append([]PullInput(nil), request.Queue...), nativePull(7))
+	f.observe(t, initial, "before-explicit-retirement")
+	revision := int64(1)
+	request.ExpectedRevision = &revision
+	request.Retired = []RetiredPull{{Number: 7, Reason: "superseded"}}
+	old := f.observe(t, request, "import-before-native")["id"].(string)
+	// Retained compact bytes can predate the explicit source field.
+	var compact []map[string]any
+	var stored string
+	if err := f.store.DB().QueryRow(`SELECT recent_runs_json FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=1`, f.project, old).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if json.Unmarshal([]byte(stored), &compact) != nil {
+		t.Fatal("old compact fixture")
+	}
+	delete(compact[0], "source")
+	encoded, _ := json.Marshal(compact)
+	if _, err := f.store.DB().Exec(`UPDATE review_pulls SET recent_runs_json=? WHERE project_id=? AND snapshot_id=? AND number=1`, string(encoded), f.project, old); err != nil {
+		t.Fatal(err)
+	}
+	oldDigest := nativeSnapshotBytes(t, f, old)
+	importedID := runOpaqueID(f.project, request.Source, imported.SourceRunID)
+	oldRoutes := []string{"/pulls/1?snapshot=" + old, "/pulls/1/runs?snapshot=" + old, "/runs/" + importedID + "?snapshot=" + old}
+	oldResponses := make([][]byte, len(oldRoutes))
+	for i, route := range oldRoutes {
+		var value any
+		oldResponses[i] = nativeRead(t, f, route, &value)
+	}
+	var initialQueue QueueResponse
+	nativeRead(t, f, "/queue?limit=1", &initialQueue)
+	captured := nativeRun(imported.SourceRunID)
+	a := nativeAttempt("shared-attempt", "completed")
+	a.FinishedAt, a.DurationSeconds, a.SourceRunID, a.TriggerID = captured.FinishedAt, &duration, captured.SourceRunID, "trigger-native"
+	metadata := pull
+	metadata.Runs, metadata.Attempts = nil, nil
+	next := mustNativePublish(t, f, NativePublication{Pull: metadata, Run: &captured, Attempt: &a})
+	if next.Revision != 3 || next.ID == old {
+		t.Fatal("native update did not append snapshot")
+	}
+	var queue QueueResponse
+	queueBytes := nativeRead(t, f, "/queue", &queue)
+	if queue.Source != nativeSource || queue.ObservedAt != request.ObservedAt || queue.Revision != 3 || len(queue.Items) != 2 || queue.Items[0].State != "merged" {
+		t.Fatal("publisher refreshed unrelated facts or lost merged history")
+	}
+	var detail PullResponse
+	pullBytes := nativeRead(t, f, "/pulls/1", &detail)
+	var runs RunsResponse
+	runBytes := nativeRead(t, f, "/pulls/1/runs", &runs)
+	if detail.Source != nativeSource || runs.Source != nativeSource || len(runs.Items) != 2 || detail.Pull.RunCount != 2 || detail.Pull.AttemptCount != 2 {
+		t.Fatal("mixed native projection lost producer history")
+	}
+	for _, summaries := range [][]RunSummary{queue.Items[0].RecentRuns, detail.Pull.RecentRuns, runs.Items} {
+		if len(summaries) != 2 || summaries[0].Source != nativeSource || summaries[1].Source != request.Source || summaries[1].ID != importedID || summaries[0].ID == summaries[1].ID {
+			t.Fatal("same external ID producers collapsed or origin relabeled", summaries)
+		}
+		if summaries[1].Found != 1 || summaries[1].Accepted != 1 || !summaries[1].Finalized || summaries[1].Fixed != 1 || !reflect.DeepEqual(summaries[1].CoverageLimits, imported.CoverageLimits) {
+			t.Fatal("imported counts/limits/fix projection changed")
+		}
+	}
+	var importedDetail, nativeDetail RunDetailResponse
+	nativeRead(t, f, "/runs/"+importedID, &importedDetail)
+	nativeRead(t, f, "/runs/"+runOpaqueID(f.project, nativeSource, captured.SourceRunID), &nativeDetail)
+	if importedDetail.Source != nativeSource || importedDetail.Run.Source != request.Source || !reflect.DeepEqual(importedDetail.Findings, imported.Findings) || nativeDetail.Run.Source != nativeSource || !reflect.DeepEqual(nativeDetail.Findings, captured.Findings) {
+		t.Fatal("full finding text/decision/fix or producer identity changed")
+	}
+	for _, body := range [][]byte{queueBytes, pullBytes, runBytes} {
+		if len(body) > 1<<20 || bytes.Contains(body, []byte("IMPORTED_IMMUTABLE_BODY")) || bytes.Contains(body, []byte("RETAINED_NATIVE_DETAIL")) {
+			t.Fatal("compact projection expanded findings or exceeded bound")
+		}
+	}
+	if nativeSnapshotBytes(t, f, old) != oldDigest {
+		t.Fatal("native publication rewrote old snapshot storage bytes")
+	}
+	for i, route := range oldRoutes {
+		var value any
+		if !bytes.Equal(nativeRead(t, f, route, &value), oldResponses[i]) {
+			t.Fatal("old explicit snapshot response bytes changed")
+		}
+	}
+	var continued QueueResponse
+	nativeRead(t, f, "/queue?limit=1&cursor="+initialQueue.Cursor, &continued)
+	if continued.SnapshotID != old || continued.Revision != 2 || len(continued.Items) != 1 || continued.Items[0].Number != 2 {
+		t.Fatal("native publish moved retained queue cursor")
+	}
+	var retained int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_retired_pulls WHERE project_id=? AND snapshot_id=? AND number=7 AND reason='superseded'`, f.project, next.ID).Scan(&retained); err != nil || retained != 1 {
+		t.Fatal("retirement provenance was not retained", err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_attempts WHERE project_id=? AND snapshot_id=? AND source_attempt_id='shared-attempt'`, f.project, next.ID).Scan(&retained); err != nil || retained != 2 {
+		t.Fatal("same attempt ID from separate producers collapsed", err)
+	}
+}
+
+func TestNativeFirstPublicationAndExplicitTransactionReplay(t *testing.T) {
+	f := newAPIFixture(t)
+	r := httptest.NewRequest("POST", "/", nil)
+	r.SetPathValue("project_id", f.project)
+	r.Header.Set("Authorization", "Bearer "+f.admin)
+	scope, err := f.store.AdminScope(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := nativeAttempt("first-native-attempt", "prepared")
+	p := NativePublication{Pull: nativePull(1), Attempt: &a}
+	mutation := core.Mutation{Operation: "test.native-publication", Target: "first", Key: "first-native-key", Request: p}
+	callbackCalls := 0
+	callback := func(ctx context.Context, tx *sql.Tx) (any, error) {
+		callbackCalls++
+		return PublishNative(ctx, tx, scope, p)
+	}
+	first, err := f.store.Mutate(context.Background(), scope, mutation, callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := f.store.Mutate(context.Background(), scope, mutation, callback)
+	if err != nil || !bytes.Equal(first, replay) || callbackCalls != 1 {
+		t.Fatal("caller receipt replay republished native source", err)
+	}
+	var receipt Receipt
+	var compact map[string]any
+	if json.Unmarshal(first, &receipt) != nil || json.Unmarshal(first, &compact) != nil || len(compact) != 3 || receipt.Revision != 1 {
+		t.Fatal("native publication receipt is not compact")
+	}
+	var queue QueueResponse
+	nativeRead(t, f, "/queue", &queue)
+	if !queue.Configured || queue.Source != nativeSource || len(queue.Items) != 1 || queue.Items[0].AttemptCount != 1 || queue.Items[0].RunCount != 0 {
+		t.Fatal("first native attempt fabricated a capture or omitted workspace")
+	}
+	before := nativeSnapshotBytes(t, f, receipt.ID)
+	a2 := nativeAttempt("new-target", "prepared")
+	second := mustNativePublish(t, f, NativePublication{Pull: nativePull(2), Attempt: &a2})
+	nativeRead(t, f, "/queue", &queue)
+	if second.Revision != 2 || len(queue.Items) != 2 || queue.Items[0].Number != 1 || queue.Items[1].Number != 2 || nativeSnapshotBytes(t, f, receipt.ID) != before {
+		t.Fatal("targeted new pull replaced existing queue or old bytes")
+	}
+	if countRows(t, f.store, "receipts") != 1 || countRows(t, f.store, "events") != 2 {
+		t.Fatal("replay or targeted append created extra receipt/event effects")
+	}
+}
+
+func TestNativeAttemptLifecycleKeepsSourceIdentity(t *testing.T) {
+	f := newAPIFixture(t)
+	pull := nativePull(1)
+	a := nativeAttempt("lifecycle", "prepared")
+	first := mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &a})
+	old := nativeSnapshotBytes(t, f, first.ID)
+	a.State, a.TriggerID = "active", "trigger_123"
+	mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &a})
+	run := nativeRun("lifecycle-capture")
+	duration := int64(60)
+	a.State, a.FinishedAt, a.DurationSeconds, a.SourceRunID = "completed", run.FinishedAt, &duration, run.SourceRunID
+	last := mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &a, Run: &run})
+	var detail PullResponse
+	nativeRead(t, f, "/pulls/1", &detail)
+	if len(detail.Attempts) != 1 || detail.Attempts[0].State != "completed" || detail.Attempts[0].SourceRunID != run.SourceRunID || detail.Attempts[0].TriggerID != "trigger_123" || detail.Attempts[0].DurationSeconds == nil || *detail.Attempts[0].DurationSeconds != 60 || detail.Pull.RunCount != 1 || detail.Pull.AttemptCount != 1 {
+		t.Fatal("lifecycle did not update one retained native attempt")
+	}
+	if nativeSnapshotBytes(t, f, first.ID) != old {
+		t.Fatal("attempt update mutated prepared snapshot")
+	}
+	for _, change := range []string{"channel", "head", "start", "pull"} {
+		t.Run(change, func(t *testing.T) {
+			changed, metadata := a, pull
+			switch change {
+			case "channel":
+				changed.Channel = "hosted"
+			case "head":
+				changed.HeadSHA = strings.Repeat("b", 40)
+			case "start":
+				changed.StartedAt = "2026-01-01T00:00:01Z"
+			case "pull":
+				metadata = nativePull(2)
+			}
+			changed.SourceRunID = ""
+			before := nativeSnapshotBytes(t, f, last.ID)
+			snapshots, events := countRows(t, f.store, "review_snapshots"), countRows(t, f.store, "events")
+			_, err := nativePublish(f, NativePublication{Pull: metadata, Attempt: &changed})
+			nativeErrorCode(t, err, "observation_conflict")
+			if before != nativeSnapshotBytes(t, f, last.ID) || countRows(t, f.store, "review_snapshots") != snapshots || countRows(t, f.store, "events") != events {
+				t.Fatal("attempt identity conflict partially published")
+			}
+		})
+	}
+}
+
+func TestNativeAttemptsOnlyLinkOwnRunOnExactTarget(t *testing.T) {
+	for _, mode := range []string{"foreign_producer", "other_pull", "channel", "head", "valid"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newAPIFixture(t)
+			pull := nativePull(1)
+			run := nativeRun("linked-run")
+			if mode == "foreign_producer" {
+				pull.Runs = []RunInput{run}
+				f.observe(t, reviewRequest(0, []PullInput{pull}), "foreign-link")
+				pull.Runs = nil
+			} else {
+				mustNativePublish(t, f, NativePublication{Pull: pull, Run: &run})
+			}
+			a := nativeAttempt("linked-attempt", "active")
+			a.SourceRunID = run.SourceRunID
+			switch mode {
+			case "other_pull":
+				pull = nativePull(2)
+			case "channel":
+				a.Channel = "hosted"
+			case "head":
+				a.HeadSHA = strings.Repeat("b", 40)
+			}
+			snapshots, events := countRows(t, f.store, "review_snapshots"), countRows(t, f.store, "events")
+			_, err := nativePublish(f, NativePublication{Pull: pull, Attempt: &a})
+			if mode == "valid" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				nativeErrorCode(t, err, "validation_failed")
+				if countRows(t, f.store, "review_snapshots") != snapshots || countRows(t, f.store, "events") != events {
+					t.Fatal("invalid run link partially published")
+				}
+			}
+		})
+	}
+}
+
+func TestNativeCapturedRunCanNeverBeReplacedOrReused(t *testing.T) {
+	for _, mode := range []string{"exact", "finding_text", "counts", "other_pull", "unfinalized", "historical_only"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newAPIFixture(t)
+			pull := nativePull(1)
+			run := nativeRun("once-only")
+			if mode == "unfinalized" {
+				run.Finalized = false
+			}
+			first := mustNativePublish(t, f, NativePublication{Pull: pull, Run: &run})
+			before := nativeSnapshotBytes(t, f, first.ID)
+			if mode == "historical_only" {
+				// A newer explicit observation can leave the native run only in
+				// retained snapshots; that does not free its source identity.
+				f.observe(t, reviewRequest(1, []PullInput{pull}), "new-observation-without-old-native-run")
+			}
+			snapshots, events := countRows(t, f.store, "review_snapshots"), countRows(t, f.store, "events")
+			switch mode {
+			case "finding_text":
+				run.Findings[0].Detail = "replacement text"
+			case "counts":
+				run.Found = 2
+				run.Complete = false
+			case "other_pull":
+				pull = nativePull(2)
+			}
+			_, err := nativePublish(f, NativePublication{Pull: pull, Run: &run})
+			nativeErrorCode(t, err, "observation_conflict")
+			if countRows(t, f.store, "review_snapshots") != snapshots || countRows(t, f.store, "events") != events || nativeSnapshotBytes(t, f, first.ID) != before {
+				t.Fatal("reused source run partially rewrote retained evidence")
+			}
+		})
+	}
+}
+
+func TestNativeKnownAttemptIdentitiesCannotBeRewritten(t *testing.T) {
+	for _, mode := range []string{"run_clear", "run_replace", "trigger_clear", "trigger_replace", "provider_clear", "provider_replace", "settled_rollback"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newAPIFixture(t)
+			pull, captured := nativePull(1), nativeRun("known-capture")
+			a := nativeAttempt("known-attempt", "completed")
+			a.FinishedAt, a.SourceRunID, a.TriggerID, a.ProviderReviewID = captured.FinishedAt, captured.SourceRunID, "known-trigger", "known-provider-review"
+			mustNativePublish(t, f, NativePublication{Pull: pull, Run: &captured, Attempt: &a})
+			other := nativeRun("different-valid-capture")
+			last := mustNativePublish(t, f, NativePublication{Pull: pull, Run: &other})
+			switch mode {
+			case "run_clear":
+				a.SourceRunID = ""
+			case "run_replace":
+				a.SourceRunID = other.SourceRunID
+			case "trigger_clear":
+				a.TriggerID = ""
+			case "trigger_replace":
+				a.TriggerID = "replacement-trigger"
+			case "provider_clear":
+				a.ProviderReviewID = ""
+			case "provider_replace":
+				a.ProviderReviewID = "replacement-provider-review"
+			case "settled_rollback":
+				a.State = "active"
+			}
+			before := nativeSnapshotBytes(t, f, last.ID)
+			snapshots, events := countRows(t, f.store, "review_snapshots"), countRows(t, f.store, "events")
+			_, err := nativePublish(f, NativePublication{Pull: pull, Attempt: &a})
+			if err == nil {
+				t.Fatal("native publisher rewrote known attempt evidence: " + mode)
+			}
+			if countRows(t, f.store, "review_snapshots") != snapshots || countRows(t, f.store, "events") != events || nativeSnapshotBytes(t, f, last.ID) != before {
+				t.Fatal("known evidence conflict partially published")
+			}
+		})
+	}
+}
+
+func TestNativeCapacityAndCallerFailureRollbackEntireTransaction(t *testing.T) {
+	for _, mode := range []string{"queue", "pull_runs", "all_runs", "pull_attempts", "all_attempts", "all_findings", "caller_failure"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newAPIFixture(t)
+			queue := []PullInput{nativePull(1)}
+			switch mode {
+			case "queue":
+				for i := int64(2); i <= 100; i++ {
+					queue = append(queue, nativePull(i))
+				}
+			case "pull_runs", "all_runs":
+				if mode == "all_runs" {
+					queue = append(queue, nativePull(2), nativePull(3))
+				}
+				for i := range queue {
+					count := 100
+					if mode == "all_runs" {
+						count = 67
+						if i == 2 {
+							count = 66
+						}
+					}
+					for n := 0; n < count; n++ {
+						queue[i].Runs = append(queue[i].Runs, RunInput{SourceRunID: fmt.Sprintf("old-%d-%d", i, n), Channel: "cli", Scope: "stored", Outcome: "unknown"})
+					}
+				}
+			case "pull_attempts", "all_attempts":
+				if mode == "all_attempts" {
+					queue = append(queue, nativePull(2), nativePull(3))
+				}
+				for i := range queue {
+					count := 100
+					if mode == "all_attempts" {
+						count = 67
+						if i == 2 {
+							count = 66
+						}
+					}
+					for n := 0; n < count; n++ {
+						queue[i].Attempts = append(queue[i].Attempts, nativeAttempt(fmt.Sprintf("old-%d-%d", i, n), "unknown"))
+					}
+				}
+			case "all_findings":
+				for n := 0; n < 10; n++ {
+					queue[0].Runs = append(queue[0].Runs, RunInput{SourceRunID: fmt.Sprintf("finding-cap-%d", n), Channel: "cli", Scope: "stored", Outcome: "unknown", Found: 100})
+				}
+			}
+			old := f.observe(t, reviewRequest(0, queue), "capacity-fixture")["id"].(string)
+			if mode == "all_findings" {
+				// Local fixture setup inserts a valid retained1000-finding snapshot
+				// without routing a large historical observation through import.
+				for _, r := range queue[0].Runs {
+					if _, err := f.store.DB().Exec(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100) INSERT INTO review_findings(project_id,snapshot_id,pull_number,run_id,position,source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at) SELECT ?,?,1,?,x-1,'finding-'||x,'Retained','Exact source','unknown','unadjudicated','','','','','','' FROM n`, f.project, old, runOpaqueID(f.project, "test-import", r.SourceRunID)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if _, err := f.store.DB().Exec(`CREATE TABLE native_test_journal(note TEXT NOT NULL)`); err != nil {
+				t.Fatal(err)
+			}
+			before := nativeSnapshotBytes(t, f, old)
+			counts := map[string]int{}
+			for _, table := range []string{"review_snapshots", "review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls", "events", "receipts"} {
+				counts[table] = countRows(t, f.store, table)
+			}
+			p := NativePublication{Pull: nativePull(1)}
+			a := nativeAttempt("new-capacity-attempt", "prepared")
+			r := nativeRun("new-capacity-run")
+			switch mode {
+			case "queue":
+				p.Pull = nativePull(101)
+				p.Attempt = &a
+			case "pull_runs", "all_findings":
+				p.Run = &r
+			case "all_runs":
+				p.Pull = nativePull(3)
+				p.Run = &r
+			case "all_attempts":
+				p.Pull = nativePull(3)
+				p.Attempt = &a
+			default:
+				p.Attempt = &a
+			}
+			err := f.store.BackgroundWrite(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO native_test_journal(note) VALUES('staged attempt')`); err != nil {
+					return err
+				}
+				if _, err := PublishNative(ctx, tx, core.Scope{ProjectID: f.project, PrincipalID: "synthetic-publisher"}, p); err != nil {
+					return err
+				}
+				if mode == "caller_failure" {
+					return core.Fail("test_failure", "Synthetic journal failure.", 409)
+				}
+				return nil
+			})
+			code := "workspace_capacity"
+			if mode == "queue" {
+				code = "validation_failed"
+			}
+			if mode == "caller_failure" {
+				code = "test_failure"
+			}
+			nativeErrorCode(t, err, code)
+			if nativeSnapshotBytes(t, f, old) != before || countRows(t, f.store, "native_test_journal") != 0 {
+				t.Fatal("failed publication changed old bytes or caller journal")
+			}
+			for table, count := range counts {
+				if countRows(t, f.store, table) != count {
+					t.Fatal("failed publication left partial rows", table)
+				}
+			}
+			var current string
+			if err := f.store.DB().QueryRow(`SELECT snapshot_id FROM review_workspace WHERE project_id=?`, f.project).Scan(&current); err != nil || current != old {
+				t.Fatal("failed publication advanced current pointer", err)
+			}
+		})
+	}
+}

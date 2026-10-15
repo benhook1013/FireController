@@ -24,6 +24,7 @@ const reviewSnapshot = {
   source: 'retained test observations', observed_at: '2026-10-15T12:00:00Z', recorded_at: '2026-10-15T12:01:00Z',
 };
 const reviewRun = {
+  source: 'original-review-producer',
   id: `review_run_${'b'.repeat(32)}`, pull_number: 1, source_run_id: 'run-source-one', channel: 'hosted',
   head_sha: 'c'.repeat(40), reviewer: 'Reviewer', scope: 'selected patch', coverage_limits: ['Historical selected scope only.'],
   outcome: 'completed', attributable: true, complete: true, started_at: '2026-10-15T11:00:00Z', finished_at: '2026-10-15T11:05:00Z',
@@ -62,6 +63,24 @@ async function connect(client: Api): Promise<void> {
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('Api stored review workspace', () => {
+  it('requires a bounded original run source in compact and full reads independently of the publisher', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const { source: _producer, ...missingSource } = reviewRun;
+    for (const kind of ['queue', 'pull', 'runs', 'detail']) {
+      for (const run of [missingSource, ...[null, '', ' \t\n', '🔥'.repeat(33), 'bad\u0000source'].map(source => ({ ...reviewRun, source }))]) {
+        const envelope = kind === 'queue' ? { ...reviewQueue, items: [{ ...reviewPull, recent_runs: [run] }] }
+          : kind === 'pull' ? { ...reviewSnapshot, pull: { ...reviewPull, recent_runs: [run] }, attempts: [reviewAttempt] }
+          : kind === 'runs' ? { ...reviewSnapshot, items: [run], has_more: false }
+          : { ...reviewDetail, run };
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(envelope)));
+        const request = kind === 'queue' ? client.reviewQueue() : kind === 'pull' ? client.reviewPull(1) : kind === 'runs' ? client.reviewRuns(1) : client.reviewRun(reviewRun.id);
+        await expect(request).rejects.toMatchObject({ code: 'invalid_response' });
+      }
+    }
+  });
+
   it('reads retained merged history and four source channels using scoped GETs and explicit snapshot pages', async () => {
     setupLocation();
     const client = api();
@@ -83,6 +102,8 @@ describe('Api stored review workspace', () => {
     const detail = await client.reviewRun(reviewRun.id, reviewSnapshot.snapshot_id);
     expect(detail.findings[0]).toEqual(reviewFinding);
     expect(detail.run.coverage_limits).toEqual(reviewRun.coverage_limits);
+    expect(detail.run.source).toBe('original-review-producer');
+    expect(detail.source).toBe(reviewSnapshot.source);
     expect((await client.reviewQueue()).configured).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(5);
     const urls = fetchMock.mock.calls.map(call => new URL(call[0]));

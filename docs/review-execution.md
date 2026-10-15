@@ -1,0 +1,63 @@
+# Native Review Execution
+
+## Implementation status
+
+Native execution is the active delivery boundary. The [stored workspace and bound read tools](review-workspace.md) work independently; development reviews still use a separate executor until the native adapters and recovery paths pass their checks. This document owns the implementation boundary for replacing that executor. The [review contract](reviews.md) owns identity, admission, evidence and policy requirements.
+
+The implementation currently provides isolated components: revisioned configuration and queued-operation receipts, a durable attempt/reservation journal, two supervised work slots, fresh source comparison checks, bounded GitHub reads/posts, immutable Git workspaces, included-only CLI execution and structured capture parsing. The journal's HTTP registration and supervisor accept in-process adapters; the packaged daemon does not yet load an operator capability catalog or dispatch real reviews through them. Native finding adjudication, finalization, policy admission, public checkpoint publication and restart settlement remain integration work. A terminal attempt state alone creates no review credit.
+
+Focused race tests cover duplicate requests, concurrent reservations, independent channel/account slots, revocation and configuration changes before dispatch, retained trigger intent, interrupted preparation versus possible execution, malformed results, bounded SQL cancellation, strict provider pagination and captures, and process interruption/output limits. The full repository check/build passed. Separate live checks verified real GitHub response shapes and complete collections, fetched and verified pinned public Git objects, and obtained a real CLI allowance observation from the isolated workspace without starting a review. These establish adapter behavior on Linux/WSL, not completed native review execution, deployment cutover, fleet performance or other-platform runtime support.
+
+## Ownership and fast requests
+
+The service owns review admission, provider work, retained artifacts and attempt recovery. An agent supplies its bound project plus an expected PR, channel and candidate head; it never supplies a GitHub credential, executable path or mutable working directory. Ordinary queue, job and inbox reads remain provider-free.
+
+A review request validates local arguments, authorization and configured capability, records a durable request and returns a compact receipt before provider preflight. Provider reads, Git preparation and subprocess execution occur under supervised background workers. A waiting adapter follows that operation through the service; an explicit detached request exposes the same receipt for recovery. A lost tool response does not imply that no request or external action happened.
+
+Queued requests, external attempts and completed review evidence are distinct records. A request can be held before any action. An external attempt records preparation, possible posting or process start, active work, and a proven terminal or uncertain outcome. Its retained transition history identifies the actor, expected head, admitted comparison, configuration revision, provider account and external identifiers. Reusing an idempotency key with the same request returns its original receipt; changing the request conflicts.
+
+## Operator capabilities and project configuration
+
+Private startup configuration supplies named provider capabilities: the GitHub credential reference, CLI executable and its protected authentication context, and explicit provider-account scheduler identities. These are operator-owned settings. Project administration selects permitted capability IDs and channels, queue mode/order, required channels and allowed source configuration through revision-guarded service records. Project content and worker requests cannot select arbitrary server files, environment variables or commands.
+
+The service obtains source through the verified project repository and creates its own bare object cache and per-attempt immutable workspace under its private data directory. A developer checkout is not the execution workspace. Git commands disable ambient hooks and configuration; source preparation does not execute repository install/build hooks. The CLI receives a minimal explicit environment and only its required authentication context, never the service's GitHub credential or another project's profile. This is a trusted local executor capability, not a hostile multi-customer sandbox.
+
+One service process supervises the initial workers. Per-adapter concurrency, account-wide admission and finite deadlines prevent one project from occupying all work. Coordination remains usable when provider work is slow or unavailable. Multiple active service replicas and remote executors remain outside this delivery.
+
+## Admission and provider boundaries
+
+Resolve the selected project repository by its stable identity and obtain its current canonical name. Refresh the selected PR and the predecessor/default-base facts required by the configured queue; do not refresh unrelated queue members or recapture completed evidence on every request. Cached observations retain time and completeness. Provider pagination must terminate completely before a collection can support admission.
+
+The expected PR/head are assertions. Admission verifies current lifecycle, repository identity, candidate head, effective parent/base and canonical patch identity, applicable active-provider activity, operator stops, required fresh facts and observed account allowance. It records the exact evidence used. A mismatch or incomplete fact holds the request without falling back to another PR.
+
+Before an external action, atomically reserve `(provider, repository_id, PR, action_class)` and retain the attempt intent. Provider-account scheduling is separate from that target reservation. Conflicts remain opaque across project grants. Recheck the external target at the final action boundary; record the admitted identity even if a later provider result belongs to an older head. No provider call or subprocess wait occupies a database transaction.
+
+Hosted and CLI channels have independent cycles and allowance observations. Exhaustion or activity in one does not hold the other unless a real shared reservation or account resource applies. No adapter purchases credits, seats or overage, or selects paid execution after an included allowance is exhausted. Unknown allowance or an ambiguous action remains an explicit hold/uncertainty.
+
+## Hosted adapter
+
+A hosted attempt records its exact command body and unique intent marker before posting a GitHub comment. Retain the returned comment ID and posting time. On a lost response or restart, search the complete scoped provider history for that intent before deciding whether posting occurred. Never blindly repost an uncertain request.
+
+Observe completion against the admitted PR/head, trigger and configured provider actor identity. Import all review comments and the completed summary, including actionable summary-only and outside-diff findings. Empty status reviews and success checks alone are not completed coverage. Incomplete pagination, attribution or captures remain visible without credit.
+
+## CLI adapter
+
+The CLI adapter verifies included allowance, prepares the admitted candidate/comparison objects in the owned workspace and executes one allowlisted argument vector. It retains exact source/comparison and executable identities plus bounded stdout/stderr artifacts. Parsing structured review output distinguishes completed capture from failure, cancellation, rate limiting and partial output; exit zero alone is insufficient.
+
+Transport keepalives and routine process progress stay out of model-facing output. A dispatched command that loses its supervising process is recovered as interrupted or uncertain from retained state; a replacement process does not silently spend another review. Canceling local execution does not recover allowance or erase its evidence.
+
+## Evidence and the native workspace
+
+New attempts, run evidence, findings, decisions, effective fix proofs and observation freshness are native durable records. Source finalization freezes source counts and identities. Adjudication/fix corrections append guarded evidence; they preserve earlier values and never replace finding text to reuse an old count. Public checkpoint publication is a separate recoverable external action.
+
+Publish workspace projections from those records while preserving imported run IDs, original source identities and retained snapshots. A new native event cannot relabel imported historical evidence as a newly executed run. Native progress publication must not require exporting the whole queue through the administrator import route or reading the old database. Preserve stable historical drill-down and source-count conflicts.
+
+Each run summary carries its original producer in `source`; snapshot metadata identifies the publisher of that observation. Those values can differ. A publication about one target does not refresh the observation age or establish completeness of unrelated PRs. Retained projection capacity is bounded; reaching it must refuse a publication atomically rather than truncate history. Increasing retained scale and reducing snapshot write amplification require separate measured storage work before claiming large review-history throughput.
+
+The browser keeps separate chronological Hosted/CLI rows. It displays real attempt/progress facts and configured policy outcomes when available; missing policy is explicit. Review completion, aggregate sufficiency and merge readiness remain distinct. Humans perform merges. Existing worker, job and message paths remain independent of this domain.
+
+## Cutover proof
+
+Before replacing development review execution, exercise both actual adapters with isolated state and controlled failures, then use the native tool on this project's real queue. Required proof includes duplicate requests and concurrent reservation, exact target and parent movement, partial provider pages, independent quota/cooldown, lost post response/restart recovery, CLI interruption, incomplete captures, summary-only findings, immutable counts and correction history, and unchanged ordinary coordination behavior.
+
+Measure request/receipt latency separately from provider duration and record provider-call scope. Browser and agent reads must continue to work without provider availability. Verify the real history, current native attempt, finding/fix workflow and restart before retiring the separate executor. Its retained private artifacts remain available for inspection; removal is a later explicit maintenance action.
