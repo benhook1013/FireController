@@ -97,18 +97,24 @@ type Attempt struct {
 }
 
 type Engine struct {
-	store                  *core.Store
-	capabilities           map[string]Capability
-	wake                   chan struct{}
-	sourceWake             chan struct{}
-	sourceRunning          atomic.Bool
-	sourceMu               sync.Mutex
-	sourceWaiters          map[string]map[*sourceRefreshWaiter]struct{}
-	sourceWaiterPrincipals map[string]int
-	sourceWaiterCount      int
-	running                atomic.Bool
-	publishAdjudication    func(context.Context, *sql.Tx, core.Scope, ReviewAdjudication) error
-	publishAttempt         func(context.Context, *sql.Tx, Attempt) error
+	checkpointWake             chan struct{}
+	checkpointRunning          atomic.Bool
+	checkpointMu               sync.Mutex
+	checkpointWaiters          map[string]map[*checkpointWaiter]struct{}
+	checkpointWaiterPrincipals map[string]int
+	checkpointWaiterCount      int
+	store                      *core.Store
+	capabilities               map[string]Capability
+	wake                       chan struct{}
+	sourceWake                 chan struct{}
+	sourceRunning              atomic.Bool
+	sourceMu                   sync.Mutex
+	sourceWaiters              map[string]map[*sourceRefreshWaiter]struct{}
+	sourceWaiterPrincipals     map[string]int
+	sourceWaiterCount          int
+	running                    atomic.Bool
+	publishAdjudication        func(context.Context, *sql.Tx, core.Scope, ReviewAdjudication) error
+	publishAttempt             func(context.Context, *sql.Tx, Attempt) error
 }
 
 // EngineOption composes trusted application integrations before an engine is
@@ -121,7 +127,7 @@ var hash = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var repository = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$`)
 
 func New(store *core.Store, capabilities []Capability, options ...EngineOption) (*Engine, error) {
-	e := &Engine{store: store, capabilities: map[string]Capability{}, wake: make(chan struct{}, 1), sourceWake: make(chan struct{}, 1), sourceWaiters: make(map[string]map[*sourceRefreshWaiter]struct{}), sourceWaiterPrincipals: make(map[string]int)}
+	e := &Engine{checkpointWake: make(chan struct{}, 1), checkpointWaiters: make(map[string]map[*checkpointWaiter]struct{}), checkpointWaiterPrincipals: make(map[string]int), store: store, capabilities: map[string]Capability{}, wake: make(chan struct{}, 1), sourceWake: make(chan struct{}, 1), sourceWaiters: make(map[string]map[*sourceRefreshWaiter]struct{}), sourceWaiterPrincipals: make(map[string]int)}
 	for _, input := range capabilities {
 		c, err := normalizedCapability(input)
 		if err != nil {

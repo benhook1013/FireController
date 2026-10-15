@@ -10,27 +10,29 @@ import (
 )
 
 type mutationInvocation struct {
-	operation           string
-	key                 string
-	id                  string
-	create              client.CreateJobRequest
-	edit                client.EditJobRequest
-	send                client.SendMessageRequest
-	checkpoint          client.AppendCheckpointRequest
-	reviewRoute         client.ReviewRouteRequest
-	reviewRouteDecision client.ReviewRouteDecisionRequest
-	reviewRouteFix      client.ReviewRouteFixRequest
-	reviewDecision      client.ReviewDecisionRequest
-	reviewFix           client.ReviewFixRequest
-	reviewFinalize      client.ReviewFinalizeRequest
-	reviewRequest       client.ReviewRequest
-	reviewSource        client.ReviewSourceRequest
-	reviewSourceWait    int
+	reviewCheckpoint         client.ReviewCheckpointRequest
+	reviewCheckpointRecovery client.ReviewCheckpointRecovery
+	operation                string
+	key                      string
+	id                       string
+	create                   client.CreateJobRequest
+	edit                     client.EditJobRequest
+	send                     client.SendMessageRequest
+	checkpoint               client.AppendCheckpointRequest
+	reviewRoute              client.ReviewRouteRequest
+	reviewRouteDecision      client.ReviewRouteDecisionRequest
+	reviewRouteFix           client.ReviewRouteFixRequest
+	reviewDecision           client.ReviewDecisionRequest
+	reviewFix                client.ReviewFixRequest
+	reviewFinalize           client.ReviewFinalizeRequest
+	reviewRequest            client.ReviewRequest
+	reviewSource             client.ReviewSourceRequest
+	reviewSourceWait         int
 }
 
 func isMutation(command, operation string) bool {
 	switch command + " " + operation {
-	case "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews finalize", "reviews request", "reviews source-refresh", "reviews route-create", "reviews route-decide", "reviews route-fix":
+	case "reviews publish", "reviews publication-recover", "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews finalize", "reviews request", "reviews source-refresh", "reviews route-create", "reviews route-decide", "reviews route-fix":
 		return true
 	}
 	return false
@@ -166,6 +168,10 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 		return service.MarkSeen(ctx, call.key, call.id)
 	case "reviews request":
 		return service.RequestReview(ctx, call.key, call.reviewRequest)
+	case "reviews publish":
+		return service.RequestReviewCheckpoint(ctx, call.key, call.reviewCheckpoint, call.reviewSourceWait)
+	case "reviews publication-recover":
+		return service.RecoverReviewCheckpoint(ctx, call.key, call.id, call.reviewCheckpointRecovery, call.reviewSourceWait)
 	case "reviews source-refresh":
 		return service.RefreshReviewSource(ctx, call.key, call.reviewSource, call.reviewSourceWait)
 	case "reviews route-create":

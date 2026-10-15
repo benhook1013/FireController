@@ -227,7 +227,7 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 	return c.requestBoundedOptions(ctx, method, segments, query, scoped, key, body, expectedStatus, mutation, dst, maxBytes, decode, nil)
 }
 
-// sourceWaitOptions is used only by the explicit source-refresh mutation. It
+// sourceWaitOptions is shared by explicit source-refresh and checkpoint mutations. It
 // preserves ordinary request budgets and never mutates shared transport state.
 type sourceWaitOptions struct {
 	seconds int

@@ -15,6 +15,8 @@ import (
 )
 
 type arguments struct {
+	reviewCheckpoint           client.ReviewCheckpointRequest
+	reviewCheckpointRecovery   client.ReviewCheckpointRecovery
 	limit                      int
 	waitMS                     int
 	cursor, worker, status, id string
@@ -43,12 +45,12 @@ type definition struct {
 
 func boundServer(binding profile.Binding) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 64})
-	definitions := toolDefinitions()
+	definitions := append(toolDefinitions(), checkpointDefinitions()...)
 	known := make(map[string]bool)
 	for _, tool := range definitions {
 		known[tool.name] = true
-		write := mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		openWorld := tool.name == "review_request" || tool.name == "review_source_refresh"
+		write := checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
+		openWorld := checkpointWrite(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		destructive := tool.name == "job_edit" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, err := parseArguments(tool.name, request.Params.Arguments)
@@ -59,7 +61,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				return result(binding.Context, false), nil
 			}
 			timeout := 5 * time.Second
-			if tool.name == "review_source_refresh" && args.reviewSourceWait > 2 {
+			if (tool.name == "review_source_refresh" || checkpointWrite(tool.name)) && args.reviewSourceWait > 2 {
 				timeout = time.Duration(args.reviewSourceWait+5) * time.Second
 			}
 			ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -85,6 +87,12 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.ReviewOperation(ctx, args.id)
 			case "review_request":
 				value, err = service.RequestReview(ctx, args.key, args.reviewRequest)
+			case "review_checkpoint_publish":
+				value, err = service.RequestReviewCheckpoint(ctx, args.key, args.reviewCheckpoint, args.reviewSourceWait)
+			case "review_checkpoint_read":
+				value, err = service.ReviewCheckpointPublication(ctx, args.id)
+			case "review_checkpoint_recover":
+				value, err = service.RecoverReviewCheckpoint(ctx, args.key, args.id, args.reviewCheckpointRecovery, args.reviewSourceWait)
 			case "review_source_refresh":
 				value, err = service.RefreshReviewSource(ctx, args.key, args.reviewSource, args.reviewSourceWait)
 			case "review_source_refresh_read":

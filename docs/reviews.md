@@ -52,7 +52,7 @@ Finding decisions distinguish accepted, routed, and rejected, with reasons and s
 
 Accepted findings require recorded fix evidence tied to the exact run and finding. Corrections append an audited change guarded by the expected current value. Correcting a transcription or adjudication preserves prior records and does not manufacture review credit. Reusing a finding count with replaced finding text must be rejected as conflicting evidence.
 
-Private source finalization and any public checkpoint publication are separate operations. Record a publication intent with exact semantic identity before posting. Recover uncertain publication through provider history and the intent; repeated requests do not create duplicate checkpoints. A checkpoint parser may accept neutral formatting edits only when semantic identity, attribution, counts, and linkage remain provable.
+Private source finalization and [public checkpoint publication](review-publication.md) are separate operations. Record a publication intent with exact semantic identity before posting. Recover uncertain publication through provider history and the intent; repeated requests do not create duplicate checkpoints. A checkpoint parser may accept neutral formatting edits only when semantic identity, attribution, counts, and linkage remain provable.
 
 ## Project policy
 

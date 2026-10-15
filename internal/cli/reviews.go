@@ -22,7 +22,7 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 	}
 	list := call.subcommand == "queue" || call.subcommand == "runs" || call.subcommand == "routes"
 	switch call.subcommand {
-	case "queue", "pull", "runs", "run", "evidence", "adjudication", "operation", "assess", "source-operation", "route", "routes":
+	case "queue", "pull", "runs", "run", "evidence", "adjudication", "operation", "assess", "source-operation", "route", "routes", "publication":
 	case "execution":
 		return call, len(args) == 0
 	default:
@@ -84,6 +84,9 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 	if len(call.position) != 1 {
 		return call, false
 	}
+	if call.subcommand == "publication" {
+		return call, client.ValidateReviewCheckpointID(call.position[0]) == nil
+	}
 	if call.subcommand == "route" {
 		return call, client.ValidateReviewRouteID(call.position[0]) == nil
 	}
@@ -121,6 +124,8 @@ func reviewID(value, prefix string) bool {
 
 func executeReview(ctx context.Context, service *client.Client, call invocation) (any, error) {
 	switch call.subcommand {
+	case "publication":
+		return service.ReviewCheckpointPublication(ctx, call.position[0])
 	case "route":
 		return service.ReviewFindingRoute(ctx, call.position[0])
 	case "routes":
@@ -155,6 +160,9 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 }
 
 func parseReviewControl(operation string, args []string) (*mutationInvocation, bool) {
+	if operation == "publish" || operation == "publication-recover" {
+		return parseReviewPublication(operation, args)
+	}
 	if operation == "source-refresh" {
 		waitSeconds := 2
 		var filtered []string
@@ -408,4 +416,60 @@ func parseReviewRequest(args []string) (*mutationInvocation, bool) {
 		return nil, false
 	}
 	return &mutationInvocation{operation: "reviews request", key: values["--key"], reviewRequest: request}, true
+}
+
+func parseReviewPublication(operation string, args []string) (*mutationInvocation, bool) {
+	if len(args) < 1 {
+		return nil, false
+	}
+	id := args[0]
+	recovery := operation == "publication-recover"
+	if recovery && client.ValidateReviewCheckpointID(id) != nil || !recovery && client.ValidateReviewEvidenceID(id) != nil {
+		return nil, false
+	}
+	values := map[string]string{}
+	retry := false
+	for i := 1; i < len(args); i++ {
+		flag, value, assigned := strings.Cut(args[i], "=")
+		if flag == "--retry-unposted" {
+			if !recovery || assigned || retry {
+				return nil, false
+			}
+			retry = true
+			continue
+		}
+		if flag != "--key" && flag != "--expect-revision" && flag != "--wait-seconds" {
+			return nil, false
+		}
+		if _, ok := values[flag]; ok {
+			return nil, false
+		}
+		if !assigned {
+			i++
+			if i >= len(args) {
+				return nil, false
+			}
+			value = args[i]
+		}
+		values[flag] = value
+	}
+	revision, err := strconv.ParseInt(values["--expect-revision"], 10, 64)
+	if err != nil || strconv.FormatInt(revision, 10) != values["--expect-revision"] || !validMutationKey(values["--key"]) {
+		return nil, false
+	}
+	wait := 2
+	if value, ok := values["--wait-seconds"]; ok {
+		n, e := strconv.Atoi(value)
+		if e != nil || strconv.Itoa(n) != value || client.ValidateReviewSourceWait(n) != nil {
+			return nil, false
+		}
+		wait = n
+	}
+	call := &mutationInvocation{operation: "reviews " + operation, id: id, key: values["--key"], reviewSourceWait: wait}
+	if recovery {
+		call.reviewCheckpointRecovery = client.ReviewCheckpointRecovery{ExpectedRevision: revision, RetryUnposted: retry}
+		return call, client.ValidateReviewCheckpointRecovery(call.reviewCheckpointRecovery) == nil
+	}
+	call.reviewCheckpoint = client.ReviewCheckpointRequest{EvidenceID: id, ExpectedRevision: revision}
+	return call, client.ValidateReviewCheckpointRequest(call.reviewCheckpoint) == nil
 }
