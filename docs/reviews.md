@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The packaged daemon supports optional native CLI and hosted review execution, with journaled admission, retained captures and restart recovery described in the [execution boundary](review-execution.md). Aggregate review sufficiency, required-CI assessment and merge readiness remain unimplemented. The [native review workspace](review-workspace.md) implements provider-free stored observations and browser inspection; those historical records do not establish native admission or readiness. Existing source code and tests establish the inherited behaviors catalogued in [source evidence](inherited-evidence.md). This document defines the intended portable boundaries; provider-specific limits and project policy are configuration rather than universal constants.
+The packaged daemon supports optional native CLI and hosted review execution, with journaled admission, retained captures and restart recovery described in the [execution boundary](review-execution.md). An explicit [captured-comparison assessment](review-controls.md#captured-comparison-assessment) applies current local policy to retained native evidence. Fresh-source aggregate assessment, required-CI assessment and merge readiness remain unimplemented. The [native review workspace](review-workspace.md) implements provider-free stored observations and browser inspection; those historical records do not establish native admission or readiness. Existing source code and tests establish the inherited behaviors catalogued in [source evidence](inherited-evidence.md). This document defines the intended portable boundaries; provider-specific limits and project policy are configuration rather than universal constants.
 
 ## Review identity
 

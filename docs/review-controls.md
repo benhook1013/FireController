@@ -4,7 +4,7 @@
 
 The service exposes retained native CLI and hosted evidence and its decision/fix ledger through project-scoped API, CLI and MCP operations. These controls use the same authorization and private client binding as jobs and messages. They do not start a review, upload a capture, refresh GitHub or publish a public checkpoint. The [execution contract](review-execution.md) owns trusted capture ingestion and provider admission; the [review workspace](review-workspace.md) owns stored browser projections.
 
-The daemon installs the execution/evidence/adjudication and project-policy schemas and registers the local routes. Its default capability set is empty; an explicitly selected private startup catalog enables the CLI integration described in the execution contract. Hosted dispatch remains unavailable. Adding these controls does not complete native review cutover or change the separately running development executor.
+The daemon installs the execution/evidence/adjudication and project-policy schemas and registers the local routes. Its default capability set is empty; an explicitly selected private startup catalog enables CLI, hosted or both pipelines described in the execution contract. Adding these controls does not complete native review cutover or change the separately running development executor.
 
 ## Explicit reads and stable finding identity
 
@@ -36,7 +36,7 @@ When a native run has already been published to the stored review workspace, a d
 
 The native run's original source identity and zero-based finding indexes bind that update. It preserves captured finding text, historical snapshots, imported runs, merged queue history and current PR facts. Finalized source counts remain the original counts even when a later audited correction changes an effective decision or fix. Updating a decision does not claim a fresh provider observation for other PRs.
 
-Evidence without an initial native workspace publication remains usable through the ledger controls. A decision does not invent a browser run or convert imported historical evidence into native execution. Trusted initial publication from retained evidence is implemented internally; invoking it from real provider execution remains part of the driver integration.
+Evidence without an initial native workspace publication remains usable through the ledger controls. A decision does not invent a browser run or convert imported historical evidence into native execution. The configured drivers publish retained evidence through this same trusted path; live-provider and operational-cutover proof remain separate.
 
 ## Explicit project policy
 
@@ -44,7 +44,15 @@ Evidence without an initial native workspace publication remains usable through 
 
 `POST` to that path requires administrator permission, an explicit idempotency key and four non-null JSON fields: `expected_revision`, `required_channels`, `paused_channels` and `max_review_files`. Initial revision is zero. Required channels are an explicit nonempty unique subset of `cli` and `hosted`; paused channels are an explicit unique subset and may be empty. `max_review_files` is zero for no additional project ceiling, or 1–100000 for a project ceiling. It neither asserts a provider's actual limit nor bypasses one. Unknown fields and query parameters are rejected.
 
-Successful configuration returns `{id,state:"policy_configured",revision}` with HTTP 200. Changes retain immutable administrator-attributed revisions and a compact event; same-key recovery and stale-revision rejection follow the other guarded writes. New review requests bind the current policy revision without adding a per-call policy flag. Paused channels refuse new requests. Before preparation and admission, a missing, changed, unbound or paused policy holds the original work rather than silently adopting another revision. The final local action guard repeats those checks with current actor, configuration, capability and reservation binding. Exact request-key replay retains its original receipt after policy changes. The project file ceiling still needs the concrete driver's fresh source/file check; aggregate sufficiency and merge-readiness assessment remain separate work. No policy CLI/MCP tools are exposed in this slice.
+Successful configuration returns `{id,state:"policy_configured",revision}` with HTTP 200. Changes retain immutable administrator-attributed revisions and a compact event; same-key recovery and stale-revision rejection follow the other guarded writes. New review requests bind the current policy revision without adding a per-call policy flag. Paused channels refuse new requests. Before preparation and admission, a missing, changed, unbound or paused policy holds the original work rather than silently adopting another revision. The final local action guard repeats those checks with current actor, configuration, capability and reservation binding. Exact request-key replay retains its original receipt after policy changes. The concrete drivers check the project file ceiling against their fresh source/file facts. Policy configuration has no CLI/MCP tools; the captured-comparison assessment below is a separate read.
+
+## Captured comparison assessment
+
+`GET /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/policy` applies current project requirements to the immutable comparison captured by that native evidence record. It accepts no query parameters or caller-supplied source facts. Its compact response contains `project_id`, `evidence_id`, the retained `anchor`, `source:"captured_comparison"`, `policy_revision`, `evaluated_at`, `state` and per-required-channel `{channel,covered,pending}` results. It excludes source findings and raw captures and fits a 16 KiB client response budget.
+
+The service authorizes the project, validates retained native evidence and its admitted identity, and evaluates current policy plus both channels in one bounded database snapshot. `sufficient` requires every explicitly required channel to have complete, finalized, applicable coverage with no remaining native obligations. `held` reports unsatisfied requirements. Absent policy returns `unconfigured`, revision zero and an empty channel list; missing requirements cannot pass vacuously. Merely enabling another channel does not make it required, and pausing new execution does not erase existing evidence. Effective decisions and fix references govern obligations while original finalized counts remain unchanged.
+
+This result describes requirements for the returned captured comparison. It does not refresh source, establish that the comparison remains current on GitHub, assess required CI or unresolved provider threads, or declare merge readiness. Repeated reads can reflect later policy or finding corrections without rewriting the capture. Reads perform no mutation or provider work.
 
 ## Bound CLI and MCP
 
@@ -53,6 +61,7 @@ The CLI uses its selected private profile without project or worker flags on eac
 ```sh
 fc reviews evidence EVIDENCE_ID
 fc reviews adjudication EVIDENCE_ID
+fc reviews assess EVIDENCE_ID
 fc reviews decide EVIDENCE_ID --key DECISION_KEY --expect-revision 0 --finding 0 --disposition accepted --reason 'Verified against the current source.'
 fc reviews fix EVIDENCE_ID --key FIX_KEY --expect-revision 1 --finding 0 --expect-sha= --fix-sha COMMIT_SHA --proof 'Focused runtime proof and source reference.'
 fc reviews finalize EVIDENCE_ID --key FINALIZATION_KEY --expect-revision 2
@@ -60,7 +69,7 @@ fc reviews finalize EVIDENCE_ID --key FINALIZATION_KEY --expect-revision 2
 
 Replace the uppercase placeholders with returned identities and the verified commit. Explicit source decisions can be finalized before fixes; the commands above are one possible ordering rather than a required project workflow. Read the current revision instead of inferring it from this example.
 
-MCP exposes `review_evidence_read`, `review_adjudication_read`, `review_finding_decide`, `review_finding_fix` and `review_source_finalize`. Mutations require the corresponding fields above plus `evidence_id` and `idempotency_key`. Tool schemas describe the zero-based finding index and field bounds. The adapter validates arguments before opening credentials or making a request and retains one five-second command budget. Exact repeats have the same keyed effect; neither adapter retries automatically or selects another project.
+MCP exposes the read-only `review_policy_assess` tool with `evidence_id`, plus `review_evidence_read`, `review_adjudication_read`, `review_finding_decide`, `review_finding_fix` and `review_source_finalize`. Mutations require the corresponding fields above plus `evidence_id` and `idempotency_key`. Tool schemas describe the zero-based finding index and field bounds. The adapter validates arguments before opening credentials or making a request and retains one five-second command budget. Exact repeats have the same keyed effect; neither adapter retries automatically or selects another project.
 
 These tools record local review evidence. Project instructions and the optional [agent workflow](agent-workflow.md) decide when workers should review, update jobs or hand off.
 

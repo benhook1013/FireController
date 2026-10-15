@@ -10,7 +10,7 @@ import (
 
 func reviewControlTool(name string) bool {
 	switch name {
-	case "review_evidence_read", "review_adjudication_read", "review_finding_decide", "review_finding_fix", "review_source_finalize", "review_execution_read", "review_operation_read", "review_request":
+	case "review_policy_assess", "review_evidence_read", "review_adjudication_read", "review_finding_decide", "review_finding_fix", "review_source_finalize", "review_execution_read", "review_operation_read", "review_request":
 		return true
 	}
 	return false
@@ -50,7 +50,7 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 			return args, invalidArguments()
 		}
 		return args, nil
-	case "review_evidence_read", "review_adjudication_read":
+	case "review_policy_assess", "review_evidence_read", "review_adjudication_read":
 		var in struct {
 			ID string `json:"evidence_id"`
 		}
@@ -124,6 +124,7 @@ func reviewControlDefinitions() []definition {
 		return map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
 	}
 	return []definition{
+		{"review_policy_assess", "Read current project requirements for this captured comparison. No provider refresh, current-source verification or merge-readiness verdict.", schema(map[string]any{"evidence_id": id}, "evidence_id")},
 		{"review_evidence_read", "Explicitly read full native immutable review evidence and parsed finding text, bounded to 4 MiB. No raw capture, provider refresh or execution.", schema(map[string]any{"evidence_id": id}, "evidence_id")},
 		{"review_adjudication_read", "Explicitly read current native finding decisions and fix proof without finding text, provider refresh or execution.", schema(map[string]any{"evidence_id": id}, "evidence_id")},
 		{"review_finding_decide", "Record or correct a native finding decision using an explicit key, revision and zero-based index; retain audit history and return a compact receipt. No provider work or automatic retry.", schema(map[string]any{"evidence_id": id, "idempotency_key": key, "expected_revision": revision, "finding": finding, "disposition": map[string]any{"type": "string", "enum": []string{"accepted", "rejected"}}, "reason": text}, "evidence_id", "idempotency_key", "expected_revision", "finding", "disposition", "reason")},
