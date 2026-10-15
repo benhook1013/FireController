@@ -254,7 +254,7 @@ func TestGitHubPendingTimeAndPullIdentityAreStrict(t *testing.T) {
 
 func TestGitHubPullTitleRequiredAndBounded(t *testing.T) {
 	base := `{"title":"Keep exact title","number":2,"state":"open","merged":false,"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":null},"base":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"main","repo":{"id":7,"full_name":"owner/repo","default_branch":"main"}},"changed_files":1}`
-	for _, replacement := range []string{"", `"title":null,`, `"title":"   ",`, `"title":"bad\u0000title",`, `"title":"` + strings.Repeat("x", 501) + `",`} {
+	for _, replacement := range []string{"", `"title":null,`, `"title":"   ",`, `"title":"bad\u0000title",`, `"title":"` + strings.Repeat("x", 4097) + `",`} {
 		t.Run(replacement, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = ioWriteString(w, strings.Replace(base, `"title":"Keep exact title",`, replacement, 1))
@@ -264,6 +264,19 @@ func TestGitHubPullTitleRequiredAndBounded(t *testing.T) {
 				t.Fatalf("invalid title accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestGitHubPullPreservesBoundedMultibyteTitle(t *testing.T) {
+	for _, title := range []string{strings.Repeat("界", 170), strings.Repeat("🔥", 256)} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"title": title, "number": 2, "state": "open", "merged": false, "head": map[string]any{"sha": strings.Repeat("a", 40), "repo": nil}, "base": map[string]any{"sha": strings.Repeat("b", 40), "ref": "main", "repo": map[string]any{"id": 7, "full_name": "owner/repo", "default_branch": "main"}}, "changed_files": 1})
+		}))
+		got, err := testGitHub(server, "").Pull(t.Context(), "owner/repo", 2)
+		server.Close()
+		if err != nil || got.Title != title {
+			t.Fatalf("bounded title changed or rejected: bytes=%d got=%q err=%v", len(title), got.Title, err)
+		}
 	}
 }
 
