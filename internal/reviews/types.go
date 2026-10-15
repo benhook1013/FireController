@@ -65,18 +65,35 @@ type Attempt struct {
 	ProviderReviewID string `json:"provider_review_id"`
 }
 
+// FindingRoute is the retained receiving-side state of a same-project route.
+// Source decision fields remain on Finding; receiver proof is never source proof.
+type FindingRoute struct {
+	ID               string `json:"id"`
+	TargetPullNumber int64  `json:"target_pull_number"`
+	Revision         int64  `json:"revision"`
+	State            string `json:"state"`
+	Disposition      string `json:"disposition"`
+	Reason           string `json:"reason"`
+	Actor            string `json:"actor"`
+	DecidedAt        string `json:"decided_at"`
+	FixSHA           string `json:"fix_sha"`
+	ProofNote        string `json:"proof_note"`
+	FixedAt          string `json:"fixed_at"`
+}
+
 type Finding struct {
-	SourceFindingID string `json:"source_finding_id"`
-	Title           string `json:"title"`
-	Detail          string `json:"detail"`
-	Severity        string `json:"severity"`
-	Disposition     string `json:"disposition"`
-	DecisionReason  string `json:"decision_reason"`
-	Actor           string `json:"actor"`
-	DecidedAt       string `json:"decided_at"`
-	FixSHA          string `json:"fix_sha"`
-	ProofNote       string `json:"proof_note"`
-	ResolvedAt      string `json:"resolved_at"`
+	Route           *FindingRoute `json:"route,omitempty"`
+	SourceFindingID string        `json:"source_finding_id"`
+	Title           string        `json:"title"`
+	Detail          string        `json:"detail"`
+	Severity        string        `json:"severity"`
+	Disposition     string        `json:"disposition"`
+	DecisionReason  string        `json:"decision_reason"`
+	Actor           string        `json:"actor"`
+	DecidedAt       string        `json:"decided_at"`
+	FixSHA          string        `json:"fix_sha"`
+	ProofNote       string        `json:"proof_note"`
+	ResolvedAt      string        `json:"resolved_at"`
 }
 
 type Receipt struct {

@@ -10,24 +10,27 @@ import (
 )
 
 type mutationInvocation struct {
-	operation        string
-	key              string
-	id               string
-	create           client.CreateJobRequest
-	edit             client.EditJobRequest
-	send             client.SendMessageRequest
-	checkpoint       client.AppendCheckpointRequest
-	reviewDecision   client.ReviewDecisionRequest
-	reviewFix        client.ReviewFixRequest
-	reviewFinalize   client.ReviewFinalizeRequest
-	reviewRequest    client.ReviewRequest
-	reviewSource     client.ReviewSourceRequest
-	reviewSourceWait int
+	operation           string
+	key                 string
+	id                  string
+	create              client.CreateJobRequest
+	edit                client.EditJobRequest
+	send                client.SendMessageRequest
+	checkpoint          client.AppendCheckpointRequest
+	reviewRoute         client.ReviewRouteRequest
+	reviewRouteDecision client.ReviewRouteDecisionRequest
+	reviewRouteFix      client.ReviewRouteFixRequest
+	reviewDecision      client.ReviewDecisionRequest
+	reviewFix           client.ReviewFixRequest
+	reviewFinalize      client.ReviewFinalizeRequest
+	reviewRequest       client.ReviewRequest
+	reviewSource        client.ReviewSourceRequest
+	reviewSourceWait    int
 }
 
 func isMutation(command, operation string) bool {
 	switch command + " " + operation {
-	case "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews finalize", "reviews request", "reviews source-refresh":
+	case "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews finalize", "reviews request", "reviews source-refresh", "reviews route-create", "reviews route-decide", "reviews route-fix":
 		return true
 	}
 	return false
@@ -165,6 +168,12 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 		return service.RequestReview(ctx, call.key, call.reviewRequest)
 	case "reviews source-refresh":
 		return service.RefreshReviewSource(ctx, call.key, call.reviewSource, call.reviewSourceWait)
+	case "reviews route-create":
+		return service.CreateReviewFindingRoute(ctx, call.key, call.id, call.reviewRoute)
+	case "reviews route-decide":
+		return service.DecideReviewFindingRoute(ctx, call.key, call.id, call.reviewRouteDecision)
+	case "reviews route-fix":
+		return service.FixReviewFindingRoute(ctx, call.key, call.id, call.reviewRouteFix)
 	case "reviews decide":
 		return service.DecideReviewFinding(ctx, call.key, call.id, call.reviewDecision)
 	case "reviews fix":

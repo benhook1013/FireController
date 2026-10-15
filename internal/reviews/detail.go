@@ -34,14 +34,22 @@ func readRunDetail(ctx context.Context, tx *sql.Tx, meta snapshotMeta, runID str
 	if err := strictStoredJSON(limits, &response.Run.CoverageLimits); err != nil {
 		return response, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=? ORDER BY position LIMIT 101`, meta.ProjectID, meta.SnapshotID, pullNum, runID)
+	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=? ORDER BY position LIMIT 101`, meta.ProjectID, meta.SnapshotID, pullNum, runID)
 	if err != nil {
 		return response, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var finding Finding
-		if err := rows.Scan(&finding.SourceFindingID, &finding.Title, &finding.Detail, &finding.Severity, &finding.Disposition, &finding.DecisionReason, &finding.Actor, &finding.DecidedAt, &finding.FixSHA, &finding.ProofNote, &finding.ResolvedAt); err != nil {
+		var routeJSON string
+		if err := rows.Scan(&finding.SourceFindingID, &finding.Title, &finding.Detail, &finding.Severity, &finding.Disposition, &finding.DecisionReason, &finding.Actor, &finding.DecidedAt, &finding.FixSHA, &finding.ProofNote, &finding.ResolvedAt, &routeJSON); err != nil {
+			return response, err
+		}
+		finding.Route, err = decodeFindingRoute(routeJSON, int64(pullNum))
+		if err != nil || finding.Route != nil && finding.Disposition != "routed" {
+			if err == nil {
+				err = core.Fail("storage_unavailable", "Stored finding route is unavailable.", 500)
+			}
 			return response, err
 		}
 		response.Findings = append(response.Findings, finding)

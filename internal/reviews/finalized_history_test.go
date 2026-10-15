@@ -98,6 +98,7 @@ func TestFinalizedHistoryVersionOneMigrationAndReplay(t *testing.T) {
 		`DROP TRIGGER review_runs_snapshot_revision_update`,
 		`DROP INDEX review_runs_project_source_id`,
 		`ALTER TABLE review_runs DROP COLUMN snapshot_revision`,
+		`ALTER TABLE review_findings DROP COLUMN route_json`,
 		`CREATE INDEX review_runs_project_source_id ON review_runs(project_id,source,source_run_id,finalized)`,
 		`UPDATE metadata SET value='1' WHERE key='schema:reviews'`,
 	} {
@@ -130,7 +131,7 @@ func TestFinalizedHistoryVersionOneMigrationAndReplay(t *testing.T) {
 	f.mux = mux
 	var version string
 	var revision int64
-	if err := store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "2" {
+	if err := store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "3" {
 		t.Fatal("migration version", version, err)
 	}
 	if err := store.DB().QueryRow(`SELECT snapshot_revision FROM review_runs WHERE project_id=? AND snapshot_id=?`, f.project, saved.ID).Scan(&revision); err != nil || revision != 1 {

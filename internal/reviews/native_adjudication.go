@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
+	"reflect"
 	"strings"
 	"time"
 	"unicode"
@@ -26,6 +27,7 @@ type NativeAdjudication struct {
 type NativeCounts struct{ Found, Accepted, Routed int64 }
 
 type NativeFindingUpdate struct {
+	Route                                                          *FindingRoute
 	SourceFindingID, Disposition, DecisionReason, Actor, DecidedAt string
 	FixSHA, ProofNote, ResolvedAt                                  string
 }
@@ -53,8 +55,11 @@ func validateNativeAdjudication(input NativeAdjudication) (map[string]NativeFind
 	counts := NativeCounts{Found: int64(len(input.Findings))}
 	var fixed int64
 	for _, finding := range input.Findings {
-		if !nativeAdjudicationText(finding.SourceFindingID, 256, true) || !oneOf(finding.Disposition, "unadjudicated", "accepted", "rejected") || !nativeAdjudicationText(finding.DecisionReason, 2048, false) || !nativeAdjudicationText(finding.Actor, 128, false) || !nativeAdjudicationText(finding.ProofNote, 2048, false) {
+		if !nativeAdjudicationText(finding.SourceFindingID, 256, true) || !oneOf(finding.Disposition, "unadjudicated", "accepted", "routed", "rejected") || !nativeAdjudicationText(finding.DecisionReason, 2048, false) || !nativeAdjudicationText(finding.Actor, 128, false) || !nativeAdjudicationText(finding.ProofNote, 2048, false) {
 			return nil, counts, 0, validationError("Use valid native finding identities, decisions and bounded proof.")
+		}
+		if finding.Disposition == "routed" && !validFindingRoute(finding.Route, 0, true) || finding.Disposition != "routed" && finding.Route != nil {
+			return nil, counts, 0, validationError("Native routed findings require their active receiving route.")
 		}
 		if _, duplicate := updates[finding.SourceFindingID]; duplicate {
 			return nil, counts, 0, validationError("Native finding identities must be unique.")
@@ -77,10 +82,12 @@ func validateNativeAdjudication(input NativeAdjudication) (map[string]NativeFind
 		}
 		if finding.Disposition == "accepted" {
 			counts.Accepted++
+		} else if finding.Disposition == "routed" {
+			counts.Routed++
 		}
 		updates[finding.SourceFindingID] = finding
 	}
-	if frozen := input.FrozenCounts; frozen != nil && (frozen.Found != counts.Found || frozen.Accepted < 0 || frozen.Accepted > frozen.Found || frozen.Routed != 0) {
+	if frozen := input.FrozenCounts; frozen != nil && (frozen.Found != counts.Found || frozen.Accepted < 0 || frozen.Routed < 0 || frozen.Accepted > frozen.Found-frozen.Routed) {
 		return nil, counts, 0, validationError("Native frozen counts must match the immutable finding count and supported dispositions.")
 	}
 	return updates, counts, fixed, nil
@@ -108,7 +115,7 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 		return Receipt{}, false, err
 	}
 	current := Receipt{ID: previous, Revision: revision, Outcome: "observed"}
-	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at FROM review_findings WHERE project_id=? AND snapshot_id=? AND run_id=? ORDER BY position`, scope.ProjectID, previous, runID)
+	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json FROM review_findings WHERE project_id=? AND snapshot_id=? AND run_id=? ORDER BY position`, scope.ProjectID, previous, runID)
 	if err != nil {
 		return Receipt{}, false, err
 	}
@@ -116,7 +123,12 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	changed := finalized != input.Finalized || oldFixed != fixed
 	for rows.Next() {
 		var before NativeFindingUpdate
-		if err = rows.Scan(&before.SourceFindingID, &before.Disposition, &before.DecisionReason, &before.Actor, &before.DecidedAt, &before.FixSHA, &before.ProofNote, &before.ResolvedAt); err != nil {
+		var routeJSON string
+		if err = rows.Scan(&before.SourceFindingID, &before.Disposition, &before.DecisionReason, &before.Actor, &before.DecidedAt, &before.FixSHA, &before.ProofNote, &before.ResolvedAt, &routeJSON); err != nil {
+			break
+		}
+		before.Route, err = decodeFindingRoute(routeJSON, number)
+		if err != nil {
 			break
 		}
 		next, exists := updates[before.SourceFindingID]
@@ -124,7 +136,15 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 			err = nativeAdjudicationConflict()
 			break
 		}
-		changed = changed || before != next
+		if before.Route != nil && before.Route.FixSHA != "" && (next.Route == nil || next.Route.ID != before.Route.ID || next.Route.TargetPullNumber != before.Route.TargetPullNumber || next.Route.Disposition != "accepted" || next.Route.FixSHA == "") {
+			err = nativeAdjudicationConflict()
+			break
+		}
+		if next.Route != nil && !validFindingRoute(next.Route, number, true) {
+			err = nativeAdjudicationConflict()
+			break
+		}
+		changed = changed || !reflect.DeepEqual(before, next)
 		ordered = append(ordered, next)
 	}
 	if err == nil {
@@ -167,7 +187,7 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 		return Receipt{}, false, err
 	}
 	for _, finding := range ordered {
-		if _, err = tx.ExecContext(ctx, `UPDATE review_findings SET disposition=?,decision_reason=?,actor=?,decided_at=?,fix_sha=?,proof_note=?,resolved_at=? WHERE project_id=? AND snapshot_id=? AND run_id=? AND source_finding_id=?`, finding.Disposition, finding.DecisionReason, finding.Actor, finding.DecidedAt, finding.FixSHA, finding.ProofNote, finding.ResolvedAt, scope.ProjectID, id, runID, finding.SourceFindingID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE review_findings SET disposition=?,decision_reason=?,actor=?,decided_at=?,fix_sha=?,proof_note=?,resolved_at=?,route_json=? WHERE project_id=? AND snapshot_id=? AND run_id=? AND source_finding_id=?`, finding.Disposition, finding.DecisionReason, finding.Actor, finding.DecidedAt, finding.FixSHA, finding.ProofNote, finding.ResolvedAt, mustJSON(finding.Route), scope.ProjectID, id, runID, finding.SourceFindingID); err != nil {
 			return Receipt{}, false, err
 		}
 	}
