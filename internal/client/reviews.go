@@ -330,7 +330,7 @@ func validReviewRunSummary(value ReviewRunSummary) bool {
 		return false
 	}
 	for _, limit := range value.CoverageLimits {
-		if !cleanReviewText(limit, 1024, false) {
+		if !cleanReviewText(limit, 1024, true) {
 			return false
 		}
 	}
@@ -383,7 +383,7 @@ func validReviewFinding(value ReviewFinding) bool {
 	if value.DecidedAt != "" && !validTimestamp(value.DecidedAt) || value.ResolvedAt != "" && !validTimestamp(value.ResolvedAt) {
 		return false
 	}
-	return (value.FixSHA == "" || value.Disposition == "accepted") && (value.ResolvedAt == "" || value.FixSHA != "")
+	return (value.FixSHA == "" && value.ProofNote == "" || value.Disposition == "accepted") && (value.ResolvedAt == "" || value.FixSHA != "")
 }
 
 func validReviewPage[T any](items []T, cursor string, hasMore bool, options PageOptions) bool {

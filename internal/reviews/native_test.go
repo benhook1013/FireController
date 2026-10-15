@@ -561,3 +561,83 @@ func TestNativeCapacityAndCallerFailureRollbackEntireTransaction(t *testing.T) {
 		})
 	}
 }
+
+func TestNativePublicationRunRowsBindOwningSnapshotRevision(t *testing.T) {
+	f := newAPIFixture(t)
+	imported := nativeRun("retained-historical-run")
+	imported.Channel = "manual"
+	pull := nativePull(1)
+	pull.Runs = []RunInput{imported}
+	observation := reviewRequest(0, []PullInput{pull})
+	first := f.observe(t, observation, "revision-import-first")["id"].(string)
+	firstBytes := nativeSnapshotBytes(t, f, first)
+	// A later source observation corrects fix evidence while preserving finalized
+	// counts and source text. Native copies must retain this current projection.
+	revision := int64(1)
+	observation.ExpectedRevision = &revision
+	observation.Queue[0].Runs[0].Findings[0].FixSHA = strings.Repeat("d", 40)
+	observation.Queue[0].Runs[0].Findings[0].ProofNote = "Corrected retained fix proof"
+	corrected := f.observe(t, observation, "revision-import-corrected")["id"].(string)
+	correctedBytes := nativeSnapshotBytes(t, f, corrected)
+	run := nativeRun("new-native-run")
+	appended := mustNativePublish(t, f, NativePublication{Pull: nativePull(1), Run: &run})
+	appendedBytes := nativeSnapshotBytes(t, f, appended.ID)
+	attempt := nativeAttempt("copy-current-projection", "prepared")
+	copied := mustNativePublish(t, f, NativePublication{Pull: nativePull(2), Attempt: &attempt})
+	if appended.Revision != 3 || copied.Revision != 4 {
+		t.Fatal("native publication did not advance snapshots")
+	}
+	rows, err := f.store.DB().Query(`SELECT r.snapshot_id,r.snapshot_revision,s.revision,count(*) FROM review_runs r JOIN review_snapshots s ON s.project_id=r.project_id AND s.snapshot_id=r.snapshot_id WHERE r.project_id=? GROUP BY r.snapshot_id,r.snapshot_revision,s.revision ORDER BY s.revision`, f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := map[string]int{first: 1, corrected: 1, appended.ID: 2, copied.ID: 2}
+	for rows.Next() {
+		var snapshot string
+		var stored, owning int64
+		var count int
+		if err := rows.Scan(&snapshot, &stored, &owning, &count); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		want, ok := expected[snapshot]
+		if !ok || stored != owning || count != want {
+			rows.Close()
+			t.Fatalf("copied/new run has wrong owning revision: snapshot=%s stored=%d owning=%d count=%d", snapshot, stored, owning, count)
+		}
+		delete(expected, snapshot)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expected) != 0 {
+		t.Fatal("publication lost retained run rows", expected)
+	}
+	var detail RunDetailResponse
+	nativeRead(t, f, "/runs/"+runOpaqueID(f.project, observation.Source, imported.SourceRunID), &detail)
+	if !detail.Run.Finalized || detail.Run.Found != 1 || detail.Run.Accepted != 1 || detail.Findings[0].FixSHA != strings.Repeat("d", 40) || detail.Findings[0].ProofNote != "Corrected retained fix proof" {
+		t.Fatal("copy lost finalized counts or corrected fix projection")
+	}
+	nativeRead(t, f, "/runs/"+runOpaqueID(f.project, nativeSource, run.SourceRunID), &detail)
+	if !reflect.DeepEqual(detail.Findings, run.Findings) {
+		t.Fatal("new native row lost retained finding/decision/fix")
+	}
+	if nativeSnapshotBytes(t, f, first) != firstBytes || nativeSnapshotBytes(t, f, corrected) != correctedBytes || nativeSnapshotBytes(t, f, appended.ID) != appendedBytes {
+		t.Fatal("publication rewrote historical snapshot bytes")
+	}
+	// A structurally valid extra row that omits the new field must be rejected,
+	// rather than silently becoming eligible under another snapshot's revision.
+	before := nativeSnapshotBytes(t, f, copied.ID)
+	_, err = f.store.DB().Exec(`INSERT INTO review_runs(project_id,snapshot_id,pull_number,run_order,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json) SELECT project_id,snapshot_id,pull_number,run_order+10,'omitted-owning-revision',source,'omitted-owning-source',channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json FROM review_runs WHERE project_id=? AND snapshot_id=? AND source=? AND source_run_id=?`, f.project, copied.ID, nativeSource, run.SourceRunID)
+	if err == nil {
+		t.Fatal("omitted snapshot revision was accepted")
+	}
+	if _, err := f.store.DB().Exec(`UPDATE review_runs SET snapshot_revision=snapshot_revision-1 WHERE project_id=? AND snapshot_id=?`, f.project, copied.ID); err == nil {
+		t.Fatal("wrong owning snapshot revision update was accepted")
+	}
+	if nativeSnapshotBytes(t, f, copied.ID) != before {
+		t.Fatal("rejected revision mismatch changed snapshot bytes")
+	}
+}
