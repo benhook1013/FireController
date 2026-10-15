@@ -38,7 +38,7 @@ function controlledStream(data: string, signal: AbortSignal, closeAfterData = tr
   return { response: response(body), close };
 }
 
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('SSE parser and message watch', () => {
   it('parses split UTF-8, CRLF, comments and multiline data without losing frame boundaries', () => {
@@ -86,6 +86,122 @@ describe('SSE parser and message watch', () => {
     controller.abort();
     await watch;
     expect(calls).toEqual(['snapshot', 'events-start', 'events:processed_cursor']);
+  });
+
+  it('backs off repeated empty readiness and comment frames at capped delays and cancels its pending retry', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(performance, 'now').mockReturnValue(0);
+    const controller = new AbortController();
+    const close = vi.fn();
+    let opened = 0;
+    const source = makeSource({
+      openStream: async (_worker, _cursor, _limit, signal) => {
+        opened += 1;
+        const stream = controlledStream(`${frame}: keepalive\n\n`, signal);
+        return { ...stream, close: () => { close(); stream.close(); } };
+      },
+    });
+    const watch = runMessageWatch(source, workerId, {}, callbacks(), controller.signal);
+    await flushMicrotasks();
+    expect(opened).toBe(1);
+    for (const delay of [1_000, 2_000, 4_000, 10_000, 10_000]) {
+      const before = opened;
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(opened).toBe(before);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(opened).toBe(before + 1);
+    }
+    controller.abort();
+    await watch;
+    expect(close).toHaveBeenCalledTimes(opened);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('resets backoff after applying substantive events and escalates again after another empty disconnect', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(performance, 'now').mockReturnValue(0);
+    const controller = new AbortController();
+    let opened = 0;
+    const page: MessageEventPage = { ...emptyPage, items: [{ sequence: 1, project_id: projectId, type: 'message.sent', resource_id: 'message_one', revision: 1, actor_id: 'actor_one', payload: { conversation_id: 'conversation_one', recipient_worker_id: workerId }, created_at: '2026-10-15T00:00:00Z' }] };
+    const substantiveFrame = `event: message-events\nid: ${page.cursor}\ndata: ${JSON.stringify(page)}\n\n`;
+    const source = makeSource({
+      openStream: async (_worker, _cursor, _limit, signal) => {
+        opened += 1;
+        return controlledStream(opened === 3 ? substantiveFrame : frame, signal);
+      },
+    });
+    const watch = runMessageWatch(source, workerId, {}, callbacks(), controller.signal);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(opened).toBe(2);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(opened).toBe(3);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(opened).toBe(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(opened).toBe(4);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(opened).toBe(4);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(opened).toBe(5);
+    controller.abort();
+    await watch;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([{ duration: 14_999, delay: 4_000 }, { duration: 15_000, delay: 1_000 }])('resets idle-stream backoff only after a stable attachment ($duration ms)', async ({ duration, delay }) => {
+    vi.useFakeTimers();
+    let elapsed = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    const controller = new AbortController();
+    let opened = 0;
+    let disconnect: (() => void) | undefined;
+    const source = makeSource({
+      openStream: async (_worker, _cursor, _limit, signal) => {
+        opened += 1;
+        const stream = controlledStream(frame, signal, opened !== 3);
+        if (opened === 3) disconnect = stream.close;
+        return stream;
+      },
+    });
+    const watch = runMessageWatch(source, workerId, {}, callbacks(), controller.signal);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(opened).toBe(3);
+    elapsed = duration;
+    disconnect?.();
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(delay - 1);
+    expect(opened).toBe(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(opened).toBe(4);
+    controller.abort();
+    await watch;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels an attached idle stream without leaving a retry or idle timer', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const close = vi.fn();
+    let opened = 0;
+    const source = makeSource({
+      openStream: async (_worker, _cursor, _limit, signal) => {
+        opened += 1;
+        const stream = controlledStream(frame, signal, false);
+        return { ...stream, close: () => { close(); stream.close(); } };
+      },
+    });
+    const watch = runMessageWatch(source, workerId, {}, callbacks(), controller.signal);
+    await flushMicrotasks();
+    expect(vi.getTimerCount()).toBe(1);
+    controller.abort();
+    await watch;
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(opened).toBe(1);
   });
 
   it('takes a fresh snapshot when the server requires resynchronization', async () => {

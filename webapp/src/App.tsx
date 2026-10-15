@@ -30,6 +30,7 @@ function time(value: string): string { return new Date(value).toLocaleString(); 
 export default function App() {
   const navigate = useNavigate();
   const match = useMatch('/projects/:projectId/*');
+  const conversationMatch = useMatch('/projects/:projectId/inbox/:conversationId');
   const routeProject = match?.params.projectId;
   const queryClient = useQueryClient();
   const [session, setSession] = useState<Session | null>(null);
@@ -83,7 +84,9 @@ export default function App() {
       const next = { ...old, worker, nonce: nonce(), controller: new AbortController() };
       current.current = next; setSession(next);
     }
-    navigate(`/projects/${encodeURIComponent(old.project.id)}/inbox`);
+    if (old.worker !== null || conversationMatch?.params.projectId !== old.project.id) {
+      navigate(`/projects/${encodeURIComponent(old.project.id)}/inbox`);
+    }
   }
   const connected = session && routeProject === session.project.id;
   return <>
