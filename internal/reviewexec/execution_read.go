@@ -3,7 +3,6 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
-	"errors"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -28,10 +27,6 @@ func (e *Engine) ReadExecutionConfiguration(ctx context.Context, scope core.Scop
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		configuration, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
 		if err != nil {
-			var failure *core.Error
-			if errors.As(err, &failure) && failure.Code == "reviews_unconfigured" {
-				return core.Fail("review_not_configured", "Review execution has no stored configuration for this project.", 409)
-			}
 			return err
 		}
 		if revision < 1 || validateConfigurationShape(configuration) != nil {
