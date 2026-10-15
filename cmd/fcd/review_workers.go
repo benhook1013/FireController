@@ -12,8 +12,12 @@ type reviewRecoveryStarter interface {
 	StartRecovery(context.Context) (<-chan error, error)
 }
 
+type sourceReaderProvider interface {
+	SourceReader() reviewexec.TargetReader
+}
+
 // Startup recovery commits before any observer starts or HTTP accepts work.
-// The returned owner waits for every supervisor/observer during shutdown.
+// The returned owner waits for the supervisor, source worker and observers.
 func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drivers map[string]reviewexec.Driver) (<-chan error, error) {
 	if len(drivers) == 0 {
 		return nil, execution.RecoverInterrupted(ctx)
@@ -37,6 +41,21 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 				cancel()
 				break
 			}
+			channels = append(channels, done)
+		}
+	}
+	if startupErr == nil {
+		readers := make(map[string]reviewexec.TargetReader)
+		for id, driver := range drivers {
+			if provider, ok := driver.(sourceReaderProvider); ok {
+				readers[id] = provider.SourceReader()
+			}
+		}
+		done, err := execution.StartSourceRefresh(workerCtx, readers)
+		if err != nil {
+			startupErr = err
+			cancel()
+		} else if done != nil {
 			channels = append(channels, done)
 		}
 	}

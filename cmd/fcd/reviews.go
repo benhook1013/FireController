@@ -94,6 +94,18 @@ type reviewChannelDriver struct {
 	hosted *reviewruntime.HostedDriver
 }
 
+// The capability has one configured provider even when both review channels
+// are enabled. Source reads do not fall back between adapters.
+func (d *reviewChannelDriver) SourceReader() reviewexec.TargetReader {
+	if d == nil {
+		return nil
+	}
+	if d.cli != nil {
+		return d.cli.SourceReader()
+	}
+	return d.hosted.SourceReader()
+}
+
 func (d *reviewChannelDriver) selectChannel(channel string) reviewexec.Driver {
 	switch channel {
 	case "cli":

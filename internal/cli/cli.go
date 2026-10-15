@@ -111,7 +111,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if err := ctx.Err(); err != nil {
 		return report(stderr, ExitCancelled, "cancelled", "The command was cancelled before connecting.", "No service operation was sent; retry when cancellation is no longer requested.")
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, serviceTimeout)
+	timeout := serviceTimeout
+	if call.mutation != nil && call.mutation.operation == "reviews source-refresh" && call.mutation.reviewSourceWait > 2 {
+		timeout = time.Duration(call.mutation.reviewSourceWait+5) * time.Second
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	service, err := client.New(requestCtx, binding)
 	if err != nil {

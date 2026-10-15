@@ -70,6 +70,10 @@ Implemented service/client boundaries have focused public tests and packaged che
 | O06 | Restore a backup after later events, receipts, credential revocations and provider posts: predecessor profiles/cursors/retries cannot continue silently; revoked grants are not revived, lost-window effects are uncertain, and provider mutations remain held until recovery. |
 | O07 | A scheduled backup fails, or its optional destination transfer times out or reports unverified success: show last usable backup and failure/uncertainty, preserve the bundle, and do not present transfer status as restore proof. |
 
+## Result collection
+
+Fast reads and local mutations return their useful completed outcome directly. For variable-duration source refresh, prove that fast completion returns the terminal observation in the original call, a blocked provider returns a pending receipt after the short wait, and an explicit longer wait can return the useful result while unrelated coordination continues. Immediate return, a changed wait preference and original-key recovery must retain the same durable action. Waiting uses completion notification; cancellation or timeout releases the wait without cancelling queued work, acknowledging messages or causing another provider action. Reauthorize a delayed result and prove post-commit uncertainty is retained when its response is lost or access changes. This is tool behavior rather than a project workflow checklist.
+
 ## Performance proof
 
 Initial calibration candidates are 1,000 quiet subscriptions and 100 committed message sends per second for ten minutes on a recorded single-host reference machine, with concurrent job reads and simulated slow provider work. These are unmeasured workload candidates, not release gates or supported capacity claims. Measure representative AI sessions first, then set explicit release budgets in a reviewed benchmark plan.

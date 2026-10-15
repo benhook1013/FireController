@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -223,6 +224,17 @@ func decodeResponse(data []byte, dst any) error {
 }
 
 func (c *Client) requestBounded(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error) error {
+	return c.requestBoundedOptions(ctx, method, segments, query, scoped, key, body, expectedStatus, mutation, dst, maxBytes, decode, nil)
+}
+
+// sourceWaitOptions is used only by the explicit source-refresh mutation. It
+// preserves ordinary request budgets and never mutates shared transport state.
+type sourceWaitOptions struct {
+	seconds int
+	status  *int
+}
+
+func (c *Client) requestBoundedOptions(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions) error {
 	operation := requestOperation(method, segments)
 	if err := ctx.Err(); err != nil {
 		if mutation {
@@ -238,7 +250,11 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 	u.Path, _ = url.PathUnescape(escaped)
 	u.RawPath = escaped
 	u.RawQuery = query.Encode()
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	timeout := requestTimeout
+	if wait != nil && wait.seconds > 2 {
+		timeout = time.Duration(wait.seconds+5) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	r, err := http.NewRequestWithContext(ctx, method, u.String(), strings.NewReader(string(body)))
 	if err != nil {
@@ -253,6 +269,9 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 	r.Header.Set("Accept", "application/json")
 	r.Header.Set("Authorization", "Bearer "+c.token)
 	r.Header.Set("X-FC-Instance", c.identity.InstanceID)
+	if wait != nil {
+		r.Header.Set("Prefer", "wait="+strconv.Itoa(wait.seconds))
+	}
 	if mutation {
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("Idempotency-Key", key)
@@ -266,7 +285,19 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 		}
 		return contextError(err)
 	}
-	response, err := c.http.Do(r)
+	httpClient := c.http
+	if wait != nil {
+		ownedClient := *c.http
+		ownedClient.Timeout = timeout
+		if wait.seconds > 2 {
+			ownedTransport := c.transport.Clone()
+			ownedTransport.ResponseHeaderTimeout = timeout
+			defer ownedTransport.CloseIdleConnections()
+			ownedClient.Transport = ownedTransport
+		}
+		httpClient = &ownedClient
+	}
+	response, err := httpClient.Do(r)
 	if err != nil {
 		if ctx.Err() != nil {
 			if mutation {
@@ -294,7 +325,8 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 		return invalidResponse()
 	}
 	responseLimit := maxBytes
-	if response.StatusCode != expectedStatus && responseLimit > 64<<10 {
+	success := response.StatusCode == expectedStatus || wait != nil && response.StatusCode == http.StatusOK
+	if !success && responseLimit > 64<<10 {
 		responseLimit = 64 << 10
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, int64(responseLimit)+1))
@@ -316,9 +348,13 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 		}
 		return invalidResponse()
 	}
-	if response.StatusCode != expectedStatus {
+	if !success {
 		if mutation && response.StatusCode >= 400 && response.StatusCode < 600 {
 			if refusal, valid := c.serviceError(data, response.StatusCode); valid {
+				if wait != nil && sourceResponseOutcomeUnknown(data) {
+					refusal.OutcomeUnknown = true
+					refusal.Action = mutationAction()
+				}
 				if response.StatusCode >= 500 {
 					refusal.Message = "The " + operation + " returned a service error; its outcome is unknown."
 					refusal.Action = mutationAction()
@@ -332,6 +368,9 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 		}
 		failure, _ := c.serviceError(data, response.StatusCode)
 		return failure
+	}
+	if wait != nil {
+		*wait.status = response.StatusCode
 	}
 	if decode(data, dst) != nil || c.hasSensitive(dst) {
 		if mutation {

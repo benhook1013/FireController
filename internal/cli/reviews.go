@@ -11,9 +11,18 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
+	if call.subcommand == "source-assess" {
+		values, ok := reviewSourceFlags(args, "--pr")
+		if !ok {
+			return call, false
+		}
+		number, err := strconv.ParseInt(values["--pr"], 10, 64)
+		call.pullNumber = number
+		return call, err == nil && number >= 1 && number <= 2147483647 && strconv.FormatInt(number, 10) == values["--pr"]
+	}
 	list := call.subcommand == "queue" || call.subcommand == "runs"
 	switch call.subcommand {
-	case "queue", "pull", "runs", "run", "evidence", "adjudication", "operation", "assess":
+	case "queue", "pull", "runs", "run", "evidence", "adjudication", "operation", "assess", "source-operation":
 	case "execution":
 		return call, len(args) == 0
 	default:
@@ -69,6 +78,9 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 	if call.subcommand == "operation" {
 		return call, client.ValidateReviewOperationID(call.position[0]) == nil
 	}
+	if call.subcommand == "source-operation" {
+		return call, client.ValidateReviewSourceRefreshID(call.position[0]) == nil
+	}
 	if call.subcommand == "run" {
 		return call, reviewID(call.position[0], "review_run_")
 	}
@@ -101,6 +113,10 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 		return service.ReviewExecution(ctx)
 	case "operation":
 		return service.ReviewOperation(ctx, call.position[0])
+	case "source-operation":
+		return service.ReviewSourceOperation(ctx, call.position[0])
+	case "source-assess":
+		return service.ReviewSourcePolicyAssessment(ctx, call.pullNumber)
 	case "queue":
 		return service.ReviewQueue(ctx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case "pull":
@@ -119,6 +135,48 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 }
 
 func parseReviewControl(operation string, args []string) (*mutationInvocation, bool) {
+	if operation == "source-refresh" {
+		waitSeconds := 2
+		var filtered []string
+		seenWait := false
+		for i := 0; i < len(args); i++ {
+			flag, value, assigned := strings.Cut(args[i], "=")
+			if flag != "--wait-seconds" {
+				filtered = append(filtered, args[i])
+				continue
+			}
+			if seenWait {
+				return nil, false
+			}
+			seenWait = true
+			if !assigned {
+				i++
+				if i >= len(args) {
+					return nil, false
+				}
+				value = args[i]
+			}
+			n, err := strconv.Atoi(value)
+			if err != nil || strconv.Itoa(n) != value || client.ValidateReviewSourceWait(n) != nil {
+				return nil, false
+			}
+			waitSeconds = n
+		}
+		values, ok := reviewSourceFlags(filtered, "--pr", "--head", "--expect-config", "--key")
+		if !ok || !validMutationKey(values["--key"]) {
+			return nil, false
+		}
+		number, err := strconv.ParseInt(values["--pr"], 10, 64)
+		if err != nil || strconv.FormatInt(number, 10) != values["--pr"] {
+			return nil, false
+		}
+		revision, err := strconv.ParseInt(values["--expect-config"], 10, 64)
+		request := client.ReviewSourceRequest{ExpectedConfigurationRevision: revision, PullNumber: number, HeadSHA: values["--head"]}
+		if err != nil || strconv.FormatInt(revision, 10) != values["--expect-config"] || client.ValidateReviewSourceRequest(request) != nil {
+			return nil, false
+		}
+		return &mutationInvocation{operation: "reviews source-refresh", key: values["--key"], reviewSource: request, reviewSourceWait: waitSeconds}, true
+	}
 	if operation == "request" {
 		return parseReviewRequest(args)
 	}
@@ -200,6 +258,32 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		}
 	}
 	return call, true
+}
+
+func reviewSourceFlags(args []string, flags ...string) (map[string]string, bool) {
+	allowed := make(map[string]bool, len(flags))
+	for _, flag := range flags {
+		allowed[flag] = true
+	}
+	values := make(map[string]string, len(flags))
+	for i := 0; i < len(args); i++ {
+		flag, value, assigned := strings.Cut(args[i], "=")
+		if !allowed[flag] {
+			return nil, false
+		}
+		if _, duplicate := values[flag]; duplicate {
+			return nil, false
+		}
+		if !assigned {
+			i++
+			if i >= len(args) || strings.HasPrefix(args[i], "--") {
+				return nil, false
+			}
+			value = args[i]
+		}
+		values[flag] = value
+	}
+	return values, len(values) == len(flags)
 }
 
 func parseReviewRequest(args []string) (*mutationInvocation, bool) {

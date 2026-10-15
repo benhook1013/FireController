@@ -412,3 +412,40 @@ func TestRecheckSourceDetectsFinalBoundaryMovement(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveSourceObservationIgnoresExecutionPauseWithoutAuthorizingDispatch(t *testing.T) {
+	reader, configuration, request := sourceFixture()
+	configuration.Paused = true
+	plan, err := reviewexec.ResolveSourceObservation(context.Background(), reader, 701, configuration, request.PullNumber, request.HeadSHA)
+	if err != nil || plan.Pull.HeadSHA != request.HeadSHA || plan.ParentSHA != reader.pulls[9].BaseSHA {
+		t.Fatal("paused source observation", plan, err)
+	}
+	requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9")
+	reader.calls = nil
+	plan, err = reviewexec.ResolveSource(context.Background(), reader, 701, configuration, request)
+	requireSourceError(t, plan, err, "validation_failed", "")
+	if len(reader.calls) != 0 {
+		t.Fatal("observation relaxed dispatch authorization")
+	}
+}
+
+func TestResolveSourceObservationPreservesStackScopeAndAssertions(t *testing.T) {
+	reader, configuration, request := sourceFixture()
+	configuration.Mode, configuration.Queue, configuration.Paused = "stacked", []int64{1, 2, 9, 42}, true
+	reader.pulls[2] = sourcePull(2, reader.pulls[9].BaseSHA, false)
+	plan, err := reviewexec.ResolveSourceObservation(context.Background(), reader, 701, configuration, request.PullNumber, request.HeadSHA)
+	if err != nil || plan.ParentPullNumber != 2 {
+		t.Fatal("observed stacked comparison", plan, err)
+	}
+	requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9", "pull:owner/canonical#2")
+	reader.calls = nil
+	plan, err = reviewexec.ResolveSourceObservation(context.Background(), reader, 701, configuration, request.PullNumber, strings.Repeat("d", 40))
+	requireSourceError(t, plan, err, "review_held", "target_changed")
+	requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9")
+	reader.calls = nil
+	plan, err = reviewexec.ResolveSourceObservation(nil, reader, 701, configuration, request.PullNumber, request.HeadSHA)
+	requireSourceError(t, plan, err, "validation_failed", "")
+	if len(reader.calls) != 0 {
+		t.Fatal("nil observation context made provider calls")
+	}
+}
