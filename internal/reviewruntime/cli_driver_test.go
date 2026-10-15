@@ -903,11 +903,11 @@ func TestCLIDriverRetainedEvidenceSurvivesMissingCurrentProjection(t *testing.T)
 			if err = f.store.DB().QueryRow(`SELECT id FROM review_execution_evidence WHERE attempt_id=?`, operation.AttemptID).Scan(&evidenceID); err != nil {
 				t.Fatal(err)
 			}
-			evidence, err := f.engine.ReadCLIEvidence(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), evidenceID)
+			evidence, err := f.engine.ReadReviewEvidence(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), evidenceID)
 			if err != nil || !evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed" {
 				t.Fatal("authoritative capture lost", err)
 			}
-			adjudication, err := f.engine.ReadCLIAdjudication(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), evidenceID)
+			adjudication, err := f.engine.ReadReviewAdjudication(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), evidenceID)
 			if err != nil || adjudication.Finalized || len(adjudication.Findings) != 1 || adjudication.Findings[0].Disposition != "unadjudicated" {
 				t.Fatal("publication failure fabricated finding disposition/coverage", err)
 			}
@@ -918,7 +918,7 @@ func TestCLIDriverRetainedEvidenceSurvivesMissingCurrentProjection(t *testing.T)
 				if cliCount(t, f.store, `SELECT count(*) FROM review_workspace w JOIN review_pulls p ON p.project_id=w.project_id AND p.snapshot_id=w.snapshot_id WHERE w.project_id=? AND p.number=2`, f.project) != 0 {
 					t.Fatal("driver recreated retired current metadata")
 				}
-				comparison, err := f.engine.CLIComparison(t.Context(), f.project, reviewexec.SourcePlan{Repository: f.reader.repository, Pull: f.reader.pulls[2], ParentSHA: f.baseSHA, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+				comparison, err := f.engine.Comparison(t.Context(), f.project, reviewexec.SourcePlan{Repository: f.reader.repository, Pull: f.reader.pulls[2], ParentSHA: f.baseSHA, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}, "cli")
 				if err != nil || !comparison.Pending || comparison.Covered {
 					t.Fatal("completed ledger-only evidence escaped pending coverage", comparison, err)
 				}
