@@ -566,7 +566,8 @@ func TestRetainCLIExcessReviewedFilesRetainsInspectableInvalidCapture(t *testing
 	}
 	// Save exact raw evidence first, establishing the artifact that RetainCLI
 	// must reconcile without rewriting when its derived parser rejects input.
-	reference, err := f.captures.Save(t.Context(), attempt.ID, capture)
+	started, finished := time.Now().Add(-time.Second).UTC(), time.Now().UTC()
+	reference, err := f.captures.Save(t.Context(), attempt.ID, CaptureRecord{Capture: capture, StartedAt: started, FinishedAt: finished})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +577,6 @@ func TestRetainCLIExcessReviewedFilesRetainsInspectableInvalidCapture(t *testing
 		t.Fatal(err)
 	}
 	beforeState := cliAttemptState(t, f.store, attempt.ID)
-	started, finished := time.Now().Add(-time.Second).UTC(), time.Now().UTC()
 	retained, err := RetainCLI(t.Context(), f.captures, f.engine, f.manager, attempt, workspace, capture, started, finished)
 	if err != nil || retained.Reason != "capture_invalid" || retained.Outcome != "uncertain" || retained.Complete || retained.Receipt.State != "captured" {
 		t.Fatalf("oversized inventory lost inspectable invalid evidence: %+v %v", retained, err)
@@ -589,7 +589,7 @@ func TestRetainCLIExcessReviewedFilesRetainsInspectableInvalidCapture(t *testing
 		t.Fatal("invalid ledger evidence lost its exact raw artifact identity")
 	}
 	loaded, afterReference, err := f.captures.Read(t.Context(), attempt.ID)
-	if err != nil || afterReference != reference || string(loaded.Stdout) != string(capture.Stdout) || string(loaded.Stderr) != string(capture.Stderr) || loaded.ExitCode != capture.ExitCode || loaded.Started != capture.Started {
+	if err != nil || afterReference != reference || string(loaded.Capture.Stdout) != string(capture.Stdout) || string(loaded.Capture.Stderr) != string(capture.Stderr) || loaded.Capture.ExitCode != capture.ExitCode || loaded.Capture.Started != capture.Started {
 		t.Fatal("raw oversized capture was changed or lost", err)
 	}
 	afterArtifact, err := os.ReadFile(artifact)
