@@ -672,6 +672,7 @@ type githubHostedReview struct {
 }
 
 type githubReviewComment struct {
+	InReplyToID    *int64      `json:"in_reply_to_id"`
 	ID             int64       `json:"id,required"`
 	ReviewID       int64       `json:"pull_request_review_id,required"`
 	Body           string      `json:"body,required"`
@@ -868,7 +869,14 @@ func normalizeReviewComment(raw githubReviewComment) (ReviewComment, error) {
 	if raw.Line != nil && (*raw.Line <= 0 || *raw.Line > 1<<31-1) {
 		return ReviewComment{}, errors.New("invalid comment line")
 	}
-	return ReviewComment{ID: raw.ID, ReviewID: raw.ReviewID, Body: raw.Body, Author: actor, Path: raw.Path, Line: raw.Line, HeadSHA: raw.CommitID, OriginalHeadSHA: raw.OriginalCommit, CreatedAt: created, UpdatedAt: updated}, nil
+	var parent int64
+	if raw.InReplyToID != nil {
+		if *raw.InReplyToID <= 0 || *raw.InReplyToID == raw.ID {
+			return ReviewComment{}, errors.New("invalid reply parent")
+		}
+		parent = *raw.InReplyToID
+	}
+	return ReviewComment{InReplyToID: parent, ID: raw.ID, ReviewID: raw.ReviewID, Body: raw.Body, Author: actor, Path: raw.Path, Line: raw.Line, HeadSHA: raw.CommitID, OriginalHeadSHA: raw.OriginalCommit, CreatedAt: created, UpdatedAt: updated}, nil
 }
 
 func validIdentifierText(value string, max int) bool {

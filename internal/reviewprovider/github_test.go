@@ -600,3 +600,49 @@ func TestGitHubMalformedLinkParametersNeverCompletePartialCollection(t *testing.
 		}
 	}
 }
+
+func TestGitHubReviewCommentReplyIdentityIsPreservedAndStrict(t *testing.T) {
+	base := `{"id":12,"pull_request_review_id":11,"body":"Exact reply text","user":{"id":7,"login":"reviewer","type":"User"},"path":"a.go","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","original_commit_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}`
+	for _, tc := range []struct {
+		name, extra string
+		parent      int64
+		invalid     bool
+	}{
+		{"root omitted", "", 0, false},
+		{"root null", `,"in_reply_to_id":null`, 0, false},
+		{"reply", `,"in_reply_to_id":9`, 9, false},
+		{"zero", `,"in_reply_to_id":0`, 0, true},
+		{"negative", `,"in_reply_to_id":-1`, 0, true},
+		{"self", `,"in_reply_to_id":12`, 0, true},
+		{"string", `,"in_reply_to_id":"9"`, 0, true},
+		{"fraction", `,"in_reply_to_id":9.5`, 0, true},
+		{"overflow", `,"in_reply_to_id":9223372036854775808`, 0, true},
+		{"duplicate", `,"in_reply_to_id":9,"in_reply_to_id":10`, 0, true},
+		{"alias", `,"IN_REPLY_TO_ID":9`, 0, true},
+		{"alias overwrite", `,"in_reply_to_id":9,"IN_REPLY_TO_ID":null`, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "[" + strings.TrimSuffix(base, "}") + tc.extra + "}]"
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Method != http.MethodGet || r.URL.Path != "/repos/owner/repo/pulls/2/comments" {
+					t.Error("unexpected endpoint", r.Method, r.URL.Path)
+				}
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+			result, err := testGitHub(server, "").ReviewComments(t.Context(), "owner/repo", 2)
+			if tc.invalid {
+				if !hasCode(err, "provider_invalid_response") || len(result) != 0 {
+					t.Fatal("unsafe reply identity admitted", result, err)
+				}
+			} else if err != nil || len(result) != 1 || result[0].InReplyToID != tc.parent || result[0].Body != "Exact reply text" {
+				t.Fatal("reply identity lost", result, err)
+			}
+			if calls.Load() != 1 {
+				t.Fatal("unexpected retry", calls.Load())
+			}
+		})
+	}
+}

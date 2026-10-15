@@ -58,6 +58,8 @@ type HostedReview struct {
 }
 
 type ReviewComment struct {
+	// InReplyToID is zero for an attached root; positive values identify replies.
+	InReplyToID     int64
 	ID              int64
 	ReviewID        int64
 	Body            string
