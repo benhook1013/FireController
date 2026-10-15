@@ -31,6 +31,12 @@ fc --profiles-file /private/agent/profiles.json --profile project-builder profil
 
 Both commands use compact structured output and safe diagnostics. They publish private files without replacement, preserve unrelated configuration, and report local publication uncertainty instead of removing a file that may already be usable. They create no worker, grant, credential, job, message, review or pending-operation receipt. The broader onboarding and import flow above remains incomplete.
 
+## Private setup proof
+
+The profile/CLI integration passed full `make check build` before the final executable-access correction, followed by focused profile/CLI race tests, vet, formatting and documentation checks for that correction. Clean runtime checkpoint `b1756115e76632f9feefb81b0110cd23f810efe0` then passed six actual packaged groups with 28 CLI invocations and no service requests. The groups cover private creation with absent credentials, byte-preserving replay and multi-profile conflicts, literal launcher execution with interleaved project identities, strict arguments/FIFO refusal, concurrent identical creators, and a real failed stdout write followed by exact recovery. Independent integration inspection caught the executable-access defect: a file with only another permission class's executable bit could produce an unusable launcher. The corrected current-user access check has a failing-before/passing-after regression and actual shell execution proof.
+
+These checks ran on Linux/WSL with POSIX launchers. They do not establish native Windows launcher support, hostile same-user filesystem race protection, power-loss durability, remote authorization, credential provisioning or the broader guided import flow. Local setup returns configured facts rather than a verified connection or a pending-operation receipt.
+
 ## Import semantics
 
 The user controls historical depth. Support bounded ranges and resuming interrupted collection; do not download all repository or provider history by default. Record source repository, scope, snapshot/version or immutable provider IDs, collection time, and transformation version. Imported text and events are data, not executable instructions.
