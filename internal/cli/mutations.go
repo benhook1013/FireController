@@ -10,17 +10,18 @@ import (
 )
 
 type mutationInvocation struct {
-	operation string
-	key       string
-	id        string
-	create    client.CreateJobRequest
-	edit      client.EditJobRequest
-	send      client.SendMessageRequest
+	operation  string
+	key        string
+	id         string
+	create     client.CreateJobRequest
+	edit       client.EditJobRequest
+	send       client.SendMessageRequest
+	checkpoint client.AppendCheckpointRequest
 }
 
 func isMutation(command, operation string) bool {
 	switch command + " " + operation {
-	case "jobs create", "jobs edit", "inbox send", "inbox seen", "inbox ack":
+	case "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack":
 		return true
 	}
 	return false
@@ -30,6 +31,9 @@ func isMutation(command, operation string) bool {
 // keys make retries recoverable across separate CLI processes without a global
 // retry identity or silently regenerated key.
 func parseMutation(command, operation string, args []string) (*mutationInvocation, bool) {
+	if command == "jobs" && operation == "checkpoint" {
+		return parseCheckpoint(args)
+	}
 	call := &mutationInvocation{operation: command + " " + operation}
 	allowed := map[string]bool{"--key": true}
 	switch call.operation {
@@ -150,6 +154,8 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 		return service.CreateJob(ctx, call.key, call.create)
 	case "jobs edit":
 		return service.EditJob(ctx, call.key, call.id, call.edit)
+	case "jobs checkpoint":
+		return service.AppendCheckpoint(ctx, call.key, call.id, call.checkpoint)
 	case "inbox send":
 		return service.SendMessage(ctx, call.key, call.send)
 	case "inbox seen":

@@ -23,6 +23,7 @@ type arguments struct {
 	create                     client.CreateJobRequest
 	edit                       client.EditJobRequest
 	send                       client.SendMessageRequest
+	checkpoint                 client.AppendCheckpointRequest
 }
 type definition struct {
 	name, description string
@@ -73,6 +74,12 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.Job(ctx, args.id)
 			case "job_history":
 				value, err = service.JobHistory(ctx, args.id, options)
+			case "job_checkpoint_latest":
+				value, err = service.LatestCheckpoint(ctx, args.id)
+			case "job_checkpoint_history":
+				value, err = service.CheckpointHistory(ctx, args.id, options)
+			case "job_checkpoint_append":
+				value, err = service.AppendCheckpoint(ctx, args.key, args.id, args.checkpoint)
 			case "inbox_list":
 				value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack})
 			case "inbox_snapshot":

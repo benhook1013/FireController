@@ -1,5 +1,5 @@
 import type {
-  ConversationPage, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions,
+  Checkpoint, ConversationPage, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
   JobSummary, Message, MessageEvent, MessageEventPage, Page, PageOptions,
   Project, WatchCallbacks, Worker,
 } from './types';
@@ -87,9 +87,9 @@ function validPage(value: unknown, limit: number): value is Record<string, unkno
 }
 function defaultLimit(options: PageOptions): number { return options.limit ?? 20; }
 
-async function readJson(response: Response, signal: AbortSignal): Promise<unknown> {
+async function readJson(response: Response, signal: AbortSignal, responseMaxBytes = maxBytes): Promise<unknown> {
   const declared = response.headers.get('content-length');
-  if (declared && Number.isFinite(Number(declared)) && Number(declared) > maxBytes) {
+  if (declared && Number.isFinite(Number(declared)) && Number(declared) > responseMaxBytes) {
     void response.body?.cancel().catch(() => {});
     throw new ApiError('response_too_large', 'The service response exceeded the supported size.', response.status);
   }
@@ -103,7 +103,7 @@ async function readJson(response: Response, signal: AbortSignal): Promise<unknow
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > maxBytes) throw new ApiError('response_too_large', 'The service response exceeded the supported size.', response.status);
+      if (size > responseMaxBytes) throw new ApiError('response_too_large', 'The service response exceeded the supported size.', response.status);
       chunks.push(value);
     }
   } catch (error) {
@@ -142,6 +142,22 @@ function validSummary(value: unknown): value is JobSummary {
 }
 function validJob(value: unknown, projectId: string): value is Job {
   return record(value) && keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at']) && value.project_id === projectId && id(value.id) && text(value.title, 240) && text(value.brief, 32768, true) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && timestamp(value.created_at) && timestamp(value.updated_at);
+}
+function checkpointText(value: unknown, max: number, required: boolean): value is string {
+  if (!text(value, max, !required) || required && /^\p{White_Space}*$/u.test(value)) return false;
+  // JSON.parse preserves unpaired escapes, while TextEncoder would repair
+  // them. Reject those code units without rejecting literal replacement text.
+  for (const character of value) {
+    const point = character.codePointAt(0)!;
+    if (point >= 0xd800 && point <= 0xdfff) return false;
+  }
+  return true;
+}
+function validCheckpoint(value: unknown, projectId: string, jobId: string): value is Checkpoint {
+  if (!record(value) || !keys(value, ['id', 'project_id', 'job_id', 'job_revision', 'sequence', 'actor_id', 'worker_id', 'done', 'next', 'blocker', 'evidence', 'created_at']) || !id(value.id) || value.project_id !== projectId || value.job_id !== jobId || !Number.isSafeInteger(value.job_revision) || Number(value.job_revision) < 1 || !Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1 || !id(value.actor_id) || value.worker_id !== '' && !id(value.worker_id) || !timestamp(value.created_at)) return false;
+  if (!checkpointText(value.done, 8 << 10, true) || !checkpointText(value.next, 8 << 10, true) || !checkpointText(value.blocker, 4 << 10, false) || !Array.isArray(value.evidence) || value.evidence.length > 10 || !value.evidence.every(item => checkpointText(item, 1024, true))) return false;
+  const encoder = new TextEncoder();
+  return [value.done, value.next, value.blocker, ...value.evidence].reduce((size, item) => size + encoder.encode(item).byteLength, 0) <= 16 << 10;
 }
 function validInboxItem(value: unknown, worker: string): value is InboxItem {
   return record(value) && keys(value, ['id', 'conversation_id', 'sender_worker_id', 'recipient_worker_id', 'preview', 'preview_truncated', 'seen', 'acknowledged', 'created_at']) && id(value.id) && id(value.conversation_id) && id(value.sender_worker_id) && value.recipient_worker_id === worker && text(value.preview, 1024, true) && [...value.preview].length <= 160 && typeof value.preview_truncated === 'boolean' && typeof value.seen === 'boolean' && typeof value.acknowledged === 'boolean' && (!value.acknowledged || value.seen) && timestamp(value.created_at);
@@ -220,6 +236,23 @@ export class Api {
     if (!validJob(value, this.projectId) || value.id !== jobId) throw new ApiError('invalid_response', 'The service returned a job outside this binding.');
     return value;
   }
+  async checkpointLatest(jobId: string, signal?: AbortSignal): Promise<LatestCheckpoint> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/checkpoints/latest`), signal, undefined, 128 << 10);
+    if (!record(value) || !keys(value, ['job_id', 'job_revision', 'checkpoint']) || value.job_id !== jobId || !Number.isSafeInteger(value.job_revision) || Number(value.job_revision) < 1 || value.checkpoint !== null && (!validCheckpoint(value.checkpoint, this.projectId, jobId) || value.checkpoint.job_revision > Number(value.job_revision))) throw new ApiError('invalid_response', 'The service returned an invalid latest checkpoint.');
+    return value as unknown as LatestCheckpoint;
+  }
+  async checkpoints(jobId: string, options: PageOptions = {}, signal?: AbortSignal): Promise<Page<Checkpoint>> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/checkpoints`), pageOptions(options)), signal, undefined, 4 << 20);
+    if (!validPage(value, defaultLimit(options)) || !value.has_more && !!value.cursor) throw new ApiError('invalid_response', 'The service returned an invalid checkpoint page.');
+    let previous = Infinity;
+    for (const item of value.items) {
+      if (!validCheckpoint(item, this.projectId, jobId) || item.sequence >= previous) throw new ApiError('invalid_response', 'The service returned an invalid checkpoint page.');
+      previous = item.sequence;
+    }
+    return value as Page<Checkpoint>;
+  }
   async inbox(worker: string, options: InboxOptions = {}, signal?: AbortSignal): Promise<Page<InboxItem>> {
     if (!id(worker)) throw new ApiError('invalid_request', 'The inbox worker is invalid.');
     const query = pageOptions(options);
@@ -284,19 +317,19 @@ export class Api {
   }
 
   private projectRoute(suffix: string): string { return `/api/v1/projects/${encodeURIComponent(this.projectId)}${suffix ? `/${suffix}` : ''}`; }
-  private async finiteGet(path: string, signal?: AbortSignal, worker?: string): Promise<unknown> {
+  private async finiteGet(path: string, signal?: AbortSignal, worker?: string, responseMaxBytes = maxBytes): Promise<unknown> {
     this.ensureOpen();
     const request = requestBudget([signal, this.session.signal], 5000);
     try {
       if (!this.verifiedInstanceId) throw new ApiError('not_connected', 'Connect to the selected project before reading data.');
-      return await this.getJson(path, this.verifiedInstanceId, request.signal, worker);
+      return await this.getJson(path, this.verifiedInstanceId, request.signal, worker, responseMaxBytes);
     } catch (error) { throw this.transportError(error, request.expired(), request.signal); }
     finally { request.close(); }
   }
-  private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string): Promise<unknown> {
+  private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string, responseMaxBytes = maxBytes): Promise<unknown> {
     const response = await fetch(urlFor(path), { method: 'GET', headers: this.headers(instanceId, worker), redirect: 'error', credentials: 'omit', cache: 'no-store', signal });
     if (!response.ok) throw await readFailure(response, signal);
-    return readJson(response, signal);
+    return readJson(response, signal, responseMaxBytes);
   }
   private headers(instanceId?: string, worker?: string): Headers {
     const value = new Headers({ Authorization: `Bearer ${this.token}`, Accept: 'application/json' });
