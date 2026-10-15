@@ -124,6 +124,12 @@ After admission, dispatch consumes one short-lived prepared context. It rechecks
 
 Observe completion against the admitted PR/head, trigger and configured provider actor identity. Import all review comments and the completed summary, including actionable summary-only and outside-diff findings. Empty status reviews and success checks alone are not completed coverage. Incomplete pagination, attribution or captures remain visible without credit.
 
+### Standing-summary proof
+
+Clean checkpoint `283425431ca1b84ded0fb4ab9e979b0cfa77e769` passed three packaged hosted-only groups in 4.127 seconds. Actual `fc` and `fcd` processes exercised fresh standing-summary completion, typed evidence reads, explicit finalization and held-to-sufficient captured policy; lost-POST restart recovery retained the same instance and attempt without reposting. A run UUID already present in the complete baseline and an acknowledgment without a standing summary remained uncredited. The baselines completed 4.9–5.9 ms before exact local admission, without an artificial delay.
+
+The run made twelve CLI commands, 133 local API requests, 49 controlled provider GETs and three each of allowance-query and review posts across its three operations. It made no real external requests. The source/assets manifest and clean executable hashes stayed unchanged; tested `fcd` SHA-256 was `d6dd2cd86c048b811d4d8beb42f3d8fefaf18d823640856628d1bf5830c49584`. Owned processes and fixture state were removed. Full repository checks/build passed with 121 browser tests and Go race/vet/documentation checks. A separate private probe accepted the real retained standing summary and completion-reply bodies; its actors, intent and observation window were synthetic. These checks do not establish live native CodeRabbit execution, browser rendering of this slice, physical-phone behavior, fleet capacity or operational cutover.
+
 ### Concrete hosted-driver proof
 
 The standalone concrete driver passed three controlled lifecycle cases in 4.304 seconds using the actual catalog loader, SQLite engine, native projection, private capture store and Git workspace manager. The cases exercised happy dispatch with supervisor-owned settlement, a lost full-review POST followed by store reopening and interruption recovery without reposting, and a delayed allowance response using one query across two observations. Existing merged PR facts, imported history and original evidence remained separate from the current attempt. A job read during a deliberately blocked provider completed in 0.169 ms in this smoke check.
