@@ -1,0 +1,49 @@
+// This per-tab record contains only public binding metadata. A read-only
+// session is retained in a nonce-specific HttpOnly cookie.
+export const browserSessionKey = 'firecontroller.browser-session.v1';
+export type BrowserSessionBinding = {
+  version: 1;
+  projectID: string;
+  instanceID: string;
+  sessionID: string;
+  expiresAt: string;
+  selectedworkerID: string;
+};
+type StorageAccess = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+export function sessionIdentity(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(value); }
+export function sessionSelector(value: unknown): value is string { return typeof value === 'string' && /^[a-f0-9]{32}$/u.test(value); }
+export function sessionExpiry(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 64 && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 19) === value.slice(0, 19);
+}
+export function newSessionID(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join('');
+}
+function storage(): StorageAccess | undefined { try { return globalThis.sessionStorage; } catch { return undefined; } }
+function validBinding(value: unknown): value is BrowserSessionBinding {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  const fields = ['version', 'projectID', 'instanceID', 'sessionID', 'expiresAt', 'selectedworkerID'];
+  return Object.keys(v).length === fields.length && fields.every(key => Object.hasOwn(v, key)) && v.version === 1 && sessionIdentity(v.projectID) && sessionIdentity(v.instanceID) && sessionSelector(v.sessionID) && sessionExpiry(v.expiresAt) && (v.selectedworkerID === '' || sessionIdentity(v.selectedworkerID));
+}
+export function clearBrowserSession(target = storage()): void { try { target?.removeItem(browserSessionKey); } catch { /* storage may be disabled */ } }
+export function saveBrowserSession(binding: BrowserSessionBinding, target = storage(), now = Date.now()): boolean {
+  if (!validBinding(binding) || Date.parse(binding.expiresAt) <= now || !target) { clearBrowserSession(target); return false; }
+  try { target.setItem(browserSessionKey, JSON.stringify(binding)); return true; } catch { clearBrowserSession(target); return false; }
+}
+export function loadBrowserSession(projectID: string | undefined, discarded?: (binding: BrowserSessionBinding) => void, target = storage(), now = Date.now()): BrowserSessionBinding | null {
+  let value: unknown;
+  try {
+    const raw = target?.getItem(browserSessionKey);
+    if (!raw) return null;
+    if (raw.length > 2048) { clearBrowserSession(target); return null; }
+    value = JSON.parse(raw) as unknown;
+  } catch { clearBrowserSession(target); return null; }
+  if (!validBinding(value)) { clearBrowserSession(target); return null; }
+  if (value.projectID !== projectID || Date.parse(value.expiresAt) <= now) {
+    clearBrowserSession(target); discarded?.(value); return null;
+  }
+  return value;
+}
+export function terminalBrowserSession(error: { code: string; status: number }): boolean {
+  return error.status === 401 || error.status === 403 || ['unauthorized', 'forbidden', 'instance_mismatch'].includes(error.code);
+}

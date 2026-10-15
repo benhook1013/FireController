@@ -7,15 +7,19 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 )
 
 type Scope struct {
-	PrincipalID string
-	ProjectID   string
-	WorkerID    string
-	tokenHash   string
-	instanceID  string
-	admin       bool
+	PrincipalID    string
+	ProjectID      string
+	WorkerID       string
+	tokenHash      string
+	instanceID     string
+	admin          bool
+	readOnly       bool
+	expiresAt      time.Time
+	sessionProject string
 }
 
 type Mutation struct {

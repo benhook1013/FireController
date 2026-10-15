@@ -99,6 +99,7 @@ type AttemptSummary struct {
 }
 
 type RunSummary struct {
+	Source         string   `json:"source"`
 	ID             string   `json:"id"`
 	PullNumber     int64    `json:"pull_number"`
 	SourceRunID    string   `json:"source_run_id"`

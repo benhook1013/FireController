@@ -1,25 +1,27 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Link, NavLink, Route, Routes, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
+import { Link, NavLink, Route, Routes, useLocation, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Api, ApiError } from './api';
 import { refreshEventQueries } from './queries';
+import { clearBrowserSession, loadBrowserSession, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
 import flameEmber from './flame-ember.svg?no-inline';
 import type { Checkpoint, InboxItem, JobSummary, LiveStatus, Page, Project, Worker, ReviewAttemptSummary, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
 
 const pageSize = 20;
-type Session = { api: Api; project: Project; instanceId: string; nonce: string; controller: AbortController; worker: Worker | null };
+type Session = { api: Api; project: Project; instanceId: string; nonce: string; controller: AbortController; worker: Worker | null; binding: BrowserSessionBinding };
 type WorkspaceValue = { session: Session; key: readonly string[]; home: string; selectWorker(worker: Worker): void; fail(error: unknown): void; ready: boolean };
 const WorkspaceContext = createContext<WorkspaceValue | null>(null);
 function useWorkspace(): WorkspaceValue { const value = useContext(WorkspaceContext); if (!value) throw new Error('Workspace unavailable'); return value; }
 function nonce(): string { return Array.from(crypto.getRandomValues(new Uint32Array(4)), value => value.toString(16).padStart(8, '0')).join(''); }
 function signalFor(session: Session, signal: AbortSignal): AbortSignal { return AbortSignal.any([session.controller.signal, signal]); }
-function terminal(error: unknown): boolean { return error instanceof ApiError && (error.status === 401 || error.status === 403 || error.code === 'unauthorized' || error.code === 'forbidden' || error.code === 'instance_mismatch'); }
+function terminal(error: unknown): boolean { return error instanceof ApiError && terminalBrowserSession(error); }
 function errorText(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 401 || error.status === 403 || error.code === 'unauthorized' || error.code === 'forbidden') return 'Access ended. Connect again with a credential that can read this project.';
     if (error.code === 'instance_mismatch') return 'The service identity changed. Connect again to verify this project.';
     if (error.code === 'invalid_binding') return 'Enter a valid project ID and project credential.';
+    if (error.code === 'browser_storage_unavailable') return 'Enable session storage for this site to retain this tab’s connection across reloads.';
     if (error.status === 404) return 'This item is unavailable in the connected project.';
     if (error.code === 'connection_failed' || error.code === 'deadline_exceeded') return 'The service could not be reached in time. Try again when the connection is available.';
   }
@@ -29,16 +31,26 @@ function time(value: string): string { return new Date(value).toLocaleString(); 
 
 export default function App() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const route = useRef(location);
+  route.current = location;
   const match = useMatch('/projects/:projectId/*');
   const conversationMatch = useMatch('/projects/:projectId/inbox/:conversationId');
   const routeProject = match?.params.projectId;
   const queryClient = useQueryClient();
   const [session, setSession] = useState<Session | null>(null);
   const current = useRef<Session | null>(null);
-  const pending = useRef<{ api: Api; controller: AbortController; projectId: string } | null>(null);
+  const pending = useRef<{ api: Api; controller: AbortController; projectId: string; routeKey: string } | null>(null);
+  const saved = useRef<BrowserSessionBinding | null>(null);
+  const [resumable, setResumable] = useState<BrowserSessionBinding | null>(null);
+  const [reconnect, setReconnect] = useState(0);
   const [notice, setNotice] = useState('');
   const [connecting, setConnecting] = useState(false);
   const clear = useCallback((message = '') => {
+    const expiring = pending.current?.api ?? current.current?.api;
+    if (expiring) void expiring.endBrowserSession().catch(() => {});
+    else if (saved.current) expireBinding(saved.current);
+    clearBrowserSession(); saved.current = null; setResumable(null);
     pending.current?.controller.abort(); pending.current?.api.close(); pending.current = null;
     const old = current.current;
     current.current = null;
@@ -48,30 +60,53 @@ export default function App() {
   }, [queryClient]);
   useEffect(() => {
     if (current.current && routeProject !== current.current.project.id) clear('Connect to open this project.');
-    if (pending.current && routeProject !== pending.current.projectId) clear('Connect to open this project.');
-  }, [routeProject, clear]);
+    if (pending.current && location.key !== pending.current.routeKey) clear('Connect to open this project.');
+  }, [routeProject, location.key, clear]);
   useEffect(() => () => {
-    pending.current?.controller.abort(); pending.current?.api.close();
+    pending.current?.controller.abort(); pending.current?.api.close(); pending.current = null;
     const old = current.current; old?.controller.abort(); old?.api.close();
+    current.current = null;
     if (old) queryClient.removeQueries({ queryKey: ['fc', old.nonce] });
   }, [queryClient]);
-  async function connect(projectId: string, token: string) {
-    clear();
+  useEffect(() => {
+    if (current.current || pending.current) return;
+    const binding = loadBrowserSession(routeProject, expireBinding);
+    saved.current = binding; setResumable(binding);
+    if (binding) void connect(binding.projectID, undefined, binding);
+  }, [routeProject, reconnect]);
+  async function connect(projectId: string, token?: string, restored?: BrowserSessionBinding) {
+    if (!restored) clear();
     let api: Api;
-    try { api = new Api(token, projectId); } catch (error) { setNotice(errorText(error)); return; }
+    try { api = restored ? Api.resume(restored.projectID, restored.sessionID, restored.instanceID) : new Api(token ?? '', projectId); } catch (error) { setNotice(errorText(error)); return; }
     const controller = new AbortController();
-    const attempt = { api, controller, projectId };
-    pending.current = attempt; setConnecting(true);
+    const attempt = { api, controller, projectId, routeKey: location.key };
+    pending.current = attempt; setConnecting(true); setNotice('');
+    const active = () => pending.current === attempt && !controller.signal.aborted && route.current.key === attempt.routeKey;
     try {
       const project = await api.connect(controller.signal);
-      if (pending.current !== attempt || controller.signal.aborted) return;
+      if (!active()) return;
       if (!api.instanceId) throw new ApiError('invalid_response', 'The service identity is unavailable.');
-      const next: Session = { api, project, instanceId: api.instanceId, nonce: nonce(), controller, worker: null };
+      let binding = restored;
+      if (!binding) {
+        const started = await api.startBrowserSession(controller.signal);
+        if (!active()) return;
+        binding = { version: 1, projectID: started.project_id, instanceID: started.instance_id, sessionID: started.session_id, expiresAt: started.expires_at, selectedworkerID: '' };
+      }
+      const worker = binding.selectedworkerID ? await restoredWorker(api, binding.selectedworkerID, controller.signal) : null;
+      if (!active()) return;
+      binding = { ...binding, selectedworkerID: worker?.id ?? '' };
+      if (!saveBrowserSession(binding)) throw new ApiError('browser_storage_unavailable', 'The browser session could not be retained safely.');
+      saved.current = binding; setResumable(binding);
+      const next: Session = { api, project, instanceId: api.instanceId!, nonce: nonce(), controller, worker, binding };
       pending.current = null; current.current = next; setSession(next); setConnecting(false);
       if (routeProject !== project.id) navigate(`/projects/${encodeURIComponent(project.id)}`);
     } catch (error) {
+      if (!restored) void api.endBrowserSession().catch(() => {});
       api.close();
-      if (pending.current === attempt) { pending.current = null; setConnecting(false); setNotice(errorText(error)); }
+      if (pending.current === attempt) {
+        if (terminal(error)) clear(errorText(error));
+        else { pending.current = null; setConnecting(false); setNotice(errorText(error)); }
+      }
     }
   }
   function selectWorker(worker: Worker) {
@@ -81,7 +116,13 @@ export default function App() {
       old.controller.abort();
       void queryClient.cancelQueries({ queryKey: ['fc', old.nonce] });
       queryClient.removeQueries({ queryKey: ['fc', old.nonce] });
-      const next = { ...old, worker, nonce: nonce(), controller: new AbortController() };
+      const binding = { ...old.binding, selectedworkerID: worker.id };
+      if (!saveBrowserSession(binding)) {
+        clear('The selected worker could not be retained. Enable session storage and connect again.');
+        return;
+      }
+      saved.current = binding; setResumable(binding);
+      const next = { ...old, worker, binding, nonce: nonce(), controller: new AbortController() };
       current.current = next; setSession(next);
     }
     if (old.worker !== null || conversationMatch?.params.projectId !== old.project.id) {
@@ -92,22 +133,47 @@ export default function App() {
   return <>
     <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />FireController</Link><span className="mast-label">Project workspace</span></div></header>
     {connected ? <Workspace key={session.nonce} session={session} selectWorker={selectWorker} disconnect={() => { clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
-      : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={connect} cancel={() => clear('Connection cancelled.')} />}
+      : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={connect} reconnect={resumable ? () => setReconnect(value => value + 1) : undefined} cancel={() => clear('Connection cancelled.')} />}
     <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span><span>Read-only project workspace</span></footer>
   </>;
 }
 
+function expireBinding(binding: BrowserSessionBinding): void {
+  const api = Api.resume(binding.projectID, binding.sessionID, binding.instanceID);
+  void api.endBrowserSession().catch(() => {}).finally(() => api.close());
+}
+async function restoredWorker(api: Api, workerID: string, signal: AbortSignal): Promise<Worker | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  const combined = AbortSignal.any([signal, controller.signal]);
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  try {
+    do {
+      if (combined.aborted) throw new ApiError('deadline_exceeded', 'The selected worker could not be verified in time.');
+      const page = await api.workers({ limit: 100, ...(cursor ? { cursor } : {}) }, combined);
+      const found = page.items.find(worker => worker.id === workerID);
+      if (found) return found;
+      if (!page.has_more) return null;
+      if (!page.cursor || cursors.has(page.cursor)) throw new ApiError('invalid_response', 'The worker pages did not advance.');
+      cursor = page.cursor; cursors.add(cursor);
+    } while (!combined.aborted);
+    throw new ApiError('deadline_exceeded', 'The selected worker could not be verified in time.');
+  } finally { clearTimeout(timer); }
+}
+
 function Flame() { return <img className="flame" src={flameEmber} alt="" aria-hidden="true" />; }
-function Connect({ projectId, busy, notice, onConnect, cancel }: { projectId: string; busy: boolean; notice: string; onConnect(project: string, token: string): void; cancel(): void }) {
+function Connect({ projectId, busy, notice, onConnect, reconnect, cancel }: { projectId: string; busy: boolean; notice: string; onConnect(project: string, token: string): void; reconnect?: () => void; cancel(): void }) {
   const [project, setProject] = useState(projectId);
   const [token, setToken] = useState('');
   function submit(event: FormEvent) { event.preventDefault(); const supplied = token; setToken(''); onConnect(project, supplied); }
   return <main className="connect-layout"><section className="connect-intro"><p className="eyebrow">Your project, in view</p><h1>Keep work<br /> moving.</h1><p>A clear view of your workers, jobs and conversations.</p><div className="intro-rule" /><p className="quiet-light">Connect to a project on this service to begin.</p></section>
     <section className="connect-card"><p className="eyebrow">FireController</p><h2>Connect to a project</h2><p className="muted">Use the project ID and a credential with read access.</p>
       {notice && <div className="notice" role="alert">{notice}</div>}
+      {reconnect && !busy && <button type="button" onClick={reconnect}>Reconnect to project</button>}
       <form onSubmit={submit} autoComplete="off"><label htmlFor="project-id">Project ID</label><input id="project-id" name="project-id" value={project} onChange={event => setProject(event.target.value)} required maxLength={128} spellCheck={false} autoCapitalize="none" disabled={busy} />
         <label htmlFor="project-credential">Project credential</label><input id="project-credential" name="project-credential" type="password" value={token} onChange={event => setToken(event.target.value)} required maxLength={4096} autoComplete="off" disabled={busy} />
-        <p className="field-note">Kept only for this connection. Disconnect to clear access and project data.</p>
+        <p className="field-note">Exchanged for a read-only session lasting up to 24 hours in this tab, including reloads. Disconnect to clear access and project data.</p>
         <button className="primary" type="submit" disabled={busy}>{busy ? 'Connecting…' : 'Connect to project'}</button>{busy && <button type="button" onClick={cancel}>Cancel connection</button>}
       </form></section></main>;
 }
@@ -368,5 +434,5 @@ function ReviewRunView() {
   const value = query.data;
   const pull = useQuery({ queryKey: [...key, 'reviews', value?.snapshot_id ?? snapshot ?? 'current', 'pull', value?.pull_number ?? 'unknown'], queryFn: ({ signal }) => session.api.reviewPull(value!.pull_number, value!.snapshot_id, signalFor(session, signal)), enabled: !!value, staleTime: Infinity });
   const mismatch = !!value?.run.head_sha && !!pull.data?.pull.head_sha && value.run.head_sha !== pull.data.pull.head_sha;
-  return <><Link className="back-link" to={value ? reviewLink(home, 'pulls', value.pull_number, value.snapshot_id) : `${home}/reviews`}>← {value ? `PR #${value.pull_number} history` : 'Review queue'}</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">PR #{value.pull_number} · {value.run.channel} run</p><h2>Review findings</h2><p>{value.run.reviewer || 'Reviewer unknown'} · {value.run.scope}</p></div><ReviewProvenance value={value} /><section className="panel review-run-summary"><RunPill run={value.run} snapshot={value.snapshot_id} head={pull.data?.pull.head_sha ?? ''} /><dl className="review-ref-grid"><div><dt>Run head</dt><dd><code>{value.run.head_sha || 'Unknown'}</code></dd></div><div><dt>Observed PR head</dt><dd><code>{pull.data?.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Started / finished</dt><dd>{value.run.started_at ? time(value.run.started_at) : 'Unknown'}<br />{value.run.finished_at ? time(value.run.finished_at) : 'Unknown'}</dd></div></dl>{mismatch && <p className="notice">This run belongs to a different head than the PR head in this observation. It does not establish coverage for that head.</p>}{(!value.run.complete || !value.run.attributable || !value.run.finalized) && <p className="notice">This run has incomplete, unattributed or unfinalized source evidence. Counts are historical observations.</p>}<ReadState error={pull.error} loading={pull.isPending} empty={false}>{!value.run.head_sha || !pull.data?.pull.head_sha ? <p className="review-warning">Head association is unknown.</p> : null}</ReadState></section><ReviewCoverageLimits limits={value.run.coverage_limits} /><section className="panel review-findings"><div className="section-heading"><h3>Findings ({value.findings.length} recorded / {value.run.found} reported)</h3></div>{value.findings.length ? <ul>{value.findings.map(finding => <FindingView key={finding.source_finding_id} finding={finding} />)}</ul> : <p className="empty">No findings recorded for this run.{!value.run.complete ? ' The source record is incomplete.' : ''}</p>}</section></>}</ReadState></>;
+  return <><Link className="back-link" to={value ? reviewLink(home, 'pulls', value.pull_number, value.snapshot_id) : `${home}/reviews`}>← {value ? `PR #${value.pull_number} history` : 'Review queue'}</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">PR #{value.pull_number} · {value.run.channel} run</p><h2>Review findings</h2><p>{value.run.reviewer || 'Reviewer unknown'} · {value.run.scope}</p></div><ReviewProvenance value={value} /><section className="panel review-run-summary"><RunPill run={value.run} snapshot={value.snapshot_id} head={pull.data?.pull.head_sha ?? ''} /><dl className="review-ref-grid"><div><dt>Original run source</dt><dd>{value.run.source}</dd></div><div><dt>Run head</dt><dd><code>{value.run.head_sha || 'Unknown'}</code></dd></div><div><dt>Observed PR head</dt><dd><code>{pull.data?.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Started / finished</dt><dd>{value.run.started_at ? time(value.run.started_at) : 'Unknown'}<br />{value.run.finished_at ? time(value.run.finished_at) : 'Unknown'}</dd></div></dl>{mismatch && <p className="notice">This run belongs to a different head than the PR head in this observation. It does not establish coverage for that head.</p>}{(!value.run.complete || !value.run.attributable || !value.run.finalized) && <p className="notice">This run has incomplete, unattributed or unfinalized source evidence. Counts are historical observations.</p>}<ReadState error={pull.error} loading={pull.isPending} empty={false}>{!value.run.head_sha || !pull.data?.pull.head_sha ? <p className="review-warning">Head association is unknown.</p> : null}</ReadState></section><ReviewCoverageLimits limits={value.run.coverage_limits} /><section className="panel review-findings"><div className="section-heading"><h3>Findings ({value.findings.length} recorded / {value.run.found} reported)</h3></div>{value.findings.length ? <ul>{value.findings.map(finding => <FindingView key={finding.source_finding_id} finding={finding} />)}</ul> : <p className="empty">No findings recorded for this run.{!value.run.complete ? ' The source record is incomplete.' : ''}</p>}</section></>}</ReadState></>;
 }

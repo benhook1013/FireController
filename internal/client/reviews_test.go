@@ -148,11 +148,11 @@ func TestReviewReadsUseScopedNativeProjectionAndPreserveNullableDuration(t *test
 		t.Fatalf("nullable duration collapsed: %+v", pull.Attempts)
 	}
 	runs, err := f.client.ReviewRuns(context.Background(), 1, client.ReviewRunOptions{PageOptions: client.PageOptions{Limit: 5}, Snapshot: snapshot})
-	if err != nil || len(runs.Items) != 1 || runs.Items[0].CoverageLimits[0] != "stored source only" {
+	if err != nil || len(runs.Items) != 1 || runs.Items[0].CoverageLimits[0] != "stored source only" || runs.Items[0].Source != "explicit-import" {
 		t.Fatalf("runs=%+v err=%v", runs, err)
 	}
 	detail, err := f.client.ReviewRun(context.Background(), runs.Items[0].ID, snapshot)
-	if err != nil || len(detail.Findings) != 1 || detail.Findings[0].Detail != "A detailed source finding" || detail.Run.Fixed != 1 {
+	if err != nil || len(detail.Findings) != 1 || detail.Findings[0].Detail != "A detailed source finding" || detail.Run.Fixed != 1 || detail.Run.Source != "explicit-import" {
 		t.Fatalf("detail=%+v err=%v", detail, err)
 	}
 	if f.calls.Load() != 6 {
@@ -314,6 +314,81 @@ func TestReviewReadsDefaultToCurrentSnapshotAndKeepHistoricalCounts(t *testing.T
 	}
 	if f.calls.Load() != 5 {
 		t.Fatalf("unexpected provider/handshake/retry requests: %d", f.calls.Load())
+	}
+}
+
+func TestReviewClientRequiresRunOriginAndKeepsMixedProducerIdentity(t *testing.T) {
+	run := client.ReviewRunSummary{Source: " original producer ", ID: "review_run_" + strings.Repeat("a", 32), PullNumber: 1, SourceRunID: "same-external-id", Channel: "manual", Scope: "stored", Outcome: "unknown", CoverageLimits: []string{}}
+	meta := map[string]any{"project_id": "project-one", "revision": 1, "snapshot_id": "review_snapshot_" + strings.Repeat("b", 32), "source": "native snapshot publisher", "observed_at": "2026-10-15T12:00:00Z", "recorded_at": "2026-10-15T12:01:00Z"}
+	makeBody := func(kind string, items []client.ReviewRunSummary) map[string]any {
+		value := map[string]any{}
+		for key, item := range meta {
+			value[key] = item
+		}
+		pull := client.ReviewPullSummary{Number: 1, Title: "PR", State: "open", CIState: "unknown", Mergeability: "unknown", RunCount: int64(len(items)), RecentRuns: items, LatestAttempts: []client.ReviewAttempt{}}
+		switch kind {
+		case "queue":
+			value["configured"], value["items"], value["has_more"] = true, []client.ReviewPullSummary{pull}, false
+		case "pull":
+			value["pull"], value["attempts"] = pull, []client.ReviewAttempt{}
+		case "runs":
+			value["items"], value["has_more"] = items, false
+		case "detail":
+			value["pull_number"], value["run"], value["findings"] = 1, items[0], []client.ReviewFinding{}
+		}
+		return value
+	}
+	call := func(kind string, body []byte) (any, error) {
+		t.Helper()
+		paths := map[string]string{"queue": "/queue", "pull": "/pulls/1", "runs": "/pulls/1/runs", "detail": "/runs/" + run.ID}
+		mock := newReviewMock(t, string(body), "/api/v1/projects/project-one/reviews"+paths[kind])
+		switch kind {
+		case "queue":
+			return mock.client.ReviewQueue(context.Background(), client.PageOptions{})
+		case "pull":
+			return mock.client.ReviewPull(context.Background(), 1, "")
+		case "runs":
+			return mock.client.ReviewRuns(context.Background(), 1, client.ReviewRunOptions{})
+		default:
+			return mock.client.ReviewRun(context.Background(), run.ID, "")
+		}
+	}
+	for _, kind := range []string{"queue", "pull", "runs", "detail"} {
+		body, _ := json.Marshal(makeBody(kind, []client.ReviewRunSummary{run}))
+		value, err := call(kind, body)
+		if err != nil {
+			t.Fatal("valid original producer rejected", kind, err)
+		}
+		encoded, _ := json.Marshal(value)
+		if !strings.Contains(string(encoded), `"source":" original producer "`) || !strings.Contains(string(encoded), `"source":"native snapshot publisher"`) {
+			t.Fatal("original producer or snapshot publisher was relabeled")
+		}
+		for _, source := range []string{"", " \t\n", strings.Repeat("🔥", 33), "bad\x00source"} {
+			invalid := run
+			invalid.Source = source
+			body, _ := json.Marshal(makeBody(kind, []client.ReviewRunSummary{invalid}))
+			_, err := call(kind, body)
+			checkError(t, err, "invalid_response")
+		}
+		missing := strings.Replace(string(body), `"source":" original producer ",`, "", 1)
+		_, err = call(kind, []byte(missing))
+		checkError(t, err, "invalid_response")
+		nullSource := strings.Replace(string(body), `"source":" original producer "`, `"source":null`, 1)
+		_, err = call(kind, []byte(nullSource))
+		checkError(t, err, "invalid_response")
+	}
+	other := run
+	other.Source, other.ID = "native producer", "review_run_"+strings.Repeat("c", 32)
+	for _, kind := range []string{"queue", "pull", "runs"} {
+		body, _ := json.Marshal(makeBody(kind, []client.ReviewRunSummary{run, other}))
+		if _, err := call(kind, body); err != nil {
+			t.Fatal("distinct producers sharing an external run ID were conflated", kind, err)
+		}
+		other.Source = run.Source
+		body, _ = json.Marshal(makeBody(kind, []client.ReviewRunSummary{run, other}))
+		_, err := call(kind, body)
+		checkError(t, err, "invalid_response")
+		other.Source = "native producer"
 	}
 }
 

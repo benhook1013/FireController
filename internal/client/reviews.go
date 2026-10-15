@@ -97,6 +97,7 @@ type ReviewPullSummary struct {
 }
 
 type ReviewRunSummary struct {
+	Source         string   `json:"source"`
 	ID             string   `json:"id"`
 	PullNumber     int64    `json:"pull_number"`
 	SourceRunID    string   `json:"source_run_id"`
@@ -225,7 +226,7 @@ func (c *Client) ReviewRuns(ctx context.Context, number int64, options ReviewRun
 		return ReviewRuns{}, invalidResponse()
 	}
 	seen := make(map[string]struct{}, len(value.Items))
-	seenSource := make(map[string]struct{}, len(value.Items))
+	seenSource := make(map[[2]string]struct{}, len(value.Items))
 	for _, item := range value.Items {
 		if !validReviewRunSummary(item) || item.PullNumber != number {
 			return ReviewRuns{}, invalidResponse()
@@ -234,10 +235,10 @@ func (c *Client) ReviewRuns(ctx context.Context, number int64, options ReviewRun
 			return ReviewRuns{}, invalidResponse()
 		}
 		seen[item.ID] = struct{}{}
-		if _, exists := seenSource[item.SourceRunID]; exists {
+		if _, exists := seenSource[[2]string{item.Source, item.SourceRunID}]; exists {
 			return ReviewRuns{}, invalidResponse()
 		}
-		seenSource[item.SourceRunID] = struct{}{}
+		seenSource[[2]string{item.Source, item.SourceRunID}] = struct{}{}
 	}
 	return value, nil
 }
@@ -292,7 +293,7 @@ func (c *Client) validReviewPull(value ReviewPullSummary) bool {
 		return false
 	}
 	seenRuns := make(map[string]struct{}, len(value.RecentRuns))
-	seenSourceRuns := make(map[string]struct{}, len(value.RecentRuns))
+	seenSourceRuns := make(map[[2]string]struct{}, len(value.RecentRuns))
 	for _, run := range value.RecentRuns {
 		if !validReviewRunSummary(run) || run.PullNumber != value.Number {
 			return false
@@ -301,10 +302,10 @@ func (c *Client) validReviewPull(value ReviewPullSummary) bool {
 			return false
 		}
 		seenRuns[run.ID] = struct{}{}
-		if _, exists := seenSourceRuns[run.SourceRunID]; exists {
+		if _, exists := seenSourceRuns[[2]string{run.Source, run.SourceRunID}]; exists {
 			return false
 		}
-		seenSourceRuns[run.SourceRunID] = struct{}{}
+		seenSourceRuns[[2]string{run.Source, run.SourceRunID}] = struct{}{}
 	}
 	seenChannels := make(map[string]struct{}, len(value.LatestAttempts))
 	for _, attempt := range value.LatestAttempts {
@@ -320,7 +321,7 @@ func (c *Client) validReviewPull(value ReviewPullSummary) bool {
 }
 
 func validReviewRunSummary(value ReviewRunSummary) bool {
-	if !validReviewRunID(value.ID) || !validPullNumber(value.PullNumber) || !cleanReviewText(value.SourceRunID, 256, true) ||
+	if !validReviewRunID(value.ID) || !validPullNumber(value.PullNumber) || !cleanReviewText(value.Source, 128, true) || !cleanReviewText(value.SourceRunID, 256, true) ||
 		!oneReviewOf(value.Channel, "cli", "hosted", "manual", "subagent") || !validReviewSHA(value.HeadSHA) ||
 		!cleanReviewText(value.Reviewer, 128, false) || !cleanReviewText(value.Scope, 128, true) ||
 		!oneReviewOf(value.Outcome, "completed", "active", "prepared", "posting", "failed", "cancelled", "rate_limited", "uncertain", "unknown") ||

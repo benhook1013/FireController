@@ -24,6 +24,7 @@ const reviewSnapshot = {
   source: 'retained test observations', observed_at: '2026-10-15T12:00:00Z', recorded_at: '2026-10-15T12:01:00Z',
 };
 const reviewRun = {
+  source: 'original-review-producer',
   id: `review_run_${'b'.repeat(32)}`, pull_number: 1, source_run_id: 'run-source-one', channel: 'hosted',
   head_sha: 'c'.repeat(40), reviewer: 'Reviewer', scope: 'selected patch', coverage_limits: ['Historical selected scope only.'],
   outcome: 'completed', attributable: true, complete: true, started_at: '2026-10-15T11:00:00Z', finished_at: '2026-10-15T11:05:00Z',
@@ -61,7 +62,162 @@ async function connect(client: Api): Promise<void> {
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
+describe('read-only browser cookie session transport', () => {
+  it('exchanges verified bearer once, then uses only the selector cookie mode for finite reads and logout', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    let selector = '';
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), init: init! });
+      if (init?.method === 'POST') {
+        selector = (JSON.parse(String(init.body)) as { session_id: string }).session_id;
+        expect(selector).toMatch(/^[a-f0-9]{32}$/);
+        expect(JSON.parse(String(init.body))).toEqual({ session_id: selector });
+        expect(new Headers(init.headers).get('authorization')).toBe('Bearer private-token-do-not-leak');
+        expect(new Headers(init.headers).has('x-fc-browser-session')).toBe(false);
+        return json({ session_id: selector, instance_id: 'instance_one', project_id: 'project_one', expires_at: new Date(Date.now() + 24 * 3600000).toISOString() });
+      }
+      if (init?.method === 'DELETE') return json({ session_id: selector, logged_out: true });
+      return json({ items: [worker], has_more: false });
+    }));
+    const started = await client.startBrowserSession();
+    expect(started.session_id).toBe(selector);
+    expect(JSON.stringify(client)).not.toContain('private-token-do-not-leak');
+    expect((await client.workers()).items).toEqual([worker]);
+    client.close();
+    // Logout remains independent of the now-aborted read transport.
+    await client.endBrowserSession();
+    for (const [index, { url, init }] of requests.entries()) {
+      expect(new URL(url).origin).toBe('https://service.example');
+      expect(init.credentials).toBe('same-origin');
+      expect(new Headers(init.headers).get('x-fc-instance')).toBe('instance_one');
+      if (index > 0) {
+        expect(new Headers(init.headers).get('authorization')).toBeNull();
+        expect(new Headers(init.headers).get('x-fc-browser-session')).toBe(selector);
+      }
+      expect(url).not.toContain(selector);
+    }
+    expect(requests[2].init.body).toBe('{}');
+  });
+
+  it('resumes exact expected identity without bearer and sends cookie-mode headers for snapshot and SSE', async () => {
+    setupLocation();
+    const selector = 'a'.repeat(32);
+    const client = Api.resume('project_one', selector, 'instance_one');
+    const requests: RequestInit[] = [];
+    const controller = new AbortController();
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(init!);
+      const url = String(input);
+      if (url.endsWith('/instance')) return json({ instance_id: 'instance_one' });
+      if (url.endsWith('/project_one')) return json(project);
+      if (url.includes('/snapshot')) return json({ inbox: { items: [], has_more: false }, event_cursor: 'snapshot_cursor' });
+      const page = { items: [], cursor: 'stream_cursor', has_more: false, timed_out: false };
+      const data = `event: message-events\nid: stream_cursor\ndata: ${JSON.stringify(page)}\n\n`;
+      return new Response(new ReadableStream<Uint8Array>({ start(output) { output.enqueue(new TextEncoder().encode(data)); } }), { headers: { 'content-type': 'text/event-stream' } });
+    }));
+    await client.watchMessages('worker_one', {}, { snapshot() {}, events() { controller.abort(); }, status() {} }, controller.signal);
+    expect(requests).toHaveLength(4);
+    for (const init of requests) {
+      expect(init.credentials).toBe('same-origin');
+      expect(new Headers(init.headers).get('authorization')).toBeNull();
+      expect(new Headers(init.headers).get('x-fc-browser-session')).toBe(selector);
+      expect(new Headers(init.headers).get('x-fc-instance')).toBe('instance_one');
+    }
+    expect(new Headers(requests[3].headers).get('x-fc-worker')).toBe('worker_one');
+    client.close();
+  });
+
+  it('rejects malformed restored bindings before HTTP and instance mismatch before project reads', async () => {
+    setupLocation();
+    const fetchMock = vi.fn().mockResolvedValue(json({ instance_id: 'instance_other' }));
+    vi.stubGlobal('fetch', fetchMock);
+    for (const args of [['../project', 'a'.repeat(32), 'instance_one'], ['project_one', 'A'.repeat(32), 'instance_one'], ['project_one', 'a'.repeat(32), ''], ['project_one', 'a'.repeat(33), 'instance_one']]) {
+      expect(() => Api.resume(args[0], args[1], args[2])).toThrow(ApiError);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    const client = Api.resume('project_one', 'a'.repeat(32), 'instance_one');
+    await expect(client.connect()).rejects.toMatchObject({ code: 'instance_mismatch' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(client.instanceId).toBeUndefined();
+    client.close();
+  });
+
+  it('strictly rejects incomplete, unbound or oversized session receipts and supports safe cleanup after failure', async () => {
+    setupLocation();
+    for (const kind of ['missing', 'null', 'unknown', 'project', 'instance', 'selector', 'expiry', 'oversize']) {
+      const client = api(); await connect(client);
+      let selector = '';
+      vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'DELETE') return json({ session_id: selector, logged_out: true });
+        selector = (JSON.parse(String(init?.body)) as { session_id: string }).session_id;
+        const value: Record<string, unknown> = { session_id: selector, instance_id: 'instance_one', project_id: 'project_one', expires_at: new Date(Date.now() + 3600000).toISOString() };
+        if (kind === 'missing') delete value.expires_at;
+        if (kind === 'null') value.expires_at = null;
+        if (kind === 'unknown') value.token = 'private-token-do-not-leak';
+        if (kind === 'project') value.project_id = 'project_two';
+        if (kind === 'instance') value.instance_id = 'instance_other';
+        if (kind === 'selector') value.session_id = 'b'.repeat(32);
+        if (kind === 'expiry') value.expires_at = '2000-01-01T00:00:00Z';
+        if (kind === 'oversize') return new Response('x'.repeat(4097), { headers: { 'content-type': 'application/json' } });
+        return json(value);
+      }));
+      await expect(client.startBrowserSession()).rejects.toMatchObject({ code: kind === 'oversize' ? 'response_too_large' : 'invalid_response' });
+      client.close(); await client.endBrowserSession();
+    }
+  });
+
+  it('cancels an old restore and permits a fresh StrictMode-style instance to verify the retained binding', async () => {
+    setupLocation();
+    const old = Api.resume('project_one', 'a'.repeat(32), 'instance_one');
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    })));
+    const pending = old.connect();
+    old.close();
+    await expect(pending).rejects.toMatchObject({ code: 'cancelled' });
+    const fresh = Api.resume('project_one', 'a'.repeat(32), 'instance_one');
+    await connect(fresh);
+    expect(fresh.instanceId).toBe('instance_one');
+    fresh.close();
+  });
+
+  it('requires the exact bounded logout receipt instead of treating an arbitrary 200 as success', async () => {
+    setupLocation();
+    for (const value of [{}, { session_id: 'b'.repeat(32), logged_out: true }, { session_id: 'a'.repeat(32), logged_out: null }, { session_id: 'a'.repeat(32), logged_out: true, extra: 'private' }]) {
+      const client = Api.resume('project_one', 'a'.repeat(32), 'instance_one');
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
+      await expect(client.endBrowserSession()).rejects.toMatchObject({ code: 'invalid_response' });
+      client.close();
+    }
+    const client = Api.resume('project_one', 'a'.repeat(32), 'instance_one');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response('x'.repeat(4097), { headers: { 'content-type': 'application/json' } })));
+    await expect(client.endBrowserSession()).rejects.toMatchObject({ code: 'response_too_large' });
+    client.close();
+  });
+});
+
 describe('Api stored review workspace', () => {
+  it('requires a bounded original run source in compact and full reads independently of the publisher', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const { source: _producer, ...missingSource } = reviewRun;
+    for (const kind of ['queue', 'pull', 'runs', 'detail']) {
+      for (const run of [missingSource, ...[null, '', ' \t\n', '🔥'.repeat(33), 'bad\u0000source'].map(source => ({ ...reviewRun, source }))]) {
+        const envelope = kind === 'queue' ? { ...reviewQueue, items: [{ ...reviewPull, recent_runs: [run] }] }
+          : kind === 'pull' ? { ...reviewSnapshot, pull: { ...reviewPull, recent_runs: [run] }, attempts: [reviewAttempt] }
+          : kind === 'runs' ? { ...reviewSnapshot, items: [run], has_more: false }
+          : { ...reviewDetail, run };
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(envelope)));
+        const request = kind === 'queue' ? client.reviewQueue() : kind === 'pull' ? client.reviewPull(1) : kind === 'runs' ? client.reviewRuns(1) : client.reviewRun(reviewRun.id);
+        await expect(request).rejects.toMatchObject({ code: 'invalid_response' });
+      }
+    }
+  });
+
   it('reads retained merged history and four source channels using scoped GETs and explicit snapshot pages', async () => {
     setupLocation();
     const client = api();
@@ -83,6 +239,8 @@ describe('Api stored review workspace', () => {
     const detail = await client.reviewRun(reviewRun.id, reviewSnapshot.snapshot_id);
     expect(detail.findings[0]).toEqual(reviewFinding);
     expect(detail.run.coverage_limits).toEqual(reviewRun.coverage_limits);
+    expect(detail.run.source).toBe('original-review-producer');
+    expect(detail.source).toBe(reviewSnapshot.source);
     expect((await client.reviewQueue()).configured).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(5);
     const urls = fetchMock.mock.calls.map(call => new URL(call[0]));

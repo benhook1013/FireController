@@ -188,6 +188,80 @@ func TestReviewDetailsKeepCompactAndFullBoundaries(t *testing.T) {
 	}
 }
 
+func TestRunOriginRetainedAcrossPublisherAndOldCompactReadFallback(t *testing.T) {
+	for _, oldCompact := range []bool{false, true} {
+		t.Run(strconv.FormatBool(oldCompact), func(t *testing.T) {
+			f := newAPIFixture(t)
+			pull := samplePull(1, "Retained source")
+			pull.Runs = []RunInput{{SourceRunID: "original-run", Channel: "manual", Scope: "stored", Outcome: "unknown", Found: 1, Findings: []Finding{{SourceFindingID: "finding", Title: "Retained finding", Detail: "Original detail", Severity: "unknown", Disposition: "unadjudicated"}}}}
+			request := reviewRequest(0, []PullInput{pull})
+			request.Source = " original producer "
+			snapshot := f.observe(t, request, "origin-observe")["id"].(string)
+			var stored string
+			if err := f.store.DB().QueryRow(`SELECT recent_runs_json FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=1`, f.project, snapshot).Scan(&stored); err != nil {
+				t.Fatal(err)
+			}
+			publisher := request.Source
+			if oldCompact {
+				// Simulate retained bytes produced before the Source field existed.
+				var compact []map[string]any
+				if json.Unmarshal([]byte(stored), &compact) != nil {
+					t.Fatal("compact fixture")
+				}
+				delete(compact[0], "source")
+				encoded, _ := json.Marshal(compact)
+				stored = string(encoded)
+				if _, err := f.store.DB().Exec(`UPDATE review_pulls SET recent_runs_json=? WHERE project_id=? AND snapshot_id=? AND number=1`, stored, f.project, snapshot); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				// Simulate a new publisher retaining an explicitly sourced run.
+				// The real mixed-source publisher is a separate implementation.
+				publisher = "native snapshot publisher"
+				if _, err := f.store.DB().Exec(`UPDATE review_snapshots SET source=? WHERE project_id=? AND snapshot_id=?`, publisher, f.project, snapshot); err != nil {
+					t.Fatal(err)
+				}
+			}
+			base := "/api/v1/projects/" + f.project + "/reviews"
+			read := func(route string, dst any) {
+				t.Helper()
+				response := f.call("GET", base+route, f.readToken, "", nil)
+				if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), dst) != nil {
+					t.Fatalf("read %s: %d %s", route, response.Code, response.Body.String())
+				}
+			}
+			beforeEvents, beforeReceipts := countRows(t, f.store, "events"), countRows(t, f.store, "receipts")
+			var queue QueueResponse
+			var detail PullResponse
+			var runs RunsResponse
+			read("/queue", &queue)
+			read("/pulls/1?snapshot="+snapshot, &detail)
+			read("/pulls/1/runs?snapshot="+snapshot, &runs)
+			if len(queue.Items) != 1 || len(detail.Pull.RecentRuns) != 1 || len(runs.Items) != 1 {
+				t.Fatal("retained projections missing")
+			}
+			id := runOpaqueID(f.project, request.Source, "original-run")
+			for _, run := range []RunSummary{queue.Items[0].RecentRuns[0], detail.Pull.RecentRuns[0], runs.Items[0]} {
+				if run.Source != request.Source || run.ID != id {
+					t.Fatalf("producer relabeled: %+v", run)
+				}
+			}
+			var full RunDetailResponse
+			read("/runs/"+id+"?snapshot="+snapshot, &full)
+			if full.Source != publisher || queue.Source != publisher || detail.Source != publisher || runs.Source != publisher || full.Run.Source != request.Source || full.Run.ID != id || len(full.Findings) != 1 || full.Findings[0].Detail != "Original detail" {
+				t.Fatal("snapshot publisher, run origin, identity or findings changed")
+			}
+			var after string
+			if err := f.store.DB().QueryRow(`SELECT recent_runs_json FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=1`, f.project, snapshot).Scan(&after); err != nil {
+				t.Fatal(err)
+			}
+			if after != stored || countRows(t, f.store, "events") != beforeEvents || countRows(t, f.store, "receipts") != beforeReceipts {
+				t.Fatal("read fallback mutated retained bytes or journal")
+			}
+		})
+	}
+}
+
 func TestReviewObservationCASRetirementAndAuthorization(t *testing.T) {
 	f := newAPIFixture(t)
 	base := "/api/v1/projects/" + f.project + "/reviews"

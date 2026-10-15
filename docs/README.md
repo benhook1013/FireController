@@ -8,10 +8,12 @@ The coordination slice implements a loopback service with scoped projects/worker
 
 - [Browser guide](browser-guide.md): embedded UI, connection privacy and build/proof limits.
 - [Development](development.md): implemented profile-bound CLI reads/mutations, build/check commands, and current proof limits.
+- [Hosting and HTTPS](hosting.md): local/remote deployment, infrastructure-owned certificates, persistence and executed hosted proof.
 - [Incoming message events](message-events.md): scoped inbox snapshots, replay and bounded waits.
 - [Local MCP tools](mcp.md): bound read/write stdio tools and protocol/host proof limits.
 - [Local API](local-api.md): implemented coordination endpoints, bootstrap and limits.
 - [Native review workspace](review-workspace.md): stored queue, PR/run history, findings, fix proof and explicit administrator observations.
+- [Native review execution](review-execution.md): durable operations, provider adapters, isolated workspaces and the remaining dispatch/cutover boundary.
 - [Job checkpoints](job-checkpoints.md): immutable progress records, guarded appends, explicit latest/archive reads and integration status.
 - [Suggested agent workflow](agent-workflow.md): optional working practices for project instructions and a usage skill, separate from tool contracts.
 - [Product scope](product.md) defines the requirements.
