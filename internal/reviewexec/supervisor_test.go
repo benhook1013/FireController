@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,9 +78,11 @@ func waitSupervisor(t *testing.T, message string, ready func() bool) {
 func runSupervisor(t *testing.T, f *attemptFixture, driver Driver) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- f.e.Run(ctx, map[string]Driver{"test-capability": driver, "other-account": driver}) }()
-	waitSupervisor(t, "supervisor ownership", func() bool { return f.e.running.Load() })
+	done, err := f.e.Start(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	if err != nil {
+		cancel()
+		t.Fatal("supervisor startup:", err)
+	}
 	stopped := false
 	stop := func() {
 		if stopped {
@@ -88,8 +91,8 @@ func runSupervisor(t *testing.T, f *attemptFixture, driver Driver) func() {
 		stopped = true
 		cancel()
 		select {
-		case err := <-done:
-			if err != nil {
+		case err, ok := <-done:
+			if !ok || err != nil {
 				t.Error("orderly supervisor shutdown:", err)
 			}
 		case <-time.After(3 * time.Second):
@@ -467,15 +470,235 @@ func TestSupervisorCooperativeShutdownRetainsInterruptedDispatch(t *testing.T) {
 func TestSupervisorRejectsInvalidDriverMapsAndDuplicateOwner(t *testing.T) {
 	f := supervisorFixture(t)
 	driver := &controlledDriver{}
-	for _, drivers := range []map[string]Driver{nil, {"test-capability": driver}, {"test-capability": driver, "other-account": nil}, {"test-capability": driver, "other-account": driver, "unknown": driver}} {
-		attemptCode(t, f.e.Run(context.Background(), drivers), "validation_failed")
+	var nilDriver *controlledDriver
+	for _, drivers := range []map[string]Driver{nil, {"test-capability": driver}, {"test-capability": driver, "other-account": nil}, {"test-capability": driver, "other-account": nilDriver}, {"test-capability": driver, "other-account": driver, "unknown": driver}} {
+		done, err := f.e.Start(context.Background(), drivers)
+		attemptCode(t, err, "validation_failed")
+		if done != nil {
+			t.Fatal("invalid bindings returned a worker completion channel")
+		}
 		if f.e.running.Load() {
 			t.Fatal("rejected supervisor retained ownership")
 		}
 	}
 	stop := runSupervisor(t, f, driver)
-	attemptCode(t, f.e.Run(context.Background(), map[string]Driver{"test-capability": driver, "other-account": driver}), "review_conflict")
+	done, err := f.e.Start(context.Background(), map[string]Driver{"test-capability": driver, "other-account": driver})
+	attemptCode(t, err, "review_conflict")
+	if done != nil {
+		t.Fatal("duplicate supervisor returned a worker completion channel")
+	}
 	stop()
+}
+
+func requireSupervisorCompletion(t *testing.T, f *attemptFixture, cancel context.CancelFunc, done <-chan error) {
+	t.Helper()
+	cancel()
+	select {
+	case err, ok := <-done:
+		if !ok || err != nil {
+			t.Fatal("missing or unsuccessful terminal result", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("supervisor shutdown did not complete")
+	}
+	select {
+	case _, ok := <-done:
+		if ok {
+			t.Fatal("supervisor emitted more than one terminal result")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("supervisor did not close its completion channel")
+	}
+	if f.e.running.Load() {
+		t.Fatal("terminal result was visible before ownership was released")
+	}
+}
+
+func TestSupervisorStartCommitsRecoveryBeforeReturning(t *testing.T) {
+	for _, state := range []string{"preparing", "posting", "active"} {
+		t.Run(state, func(t *testing.T) {
+			f := supervisorFixture(t)
+			channel := "cli"
+			if state == "posting" {
+				channel = "hosted"
+			}
+			r := f.enqueue(t, attemptProject, "interrupted-before-start", channel, 2, 1)
+			a := f.start(t, attemptProject, r)
+			if state != "preparing" {
+				intent := ""
+				if channel == "hosted" {
+					intent = "retained-startup-intent"
+				}
+				var err error
+				a, err = f.e.Admit(context.Background(), attemptProject, a.ID, a.Revision, attemptAnchor(attemptProject, 2), intent)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeTransitions := attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions WHERE attempt_id=?`, a.ID)
+			driver := &controlledDriver{}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done, err := f.e.Start(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// No readiness poll: the durable state must already be committed when
+			// Start returns, before an HTTP listener would accept a new request.
+			want, reservations := "uncertain", 1
+			if state == "preparing" {
+				want, reservations = "cancelled", 0
+			}
+			if supervisorOperationState(t, f, r.ID) != want || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != reservations || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions WHERE attempt_id=?`, a.ID) != beforeTransitions+1 || driver.prepares.Load() != 0 || driver.calls.Load() != 0 {
+				t.Fatal("Start returned before recovery or dispatched interrupted work")
+			}
+			requireSupervisorCompletion(t, f, cancel, done)
+		})
+	}
+}
+
+func TestSupervisorStartRecoveryFailureHasNoWorkersAndAllowsRetry(t *testing.T) {
+	f := supervisorFixture(t)
+	r := f.enqueue(t, attemptProject, "startup-recovery-fault", "cli", 2, 1)
+	a := f.start(t, attemptProject, r)
+	before := attemptState(t, f, a)
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_startup_recovery BEFORE UPDATE ON review_operations BEGIN SELECT RAISE(ABORT,'synthetic startup recovery fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	driver := &controlledDriver{}
+	drivers := map[string]Driver{"test-capability": driver, "other-account": driver}
+	done, err := f.e.Start(context.Background(), drivers)
+	if err == nil || done != nil || f.e.running.Load() || attemptState(t, f, a) != before || driver.prepares.Load() != 0 || driver.calls.Load() != 0 {
+		t.Fatal("failed synchronous recovery leaked ownership/workers or partial state", err)
+	}
+	if _, err := f.store.DB().Exec(`DROP TRIGGER reject_startup_recovery`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done, err = f.e.Start(ctx, drivers)
+	if err != nil || supervisorOperationState(t, f, r.ID) != "cancelled" {
+		t.Fatal("valid startup could not retry recovery", err)
+	}
+	requireSupervisorCompletion(t, f, cancel, done)
+}
+
+func TestSupervisorStartWaitsForRecoveryTransaction(t *testing.T) {
+	f := supervisorFixture(t)
+	r := f.enqueue(t, attemptProject, "recovery-behind-owned-write", "cli", 2, 1)
+	f.start(t, attemptProject, r)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWrite := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseWrite)
+	writerDone := make(chan error, 1)
+	go func() {
+		writerDone <- f.store.BackgroundWrite(context.Background(), func(ctx context.Context, _ *sql.Tx) error {
+			close(entered)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("owned startup fixture writer did not enter")
+	}
+	type startup struct {
+		done <-chan error
+		err  error
+	}
+	started := make(chan startup, 1)
+	driver := &controlledDriver{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		done, err := f.e.Start(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+		started <- startup{done, err}
+	}()
+	select {
+	case result := <-started:
+		t.Fatal("startup returned before its recovery transaction could run", result.err)
+	case <-time.After(80 * time.Millisecond):
+	}
+	releaseWrite()
+	select {
+	case err := <-writerDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("owned writer did not release")
+	}
+	var result startup
+	select {
+	case result = <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("startup did not complete after writer release")
+	}
+	if result.err != nil || result.done == nil || supervisorOperationState(t, f, r.ID) != "cancelled" || driver.prepares.Load() != 0 || driver.calls.Load() != 0 {
+		t.Fatal("startup did not commit recovery before success", result.err)
+	}
+	requireSupervisorCompletion(t, f, cancel, result.done)
+}
+
+func TestSupervisorConcurrentStartOwnsOnePoolAndCopiesBindings(t *testing.T) {
+	f := supervisorFixture(t)
+	driver := &controlledDriver{}
+	drivers := map[string]Driver{"test-capability": driver, "other-account": driver}
+	if done, err := f.e.Start(nil, drivers); done != nil || err == nil || f.e.running.Load() {
+		t.Fatal("nil context admitted a supervisor")
+	}
+	interrupted, interrupt := context.WithCancel(context.Background())
+	interrupt()
+	if done, err := f.e.Start(interrupted, drivers); done != nil || err == nil || f.e.running.Load() {
+		t.Fatal("cancelled startup retained ownership or returned workers")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type startup struct {
+		done <-chan error
+		err  error
+	}
+	results := make(chan startup, 8)
+	start := make(chan struct{})
+	var callers sync.WaitGroup
+	for range 8 {
+		callers.Go(func() { <-start; done, err := f.e.Start(ctx, drivers); results <- startup{done, err} })
+	}
+	close(start)
+	callers.Wait()
+	var winner <-chan error
+	for range 8 {
+		got := <-results
+		if got.err == nil {
+			if winner != nil || got.done == nil {
+				t.Fatal("multiple owners or missing completion channel")
+			}
+			winner = got.done
+		} else {
+			attemptCode(t, got.err, "review_conflict")
+			if got.done != nil {
+				t.Fatal("rejected start returned worker channel")
+			}
+		}
+	}
+	if winner == nil {
+		t.Fatal("no concurrent startup succeeded")
+	}
+	// Mutating the caller's map after Start returns must not affect the pool.
+	delete(drivers, "test-capability")
+	drivers["other-account"] = nil
+	r := f.enqueue(t, attemptProject, "copied-startup-drivers", "cli", 2, 1)
+	waitOperationState(t, f, r.ID, "completed")
+	if driver.prepares.Load() != 1 || driver.calls.Load() != 1 {
+		t.Fatal("owned driver binding changed or redispatched")
+	}
+	requireSupervisorCompletion(t, f, cancel, winner)
 }
 
 func TestSupervisorBackgroundWriteCancelsRealSQLiteAndRollsBackJournal(t *testing.T) {

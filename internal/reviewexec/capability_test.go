@@ -204,6 +204,12 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 	before := bindingOperation(t, f, scope, oldReceipt.ID)
 	instance := f.store.InstanceID()
 	// Reconstruct the actual version1 table shape only in this owned fixture.
+	if _, err := f.store.DB().Exec(`DROP INDEX review_operations_cli_admission`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().Exec(`DROP TABLE review_cli_preflight`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.store.DB().Exec(`DROP INDEX review_operations_coverage`); err != nil {
 		t.Fatal(err)
 	}
@@ -237,11 +243,11 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := EnsureSchema(context.Background(), reopened); err != nil {
-		t.Fatal("second version3 startup was not idempotent", err)
+		t.Fatal("second version4 startup was not idempotent", err)
 	}
 	bindEngine(t, f, bindingCapability())
 	var version, title, brief, worker string
-	if err := reopened.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "3" {
+	if err := reopened.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "4" {
 		t.Fatal("migration did not advance only the domain version", err)
 	}
 	if err := reopened.DB().QueryRow(`SELECT title,brief,worker_id FROM jobs WHERE id='retained-job'`).Scan(&title, &brief, &worker); err != nil || title != "Retained title" || brief != "Retained exact brief" || worker != "retained-worker" {
@@ -274,4 +280,39 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 		t.Fatal("new request remained unbound after migration")
 	}
 	f.start(t, attemptProject, fresh)
+}
+
+func TestMatchesCapabilityUsesExactCanonicalOperatorBinding(t *testing.T) {
+	original := Capability{ID: "operator", Provider: "coderabbit", Account: "account", Channels: []string{"cli", "hosted"}, Fingerprint: strings.Repeat("a", 64)}
+	engine, err := New(nil, []Capability{original})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !engine.MatchesCapability(original) {
+		t.Fatal("same operator binding did not match")
+	}
+	reversed := original
+	reversed.Channels = []string{"hosted", "cli"}
+	if !engine.MatchesCapability(reversed) {
+		t.Fatal("channel order changed canonical binding")
+	}
+	for _, change := range []func(*Capability){
+		func(c *Capability) { c.Fingerprint = strings.Repeat("b", 64) },
+		func(c *Capability) { c.Fingerprint = "" },
+		func(c *Capability) { c.Account = "other" },
+		func(c *Capability) { c.ID = "other" },
+		func(c *Capability) { c.Provider = "other" },
+		func(c *Capability) { c.Channels = []string{"cli"} },
+		func(c *Capability) { c.Channels = []string{"cli", "cli"} },
+	} {
+		changed := original
+		change(&changed)
+		if engine.MatchesCapability(changed) {
+			t.Fatal("different or invalid operator binding matched")
+		}
+	}
+	var absent *Engine
+	if absent.MatchesCapability(original) {
+		t.Fatal("absent engine matched")
+	}
 }

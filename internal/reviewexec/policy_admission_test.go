@@ -307,6 +307,8 @@ func TestPolicyAdmissionVersionTwoMigrationRetainsUnboundJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	admissionSQL(t, f, `DROP INDEX review_operations_cli_admission`)
+	admissionSQL(t, f, `DROP TABLE review_cli_preflight`)
 	admissionSQL(t, f, `DROP INDEX review_operations_coverage`)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN policy_revision`)
 	admissionSQL(t, f, `UPDATE metadata SET value='2' WHERE key='schema:review_execution'`)
@@ -353,5 +355,55 @@ func TestPolicyAdmissionVersionTwoMigrationRetainsUnboundJournal(t *testing.T) {
 	}
 	if attemptCount(t, store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
 		t.Fatal("migration hold created work")
+	}
+}
+
+func TestVerifyActionRejectsAllHeadPendingAndLateCorrection(t *testing.T) {
+	f, prior, id, current := coverageFixture(t, 1, false)
+	adjudicationComplete(t, f, prior)
+	next := coverageNextAttempt(t, f, "new-head-intent", "cli", strings.Repeat("9", 40))
+	before := adjudicationState(t, f, next)
+	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, next.ID, next.Revision), "review_evidence_pending")
+	if adjudicationState(t, f, next) != before {
+		t.Fatal("refused action mutated journal")
+	}
+	adjudicationDecide(t, f, id, "reject-old", 0, 0, "rejected")
+	body, err := f.e.FinalizeCLI(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-old", id, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(1)})
+	adjudicationReceipt(t, body, err, id, "finalized", 2)
+	if err := f.e.VerifyAction(t.Context(), attemptProject, next.ID, next.Revision); err != nil {
+		t.Fatal("closed old comparison blocked new head", err)
+	}
+	// A decision correction can land after preparation's source/coverage read.
+	// The final guard must re-read that obligation in its own current snapshot.
+	adjudicationDecide(t, f, id, "late-acceptance", 2, 0, "accepted")
+	before = adjudicationState(t, f, next)
+	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, next.ID, next.Revision), "review_evidence_pending")
+	if adjudicationState(t, f, next) != before {
+		t.Fatal("late refusal mutated state")
+	}
+	coverageFix(t, f, id, "late-fix", 3, 0, "")
+	if err := f.e.VerifyAction(t.Context(), attemptProject, next.ID, next.Revision); err != nil {
+		t.Fatal(err)
+	}
+	coverageComparison(t, f, prior, current, CLIComparisonState{Covered: true})
+}
+
+func TestVerifyActionAlreadyCoveredAndHostedIndependent(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			f, prior, id, current := coverageFixture(t, 0, false)
+			coverageFinalize(t, f, prior, id, 0)
+			next := coverageNextAttempt(t, f, "explicit-current", channel, current.Pull.HeadSHA)
+			before := adjudicationState(t, f, next)
+			err := f.e.VerifyAction(t.Context(), attemptProject, next.ID, next.Revision)
+			if channel == "cli" {
+				attemptCode(t, err, "review_held")
+			} else if err != nil {
+				t.Fatal("CLI coverage blocked hosted", err)
+			}
+			if adjudicationState(t, f, next) != before {
+				t.Fatal("action check changed state")
+			}
+		})
 	}
 }

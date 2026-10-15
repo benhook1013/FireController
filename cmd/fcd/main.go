@@ -18,6 +18,7 @@ import (
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviewruntime"
 	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/server"
 	"github.com/benhook1013/FireController/internal/webui"
@@ -29,12 +30,13 @@ func main() {
 	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode int) {
 	flags := flag.NewFlagSet("fcd", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	dataDir := flags.String("data-dir", "", "private local data directory (required)")
 	listen := flags.String("listen", "127.0.0.1:8080", "loopback HTTP listen address")
 	tokenFile := flags.String("github-token-file", "", "optional private GitHub credential file")
+	reviewCatalog := flags.String("review-catalog", "", "optional private native CLI capability catalog")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -44,6 +46,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if flags.NArg() != 0 || *dataDir == "" || !loopback(*listen) {
 		diagnostic(stderr, "configuration_invalid", "Provide --data-dir and a loopback --listen address.")
 		return 2
+	}
+	catalog, err := reviewruntime.LoadCatalog(*reviewCatalog)
+	if err != nil {
+		diagnosticError(stderr, err)
+		return 3
 	}
 	address := *listen
 	if host, port, _ := net.SplitHostPort(address); host == "localhost" {
@@ -72,15 +79,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		diagnosticError(stderr, err)
 		return 3
 	}
-	// Retained evidence controls are local operations; the empty capability set
-	// deliberately leaves provider execution unavailable until its runtime is wired.
 	for _, ensure := range []func(context.Context, *core.Store) error{reviewexec.EnsureSchema, reviewexec.EnsureEvidenceSchema, reviewexec.EnsureAdjudicationSchema, reviewexec.EnsurePolicySchema} {
 		if err = ensure(ctx, store); err != nil {
 			diagnosticError(stderr, err)
 			return 3
 		}
 	}
-	execution, err := reviewexec.New(store, nil, reviewexec.WithNativeProjection())
+	execution, drivers, err := buildReviewExecution(store, *dataDir, catalog)
 	if err != nil {
 		diagnosticError(stderr, err)
 		return 3
@@ -101,6 +106,36 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		diagnostic(stderr, "configuration_invalid", "The bound listener must use a loopback TCP address.")
 		return 2
 	}
+	defer listener.Close()
+	reviewCtx, cancelReviews := context.WithCancel(ctx)
+	var reviewDone <-chan error
+	if len(drivers) != 0 {
+		// Start commits recovery before HTTP accepts any new review requests.
+		reviewDone, err = execution.Start(reviewCtx, drivers)
+	} else {
+		err = execution.RecoverInterrupted(ctx)
+	}
+	if err != nil {
+		cancelReviews()
+		diagnosticError(stderr, err)
+		return 3
+	}
+	defer func() {
+		cancelReviews()
+		if reviewDone == nil {
+			return
+		}
+		select {
+		case reviewErr := <-reviewDone:
+			if reviewErr != nil {
+				diagnosticError(stderr, reviewErr)
+				exitCode = 3
+			}
+		case <-time.After(12 * time.Second):
+			diagnostic(stderr, "shutdown_failed", "Native review workers did not settle within the shutdown budget; inspect retained evidence before restarting.")
+			exitCode = 3
+		}
+	}()
 	srv := newHTTPServer(ctx, mux)
 	_ = json.NewEncoder(stdout).Encode(map[string]string{"event": "listening", "address": listener.Addr().String(), "instance_id": store.InstanceID()})
 	done := make(chan error, 1)
@@ -117,6 +152,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 3
 		}
 		<-done
+	case reviewErr := <-reviewDone:
+		cancelReviews()
+		shutdownErr := shutdownHTTPServer(srv, 5*time.Second)
+		<-done
+		if reviewErr != nil {
+			diagnosticError(stderr, reviewErr)
+			return 3
+		}
+		if shutdownErr != nil || ctx.Err() == nil {
+			diagnostic(stderr, "review_execution_stopped", "The native review supervisor stopped unexpectedly.")
+			return 3
+		}
 	}
 	return 0
 }

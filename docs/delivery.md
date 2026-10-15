@@ -10,7 +10,7 @@ The [native review workspace](review-workspace.md) implements stored queue, PR/r
 
 ## Next active boundary
 
-The profile-bound review read tools have passed packaged checks. Native hosted/CLI execution is the active implementation boundary: isolated request/attempt supervision, provider adapters, source preparation and capture parsing have focused proof, while actual daemon dispatch, evidence/adjudication integration and cutover remain. The [execution boundary](review-execution.md) records that distinction. This work removes the development executor dependency. Project maps, appearance polish and other extras follow that replacement; concrete usability regressions in existing views are fixed as they are found.
+The profile-bound review read tools have passed packaged checks. Native hosted/CLI execution is the active implementation boundary: request/attempt supervision, source preparation, capture parsing, evidence/adjudication controls and native browser publication have focused and packaged proof. The optional concrete CLI daemon integration is being validated; hosted dispatch/recovery, aggregate policy/required-CI assessment, public checkpoint publication and full review cutover remain. The [execution boundary](review-execution.md) records that distinction. This work removes the development executor dependency. Project maps, appearance polish and other extras follow that replacement; concrete usability regressions in existing views are fixed as they are found.
 
 ## Development bootstrap
 

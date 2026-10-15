@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sync"
 	"time"
 
@@ -32,32 +33,48 @@ type Driver interface {
 	Dispatch(context.Context, Operation, Attempt, func(context.Context, string) error) (Result, error)
 }
 
-// Run supervises two finite work slots, with account and target reservations
-// enforced durably by StartAttempt. No request handler waits for these workers.
-// The owner starts Run once before accepting requests and waits for shutdown.
-func (e *Engine) Run(ctx context.Context, drivers map[string]Driver) error {
-	if !e.running.CompareAndSwap(false, true) {
-		return conflict()
+// Start validates and owns one supervisor, committing crash recovery before
+// returning success. The owner calls it before accepting requests, then waits
+// for the single terminal result and closed channel during shutdown.
+func (e *Engine) Start(ctx context.Context, drivers map[string]Driver) (<-chan error, error) {
+	if ctx == nil {
+		return nil, invalid()
 	}
-	defer e.running.Store(false)
 	owned := make(map[string]Driver, len(drivers))
 	for id, d := range drivers {
-		if d == nil {
-			return invalid()
+		if d == nil || reflect.ValueOf(d).Kind() == reflect.Pointer && reflect.ValueOf(d).IsNil() {
+			return nil, invalid()
 		}
 		if _, ok := e.capabilities[id]; !ok {
-			return invalid()
+			return nil, invalid()
 		}
 		owned[id] = d
 	}
 	for id := range e.capabilities {
 		if owned[id] == nil {
-			return invalid()
+			return nil, invalid()
 		}
 	}
-	if err := e.RecoverInterrupted(ctx); err != nil {
-		return err
+	if !e.running.CompareAndSwap(false, true) {
+		return nil, conflict()
 	}
+	if err := e.RecoverInterrupted(ctx); err != nil {
+		e.running.Store(false)
+		return nil, err
+	}
+	done := make(chan error, 1)
+	go func() {
+		err := e.supervise(ctx, owned)
+		e.running.Store(false)
+		done <- err
+		close(done)
+	}()
+	return done, nil
+}
+
+// supervise owns the same two finite work slots; provider waits never hold a
+// database transaction. Start has already completed startup recovery.
+func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 	workCtx, cancelWork := context.WithCancel(ctx)
 	defer cancelWork()
 	failures := make(chan error, 1)

@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -108,7 +109,7 @@ func TestCLICoverageZeroAndIncompleteEvidence(t *testing.T) {
 		f, a, id, current := coverageFixture(t, 1, true)
 		adjudicationDecide(t, f, id, "reject-partial", 0, 0, "rejected")
 		adjudicationComplete(t, f, a)
-		coverageRead(t, f, a, current, false)
+		coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
 	})
 	t.Run("pending", func(t *testing.T) {
 		f, a, id, current := coverageFixture(t, 1, false)
@@ -319,12 +320,15 @@ func TestCLICoverageCompletedMissingCaptureBound(t *testing.T) {
 			// The original attempt is still active and therefore is excluded.
 			// Even without captures, completed operations consume the scan budget.
 			coverageSeedOperations(t, f, a, count, "completed")
+			// The all-head budget also includes completed intents on older heads.
+			admissionSQL(t, f, `UPDATE review_operations SET head_sha=? WHERE state='completed'`, strings.Repeat("9", 40))
 			before := adjudicationState(t, f, a)
 			got, err := f.e.CLICoverage(t.Context(), attemptProject, current)
 			if count == 100 {
 				if err != nil {
 					t.Fatal("missing captures should provide no coverage", err)
 				}
+				coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
 			} else {
 				attemptCode(t, err, "review_capacity")
 			}
@@ -344,5 +348,107 @@ func TestCLICoverageCompletedOperationAttemptMismatch(t *testing.T) {
 	attemptCode(t, err, "storage_unavailable")
 	if got || adjudicationState(t, f, a) != before {
 		t.Fatal("mismatched retained attempt gave credit or changed state", got, err)
+	}
+}
+
+// coverageNextAttempt creates a distinct explicit intent; it does not bypass any
+// production reservation/admission checks or manufacture evidence rows.
+func coverageNextAttempt(t *testing.T, f *attemptFixture, key, channel, head string) Attempt {
+	t.Helper()
+	body, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), key, Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: channel, HeadSHA: head})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt Receipt
+	if err := json.Unmarshal(body, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	a := f.start(t, attemptProject, receipt)
+	anchor := attemptAnchor(attemptProject, 2)
+	anchor.CandidateSHA, anchor.ParentSHA = head, anchor.BaseSHA
+	intent := ""
+	if channel == "hosted" {
+		intent = "explicit-hosted-intent"
+	}
+	a, err = f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, anchor, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func coverageComparison(t *testing.T, f *attemptFixture, a Attempt, plan SourcePlan, want CLIComparisonState) {
+	t.Helper()
+	before := adjudicationState(t, f, a)
+	got, err := f.e.CLIComparison(t.Context(), attemptProject, plan)
+	if err != nil || got != want {
+		t.Fatalf("comparison got %+v want %+v: %v", got, want, err)
+	}
+	coverageRead(t, f, a, plan, want.Covered && !want.Pending)
+	if adjudicationState(t, f, a) != before {
+		t.Fatal("comparison mutated retained evidence")
+	}
+}
+
+func TestCLIComparisonOlderHeadPendingUntilClosed(t *testing.T) {
+	f, a, id, current := coverageFixture(t, 1, false)
+	adjudicationComplete(t, f, a)
+	current.Pull.HeadSHA = strings.Repeat("9", 40)
+	coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
+	adjudicationDecide(t, f, id, "accept-old", 0, 0, "accepted")
+	coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
+	body, err := f.e.FinalizeCLI(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-old", id, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(1)})
+	adjudicationReceipt(t, body, err, id, "finalized", 2)
+	coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
+	coverageFix(t, f, id, "fix-old", 2, 0, "")
+	// Closing old obligations does not grant coverage for the new comparison.
+	coverageComparison(t, f, a, current, CLIComparisonState{})
+}
+
+func TestCLIComparisonReadyRunCannotMaskPendingRun(t *testing.T) {
+	f, a, id, current := coverageFixture(t, 0, false)
+	coverageFinalize(t, f, a, id, 0)
+	source, err := f.e.ReadCLIEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := coverageNextAttempt(t, f, "another-explicit-intent", "cli", current.Pull.HeadSHA)
+	capture := source.Capture
+	capture.ExpectedAnchor = *next.Anchor
+	receipt, err := f.e.RecordCLIEvidence(t.Context(), attemptProject, next.ID, capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adjudicationComplete(t, f, next)
+	coverageComparison(t, f, a, current, CLIComparisonState{Covered: true, Pending: true})
+	body, err := f.e.FinalizeCLI(t.Context(), f.scope(t, attemptProject, f.writer, false), "close-second", receipt.ID, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(0)})
+	adjudicationReceipt(t, body, err, receipt.ID, "finalized", 1)
+	coverageComparison(t, f, a, current, CLIComparisonState{Covered: true})
+	// A completed intent with no retained capture also dominates ready credit.
+	coverageSeedOperations(t, f, a, 1, "completed")
+	coverageComparison(t, f, a, current, CLIComparisonState{Covered: true, Pending: true})
+}
+
+func TestCLIComparisonCompletedScanUsesBoundedAllHeadIndex(t *testing.T) {
+	f, _, _, _ := coverageFixture(t, 0, false)
+	rows, err := f.store.DB().Query(`EXPLAIN QUERY PLAN SELECT id,attempt_id FROM review_operations WHERE project_id=? AND pull_number=? AND channel='cli' AND state='completed' ORDER BY id LIMIT 101`, attemptProject, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan += detail
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan, "review_operations_cli_admission") || strings.Contains(plan, "TEMP B-TREE") {
+		t.Fatal("completed scan lost index or order bound", plan)
 	}
 }

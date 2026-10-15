@@ -115,32 +115,14 @@ var repository = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100
 
 func New(store *core.Store, capabilities []Capability, options ...EngineOption) (*Engine, error) {
 	e := &Engine{store: store, capabilities: map[string]Capability{}, wake: make(chan struct{}, 1)}
-	for _, c := range capabilities {
-		if !identifier.MatchString(c.ID) || !identifier.MatchString(c.Provider) || !identifier.MatchString(c.Account) || len(c.Channels) == 0 || len(c.Channels) > 2 {
+	for _, input := range capabilities {
+		c, err := normalizedCapability(input)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := e.capabilities[c.ID]; exists {
 			return nil, invalid()
 		}
-		if _, ok := e.capabilities[c.ID]; ok {
-			return nil, invalid()
-		}
-		seen := map[string]bool{}
-		for _, channel := range c.Channels {
-			if !validChannel(channel) || seen[channel] {
-				return nil, invalid()
-			}
-			seen[channel] = true
-		}
-		c.Channels = append([]string(nil), c.Channels...)
-		slices.Sort(c.Channels)
-		if c.Fingerprint != "" && !hash.MatchString(c.Fingerprint) {
-			return nil, invalid()
-		}
-		canonical := struct {
-			ID, Provider, Account    string
-			Channels                 []string
-			ConfigurationFingerprint string
-		}{c.ID, c.Provider, c.Account, c.Channels, c.Fingerprint}
-		digest := sha256.Sum256([]byte(encoded(canonical)))
-		c.Fingerprint = hex.EncodeToString(digest[:])
 		e.capabilities[c.ID] = c
 	}
 	for _, option := range options {
@@ -150,6 +132,43 @@ func New(store *core.Store, capabilities []Capability, options ...EngineOption) 
 		option(e)
 	}
 	return e, nil
+}
+
+// MatchesCapability verifies trusted runtime composition against the same
+// canonical binding used by New. It performs no storage or provider work.
+func (e *Engine) MatchesCapability(expected Capability) bool {
+	if e == nil {
+		return false
+	}
+	current, exists := e.capabilities[expected.ID]
+	normalized, err := normalizedCapability(expected)
+	return exists && err == nil && current.Fingerprint == normalized.Fingerprint
+}
+
+func normalizedCapability(c Capability) (Capability, error) {
+	if !identifier.MatchString(c.ID) || !identifier.MatchString(c.Provider) || !identifier.MatchString(c.Account) || len(c.Channels) == 0 || len(c.Channels) > 2 {
+		return Capability{}, invalid()
+	}
+	seen := map[string]bool{}
+	for _, channel := range c.Channels {
+		if !validChannel(channel) || seen[channel] {
+			return Capability{}, invalid()
+		}
+		seen[channel] = true
+	}
+	c.Channels = append([]string(nil), c.Channels...)
+	slices.Sort(c.Channels)
+	if c.Fingerprint != "" && !hash.MatchString(c.Fingerprint) {
+		return Capability{}, invalid()
+	}
+	canonical := struct {
+		ID, Provider, Account    string
+		Channels                 []string
+		ConfigurationFingerprint string
+	}{c.ID, c.Provider, c.Account, c.Channels, c.Fingerprint}
+	digest := sha256.Sum256([]byte(encoded(canonical)))
+	c.Fingerprint = hex.EncodeToString(digest[:])
+	return c, nil
 }
 
 func validChannel(s string) bool { return s == "cli" || s == "hosted" }

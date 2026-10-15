@@ -164,6 +164,18 @@ func (e *Engine) VerifyAction(ctx context.Context, project, attemptID string, ex
 		if reserved != 1 {
 			return conflict()
 		}
+		if operation.Channel == "cli" {
+			comparison, err := cliComparison(ctx, tx, project, current.RepositoryID, operation.PullNumber, *attempt.Anchor)
+			if err != nil {
+				return err
+			}
+			if comparison.Pending {
+				return core.Fail("review_evidence_pending", "Resolve retained native CLI evidence before starting another review.", 409)
+			}
+			if comparison.Covered {
+				return &core.Error{Code: "review_held", Message: "The selected native CLI comparison already has completed coverage.", Status: 409, Details: map[string]string{"reason": "target_already_covered"}}
+			}
+		}
 		return nil
 	})
 }
