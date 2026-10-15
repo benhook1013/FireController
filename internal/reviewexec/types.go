@@ -97,6 +97,7 @@ type Attempt struct {
 }
 
 type Engine struct {
+	attemptNow             func() time.Time
 	store                  *core.Store
 	capabilities           map[string]Capability
 	wake                   chan struct{}
