@@ -16,6 +16,8 @@ Same-head and moved-head requests with pending evidence caused no additional all
 
 The fixture made 19 controlled source GETs, three allowance invocations and two review invocations, including one interrupted process. It made no real external provider calls or paid-credit requests. This proves the concrete pipeline under controlled facts; real CodeRabbit account behavior, hosted dispatch, aggregate required-CI assessment and live cutover remain separate checks.
 
+A missing-projection regression passed three packaged-service groups in 2.822 seconds at clean checkpoint `eb24bd9e120f589286a8ea84d5623f7fd69999e7`. An administrator import removed the selected current PR while its controlled review process was blocked. Completion retained unfinalized evidence, released the reservation and preserved the import and historical snapshots without recreating browser facts. Original-key replay and repeated typed reads performed no provider work or durable writes. The run used eleven CLI commands, 26 local HTTP requests, five controlled provider GETs and one each of allowance and review invocations; source/binary hashes stayed unchanged and owned processes/state were removed. This does not establish live provider behavior, aggregate policy sufficiency, browser rendering or operational cutover.
+
 ## Ownership and fast requests
 
 The service owns review admission, provider work, retained artifacts and attempt recovery. An agent supplies its bound project plus an expected PR, channel and candidate head; it never supplies a GitHub credential, executable path or mutable working directory. Ordinary queue, job and inbox reads remain provider-free.
