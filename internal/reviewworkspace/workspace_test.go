@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,6 +95,71 @@ func prepare(t *testing.T, f fixture, attempt string) reviewworkspace.Workspace 
 		t.Fatal(err)
 	}
 	return w
+}
+
+func TestPrepareEmptyCacheCannotDiscoverOuterBareRepository(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("controlled Git wrapper requires a Unix shell")
+	}
+	f := newFixture(t)
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "outer.git")
+	git(t, f.git, dir, "clone", "--bare", "--template=", "--", f.source, parent)
+	// Both requested commits exist outside the empty cache, so an unpinned
+	// rev-parse can wrongly satisfy every cache check through parent discovery.
+	for _, sha := range []string{f.candidate, f.base} {
+		git(t, f.git, dir, "--git-dir="+parent, "cat-file", "-e", sha+"^{commit}")
+	}
+	log, wrapper := filepath.Join(dir, "git-calls"), filepath.Join(dir, "controlled-git")
+	script := fmt.Sprintf("#!/bin/sh\nset -eu\nprintf 'CALL' >> %q\nfor arg do printf '|%%s' \"$arg\" >> %q; done\nprintf '\\n' >> %q\nexec %q \"$@\"\n", log, log, log, f.git)
+	write(t, wrapper, script, 0o700)
+	manager, err := reviewworkspace.New(filepath.Join(parent, "owned"), wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, err := manager.CachePath(77)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Prepare(context.Background(), 77, "empty-cache", f.candidate, f.base); err == nil {
+		t.Fatal("empty cache did not fail safely", err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(calls) != 1 || !strings.Contains(calls[0], "|--git-dir="+cache+"|rev-parse|--is-bare-repository") {
+		t.Fatalf("empty cache reached outer repository/object checks or clone: %q", calls)
+	}
+	entries, err := os.ReadDir(filepath.Join(parent, "owned", "workspaces"))
+	if err != nil || len(entries) != 0 {
+		t.Fatal("failed exact-cache check created an attempt workspace", entries, err)
+	}
+	// Valid materialization still checks both pinned commits against its exact
+	// populated cache before creating the isolated workspace.
+	write(t, log, "", 0o600)
+	valid, err := reviewworkspace.New(f.root, wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := valid.Prepare(context.Background(), 42, "bound-cache", f.candidate, f.base); err != nil {
+		t.Fatal("valid exact-cache materialization failed", err)
+	}
+	data, err = os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls = strings.Split(strings.TrimSpace(string(data)), "\n")
+	checks := []string{"|rev-parse|--is-bare-repository", "|rev-parse|--verify|" + f.candidate + "^{commit}", "|rev-parse|--verify|" + f.base + "^{commit}"}
+	for i, check := range checks {
+		if len(calls) <= i || !strings.Contains(calls[i], "|--git-dir="+f.cache+check) {
+			t.Fatalf("valid cache verification was not pinned: %q", calls)
+		}
+	}
 }
 
 func TestPinnedDetachedSourceComparisonAndPatch(t *testing.T) {
