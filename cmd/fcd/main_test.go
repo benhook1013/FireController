@@ -38,12 +38,12 @@ func (o *output) String() string { o.Lock(); defer o.Unlock(); return o.data.Str
 func TestExecutableBootIdentityAndGracefulRestart(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private")
 	instance := ""
-	for range 2 {
+	for _, listen := range []string{"127.0.0.1:0", "localhost:0"} {
 		ctx, cancel := context.WithCancel(context.Background())
 		stdout := &output{ready: make(chan struct{})}
 		stderr := &output{ready: make(chan struct{})}
 		done := make(chan int, 1)
-		go func() { done <- run(ctx, []string{"--data-dir", dir, "--listen", "127.0.0.1:0"}, stdout, stderr) }()
+		go func() { done <- run(ctx, []string{"--data-dir", dir, "--listen", listen}, stdout, stderr) }()
 		select {
 		case <-stdout.ready:
 		case code := <-done:
@@ -57,6 +57,11 @@ func TestExecutableBootIdentityAndGracefulRestart(t *testing.T) {
 		if err := json.Unmarshal([]byte(stdout.String()), &started); err != nil {
 			cancel()
 			t.Fatal(err)
+		}
+		host, _, err := net.SplitHostPort(started["address"])
+		if err != nil || host != "127.0.0.1" {
+			cancel()
+			t.Fatalf("listener %s did not bind pinned IPv4 loopback: %s", listen, started["address"])
 		}
 		if instance == "" {
 			instance = started["instance_id"]
@@ -125,6 +130,42 @@ func TestExecutableBootIdentityAndGracefulRestart(t *testing.T) {
 		if strings.Contains(stdout.String()+stderr.String(), token) || stderr.String() != "" {
 			t.Fatal("startup/shutdown emitted credential or diagnostics")
 		}
+	}
+}
+
+type listenerAddress struct {
+	net.Listener
+	address net.Addr
+}
+
+func (l listenerAddress) Addr() net.Addr { return l.address }
+
+func TestBoundListenerRejectsUnsafeOrUnexpectedAddressAndClosesSocket(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		address net.Addr
+	}{
+		{"public TCP", &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 8080}},
+		{"unspecified TCP", &net.TCPAddr{IP: net.IPv4zero, Port: 8080}},
+		{"unexpected address type", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}},
+		{"missing TCP address", (*net.TCPAddr)(nil)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+				t.Fatal(err)
+			}
+			if validateLoopbackListener(listenerAddress{Listener: listener, address: test.address}) {
+				t.Fatal("unsafe bound address accepted")
+			}
+			if _, err := listener.Accept(); !errors.Is(err, net.ErrClosed) {
+				t.Fatalf("rejected listener socket was not closed: %v", err)
+			}
+		})
 	}
 }
 
