@@ -96,6 +96,16 @@ func scheduleWait(ctx context.Context, d time.Duration) error {
 	}
 }
 func managedStamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
+// Attempt timestamps are effective recording facts. A local clock rollback
+// must not turn a retained start into an invalid negative-duration status.
+func managedFinish(started string, now time.Time) string {
+	start, _ := time.Parse(time.RFC3339Nano, started)
+	if now.Before(start) {
+		return started
+	}
+	return managedStamp(now)
+}
 func safeManaged(err error) error {
 	var e *core.Error
 	if errors.As(err, &e) && managedReason(e.Code) {
@@ -141,19 +151,30 @@ func NewManager(store *core.Store, dataDir string, cfg ScheduleConfig) (*Manager
 		if err != nil {
 			return err
 		}
-		r := managedRecord{Configuration: cfg}
+		recovery, err := readRecoveryStatus(ctx, tx)
+		if err != nil {
+			return err
+		}
+		// The singleton may be inherited from a predecessor. Its history stays
+		// visible, but its due time cannot schedule this new instance's work.
+		currentGeneration := old != nil && (old.SourceInstanceID == store.InstanceID() || old.SourceInstanceID == "" && !recovery.ProvidersHeld)
+		r := managedRecord{Configuration: cfg, SourceInstanceID: store.InstanceID()}
 		if old != nil {
 			r.Status = old.Status
 		}
 		s := &r.Status
 		if s.State == "running" {
 			if s.LastAttempt != nil && s.LastAttempt.State == "running" {
-				s.LastAttempt = &AttemptStatus{StartedAt: s.LastAttempt.StartedAt, FinishedAt: managedStamp(now), State: "interrupted", Reason: "backup_interrupted"}
+				origin := s.LastAttempt.SourceInstanceID
+				if origin == "" {
+					origin = old.SourceInstanceID
+				}
+				s.LastAttempt = &AttemptStatus{StartedAt: s.LastAttempt.StartedAt, FinishedAt: managedFinish(s.LastAttempt.StartedAt, now), State: "interrupted", Reason: "backup_interrupted", SourceInstanceID: origin}
 			} else {
 				s.Retention = &RetentionStatus{AttemptedAt: managedStamp(now), State: "failed", Reason: "backup_retention_interrupted"}
 			}
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE managed_backup_bundles SET state='cleanup_failed' WHERE state='deleting'`); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE managed_backup_bundles SET state='cleanup_failed' WHERE state='deleting' AND source_instance_id=?`, store.InstanceID()); err != nil {
 			return err
 		}
 		s.Destination, s.Keep = cfg.Destination, cfg.Keep
@@ -162,11 +183,13 @@ func NewManager(store *core.Store, dataDir string, cfg ScheduleConfig) (*Manager
 		if cfg.Destination != "" {
 			s.State, s.Interval, s.Timeout = "scheduled", cfg.Interval.String(), cfg.Timeout.String()
 			m.next = now.Add(cfg.Interval)
-			if old != nil && old.Configuration == cfg && old.Status.NextAttemptAt != "" {
+			if currentGeneration && old.Configuration == cfg && old.Status.NextAttemptAt != "" {
 				m.next, _ = time.Parse(time.RFC3339Nano, old.Status.NextAttemptAt)
-			} else if s.LastAttempt != nil && s.LastAttempt.FinishedAt != "" {
-				finish, _ := time.Parse(time.RFC3339Nano, s.LastAttempt.FinishedAt)
-				m.next = finish.Add(cfg.Interval)
+			} else if currentGeneration && s.LastAttempt != nil && s.LastAttempt.FinishedAt != "" {
+				if s.LastAttempt.SourceInstanceID == store.InstanceID() || s.LastAttempt.SourceInstanceID == "" && !recovery.ProvidersHeld {
+					finish, _ := time.Parse(time.RFC3339Nano, s.LastAttempt.FinishedAt)
+					m.next = finish.Add(cfg.Interval)
+				}
 			}
 			s.NextAttemptAt = managedStamp(m.next)
 		}
@@ -243,7 +266,7 @@ func (m *Manager) attempt(parent context.Context) error {
 	err := m.update(ctx, func(r *managedRecord, _ *sql.Tx) error {
 		r.Status.State = "running"
 		r.Status.NextAttemptAt = ""
-		r.Status.LastAttempt = &AttemptStatus{StartedAt: start, State: "running"}
+		r.Status.LastAttempt = &AttemptStatus{StartedAt: start, State: "running", SourceInstanceID: m.store.InstanceID()}
 		return nil
 	})
 	if err != nil {
@@ -265,7 +288,7 @@ func (m *Manager) attempt(parent context.Context) error {
 						return e
 					}
 					r.Status.LastSuccess = &result
-					r.Status.LastAttempt = &AttemptStatus{StartedAt: start, FinishedAt: managedStamp(m.now()), State: "complete"}
+					r.Status.LastAttempt = &AttemptStatus{StartedAt: start, FinishedAt: managedFinish(start, m.now()), State: "complete", SourceInstanceID: m.store.InstanceID()}
 					return nil
 				})
 			}
@@ -286,7 +309,7 @@ func (m *Manager) attempt(parent context.Context) error {
 		settle, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
 		saveErr := m.update(settle, func(r *managedRecord, _ *sql.Tx) error {
-			r.Status.LastAttempt = &AttemptStatus{StartedAt: start, FinishedAt: managedStamp(m.now()), State: state, Reason: reason}
+			r.Status.LastAttempt = &AttemptStatus{StartedAt: start, FinishedAt: managedFinish(start, m.now()), State: state, Reason: reason, SourceInstanceID: m.store.InstanceID()}
 			return nil
 		})
 		if saveErr != nil {

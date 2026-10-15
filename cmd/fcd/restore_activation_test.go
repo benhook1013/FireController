@@ -274,13 +274,14 @@ func activationWorkRows(t *testing.T, dir string) map[string][]byte {
 	return result
 }
 
-func activationStart(t *testing.T, f activationCommandFixture) (string, func()) {
+func activationStart(t *testing.T, f activationCommandFixture, options ...string) (string, func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	out := &output{ready: make(chan struct{})}
 	diagnostics := &output{ready: make(chan struct{})}
 	done := make(chan int, 1)
 	args := []string{"--data-dir", f.dir, "--listen", "127.0.0.1:0", "--review-catalog", filepath.Join(f.dir, "must-not-read-catalog"), "--github-token-file", filepath.Join(f.dir, "must-not-read-token")}
+	args = append(args, options...)
 	go func() { done <- run(ctx, args, out, diagnostics) }()
 	select {
 	case <-out.ready:
@@ -327,18 +328,6 @@ func TestRestoreActivationCommandCoordinationAndHeldRestart(t *testing.T) {
 		t.Fatal("exact activation retry changed identity/receipt")
 	}
 	before := activationWorkRows(t, f.dir)
-	// An explicit schedule cannot silently become disabled on a held restore.
-	var scheduleOut, scheduleDiagnostics bytes.Buffer
-	scheduleDestination := filepath.Join(t.TempDir(), "uncreated-backups")
-	if code := run(t.Context(), []string{"--data-dir", f.dir, "--listen", "127.0.0.1:0", "--backup-destination", scheduleDestination, "--backup-interval", "1m", "--backup-keep", "2", "--review-catalog", filepath.Join(f.dir, "absent-catalog"), "--github-token-file", filepath.Join(f.dir, "absent-provider-token")}, &scheduleOut, &scheduleDiagnostics); code != 3 || scheduleOut.Len() != 0 || !strings.Contains(scheduleDiagnostics.String(), `"code":"restore_backup_unsupported"`) {
-		t.Fatal("held schedule silently ignored or reached provider configuration", code, scheduleDiagnostics.String())
-	}
-	if _, err := os.Lstat(scheduleDestination); !os.IsNotExist(err) {
-		t.Fatal("held schedule created backup state", err)
-	}
-	if !reflect.DeepEqual(before, activationWorkRows(t, f.dir)) {
-		t.Fatal("held schedule rejection changed provider work")
-	}
 	for restart := 0; restart < 2; restart++ {
 		base, stop := activationStart(t, f)
 		if !reflect.DeepEqual(before, activationWorkRows(t, f.dir)) {

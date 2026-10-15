@@ -101,10 +101,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 	}
-	if recovery.ProvidersHeld && hasSchedule {
-		diagnostic(stderr, "restore_backup_unsupported", "Managed backups of restored installations are not supported; omit backup schedule flags for coordination-only startup and retain the original verified bundles.")
-		return 3
-	}
 	var catalog reviewruntime.Catalog
 	var resolver server.RepositoryResolver
 	if !recovery.ProvidersHeld {
@@ -148,17 +144,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 	}
-	var backupManager *backup.Manager
-	if !recovery.ProvidersHeld {
-		if err = backup.EnsureManagedSchema(ctx, store); err != nil {
-			diagnosticError(stderr, err)
-			return 3
-		}
-		backupManager, err = backup.NewManager(store, *dataDir, schedule)
-		if err != nil {
-			diagnosticError(stderr, err)
-			return 3
-		}
+	if err = backup.EnsureManagedSchema(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
+	backupManager, err := backup.NewManager(store, *dataDir, schedule)
+	if err != nil {
+		diagnosticError(stderr, err)
+		return 3
 	}
 	execution, drivers, err := buildReviewExecution(store, *dataDir, catalog)
 	if err != nil {
@@ -208,10 +201,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
-	var backupDone <-chan error
-	if !recovery.ProvidersHeld {
-		backupDone = startBackupWorker(reviewCtx, backupManager, schedule.Destination != "", func(err error) { diagnosticError(stderr, err) })
-	}
+	backupDone := startBackupWorker(reviewCtx, backupManager, schedule.Destination != "", func(err error) { diagnosticError(stderr, err) })
 	defer func() {
 		cancelReviews()
 		if err := waitBackupWorker(backupDone, 12*time.Second); err != nil {

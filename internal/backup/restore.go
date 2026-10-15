@@ -222,6 +222,18 @@ func restoreIdentity(ctx context.Context, dir string, m Manifest, id, key string
 		return unavailable()
 	}
 	defer tx.Rollback()
+	current, err := readRecoveryStatus(ctx, tx)
+	if err != nil || current.InstanceID != m.SourceInstanceID || current.State == "inactive" {
+		return invalid()
+	}
+	if current.State == "coordination_active" {
+		if err = archiveRecoveryGeneration(ctx, tx, current); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM metadata WHERE key IN ('restore:provider_state','restore:activation_credential_id','restore:activated_at')`); err != nil {
+			return unavailable()
+		}
+	}
 	values := restoreMetadata(m, id, key)
 	for name, value := range values {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, name, value); err != nil {

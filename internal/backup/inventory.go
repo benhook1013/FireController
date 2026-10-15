@@ -215,8 +215,9 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"jobs": 2, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1}
+var supportedDomains = map[string]int{"jobs": 2, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"restore_history":        {"recovery_history", 1, "instance_id body_json"},
 	"managed_backup_state":   {"managed_backups", 1, "singleton body_json"},
 	"managed_backup_bundles": {"managed_backups", 1, "sequence id destination source_instance_id manifest_sha256 created_at state"},
 	"metadata":               {"", 1, "key value"}, "projects": {"", 1, "id name github_repository_id repository"}, "workers": {"", 1, "project_id id name"}, "credentials": {"", 1, "id principal_id token_sha256 is_admin revoked"}, "grants": {"", 1, "credential_id project_id can_read can_write"}, "receipts": {"", 1, "principal_id project_id operation target key fingerprint response_json"}, "events": {"", 1, "sequence project_id event_type resource_id revision actor_id payload_json created_at"},
@@ -271,11 +272,7 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, invalid()
 		}
 		if strings.HasPrefix(key, "restore:") {
-			if !allowInactive {
-				rows.Close()
-				return nil, invalid()
-			}
-			continue
+			continue // Exact recovery state and history are validated below.
 		}
 		name := strings.TrimPrefix(key, "schema:")
 		max, ok := supportedDomains[name]
@@ -358,6 +355,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if name == "restore_history" && !recoveryHistoryColumn(col, kind, notnull, pk, hidden, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			present[col] = true
 		}
 		e = columnRows.Err()
@@ -384,6 +385,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		if !errors.Is(err, sql.ErrNoRows) {
 			return nil, invalid()
 		}
+	}
+	status, err := readRecoveryStatus(ctx, db)
+	if err != nil || status.State == "inactive" && !allowInactive {
+		return nil, invalid()
 	}
 	return versions, nil
 }
@@ -436,6 +441,15 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	versions, err := validateSchema(ctx, tx, allowInactive)
 	if err != nil {
 		return err
+	}
+	// Published source bundles must leave room to archive their active source.
+	// Live preflight/status/startup keep accepting a valid bounded history.
+	if !allowInactive && versions["recovery_history"] != 0 {
+		status, err := readRecoveryStatus(ctx, tx)
+		var count int
+		if err != nil || tx.QueryRowContext(ctx, `SELECT count(*) FROM restore_history`).Scan(&count) != nil || status.State == "coordination_active" && count >= maxRecoveryGenerations {
+			return invalid()
+		}
 	}
 	var identity, key string
 	var sequence int64
@@ -623,6 +637,7 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"restore_history":                 {},
 	"workers":                         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"grants":                          {canonicalFK("credentials", "credential_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"events":                          {canonicalFK("projects", "project_id", "id", "NO ACTION")},

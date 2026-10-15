@@ -17,10 +17,11 @@ const (
 )
 
 type AttemptStatus struct {
-	StartedAt  string `json:"started_at"`
-	FinishedAt string `json:"finished_at"`
-	State      string `json:"state"`
-	Reason     string `json:"reason"`
+	StartedAt        string `json:"started_at"`
+	FinishedAt       string `json:"finished_at"`
+	State            string `json:"state"`
+	Reason           string `json:"reason"`
+	SourceInstanceID string `json:"source_instance_id,omitempty"`
 }
 type RetentionStatus struct {
 	AttemptedAt string `json:"attempted_at"`
@@ -48,7 +49,7 @@ type Status struct {
 func scheduleStatusFits(cfg ScheduleConfig) bool {
 	const latest = "9999-12-31T23:59:59.999999999Z"
 	status := Status{State: "scheduled", Destination: cfg.Destination, Interval: cfg.Interval.String(), Timeout: cfg.Timeout.String(), Keep: cfg.Keep, NextAttemptAt: latest,
-		LastAttempt: &AttemptStatus{StartedAt: latest, FinishedAt: latest, State: "interrupted", Reason: "backup_retention_interrupted"},
+		LastAttempt: &AttemptStatus{StartedAt: latest, FinishedAt: latest, State: "interrupted", Reason: "backup_retention_interrupted", SourceInstanceID: "instance_00000000000000000000000000000000"},
 		Retention:   &RetentionStatus{AttemptedAt: latest, State: "failed", Reason: "backup_retention_interrupted"}}
 	public, err := json.Marshal(status)
 	// A manual Summary is at most 4095 encoded bytes, plus its output newline.
@@ -56,13 +57,14 @@ func scheduleStatusFits(cfg ScheduleConfig) bool {
 	if err != nil || len(public)-len("null")+maxManualSummaryBytes > maxManagedStatusBytes {
 		return false
 	}
-	private, err := json.Marshal(managedRecord{Configuration: cfg, Status: status})
+	private, err := json.Marshal(managedRecord{Configuration: cfg, Status: status, SourceInstanceID: "instance_00000000000000000000000000000000"})
 	return err == nil && len(private)-len("null")+maxManualSummaryBytes-1 <= maxManagedRecordBytes
 }
 
 type managedRecord struct {
-	Configuration ScheduleConfig `json:"configuration"`
-	Status        Status         `json:"status"`
+	Configuration    ScheduleConfig `json:"configuration"`
+	Status           Status         `json:"status"`
+	SourceInstanceID string         `json:"source_instance_id,omitempty"`
 }
 
 func loadManaged(ctx context.Context, db sqlReader) (*managedRecord, error) {
@@ -94,6 +96,9 @@ func loadManaged(ctx context.Context, db sqlReader) (*managedRecord, error) {
 	return result, nil
 }
 func encodeManaged(r managedRecord) ([]byte, error) {
+	if r.SourceInstanceID != "" && !instanceID.MatchString(r.SourceInstanceID) {
+		return nil, invalid()
+	}
 	c, err := normalizeScheduleConfig("", r.Configuration, false)
 	if err != nil || c != r.Configuration {
 		return nil, invalid()
@@ -118,6 +123,9 @@ func encodeManaged(r managedRecord) ([]byte, error) {
 		}
 	}
 	if a := s.LastAttempt; a != nil {
+		if a.SourceInstanceID != "" && !instanceID.MatchString(a.SourceInstanceID) {
+			return nil, invalid()
+		}
 		start, ok := canonicalTime(a.StartedAt)
 		if !ok {
 			return nil, invalid()

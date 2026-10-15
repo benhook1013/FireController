@@ -68,27 +68,34 @@ func readRecoveryStatus(ctx context.Context, db sqlReader) (RecoveryStatus, erro
 	if db.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='instance_id'`).Scan(&status.InstanceID) != nil || !instanceID.MatchString(status.InstanceID) || db.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='signing_key'`).Scan(&signing) != nil || !digest.MatchString(signing) {
 		return RecoveryStatus{}, invalid()
 	}
-	rows, err := db.QueryContext(ctx, `SELECT key,value FROM metadata WHERE key GLOB 'restore:*' LIMIT 10`)
+	fields, err := readRestoreFields(ctx, db)
 	if err != nil {
-		return RecoveryStatus{}, unavailable()
+		return RecoveryStatus{}, err
 	}
-	fields := map[string]string{}
-	for rows.Next() {
-		var k, v string
-		if err = rows.Scan(&k, &v); err != nil {
-			rows.Close()
-			return RecoveryStatus{}, unavailable()
-		}
-		fields[k] = v
+	var actual int64
+	if db.QueryRowContext(ctx, `SELECT coalesce(max(sequence),0) FROM events`).Scan(&actual) != nil {
+		return RecoveryStatus{}, invalid()
 	}
-	err = rows.Err()
-	rows.Close()
+	status, sequence, err := recoveryStatusFields(ctx, db, status.InstanceID, fields, actual)
 	if err != nil {
-		return RecoveryStatus{}, unavailable()
+		return RecoveryStatus{}, err
+	}
+	if err = validateRecoveryHistory(ctx, db, status, sequence); err != nil {
+		return RecoveryStatus{}, err
+	}
+	return status, nil
+}
+
+// recoveryStatusFields validates one generation without traversing history.
+// Its upper sequence is the containing generation's recovery point.
+func recoveryStatusFields(ctx context.Context, db sqlReader, identity string, fields map[string]string, actual int64) (RecoveryStatus, int64, error) {
+	status := RecoveryStatus{InstanceID: identity}
+	if !instanceID.MatchString(identity) {
+		return RecoveryStatus{}, 0, invalid()
 	}
 	if len(fields) == 0 {
 		status.State = "ordinary"
-		return status, nil
+		return status, actual, nil
 	}
 	status.State = fields["restore:state"]
 	status.SourceInstanceID = fields["restore:source_instance_id"]
@@ -97,18 +104,14 @@ func readRecoveryStatus(ctx context.Context, db sqlReader) (RecoveryStatus, erro
 	start, startOK := canonicalTime(fields["restore:snapshot_started_at"])
 	finish, finishOK := canonicalTime(fields["restore:snapshot_finished_at"])
 	sequence, err := strconv.ParseInt(fields["restore:event_sequence"], 10, 64)
-	if !instanceID.MatchString(status.SourceInstanceID) || status.SourceInstanceID == status.InstanceID || !backupID.MatchString(status.BundleID) || !startOK || !finishOK || finish.Before(start) || err != nil || sequence < 0 || strconv.FormatInt(sequence, 10) != fields["restore:event_sequence"] {
-		return RecoveryStatus{}, invalid()
-	}
-	var actual int64
-	if db.QueryRowContext(ctx, `SELECT coalesce(max(sequence),0) FROM events`).Scan(&actual) != nil || actual < sequence {
-		return RecoveryStatus{}, invalid()
+	if !instanceID.MatchString(status.SourceInstanceID) || status.SourceInstanceID == identity || !backupID.MatchString(status.BundleID) || !startOK || !finishOK || finish.Before(start) || err != nil || sequence < 0 || strconv.FormatInt(sequence, 10) != fields["restore:event_sequence"] || actual < sequence {
+		return RecoveryStatus{}, 0, invalid()
 	}
 	switch status.State {
 	case "inactive":
 		var active int64
 		if len(fields) != 6 || actual != sequence || db.QueryRowContext(ctx, `SELECT count(*) FROM credentials WHERE revoked<>1`).Scan(&active) != nil || active != 0 {
-			return RecoveryStatus{}, invalid()
+			return RecoveryStatus{}, 0, invalid()
 		}
 	case "coordination_active":
 		status.CredentialID = fields["restore:activation_credential_id"]
@@ -117,13 +120,14 @@ func readRecoveryStatus(ctx context.Context, db sqlReader) (RecoveryStatus, erro
 		var principal, hash string
 		var admin, revoked int
 		if len(fields) != 9 || fields["restore:provider_state"] != "held" || !activationCredentialID.MatchString(status.CredentialID) || !atOK || db.QueryRowContext(ctx, `SELECT principal_id,token_sha256,is_admin,revoked FROM credentials WHERE id=?`, status.CredentialID).Scan(&principal, &hash, &admin, &revoked) != nil || !activationPrincipalID.MatchString(principal) || !digest.MatchString(hash) || admin != 1 || revoked < 0 || revoked > 1 {
-			return RecoveryStatus{}, invalid()
+			return RecoveryStatus{}, 0, invalid()
 		}
 	default:
-		return RecoveryStatus{}, invalid()
+		return RecoveryStatus{}, 0, invalid()
 	}
-	return status, nil
+	return status, sequence, nil
 }
+
 func activationTokenHash(path string) (string, error) {
 	if path == "" || restoreParent(filepath.Dir(path)) != nil {
 		return "", invalid()
