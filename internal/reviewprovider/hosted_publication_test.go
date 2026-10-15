@@ -406,3 +406,61 @@ func TestHostedPublicationOptionalLocationsValidateWithoutInferringRanges(t *tes
 	s.ReviewComments[0].Side, s.ReviewComments[0].StartSide = "LEFT", "RIGHT"
 	resolvePublication(t, s, intent, poster, bot, earliest, "attributed", "")
 }
+
+func TestHostedPublicationEditedCommentsCloseUnknownOriginalCommandWindow(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		created, updated time.Duration
+		author           string
+		state, reason    string
+	}{
+		{"removed command edited after review", time.Second, 3 * time.Second, "other", "uncertain", "attribution_window_closed"},
+		{"older comment edited after trigger", -2 * time.Second, 3 * time.Second, "other", "uncertain", "attribution_window_closed"},
+		{"older comment edited at trigger", -2 * time.Second, 0, "other", "uncertain", "attribution_window_closed"},
+		{"same posting actor different comment", time.Second, 3 * time.Second, "poster", "uncertain", "attribution_window_closed"},
+		{"review at possible command time", 2 * time.Second, 3 * time.Second, "other", "uncertain", "attribution_window_closed"},
+		{"unedited benign comment", time.Second, time.Second, "other", "attributed", "publication_inventory_attributed"},
+		{"older comment edited before trigger", -3 * time.Second, -time.Second, "other", "attributed", "publication_inventory_attributed"},
+		{"provider comment edit", time.Second, 3 * time.Second, "provider", "attributed", "publication_inventory_attributed"},
+		{"review before earliest possible competing command", 3 * time.Second, 4 * time.Second, "other", "attributed", "publication_inventory_attributed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, intent, poster, bot, earliest := publicationFixture(t)
+			trigger := s.IssueComments[0]
+			author := Author{ID: 777, Login: "another-user", Kind: "User"}
+			if test.author == "poster" {
+				author = poster
+			} else if test.author == "provider" {
+				author = bot
+			}
+			// Current benign prose cannot reveal whether a review command was
+			// removed by an edit, including an edit after review submission.
+			comment := IssueComment{ID: trigger.ID + 1, Body: "Updated discussion without a visible command.", Author: author, CreatedAt: trigger.CreatedAt.Add(test.created), UpdatedAt: trigger.CreatedAt.Add(test.updated)}
+			s.IssueComments = append(s.IssueComments, comment)
+			before := append([]IssueComment(nil), s.IssueComments...)
+			got := resolvePublication(t, s, intent, poster, bot, earliest, test.state, test.reason)
+			if got.Trigger.State != "adopted" || got.Trigger.CommentID != trigger.ID {
+				t.Fatal("competing prose changed exact trigger identity")
+			}
+			if test.state == "attributed" {
+				if len(got.Batches) != 1 || len(got.Roots) != 1 || got.Batches[0].Body != s.Reviews[0].Body || got.Roots[0].Body != s.ReviewComments[0].Body {
+					t.Fatal("eligible prior publication lost its original inventory")
+				}
+			} else if len(got.EligibleReviews) != 0 || len(got.Batches) != 0 {
+				t.Fatal("closed window retained an eligible competing review")
+			}
+			if !reflect.DeepEqual(before, s.IssueComments) {
+				t.Fatal("resolver changed original comments")
+			}
+		})
+	}
+}
+
+func TestHostedPublicationEditedOwnTriggerStillCannotBeAdopted(t *testing.T) {
+	s, intent, poster, bot, earliest := publicationFixture(t)
+	s.IssueComments[0].UpdatedAt = s.IssueComments[0].CreatedAt.Add(time.Second)
+	got := resolvePublication(t, s, intent, poster, bot, earliest, "ambiguous", "conflicting_trigger_evidence")
+	if got.Trigger.State == "adopted" || len(got.Batches) != 0 {
+		t.Fatal("own edited trigger bypassed original command validation")
+	}
+}

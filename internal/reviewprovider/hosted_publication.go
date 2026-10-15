@@ -234,11 +234,23 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		return result, nil
 	}
 	result.State = "active"
-	// A later command closes this trigger's attribution window. Edited commands
-	// whose original timing is unknowable close it conservatively at the trigger.
+	// A later command closes this trigger's attribution window. Edited comments
+	// may have removed a command, so their original prose cannot prove attribution.
 	var closing time.Time
 	for _, comment := range snapshot.IssueComments {
 		if comment.ID == trigger.CommentID || publicationActor(comment.Author, providerAuthor) {
+			continue
+		}
+		if !comment.UpdatedAt.Equal(comment.CreatedAt) && !comment.UpdatedAt.Before(trigger.CreatedAt) {
+			// The original command may have acted before this edit. Its
+			// earliest possible effect is the later of creation and our trigger.
+			when := comment.CreatedAt
+			if when.Before(trigger.CreatedAt) {
+				when = trigger.CreatedAt
+			}
+			if closing.IsZero() || when.Before(closing) {
+				closing = when
+			}
 			continue
 		}
 		command := false
