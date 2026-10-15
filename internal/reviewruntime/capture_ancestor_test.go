@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/reviewprocess"
 )
@@ -53,7 +54,8 @@ func TestCaptureAncestorAliasCanonicalRoundTrip(t *testing.T) {
 					}
 				}
 			}
-			input := reviewprocess.Capture{Stdout: []byte("literal <capture> 雪\x00"), Stderr: []byte("retained diagnostic"), ExitCode: 1, Started: true}
+			at := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+			input := CaptureRecord{Capture: reviewprocess.Capture{Stdout: []byte("literal <capture> 雪\x00"), Stderr: []byte("retained diagnostic"), ExitCode: 1, Started: true}, StartedAt: at, FinishedAt: at.Add(time.Second)}
 			ref, err := store.Save(t.Context(), "attempt-alias", input)
 			if err != nil {
 				t.Fatal(err)
@@ -89,7 +91,8 @@ func TestCaptureAncestorAliasRetargetCannotRedirectStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := reviewprocess.Capture{Stdout: []byte("original"), Stderr: []byte{}, Started: true}
+	at := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	input := CaptureRecord{Capture: reviewprocess.Capture{Stdout: []byte("original"), Stderr: []byte{}, Started: true}, StartedAt: at, FinishedAt: at.Add(time.Second)}
 	ref, err := store.Save(t.Context(), "existing", input)
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +101,7 @@ func TestCaptureAncestorAliasRetargetCannotRedirectStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = other.Save(t.Context(), "existing", reviewprocess.Capture{Stdout: []byte("redirected"), Started: true}); err != nil {
+	if _, err = other.Save(t.Context(), "existing", CaptureRecord{Capture: reviewprocess.Capture{Stdout: []byte("redirected"), Started: true}, StartedAt: at, FinishedAt: at.Add(time.Second)}); err != nil {
 		t.Fatal(err)
 	}
 	if err = os.Remove(alias); err != nil {
