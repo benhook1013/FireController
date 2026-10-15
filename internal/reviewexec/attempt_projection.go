@@ -33,8 +33,9 @@ func publishAttemptTransition(ctx context.Context, tx *sql.Tx, attempt Attempt) 
 }
 
 // PublishAttempt explicitly projects a retained attempt. A nil metadata argument
-// requires existing current PR facts. A trusted fresh observation may establish
-// the first row; captured source fields are never used as current PR metadata.
+// requires existing current PR facts. Supplied metadata is an initial fallback
+// only: the same publication transaction prefers any existing current PR row.
+// Captured source fields are never used as current PR metadata.
 func (e *Engine) PublishAttempt(ctx context.Context, project, attemptID string, metadata *reviews.PullInput) (reviews.Receipt, error) {
 	if !identifier.MatchString(project) || !identifier.MatchString(attemptID) {
 		return reviews.Receipt{}, invalid()
@@ -70,17 +71,17 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 	if operation.AttemptID != attempt.ID || operation.State != attempt.State || !validChannel(operation.Channel) || !sha.MatchString(operation.HeadSHA) {
 		return reviews.Receipt{}, cliPublicationConflict()
 	}
-	var pull reviews.PullInput
-	if metadata != nil {
-		pull = *metadata
-	} else {
-		pull, err = currentReviewPull(ctx, tx, attempt.ProjectID, operation.PullNumber)
-		if allowMissing && missingCurrentPull(err) {
-			return reviews.Receipt{}, nil
-		}
-		if err != nil {
-			return reviews.Receipt{}, err
-		}
+	if metadata != nil && metadata.Number != operation.PullNumber {
+		return reviews.Receipt{}, cliPublicationConflict()
+	}
+	pull, err := currentReviewPull(ctx, tx, attempt.ProjectID, operation.PullNumber)
+	if missingCurrentPull(err) && metadata != nil {
+		pull, err = *metadata, nil
+	} else if missingCurrentPull(err) && allowMissing {
+		return reviews.Receipt{}, nil
+	}
+	if err != nil {
+		return reviews.Receipt{}, err
 	}
 	if pull.Number != operation.PullNumber {
 		return reviews.Receipt{}, cliPublicationConflict()
