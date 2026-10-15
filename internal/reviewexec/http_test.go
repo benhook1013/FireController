@@ -280,7 +280,7 @@ func TestExecutionReadHTTPQueriesUseCommonValidationCodeWithoutEffects(t *testin
 		missingStatus int
 		missingCode   string
 	}{
-		{"configuration", "/api/v1/projects/exec-project-one/reviews/execution/configuration", http.StatusConflict, "review_not_configured"},
+		{"configuration", "/api/v1/projects/exec-project-one/reviews/execution/configuration", http.StatusConflict, "reviews_unconfigured"},
 		{"operation", "/api/v1/projects/exec-project-one/reviews/operations/review_operation_" + strings.Repeat("a", 32), http.StatusNotFound, "not_found"},
 	} {
 		for _, query := range []string{"?refresh=true", "?refresh=true&refresh=false", ""} {
