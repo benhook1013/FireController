@@ -475,7 +475,7 @@ func TestRestoreRejectsRehashedNewerSchemaAndInsideBundleWithoutMutation(t *test
 	if !reflect.DeepEqual(before, restoreTree(t, bundle.Path)) {
 		t.Fatal("bundle changed after forbidden destination")
 	}
-	selected := restoreModifiedBundle(t, bundle, "PRAGMA user_version=2")
+	selected := restoreModifiedBundle(t, bundle, "PRAGMA user_version=3")
 	parent := t.TempDir()
 	destination := filepath.Join(parent, "newer-refused")
 	if _, err := Restore(t.Context(), selected, destination); err == nil {

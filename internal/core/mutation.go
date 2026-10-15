@@ -59,7 +59,7 @@ func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(con
 	if len(encoded) > 256<<10 {
 		return nil, Fail("internal_error", "The mutation receipt exceeds its bounded size.", 500)
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO receipts(principal_id,project_id,operation,target,key,fingerprint,response_json) VALUES(?,?,?,?,?,?,?)", scope.PrincipalID, scope.ProjectID, m.Operation, m.Target, m.Key, fingerprint, string(encoded)); err != nil {
+	if _, err = tx.ExecContext(ctx, "INSERT INTO receipts(instance_id,principal_id,project_id,operation,target,key,fingerprint,response_json) VALUES(?,?,?,?,?,?,?,?)", s.instanceID, scope.PrincipalID, scope.ProjectID, m.Operation, m.Target, m.Key, fingerprint, string(encoded)); err != nil {
 		return nil, mutationError(ctx, err)
 	}
 	if ctx.Err() != nil {
@@ -125,7 +125,7 @@ func (s *Store) replay(ctx context.Context, tx *sql.Tx, scope Scope, m Mutation,
 		return nil, false, err
 	}
 	var oldFingerprint, response string
-	err := tx.QueryRowContext(ctx, "SELECT fingerprint,response_json FROM receipts WHERE principal_id=? AND project_id=? AND operation=? AND target=? AND key=?", scope.PrincipalID, scope.ProjectID, m.Operation, m.Target, m.Key).Scan(&oldFingerprint, &response)
+	err := tx.QueryRowContext(ctx, "SELECT fingerprint,response_json FROM receipts WHERE instance_id=? AND principal_id=? AND project_id=? AND operation=? AND target=? AND key=?", s.instanceID, scope.PrincipalID, scope.ProjectID, m.Operation, m.Target, m.Key).Scan(&oldFingerprint, &response)
 	if err == nil {
 		if oldFingerprint != fingerprint {
 			return nil, false, Fail("idempotency_conflict", "The mutation key was already used for a different request.", 409)

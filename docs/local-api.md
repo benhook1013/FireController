@@ -34,6 +34,8 @@ Session reads send exactly one `X-FC-Browser-Session` selector and its matching 
 
 Every mutation requires one `Idempotency-Key` of at most 128 bytes. Retain the same key, normalized request and worker attribution when retrying an uncertain outcome. Exact replay returns the original receipt after checking current access; it does not report current resource state. Changed request or worker under that key conflicts. A new key creates a new mutation and enforces the current revision where required. Revoked credentials cannot replay old receipts.
 
+Receipt keys include their originating instance. Startup upgrades base schema version one to version two in one exclusive transaction, preserving existing receipt fingerprints and response bytes; retained restore metadata identifies the predecessor for supported inactive copies. Reads and writes use the current instance's receipt namespace. This does not activate an inactive restore or permit an adapter to relabel an old retry after rebind; [restore](backups.md#inactive-restore) owns that boundary.
+
 ## Project and worker setup
 
 | Endpoint | Request or result |

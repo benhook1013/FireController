@@ -98,7 +98,7 @@ func TestInventorySnapshotSchemaCompatibilityWithoutMigration(t *testing.T) {
 	if !reflect.DeepEqual(before, restoreTree(t, created.Path)) {
 		t.Fatal("old schema migrated during inspection")
 	}
-	for _, change := range []string{`PRAGMA user_version=2`, `UPDATE metadata SET value='99' WHERE key='schema:jobs'`, `INSERT INTO metadata(key,value) VALUES('schema:unknown_domain','1')`, `UPDATE metadata SET value='2' WHERE key='schema:jobs'`, `DELETE FROM metadata WHERE key='schema:jobs'`, `INSERT INTO metadata(key,value) VALUES('restore:state','inactive')`} {
+	for _, change := range []string{`PRAGMA user_version=3`, `UPDATE metadata SET value='99' WHERE key='schema:jobs'`, `INSERT INTO metadata(key,value) VALUES('schema:unknown_domain','1')`, `UPDATE metadata SET value='2' WHERE key='schema:jobs'`, `DELETE FROM metadata WHERE key='schema:jobs'`, `INSERT INTO metadata(key,value) VALUES('restore:state','inactive')`} {
 		t.Run(change, func(t *testing.T) {
 			fresh, err := Create(t.Context(), store, dir, filepath.Join(t.TempDir(), "bundles"))
 			if err != nil {

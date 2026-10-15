@@ -233,7 +233,7 @@ var tables = map[string]tableVersion{
 
 func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[string]int, error) {
 	var version int
-	if db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version) != nil || version != 1 {
+	if db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version) != nil || (version != 1 && version != 2) {
 		return nil, invalid()
 	}
 	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 129`)
@@ -308,6 +308,17 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			continue
 		}
 		columns := spec.columns
+		receiptPK := map[string]int{}
+		if name == "receipts" {
+			keys := []string{"principal_id", "project_id", "operation", "target", "key"}
+			if version == 2 {
+				columns = "instance_id " + columns
+				keys = append([]string{"instance_id"}, keys...)
+			}
+			for i, key := range keys {
+				receiptPK[key] = i + 1
+			}
+		}
 		if name == "review_operations" {
 			if versions[spec.domain] >= 2 {
 				columns += " capability_fingerprint"
@@ -343,6 +354,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if name == "receipts" && (kind != "TEXT" || notnull != 1 || defaultValue != nil || pk != receiptPK[col]) {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			present[col] = true
 		}
 		e = columnRows.Err()
@@ -361,6 +376,13 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		}
 		if err = validateForeignKeys(ctx, db, name); err != nil {
 			return nil, err
+		}
+	}
+	if version == 2 {
+		var empty int
+		err = db.QueryRowContext(ctx, `SELECT 1 FROM receipts WHERE instance_id='' LIMIT 1`).Scan(&empty)
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, invalid()
 		}
 	}
 	return versions, nil
