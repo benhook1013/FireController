@@ -53,6 +53,9 @@ func (a *api) createBrowserSession(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	for _, stale := range a.store.PruneBrowserSessions(r, cookie) {
+		http.SetCookie(w, stale)
+	}
 	http.SetCookie(w, cookie)
 	core.WriteJSON(w, 200, response)
 }

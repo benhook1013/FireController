@@ -20,6 +20,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprocess"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
 
@@ -598,5 +599,110 @@ func TestRetainCLIExcessReviewedFilesRetainsInspectableInvalidCapture(t *testing
 	}
 	if cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence WHERE project_id=? AND attempt_id=?`, f.project, attempt.ID) != 1 || cliCount(t, f.store, `SELECT count(*) FROM events WHERE resource_id=? AND event_type='review.captured'`, retained.Receipt.ID) != 1 || cliAttemptState(t, f.store, attempt.ID) != beforeState {
 		t.Fatal("invalid retention lost its single ledger/event or changed attempt state")
+	}
+}
+
+func TestRetainCLILedgerInvalidProjectionKeepsRawCaptureInspectable(t *testing.T) {
+	for _, mode := range []string{"c1-control", "canonical-size"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCLIEvidenceFixture(t)
+			attempt, workspace := f.startAdmitted(t, 2)
+			paths := mustChangedFiles(t, f.manager, workspace)
+			capture := makeCompleteCLICapture(t, workspace, paths)
+			if mode == "c1-control" {
+				capture.Stdout = []byte(strings.Replace(string(capture.Stdout), "A bounded synthetic observation.", "A bounded synthetic\u0085observation.", 1))
+			} else {
+				// Every event and atomic finding is valid, but canonical ledger JSON
+				// expands the escaped text beyond the aggregate 2 MiB input bound.
+				lines := strings.Split(strings.TrimSpace(string(capture.Stdout)), "\n")
+				var finding map[string]any
+				if err := json.Unmarshal([]byte(lines[1]), &finding); err != nil {
+					t.Fatal(err)
+				}
+				finding["comment"] = strings.Repeat("<", 4096)
+				encoded, err := json.Marshal(finding)
+				if err != nil {
+					t.Fatal(err)
+				}
+				terminal, err := json.Marshal(map[string]any{"type": "complete", "status": "review_completed", "outcome": "completed", "findings": 100, "reviewedFiles": paths})
+				if err != nil {
+					t.Fatal(err)
+				}
+				capture.Stdout = []byte(lines[0] + "\n" + strings.Repeat(string(encoded)+"\n", 100) + string(terminal) + "\n")
+				parsed, err := reviewprovider.ParseCLIReview(capture.Stdout, 0, reviewprovider.CLIContext{BaseBranch: workspace.ComparisonRef, WorkingDirectory: workspace.Directory})
+				if err != nil || !parsed.Complete || len(parsed.Findings) != 100 {
+					t.Fatal("fixture must pass structured parser", err)
+				}
+				canonical, err := json.Marshal(parsed)
+				if err != nil || len(canonical) <= 2<<20 {
+					t.Fatal("fixture must exceed canonical ledger budget", len(canonical), err)
+				}
+			}
+			started, finished := time.Now().Add(-time.Second).UTC(), time.Now().UTC()
+			reference, err := f.captures.Save(t.Context(), attempt.ID, CaptureRecord{Capture: capture, StartedAt: started, FinishedAt: finished})
+			if err != nil {
+				t.Fatal(err)
+			}
+			artifact := filepath.Join(f.captures.root, attempt.ID+".json")
+			original, err := os.ReadFile(artifact)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := cliAttemptState(t, f.store, attempt.ID)
+			result, err := RetainCLI(t.Context(), f.captures, f.engine, f.manager, attempt, workspace, capture, started, finished)
+			if err != nil || result.Outcome != "uncertain" || result.Complete || result.Reason != "capture_invalid" {
+				t.Fatalf("invalid projection lost retained pointer: %+v %v", result, err)
+			}
+			evidence, err := f.engine.ReadCLIEvidence(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), result.Receipt.ID)
+			if err != nil || evidence.Capture.CaptureID != reference.ID || evidence.Capture.CaptureSHA256 != reference.SHA256 || evidence.Capture.CaptureBytes != reference.Bytes || evidence.Capture.ExpectedAnchor != *attempt.Anchor || evidence.Capture.StartedAt != started.Format(time.RFC3339Nano) || evidence.Capture.FinishedAt != finished.Format(time.RFC3339Nano) || evidence.Capture.Review.Outcome != "uncertain" || evidence.Capture.Review.Complete || len(evidence.Capture.Review.Findings) != 0 || len(evidence.Capture.Review.ReviewedFiles) != 0 || evidence.Capture.Review.ReportedFindings != 0 {
+				t.Fatal("fallback changed binding/times or fabricated review evidence", err)
+			}
+			replay, err := RetainCLI(t.Context(), f.captures, f.engine, f.manager, attempt, workspace, capture, started, finished)
+			if err != nil || replay != result || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, attempt.ID) != 1 || cliCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.captured' AND resource_id=?`, result.Receipt.ID) != 1 || cliAttemptState(t, f.store, attempt.ID) != before {
+				t.Fatal("fallback replay repeated effect or changed lifecycle", err)
+			}
+			loaded, afterRef, err := f.captures.Read(t.Context(), attempt.ID)
+			after, readErr := os.ReadFile(artifact)
+			if err != nil || readErr != nil || afterRef != reference || string(loaded.Capture.Stdout) != string(capture.Stdout) || string(original) != string(after) {
+				t.Fatal("fallback rewrote original raw bytes", err, readErr)
+			}
+		})
+	}
+}
+
+func TestRetainCLIDoesNotMaskLedgerConflictOrStorageFailure(t *testing.T) {
+	for _, mode := range []string{"conflict", "storage"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCLIEvidenceFixture(t)
+			attempt, workspace := f.startAdmitted(t, 2)
+			capture := makeCompleteCLICapture(t, workspace, mustChangedFiles(t, f.manager, workspace))
+			started, finished := time.Now().Add(-time.Second).UTC(), time.Now().UTC()
+			reference, err := f.captures.Save(t.Context(), attempt.ID, CaptureRecord{Capture: capture, StartedAt: started, FinishedAt: finished})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "conflict" {
+				// A blanket retry with empty evidence would incorrectly turn this
+				// conflicting complete capture into a successful replay of this row.
+				_, err = f.engine.RecordCLIEvidence(t.Context(), f.project, attempt.ID, reviewexec.CLIEvidenceInput{CaptureID: reference.ID, CaptureSHA256: reference.SHA256, CaptureBytes: reference.Bytes, StartedAt: started.Format(time.RFC3339Nano), FinishedAt: finished.Format(time.RFC3339Nano), ExpectedAnchor: *attempt.Anchor, Review: reviewprovider.CLIReview{Outcome: "uncertain", Findings: []reviewprovider.CLIFinding{}, ReviewedFiles: []string{}}})
+			} else {
+				_, err = f.store.DB().Exec(`CREATE TRIGGER fixture_evidence_failure BEFORE INSERT ON review_execution_evidence BEGIN SELECT RAISE(ABORT,'private injected storage error'); END`)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := cliAttemptState(t, f.store, attempt.ID)
+			events := cliCount(t, f.store, `SELECT count(*) FROM events`)
+			rows := cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`)
+			_, err = RetainCLI(t.Context(), f.captures, f.engine, f.manager, attempt, workspace, capture, started, finished)
+			code := "review_conflict"
+			if mode == "storage" {
+				code = "storage_unavailable"
+			}
+			assertCoreErrorCode(t, err, code)
+			if strings.Contains(err.Error(), "private injected") || cliAttemptState(t, f.store, attempt.ID) != before || cliCount(t, f.store, `SELECT count(*) FROM events`) != events || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != rows {
+				t.Fatal("nonvalidation failure was masked or changed state", err)
+			}
+		})
 	}
 }

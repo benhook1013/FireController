@@ -214,7 +214,7 @@ func cliProse(value string, max int, required bool) bool {
 	if len(value) > max || !utf8.ValidString(value) || required && strings.TrimSpace(value) == "" {
 		return false
 	}
-	return strings.IndexFunc(value, func(c rune) bool { return c < 0x20 && c != '\t' && c != '\r' && c != '\n' || c == 0x7f }) < 0
+	return strings.IndexFunc(value, func(c rune) bool { return unicode.IsControl(c) && c != '\t' && c != '\r' && c != '\n' }) < 0
 }
 
 func cliPortablePath(value string, empty bool) bool {
