@@ -90,7 +90,7 @@ type workspaceKey struct {
 // authenticationEnvironment is operator-owned and may contain only private
 // home/config directory paths; it is never taken from a worker request.
 func New(manager *reviewworkspace.Manager, executable string, authenticationEnvironment map[string]string) (*Runner, error) {
-	if manager == nil || executable == "" || strings.IndexByte(executable, 0) >= 0 {
+	if !processGroupsSupported || manager == nil || executable == "" || strings.IndexByte(executable, 0) >= 0 {
 		return nil, processError("configuration_invalid", false)
 	}
 	resolved, err := exec.LookPath(executable)
@@ -225,6 +225,10 @@ func (r *Runner) run(ctx context.Context, directory string, args []string, stdou
 	command.Dir = directory
 	command.Env = append([]string(nil), r.env...)
 	command.WaitDelay = time.Second
+	cleanup, err := configureOwnedProcess(command)
+	if err != nil {
+		return runResult{capture: Capture{ExitCode: -1}, err: err}
+	}
 	out := &limitedBuffer{limit: stdoutLimit, cancel: cancel}
 	stderr := &limitedBuffer{limit: stderrLimit, cancel: cancel}
 	command.Stdout = out
@@ -233,7 +237,8 @@ func (r *Runner) run(ctx context.Context, directory string, args []string, stdou
 		return runResult{capture: Capture{Stdout: out.Bytes(), Stderr: stderr.Bytes(), ExitCode: -1}, err: err}
 	}
 	started := true
-	err := command.Wait()
+	err = command.Wait()
+	cleanupErr := cleanup()
 	code := 0
 	if err != nil {
 		var exit *exec.ExitError
@@ -244,7 +249,7 @@ func (r *Runner) run(ctx context.Context, directory string, args []string, stdou
 		}
 	}
 	capture := Capture{Stdout: out.Bytes(), Stderr: stderr.Bytes(), ExitCode: code, Started: started}
-	if out.overflow || stderr.overflow || commandCtx.Err() != nil || errors.Is(err, exec.ErrWaitDelay) || err != nil && code < 0 {
+	if cleanupErr != nil && !errors.Is(cleanupErr, os.ErrProcessDone) || out.overflow || stderr.overflow || commandCtx.Err() != nil || errors.Is(err, exec.ErrWaitDelay) || err != nil && code < 0 {
 		return runResult{capture: capture, err: errOutputOrProcess}
 	}
 	return runResult{capture: capture}

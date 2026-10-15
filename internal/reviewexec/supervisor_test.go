@@ -672,3 +672,35 @@ func TestSupervisorBackgroundWriteCancelsRealSQLiteAndRollsBackJournal(t *testin
 	}
 	proveOrdinaryCoordination(t, f, "write-after-sql-cancel", r.ID)
 }
+
+func TestSupervisorAttemptStartStorageFailureStopsWithoutDispatch(t *testing.T) {
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "start-attempt-storage-failure", "cli", 2, 1)
+	// The read-only queue selection must work. Fail the real admission INSERT,
+	// where silently skipping every error would leave queued work retrying forever.
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_attempt_insert BEFORE INSERT ON review_execution_attempts BEGIN SELECT RAISE(ABORT,'synthetic-private-storage-diagnostic'); END`); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := f.e.pending(context.Background())
+	if err != nil || len(pending) != 1 || pending[0].ID != receipt.ID {
+		t.Fatal("fixture did not isolate StartAttempt failure", pending, err)
+	}
+	beforeEvents := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+	beforeReceipts := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
+	driver := &controlledDriver{}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err = f.e.Run(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	attemptCode(t, err, "review_persistence_failed")
+	if strings.Contains(err.Error(), "synthetic-private-storage-diagnostic") {
+		t.Fatal("supervisor exposed private persistence diagnostic")
+	}
+	if ctx.Err() != nil || f.e.running.Load() || driver.prepares.Load() != 0 || driver.calls.Load() != 0 || supervisorOperationState(t, f, receipt.ID) != "queued" || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != beforeReceipts {
+		t.Fatal("attempt-start failure did not stop promptly/atomically before provider work")
+	}
+	var revision int64
+	var attemptID string
+	if err := f.store.DB().QueryRow(`SELECT revision,attempt_id FROM review_operations WHERE id=?`, receipt.ID).Scan(&revision, &attemptID); err != nil || revision != 1 || attemptID != "" {
+		t.Fatal("failed attempt start changed queued identity", revision, attemptID, err)
+	}
+}

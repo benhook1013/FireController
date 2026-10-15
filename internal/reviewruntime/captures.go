@@ -193,7 +193,7 @@ func (s *CaptureStore) readCapture(ctx context.Context, attemptID string) ([]byt
 }
 
 func validCapture(c reviewprocess.Capture) bool {
-	return len(c.Stdout) <= maxCaptureStdout && len(c.Stderr) <= maxCaptureStderr && c.ExitCode >= -1 && c.ExitCode <= 255
+	return len(c.Stdout) <= maxCaptureStdout && len(c.Stderr) <= maxCaptureStderr && c.ExitCode >= -1 && int64(c.ExitCode) <= 0xffffffff
 }
 
 func captureReference(data []byte) CaptureReference {
