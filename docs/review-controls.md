@@ -30,7 +30,7 @@ Finalization requires a completed attempt, complete retained capture and a decis
 
 ## Browser consistency
 
-When a native run has already been published to the stored review workspace, a decision, fix reference or finalization updates its browser projection in the same transaction as the authoritative ledger, audit, event and receipt. A failed projection leaves all of them unchanged. The browser shows the new observation on refresh; these controls do not make provider requests.
+When a native run has already been published to the stored review workspace, a decision, fix reference or finalization updates its browser projection in the same transaction as the authoritative ledger, audit, event and receipt. A failed projection leaves all of them unchanged. Native publication and corrections must fit the browser's encoded 4 MiB run-detail response budget, including JSON escaping and its final newline. An oversized result returns `workspace_capacity` before commit; source text and history are never truncated. Shorter decision or proof text can fit without replacing captured evidence. The browser shows the new observation on refresh; these controls do not make provider requests.
 
 The native run's original source identity and zero-based finding indexes bind that update. It preserves captured finding text, historical snapshots, imported runs, merged queue history and current PR facts. Finalized source counts remain the original counts even when a later audited correction changes an effective decision or fix. Updating a decision does not claim a fresh provider observation for other PRs.
 

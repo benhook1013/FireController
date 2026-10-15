@@ -116,6 +116,11 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 	if err = checkNativeCapacity(ctx, tx, scope.ProjectID, id); err != nil {
 		return Receipt{}, err
 	}
+	if p.Run != nil {
+		if err = checkNativeRunDetail(ctx, tx, scope.ProjectID, id, runOpaqueID(scope.ProjectID, nativeSource, p.Run.SourceRunID)); err != nil {
+			return Receipt{}, err
+		}
+	}
 	// Rebuild every compact projection from original rows. A copied pre-native
 	// JSON summary may lack per-run source; its new mixed snapshot must not
 	// use the publisher's label as a substitute for the original producer.
