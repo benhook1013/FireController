@@ -42,6 +42,22 @@ func resolveAllowance(t *testing.T, s HostedAllowanceSnapshot, i HostedTriggerIn
 	return result
 }
 
+func TestHostedAllowanceRecoveryUsesBoundedProviderClockSkew(t *testing.T) {
+	for _, offset := range []time.Duration{-time.Second, -5 * time.Second, -5*time.Second - time.Nanosecond} {
+		s, intent, poster, bot, earliest := allowanceFixture(t)
+		s.IssueComments[0].CreatedAt = earliest.Add(offset)
+		s.IssueComments[0].UpdatedAt = s.IssueComments[0].CreatedAt
+		got := resolveAllowance(t, s, intent, poster, bot, earliest)
+		if offset < -5*time.Second {
+			if got.State != "ambiguous" || got.QueryCommentID != 0 || !got.RetryNotBefore.IsZero() {
+				t.Fatalf("excessive skew granted query recovery: %+v", got)
+			}
+		} else if got.State != "cooldown_observed" || got.QueryCommentID != s.IssueComments[0].ID || got.QueryCreatedAt != s.IssueComments[0].CreatedAt {
+			t.Fatalf("bounded skew lost original query: %+v", got)
+		}
+	}
+}
+
 func TestHostedAllowanceExactQueryAndObservedCooldown(t *testing.T) {
 	s, intent, poster, bot, earliest := allowanceFixture(t)
 	want := "@coderabbitai rate limit\n\n<!-- firecontroller-allowance-query v1 operation=" + intent.OperationID + " attempt=" + intent.AttemptID + " head=" + intent.HeadSHA + " -->"
