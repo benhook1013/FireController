@@ -205,7 +205,7 @@ func validPublicationSnapshot(s HostedPublicationSnapshot) bool {
 	}
 	seen = map[int64]bool{}
 	for _, c := range s.ReviewComments {
-		if c.ID <= 0 || seen[c.ID] || c.ReviewID <= 0 || c.InReplyToID < 0 || c.InReplyToID == c.ID || !add(c.Body) || !publicationValidActor(c.Author) || !validRepoPath(c.Path) || !validSHA(c.HeadSHA) || !validSHA(c.OriginalHeadSHA) || c.Line != nil && (*c.Line <= 0 || *c.Line > 1<<31-1) || !hostedTriggerTime(c.CreatedAt) || !hostedTriggerTime(c.UpdatedAt) || c.UpdatedAt.Before(c.CreatedAt) || c.UpdatedAt.After(s.ObservedAt) {
+		if c.ID <= 0 || seen[c.ID] || c.ReviewID <= 0 || c.InReplyToID < 0 || c.InReplyToID == c.ID || !add(c.Body) || !publicationValidActor(c.Author) || !validRepoPath(c.Path) || !validSHA(c.HeadSHA) || !validSHA(c.OriginalHeadSHA) || !validReviewCommentLocation(c) || !hostedTriggerTime(c.CreatedAt) || !hostedTriggerTime(c.UpdatedAt) || c.UpdatedAt.Before(c.CreatedAt) || c.UpdatedAt.After(s.ObservedAt) {
 			return false
 		}
 		seen[c.ID] = true
@@ -314,10 +314,10 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 			continue
 		}
 		copy := comment
-		if comment.Line != nil {
-			line := *comment.Line
-			copy.Line = &line
-		}
+		copy.Line = copyPublicationLine(comment.Line)
+		copy.StartLine = copyPublicationLine(comment.StartLine)
+		copy.OriginalLine = copyPublicationLine(comment.OriginalLine)
+		copy.OriginalStartLine = copyPublicationLine(comment.OriginalStartLine)
 		result.Roots = append(result.Roots, copy)
 	}
 	sort.Slice(result.Roots, func(i, j int) bool { return result.Roots[i].ID < result.Roots[j].ID })
@@ -347,4 +347,12 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 	}
 	result.State, result.Reason = "attributed", "publication_inventory_attributed"
 	return result, nil
+}
+
+func copyPublicationLine(line *int64) *int64 {
+	if line == nil {
+		return nil
+	}
+	value := *line
+	return &value
 }

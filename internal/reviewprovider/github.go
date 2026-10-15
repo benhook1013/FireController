@@ -672,17 +672,22 @@ type githubHostedReview struct {
 }
 
 type githubReviewComment struct {
-	InReplyToID    *int64      `json:"in_reply_to_id"`
-	ID             int64       `json:"id,required"`
-	ReviewID       int64       `json:"pull_request_review_id,required"`
-	Body           string      `json:"body,required"`
-	User           githubActor `json:"user,required"`
-	Path           string      `json:"path,required"`
-	Line           *int64      `json:"line"`
-	CommitID       string      `json:"commit_id,required"`
-	OriginalCommit string      `json:"original_commit_id,required"`
-	CreatedAt      string      `json:"created_at,required"`
-	UpdatedAt      string      `json:"updated_at,required"`
+	InReplyToID       *int64      `json:"in_reply_to_id"`
+	ID                int64       `json:"id,required"`
+	ReviewID          int64       `json:"pull_request_review_id,required"`
+	Body              string      `json:"body,required"`
+	User              githubActor `json:"user,required"`
+	Path              string      `json:"path,required"`
+	Line              *int64      `json:"line"`
+	StartLine         *int64      `json:"start_line"`
+	OriginalLine      *int64      `json:"original_line"`
+	OriginalStartLine *int64      `json:"original_start_line"`
+	Side              *string     `json:"side"`
+	StartSide         *string     `json:"start_side"`
+	CommitID          string      `json:"commit_id,required"`
+	OriginalCommit    string      `json:"original_commit_id,required"`
+	CreatedAt         string      `json:"created_at,required"`
+	UpdatedAt         string      `json:"updated_at,required"`
 }
 
 func decodeProviderJSON(data []byte, dst any) error {
@@ -866,8 +871,22 @@ func normalizeReviewComment(raw githubReviewComment) (ReviewComment, error) {
 	if err != nil {
 		return ReviewComment{}, err
 	}
-	if raw.Line != nil && (*raw.Line <= 0 || *raw.Line > 1<<31-1) {
-		return ReviewComment{}, errors.New("invalid comment line")
+	for _, line := range []*int64{raw.Line, raw.StartLine, raw.OriginalLine, raw.OriginalStartLine} {
+		if !validReviewCommentLine(line) {
+			return ReviewComment{}, errors.New("invalid comment line")
+		}
+	}
+	var side, startSide string
+	for _, pair := range []struct {
+		source *string
+		target *string
+	}{{raw.Side, &side}, {raw.StartSide, &startSide}} {
+		if pair.source != nil {
+			if *pair.source != "LEFT" && *pair.source != "RIGHT" {
+				return ReviewComment{}, errors.New("invalid comment side")
+			}
+			*pair.target = *pair.source
+		}
 	}
 	var parent int64
 	if raw.InReplyToID != nil {
@@ -876,7 +895,17 @@ func normalizeReviewComment(raw githubReviewComment) (ReviewComment, error) {
 		}
 		parent = *raw.InReplyToID
 	}
-	return ReviewComment{InReplyToID: parent, ID: raw.ID, ReviewID: raw.ReviewID, Body: raw.Body, Author: actor, Path: raw.Path, Line: raw.Line, HeadSHA: raw.CommitID, OriginalHeadSHA: raw.OriginalCommit, CreatedAt: created, UpdatedAt: updated}, nil
+	return ReviewComment{InReplyToID: parent, ID: raw.ID, ReviewID: raw.ReviewID, Body: raw.Body, Author: actor, Path: raw.Path, Line: raw.Line, StartLine: raw.StartLine, OriginalLine: raw.OriginalLine, OriginalStartLine: raw.OriginalStartLine, Side: side, StartSide: startSide, HeadSHA: raw.CommitID, OriginalHeadSHA: raw.OriginalCommit, CreatedAt: created, UpdatedAt: updated}, nil
+}
+
+func validReviewCommentLine(line *int64) bool {
+	return line == nil || *line > 0 && *line <= 1<<31-1
+}
+
+// Empty normalized sides represent omitted/null provider metadata. These
+// checks preserve facts without inferring a range or a relationship to the diff.
+func validReviewCommentLocation(comment ReviewComment) bool {
+	return validReviewCommentLine(comment.Line) && validReviewCommentLine(comment.StartLine) && validReviewCommentLine(comment.OriginalLine) && validReviewCommentLine(comment.OriginalStartLine) && (comment.Side == "" || comment.Side == "LEFT" || comment.Side == "RIGHT") && (comment.StartSide == "" || comment.StartSide == "LEFT" || comment.StartSide == "RIGHT")
 }
 
 func validIdentifierText(value string, max int) bool {

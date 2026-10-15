@@ -327,3 +327,82 @@ func TestHostedPublicationSameTimestampAsTriggerCannotEstablishOrdering(t *testi
 	s.ReviewComments = []ReviewComment{{ID: 2001, ReviewID: s.Reviews[0].ID, Body: "Exact root", Author: bot, Path: "source.go", HeadSHA: intent.HeadSHA, OriginalHeadSHA: intent.HeadSHA, CreatedAt: s.IssueComments[0].CreatedAt, UpdatedAt: s.IssueComments[0].CreatedAt}}
 	resolvePublication(t, s, intent, poster, bot, earliest, "attributed", "")
 }
+
+func TestHostedPublicationPreservesLocationsWithIndependentPointerCopies(t *testing.T) {
+	s, intent, poster, bot, earliest := publicationFixture(t)
+	start, original, originalStart := int64(2), int64(13), int64(12)
+	s.ReviewComments[0].StartLine = &start
+	s.ReviewComments[0].OriginalLine = &original
+	s.ReviewComments[0].OriginalStartLine = &originalStart
+	s.ReviewComments[0].Side, s.ReviewComments[0].StartSide = "RIGHT", "RIGHT"
+	got := resolvePublication(t, s, intent, poster, bot, earliest, "attributed", "")
+	if len(got.Roots) != 1 || !reflect.DeepEqual(got.Roots[0], s.ReviewComments[0]) {
+		t.Fatal("location facts or body lost from attributed root")
+	}
+	copied := got.Roots[0]
+	pairs := []struct{ source, returned *int64 }{
+		{s.ReviewComments[0].Line, copied.Line},
+		{s.ReviewComments[0].StartLine, copied.StartLine},
+		{s.ReviewComments[0].OriginalLine, copied.OriginalLine},
+		{s.ReviewComments[0].OriginalStartLine, copied.OriginalStartLine},
+	}
+	for _, pair := range pairs {
+		if pair.source == pair.returned || pair.source == nil || pair.returned == nil {
+			t.Fatal("publication leaked a caller-owned numeric pointer")
+		}
+		before := *pair.source
+		*pair.returned = 90
+		if *pair.source != before {
+			t.Fatal("returned location mutation changed source evidence")
+		}
+		*pair.returned = before
+		*pair.source = 91
+		if *pair.returned != before {
+			t.Fatal("source location mutation changed returned evidence")
+		}
+		*pair.source = before
+	}
+	// An outdated current location does not erase known original coordinates.
+	s.ReviewComments[0].Line, s.ReviewComments[0].StartLine = nil, nil
+	got = resolvePublication(t, s, intent, poster, bot, earliest, "attributed", "")
+	if got.Roots[0].Line != nil || got.Roots[0].StartLine != nil || got.Roots[0].OriginalLine == nil || *got.Roots[0].OriginalLine != original || got.Roots[0].OriginalStartLine == nil || *got.Roots[0].OriginalStartLine != originalStart {
+		t.Fatal("outdated current location overwrote original coordinates")
+	}
+}
+
+func TestHostedPublicationOptionalLocationsValidateWithoutInferringRanges(t *testing.T) {
+	for _, field := range []string{"line", "start", "original", "original start"} {
+		for _, invalid := range []int64{0, -1, 1 << 31} {
+			t.Run(fmt.Sprint(field, "/", invalid), func(t *testing.T) {
+				s, intent, poster, bot, earliest := publicationFixture(t)
+				switch field {
+				case "line":
+					s.ReviewComments[0].Line = &invalid
+				case "start":
+					s.ReviewComments[0].StartLine = &invalid
+				case "original":
+					s.ReviewComments[0].OriginalLine = &invalid
+				default:
+					s.ReviewComments[0].OriginalStartLine = &invalid
+				}
+				resolvePublication(t, s, intent, poster, bot, earliest, "ambiguous", "invalid_publication_evidence")
+			})
+		}
+	}
+	for _, side := range []string{"left", "CENTER", "RIGHT "} {
+		for _, start := range []bool{false, true} {
+			s, intent, poster, bot, earliest := publicationFixture(t)
+			if start {
+				s.ReviewComments[0].StartSide = side
+			} else {
+				s.ReviewComments[0].Side = side
+			}
+			resolvePublication(t, s, intent, poster, bot, earliest, "ambiguous", "invalid_publication_evidence")
+		}
+	}
+	s, intent, poster, bot, earliest := publicationFixture(t)
+	maximum := int64(1<<31 - 1)
+	s.ReviewComments[0].StartLine, s.ReviewComments[0].OriginalLine, s.ReviewComments[0].OriginalStartLine = &maximum, &maximum, &maximum
+	s.ReviewComments[0].Side, s.ReviewComments[0].StartSide = "LEFT", "RIGHT"
+	resolvePublication(t, s, intent, poster, bot, earliest, "attributed", "")
+}

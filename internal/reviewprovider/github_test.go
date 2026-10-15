@@ -646,3 +646,100 @@ func TestGitHubReviewCommentReplyIdentityIsPreservedAndStrict(t *testing.T) {
 		})
 	}
 }
+
+func TestGitHubReviewCommentsPreserveOptionalMultilineAndOutdatedLocations(t *testing.T) {
+	body := "Exact provider body <b>literal</b> & markers\n<!-- source fact -->"
+	current := observationInline(31, 0, body)
+	current["line"], current["start_line"], current["original_line"], current["original_start_line"] = 15, 12, 21, 18
+	current["side"], current["start_side"] = "RIGHT", "RIGHT"
+	outdated := observationInline(32, 31, body)
+	outdated["line"], outdated["start_line"] = nil, nil
+	outdated["original_line"], outdated["original_start_line"] = 21, 18
+	outdated["side"], outdated["start_side"] = "LEFT", "LEFT"
+	unknown := observationInline(33, 0, body)
+	delete(unknown, "line")
+	null := observationInline(34, 0, body)
+	for _, field := range []string{"line", "start_line", "original_line", "original_start_line", "side", "start_side"} {
+		null[field] = nil
+	}
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/owner/repo/pulls/42/comments" || r.URL.Query().Get("page") != "1" {
+			t.Error("unexpected target, mutation or retry")
+		}
+		_ = json.NewEncoder(w).Encode([]any{current, outdated, unknown, null})
+	}))
+	defer server.Close()
+	comments, err := testGitHub(server, "").ReviewComments(t.Context(), "owner/repo", 42)
+	if err != nil || len(comments) != 4 || calls.Load() != 1 {
+		t.Fatalf("location observations unavailable: %d %v", len(comments), err)
+	}
+	first, old := comments[0], comments[1]
+	if first.Line == nil || *first.Line != 15 || first.StartLine == nil || *first.StartLine != 12 || first.OriginalLine == nil || *first.OriginalLine != 21 || first.OriginalStartLine == nil || *first.OriginalStartLine != 18 || first.Side != "RIGHT" || first.StartSide != "RIGHT" {
+		t.Fatal("multiline coordinates lost")
+	}
+	if old.Line != nil || old.StartLine != nil || old.OriginalLine == nil || *old.OriginalLine != 21 || old.OriginalStartLine == nil || *old.OriginalStartLine != 18 || old.Side != "LEFT" || old.StartSide != "LEFT" || old.InReplyToID != 31 {
+		t.Fatal("outdated original coordinates or reply identity lost")
+	}
+	for _, item := range comments {
+		if item.Body != body {
+			t.Fatal("location parsing transformed original finding body")
+		}
+	}
+	for _, item := range comments[2:] {
+		if item.Line != nil || item.StartLine != nil || item.OriginalLine != nil || item.OriginalStartLine != nil || item.Side != "" || item.StartSide != "" {
+			t.Fatal("missing/null locations became invented facts")
+		}
+	}
+}
+
+func TestGitHubReviewCommentOptionalLocationFieldsAreStrict(t *testing.T) {
+	base, _ := json.Marshal(observationInline(31, 0, "Exact location fixture body"))
+	// Remove the existing optional line so each case supplies exactly its own
+	// canonical field (or deliberately malformed duplicate/alias).
+	var clean map[string]any
+	_ = json.Unmarshal(base, &clean)
+	delete(clean, "line")
+	base, _ = json.Marshal(clean)
+	type badField struct{ name, extra string }
+	var cases []badField
+	for _, field := range []string{"line", "start_line", "original_line", "original_start_line"} {
+		for _, value := range []string{"0", "-1", "2147483648", "9223372036854775808", "1.5", `"3"`, "true", "[]", "{}"} {
+			cases = append(cases, badField{field + "/" + value, fmt.Sprintf(`,%q:%s`, field, value)})
+		}
+		cases = append(cases,
+			badField{field + "/duplicate", fmt.Sprintf(`,%q:3,%q:4`, field, field)},
+			badField{field + "/alias", fmt.Sprintf(`,%q:null`, strings.ToUpper(field))},
+			badField{field + "/alias overwrite", fmt.Sprintf(`,%q:3,%q:null`, field, strings.ToUpper(field))},
+		)
+	}
+	for _, field := range []string{"side", "start_side"} {
+		for _, value := range []string{`""`, `"left"`, `"CENTER"`, `"RIGHT "`, "1", "true", "[]", "{}"} {
+			cases = append(cases, badField{field + "/" + value, fmt.Sprintf(`,%q:%s`, field, value)})
+		}
+		cases = append(cases,
+			badField{field + "/duplicate", fmt.Sprintf(`,%q:"LEFT",%q:"RIGHT"`, field, field)},
+			badField{field + "/alias", fmt.Sprintf(`,%q:null`, strings.ToUpper(field))},
+			badField{field + "/alias overwrite", fmt.Sprintf(`,%q:"LEFT",%q:null`, field, strings.ToUpper(field))},
+		)
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			response := "[" + strings.TrimSuffix(string(base), "}") + tc.extra + "}]"
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Method != http.MethodGet || r.URL.Path != "/repos/owner/repo/pulls/42/comments" {
+					t.Error("unexpected target or mutation")
+				}
+				_, _ = w.Write([]byte(response))
+			}))
+			defer server.Close()
+			result, err := testGitHub(server, "").ReviewComments(t.Context(), "owner/repo", 42)
+			if !hasCode(err, "provider_invalid_response") || len(result) != 0 || calls.Load() != 1 {
+				t.Fatal("invalid optional location accepted or retried", err)
+			}
+		})
+	}
+}
