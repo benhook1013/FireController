@@ -216,7 +216,7 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 	if _, err := f.store.DB().Exec(`DROP TABLE review_cli_preflight`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.store.DB().Exec(`DROP INDEX review_operations_coverage`); err != nil {
+	if _, err := f.store.DB().Exec(`DROP INDEX IF EXISTS review_operations_coverage`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.store.DB().Exec(`ALTER TABLE review_operations DROP COLUMN policy_revision`); err != nil {
@@ -249,7 +249,7 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := EnsureSchema(context.Background(), reopened); err != nil {
-		t.Fatal("second version4 startup was not idempotent", err)
+		t.Fatal("second startup was not idempotent", err)
 	}
 	bindEngine(t, f, bindingCapability())
 	var version, title, brief, worker string

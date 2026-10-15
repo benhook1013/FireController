@@ -18,7 +18,6 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		`CREATE TABLE review_execution_transitions(attempt_id TEXT NOT NULL REFERENCES review_execution_attempts(id),revision INTEGER NOT NULL,state TEXT NOT NULL,reason TEXT NOT NULL,external_id TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(attempt_id,revision))`,
 	}, []string{`ALTER TABLE review_operations ADD COLUMN capability_fingerprint TEXT NOT NULL DEFAULT ''`}, []string{
 		`ALTER TABLE review_operations ADD COLUMN policy_revision INTEGER NOT NULL DEFAULT 0`,
-		`CREATE INDEX review_operations_coverage ON review_operations(project_id,pull_number,channel,head_sha,state,id)`,
 	}, []string{
 		`CREATE TABLE review_cli_preflight(attempt_id TEXT PRIMARY KEY REFERENCES review_execution_attempts(id),project_id TEXT NOT NULL REFERENCES projects(id),body_json TEXT NOT NULL)`,
 		`CREATE INDEX review_operations_cli_admission ON review_operations(project_id,pull_number,channel,state,id)`,
@@ -29,6 +28,11 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		`CREATE TABLE review_hosted_preflight(attempt_id TEXT PRIMARY KEY REFERENCES review_execution_attempts(id),project_id TEXT NOT NULL REFERENCES projects(id),body_json TEXT NOT NULL)`,
 		`CREATE TABLE review_hosted_allowance_queries(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),operation_id TEXT NOT NULL REFERENCES review_operations(id),capability_fingerprint TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision IN (1,2)),body_json TEXT NOT NULL)`,
 	}); err != nil {
+		return err
+	}
+	// Index maintenance has its own version so newer execution-table
+	// migrations retain their existing positions in deployed databases.
+	if err := store.EnsureSchema(ctx, "review_execution_indexes", []string{`DROP INDEX IF EXISTS review_operations_coverage`}); err != nil {
 		return err
 	}
 	if err := EnsureEvidenceSchema(ctx, store); err != nil {
