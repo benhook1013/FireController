@@ -148,6 +148,8 @@ Private captures preserve exact stdout/stderr bytes, process-start status, exit 
 
 Transport keepalives and routine process progress stay out of model-facing output. A dispatched command that loses its supervising process is recovered as interrupted or uncertain from retained state; a replacement process does not silently spend another review. Canceling local execution does not recover allowance or erase its evidence.
 
+Provider source reads retain the full validated UTF-8 title within a separate 4096-byte adapter bound. Browser PR metadata uses a trimmed prefix at a complete UTF-8 character boundary within its 500-byte display budget. That display limit does not reject an otherwise valid source comparison; the adapter bound is a local resource limit, not an asserted GitHub title maximum.
+
 ## Evidence and the native workspace
 
 The shared CLI/hosted capture ledger is independent of browser snapshots. Trusted runtime integration binds its checksum, timing, structured findings and scope to the exact stored attempt anchor and capability fingerprint. An exact retry returns the original capture receipt after settlement; different evidence conflicts. A scoped full read rechecks current authorization. Recording a capture neither releases its reservation nor marks the attempt completed, finalizes findings or establishes policy sufficiency. The optional configured CLI and hosted drivers retain and publish this evidence; the default unconfigured daemon exposes only stored controls.

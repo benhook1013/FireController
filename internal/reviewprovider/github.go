@@ -847,7 +847,7 @@ func normalizeRepository(raw githubRepository, expectedID int64) (Repository, er
 }
 
 func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
-	if !validPlainText(raw.Title, 500) || strings.TrimSpace(raw.Title) == "" || raw.Number != expectedNumber || raw.ChangedFiles < 0 || raw.ChangedFiles > 1000000 || raw.State != "open" && raw.State != "closed" || raw.Merged && raw.State != "closed" || raw.Base.Repo.ID <= 0 || !validSHA(raw.Head.SHA) || !validSHA(raw.Base.SHA) || !validPlainText(raw.Base.Ref, 255) || strings.TrimSpace(raw.Base.Ref) == "" {
+	if !validPlainText(raw.Title, 4096) || strings.TrimSpace(raw.Title) == "" || raw.Number != expectedNumber || raw.ChangedFiles < 0 || raw.ChangedFiles > 1000000 || raw.State != "open" && raw.State != "closed" || raw.Merged && raw.State != "closed" || raw.Base.Repo.ID <= 0 || !validSHA(raw.Head.SHA) || !validSHA(raw.Base.SHA) || !validPlainText(raw.Base.Ref, 255) || strings.TrimSpace(raw.Base.Ref) == "" {
 		return Pull{}, errors.New("invalid pull")
 	}
 	if _, err := normalizeRepository(raw.Base.Repo, 0); err != nil {
