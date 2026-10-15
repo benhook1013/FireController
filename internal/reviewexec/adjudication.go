@@ -92,7 +92,7 @@ func loadReviewAdjudication(ctx context.Context, tx *sql.Tx, project, id string)
 		return evidence, state, adjudicationStorageError()
 	}
 	if state.Findings == nil {
-		state.Findings = []CLIFindingDecision{}
+		state.Findings = []FindingDecision{}
 	}
 	for i, finding := range state.Findings {
 		if finding.Finding != int64(i) || finding.Disposition != "unadjudicated" && finding.Disposition != "accepted" && finding.Disposition != "rejected" || !safeText(finding.Reason, 2048) || !safeText(finding.ProofNote, 2048) {

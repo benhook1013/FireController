@@ -380,7 +380,7 @@ func TestEvidenceHTTPStoredNullFindingsAreArrayWithoutWrites(t *testing.T) {
 	if findings, ok := value["findings"].([]any); !ok || len(findings) != 0 {
 		t.Fatal("stored zero findings must be encoded as []")
 	}
-	state, err := f.e.ReadCLIAdjudication(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), id)
+	state, err := f.e.ReadReviewAdjudication(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), id)
 	if err != nil || state.Findings == nil || len(state.Findings) != 0 {
 		t.Fatal("direct ledger view retained null collection", err)
 	}
