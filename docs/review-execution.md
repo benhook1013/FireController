@@ -42,6 +42,8 @@ A review request validates local arguments, authorization and configured capabil
 
 Queued requests, external attempts and completed review evidence are distinct records. A request can be held before any action. An external attempt records preparation, possible posting or process start, active work, and a proven terminal or uncertain outcome. Its retained transition history identifies the actor, expected head, admitted comparison, configuration revision, provider account and external identifiers. Reusing an idempotency key with the same request returns its original receipt; changing the request conflicts.
 
+Each local attempt mutation records one effective UTC timestamp shared by its operation update and transition. It cannot precede valid retained operation or attempt chronology, including after restart or a backwards wall-clock adjustment. Malformed retained timing is rejected without changing the journal. Effective recording time does not establish physical elapsed duration or adjust provider, capture or source-observation timestamps; their attribution and freshness checks remain separate.
+
 ## Bound execution tools
 
 Use the existing private profile for these commands; project and worker are inherited from that binding:
