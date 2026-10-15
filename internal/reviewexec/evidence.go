@@ -70,6 +70,8 @@ func validEvidenceAnchor(a Anchor) bool {
 	return err == nil && !t.IsZero() && a.RepositoryID > 0 && repository.MatchString(a.Repository) && a.PullNumber > 0 && a.PullNumber <= 2147483647 && a.ParentPullNumber >= 0 && a.ParentPullNumber <= 2147483647 && a.BaseRef != "" && safeText(a.BaseRef, 256) && sha.MatchString(a.CandidateSHA) && sha.MatchString(a.BaseSHA) && sha.MatchString(a.ParentSHA) && sha.MatchString(a.MergeBaseSHA) && hash.MatchString(a.PatchSHA256)
 }
 
+// validateReviewEvidence checks immutable structure, never current wall-clock
+// freshness. Retained captures remain valid after a host clock correction.
 func validateReviewEvidence(in ReviewEvidenceInput) error {
 	limit := int64(24 << 20)
 	if in.Hosted != nil {
@@ -80,7 +82,7 @@ func validateReviewEvidence(in ReviewEvidenceInput) error {
 	}
 	start, err := time.Parse(time.RFC3339Nano, in.StartedAt)
 	end, endErr := time.Parse(time.RFC3339Nano, in.FinishedAt)
-	if err != nil || endErr != nil || start.IsZero() || end.IsZero() || end.Before(start) || end.After(time.Now().Add(5*time.Second)) {
+	if err != nil || endErr != nil || start.IsZero() || end.IsZero() || end.Before(start) {
 		return invalid()
 	}
 	r := in.Review
@@ -118,6 +120,10 @@ func validateReviewEvidence(in ReviewEvidenceInput) error {
 // RecordReviewEvidence retains one immutable capture without settling or crediting
 // its attempt. Only trusted in-process capture integration may call this method.
 func (e *Engine) RecordReviewEvidence(ctx context.Context, project, attemptID string, input ReviewEvidenceInput) (Receipt, error) {
+	return e.recordReviewEvidenceAt(ctx, project, attemptID, input, time.Now())
+}
+
+func (e *Engine) recordReviewEvidenceAt(ctx context.Context, project, attemptID string, input ReviewEvidenceInput, now time.Time) (Receipt, error) {
 	if !identifier.MatchString(project) || !identifier.MatchString(attemptID) {
 		return Receipt{}, invalid()
 	}
@@ -156,6 +162,12 @@ func (e *Engine) RecordReviewEvidence(ctx context.Context, project, attemptID st
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		// Only a genuinely new capture is subject to the admission clock. Exact
+		// immutable replay above retains its original receipt after rollback.
+		finished, _ := time.Parse(time.RFC3339Nano, owned.FinishedAt)
+		if finished.After(now.Add(5 * time.Second)) {
+			return invalid()
 		}
 		if !validChannel(o.Channel) || a.State != "active" && a.State != "uncertain" || a.Anchor == nil || !validEvidenceAnchor(*a.Anchor) || *a.Anchor != owned.ExpectedAnchor || a.Anchor.PullNumber != o.PullNumber || a.Anchor.CandidateSHA != o.HeadSHA || !hash.MatchString(o.CapabilityFingerprint) {
 			return conflict()
