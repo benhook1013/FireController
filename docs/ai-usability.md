@@ -2,7 +2,7 @@
 
 ## Goal and proof status
 
-Let an AI worker receive the right information with few predictable calls, retain its task context, and spend its working time on the assigned job. This is a primary product contract. No host integration, token savings, or latency improvement has been measured yet.
+Let an AI worker receive the right information with few predictable calls, retain its task context, and spend its working time on the assigned job. This is a primary product contract. Packaged client and coordination latency have been measured as described below. Actual orchestrator-host integration, token savings and comparative latency improvement remain unmeasured.
 
 ## Output discipline
 
@@ -37,3 +37,16 @@ Test two projects with identically named workers in a shared checkout and interl
 Everyday operation latency targets belong to [acceptance](acceptance.md). A multi-minute wait for ordinary coordination is a failure, not an acceptable average hidden by fast calls. Provider execution may legitimately take minutes; it must not consume unrelated tool availability or make the agent poll for progress by default.
 
 Source inspections should extract functional outcomes and failure modes. Tests should prove those outcomes through public contracts and realistic failures, not lock in an old table layout, private helper, renderer shape, or flag spelling unless compatibility is deliberately selected.
+
+## Packaged coordination calibration
+
+A bounded Linux/WSL check used actual packaged `fc` and `fcd`, 32 explicitly bound worker profiles across two projects, at most 16 concurrent CLI processes and eight SSE streams. The short workload delivered 128 messages and events, with no unexpected errors, timeouts or overloads. Reads left all messages unseen and unacknowledged; 32 original-key replays added no durable effects. Cross-project access and another worker’s cursor were rejected.
+
+| Measurement | p50 | p95 | Maximum |
+| --- | --- | --- | --- |
+| Fresh message send, 128 calls | 24.2 ms | 35.4 ms | 47.1 ms |
+| Exact-key replay, 32 calls | 10.2 ms | 16.8 ms | 17.8 ms |
+| Inbox list, 160 calls | 10.0 ms | 20.0 ms | 29.6 ms |
+| Stream delivery from sender invocation, 32 observed deliveries | 22.3 ms | 34.9 ms | 45.6 ms |
+
+CLI timings include subprocess startup, profile validation and the API identity handshake. Stream timing starts at sender invocation rather than the precise commit. The burst took 0.447 seconds; it does not establish sustained throughput, saturation, remote latency or model-visible delivery. Provider workers were disabled, with two controlled setup repository lookups and zero provider calls during the workload. Review interference, actual model sessions/token cost, browser behavior and multi-replica operation were not measured by this check.
