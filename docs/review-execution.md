@@ -24,6 +24,22 @@ A review request validates local arguments, authorization and configured capabil
 
 Queued requests, external attempts and completed review evidence are distinct records. A request can be held before any action. An external attempt records preparation, possible posting or process start, active work, and a proven terminal or uncertain outcome. Its retained transition history identifies the actor, expected head, admitted comparison, configuration revision, provider account and external identifiers. Reusing an idempotency key with the same request returns its original receipt; changing the request conflicts.
 
+## Bound execution tools
+
+Use the existing private profile for these commands; project and worker are inherited from that binding:
+
+```sh
+fc reviews execution
+fc reviews request 42 --key review-42-cli-a1 --expect-config 3 --channel cli --head 0123456789abcdef0123456789abcdef01234567
+fc reviews operation review_operation_0123456789abcdef0123456789abcdef
+```
+
+`reviews execution` reads stored project configuration and its revision without checking provider availability. Missing configuration returns `review_not_configured`. `reviews request` explicitly authorizes background review work against the selected PR, channel, candidate and configuration revision. Its compact receipt contains only operation ID, initial `queued` state and revision; it does not mean a review started or completed. `reviews operation` reads current retained state and its stable reason. Reads make no provider calls and do not poll automatically.
+
+The corresponding MCP tools are `review_execution_read` with no fields, `review_operation_read` with `operation_id`, and `review_request` with `idempotency_key`, `expected_configuration_revision`, `pull_number`, `channel` and `head_sha`. Only the request tool authorizes external work. All calls use the shared five-second client budget; server preparation and execution continue independently of the request connection. Invalid selectors fail before loading credentials or contacting the service. After an unknown response, recover with the same explicit key and exact request; neither interface generates a new key or automatically retries.
+
+`GET /api/v1/projects/{project_id}/reviews/execution/configuration` returns stored `project_id`, `revision`, `capability_id`, `mode`, `queue`, `channels` and `paused`. It is a project-scoped read with instance/authorization checks, including when no runnable capability is installed. It exposes no account credentials or private paths and makes no sufficiency or CI assertion.
+
 ## Operator capabilities and project configuration
 
 Private startup configuration supplies named provider capabilities: the GitHub credential reference, CLI executable and its protected authentication context, and explicit provider-account scheduler identities. These are operator-owned settings. Project administration selects permitted capability IDs and channels, queue mode/order, required channels and allowed source configuration through revision-guarded service records. New requests bind both their execution configuration and current project-policy revisions. Local preparation, admission and the final action guard recheck those bindings, actor access and channel pauses; older unbound requests remain held. Project content and worker requests cannot select arbitrary server files, environment variables or commands.

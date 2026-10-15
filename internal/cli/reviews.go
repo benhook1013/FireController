@@ -13,7 +13,9 @@ import (
 func parseReview(call invocation, args []string) (invocation, bool) {
 	list := call.subcommand == "queue" || call.subcommand == "runs"
 	switch call.subcommand {
-	case "queue", "pull", "runs", "run", "evidence", "adjudication":
+	case "queue", "pull", "runs", "run", "evidence", "adjudication", "operation":
+	case "execution":
+		return call, len(args) == 0
 	default:
 		return call, false
 	}
@@ -64,6 +66,9 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 	if len(call.position) != 1 {
 		return call, false
 	}
+	if call.subcommand == "operation" {
+		return call, client.ValidateReviewOperationID(call.position[0]) == nil
+	}
 	if call.subcommand == "run" {
 		return call, reviewID(call.position[0], "review_run_")
 	}
@@ -92,6 +97,10 @@ func reviewID(value, prefix string) bool {
 
 func executeReview(ctx context.Context, service *client.Client, call invocation) (any, error) {
 	switch call.subcommand {
+	case "execution":
+		return service.ReviewExecution(ctx)
+	case "operation":
+		return service.ReviewOperation(ctx, call.position[0])
 	case "queue":
 		return service.ReviewQueue(ctx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case "pull":
@@ -108,6 +117,9 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 }
 
 func parseReviewControl(operation string, args []string) (*mutationInvocation, bool) {
+	if operation == "request" {
+		return parseReviewRequest(args)
+	}
 	call := &mutationInvocation{operation: "reviews " + operation}
 	allowed := map[string]bool{"--key": true, "--expect-revision": true}
 	switch operation {
@@ -186,4 +198,47 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		}
 	}
 	return call, true
+}
+
+func parseReviewRequest(args []string) (*mutationInvocation, bool) {
+	allowed := map[string]bool{"--key": true, "--expect-config": true, "--channel": true, "--head": true}
+	values := map[string]string{}
+	var positions []string
+	for i := 0; i < len(args); i++ {
+		if !strings.HasPrefix(args[i], "-") {
+			positions = append(positions, args[i])
+			continue
+		}
+		flag, value, assigned := strings.Cut(args[i], "=")
+		if !allowed[flag] {
+			return nil, false
+		}
+		if _, duplicate := values[flag]; duplicate {
+			return nil, false
+		}
+		if !assigned {
+			i++
+			if i >= len(args) {
+				return nil, false
+			}
+			value = args[i]
+		}
+		values[flag] = value
+	}
+	if len(positions) != 1 || len(values) != len(allowed) || !validMutationKey(values["--key"]) {
+		return nil, false
+	}
+	number, err := strconv.ParseInt(positions[0], 10, 64)
+	if err != nil || strconv.FormatInt(number, 10) != positions[0] {
+		return nil, false
+	}
+	revision, err := strconv.ParseInt(values["--expect-config"], 10, 64)
+	if err != nil || strconv.FormatInt(revision, 10) != values["--expect-config"] {
+		return nil, false
+	}
+	request := client.ReviewRequest{ExpectedConfigurationRevision: revision, PullNumber: number, Channel: values["--channel"], HeadSHA: values["--head"]}
+	if client.ValidateReviewRequest(request) != nil {
+		return nil, false
+	}
+	return &mutationInvocation{operation: "reviews request", key: values["--key"], reviewRequest: request}, true
 }
