@@ -199,6 +199,13 @@ func TestReviewControlsStrictReadShapesAndBudgets(t *testing.T) {
 		strings.Replace(string(valid), `"path":"outside/diff.go"`, `"path":"../escape"`, 1),
 		strings.Replace(string(valid), `"end_line":12`, `"end_line":7`, 1),
 		strings.Replace(string(valid), `"complete":true`, `"complete":null`, 1),
+		strings.Replace(string(valid), `"capture_sha256":"`+strings.Repeat("a", 64)+`"`, `"capture_sha256":""`, 1),
+		strings.Replace(string(valid), `"capture_sha256":"`+strings.Repeat("a", 64)+`"`, `"capture_sha256":"a"`, 1),
+		strings.Replace(string(valid), `"capture_sha256":"`+strings.Repeat("a", 64)+`"`, `"capture_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`, 1),
+		strings.Replace(string(valid), `"capture_sha256":"`+strings.Repeat("a", 64)+`"`, `"capture_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`, 1),
+		strings.Replace(string(valid), `"capture_sha256":"`+strings.Repeat("a", 64)+`"`, `"capture_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`, 1),
+		strings.Replace(string(valid), `"capture_sha256":"`+strings.Repeat("a", 64)+`"`, `"capture_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`, 1),
+		strings.Replace(string(valid), `"capture_sha256":"`+strings.Repeat("a", 64)+`"`, `"capture_sha256":"gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"`, 1),
 		strings.Replace(string(valid), `"capture_bytes":1024`, `"capture_bytes":0`, 1),
 		string(valid) + `{}`, strings.Repeat(" ", 4<<20) + string(valid),
 	} {

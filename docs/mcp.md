@@ -41,6 +41,11 @@ Startup validates configuration without opening the credential or contacting the
 | `review_source_refresh` | Required idempotency_key/expected_configuration_revision/pull_number/head_sha; optional wait_seconds (default 2, range 0–60). Returns a completed outcome within the wait, otherwise an operation receipt; schedules only selected source reads, never a review. |
 | `review_source_refresh_read` | Required refresh_id; stored operation and observed comparison, no provider calls. |
 | `review_source_policy_assess` | Required pull_number; current local policy against the last completed source observation, with its age; no CI or merge-readiness claim. |
+| `review_evidence_read` | Required evidence_id; explicit full retained native capture and parsed findings, excluding raw diagnostics. |
+| `review_adjudication_read` | Required evidence_id; current guarded decisions and fix references without repeating finding text. |
+| `review_finding_decide` | Required idempotency_key/evidence_id/expected_revision/finding/disposition/reason; completed adjudication result. |
+| `review_finding_fix` | Required idempotency_key/evidence_id/expected_revision/finding/expected_sha/fix_sha/proof_note; completed fix-reference result. |
+| `review_source_finalize` | Required idempotency_key/evidence_id/expected_revision; completed source-count finalization result. |
 | `review_queue` | Optional limit/cursor; stored queue, default five PRs. |
 | `review_pull` | Required pull_number, optional snapshot; explicit PR summary and attempts. |
 | `review_runs` | Required pull_number, optional snapshot/limit/cursor; default five stored run summaries. |
