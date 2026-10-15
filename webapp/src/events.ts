@@ -4,6 +4,7 @@ import type { InboxOptions, InboxSnapshot, MessageEventPage, WatchCallbacks } fr
 const maximumFrameBytes = 1 << 20;
 const idleMilliseconds = 45_000;
 const reconnectDelays = [1_000, 2_000, 4_000, 10_000] as const;
+const stableConnectionMilliseconds = 15_000;
 
 type Frame = { event: string; id?: string; data: string; comment: boolean };
 type OpenStream = { response: Response; close: () => void };
@@ -123,10 +124,10 @@ export async function runMessageWatch(source: MessageWatchSource, worker: string
     throw error instanceof ApiError ? error : new ApiError('connection_failed', 'The inbox snapshot could not be loaded.');
   }
   let attempts = 0;
-  let healthy = false;
   while (!signal.aborted) {
     let connection: OpenStream | undefined;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let attachedAt: number | undefined;
     try {
       connection = await source.openStream(worker, cursor, limit, signal);
       const response = connection.response;
@@ -136,7 +137,6 @@ export async function runMessageWatch(source: MessageWatchSource, worker: string
           callbacks.status('connecting');
           cursor = await deliverSnapshot(source, worker, options, callbacks, signal);
           attempts = 0;
-          healthy = false;
           continue;
         }
         throw error;
@@ -147,6 +147,7 @@ export async function runMessageWatch(source: MessageWatchSource, worker: string
       if (response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== 'text/event-stream' || !response.body) throw new ApiError('invalid_response', 'The service returned an invalid event stream.', response.status);
       if (signal.aborted) break;
       reader = response.body.getReader();
+      attachedAt = performance.now();
       callbacks.status('live');
       const parser = new SSEParser();
       while (!signal.aborted) {
@@ -174,8 +175,7 @@ export async function runMessageWatch(source: MessageWatchSource, worker: string
           }
           if (signal.aborted) break;
           cursor = page.cursor;
-          healthy = true;
-          attempts = 0;
+          if (page.items.length > 0) attempts = 0;
         }
       }
     } catch (caught) {
@@ -186,7 +186,6 @@ export async function runMessageWatch(source: MessageWatchSource, worker: string
           callbacks.status('connecting');
           cursor = await deliverSnapshot(source, worker, options, callbacks, signal);
           attempts = 0;
-          healthy = false;
           continue;
         } catch (snapshotError) {
           if (signal.aborted) break;
@@ -196,12 +195,11 @@ export async function runMessageWatch(source: MessageWatchSource, worker: string
       }
       if (isTerminal(error)) { callbacks.status('closed'); throw error; }
       callbacks.status('reconnecting');
+      if (attachedAt !== undefined && performance.now() - attachedAt >= stableConnectionMilliseconds) attempts = 0;
       const delay = reconnectDelays[Math.min(attempts, reconnectDelays.length - 1)];
       attempts += 1;
       try { await wait(delay, signal); }
       catch { break; }
-      if (healthy) attempts = 0;
-      healthy = false;
     } finally {
       if (reader) { try { await reader.cancel(); } catch { /* the stream may already be aborted */ } try { reader.releaseLock(); } catch { /* already released */ } }
       connection?.close();

@@ -77,7 +77,7 @@ func New(root, gitExecutable string) (*Manager, error) {
 		}
 	}
 	env = append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull,
-		"GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat", "LANG=C.UTF-8")
+		"GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat", "GIT_OPTIONAL_LOCKS=0", "LANG=C.UTF-8")
 	return &Manager{root: absolute, git: resolved, env: env, fetchGate: make(chan struct{}, 1)}, nil
 }
 
