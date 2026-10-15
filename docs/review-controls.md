@@ -36,7 +36,7 @@ When a native run has already been published to the stored review workspace, a d
 
 The native run's original source identity and zero-based finding indexes bind that update. It preserves captured finding text, historical snapshots, imported runs, merged queue history and current PR facts. Finalized source counts remain the original counts even when a later audited correction changes an effective decision or fix. Updating a decision does not claim a fresh provider observation for other PRs.
 
-Evidence without an initial native workspace publication remains usable through the ledger controls. A decision does not invent a browser run or convert imported historical evidence into native execution. The configured drivers publish retained evidence through this same trusted path; live-provider and operational-cutover proof remain separate.
+Evidence without an initial native workspace publication remains usable through the ledger controls. A decision does not invent a browser run or convert imported historical evidence into native execution. The optional configured CLI and hosted drivers perform trusted initial publication from retained evidence, as described in the [execution contract](review-execution.md#evidence-and-the-native-workspace); real CodeRabbit execution through those drivers and operational cutover remain unproven.
 
 ## Explicit project policy
 
@@ -75,7 +75,7 @@ These tools record local review evidence. Project instructions and the optional 
 
 ## Validation boundary
 
-Focused public-handler, typed-client, CLI and actual stdio MCP checks must cover project/read-write isolation, instance mismatch, strict fields, exact keyed replay, stale revisions, guarded fix corrections, retained source counts and bounded failures. Policy handlers also cover administrator authority, explicit empty arrays/zero, immutable revisions and the unconfigured state. Integration checks must verify atomic ledger/projection rollback and retained history. Packaged-service checks must verify daemon registration and actual browser refresh before claiming executable projection consistency. Passing these controls does not establish initial provider publication, admission, hosted recovery or native cutover.
+Focused public-handler, typed-client, CLI and actual stdio MCP checks must cover project/read-write isolation, instance mismatch, strict fields, exact keyed replay, stale revisions, guarded fix corrections, retained source counts and bounded failures. Policy handlers also cover administrator authority, explicit empty arrays/zero, immutable revisions and the unconfigured state. Integration checks must verify atomic ledger/projection rollback and retained history. Packaged-service checks must verify daemon registration and actual browser refresh before claiming executable projection consistency. Passing the ledger controls alone does not establish provider dispatch, admission, hosted recovery or native cutover. The execution contract records the separate configured-driver publication proof and remaining live CodeRabbit limits.
 
 ## Executed proof
 
