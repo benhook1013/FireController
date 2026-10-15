@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -270,5 +271,24 @@ func TestCLIReviewReviewedFilesCountBoundary(t *testing.T) {
 				t.Fatalf("valid maximum reviewed-file inventory rejected or truncated: complete=%t files=%d err=%v", result.Complete, len(result.ReviewedFiles), err)
 			}
 		})
+	}
+}
+
+func TestCLIReviewRejectsC1ControlsInRetainedProse(t *testing.T) {
+	for _, field := range []string{"title", "comment", "severity"} {
+		for _, control := range []string{"\u0085", "\u009f"} {
+			t.Run(field+fmt.Sprintf("-%x", []rune(control)[0]), func(t *testing.T) {
+				finding := cliFindingEvent()
+				finding[field] = "before" + control + "after"
+				requireCLIInvalid(t, cliJSONLines(t, cliContextEvent(), finding, cliCompleteEvent(1)), 0, syntheticCLIContext)
+			})
+		}
+	}
+	finding := cliFindingEvent()
+	finding["title"] = "Valid café 🔥"
+	finding["comment"] = "Unicode 文 remains exact.\tAllowed tab\r\nNew line."
+	result, err := ParseCLIReview(cliJSONLines(t, cliContextEvent(), finding, cliCompleteEvent(1)), 0, syntheticCLIContext)
+	if err != nil || !result.Complete || result.Findings[0].Title != finding["title"] || result.Findings[0].Detail != finding["comment"] {
+		t.Fatal("valid Unicode and allowed whitespace changed", err)
 	}
 }
