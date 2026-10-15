@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Local operator bundle creation, read-only inspection and inactive restore are implemented with focused tests. Full checks and packaged-command proof are pending below. Scheduling, retention, activation and provider reconciliation remain unfinished. This is not yet an installed backup or disaster recovery workflow.
+Local operator bundle creation, read-only inspection and inactive restore are implemented. Full checks and five packaged proof groups pass as recorded below. Scheduling, retention, activation and provider reconciliation remain unfinished. This is not yet an installed backup or disaster recovery workflow.
 
 ## Canonical data and local format
 
@@ -40,6 +40,12 @@ Prove online SQLite snapshot consistency while writes continue; self-contained r
 
 ## Proof status and limits
 
-Focused proof lives in [core snapshot tests](../internal/core/snapshot_test.go), [bundle tests](../internal/backup/bundle_test.go), [schema and capture-reference tests](../internal/backup/inventory_test.go), [inactive restore tests](../internal/backup/restore_test.go), and [operator command tests](../cmd/fcd/backups_test.go). Packaged-command proof and full checks are pending at this checkpoint.
+Focused proof lives in [core snapshot tests](../internal/core/snapshot_test.go), [bundle tests](../internal/backup/bundle_test.go), [schema and capture-reference tests](../internal/backup/inventory_test.go), [inactive restore tests](../internal/backup/restore_test.go), and [operator command tests](../cmd/fcd/backups_test.go). Clean runtime checkpoint `35aa2b69bb7bd18177c56e74f2c9d2a29b8ded90` passed full `make check build`: 175 browser tests, all Go race tests and vet, documentation/link checks, embedded browser assets and three binaries. Focused tests cover thirteen older component-schema combinations, full rehashed foreign-key cascade rejection before restore writes, and a live held writer while the operator snapshots the committed prefix without writable initialization.
+
+Five actual packaged groups passed in 1.673 seconds using nineteen `fcd` and nineteen `fc` invocations with isolated canonical data. Six immutable artifacts totaling 45,923,657 bytes survived exactly, including referenced hosted observations and unreferenced CLI forensic captures. Read-only inspection and self-contained inactive restore with the source offline preserved jobs, messages, receipts, events, native evidence/routes, imported history and provider intents. Only intended instance/signing/restore metadata and credential revocation changed. Startup refused the inactive result before catalog or listener work; ordinary source restart retained identity.
+
+The backup command took 91.721 ms while nine coordination mutations completed. None completed wholly within its short SQLite snapshot window, so this packaged group does not establish strict snapshot/write overlap; the focused transactional snapshot test covers that boundary. Read-only inspection took 29.940 ms and inactive restore 113.039 ms. These small local samples are not throughput guarantees. Corrupted hashes/references/schema/triggers, wrong source paths, existing destinations, incomplete startup and deadline cleanup failed safely. Source and binary hashes remained unchanged; fixture processes, listeners and state were removed, with zero external/provider/Git/review/allowance calls.
+
+Two initial private-harness failures were preserved before fixing an eager diagnostic read and a local nanosecond timestamp parser. They required no production change, timeout relaxation or weakened assertion.
 
 This slice addresses the snapshot and inactive-copy portions of O02 and O06 in [acceptance](acceptance.md). It does not satisfy O07 scheduled-backup status or claim active recovery. No daemon schedule, retention policy, destination transfer, activation command, provider reconciliation, browser backup control or extra agent tool is delivered here. Local bundles remain under the operator's filesystem authority and are not encrypted by this format; use storage protection appropriate to the installation. Windows and macOS runtime durability and access-control behavior remain separate proof.
