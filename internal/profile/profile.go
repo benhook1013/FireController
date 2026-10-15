@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/strictjson"
@@ -22,6 +23,12 @@ type Context struct {
 	InstanceID string `json:"instance_id"`
 	ProjectID  string `json:"project_id"`
 	WorkerID   string `json:"worker_id"`
+}
+
+// Binding adds a private credential reference for service client construction.
+type Binding struct {
+	Context        Context `json:"context"`
+	CredentialFile string  `json:"-"`
 }
 
 type entry struct {
@@ -55,7 +62,16 @@ func failure(code, message, action string) *Error {
 // reference or modifying configuration. All entries must be valid so selection
 // cannot hide malformed or ambiguous configuration.
 func Load(path, name string) (Context, *Error) {
-	var result Context
+	binding, err := loadBinding(path, name, false)
+	return binding.Context, err
+}
+
+// LoadBinding resolves the credential reference against the profile directory,
+// without opening it or contacting the service.
+func LoadBinding(path, name string) (Binding, *Error) { return loadBinding(path, name, true) }
+
+func loadBinding(path, name string, resolve bool) (Binding, *Error) {
+	var result Binding
 	if !cleanValue(name) {
 		return result, failure("profile_required", "A profile name is required without surrounding whitespace.", "Set --profile NAME or FC_PROFILE.")
 	}
@@ -112,7 +128,19 @@ func Load(path, name string) (Context, *Error) {
 	if !ok {
 		return result, failure("profile_not_found", "The selected profile does not exist.", "Select a configured name with --profile or FC_PROFILE.")
 	}
-	return Context{Profile: name, ServerURL: selected.ServerURL, InstanceID: selected.InstanceID, ProjectID: selected.ProjectID, WorkerID: selected.WorkerID}, nil
+	reference := ""
+	if resolve {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return result, failure("profiles_unreadable", "The profiles configuration location could not be resolved.", "Check --profiles-file and its location.")
+		}
+		reference = selected.CredentialFile
+		if !filepath.IsAbs(reference) {
+			reference = filepath.Join(filepath.Dir(absolute), reference)
+		}
+		reference = filepath.Clean(reference)
+	}
+	return Binding{Context: Context{Profile: name, ServerURL: selected.ServerURL, InstanceID: selected.InstanceID, ProjectID: selected.ProjectID, WorkerID: selected.WorkerID}, CredentialFile: reference}, nil
 }
 
 func notRegularFile() *Error {

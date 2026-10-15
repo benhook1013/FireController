@@ -66,6 +66,7 @@ func Register(mux *http.ServeMux, store *core.Store) {
 	h := &handler{store: store}
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages", h.send)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}", h.list)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}/snapshot", h.snapshot)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/conversations/{conversation_id}", h.conversation)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages/{message_id}/seen", h.seen)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages/{message_id}/ack", h.ack)
@@ -204,6 +205,87 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	page, err := h.inboxPage(r.Context(), h.store.DB(), scope, workerID, unread, unacknowledged, filter, limit, after)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, page)
+}
+
+type inboxSnapshot struct {
+	Inbox       inboxPage `json:"inbox"`
+	EventCursor string    `json:"event_cursor"`
+}
+
+func (h *handler) snapshot(w http.ResponseWriter, r *http.Request) {
+	scope, err := h.store.Scope(r, "read")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	workerID := r.PathValue("worker_id")
+	if scope.WorkerID == "" || workerID != scope.WorkerID {
+		core.WriteError(w, core.Fail("forbidden", "Select this inbox recipient with X-FC-Worker.", http.StatusForbidden))
+		return
+	}
+	if _, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "unread", "unacknowledged"); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	unread, err := boolFilter(r, "unread")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	unacknowledged, err := boolFilter(r, "unacknowledged")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	filter := "inbox:" + workerID + ":unread=" + strconv.FormatBool(unread) + ":unacknowledged=" + strconv.FormatBool(unacknowledged)
+	limit, after, err := h.page(r, scope, filter)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	var result inboxSnapshot
+	err = h.store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
+		if err := checkInboxWorker(ctx, tx, scope.ProjectID, workerID); err != nil {
+			return err
+		}
+		page, err := h.inboxPage(ctx, tx, scope, workerID, unread, unacknowledged, filter, limit, after)
+		if err != nil {
+			return err
+		}
+		cursor, err := h.store.MessageEventCursor(ctx, tx, scope)
+		if err != nil {
+			return err
+		}
+		result = inboxSnapshot{Inbox: page, EventCursor: cursor}
+		return nil
+	})
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, result)
+}
+
+type queryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func checkInboxWorker(ctx context.Context, db queryer, projectID, workerID string) error {
+	var exists int
+	if err := db.QueryRowContext(ctx, "SELECT 1 FROM workers WHERE project_id=? AND id=?", projectID, workerID).Scan(&exists); err != nil {
+		return missing(err)
+	}
+	return nil
+}
+
+func (h *handler) inboxPage(ctx context.Context, db queryer, scope core.Scope, workerID string, unread, unacknowledged bool, filter string, limit int, after int64) (inboxPage, error) {
 	query := `SELECT m.sequence,m.id,m.conversation_id,m.sender_worker_id,m.recipient_worker_id,m.body,m.created_at,s.seen,s.acknowledged FROM inbox_messages m JOIN inbox_recipient_state s ON s.project_id=m.project_id AND s.message_id=m.id AND s.worker_id=m.recipient_worker_id WHERE m.project_id=? AND m.recipient_worker_id=? AND m.sequence>?`
 	if unread {
 		query += " AND s.seen=0"
@@ -212,10 +294,9 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 		query += " AND s.acknowledged=0"
 	}
 	query += " ORDER BY m.sequence ASC LIMIT ?"
-	rows, err := h.store.DB().QueryContext(r.Context(), query, scope.ProjectID, workerID, after, limit+1)
+	rows, err := db.QueryContext(ctx, query, scope.ProjectID, workerID, after, limit+1)
 	if err != nil {
-		core.WriteError(w, err)
-		return
+		return inboxPage{}, err
 	}
 	defer rows.Close()
 	page := inboxPage{Items: make([]inboxItem, 0, limit)}
@@ -223,22 +304,20 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 		var item inboxItem
 		var body string
 		if err := rows.Scan(&item.sequence, &item.ID, &item.ConversationID, &item.SenderWorkerID, &item.RecipientWorkerID, &body, &item.CreatedAt, &item.Seen, &item.Acknowledged); err != nil {
-			core.WriteError(w, err)
-			return
+			return inboxPage{}, err
 		}
 		item.Preview, item.PreviewTruncated = preview(body)
 		page.Items = append(page.Items, item)
 	}
 	if err := rows.Err(); err != nil {
-		core.WriteError(w, err)
-		return
+		return inboxPage{}, err
 	}
 	if len(page.Items) > limit {
 		page.HasMore = true
 		page.Items = page.Items[:limit]
 		page.Cursor = h.store.Cursor(scope, filter, strconv.FormatInt(page.Items[len(page.Items)-1].sequence, 10))
 	}
-	core.WriteJSON(w, http.StatusOK, page)
+	return page, nil
 }
 
 type message struct {

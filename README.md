@@ -9,9 +9,9 @@ AI workers are the primary clients. Everyday commands return concise, useful inf
 
 ## Current status
 
-The standalone application is under development. [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the design and repository validation. [PR #2](https://github.com/benhook1013/FireController/pull/2) combines the first local CLI commands, `fc version` and `fc context`, private profile validation, and the durable coordination service.
+The standalone application is under development. The merged [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the design and repository validation. [PR #2](https://github.com/benhook1013/FireController/pull/2) combines the first local CLI commands, `fc version` and `fc context`, private profile validation, and the durable coordination service. [PR #4](https://github.com/benhook1013/FireController/pull/4) brings together the agent clients, live message transport and embedded browser.
 
-The coordination slice implements a loopback service API, scoped projects/workers and access grants, basic jobs with guarded edits/history, and durable message reads and explicit seen/ack actions. See the [local API](docs/local-api.md). Live event transport, MCP, onboarding commands, provider review orchestration, backups, advanced jobs and the new browser remain unimplemented. The capabilities below describe the selected product design. [Delivery and proof status](docs/delivery.md) records what has actually been built and checked.
+The coordination slice implements a loopback service API, scoped projects/workers and access grants, basic jobs with guarded edits/history, and durable message reads and explicit seen/ack actions. See the [local API](docs/local-api.md). An embedded read-only browser displays jobs, workers and live incoming conversations; open the service address and connect with a project credential. The [browser guide](docs/browser-guide.md) describes its current scope. Onboarding commands, provider review orchestration, backups, advanced jobs and project appearance settings remain unimplemented. The capabilities below describe the selected product design. [Delivery and proof status](docs/delivery.md) records what has actually been built and checked.
 
 ## What FireController provides
 
@@ -33,7 +33,7 @@ fc jobs assigned
 fc inbox list
 ```
 
-These service commands are part of the target workflow; the current CLI slice implements `version` and `context`. Profiles belong to the individual client process or connection, without a shared workspace-wide active identity.
+The current CLI supports these compact reads plus verified `doctor`, workers, explicit job detail/history and conversation pages. `version` and `context` remain local. Explicit-key job/message mutations also return compact receipts with safe retry guidance. The [stdio MCP adapter](docs/mcp.md) exposes eleven bound read tools and five explicit-key mutations through the official Go SDK. Persistent CLI/MCP subscriptions remain to be implemented; the [HTTP message feed](docs/message-events.md) already supports snapshot, replay and SSE. Profiles belong to the individual client process or connection, without a shared workspace-wide active identity.
 
 The CLI and MCP adapter use the same API as the browser. Results are structured and bounded, errors give a useful next action, and full context or archives are explicit reads. Long operations retain durable receipts internally; capable adapters deliver completion while the agent continues other work. Host support for concurrent tools and result delivery is verified rather than assumed.
 
@@ -47,7 +47,7 @@ Start with one service on a single computer or a network host. One instance serv
 | --- | --- |
 | Service and CLI | Go |
 | Durable state | SQLite on local storage; one active service replica |
-| Browser | TypeScript assets embedded in the service binary |
+| Browser | React, TypeScript, React Router and TanStack Query; Vite builds assets embedded in the service binary |
 | Native AI interface | Packaged MCP adapter using the official Go SDK |
 | Checks and review | GitHub Actions, focused functional tests, documentation validation, and CodeRabbit |
 
@@ -75,18 +75,20 @@ The [onboarding guide](docs/onboarding.md) defines this flow. Its application co
 
 ## Development and contribution
 
-For the documentation scaffold, use Node.js 22 or newer:
+For documentation checks, use Node.js 22.22 or newer:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
 npm run docs:check
 ```
 
-The check runs Markdown lint, focused link-checker tests, and repository-link validation. For the local CLI, install Go 1.27, Make and a C compiler such as `gcc`, with cgo enabled for the race-enabled checks. `make check` also runs the documentation checks, so complete the Node.js setup and `npm ci` above before running:
+The check runs Markdown lint, focused link-checker tests, and repository-link validation. For the service, CLI and embedded browser, install Go 1.27, Make and a C compiler such as `gcc`, with cgo enabled for the race-enabled checks. `make check` also runs the documentation checks, so complete the Node.js setup and root `npm ci` above before running:
 
 ```sh
+npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
 make check build
 ./bin/fc version
+./bin/fcd --data-dir /private/firecontroller --listen 127.0.0.1:8080
 ```
 
 The [development guide](docs/development.md) documents private profiles, implemented commands, build checks and proof limits.

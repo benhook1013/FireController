@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fcd` serves scoped projects, workers, access grants, basic jobs and durable messages. The CLI currently implements only local `version` and `context`; these HTTP operations are not yet agent-facing CLI or MCP commands. There is no standalone browser, live event stream, review executor, backup API, primary-job selection, checklist, checkpoint or deferred-note API in this slice.
+`fcd` serves scoped projects, workers, access grants, basic jobs and durable messages. The CLI implements local `version`/`context` and the profile-bound [read commands](development.md#read-only-agent-commands). The [explicit-key CLI mutations](development.md#explicit-agent-mutations) create/edit jobs and send/seen/ack messages. The [stdio MCP adapter](mcp.md) exposes read and explicit-key mutation tools against these same endpoints. The [incoming-message event API](message-events.md) supplies scoped snapshot/replay, bounded waits and a persistent SSE transport. The [embedded read-only browser](browser-guide.md) displays projects, jobs, workers and live incoming conversations. Browser mutations, a project/job event feed, review executor, backup API, primary-job selection, checklist, checkpoint and deferred-note API remain unavailable in this slice.
 
 The [architecture](architecture.md) owns target behavior. This page describes the current implementation and its limits.
 
@@ -20,7 +20,7 @@ Only loopback listeners are supported in this slice. Network/TLS deployment need
 
 Clients send `Authorization: Bearer <credential>` on API requests. Administrative project creation, project listing, and access management require the bootstrap administrator. Project clients receive explicit `read` and/or `write` grants. `X-FC-Worker` selects an existing worker in the request's project for attribution; it never grants permission. Sending messages and changing seen/ack state require that worker selection.
 
-The authenticated `GET /api/v1/instance` returns the durable instance ID. A future service client must compare it with its profile before mutation. The current `fc context` only reports local configuration.
+The authenticated `GET /api/v1/instance` returns the durable instance ID. Bound clients supply `X-FC-Instance` on every request; a mismatch returns `instance_mismatch` before domain reads, writes or provider work, including replacement after a client handshake. Missing headers remain supported for explicit administrative bootstrap. The local `fc context` command only reports configuration.
 
 Every mutation requires one `Idempotency-Key` of at most 128 bytes. Retain the same key, normalized request and worker attribution when retrying an uncertain outcome. Exact replay returns the original receipt after checking current access; it does not report current resource state. Changed request or worker under that key conflicts. A new key creates a new mutation and enforces the current revision where required. Revoked credentials cannot replay old receipts.
 

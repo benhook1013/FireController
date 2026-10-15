@@ -545,6 +545,49 @@ func TestAdmissionCancellationAndCursorFilterBinding(t *testing.T) {
 	}
 }
 
+func TestExpectedInstanceGuardsReadsMutationsAndProviderWork(t *testing.T) {
+	f := setup(t)
+	p := f.project(t, "owner/one")
+	worker := f.worker(t, p, "Builder")
+	token := strings.Repeat("guard-token-", 4)
+	f.grant(t, p, token, true)
+	calls := f.calls.Load()
+	events, receipts := count(t, f.store, "events"), count(t, f.store, "receipts")
+	call := func(method, path, credential, body string, expected ...string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+credential)
+		r.Header.Set("Idempotency-Key", "guard-key")
+		for _, value := range expected {
+			r.Header.Add("X-FC-Instance", value)
+		}
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		return w
+	}
+	paths := []struct{ method, path, credential, body string }{
+		{"GET", "/api/v1/instance", token, ""},
+		{"GET", "/api/v1/projects/" + p + "/workers/" + worker, token, ""},
+		{"POST", "/api/v1/projects/" + p + "/workers", token, `{"name":"Unwanted"}`},
+		{"POST", "/api/v1/projects", f.admin, `{"name":"Unwanted","repository":"owner/two"}`},
+	}
+	for _, tc := range paths {
+		bad := require(t, call(tc.method, tc.path, tc.credential, tc.body, "instance-replaced"), 409)
+		if bad["error"].(map[string]any)["code"] != "instance_mismatch" {
+			t.Fatal("mismatch code missing")
+		}
+		for _, expected := range [][]string{{""}, {" padded "}, {"malformed instance"}, {"malformed\tinstance"}, {"malformed\u00a0instance"}, {string([]byte{255})}, {strings.Repeat("x", 129)}, {f.store.InstanceID(), f.store.InstanceID()}} {
+			require(t, call(tc.method, tc.path, tc.credential, tc.body, expected...), 400)
+		}
+	}
+	require(t, call("GET", "/api/v1/instance", "wrong-credential", "", "instance-replaced"), 401)
+	require(t, call("GET", "/api/v1/instance", token, "", f.store.InstanceID()), 200)
+	require(t, call("GET", "/api/v1/projects/"+p+"/workers/"+worker, token, "", f.store.InstanceID()), 200)
+	// Existing bootstrap/raw API calls without a bound expected-instance header remain valid.
+	require(t, call("GET", "/api/v1/instance", token, ""), 200)
+	if f.calls.Load() != calls || count(t, f.store, "workers") != 1 || count(t, f.store, "projects") != 1 || count(t, f.store, "events") != events || count(t, f.store, "receipts") != receipts {
+		t.Fatal("guard denial changed domain/provider state")
+	}
+}
 func TestWriteDeadlineInterruptsStagedSQLiteAndKeepsKeyRetryable(t *testing.T) {
 	// Run the expensive statement only in an externally bounded child. Losing
 	// propagation to SQLite must fail this proof, never hang the parent suite.

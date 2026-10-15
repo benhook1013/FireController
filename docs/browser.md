@@ -2,9 +2,9 @@
 
 ## Implementation status
 
-The standalone browser is not implemented. This contract replaces the legacy private refresh/render/publish cycle after a separately reviewed migration.
+The service embeds a read-only browser for project connection, workers, basic jobs/full briefs and incoming conversations with live message updates. The [browser guide](browser-guide.md) records its implemented boundary, build and proof limits. Project settings, maps, reviews and browser mutations remain later slices. This contract replaces the legacy private refresh/render/publish cycle after a separately reviewed migration.
 
-## Live application
+## Target application
 
 The service serves embedded application assets. The browser reads the same project-scoped API as agents and subscribes to authorized changes. Job, conversation, map, and PR detail routes render from service records rather than generated per-PR HTML files. Opening or refreshing a page does not silently call GitHub or sync provider captures.
 

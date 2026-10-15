@@ -13,6 +13,8 @@ reviews:
     provider refresh, persistence, installation, and validation where relevant.
     Distinguish proposed contracts from implemented or measured behavior.
   review_status: true
+  path_filters:
+    - '!internal/webui/assets/**'
   in_progress_fortune: false
   poem: false
   pre_merge_checks:
