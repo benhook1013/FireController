@@ -144,6 +144,41 @@ func TestRecoverHostedAdoptsAndPublishesWithoutReposting(t *testing.T) {
 	}
 }
 
+func TestRecoverHostedProviderClockSkewRetainsRealTimestamp(t *testing.T) {
+	for _, seconds := range []int{1, 5, 6} {
+		t.Run(fmt.Sprint(seconds), func(t *testing.T) {
+			f, captures, a, reader := recoveryRuntimeFixture(t, "uncertain")
+			recoveryRuntimeMetadata(t, f, a)
+			triggerAt := reader.record.Snapshot.IssueComments[0].CreatedAt
+			admitted := triggerAt.Add(time.Duration(seconds) * time.Second)
+			if _, err := f.store.DB().Exec(`UPDATE review_execution_transitions SET created_at=? WHERE attempt_id=? AND reason='admitted'`, admitted.Format(time.RFC3339Nano), a.ID); err != nil {
+				t.Fatal(err)
+			}
+			got, err := recoverRuntime(t, f, captures, a, reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if seconds > 5 {
+				if got.State != "uncertain" || got.EvidenceID != "" || recoveryRuntimeCount(t, f, "review_execution_reservations") != 1 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 {
+					t.Fatalf("excessive skew settled uncertain action: %+v", got)
+				}
+				return
+			}
+			if got.State != "completed" || got.TriggerCommentID != 100 || got.EvidenceID == "" {
+				t.Fatalf("bounded provider lag not recovered: %+v", got)
+			}
+			evidence, err := f.engine.ReadReviewEvidence(t.Context(), f.scope(t, f.writer, false), got.EvidenceID)
+			if err != nil || evidence.Capture.StartedAt != triggerAt.Format(time.RFC3339Nano) {
+				t.Fatal("provider timestamp was relabeled", err)
+			}
+			calls := len(reader.calls)
+			if again, err := recoverRuntime(t, f, captures, a, reader); err != nil || again.State != "completed" || len(reader.calls) != calls {
+				t.Fatal("settled skew recovery observed provider again", again, err)
+			}
+		})
+	}
+}
+
 func TestRecoverHostedRetainedEvidenceRepairsPublicationBeforeNewObservation(t *testing.T) {
 	f, captures, a, reader := recoveryRuntimeFixture(t, "uncertain")
 	recoveryRuntimeMetadata(t, f, a)

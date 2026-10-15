@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -47,7 +48,7 @@ func TestExecutionConfigurationReadScopeQueryAndInstanceFailures(t *testing.T) {
 	path := "/api/v1/projects/" + attemptProject + "/reviews/execution/configuration"
 	before := policyState(t, f)
 	w := f.request("GET", path, f.reader, "", "")
-	if w.Code != 409 || !strings.Contains(w.Body.String(), `"code":"review_not_configured"`) || policyState(t, f) != before {
+	if w.Code != 409 || !strings.Contains(w.Body.String(), `"code":"reviews_unconfigured"`) || policyState(t, f) != before {
 		t.Fatal("missing configuration silently became an empty passing result", w.Code, w.Body.String())
 	}
 	f.configure(t, attemptProject, "test-capability", 0, false)
@@ -77,5 +78,75 @@ func TestExecutionConfigurationReadScopeQueryAndInstanceFailures(t *testing.T) {
 	w = f.request("GET", path, f.reader, "", "")
 	if w.Code != 401 {
 		t.Fatal("revoked reader retained access", w.Code, w.Body.String())
+	}
+}
+
+func TestExecutionConfigurationReadAndRequestDistinguishMissingFromOutOfScope(t *testing.T) {
+	f := newAttemptFixture(t)
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	service := httptest.NewServer(mux)
+	defer service.Close()
+	base := service.URL + "/api/v1/projects/" + attemptProject + "/reviews"
+	call := func(method, suffix, body, key string) (int, string) {
+		t.Helper()
+		r, err := http.NewRequestWithContext(t.Context(), method, base+suffix, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Header.Set("Authorization", "Bearer "+f.writer)
+		r.Header.Set("X-FC-Instance", f.store.InstanceID())
+		if method == http.MethodPost {
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Idempotency-Key", key)
+		}
+		response, err := service.Client().Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		data, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err = json.Unmarshal(data, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode, decoded.Error.Code
+	}
+	request := `{"expected_configuration_revision":1,"pull_number":2,"channel":"cli","head_sha":"` + strings.Repeat("a", 40) + `"}`
+	before := policyState(t, f)
+	readStatus, readCode := call("GET", "/execution/configuration", "", "")
+	requestStatus, requestCode := call("POST", "/requests", request, "missing-config-request")
+	if readStatus != http.StatusConflict || requestStatus != readStatus || readCode != "reviews_unconfigured" || requestCode != readCode {
+		t.Fatalf("missing configuration contract differs: read=%d/%s request=%d/%s", readStatus, readCode, requestStatus, requestCode)
+	}
+	if policyState(t, f) != before || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+		t.Fatal("missing configuration refusal mutated state")
+	}
+	zero := int64(0)
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "scoped-config", Configuration{ExpectedRevision: &zero, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli"}}); err != nil {
+		t.Fatal(err)
+	}
+	if status, code := call("GET", "/execution/configuration", "", ""); status != 200 || code != "" {
+		t.Fatalf("stored configuration read failed: %d/%s", status, code)
+	}
+	before = policyState(t, f)
+	for _, test := range []struct{ key, body string }{
+		{"outside-queue", strings.Replace(request, `"pull_number":2`, `"pull_number":99`, 1)},
+		{"outside-channel", strings.Replace(request, `"channel":"cli"`, `"channel":"hosted"`, 1)},
+	} {
+		status, code := call("POST", "/requests", test.body, test.key)
+		if status != http.StatusConflict || code != "review_not_configured" {
+			t.Fatalf("%s lost distinct configured-scope refusal: %d/%s", test.key, status, code)
+		}
+	}
+	if policyState(t, f) != before || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+		t.Fatal("out-of-scope refusal created execution or durable mutation effects")
 	}
 }
