@@ -160,6 +160,8 @@ A standalone harness exercised actual recovery, SQLite storage, immutable captur
 
 Both preserved merged history and current target metadata while retaining two undecided, unfinalized findings. Completed replays changed neither logical SQLite contents nor HTTP counts. The 204-file source/module manifest stayed unchanged, and disposable listeners, stores and runtime directories were cleaned. This proves component integration with normalized synthetic HTTP facts; production GitHub transport, packaged daemon recovery, browser rendering, live provider behavior and scheduled recovery are separate proof boundaries.
 
+Retained allowance-query intent and confirmation remain readable and exactly replayable after clock rollback; the future-time bound applies when a new comment is first retained. A transient `overloaded` candidate-selection result uses the existing failure backoff and resets after a successful poll. Storage corruption remains terminal. Focused race regressions exercise future-dated retained query facts across reopening and exhaustion of the actual SQLite read pool followed by recovery; these do not inject a host-wide clock change or establish live provider behavior.
+
 ## CLI adapter
 
 Native CLI process execution requires a supported Unix host. Each invocation owns a separate process group; cancellation, timeout, output overflow and wrapper exit terminate remaining workers in that group. Unsupported hosts reject the native CLI capability before launching a process. Windows clients can still use a remote controller, and installations without a native CLI capability retain their coordination/browser behavior. Equivalent native Windows process-tree ownership remains unimplemented; cross-builds do not establish that runtime guarantee.

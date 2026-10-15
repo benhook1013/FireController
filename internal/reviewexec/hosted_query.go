@@ -49,7 +49,7 @@ func validHostedQueryComment(query HostedAllowanceQuery, comment reviewprovider.
 	return valid && comment.ID > 0 && comment.Body == query.Intent && comment.Author.ID == query.PostingActor.ID && comment.Author.Kind == query.PostingActor.Kind &&
 		validHostedQueryActors(intent, comment.Author, query.ProviderActor, earliest) && comment.CreatedAt.Location() == time.UTC && comment.UpdatedAt.Location() == time.UTC &&
 		!comment.CreatedAt.IsZero() && comment.CreatedAt.Year() >= 1 && comment.CreatedAt.Year() <= 9999 && comment.UpdatedAt.Equal(comment.CreatedAt) &&
-		!comment.CreatedAt.Before(earliest.Truncate(time.Second)) && !comment.CreatedAt.After(time.Now().Add(5*time.Second))
+		!comment.CreatedAt.Before(earliest.Truncate(time.Second))
 }
 
 // readHostedQuery validates indexed facts against canonical owned JSON and the
@@ -73,7 +73,7 @@ func readHostedQuery(ctx context.Context, tx *sql.Tx, a Attempt, o Operation) (H
 	earliest, validTime := hostedObservationTime(record.EarliestPosting)
 	_, validObserved := hostedObservationTime(record.Anchor.ObservedAt)
 	if intentErr != nil || !hostedObservationID(id, "review_hosted_query_") || id != record.ID || project != a.ProjectID || project != record.ProjectID || attempt != a.ID || attempt != record.AttemptID || operation != o.ID || operation != record.OperationID || o.ProjectID != project || a.OperationID != o.ID || o.AttemptID != a.ID || o.Channel != "hosted" ||
-		revision != record.Revision || fingerprint != record.CapabilityFingerprint || !hash.MatchString(fingerprint) || fingerprint != o.CapabilityFingerprint || record.Intent != command || !validEvidenceAnchor(record.Anchor) || !validObserved || record.Anchor.PullNumber != o.PullNumber || record.Anchor.CandidateSHA != o.HeadSHA || !validTime || earliest.After(time.Now().Add(5*time.Second)) || !validHostedQueryActors(intent, record.PostingActor, record.ProviderActor, earliest) ||
+		revision != record.Revision || fingerprint != record.CapabilityFingerprint || !hash.MatchString(fingerprint) || fingerprint != o.CapabilityFingerprint || record.Intent != command || !validEvidenceAnchor(record.Anchor) || !validObserved || record.Anchor.PullNumber != o.PullNumber || record.Anchor.CandidateSHA != o.HeadSHA || !validTime || !validHostedQueryActors(intent, record.PostingActor, record.ProviderActor, earliest) ||
 		(record.Revision != 1 || record.Comment != nil) && (record.Revision != 2 || record.Comment == nil) || record.Comment != nil && !validHostedQueryComment(record, *record.Comment) {
 		return HostedAllowanceQuery{}, hostedQueryUnavailable()
 	}
@@ -205,7 +205,7 @@ func (e *Engine) ConfirmHostedAllowanceQuery(ctx context.Context, project, attem
 		if err != nil {
 			return err
 		}
-		if expectedQueryRevision != 1 || !validHostedQueryComment(prior, comment) {
+		if expectedQueryRevision != 1 || !validHostedQueryComment(prior, comment) || prior.Comment == nil && comment.CreatedAt.After(time.Now().Add(5*time.Second)) {
 			return conflict()
 		}
 		if prior.Comment != nil {
