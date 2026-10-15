@@ -19,10 +19,13 @@ type arguments struct {
 	waitMS                     int
 	cursor, worker, status, id string
 	unread, unack              bool
+	snapshot                   string
+	pullNumber                 int64
 	key                        string
 	create                     client.CreateJobRequest
 	edit                       client.EditJobRequest
 	send                       client.SendMessageRequest
+	checkpoint                 client.AppendCheckpointRequest
 }
 type definition struct {
 	name, description string
@@ -30,7 +33,7 @@ type definition struct {
 }
 
 func boundServer(binding profile.Binding) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 20})
+	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 32})
 	definitions := toolDefinitions()
 	known := make(map[string]bool)
 	for _, tool := range definitions {
@@ -63,6 +66,14 @@ func boundServer(binding profile.Binding) *mcp.Server {
 						Verified bool `json:"verified"`
 					}{service.Identity(), true}
 				}
+			case "review_queue":
+				value, err = service.ReviewQueue(ctx, options)
+			case "review_pull":
+				value, err = service.ReviewPull(ctx, args.pullNumber, args.snapshot)
+			case "review_runs":
+				value, err = service.ReviewRuns(ctx, args.pullNumber, client.ReviewRunOptions{PageOptions: options, Snapshot: args.snapshot})
+			case "review_run":
+				value, err = service.ReviewRun(ctx, args.id, args.snapshot)
 			case "workers_list":
 				value, err = service.Workers(ctx, options)
 			case "jobs_list":
@@ -73,6 +84,12 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.Job(ctx, args.id)
 			case "job_history":
 				value, err = service.JobHistory(ctx, args.id, options)
+			case "job_checkpoint_latest":
+				value, err = service.LatestCheckpoint(ctx, args.id)
+			case "job_checkpoint_history":
+				value, err = service.CheckpointHistory(ctx, args.id, options)
+			case "job_checkpoint_append":
+				value, err = service.AppendCheckpoint(ctx, args.key, args.id, args.checkpoint)
 			case "inbox_list":
 				value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack})
 			case "inbox_snapshot":

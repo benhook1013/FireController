@@ -1,7 +1,9 @@
 import type {
-  ConversationPage, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions,
+  Checkpoint, ConversationPage, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
   JobSummary, Message, MessageEvent, MessageEventPage, Page, PageOptions,
   Project, WatchCallbacks, Worker,
+  ReviewAttemptSummary, ReviewFinding, ReviewPull, ReviewPullSummary, ReviewQueue, ReviewRunDetail,
+  ReviewRunOptions, ReviewRuns, ReviewRunSummary,
 } from './types';
 import { runMessageWatch, type MessageWatchSource } from './events';
 
@@ -93,9 +95,9 @@ function validPage(value: unknown, limit: number): value is Record<string, unkno
 }
 function defaultLimit(options: PageOptions): number { return options.limit ?? 20; }
 
-async function readJson(response: Response, signal: AbortSignal): Promise<unknown> {
+async function readJson(response: Response, signal: AbortSignal, responseMaxBytes = maxBytes): Promise<unknown> {
   const declared = response.headers.get('content-length');
-  if (declared && Number.isFinite(Number(declared)) && Number(declared) > maxBytes) {
+  if (declared && Number.isFinite(Number(declared)) && Number(declared) > responseMaxBytes) {
     void response.body?.cancel().catch(() => {});
     throw new ApiError('response_too_large', 'The service response exceeded the supported size.', response.status);
   }
@@ -109,7 +111,7 @@ async function readJson(response: Response, signal: AbortSignal): Promise<unknow
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > maxBytes) throw new ApiError('response_too_large', 'The service response exceeded the supported size.', response.status);
+      if (size > responseMaxBytes) throw new ApiError('response_too_large', 'The service response exceeded the supported size.', response.status);
       chunks.push(value);
     }
   } catch (error) {
@@ -148,6 +150,55 @@ function validSummary(value: unknown): value is JobSummary {
 }
 function validJob(value: unknown, projectId: string): value is Job {
   return record(value) && keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at']) && value.project_id === projectId && id(value.id) && contentText(value.title, 240) && contentText(value.brief, 32768, true) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && timestamp(value.created_at) && timestamp(value.updated_at);
+}
+function checkpointText(value: unknown, max: number, required: boolean): value is string {
+  if (!text(value, max, !required) || required && /^\p{White_Space}*$/u.test(value)) return false;
+  // JSON.parse preserves unpaired escapes, while TextEncoder would repair
+  // them. Reject those code units without rejecting literal replacement text.
+  for (const character of value) {
+    const point = character.codePointAt(0)!;
+    if (point >= 0xd800 && point <= 0xdfff) return false;
+  }
+  return true;
+}
+function validCheckpoint(value: unknown, projectId: string, jobId: string): value is Checkpoint {
+  if (!record(value) || !keys(value, ['id', 'project_id', 'job_id', 'job_revision', 'sequence', 'actor_id', 'worker_id', 'done', 'next', 'blocker', 'evidence', 'created_at']) || !id(value.id) || value.project_id !== projectId || value.job_id !== jobId || !Number.isSafeInteger(value.job_revision) || Number(value.job_revision) < 1 || !Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1 || !id(value.actor_id) || value.worker_id !== '' && !id(value.worker_id) || !timestamp(value.created_at)) return false;
+  if (!checkpointText(value.done, 8 << 10, true) || !checkpointText(value.next, 8 << 10, true) || !checkpointText(value.blocker, 4 << 10, false) || !Array.isArray(value.evidence) || value.evidence.length > 10 || !value.evidence.every(item => checkpointText(item, 1024, true))) return false;
+  const encoder = new TextEncoder();
+  return [value.done, value.next, value.blocker, ...value.evidence].reduce((size, item) => size + encoder.encode(item).byteLength, 0) <= 16 << 10;
+}
+const reviewMetadata = ['project_id', 'revision', 'snapshot_id', 'source', 'observed_at', 'recorded_at'];
+const reviewOutcomes = new Set(['completed', 'active', 'prepared', 'posting', 'failed', 'cancelled', 'rate_limited', 'uncertain', 'unknown']);
+function positive(value: unknown): value is number { return Number.isSafeInteger(value) && Number(value) > 0; }
+function nonnegative(value: unknown): value is number { return Number.isSafeInteger(value) && Number(value) >= 0; }
+function pullNumber(value: unknown): value is number { return positive(value) && value <= 2147483647; }
+function reviewSnapshotID(value: unknown): value is string { return typeof value === 'string' && /^review_snapshot_[a-f0-9]{32}$/u.test(value); }
+function reviewRunID(value: unknown): value is string { return typeof value === 'string' && /^review_run_[a-f0-9]{32}$/u.test(value); }
+function sha(value: unknown): value is string { return typeof value === 'string' && (value === '' || /^[a-f0-9]{40}$/u.test(value)); }
+function maybeTimestamp(value: unknown): value is string { return value === '' || timestamp(value); }
+function orderedTimes(start: string, finish: string): boolean { return !start || !finish || Date.parse(start) <= Date.parse(finish); }
+function validReviewSnapshot(value: Record<string, unknown>, project: string, expected?: string): boolean {
+  return value.project_id === project && positive(value.revision) && reviewSnapshotID(value.snapshot_id) && (expected === undefined || value.snapshot_id === expected) && checkpointText(value.source, 128, true) && timestamp(value.observed_at) && timestamp(value.recorded_at);
+}
+function validReviewRun(value: unknown, number?: number): value is ReviewRunSummary {
+  return record(value) && keys(value, ['id', 'pull_number', 'source_run_id', 'channel', 'head_sha', 'reviewer', 'scope', 'coverage_limits', 'outcome', 'attributable', 'complete', 'started_at', 'finished_at', 'found', 'accepted', 'routed', 'finalized', 'fixed']) && reviewRunID(value.id) && pullNumber(value.pull_number) && (number === undefined || value.pull_number === number) && checkpointText(value.source_run_id, 256, true) && typeof value.channel === 'string' && ['cli', 'hosted', 'manual', 'subagent'].includes(value.channel) && sha(value.head_sha) && checkpointText(value.reviewer, 128, false) && checkpointText(value.scope, 128, true) && Array.isArray(value.coverage_limits) && value.coverage_limits.length <= 16 && value.coverage_limits.every(item => checkpointText(item, 1024, true)) && typeof value.outcome === 'string' && reviewOutcomes.has(value.outcome) && typeof value.attributable === 'boolean' && typeof value.complete === 'boolean' && maybeTimestamp(value.started_at) && maybeTimestamp(value.finished_at) && orderedTimes(value.started_at, value.finished_at) && ((value.outcome !== 'completed' && !value.complete) || (!!value.started_at && !!value.finished_at)) && nonnegative(value.found) && nonnegative(value.accepted) && nonnegative(value.routed) && value.accepted + value.routed <= value.found && nonnegative(value.fixed) && value.fixed <= value.found && typeof value.finalized === 'boolean';
+}
+function validReviewAttempt(value: unknown): value is ReviewAttemptSummary {
+  return record(value) && keys(value, ['source_attempt_id', 'channel', 'head_sha', 'state', 'started_at', 'finished_at', 'duration_seconds', 'source_run_id', 'trigger_id', 'provider_review_id']) && checkpointText(value.source_attempt_id, 256, true) && typeof value.channel === 'string' && ['cli', 'hosted', 'manual', 'subagent'].includes(value.channel) && sha(value.head_sha) && typeof value.state === 'string' && reviewOutcomes.has(value.state) && maybeTimestamp(value.started_at) && maybeTimestamp(value.finished_at) && orderedTimes(value.started_at, value.finished_at) && (value.state !== 'completed' || (!!value.started_at && !!value.finished_at)) && (value.duration_seconds === null || nonnegative(value.duration_seconds)) && checkpointText(value.source_run_id, 256, false) && checkpointText(value.trigger_id, 128, false) && checkpointText(value.provider_review_id, 128, false);
+}
+function validReviewPull(value: unknown): value is ReviewPullSummary {
+  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'attempt_count', 'recent_runs', 'latest_attempts']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || value.run_count > 100 || !nonnegative(value.attempt_count) || value.attempt_count > 100 || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(validReviewAttempt) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
+  return new Set(value.recent_runs.map(item => item.id)).size === value.recent_runs.length && new Set(value.latest_attempts.map(item => item.channel)).size === value.latest_attempts.length;
+}
+function validReviewFinding(value: unknown): value is ReviewFinding {
+  return record(value) && keys(value, ['source_finding_id', 'title', 'detail', 'severity', 'disposition', 'decision_reason', 'actor', 'decided_at', 'fix_sha', 'proof_note', 'resolved_at']) && checkpointText(value.source_finding_id, 256, true) && checkpointText(value.title, 500, true) && checkpointText(value.detail, 16 << 10, false) && typeof value.severity === 'string' && ['info', 'low', 'medium', 'high', 'critical', 'unknown'].includes(value.severity) && typeof value.disposition === 'string' && ['unadjudicated', 'accepted', 'routed', 'rejected'].includes(value.disposition) && checkpointText(value.decision_reason, 2048, false) && checkpointText(value.actor, 128, false) && maybeTimestamp(value.decided_at) && sha(value.fix_sha) && checkpointText(value.proof_note, 2048, false) && maybeTimestamp(value.resolved_at) && (value.disposition === 'accepted' || value.fix_sha === '' && value.proof_note === '' && value.resolved_at === '') && (value.resolved_at === '' || value.fix_sha !== '');
+}
+function reviewQuery(snapshot?: string): URLSearchParams {
+  if (snapshot !== undefined && !reviewSnapshotID(snapshot)) throw new ApiError('invalid_request', 'The review snapshot identifier is invalid.');
+  return new URLSearchParams(snapshot === undefined ? {} : { snapshot });
+}
+function validReviewPage(value: unknown, options: PageOptions): value is Record<string, unknown> & { items: unknown[]; has_more: boolean; cursor?: string } {
+  return validPage(value, defaultLimit(options)) && (value.has_more || !value.cursor);
 }
 function validInboxItem(value: unknown, worker: string): value is InboxItem {
   return record(value) && keys(value, ['id', 'conversation_id', 'sender_worker_id', 'recipient_worker_id', 'preview', 'preview_truncated', 'seen', 'acknowledged', 'created_at']) && id(value.id) && id(value.conversation_id) && id(value.sender_worker_id) && value.recipient_worker_id === worker && contentText(value.preview, 1024, true) && [...value.preview].length <= 160 && typeof value.preview_truncated === 'boolean' && typeof value.seen === 'boolean' && typeof value.acknowledged === 'boolean' && (!value.acknowledged || value.seen) && timestamp(value.created_at);
@@ -226,6 +277,51 @@ export class Api {
     if (!validJob(value, this.projectId) || value.id !== jobId) throw new ApiError('invalid_response', 'The service returned a job outside this binding.');
     return value;
   }
+  async checkpointLatest(jobId: string, signal?: AbortSignal): Promise<LatestCheckpoint> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/checkpoints/latest`), signal, undefined, 128 << 10);
+    if (!record(value) || !keys(value, ['job_id', 'job_revision', 'checkpoint']) || value.job_id !== jobId || !Number.isSafeInteger(value.job_revision) || Number(value.job_revision) < 1 || value.checkpoint !== null && (!validCheckpoint(value.checkpoint, this.projectId, jobId) || value.checkpoint.job_revision > Number(value.job_revision))) throw new ApiError('invalid_response', 'The service returned an invalid latest checkpoint.');
+    return value as unknown as LatestCheckpoint;
+  }
+  async checkpoints(jobId: string, options: PageOptions = {}, signal?: AbortSignal): Promise<Page<Checkpoint>> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/checkpoints`), pageOptions(options)), signal, undefined, 4 << 20);
+    if (!validPage(value, defaultLimit(options)) || !value.has_more && !!value.cursor) throw new ApiError('invalid_response', 'The service returned an invalid checkpoint page.');
+    let previous = Infinity;
+    for (const item of value.items) {
+      if (!validCheckpoint(item, this.projectId, jobId) || item.sequence >= previous) throw new ApiError('invalid_response', 'The service returned an invalid checkpoint page.');
+      previous = item.sequence;
+    }
+    return value as Page<Checkpoint>;
+  }
+  async reviewQueue(options: PageOptions = {}, signal?: AbortSignal): Promise<ReviewQueue> {
+    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), pageOptions(options)), signal);
+    if (!record(value) || !keys(value, [...reviewMetadata, 'configured', 'items', 'has_more'], ['cursor']) || typeof value.configured !== 'boolean' || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options)) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
+    if (value.configured ? !validReviewSnapshot(value, this.projectId) : value.project_id !== this.projectId || value.revision !== 0 || value.snapshot_id !== '' || value.source !== '' || value.observed_at !== '' || value.recorded_at !== '' || value.items.length !== 0 || value.has_more) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
+    if (!value.items.every(validReviewPull) || new Set(value.items.map(item => item.number)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
+    return value as unknown as ReviewQueue;
+  }
+  async reviewPull(number: number, snapshot?: string, signal?: AbortSignal): Promise<ReviewPull> {
+    if (!pullNumber(number)) throw new ApiError('invalid_request', 'The pull request number is invalid.');
+    const query = reviewQuery(snapshot);
+    const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}`), query), signal);
+    if (!record(value) || !keys(value, [...reviewMetadata, 'pull', 'attempts']) || !validReviewSnapshot(value, this.projectId, snapshot) || !validReviewPull(value.pull) || value.pull.number !== number || !Array.isArray(value.attempts) || value.attempts.length !== value.pull.attempt_count || !value.attempts.every(validReviewAttempt) || new Set(value.attempts.map(item => item.source_attempt_id)).size !== value.attempts.length) throw new ApiError('invalid_response', 'The service returned an invalid review pull request.');
+    return value as unknown as ReviewPull;
+  }
+  async reviewRuns(number: number, options: ReviewRunOptions = {}, signal?: AbortSignal): Promise<ReviewRuns> {
+    if (!pullNumber(number)) throw new ApiError('invalid_request', 'The pull request number is invalid.');
+    const query = pageOptions(options);
+    for (const [name, value] of reviewQuery(options.snapshot)) query.set(name, value);
+    const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}/runs`), query), signal);
+    if (!record(value) || !keys(value, [...reviewMetadata, 'items', 'has_more'], ['cursor']) || !validReviewSnapshot(value, this.projectId, options.snapshot) || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options) || !value.items.every(item => validReviewRun(item, number)) || new Set(value.items.map(item => item.id)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review run page.');
+    return value as unknown as ReviewRuns;
+  }
+  async reviewRun(runId: string, snapshot?: string, signal?: AbortSignal): Promise<ReviewRunDetail> {
+    if (!reviewRunID(runId)) throw new ApiError('invalid_request', 'The review run identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/runs/${encodeURIComponent(runId)}`), reviewQuery(snapshot)), signal, undefined, 4 << 20);
+    if (!record(value) || !keys(value, [...reviewMetadata, 'pull_number', 'run', 'findings']) || !validReviewSnapshot(value, this.projectId, snapshot) || !pullNumber(value.pull_number) || !validReviewRun(value.run, value.pull_number) || value.run.id !== runId || !Array.isArray(value.findings) || value.findings.length > 100 || value.findings.length > value.run.found || value.run.complete && value.findings.length !== value.run.found || !value.findings.every(validReviewFinding) || new Set(value.findings.map(item => item.source_finding_id)).size !== value.findings.length || value.findings.filter(item => item.fix_sha !== '').length !== value.run.fixed) throw new ApiError('invalid_response', 'The service returned an invalid review run detail.');
+    return value as unknown as ReviewRunDetail;
+  }
   async inbox(worker: string, options: InboxOptions = {}, signal?: AbortSignal): Promise<Page<InboxItem>> {
     if (!id(worker)) throw new ApiError('invalid_request', 'The inbox worker is invalid.');
     const query = pageOptions(options);
@@ -290,19 +386,19 @@ export class Api {
   }
 
   private projectRoute(suffix: string): string { return `/api/v1/projects/${encodeURIComponent(this.projectId)}${suffix ? `/${suffix}` : ''}`; }
-  private async finiteGet(path: string, signal?: AbortSignal, worker?: string): Promise<unknown> {
+  private async finiteGet(path: string, signal?: AbortSignal, worker?: string, responseMaxBytes = maxBytes): Promise<unknown> {
     this.ensureOpen();
     const request = requestBudget([signal, this.session.signal], 5000);
     try {
       if (!this.verifiedInstanceId) throw new ApiError('not_connected', 'Connect to the selected project before reading data.');
-      return await this.getJson(path, this.verifiedInstanceId, request.signal, worker);
+      return await this.getJson(path, this.verifiedInstanceId, request.signal, worker, responseMaxBytes);
     } catch (error) { throw this.transportError(error, request.expired(), request.signal); }
     finally { request.close(); }
   }
-  private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string): Promise<unknown> {
+  private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string, responseMaxBytes = maxBytes): Promise<unknown> {
     const response = await fetch(urlFor(path), { method: 'GET', headers: this.headers(instanceId, worker), redirect: 'error', credentials: 'omit', cache: 'no-store', signal });
     if (!response.ok) throw await readFailure(response, signal);
-    return readJson(response, signal);
+    return readJson(response, signal, responseMaxBytes);
   }
   private headers(instanceId?: string, worker?: string): Headers {
     const value = new Headers({ Authorization: `Bearer ${this.token}`, Accept: 'application/json' });

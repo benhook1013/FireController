@@ -15,6 +15,37 @@ const message = {
   id: 'msg_one', conversation_id: 'conv_one', sender_worker_id: 'worker_two', recipient_worker_id: 'worker_one',
   body: 'private body', created_at: '2026-10-15T12:00:00Z',
 };
+const checkpoint = {
+  id: 'checkpoint_one', project_id: 'project_one', job_id: 'job_one', job_revision: 2, sequence: 9,
+  actor_id: 'principal_one', worker_id: 'worker_one', done: '  Finished exactly\n🔥 �', next: 'next\tstep', blocker: '', evidence: ['second proof', 'first proof'], created_at: '2026-10-15T12:00:00Z',
+};
+const reviewSnapshot = {
+  project_id: 'project_one', revision: 1, snapshot_id: `review_snapshot_${'a'.repeat(32)}`,
+  source: 'retained test observations', observed_at: '2026-10-15T12:00:00Z', recorded_at: '2026-10-15T12:01:00Z',
+};
+const reviewRun = {
+  id: `review_run_${'b'.repeat(32)}`, pull_number: 1, source_run_id: 'run-source-one', channel: 'hosted',
+  head_sha: 'c'.repeat(40), reviewer: 'Reviewer', scope: 'selected patch', coverage_limits: ['Historical selected scope only.'],
+  outcome: 'completed', attributable: true, complete: true, started_at: '2026-10-15T11:00:00Z', finished_at: '2026-10-15T11:05:00Z',
+  found: 1, accepted: 1, routed: 0, finalized: true, fixed: 1,
+};
+const reviewFinding = {
+  source_finding_id: 'finding-one', title: '<Untrusted finding>', detail: 'Retained finding detail.', severity: 'medium',
+  disposition: 'accepted', decision_reason: 'Reproduced locally.', actor: 'Builder', decided_at: '2026-10-15T11:10:00Z',
+  fix_sha: 'd'.repeat(40), proof_note: 'Focused proof passed.', resolved_at: '2026-10-15T11:15:00Z',
+};
+const reviewAttempt = {
+  source_attempt_id: 'attempt-one', channel: 'hosted', head_sha: reviewRun.head_sha, state: 'completed',
+  started_at: reviewRun.started_at, finished_at: reviewRun.finished_at, duration_seconds: 300,
+  source_run_id: reviewRun.source_run_id, trigger_id: '', provider_review_id: '',
+};
+const reviewPull = {
+  number: 1, title: 'Retained merged work', state: 'merged', head_sha: reviewRun.head_sha, base_ref: 'main', base_sha: 'e'.repeat(40),
+  ci_state: 'success', mergeability: 'unknown', complete: true, run_count: 1, attempt_count: 1,
+  recent_runs: [reviewRun], latest_attempts: [reviewAttempt],
+};
+const reviewQueue = { ...reviewSnapshot, configured: true, items: [reviewPull], has_more: false };
+const reviewDetail = { ...reviewSnapshot, pull_number: 1, run: reviewRun, findings: [reviewFinding] };
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
@@ -29,6 +60,340 @@ async function connect(client: Api): Promise<void> {
 }
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+describe('Api stored review workspace', () => {
+  it('reads retained merged history and four source channels using scoped GETs and explicit snapshot pages', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const channels = ['cli', 'hosted', 'manual', 'subagent'];
+    const attempts = channels.map((channel, index) => ({ ...reviewAttempt, channel, source_attempt_id: `attempt-${index}` }));
+    const pull = { ...reviewPull, attempt_count: 4, latest_attempts: attempts };
+    const runs = channels.map((channel, index) => ({ ...reviewRun, channel, id: `review_run_${String(index).repeat(32)}`, source_run_id: `run-${index}` }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull], has_more: true, cursor: 'signed_queue_cursor' }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, items: runs, has_more: true, cursor: 'signed_runs_cursor' }))
+      .mockResolvedValueOnce(json(reviewDetail))
+      .mockResolvedValueOnce(json({ project_id: 'project_one', configured: false, revision: 0, snapshot_id: '', source: '', observed_at: '', recorded_at: '', items: [], has_more: false }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await client.reviewQueue({ limit: 1, cursor: 'previous_queue_cursor' })).items[0].state).toBe('merged');
+    expect((await client.reviewPull(1, reviewSnapshot.snapshot_id)).attempts.map(item => item.channel)).toEqual(channels);
+    expect((await client.reviewRuns(1, { snapshot: reviewSnapshot.snapshot_id, limit: 4, cursor: 'previous_runs_cursor' })).items.map(item => item.id)).toEqual(runs.map(item => item.id));
+    const detail = await client.reviewRun(reviewRun.id, reviewSnapshot.snapshot_id);
+    expect(detail.findings[0]).toEqual(reviewFinding);
+    expect(detail.run.coverage_limits).toEqual(reviewRun.coverage_limits);
+    expect((await client.reviewQueue()).configured).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    const urls = fetchMock.mock.calls.map(call => new URL(call[0]));
+    expect(urls[0].pathname).toBe('/api/v1/projects/project_one/reviews/queue');
+    expect(urls[0].searchParams.get('limit')).toBe('1');
+    expect(urls[0].searchParams.get('cursor')).toBe('previous_queue_cursor');
+    expect(urls[1].pathname).toBe('/api/v1/projects/project_one/reviews/pulls/1');
+    expect(urls[2].pathname).toBe('/api/v1/projects/project_one/reviews/pulls/1/runs');
+    expect(urls[2].searchParams.get('cursor')).toBe('previous_runs_cursor');
+    expect(urls[3].pathname).toBe(`/api/v1/projects/project_one/reviews/runs/${reviewRun.id}`);
+    for (const [index, call] of fetchMock.mock.calls.entries()) {
+      expect(urls[index].origin).toBe('https://service.example');
+      expect(call[1].method ?? 'GET').toBe('GET');
+      expect(new Headers(call[1].headers).get('x-fc-instance')).toBe('instance_one');
+      expect(urls[index].href).not.toContain('private-token');
+      if (index >= 1 && index <= 3) expect(urls[index].searchParams.get('snapshot')).toBe(reviewSnapshot.snapshot_id);
+    }
+  });
+
+  it('rejects uppercase and mixed-case review SHAs across public response views', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    for (const value of ['A'.repeat(40), `aB${'c'.repeat(38)}`]) {
+      const cases: Array<{ name: string; body: unknown; read: () => Promise<unknown> }> = [
+        { name: 'queue pull head', body: { ...reviewQueue, items: [{ ...reviewPull, head_sha: value }] }, read: () => client.reviewQueue() },
+        { name: 'pull base', body: { ...reviewSnapshot, pull: { ...reviewPull, base_sha: value }, attempts: [reviewAttempt] }, read: () => client.reviewPull(1) },
+        { name: 'queue run head', body: { ...reviewQueue, items: [{ ...reviewPull, recent_runs: [{ ...reviewRun, head_sha: value }] }] }, read: () => client.reviewQueue() },
+        { name: 'run page head', body: { ...reviewSnapshot, items: [{ ...reviewRun, head_sha: value }], has_more: false }, read: () => client.reviewRuns(1) },
+        { name: 'run detail head', body: { ...reviewDetail, run: { ...reviewRun, head_sha: value } }, read: () => client.reviewRun(reviewRun.id) },
+        { name: 'queue attempt head', body: { ...reviewQueue, items: [{ ...reviewPull, latest_attempts: [{ ...reviewAttempt, head_sha: value }] }] }, read: () => client.reviewQueue() },
+        { name: 'pull attempt head', body: { ...reviewSnapshot, pull: reviewPull, attempts: [{ ...reviewAttempt, head_sha: value }] }, read: () => client.reviewPull(1) },
+        { name: 'finding fix', body: { ...reviewDetail, findings: [{ ...reviewFinding, fix_sha: value }] }, read: () => client.reviewRun(reviewRun.id) },
+      ];
+      for (const test of cases) {
+        const fetchMock = vi.fn().mockResolvedValueOnce(json(test.body));
+        vi.stubGlobal('fetch', fetchMock);
+        await expect(test.read(), test.name).rejects.toMatchObject({ code: 'invalid_response' });
+        expect(fetchMock, test.name).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0][1].method ?? 'GET', test.name).toBe('GET');
+      }
+    }
+  });
+
+  it('preserves empty unknown review SHAs without inventing identities', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const run = { ...reviewRun, head_sha: '', fixed: 0 };
+    const attempt = { ...reviewAttempt, head_sha: '' };
+    const pull = { ...reviewPull, head_sha: '', base_sha: '', recent_runs: [run], latest_attempts: [attempt] };
+    const finding = { ...reviewFinding, fix_sha: '', proof_note: '', resolved_at: '' };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [run], has_more: false }))
+      .mockResolvedValueOnce(json({ ...reviewDetail, run, findings: [finding] }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await client.reviewQueue()).items[0].head_sha).toBe('');
+    expect((await client.reviewPull(1)).pull.base_sha).toBe('');
+    expect((await client.reviewRuns(1)).items[0].head_sha).toBe('');
+    expect((await client.reviewRun(run.id)).findings[0].fix_sha).toBe('');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it.each<Array<[string, Partial<typeof reviewRun>]>[number]>([
+    ['completed missing start', { complete: false, started_at: '' }],
+    ['completed missing finish', { complete: false, finished_at: '' }],
+    ['completed missing both', { complete: false, started_at: '', finished_at: '' }],
+    ['complete unknown missing start', { outcome: 'unknown', started_at: '' }],
+    ['complete unknown missing finish', { outcome: 'unknown', finished_at: '' }],
+    ['complete unknown missing both', { outcome: 'unknown', started_at: '', finished_at: '' }],
+  ])('rejects %s across all stored review views', async (_name, patch) => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const run = { ...reviewRun, ...patch };
+    const pull = { ...reviewPull, recent_runs: [run] };
+    const views: Array<[unknown, () => Promise<unknown>]> = [
+      [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
+      [{ ...reviewSnapshot, pull, attempts: [reviewAttempt] }, () => client.reviewPull(1)],
+      [{ ...reviewSnapshot, items: [run], has_more: false }, () => client.reviewRuns(1)],
+      [{ ...reviewDetail, run }, () => client.reviewRun(run.id)],
+    ];
+    for (const [body, read] of views) {
+      const fetchMock = vi.fn().mockResolvedValueOnce(json(body));
+      vi.stubGlobal('fetch', fetchMock);
+      await expect(read()).rejects.toMatchObject({ code: 'invalid_response' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][1].method ?? 'GET').toBe('GET');
+    }
+  });
+
+  it.each([
+    ['start', '', reviewAttempt.finished_at],
+    ['finish', reviewAttempt.started_at, ''],
+    ['both', '', ''],
+  ])('rejects completed attempts missing %s timestamps in queue and pull views', async (_name, start, finish) => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const attempt = { ...reviewAttempt, started_at: start, finished_at: finish };
+    const pull = { ...reviewPull, latest_attempts: [attempt] };
+    for (const [body, read] of [
+      [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
+      [{ ...reviewSnapshot, pull, attempts: [attempt] }, () => client.reviewPull(1)],
+    ] as Array<[unknown, () => Promise<unknown>]>) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(body)));
+      await expect(read()).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
+
+  it.each(['runs', 'attempts'])('rejects positive %s counts with an empty corresponding summary', async kind => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const pull = kind === 'runs' ? { ...reviewPull, recent_runs: [] } : { ...reviewPull, latest_attempts: [] };
+    for (const [body, read] of [
+      [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
+      [{ ...reviewSnapshot, pull, attempts: [reviewAttempt] }, () => client.reviewPull(1)],
+    ] as Array<[unknown, () => Promise<unknown>]>) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(body)));
+      await expect(read()).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
+
+  it('rejects a resolved accepted finding without its effective fix SHA', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    // Keep the fixed count consistent so this isolates the missing SHA guard.
+    const body = { ...reviewDetail, run: { ...reviewRun, fixed: 0 }, findings: [{ ...reviewFinding, fix_sha: '', proof_note: '' }] };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(body)));
+    await expect(client.reviewRun(reviewRun.id)).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  it.each(['unknown', 'ordered complete', 'completed'])('retains legitimate %s history and unresolved accepted findings', async shape => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const run = { ...reviewRun, fixed: 0, ...(shape === 'unknown' ? { complete: false, outcome: 'unknown', started_at: '', finished_at: '' } : shape === 'ordered complete' ? { outcome: 'unknown' } : {}) };
+    const attempt = { ...reviewAttempt, ...(shape === 'unknown' ? { state: 'unknown', started_at: '', finished_at: '', duration_seconds: null } : {}) };
+    const finding = { ...reviewFinding, fix_sha: '', proof_note: 'Accepted; fix evidence remains unknown.', resolved_at: '' };
+    const pull = { ...reviewPull, recent_runs: [run], latest_attempts: [attempt] };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [run], has_more: false }))
+      .mockResolvedValueOnce(json({ ...reviewDetail, run, findings: [finding] }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await client.reviewQueue()).items[0].recent_runs[0]).toEqual(run);
+    expect((await client.reviewPull(1)).attempts[0]).toEqual(attempt);
+    expect((await client.reviewRuns(1)).items[0]).toEqual(run);
+    expect((await client.reviewRun(run.id)).findings[0]).toEqual(finding);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    for (const call of fetchMock.mock.calls) expect(call[1].method ?? 'GET').toBe('GET');
+  });
+
+  it('retains genuinely empty zero-count review histories', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const pull = { ...reviewPull, run_count: 0, attempt_count: 0, recent_runs: [], latest_attempts: [] };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [], has_more: false })));
+    expect((await client.reviewQueue()).items[0]).toEqual(pull);
+    expect((await client.reviewPull(1)).attempts).toEqual([]);
+    expect((await client.reviewRuns(1)).items).toEqual([]);
+  });
+
+  it('rejects invalid review selectors and paging before any request', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    for (const call of [
+      () => client.reviewQueue({ limit: 101 }), () => client.reviewQueue({ cursor: ' padded ' }),
+      () => client.reviewPull(0), () => client.reviewPull(2147483648), () => client.reviewPull(1, ''),
+      () => client.reviewRuns(1, { snapshot: '../other' }), () => client.reviewRuns(1, { limit: 0 }),
+      () => client.reviewRun('run_other'), () => client.reviewRun(reviewRun.id, 'bad_snapshot'),
+    ]) await expect(call()).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('requires complete scoped metadata and safe parsed review shapes', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const { project_id: _project, ...missingProject } = reviewQueue;
+    const { coverage_limits: _limits, ...missingLimits } = reviewRun;
+    const invalidQueues = [
+      missingProject, { ...reviewQueue, project_id: 'project_two' }, { ...reviewQueue, snapshot_id: 'snapshot_bad' },
+      { ...reviewQueue, observed_at: null }, { ...reviewQueue, extra: 'private-token-do-not-leak' },
+      { ...reviewQueue, items: [{ ...reviewPull, state: { toString: null } }] },
+      { ...reviewQueue, items: [{ ...reviewPull, recent_runs: [missingLimits] }] },
+      { ...reviewQueue, items: [{ ...reviewPull, latest_attempts: [reviewAttempt, reviewAttempt], attempt_count: 2 }] },
+      { ...reviewQueue, configured: false }, { ...reviewQueue, has_more: true },
+      { ...reviewQueue, items: [reviewPull, reviewPull] },
+    ];
+    for (const value of invalidQueues) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
+      const error = await client.reviewQueue().catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(ApiError);
+      expect(error).toMatchObject({ code: 'invalid_response' });
+      expect((error as Error).message).not.toContain('private-token');
+    }
+    for (const value of [
+      { ...reviewSnapshot, pull: { ...reviewPull, number: 2, recent_runs: [] }, attempts: [reviewAttempt] },
+      { ...reviewSnapshot, snapshot_id: `review_snapshot_${'f'.repeat(32)}`, pull: reviewPull, attempts: [reviewAttempt] },
+      { ...reviewSnapshot, pull: reviewPull, attempts: [] },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
+      await expect(client.reviewPull(1, reviewSnapshot.snapshot_id)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
+
+  it('honors default and explicit page sizes, route identity and cursor completeness', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const pulls = Array.from({ length: 21 }, (_, index) => ({ ...reviewPull, number: index + 1, run_count: 0, recent_runs: [], attempt_count: 0, latest_attempts: [] }));
+    const runs = Array.from({ length: 21 }, (_, index) => ({ ...reviewRun, id: `review_run_${index.toString(16).padStart(32, '0')}`, source_run_id: `run-${index}` }));
+    for (const kind of ['queue', 'runs']) {
+      const page = { ...reviewSnapshot, ...(kind === 'queue' ? { configured: true } : {}), items: kind === 'queue' ? pulls : runs, has_more: false };
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(json(page))));
+      await expect(kind === 'queue' ? client.reviewQueue() : client.reviewRuns(1)).rejects.toMatchObject({ code: 'invalid_response' });
+      const explicit = kind === 'queue' ? await client.reviewQueue({ limit: 21 }) : await client.reviewRuns(1, { limit: 21 });
+      expect(explicit.items).toHaveLength(21);
+    }
+    for (const page of [
+      { ...reviewSnapshot, items: [{ ...reviewRun, pull_number: 2 }], has_more: false },
+      { ...reviewSnapshot, items: [reviewRun, reviewRun], has_more: false },
+      { ...reviewSnapshot, items: [reviewRun], has_more: true },
+      { ...reviewSnapshot, items: [], has_more: true, cursor: 'cursor' },
+      { ...reviewSnapshot, items: [reviewRun], has_more: false, cursor: 'cursor' },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(page)));
+      await expect(client.reviewRuns(1)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
+
+  it('validates full finding completeness, attribution fields and bounded source limitations', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const { findings: _findings, ...missingFindings } = reviewDetail;
+    for (const value of [
+      missingFindings, { ...reviewDetail, project_id: 'project_two' }, { ...reviewDetail, pull_number: 2 },
+      { ...reviewDetail, run: { ...reviewRun, id: `review_run_${'0'.repeat(32)}` } },
+      { ...reviewDetail, findings: [] }, { ...reviewDetail, findings: [reviewFinding, reviewFinding], run: { ...reviewRun, found: 2, accepted: 2, fixed: 2 } },
+      { ...reviewDetail, findings: [{ ...reviewFinding, disposition: 'rejected' }] },
+      { ...reviewDetail, findings: [{ ...reviewFinding, detail: 'x'.repeat((16 << 10) + 1) }] },
+      { ...reviewDetail, findings: [{ ...reviewFinding, title: '\ud800' }] },
+      { ...reviewDetail, findings: [{ ...reviewFinding, proof_note: 'bad\u0000proof' }] },
+      { ...reviewDetail, run: { ...reviewRun, fixed: 0 } },
+      { ...reviewDetail, run: { ...reviewRun, accepted: 2 } },
+      { ...reviewDetail, run: { ...reviewRun, coverage_limits: ['x'.repeat(1025)] } },
+      { ...reviewDetail, run: { ...reviewRun, coverage_limits: Array(17).fill('bounded') } },
+      { ...reviewDetail, run: { ...reviewRun, started_at: reviewRun.finished_at, finished_at: reviewRun.started_at } },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
+      await expect(client.reviewRun(reviewRun.id)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    const incomplete = { ...reviewDetail, findings: [], run: { ...reviewRun, channel: 'subagent', complete: false, finalized: false, attributable: false, fixed: 0, outcome: 'unknown', started_at: '', finished_at: '' } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(incomplete)));
+    expect((await client.reviewRun(reviewRun.id)).run.complete).toBe(false);
+  });
+
+  it('retains unknown attempt duration without converting it into measured zero', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const attempt = { ...reviewAttempt, duration_seconds: null };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewSnapshot, pull: { ...reviewPull, latest_attempts: [attempt] }, attempts: [attempt] })));
+    expect((await client.reviewPull(1)).attempts[0].duration_seconds).toBeNull();
+    for (const duration_seconds of [-1, '0', Number.MAX_SAFE_INTEGER + 1]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewSnapshot, pull: reviewPull, attempts: [{ ...reviewAttempt, duration_seconds }] })));
+      await expect(client.reviewPull(1)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
+
+  it('uses the separate four MiB run-detail budget and cancels review requests', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const findings = Array.from({ length: 100 }, (_, index) => ({ ...reviewFinding, source_finding_id: `finding-${index}`, detail: 'x'.repeat(12 << 10) }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewDetail, findings, run: { ...reviewRun, found: 100, accepted: 100, fixed: 100 } })));
+    expect((await client.reviewRun(reviewRun.id)).findings).toHaveLength(100);
+    for (const [size, call] of [[1 << 20, () => client.reviewQueue()], [4 << 20, () => client.reviewRun(reviewRun.id)]] as const) {
+      const cancelled = vi.fn();
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new Uint8Array(size + 1)); }, cancel: cancelled,
+      }), { headers: { 'content-type': 'application/json' } })));
+      await expect(call()).rejects.toMatchObject({ code: 'response_too_large' });
+      expect(cancelled).toHaveBeenCalledTimes(1);
+    }
+    const controller = new AbortController();
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    })));
+    const pending = client.reviewRuns(1, {}, controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'cancelled' });
+    const detail = client.reviewRun(reviewRun.id);
+    client.close();
+    await expect(detail).rejects.toMatchObject({ code: 'cancelled' });
+  });
+});
 
 describe('Api binding and bounded reads', () => {
   it('verifies instance then project and binds every read to same origin, instance and selected worker', async () => {
@@ -347,5 +712,166 @@ describe('Api binding and bounded reads', () => {
     controller.abort();
     await client.watchMessages('worker_one', {}, { snapshot() {}, events() {}, status() {} }, controller.signal);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('explicit checkpoint reads', () => {
+  it('preserves scoped latest/current revisions, explicit null and newest-first archive pages without extra reads', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, init });
+      if (url.endsWith('/latest')) return json({ job_id: 'job_one', job_revision: 3, checkpoint });
+      return json({ items: [{ ...checkpoint, worker_id: '', evidence: [] }], has_more: true, cursor: 'older_cursor' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const latest = await client.checkpointLatest('job_one');
+    expect(latest.job_revision).toBe(3);
+    expect(latest.checkpoint).toEqual(checkpoint);
+    expect(latest.checkpoint?.job_revision).toBe(2);
+    const page = await client.checkpoints('job_one', { limit: 1, cursor: 'explicit_cursor' });
+    expect(page).toMatchObject({ has_more: true, cursor: 'older_cursor' });
+    expect(page.items[0].worker_id).toBe('');
+    expect(page.items[0].evidence).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(requests[0].url).pathname).toBe('/api/v1/projects/project_one/jobs/job_one/checkpoints/latest');
+    expect(new URL(requests[0].url).search).toBe('');
+    expect(new URL(requests[1].url).searchParams.get('limit')).toBe('1');
+    expect(new URL(requests[1].url).searchParams.get('cursor')).toBe('explicit_cursor');
+    for (const request of requests) {
+      expect(request.init).toMatchObject({ method: 'GET', credentials: 'omit', redirect: 'error', cache: 'no-store' });
+      expect(new Headers(request.init?.headers).get('x-fc-instance')).toBe('instance_one');
+      expect(new Headers(request.init?.headers).get('authorization')).toBe('Bearer private-token-do-not-leak');
+      expect(request.url).not.toContain('private-token');
+    }
+    fetchMock.mockResolvedValueOnce(json({ job_id: 'job_one', job_revision: 3, checkpoint: null }));
+    expect((await client.checkpointLatest('job_one')).checkpoint).toBeNull();
+  });
+
+  it('rejects incomplete, malformed, unscoped or invalid checkpoint latest records', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const { evidence: _evidence, ...withoutEvidence } = checkpoint;
+    const valid = { job_id: 'job_one', job_revision: 3, checkpoint };
+    const invalid = [
+      { job_id: 'job_one', job_revision: 3 }, { ...valid, job_id: null }, { ...valid, job_revision: null },
+      { ...valid, checkpoint: [] }, { ...valid, checkpoint: { ...checkpoint, evidence: null } },
+      { ...valid, checkpoint: withoutEvidence }, { ...valid, checkpoint: { ...checkpoint, private_extra: 'not declared' } },
+      { ...valid, private_extra: true }, { ...valid, job_id: 'job_other' },
+      { ...valid, checkpoint: { ...checkpoint, project_id: 'project_other' } },
+      { ...valid, checkpoint: { ...checkpoint, job_id: 'job_other' } },
+      { ...valid, checkpoint: { ...checkpoint, actor_id: '' } }, { ...valid, checkpoint: { ...checkpoint, worker_id: null } },
+      { ...valid, checkpoint: { ...checkpoint, job_revision: 4 } }, { ...valid, checkpoint: { ...checkpoint, job_revision: 0 } },
+      { ...valid, checkpoint: { ...checkpoint, sequence: 0 } }, { ...valid, checkpoint: { ...checkpoint, sequence: 1.5 } },
+      { ...valid, checkpoint: { ...checkpoint, sequence: Number.MAX_SAFE_INTEGER + 1 } },
+      { ...valid, checkpoint: { ...checkpoint, created_at: 'not a timestamp' } },
+      { ...valid, checkpoint: { ...checkpoint, done: ' \n\t' } },
+      { ...valid, checkpoint: { ...checkpoint, done: '\u0085' } },
+      { ...valid, checkpoint: { ...checkpoint, done: 'bad\u0001' } },
+      { ...valid, checkpoint: { ...checkpoint, next: 'bad\u007f' } },
+      { ...valid, checkpoint: { ...checkpoint, done: 'bad\ud800' } },
+      { ...valid, checkpoint: { ...checkpoint, next: 'bad\udc00' } },
+      { ...valid, checkpoint: { ...checkpoint, done: 'é'.repeat(4097) } },
+      { ...valid, checkpoint: { ...checkpoint, blocker: 'b'.repeat(4097) } },
+      { ...valid, checkpoint: { ...checkpoint, evidence: Array(11).fill('reference') } },
+      { ...valid, checkpoint: { ...checkpoint, evidence: [''] } },
+      { ...valid, checkpoint: { ...checkpoint, evidence: ['e'.repeat(1025)] } },
+      { ...valid, checkpoint: { ...checkpoint, done: 'd'.repeat(8192), next: 'n'.repeat(8192), blocker: 'b', evidence: [] } },
+    ];
+    for (const response of invalid) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(response)));
+      await expect(client.checkpointLatest('job_one')).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response('{malformed', { headers: { 'content-type': 'application/json' } })));
+    await expect(client.checkpointLatest('job_one')).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  it('requires complete descending archive pages and validates arguments before requests', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const older = { ...checkpoint, id: 'checkpoint_older', sequence: 8 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ items: [checkpoint, older], has_more: false })));
+    expect((await client.checkpoints('job_one')).items.map(item => item.sequence)).toEqual([9, 8]);
+    for (const response of [
+      { items: [older, checkpoint], has_more: false }, { items: [checkpoint, checkpoint], has_more: false },
+      { items: null, has_more: false }, { items: [checkpoint] }, { items: [], has_more: true, cursor: 'next' },
+      { items: [checkpoint], has_more: true }, { items: [checkpoint], has_more: false, cursor: 'unexpected' },
+      { items: [checkpoint, older], has_more: false, unknown: true },
+      { items: [{ ...checkpoint, project_id: 'project_other' }], has_more: false },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(response)));
+      await expect(client.checkpoints('job_one')).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ items: [checkpoint, older], has_more: false })));
+    await expect(client.checkpoints('job_one', { limit: 1 })).rejects.toMatchObject({ code: 'invalid_response' });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(client.checkpointLatest('../other')).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(client.checkpoints('job_one', { limit: 101 })).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(client.checkpoints('job_one', { cursor: '' })).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('enforces the default checkpoint page size while accepting an explicit larger limit', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const page = { items: Array.from({ length: 21 }, (_, index) => ({ ...checkpoint, id: `checkpoint_${index}`, sequence: 21 - index })), has_more: false };
+    const fetchMock = vi.fn().mockImplementation(async () => json(page));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(client.checkpoints('job_one')).rejects.toMatchObject({ code: 'invalid_response' });
+    expect((await client.checkpoints('job_one', { limit: 21 })).items).toHaveLength(21);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.has('limit')).toBe(false);
+    expect(new URL(String(fetchMock.mock.calls[1][0])).searchParams.get('limit')).toBe('21');
+  });
+
+  it('bounds latest to 128 KiB and archive to 4 MiB without truncation or automatic paging', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const full = { ...checkpoint, done: '<'.repeat(8192), next: 'n'.repeat(8192), evidence: [] };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ job_id: 'job_one', job_revision: 2, checkpoint: full })));
+    expect((await client.checkpointLatest('job_one')).checkpoint?.done).toHaveLength(8192);
+    const archive = { items: Array.from({ length: 100 }, (_, index) => ({ ...full, id: `checkpoint_${index}`, sequence: 100 - index })), has_more: false };
+    expect(new TextEncoder().encode(JSON.stringify(archive)).byteLength).toBeGreaterThan(1 << 20);
+    const fetchMock = vi.fn().mockResolvedValueOnce(json(archive));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await client.checkpoints('job_one', { limit: 100 })).items).toHaveLength(100);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    for (const [kind, size] of [['latest', 128 << 10], ['archive', 4 << 20]] as const) {
+      const cancelled = vi.fn();
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new Uint8Array(size + 1)); }, cancel: cancelled,
+      }), { headers: { 'content-type': 'application/json' } })));
+      const call = kind === 'latest' ? client.checkpointLatest('job_one') : client.checkpoints('job_one');
+      await expect(call).rejects.toMatchObject({ code: 'response_too_large' });
+      expect(cancelled).toHaveBeenCalledTimes(1);
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response('{}', { headers: { 'content-type': 'application/json', 'content-length': String((128 << 10) + 1) } })));
+    await expect(client.checkpointLatest('job_one')).rejects.toMatchObject({ code: 'response_too_large' });
+  });
+
+  it('cancels checkpoint reads through their caller and session signals', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const latest = client.checkpointLatest('job_one', controller.signal);
+    controller.abort();
+    await expect(latest).rejects.toMatchObject({ code: 'cancelled' });
+    const history = client.checkpoints('job_one');
+    client.close();
+    await expect(history).rejects.toMatchObject({ code: 'cancelled' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

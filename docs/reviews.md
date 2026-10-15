@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The standalone review engine is not implemented. Existing source code and tests establish the inherited behaviors catalogued in [source evidence](inherited-evidence.md). This document defines the intended portable boundaries; provider-specific limits and project policy are configuration rather than universal constants.
+The standalone review execution engine is not implemented. The [native review workspace](review-workspace.md) implements provider-free stored observations and browser inspection; those historical records do not establish native admission or readiness. Existing source code and tests establish the inherited behaviors catalogued in [source evidence](inherited-evidence.md). This document defines the intended portable boundaries; provider-specific limits and project policy are configuration rather than universal constants.
 
 ## Review identity
 

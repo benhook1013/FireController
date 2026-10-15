@@ -2,7 +2,7 @@
 
 ## Proof status
 
-No standalone service behavior has been tested or benchmarked yet. Inherited test names identify source scenarios; they are not passing proof for this rebuild. Each delivered slice must link runnable tests and actual results here or in its PR, without claiming unfinished scenarios.
+Implemented service/client boundaries have focused public tests and packaged checks recorded in [development](development.md), [message events](message-events.md), [MCP](mcp.md) and the [browser guide](browser-guide.md). These records identify tested source and limitations; they do not establish every scenario below. [Job checkpoint proof](job-checkpoints.md#proof-and-limits) covers guarded progress records, explicit reads and packaged CLI/MCP behavior. [Review workspace proof](review-workspace.md#validation-status) covers stored observation import and provider-free review reads; it does not establish native execution or the R-series admission scenarios. Fleet throughput and installed-host wakeup behavior remain unproven. Inherited test names identify source scenarios, not passing proof for this rebuild. Each delivered slice must link runnable tests and actual results here or in its PR, without claiming unfinished scenarios.
 
 ## Coordination scenarios
 

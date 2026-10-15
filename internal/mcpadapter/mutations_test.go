@@ -29,6 +29,7 @@ type mutationAPI struct {
 	store                                  *core.Store
 	handler                                http.Handler
 	project, sender, recipient, credential string
+	admin                                  string
 	providers                              atomic.Int64
 }
 
@@ -58,6 +59,7 @@ func mutationFixture(t *testing.T) *mutationAPI {
 		t.Fatal(err)
 	}
 	admin := strings.TrimSpace(string(data))
+	f.admin = admin
 	setup := func(route string, body any) map[string]any {
 		t.Helper()
 		encoded, _ := json.Marshal(body)

@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The service embeds a read-only browser for project connection, workers, basic jobs/full briefs and incoming conversations with live message updates. The [browser guide](browser-guide.md) records its implemented boundary, build and proof limits. Project settings, maps, reviews and browser mutations remain later slices. This contract replaces the legacy private refresh/render/publish cycle after a separately reviewed migration.
+The service embeds a read-only browser for project connection, workers, basic jobs/full briefs and incoming conversations with live message updates. The [browser guide](browser-guide.md) records its implemented boundary, build and proof limits. The [native review workspace](review-workspace.md) provides stored review queue/history/findings. Project settings, maps and browser mutations remain later slices. This contract replaces the legacy private refresh/render/publish cycle after a separately reviewed migration.
 
 ## Target application
 
@@ -13,6 +13,8 @@ Initial views include project selection, worker lanes and history, job detail wi
 ## Project presentation
 
 Retain the refined existing dashboard's look and feel as the default wherever the new browser has equivalent structure: red fire theme, typography, hero, compact review pills, worker lanes, and information density. Rebuilding the service is not a reason to redesign those working views. Adapt the presentation where new structure requires it, and verify the result visually at desktop and narrow widths. The defaults remain customizable project settings rather than fixed project identity.
+
+Review summaries and PR history keep Hosted and CLI progression in separate channel groups, with all retained rounds ordered chronologically. Compact pills show found/accepted/routed counts and age, with explicit detail links. Manual and subagent evidence has separate groups. This preserves the ability to see a declining finding trend without mixing independent review cycles. A historical trend does not establish taper or readiness: those labels require the actual configured policy and applicable evidence. Presentation changes must preserve these useful interactions or explain the concrete behavior that requires a different view.
 
 Each project owns its display name, page and section headings, theme colors, and branding configuration. Headings and colors are data-driven settings, not constants tied to an originating project. A profile's project selection does not modify another project's appearance.
 

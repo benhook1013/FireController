@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fcd` serves scoped projects, workers, access grants, basic jobs and durable messages. The CLI implements local `version`/`context` and the profile-bound [read commands](development.md#read-only-agent-commands). The [explicit-key CLI mutations](development.md#explicit-agent-mutations) create/edit jobs and send/seen/ack messages. The [stdio MCP adapter](mcp.md) exposes read and explicit-key mutation tools against these same endpoints. The [incoming-message event API](message-events.md) supplies scoped snapshot/replay, bounded waits and a persistent SSE transport. The [embedded read-only browser](browser-guide.md) displays projects, jobs, workers and live incoming conversations. Browser mutations, a project/job event feed, review executor, backup API, primary-job selection, checklist, checkpoint and deferred-note API remain unavailable in this slice.
+`fcd` serves scoped projects, workers, access grants, basic jobs and durable messages. The CLI implements local `version`/`context` and the profile-bound [read commands](development.md#read-only-agent-commands). The [explicit-key CLI mutations](development.md#explicit-agent-mutations) create/edit jobs and send/seen/ack messages. The [stdio MCP adapter](mcp.md) exposes read and explicit-key mutation tools against these same endpoints. The [incoming-message event API](message-events.md) supplies scoped snapshot/replay, bounded waits and a persistent SSE transport. The [embedded read-only browser](browser-guide.md) displays projects, jobs/checkpoint details, workers, live incoming conversations and stored review queue, PR and run views. [Job checkpoints](job-checkpoints.md) provide immutable progress records through the same API and agent clients. The [review workspace](review-workspace.md) implements administrator observation and scoped read routes. Browser mutations, a project/job event feed, review executor, backup API, primary-job selection, checklist and deferred-note API remain unavailable in this slice.
 
 The [architecture](architecture.md) owns target behavior. This page describes the current implementation and its limits.
 
@@ -55,6 +55,10 @@ Routes below are relative to `/api/v1/projects/{project_id}`.
 
 Statuses are `active`, `parked`, `blocked` and `completed`; creation defaults to `active`. Title is bounded to 240 bytes and brief to 32 KiB. Assignments reference workers in the selected project. Creation starts revision 1. A guarded edit atomically changes the job, appends history/event metadata and stores its receipt; a losing revision race writes none of them. An empty worker ID clears an assignment on edit.
 
+## Job checkpoints
+
+[Job checkpoints](job-checkpoints.md) add guarded progress records independently of job state. That page owns append/latest/archive endpoints, content limits, current integration status and client commands.
+
 ## Durable messages
 
 | Endpoint | Request or result |
@@ -82,3 +86,5 @@ See [development proof](development.md) for executed checks and unproven boundar
 ## Domain schema startup
 
 Jobs and inbox schemas have separate ordered migration versions stored in instance metadata. Startup applies only missing migrations under the same exclusive transaction as their version records and refuses a newer domain version before running its DDL. Failed migrations roll back their schema changes and version updates together. The original unversioned domain tables enter this sequence at version zero using their idempotent initial DDL; this does not validate an arbitrarily modified database. Use a compatible binary for a newer schema rather than deleting version records. Migration checks run before serving requests, never during ordinary reads or writes.
+
+The [native review workspace](review-workspace.md) owns its administrator observation and project-scoped queue/PR/run read routes. Those handlers read indexed stored evidence without provider refresh or job/message effects.
