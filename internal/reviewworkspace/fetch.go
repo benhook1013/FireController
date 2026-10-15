@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -43,38 +44,47 @@ func (m *Manager) Fetch(ctx context.Context, repositoryID int64, canonicalReposi
 	}
 
 	_, statErr := os.Lstat(cache)
-	if statErr == nil {
-		if privateDirectory(cache, false) != nil {
-			return errConfiguration
-		}
-		bare, verifyErr := m.fetchOutput(operationCtx, cache, token, "rev-parse", "--is-bare-repository")
-		if verifyErr != nil || bare != "true" {
-			return errMaterialize
-		}
-	} else if errors.Is(statErr, os.ErrNotExist) {
+	if errors.Is(statErr, os.ErrNotExist) {
 		if err = os.Mkdir(cache, 0o700); err != nil {
 			return errMaterialize
 		}
+	} else if statErr != nil {
+		return errConfiguration
+	}
+	if privateDirectory(cache, false) != nil {
+		return errConfiguration
+	}
+	directory, err := os.Open(cache)
+	if err != nil {
+		return errMaterialize
+	}
+	entries, readErr := directory.ReadDir(1)
+	closeErr := directory.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) || closeErr != nil {
+		return errMaterialize
+	}
+	// A failed initialization may leave only our empty private directory. Retry
+	// that case without deleting anything or reinitializing nonempty state.
+	if len(entries) == 0 {
 		if _, err = m.fetchOutput(operationCtx, m.root, token, "init", "--bare", "--template=", "--", cache); err != nil {
 			return errMaterialize
 		}
 		if privateDirectory(cache, false) != nil {
 			return errConfiguration
 		}
-		bare, verifyErr := m.fetchOutput(operationCtx, cache, token, "rev-parse", "--is-bare-repository")
-		if verifyErr != nil || bare != "true" {
-			return errMaterialize
-		}
-	} else {
-		return errConfiguration
+	}
+	gitDir := "--git-dir=" + cache
+	bare, verifyErr := m.fetchOutput(operationCtx, cache, token, gitDir, "rev-parse", "--is-bare-repository")
+	if verifyErr != nil || bare != "true" {
+		return errMaterialize
 	}
 
 	remote := "https://github.com/" + canonicalRepository + ".git"
-	if _, err = m.fetchOutput(operationCtx, cache, token, "fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--", remote, candidateSHA, baseSHA); err != nil {
+	if _, err = m.fetchOutput(operationCtx, cache, token, gitDir, "fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--", remote, candidateSHA, baseSHA); err != nil {
 		return errMaterialize
 	}
 	for _, sha := range []string{candidateSHA, baseSHA} {
-		commit, verifyErr := m.fetchOutput(operationCtx, cache, token, "rev-parse", "--verify", sha+"^{commit}")
+		commit, verifyErr := m.fetchOutput(operationCtx, cache, token, gitDir, "rev-parse", "--verify", sha+"^{commit}")
 		if verifyErr != nil || commit != sha {
 			return errMaterialize
 		}

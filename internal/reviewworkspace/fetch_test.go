@@ -3,6 +3,7 @@ package reviewworkspace
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +18,109 @@ import (
 
 const fetchCandidate = "0123456789abcdef0123456789abcdef01234567"
 const fetchBase = "89abcdef0123456789abcdef0123456789abcdef"
+
+func TestFetchRetriesEmptyCacheWithoutDiscoveringParentRepository(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("controlled Git wrapper requires Unix execution")
+	}
+	executable, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("real Git unavailable")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("controlled Git wrapper requires Python")
+	}
+	dir := t.TempDir()
+	git := func(directory string, args ...string) string {
+		t.Helper()
+		command := exec.Command(executable, args...)
+		command.Dir = directory
+		command.Env = []string{"PATH=" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_TERMINAL_PROMPT=0", "GIT_AUTHOR_NAME=Fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_COMMITTER_NAME=Fixture", "GIT_COMMITTER_EMAIL=fixture@example.invalid"}
+		value, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("owned fixture Git: %v %s", err, value)
+		}
+		return strings.TrimSpace(string(value))
+	}
+	source, parent := filepath.Join(dir, "source"), filepath.Join(dir, "parent.git")
+	git(dir, "init", "--quiet", "--template=", source)
+	file := filepath.Join(source, "source.txt")
+	if err := os.WriteFile(file, []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(source, "add", "source.txt")
+	git(source, "commit", "--quiet", "-m", "base")
+	base := git(source, "rev-parse", "HEAD")
+	git(dir, "clone", "--quiet", "--bare", "--template=", source, parent)
+	if err := os.WriteFile(file, []byte("candidate\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(source, "commit", "--quiet", "-am", "candidate")
+	candidate := git(source, "rev-parse", "HEAD")
+	flag, log := filepath.Join(dir, "failed-init"), filepath.Join(dir, "calls.jsonl")
+	wrapper := filepath.Join(dir, "controlled-git")
+	script := fmt.Sprintf(`#!%s
+import json,os,sys
+from pathlib import Path
+a=sys.argv[1:]
+with open(%q,'a') as log: log.write(json.dumps(a)+'\n')
+if 'init' in a and not Path(%q).exists():
+ Path(%q).touch()
+ sys.exit(91)
+if 'fetch' in a:
+ i=a.index('fetch')
+ if a[i:]!=['fetch','--no-tags','--no-recurse-submodules','--no-write-fetch-head','--','https://github.com/owner/repo.git',%q,%q]:sys.exit(92)
+ a[i+5]=%q
+ a=['-c','protocol.file.allow=always']+a
+for arg in a:
+ if '://' in arg:sys.exit(93)
+os.execv(%q,[%q]+a)
+`, python, log, flag, flag, candidate, base, source, executable, executable)
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := New(filepath.Join(parent, "owned"), wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, _ := manager.CachePath(77)
+	if err := manager.Fetch(context.Background(), 77, "owner/repo", candidate, base, ""); !errors.Is(err, errMaterialize) {
+		t.Fatalf("injected initialization failure: %v", err)
+	}
+	entries, err := os.ReadDir(cache)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("failed init did not leave the expected empty cache: %v %v", entries, err)
+	}
+	if err := manager.Fetch(context.Background(), 77, "owner/repo", candidate, base, ""); err != nil {
+		t.Fatalf("empty cache retry failed: %v", err)
+	}
+	if git(dir, "--git-dir="+cache, "rev-parse", "--is-bare-repository") != "true" {
+		t.Fatal("retry did not initialize the exact cache")
+	}
+	for _, sha := range []string{candidate, base} {
+		if git(dir, "--git-dir="+cache, "rev-parse", "--verify", sha+"^{commit}") != sha {
+			t.Fatal("cache lost its pinned source object")
+		}
+	}
+	probe := exec.Command(executable, "--git-dir="+parent, "cat-file", "-e", candidate+"^{commit}")
+	if probe.Run() == nil {
+		t.Fatal("fetch inherited and modified its parent repository")
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var args []string
+		if json.Unmarshal([]byte(line), &args) != nil {
+			t.Fatal("invalid controlled Git log")
+		}
+		if suffixAfter(args, "init") == nil && !containsSequence(args, []string{"--git-dir=" + cache}) {
+			t.Fatalf("cache command allowed parent discovery: %q", args)
+		}
+	}
+}
 
 type fetchFixture struct {
 	manager           *Manager
@@ -38,6 +142,7 @@ for arg do printf '|%%s' "$arg" >> %q; done
 printf '\n' >> %q
 printf '%%s|%%s|%%s\n' "${GIT_CONFIG_COUNT-unset}" "${GIT_CONFIG_KEY_0-unset}" "${GIT_CONFIG_VALUE_0-unset}" >> %q
 case "$*" in
+  *"init --bare"*) for cache do :; done; mkdir -p "$cache/objects" ;;
   *"rev-parse --is-bare-repository"*) printf 'true\n' ;;
   *"rev-parse --verify %s^{commit}"*) printf '%%s\n' %q ;;
   *"rev-parse --verify %s^{commit}"*) printf '%%s\n' %q ;;
@@ -106,6 +211,9 @@ func TestFetchUsesFixedURLPinnedObjectsAndPrivateTokenEnvironment(t *testing.T) 
 	for _, call := range calls {
 		if !hasPrefix(call, configPrefix) {
 			t.Fatalf("Git command omitted fixed isolation config: %q", call)
+		}
+		if suffixAfter(call, "init") == nil && !containsSequence(call, []string{"--git-dir=" + filepath.Join(f.root, "repositories", "41.git")}) {
+			t.Fatalf("cache command omitted exact Git directory: %q", call)
 		}
 	}
 	if !equalStrings(suffixAfter(initCall, "init"), []string{"init", "--bare", "--template=", "--", filepath.Join(f.root, "repositories", "41.git")}) {
@@ -257,8 +365,17 @@ func TestFetchRejectsNonBareAndSymlinkCacheWithoutReplacing(t *testing.T) {
 	if err := os.Mkdir(cache, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	sentinel := filepath.Join(cache, "preserved-invalid-state")
+	if err := os.WriteFile(sentinel, []byte("preserve me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := manager.Fetch(context.Background(), 43, "owner/repo", fetchCandidate, fetchBase, ""); !errors.Is(err, errMaterialize) {
 		t.Fatalf("non-bare cache result: %v", err)
+	}
+	entries, err := os.ReadDir(cache)
+	value, readErr := os.ReadFile(sentinel)
+	if err != nil || len(entries) != 1 || readErr != nil || string(value) != "preserve me" {
+		t.Fatalf("nonempty invalid cache changed: %v %v %v", entries, err, readErr)
 	}
 	if runtime.GOOS != "windows" {
 		f2 := newFetchFixture(t, ":")
