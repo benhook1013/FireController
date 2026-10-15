@@ -87,6 +87,22 @@ type findingRouteReceipt struct {
 	SourceRevision int64  `json:"source_revision"`
 }
 
+// routeStamp samples only local mutation recording time. Route timestamps use
+// one fixed-width UTC representation, so their lexical order is chronological.
+func (e *Engine) routeStamp(minimum string) string {
+	now := time.Now
+	if e.routeNow != nil {
+		now = e.routeNow
+	}
+	return routeStampAtLeast(now().UTC().Format("2006-01-02T15:04:05.000000000Z"), minimum)
+}
+func routeStampAtLeast(at, minimum string) string {
+	if at < minimum {
+		return minimum
+	}
+	return at
+}
+
 func validFindingRouteID(id string) bool { return hostedObservationID(id, "review_route_") }
 func validRoutePull(n int64) bool        { return n > 0 && n <= 2147483647 }
 func routeStorageError() error {
@@ -253,22 +269,25 @@ func persistFindingRoute(ctx context.Context, tx *sql.Tx, scope core.Scope, rout
 		TargetPullNumber int64  `json:"target_pull_number"`
 	}{route.SourceEvidenceID, route.Finding, route.TargetPullNumber})
 }
-func supersedeFindingRoute(ctx context.Context, tx *sql.Tx, scope core.Scope, evidence ReviewEvidence, state ReviewAdjudication, finding FindingDecision, expected int64, at string) error {
+func supersedeFindingRoute(ctx context.Context, tx *sql.Tx, scope core.Scope, evidence ReviewEvidence, state ReviewAdjudication, finding FindingDecision, expected int64, at string) (string, error) {
 	route, err := readFindingRoute(ctx, tx, scope.ProjectID, finding.RouteID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !routeMatchesSource(route, evidence, state, true) {
-		return routeStorageError()
+		return "", routeStorageError()
 	}
 	if route.Revision != expected || route.Revision == math.MaxInt64 || route.FixSHA != "" {
-		return conflict()
+		return "", conflict()
 	}
 	prior := route.Revision
 	route.Revision++
 	route.State = "superseded"
-	route.UpdatedAt = at
-	return persistFindingRoute(ctx, tx, scope, route, prior, "superseded")
+	route.UpdatedAt = routeStampAtLeast(at, route.UpdatedAt)
+	if err = persistFindingRoute(ctx, tx, scope, route, prior, "superseded"); err != nil {
+		return "", err
+	}
+	return route.UpdatedAt, nil
 }
 
 func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, evidenceID string, request FindingRouteRequest) (json.RawMessage, error) {
@@ -305,9 +324,9 @@ func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, 
 		if f.FixSHA != "" {
 			return nil, conflict()
 		}
-		at := sourceStamp()
+		at := e.routeStamp("")
 		if f.Disposition == "routed" {
-			if err = supersedeFindingRoute(ctx, tx, scope, evidence, state, *f, request.ExpectedRouteRevision, at); err != nil {
+			if at, err = supersedeFindingRoute(ctx, tx, scope, evidence, state, *f, request.ExpectedRouteRevision, at); err != nil {
 				return nil, err
 			}
 		} else if request.ExpectedRouteRevision != 0 {
@@ -325,7 +344,7 @@ func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, 
 	})
 }
 
-func (e *Engine) mutateFindingRoute(ctx context.Context, scope core.Scope, key, id, kind string, expected int64, request any, change func(*ReviewRoute) error) (json.RawMessage, error) {
+func (e *Engine) mutateFindingRoute(ctx context.Context, scope core.Scope, key, id, kind string, expected int64, request any, change func(*ReviewRoute, string) error) (json.RawMessage, error) {
 	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.route." + kind, Target: id, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		route, err := readFindingRoute(ctx, tx, scope.ProjectID, id)
 		if err != nil {
@@ -344,11 +363,12 @@ func (e *Engine) mutateFindingRoute(ctx context.Context, scope core.Scope, key, 
 		if !routeMatchesSource(route, evidence, state, true) {
 			return nil, routeStorageError()
 		}
-		if err = change(&route); err != nil {
+		at := e.routeStamp(route.UpdatedAt)
+		if err = change(&route, at); err != nil {
 			return nil, err
 		}
 		route.Revision++
-		route.UpdatedAt = sourceStamp()
+		route.UpdatedAt = at
 		if err = persistFindingRoute(ctx, tx, scope, route, expected, kind); err != nil {
 			return nil, err
 		}
@@ -366,11 +386,11 @@ func (e *Engine) DecideFindingRoute(ctx context.Context, scope core.Scope, key, 
 	}
 	expected := *request.ExpectedRevision
 	request.ExpectedRevision = &expected
-	return e.mutateFindingRoute(ctx, scope, key, id, "adjudicated", expected, request, func(r *ReviewRoute) error {
+	return e.mutateFindingRoute(ctx, scope, key, id, "adjudicated", expected, request, func(r *ReviewRoute, at string) error {
 		if r.FixSHA != "" && request.Disposition == "rejected" {
 			return conflict()
 		}
-		r.Disposition, r.Reason, r.ActorID, r.DecidedAt = request.Disposition, request.Reason, scope.PrincipalID, sourceStamp()
+		r.Disposition, r.Reason, r.ActorID, r.DecidedAt = request.Disposition, request.Reason, scope.PrincipalID, at
 		return nil
 	})
 }
@@ -380,11 +400,11 @@ func (e *Engine) RecordFindingRouteFix(ctx context.Context, scope core.Scope, ke
 	}
 	expected, expectedSHA := *request.ExpectedRevision, *request.ExpectedSHA
 	request.ExpectedRevision, request.ExpectedSHA = &expected, &expectedSHA
-	return e.mutateFindingRoute(ctx, scope, key, id, "fix_recorded", expected, request, func(r *ReviewRoute) error {
+	return e.mutateFindingRoute(ctx, scope, key, id, "fix_recorded", expected, request, func(r *ReviewRoute, at string) error {
 		if r.Disposition != "accepted" || r.FixSHA != expectedSHA {
 			return conflict()
 		}
-		r.FixSHA, r.ProofNote, r.FixedAt = request.FixSHA, request.ProofNote, sourceStamp()
+		r.FixSHA, r.ProofNote, r.FixedAt = request.FixSHA, request.ProofNote, at
 		return nil
 	})
 }
