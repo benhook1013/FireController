@@ -32,6 +32,7 @@ type HostedPublication struct {
 	Roots             []ReviewComment
 	EligibleReviews   []HostedReview
 	FinishedAt        time.Time
+	StandingZero      *HostedStandingZero
 }
 
 const publicationUUID = `[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`
@@ -295,6 +296,10 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		batches[marker.ordinal] = review
 	}
 	if total == 0 {
+		result = resolveStandingZero(snapshot, result, intent, providerAuthor, closing)
+		if result.State == "attributed" || result.State == "ambiguous" {
+			return result, nil
+		}
 		if !closing.IsZero() {
 			result.State, result.Reason = "uncertain", "attribution_window_closed"
 		}

@@ -206,7 +206,17 @@ func ResolveHostedComparison(publication HostedPublication, headSHA, parentSHA, 
 			return "", false
 		}
 	}
-	if publication.State != "attributed" || len(publication.Batches) == 0 || len(publication.Batches) > 200 {
+	if publication.State != "attributed" {
+		return "", false
+	}
+	if publication.StandingZero != nil {
+		z := publication.StandingZero
+		if !validStandingZero(z) || len(publication.Batches) != 0 || len(publication.Roots) != 0 || len(publication.EligibleReviews) != 0 || publication.PublicationID != "" || publication.ProviderAttemptID != "" || z.HeadSHA != headSHA || z.BaseSHA != parentSHA && z.BaseSHA != mergeBaseSHA {
+			return "", false
+		}
+		return z.BaseSHA, true
+	}
+	if len(publication.Batches) == 0 || len(publication.Batches) > 200 {
 		return "", false
 	}
 	scanner := hostedComparisonScanner{head: headSHA, parent: parentSHA, merge: mergeBaseSHA}

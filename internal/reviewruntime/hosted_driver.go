@@ -206,6 +206,9 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	if err := RetainHostedAllowance(ctx, d.captures, d.engine, attempt, anchor, int64(len(paths)), observed.Capture); err != nil {
 		return preparation, reviewHold("hosted_allowance_unproven")
 	}
+	if _, err := retainHostedBaseline(ctx, d.provider, d.captures, d.engine, attempt, anchor, actor, d.providerActor()); err != nil {
+		return preparation, reviewHold("standing_baseline_unproven")
+	}
 	_, err = d.engine.PublishAttempt(ctx, operation.ProjectID, attempt.ID, nil)
 	if err != nil {
 		var missing *core.Error

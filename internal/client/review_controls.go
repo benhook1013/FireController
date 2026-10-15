@@ -30,11 +30,17 @@ type ReviewAnchor struct {
 	ObservedAt       string `json:"observed_at"`
 }
 type ReviewHostedPublication struct {
-	PublicationID     string  `json:"publication_id"`
-	ProviderAttemptID string  `json:"provider_attempt_id"`
-	TriggerCommentID  int64   `json:"trigger_comment_id"`
-	ReviewIDs         []int64 `json:"review_ids"`
-	ObservedBaseSHA   string  `json:"observed_base_sha"`
+	PublicationID     string                       `json:"publication_id"`
+	ProviderAttemptID string                       `json:"provider_attempt_id"`
+	TriggerCommentID  int64                        `json:"trigger_comment_id"`
+	ReviewIDs         []int64                      `json:"review_ids"`
+	ObservedBaseSHA   string                       `json:"observed_base_sha"`
+	StandingSummary   *ReviewHostedStandingSummary `json:"standing_summary,omitempty"`
+}
+type ReviewHostedStandingSummary struct {
+	CommentID     int64  `json:"comment_id"`
+	ProviderRunID string `json:"provider_run_id"`
+	UpdatedAt     string `json:"updated_at"`
 }
 type ReviewHostedFindingSource struct {
 	SourceKey   string `json:"source_key"`
@@ -245,7 +251,19 @@ func controlUUID(value string) bool {
 
 func validHostedControlCapture(capture ReviewEvidenceCapture, anchor ReviewAnchor) bool {
 	hosted := capture.Hosted
-	if hosted == nil || !capture.Complete || capture.Outcome != "completed" || len(capture.ReviewedFiles) != 0 || capture.ReportedFindings != int64(len(capture.Findings)) || !controlUUID(hosted.PublicationID) || !controlUUID(hosted.ProviderAttemptID) || hosted.TriggerCommentID <= 0 || len(hosted.ReviewIDs) < 1 || len(hosted.ReviewIDs) > 200 || !controlHex(hosted.ObservedBaseSHA, 40) || hosted.ObservedBaseSHA != anchor.ParentSHA && hosted.ObservedBaseSHA != anchor.MergeBaseSHA {
+	if hosted == nil || !capture.Complete || capture.Outcome != "completed" || len(capture.ReviewedFiles) != 0 || capture.ReportedFindings != int64(len(capture.Findings)) || hosted.TriggerCommentID <= 0 || hosted.ReviewIDs == nil || !controlHex(hosted.ObservedBaseSHA, 40) || hosted.ObservedBaseSHA != anchor.ParentSHA && hosted.ObservedBaseSHA != anchor.MergeBaseSHA {
+		return false
+	}
+	if summary := hosted.StandingSummary; summary != nil {
+		if hosted.PublicationID != "" || hosted.ProviderAttemptID != "" || len(hosted.ReviewIDs) != 0 || len(capture.Findings) != 0 || capture.ReportedFindings != 0 || summary.CommentID <= 0 || summary.CommentID == hosted.TriggerCommentID || !controlUUID(summary.ProviderRunID) || !controlTime(summary.UpdatedAt) {
+			return false
+		}
+		updated, _ := time.Parse(time.RFC3339Nano, summary.UpdatedAt)
+		started, _ := time.Parse(time.RFC3339Nano, capture.StartedAt)
+		finished, _ := time.Parse(time.RFC3339Nano, capture.FinishedAt)
+		return updated.After(started) && !updated.After(finished)
+	}
+	if !controlUUID(hosted.PublicationID) || !controlUUID(hosted.ProviderAttemptID) || len(hosted.ReviewIDs) < 1 || len(hosted.ReviewIDs) > 200 {
 		return false
 	}
 	reviews := make(map[int64]bool, len(hosted.ReviewIDs))

@@ -16,15 +16,16 @@ import (
 
 type driverHostedProvider struct {
 	*cliDriverReader
-	t                                                     *testing.T
-	actor, bot                                            reviewprovider.Author
-	comments                                              []reviewprovider.IssueComment
-	queries, reviews, histories, observations, activities int
-	delay                                                 int
-	reply, activity                                       string
-	partial, lost, malformed                              bool
-	postHook                                              func()
-	alterReturn                                           func(*reviewprovider.IssueComment)
+	t                                                                *testing.T
+	actor, bot                                                       reviewprovider.Author
+	comments                                                         []reviewprovider.IssueComment
+	queries, reviews, histories, baselines, observations, activities int
+	delay                                                            int
+	reply, activity                                                  string
+	partial, lost, malformed                                         bool
+	postHook                                                         func()
+	alterReturn                                                      func(*reviewprovider.IssueComment)
+	baselineHook                                                     func(context.Context, *reviewprovider.HostedPublicationSnapshot) error
 }
 
 func (p *driverHostedProvider) CurrentActor(ctx context.Context) (reviewprovider.Author, error) {
@@ -85,7 +86,6 @@ func (p *driverHostedProvider) IssueComments(ctx context.Context, repo string, n
 	return append([]reviewprovider.IssueComment(nil), p.comments...), nil
 }
 func (p *driverHostedProvider) ObserveHosted(ctx context.Context, repo string, number int64) (reviewprovider.HostedPublicationSnapshot, error) {
-	p.observations++
 	if err := ctx.Err(); err != nil {
 		return reviewprovider.HostedPublicationSnapshot{}, err
 	}
@@ -99,8 +99,16 @@ func (p *driverHostedProvider) ObserveHosted(ctx context.Context, repo string, n
 		}
 	}
 	if trigger.ID == 0 {
-		p.t.Fatal("observed review without a trigger")
+		p.baselines++
+		snapshot := reviewprovider.HostedPublicationSnapshot{Complete: true, ObservedAt: time.Now().UTC(), IssueComments: append([]reviewprovider.IssueComment(nil), p.comments...), Reviews: []reviewprovider.HostedReview{}, ReviewComments: []reviewprovider.ReviewComment{}}
+		if p.baselineHook != nil {
+			if err := p.baselineHook(ctx, &snapshot); err != nil {
+				return snapshot, err
+			}
+		}
+		return snapshot, nil
 	}
+	p.observations++
 	at := time.Now().UTC()
 	body := "**Actionable comments posted: 1**\n\n" + hostedRetainScope(p.pulls[2].BaseSHA, p.pulls[2].HeadSHA) + "\n\n" + hostedRetainPublicationMarker()
 	if p.partial {
@@ -205,7 +213,7 @@ func TestHostedDriverQueryAdmitPublishThenSupervisorSettlement(t *testing.T) {
 		t.Fatal("admission state")
 	}
 	result, err := f.hosted.Dispatch(t.Context(), op, a, f.callback(t, &a))
-	if err != nil || result.State != "completed" || result.ExternalID != "200" || f.provider.queries != 1 || f.provider.reviews != 1 || f.provider.observations != 1 {
+	if err != nil || result.State != "completed" || result.ExternalID != "200" || f.provider.queries != 1 || f.provider.reviews != 1 || f.provider.observations != 1 || f.provider.baselines != 1 {
 		t.Fatal("happy path", result, err, f.provider.queries, f.provider.reviews, f.provider.observations)
 	}
 	if hostedDriverJournal(t, f, a.ID) != "active" || cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 {
@@ -390,7 +398,14 @@ func TestHostedDriverDelayedAndUnavailableAllowanceNeverRepostsQuery(t *testing.
 				t.Fatal("unknown allowance exceeded observation budget")
 			}
 			observations, readErr := f.engine.ReadHostedObservations(t.Context(), f.project, a.ID)
-			if readErr != nil || len(observations) != f.provider.histories {
+			expectedObservations := f.provider.histories
+			if mode == "delayed" {
+				expectedObservations++ // One full history phase after allowance is available.
+			}
+			if f.provider.baselines != expectedObservations-f.provider.histories {
+				t.Fatal("full baseline fetched during pending query or repeated", f.provider.observations)
+			}
+			if readErr != nil || len(observations) != expectedObservations {
 				t.Fatal("query capture orphaned before interpretation", len(observations), f.provider.histories, readErr)
 			}
 			for _, observation := range observations {

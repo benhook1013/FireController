@@ -2,6 +2,8 @@ package reviewruntime
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -42,6 +44,16 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		return result, nil
 	}
 	publication := inventory.Publication
+	if publication.StandingZero != nil {
+		reason, err := hostedStandingBaseline(ctx, captures, engine, attempt, retained, publication.StandingZero.ProviderRunID)
+		if err != nil || reason != "" {
+			result.Reason = reason
+			if result.Reason == "" {
+				result.Reason = "standing_baseline_unproven"
+			}
+			return result, err
+		}
+	}
 	base, proven := reviewprovider.ResolveHostedComparison(publication, anchor.CandidateSHA, anchor.ParentSHA, anchor.MergeBaseSHA)
 	if !proven {
 		result.Reason = "comparison_unproven"
@@ -49,6 +61,9 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 	}
 	review := reviewprovider.ParsedReview{Outcome: "completed", Complete: true, ReportedFindings: int64(len(inventory.Findings)), ReviewedFiles: []string{}, Findings: make([]reviewprovider.ParsedFinding, 0, len(inventory.Findings))}
 	metadata := &reviewexec.HostedEvidenceMetadata{PublicationID: publication.PublicationID, ProviderAttemptID: publication.ProviderAttemptID, TriggerCommentID: publication.Trigger.CommentID, ReviewIDs: make([]int64, 0, len(publication.Batches)), ObservedBaseSHA: base, Sources: make([]reviewexec.HostedFindingSource, 0, len(inventory.Findings))}
+	if standing := publication.StandingZero; standing != nil {
+		metadata.StandingSummary = &reviewexec.HostedStandingSummaryMetadata{CommentID: standing.Summary.ID, ProviderRunID: standing.ProviderRunID, UpdatedAt: standing.Summary.UpdatedAt.Format(time.RFC3339Nano)}
+	}
 	for _, batch := range publication.Batches {
 		metadata.ReviewIDs = append(metadata.ReviewIDs, batch.ID)
 	}
@@ -108,4 +123,82 @@ func retainHostedObservation(ctx context.Context, captures *HostedCaptureStore, 
 		return result, HostedCaptureRecord{}, err
 	}
 	return result, retained, nil
+}
+
+// hostedStandingBaseline proves that a standing comment's run identity is new
+// relative to the same attempt's complete, immutable pre-post query history.
+// Journal position selects the latest pre-post query; an invalid latest source
+// cannot be replaced by older bytes. Current summary timestamps alone cannot
+// establish that mutable-source fact. Local fetch timing uses the exact journal
+// instant, while provider trigger matching retains its second-level floor.
+func hostedStandingBaseline(ctx context.Context, captures *HostedCaptureStore, engine *reviewexec.Engine, attempt reviewexec.Attempt, retained HostedCaptureRecord, runID string) (string, error) {
+	const unproven = "standing_baseline_unproven"
+	query, err := engine.ReadHostedAllowanceQuery(ctx, attempt.ProjectID, attempt.ID)
+	if err != nil {
+		var missing *core.Error
+		if errors.As(err, &missing) && missing.Code == "not_found" {
+			return unproven, nil
+		}
+		return unproven, err
+	}
+	intent := reviewprovider.HostedTriggerIntent{OperationID: query.OperationID, AttemptID: query.AttemptID, HeadSHA: query.Anchor.CandidateSHA}
+	earliest, err := time.Parse(time.RFC3339Nano, query.EarliestPosting)
+	sameActor := func(a, b reviewprovider.Author) bool { return a.ID == b.ID && a.Kind == b.Kind }
+	if err != nil || query.Comment == nil || !sameHostedQueryTarget(*attempt.Anchor, query.Anchor) || query.OperationID != attempt.OperationID || intent != retained.Intent || !sameActor(query.PostingActor, retained.PostingActor) || !sameActor(query.ProviderActor, retained.ProviderActor) {
+		return unproven, nil
+	}
+	posting, err := engine.ReadHostedPostingBoundary(ctx, attempt.ProjectID, attempt.ID)
+	if err != nil {
+		return unproven, err
+	}
+	if !retained.EarliestPosting.Equal(posting.Truncate(time.Second)) {
+		return unproven, nil
+	}
+	observations, err := engine.ReadHostedObservations(ctx, attempt.ProjectID, attempt.ID)
+	if err != nil {
+		return unproven, err
+	}
+	var baseline *HostedCaptureRecord
+	for position := len(observations) - 1; position >= 0; position-- {
+		in := observations[position].Input
+		finish, err := time.Parse(time.RFC3339Nano, in.FinishedAt)
+		if in.Kind != "allowance_query" || err != nil || finish.After(posting) {
+			continue
+		}
+		record, err := captures.Read(ctx, attempt.ID, CaptureReference{ID: in.CaptureID, SHA256: in.CaptureSHA256, Bytes: in.CaptureBytes})
+		if err != nil {
+			return unproven, err
+		}
+		if !record.Snapshot.Complete || record.Snapshot.IssueComments == nil || record.Snapshot.Reviews == nil || record.Snapshot.ReviewComments == nil || record.RepositoryID != query.Anchor.RepositoryID || record.Repository != query.Anchor.Repository || record.PullNumber != query.Anchor.PullNumber || record.Intent != intent || !sameActor(record.PostingActor, query.PostingActor) || !sameActor(record.ProviderActor, query.ProviderActor) || !record.EarliestPosting.Equal(earliest.Truncate(time.Second)) ||
+			in.ExpectedAnchor != query.Anchor || in.Intent != query.Intent || in.StartedAt != record.StartedAt.Format(time.RFC3339Nano) || in.FinishedAt != record.FinishedAt.Format(time.RFC3339Nano) || in.ObservedAt != record.Snapshot.ObservedAt.Format(time.RFC3339Nano) {
+			return unproven, nil
+		}
+		if !hostedBaselineQueryPresent(record.Snapshot, query) {
+			return unproven, nil
+		}
+		baseline = &record
+		break
+	}
+	if baseline == nil {
+		return unproven, nil
+	}
+	containsRun := func(author reviewprovider.Author, body string) bool {
+		return sameActor(author, query.ProviderActor) && strings.Contains(strings.ToLower(body), strings.ToLower(runID))
+	}
+	for _, comment := range baseline.Snapshot.IssueComments {
+		if containsRun(comment.Author, comment.Body) {
+			return "standing_run_not_new", nil
+		}
+	}
+	for _, review := range baseline.Snapshot.Reviews {
+		if containsRun(review.Author, review.Body) {
+			return "standing_run_not_new", nil
+		}
+	}
+	for _, comment := range baseline.Snapshot.ReviewComments {
+		if containsRun(comment.Author, comment.Body) {
+			return "standing_run_not_new", nil
+		}
+	}
+	return "", nil
 }
