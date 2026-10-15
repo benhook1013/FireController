@@ -33,6 +33,11 @@ Startup validates configuration without opening the credential or contacting the
 | `inbox_thread` | Required conversation_id and optional limit/cursor; explicit full-body conversation page. |
 | `inbox_snapshot` | Optional unread/unacknowledged/limit/cursor; one inbox page plus its atomic incoming-event watermark. |
 | `inbox_events` | Required event cursor; optional limit and wait_ms 0–4000; one bounded incoming-event page. |
+| `review_evidence_read` | Required evidence_id; explicit full retained native capture and parsed findings, excluding raw diagnostics. |
+| `review_adjudication_read` | Required evidence_id; current guarded decisions and fix references without repeating finding text. |
+| `review_finding_decide` | Required idempotency_key/evidence_id/expected_revision/finding/disposition/reason; completed adjudication result. |
+| `review_finding_fix` | Required idempotency_key/evidence_id/expected_revision/finding/expected_sha/fix_sha/proof_note; completed fix-reference result. |
+| `review_source_finalize` | Required idempotency_key/evidence_id/expected_revision; completed source-count finalization result. |
 | `review_queue` | Optional limit/cursor; stored queue, default five PRs. |
 | `review_pull` | Required pull_number, optional snapshot; explicit PR summary and attempts. |
 | `review_runs` | Required pull_number, optional snapshot/limit/cursor; default five stored run summaries. |

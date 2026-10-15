@@ -12,10 +12,7 @@ import (
 
 func attemptProjectionCapacity(ctx context.Context, tx *sql.Tx, operation Operation) (bool, error) {
 	_, err := currentReviewPull(ctx, tx, operation.ProjectID, operation.PullNumber)
-	if missingCurrentPull(err) {
-		return true, nil
-	}
-	if err != nil {
+	if err != nil && !missingCurrentPull(err) {
 		return false, err
 	}
 	return reviews.NativeAttemptCapacity(ctx, tx, operation.ProjectID, operation.PullNumber)

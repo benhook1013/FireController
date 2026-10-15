@@ -166,3 +166,117 @@ func TestAttemptProjectionFullMissingRowStillRejectsCorruptJournal(t *testing.T)
 		t.Fatal("corrupt transition committed partial state")
 	}
 }
+
+func missingTargetCapacityObservation(t *testing.T, f *attemptFixture, fullPulls, fullAttempts bool, existingTarget bool) {
+	t.Helper()
+	queue := []reviews.PullInput{projectionPull(4), projectionPull(6)}
+	if fullPulls {
+		queue = nil
+		for i := int64(100); i < 200; i++ {
+			queue = append(queue, projectionPull(i))
+		}
+		if existingTarget {
+			queue[0] = projectionPull(2)
+		}
+	}
+	if fullAttempts {
+		for n := range 2 {
+			for i := range 100 {
+				queue[n].Attempts = append(queue[n].Attempts, reviews.Attempt{SourceAttemptID: fmt.Sprintf("retained-%d-%d", queue[n].Number, i), Channel: "cli", HeadSHA: queue[n].HeadSHA, State: "prepared"})
+			}
+		}
+	}
+	zero := int64(0)
+	request := reviews.ObservationRequest{ExpectedRevision: &zero, RepositoryID: 801, Source: "capacity-before-native-target", ObservedAt: stamp(), Queue: queue}
+	w := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/observations", f.admin, "initial-capacity", encoded(request))
+	if w.Code != 201 {
+		t.Fatal("canonical capacity observation", w.Code, w.Body.String())
+	}
+}
+
+func TestAttemptProjectionMissingTargetCapacityHoldsBeforeDriver(t *testing.T) {
+	for _, kind := range []string{"global-attempts", "pull-rows"} {
+		t.Run(kind, func(t *testing.T) {
+			f := attemptProjectionFixture(t, false)
+			missingTargetCapacityObservation(t, f, kind == "pull-rows", kind == "global-attempts", false)
+			request := f.enqueue(t, attemptProject, "missing-target-at-capacity", "cli", 2, 1)
+			before := projectionDigest(t, f, "")
+			driver := &controlledDriver{}
+			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
+				t.Fatal(err)
+			}
+			operation, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), request.ID)
+			if err != nil || operation.State != "held" || operation.Reason != "projection_capacity" || operation.AttemptID != "" || driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+				t.Fatal("missing PR bypassed retained projection capacity", operation, err, "prepare", driver.prepares.Load(), "dispatch", driver.calls.Load())
+			}
+			if projectionDigest(t, f, "") != before {
+				t.Fatal("preparation refusal created orphan or changed retained projection")
+			}
+			events := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+			if err = f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil || projectionDigest(t, f, "") != before || attemptCount(t, f.store, `SELECT count(*) FROM events`) != events {
+				t.Fatal("held capacity work repeated effects", err)
+			}
+		})
+	}
+}
+
+func TestAttemptProjectionMissingTargetCapacityAllowsInitialMetadataWithinBounds(t *testing.T) {
+	for _, kind := range []string{"unconfigured-workspace", "empty-workspace", "missing-spare", "existing-full-queue"} {
+		t.Run(kind, func(t *testing.T) {
+			f := attemptProjectionFixture(t, false)
+			switch kind {
+			case "empty-workspace":
+				zero := int64(0)
+				request := reviews.ObservationRequest{ExpectedRevision: &zero, RepositoryID: 801, Source: "empty-history", ObservedAt: stamp(), Queue: []reviews.PullInput{}}
+				if w := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/observations", f.admin, "empty", encoded(request)); w.Code != 201 {
+					t.Fatal(w.Code, w.Body.String())
+				}
+			case "missing-spare":
+				missingTargetCapacityObservation(t, f, false, false, false)
+			case "existing-full-queue":
+				missingTargetCapacityObservation(t, f, true, false, true)
+			}
+			receipt := f.enqueue(t, attemptProject, "initial-metadata-with-capacity", "cli", 2, 1)
+			driver := &controlledDriver{prepare: func(ctx context.Context, o Operation, c Configuration, a Attempt) (Preparation, error) {
+				metadata := projectionPull(2)
+				if _, err := f.e.PublishAttempt(ctx, attemptProject, a.ID, &metadata); err != nil {
+					return Preparation{}, err
+				}
+				return Preparation{Anchor: attemptAnchor(attemptProject, 2)}, nil
+			}}
+			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
+				t.Fatal(err)
+			}
+			operation, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), receipt.ID)
+			if err != nil || operation.State != "completed" || driver.prepares.Load() != 1 || driver.calls.Load() != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+				t.Fatal("valid initial publication refused", operation, err, driver.prepares.Load(), driver.calls.Load())
+			}
+			_, projected := projectedAttempt(t, f, Attempt{ID: operation.AttemptID})
+			if projected.State != "completed" {
+				t.Fatal("initial metadata not published", projected)
+			}
+		})
+	}
+}
+
+func TestAttemptProjectionMissingTargetReadFailuresRollbackBeforePreparation(t *testing.T) {
+	for _, table := range []string{"review_attempts", "review_pulls"} {
+		t.Run(table, func(t *testing.T) {
+			f := attemptProjectionFixture(t, false)
+			missingTargetCapacityObservation(t, f, false, false, false)
+			receipt := f.enqueue(t, attemptProject, "storage-error-before-preparation", "cli", 2, 1)
+			// Break only the owned fixture's read schema, preserving a genuine queued
+			// operation so StartAttempt, rather than the pending query, reaches failure.
+			admissionSQL(t, f, `ALTER TABLE `+table+` RENAME TO unavailable_projection_rows`)
+			beforeEvents := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+			a, err := f.e.StartAttempt(t.Context(), attemptProject, receipt.ID)
+			if err == nil || a.ID != "" {
+				t.Fatal("missing-target capacity swallowed storage failure", a, err)
+			}
+			operation, readErr := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), receipt.ID)
+			if readErr != nil || operation.State != "queued" || operation.Revision != 1 || operation.AttemptID != "" || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents {
+				t.Fatal("storage failure committed journal effects", operation, readErr)
+			}
+		})
+	}
+}
