@@ -717,3 +717,75 @@ func TestCLIDriverLatePreparationCorrectionNeverRunsReview(t *testing.T) {
 		t.Fatal("late correction spent another review")
 	}
 }
+
+func TestCLIDriverPredecessorCorrectionAfterGitVerificationStopsReview(t *testing.T) {
+	for _, correct := range []bool{false, true} {
+		t.Run(fmt.Sprint(correct), func(t *testing.T) {
+			f := newCLIDriverFixture(t)
+			_, id := cliDriverCompletedFinding(t, f)
+			cliDriverDecision(t, f, id, "reject-parent", 0, "rejected")
+			revision := int64(1)
+			if _, err := f.engine.FinalizeCLI(t.Context(), f.scope(t, f.writer, false), "finalize-parent", id, reviewexec.CLIFinalizeRequest{ExpectedRevision: &revision}); err != nil {
+				t.Fatal(err)
+			}
+			source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
+			if err := os.WriteFile(filepath.Join(source, "third.txt"), []byte("child comparison\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			gitTestRun(t, source, "add", "third.txt")
+			gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "child")
+			third := gitTestOutput(t, source, "rev-parse", "HEAD")
+			gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/third")
+			merged := f.reader.pulls[3]
+			merged.Merged, merged.State = true, "closed"
+			f.reader.pulls[3] = merged
+			child := f.reader.pulls[4]
+			child.HeadSHA, child.BaseSHA, child.BaseRef = third, f.headSHA, "covered-parent"
+			f.reader.pulls[4] = child
+			f.configure(t, "stacked", []int64{2, 3, 4})
+			op, a := f.prepareAdmit(t, 4, 2, "child-after-covered-parent")
+			var verifications, reviews atomic.Int64
+			f.driver.verify = func(ctx context.Context, w reviewworkspace.Workspace) error {
+				if err := f.manager.Verify(ctx, w); err != nil {
+					return err
+				}
+				verifications.Add(1)
+				if correct {
+					cliDriverDecision(t, f, id, "correct-parent-after-git", 2, "accepted")
+				}
+				return nil
+			}
+			f.driver.review = func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error) {
+				reviews.Add(1)
+				return reviewprocess.Capture{ExitCode: -1}, &reviewprocess.Error{Code: "process_failed"}
+			}
+			before, _ := os.ReadFile(f.log)
+			result, err := f.driver.Dispatch(t.Context(), op, a, nil)
+			if err != nil || verifications.Load() != 1 {
+				t.Fatal("dispatch failed before real final Git verification", result, err)
+			}
+			wantReviews, wantReason := int64(1), "process_not_started"
+			if correct {
+				wantReviews, wantReason = 0, "admission_changed"
+			}
+			if result.State != "failed" || result.Reason != wantReason || reviews.Load() != wantReviews {
+				t.Fatal("late predecessor correction crossed final spend boundary", result, reviews.Load())
+			}
+			after, _ := os.ReadFile(f.log)
+			if string(before) != string(after) {
+				t.Fatal("fixture invoked unexpected CLI executable")
+			}
+			if f.reader.repositoryCalls != 4 || f.reader.calls[2] != 4 || f.reader.calls[3] != 2 || f.reader.calls[4] != 2 {
+				t.Fatal("final admission duplicated provider source reads", f.reader.calls, f.reader.repositoryCalls)
+			}
+			// The corrected predecessor is still the original finalized source count;
+			// only its current accepted-without-fix obligation changed.
+			if correct {
+				state, err := f.engine.ReadCLIAdjudication(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), id)
+				if err != nil || !state.Finalized || state.FrozenCounts.Accepted != 0 || state.Findings[0].Disposition != "accepted" || state.Findings[0].FixSHA != "" {
+					t.Fatal("regression did not commit the actual correction", err)
+				}
+			}
+		})
+	}
+}

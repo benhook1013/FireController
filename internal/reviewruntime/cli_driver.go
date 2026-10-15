@@ -26,6 +26,7 @@ type CLIDriver struct {
 	captures   *CaptureStore
 	reader     reviewexec.TargetReader
 	fetch      func(context.Context, int64, string, string, string, string) error
+	verify     func(context.Context, reviewworkspace.Workspace) error
 	usage      func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error)
 	review     func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error)
 	mu         sync.Mutex
@@ -73,7 +74,7 @@ func NewCLIDriver(store *core.Store, engine *reviewexec.Engine, capability Opera
 	if err != nil || capability.Fingerprint != fingerprint {
 		return nil, configurationError()
 	}
-	return &CLIDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, reader: reader, fetch: manager.Fetch, usage: runner.Usage, review: runner.Review, prepared: map[string]*cliPrepared{}}, nil
+	return &CLIDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, reader: reader, fetch: manager.Fetch, verify: manager.Verify, usage: runner.Usage, review: runner.Review, prepared: map[string]*cliPrepared{}}, nil
 }
 
 // A successful preflight can be held by admission before Dispatch. Expire only
@@ -136,54 +137,57 @@ func (r *cliSourceReads) Pull(ctx context.Context, repository string, number int
 	return value, err
 }
 
-func (d *CLIDriver) sourceGate(ctx context.Context, reads *cliSourceReads, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation) (reviewexec.SourcePlan, error) {
+func (d *CLIDriver) sourceGate(ctx context.Context, reads *cliSourceReads, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation) (reviewexec.SourcePlan, []reviewexec.SourcePlan, error) {
 	plan, err := reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, cliRequest(operation))
 	if err != nil {
-		return plan, err
+		return plan, nil, err
 	}
 	comparison, err := d.engine.CLIComparison(ctx, operation.ProjectID, plan)
 	if err != nil {
-		return plan, err
+		return plan, nil, err
 	}
 	if comparison.Pending {
-		return plan, core.Fail("review_evidence_pending", "Resolve retained native CLI evidence before starting another review.", 409)
+		return plan, nil, core.Fail("review_evidence_pending", "Resolve retained native CLI evidence before starting another review.", 409)
 	}
 	if comparison.Covered {
-		return plan, cliDriverHold("target_already_covered")
+		return plan, nil, cliDriverHold("target_already_covered")
 	}
 	if configuration.Mode != "stacked" {
-		return plan, nil
+		return plan, nil, nil
 	}
 	position := slices.Index(configuration.Queue, operation.PullNumber)
+	predecessors := make([]reviewexec.SourcePlan, 0, position)
 	for _, number := range configuration.Queue[:position] {
 		pull, err := reads.Pull(ctx, plan.Repository.FullName, number)
 		if err != nil {
-			return plan, err
+			return plan, nil, err
 		}
 		if pull.RepositoryID != repositoryID || pull.Number != number {
-			return plan, cliDriverHold("predecessor_identity_changed")
+			return plan, nil, cliDriverHold("predecessor_identity_changed")
 		}
 		if pull.Merged {
+			predecessors = append(predecessors, reviewexec.SourcePlan{Repository: plan.Repository, Pull: pull, ObservedAt: plan.ObservedAt})
 			continue
 		}
 		if pull.State != "open" {
-			return plan, cliDriverHold("predecessor_unavailable")
+			return plan, nil, cliDriverHold("predecessor_unavailable")
 		}
 		request := cliRequest(operation)
 		request.PullNumber, request.HeadSHA = number, pull.HeadSHA
 		preceding, err := reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, request)
 		if err != nil {
-			return plan, err
+			return plan, nil, err
 		}
 		covered, err := d.engine.CLICoverage(ctx, operation.ProjectID, preceding)
 		if err != nil {
-			return plan, err
+			return plan, nil, err
 		}
 		if !covered {
-			return plan, cliDriverHold("predecessor_unfinished")
+			return plan, nil, cliDriverHold("predecessor_unfinished")
 		}
+		predecessors = append(predecessors, preceding)
 	}
-	return plan, nil
+	return plan, predecessors, nil
 }
 
 func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation, configuration reviewexec.Configuration, attempt reviewexec.Attempt) (preparation reviewexec.Preparation, failure error) {
@@ -215,7 +219,7 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 		}
 	}()
 	reads := newCLISourceReads(d.reader)
-	plan, err := d.sourceGate(ctx, reads, current.RepositoryID, current.Configuration, current.Operation)
+	plan, _, err := d.sourceGate(ctx, reads, current.RepositoryID, current.Configuration, current.Operation)
 	if err != nil {
 		return preparation, err
 	}
@@ -230,7 +234,7 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	if err != nil {
 		return preparation, cliDriverHold("workspace_unavailable")
 	}
-	if err := d.manager.Verify(ctx, workspace); err != nil {
+	if err := d.verify(ctx, workspace); err != nil {
 		return preparation, cliDriverHold("workspace_changed")
 	}
 	paths, err := d.manager.ChangedFiles(ctx, workspace)
@@ -288,13 +292,14 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 	if err := reviewexec.RecheckSource(ctx, reads, prepared.anchor.RepositoryID, prepared.configuration, cliRequest(operation), prepared.plan); err != nil {
 		return failed("source_changed")
 	}
-	if _, err := d.sourceGate(ctx, reads, prepared.anchor.RepositoryID, prepared.configuration, operation); err != nil {
+	_, predecessors, err := d.sourceGate(ctx, reads, prepared.anchor.RepositoryID, prepared.configuration, operation)
+	if err != nil {
 		return failed("source_admission_changed")
 	}
-	if err := d.manager.Verify(ctx, prepared.workspace); err != nil {
+	if err := d.verify(ctx, prepared.workspace); err != nil {
 		return failed("workspace_changed")
 	}
-	if err := d.engine.VerifyAction(ctx, operation.ProjectID, attempt.ID, attempt.Revision); err != nil {
+	if err := d.engine.VerifyAction(ctx, operation.ProjectID, attempt.ID, attempt.Revision, predecessors...); err != nil {
 		return failed("admission_changed")
 	}
 	started := time.Now().UTC()
