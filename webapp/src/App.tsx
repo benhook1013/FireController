@@ -286,10 +286,12 @@ function JobChecklistPanel({ jobId, jobRevision }: { jobId: string; jobRevision:
   const query = useQuery({ queryKey: [...key, 'checklist-current', jobId], queryFn: ({ signal }) => session.api.jobChecklist(jobId, signalFor(session, signal)), staleTime: Infinity });
   const checklist = query.data;
   return <section className="panel" aria-label="Current job checklist"><div className="section-heading"><div><p className="eyebrow">Job progress</p><h3>Current checklist</h3></div></div><ReadState error={query.error} loading={query.isPending} empty={false}>{checklist && <>
-    <p className="item-meta">Checklist revision {checklist.revision} · Job revision {checklist.job_revision}</p>
-    {checklist.job_revision !== jobRevision && <p className="notice" role="status">This job changed while its details were being read. Refresh visible data to align the brief and checklist.</p>}
-    <ChecklistItems items={checklist.items} />
-    <button type="button" aria-expanded={showHistory} onClick={() => setShowHistory(value => !value)}>{showHistory ? 'Close checklist history' : 'Show checklist history'}</button>
+    <div className="brief">
+      <p className="item-meta">Checklist revision {checklist.revision} · Job revision {checklist.job_revision}</p>
+      {checklist.job_revision !== jobRevision && <p className="notice" role="status">This job changed while its details were being read. Refresh visible data to align the brief and checklist.</p>}
+      <ChecklistItems items={checklist.items} />
+      <button type="button" aria-expanded={showHistory} onClick={() => setShowHistory(value => !value)}>{showHistory ? 'Close checklist history' : 'Show checklist history'}</button>
+    </div>
     {showHistory && <JobChecklistHistory jobId={jobId} jobRevision={jobRevision} checklistRevision={checklist.revision} />}
   </>}</ReadState></section>;
 }
