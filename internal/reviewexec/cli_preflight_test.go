@@ -79,7 +79,7 @@ func TestCLIAllowanceVersionThreeMigrationRetainsFactsAndReplayAcrossRestart(t *
 	admissionSQL(t, f, `UPDATE metadata SET value='3' WHERE key='schema:review_execution'`)
 	cliAllowanceReopen(t, f)
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "5" || attemptState(t, f, a) != journal {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "4" || attemptState(t, f, a) != journal {
 		t.Fatal("migration changed retained journal", version, err)
 	}
 	receipts := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)

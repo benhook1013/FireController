@@ -21,9 +21,12 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	}, []string{
 		`CREATE TABLE review_cli_preflight(attempt_id TEXT PRIMARY KEY REFERENCES review_execution_attempts(id),project_id TEXT NOT NULL REFERENCES projects(id),body_json TEXT NOT NULL)`,
 		`CREATE INDEX review_operations_cli_admission ON review_operations(project_id,pull_number,channel,state,id)`,
-	}, []string{
-		`DROP INDEX IF EXISTS review_operations_coverage`,
 	}); err != nil {
+		return err
+	}
+	// Index maintenance has its own version so newer execution-table
+	// migrations retain their existing positions in deployed databases.
+	if err := store.EnsureSchema(ctx, "review_execution_indexes", []string{`DROP INDEX IF EXISTS review_operations_coverage`}); err != nil {
 		return err
 	}
 	if err := EnsureEvidenceSchema(ctx, store); err != nil {
