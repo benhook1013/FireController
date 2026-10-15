@@ -150,6 +150,10 @@ func validID(value string) bool {
 	}
 	return true
 }
+
+// ValidID admits a bounded resource identity without normalization. Transports
+// use the same guard before loading credentials or constructing a client.
+func ValidID(value string) bool { return validID(value) }
 func safeURL(u *url.URL, raw string) bool {
 	if u == nil || !cleanText(raw, 4096) || strings.Contains(raw, "#") || u.Hostname() == "" || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return false
@@ -292,8 +296,13 @@ func (c *Client) request(ctx context.Context, method string, segments []string, 
 		return invalidResponse()
 	}
 	if response.StatusCode != expectedStatus {
-		if mutation && response.StatusCode >= 400 && response.StatusCode < 500 {
+		if mutation && response.StatusCode >= 400 && response.StatusCode < 600 {
 			if refusal, valid := c.serviceError(data, response.StatusCode); valid {
+				if response.StatusCode >= 500 {
+					refusal.Message = "The " + operation + " returned a service error; its outcome is unknown."
+					refusal.Action = mutationAction()
+					refusal.OutcomeUnknown = true
+				}
 				return refusal
 			}
 		}

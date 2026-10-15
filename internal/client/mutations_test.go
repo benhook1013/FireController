@@ -351,3 +351,84 @@ func TestMalformedMutationReceiptIsUnknownAndDeadlinesAreClassified(t *testing.T
 }
 
 func ptr(value string) *string { return &value }
+
+func TestMutationServiceErrorsPreserveSafeDiagnosticsAndUncertainty(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		status   int
+		code     string
+		mode     string
+		wantCode string
+		unknown  bool
+	}{
+		{"overloaded", 503, "overloaded", "valid", "overloaded", true},
+		{"internal", 500, "internal_error", "valid", "internal_error", true},
+		{"known-refusal", 409, "revision_conflict", "valid", "revision_conflict", false},
+		{"malformed", 503, "overloaded", "malformed", "unexpected_status", true},
+		{"invalid-code", 500, "InvalidCode", "valid", "unexpected_status", true},
+		{"missing-request-id", 500, "internal_error", "missing-id", "unexpected_status", true},
+		{"credential-reflection", 503, "overloaded", "credential", "unexpected_status", true},
+		{"path-reflection", 500, "internal_error", "path", "unexpected_status", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			selected := binding(t, "http://127.0.0.1:1")
+			var calls atomic.Int64
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				calls.Add(1)
+				if r.Method != "POST" || r.Header.Get("Idempotency-Key") != "same-key" {
+					t.Error("mutation identity changed")
+				}
+				if test.mode == "malformed" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(test.status)
+					_, _ = w.Write([]byte(`{"error":`))
+					return
+				}
+				message := "RAW_PROVIDER_FAILURE_MUST_NOT_REACH_OUTPUT"
+				requestID := "request-safe-id"
+				details := map[string]any{"current_revision": 3, "project_id": "project-one", "provider_debug": "FILTERED_SECRET_DETAIL"}
+				switch test.mode {
+				case "missing-id":
+					requestID = ""
+				case "credential":
+					details["private_credential"] = testToken
+				case "path":
+					details["private_path"] = selected.CredentialFile
+				}
+				write(w, test.status, map[string]any{"error": map[string]any{"code": test.code, "message": message, "details": details}, "request_id": requestID})
+			}))
+			defer service.Close()
+			selected.Context.ServerURL = service.URL
+			c, err := client.New(context.Background(), selected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			_, err = c.CreateJob(context.Background(), "same-key", client.CreateJobRequest{Title: "request title"})
+			checkError(t, err, test.wantCode, selected.CredentialFile, "RAW_PROVIDER_FAILURE_MUST_NOT_REACH_OUTPUT", "FILTERED_SECRET_DETAIL")
+			var failure *client.Error
+			if !errors.As(err, &failure) || failure.Status != test.status || failure.OutcomeUnknown != test.unknown || calls.Load() != 1 {
+				t.Fatalf("classification or no-retry changed: %#v calls=%d", failure, calls.Load())
+			}
+			valid := test.wantCode == test.code
+			if valid {
+				if failure.RequestID != "request-safe-id" {
+					t.Fatal("safe request ID was discarded")
+				}
+				fields, ok := failure.Details.(map[string]any)
+				if !ok || len(fields) != 2 || fields["current_revision"] != int64(3) || fields["project_id"] != "project-one" {
+					t.Fatalf("filtered details lost: %#v", failure.Details)
+				}
+			} else if failure.RequestID != "" || failure.Details != nil {
+				t.Fatal("invalid service body leaked diagnostics")
+			}
+			if test.unknown && !strings.Contains(failure.Action, "exact same idempotency key") {
+				t.Fatal("uncertain mutation lost same-key recovery guidance")
+			}
+		})
+	}
+}

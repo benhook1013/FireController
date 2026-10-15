@@ -153,7 +153,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if _, ok := fields["worker_id"]; ok && !validID(args.worker) {
 		return args, invalidArguments()
 	}
-	if _, ok := fields["status"]; ok && args.status != "active" && args.status != "parked" && args.status != "blocked" && args.status != "completed" {
+	if _, ok := fields["status"]; ok && !validStatus(args.status) {
 		return args, invalidArguments()
 	}
 	if name == "job_read" || name == "job_history" || name == "inbox_thread" {
@@ -173,18 +173,10 @@ func mutationTool(name string) bool {
 }
 
 func validKey(value string) bool {
-	if value == "" || len(value) > 128 || value != strings.TrimSpace(value) {
-		return false
-	}
-	for i := 0; i < len(value); i++ {
-		if value[i] < 0x20 || value[i] > 0x7e {
-			return false
-		}
-	}
-	return true
+	return client.ValidMutationKey(value)
 }
 func validStatus(value string) bool {
-	return value == "active" || value == "parked" || value == "blocked" || value == "completed"
+	return client.ValidStatus(value)
 }
 func validTitle(value string) bool {
 	return value != "" && utf8.ValidString(value) && len(value) <= 240
@@ -281,15 +273,7 @@ func mutationArguments(name string, data json.RawMessage) (arguments, error) {
 	return args, nil
 }
 func validID(value string) bool {
-	if value == "" || len(value) > 128 || !utf8.ValidString(value) || value != strings.TrimSpace(value) || value == "." || value == ".." || strings.ContainsAny(value, "/\\%?#") {
-		return false
-	}
-	for _, r := range value {
-		if unicode.IsSpace(r) || unicode.IsControl(r) {
-			return false
-		}
-	}
-	return true
+	return client.ValidID(value)
 }
 
 func validEventCursor(value string) bool {

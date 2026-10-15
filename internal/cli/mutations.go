@@ -133,15 +133,7 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 }
 
 func validMutationKey(key string) bool {
-	if len(key) == 0 || len(key) > 128 || key != strings.TrimSpace(key) {
-		return false
-	}
-	for _, b := range []byte(key) {
-		if b < 32 || b > 126 {
-			return false
-		}
-	}
-	return true
+	return client.ValidMutationKey(key)
 }
 
 func executeMutation(ctx context.Context, service *client.Client, call *mutationInvocation) (any, error) {

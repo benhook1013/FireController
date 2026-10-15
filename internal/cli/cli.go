@@ -319,24 +319,11 @@ func parseInvocation(args []string) (invocation, bool) {
 }
 
 func validStatus(status string) bool {
-	switch status {
-	case "active", "parked", "blocked", "completed":
-		return true
-	default:
-		return false
-	}
+	return client.ValidStatus(status)
 }
 
 func validResourceID(value string) bool {
-	if value == "" || len(value) > 128 || !utf8.ValidString(value) || value != strings.TrimSpace(value) || value == "." || value == ".." || strings.ContainsAny(value, "/\\%?#") {
-		return false
-	}
-	for _, r := range value {
-		if unicode.IsSpace(r) || unicode.IsControl(r) {
-			return false
-		}
-	}
-	return true
+	return client.ValidID(value)
 }
 
 func reportClientError(stderr io.Writer, err error, parent context.Context) int {
