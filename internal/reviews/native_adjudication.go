@@ -180,7 +180,11 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	digest := sha256.Sum256([]byte(previous + "\x00" + mustJSON(input)))
 	id := core.NewID("review_snapshot")
 	next := revision + 1
-	if _, err = tx.ExecContext(ctx, `INSERT INTO review_snapshots(project_id,snapshot_id,revision,repository_id,source,observed_at,recorded_at,payload_sha256) VALUES(?,?,?,?,?,?,?,?)`, scope.ProjectID, id, next, repositoryID, nativeSource, observed, time.Now().UTC().Format(time.RFC3339Nano), hex.EncodeToString(digest[:])); err != nil {
+	recordedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if err = preflightNativeAdjudicationDetail(ctx, tx, scope.ProjectID, previous, runID, snapshotMeta{ProjectID: scope.ProjectID, Revision: next, SnapshotID: id, Source: nativeSource, ObservedAt: observed, RecordedAt: recordedAt}, updates, accepted, routed, input.Finalized, fixed); err != nil {
+		return Receipt{}, false, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO review_snapshots(project_id,snapshot_id,revision,repository_id,source,observed_at,recorded_at,payload_sha256) VALUES(?,?,?,?,?,?,?,?)`, scope.ProjectID, id, next, repositoryID, nativeSource, observed, recordedAt, hex.EncodeToString(digest[:])); err != nil {
 		return Receipt{}, false, err
 	}
 	if err = copyNativeSnapshot(ctx, tx, scope.ProjectID, previous, id); err != nil {

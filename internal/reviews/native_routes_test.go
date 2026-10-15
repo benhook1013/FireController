@@ -161,10 +161,18 @@ func TestNativeRoutesNestedProofParticipatesInDetailBudget(t *testing.T) {
 		route.FixedAt = "2026-01-01T00:06:00Z"
 		finding.Route = route
 	}
+	// Oversized proof is knowable before writing a new snapshot. Refuse it
+	// before snapshot copies and per-finding updates can consume admission.
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER forbid_oversized_snapshot BEFORE INSERT ON review_snapshots BEGIN SELECT RAISE(ABORT,'unexpected snapshot write'); END`); err != nil {
+		t.Fatal(err)
+	}
 	_, _, err := applyNativeAdjudication(f, input)
 	nativeErrorCode(t, err, "workspace_capacity")
 	if !reflect.DeepEqual(counts, nativeProjectionCounts(t, f)) || nativeSnapshotBytes(t, f, prior.ID) != before {
 		t.Fatal("oversized nested proof partially published")
+	}
+	if _, err := f.store.DB().Exec(`DROP TRIGGER forbid_oversized_snapshot`); err != nil {
+		t.Fatal(err)
 	}
 	for i := range input.Findings {
 		input.Findings[i].DecisionReason = "Bounded source reason"
