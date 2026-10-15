@@ -27,7 +27,7 @@ The coordination slice implements a loopback service with scoped projects/worker
 - [Architecture](architecture.md) owns service boundaries, project isolation, storage, and provider observation rules.
 - [Agent and client contract](agent-client.md) owns profiles, tool calls, subscriptions, cancellation and reconnect semantics.
 - [AI usability](ai-usability.md) owns output budgets, agent interaction patterns, and attention-cost proof.
-- [Onboarding](onboarding.md) owns AI-guided project setup and historical import.
+- [Onboarding](onboarding.md) owns AI-guided project setup and historical import; the bundled [onboarding skill](../skills/firecontroller-onboard/SKILL.md) guides the supported setup.
 - [Review orchestration](reviews.md) owns reusable review invariants and configurable policy.
 - [Acceptance and performance](acceptance.md) defines observable proof requirements.
 - [Inherited evidence](inherited-evidence.md) records source provenance and disposition of existing behavior and tests.

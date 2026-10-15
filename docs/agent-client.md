@@ -55,7 +55,7 @@ Ending a turn, closing a client or cancelling a wait does not complete or pause 
 
 Reconnect verifies the expected instance and authenticated project/worker binding before operations resume. Valid cursors continue replay; expired retention produces the explicit snapshot/resubscribe behavior owned by [architecture](architecture.md). Reconnect or a context read does not automatically resume a paused job.
 
-The client imposes no end-of-work checklist or checkpoint cadence. The separate [suggested agent workflow](agent-workflow.md) is optional guidance for projects and a future usage skill.
+The client imposes no end-of-work checklist or checkpoint cadence. The separate [suggested agent workflow](agent-workflow.md) is optional guidance for projects and the [onboarding skill](../skills/firecontroller-onboard/SKILL.md).
 
 ## CLI behavior
 

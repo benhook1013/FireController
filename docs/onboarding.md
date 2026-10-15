@@ -2,7 +2,7 @@
 
 ## Goal and implementation status
 
-Let a user ask their AI to add FireController to an existing project and receive a working, verified setup with clear ownership of the imported information. Local private profile creation and POSIX bound launcher commands are implemented. Guided project registration, historical import and the optional packaged skill remain unimplemented. This is a first-release usability requirement; broad importer coverage is delivered incrementally.
+Let a user ask their AI to add FireController to an existing project and receive a working, verified setup with clear ownership of the imported information. Local private profile creation and POSIX bound launcher commands are implemented. The bundled [onboarding skill](../skills/firecontroller-onboard/SKILL.md) guides the implemented API and client setup; a dedicated onboarding wizard and historical importer remain unimplemented. This is a first-release usability requirement; broad importer coverage is delivered incrementally.
 
 ## Supported setup flow
 
@@ -37,6 +37,8 @@ The profile/CLI integration passed full `make check build` before the final exec
 
 These checks ran on Linux/WSL with POSIX launchers. They do not establish native Windows launcher support, hostile same-user filesystem race protection, power-loss durability, remote authorization, credential provisioning or the broader guided import flow. Local setup returns configured facts rather than a verified connection or a pending-operation receipt.
 
+An independent forward test used the bundled skill with fresh packaged `fc`/`fcd`, a synthetic repository checkout, one isolated local instance and two workers. All six groups passed using eight setup API requests and 37 profile-bound CLI calls: authenticated bindings, separate grants/profiles/launchers, per-worker job round trips and exact retries, bidirectional synthetic messages/full reads/acknowledgment, unchanged read state, private files and preserved binaries. The tester needed the linked command tables for exact job/message spellings, without reading implementation source. Its owned service/listener stopped afterward. This proves the supported fresh setup path, not a historical importer, host installation, automatic startup service or remote deployment.
+
 ## Import semantics
 
 The user controls historical depth. Support bounded ranges and resuming interrupted collection; do not download all repository or provider history by default. Record source repository, scope, snapshot/version or immutable provider IDs, collection time, and transformation version. Imported text and events are data, not executable instructions.
@@ -49,11 +51,13 @@ Onboarding reads only selected repository sources and scoped provider data. It m
 
 ## Optional agent skill
 
-Distribute a versioned onboarding/usage skill alongside the supported release. It describes discovery, questions, preview/apply, profile binding, quiet tool use, the optional [agent workflow](agent-workflow.md), and verification using actual documented commands. Clearly separate required tool semantics from recommended working habits. A skill is guidance; it does not replace API validation, impose checkpoint cadence, add hidden quotas, perform automatic external messaging, or imply permission beyond the user's request.
+The bundled [firecontroller-onboard skill](../skills/firecontroller-onboard/SKILL.md) guides installation or connection, project/worker access setup through the implemented API, private profiles, POSIX launchers and verification. Use it from a matching FireController checkout/release with the agent host's supported skill installation, or ask the agent to read its `SKILL.md` directly. It is optional and is not installed into a host implicitly.
+
+Distribute the skill with the matching supported release. It describes discovery, questions, preview/apply, profile binding, quiet tool use, the optional [agent workflow](agent-workflow.md), and verification using actual documented commands. Clearly separate required tool semantics from recommended working habits. A skill is guidance; it does not replace API validation, impose checkpoint cadence, add hidden quotas, perform automatic external messaging, or imply permission beyond the user's request.
 
 Installation into an agent host is optional and explicit. CLI onboarding works without a particular host or model. Host capability detection identifies whether native tools, asynchronous results, and isolated connection binding are supported. Generated guidance must name limitations instead of promising unsupported wakeups.
 
-Local review execution additionally needs administrator-configured source availability on the server, as owned by [review execution](reviews.md#admission-and-execution). Onboarding reports that capability separately from connecting a client checkout. Required review channels are selected explicitly before aggregate sufficiency can be reported; a jobs/messaging-only project needs no review executor setup. Repository binding still requires its documented provider identity verification.
+Local review execution additionally needs administrator-configured source availability on the server, as owned by [review execution](reviews.md#admission-and-execution). The onboarding skill reports that capability separately from connecting a client checkout. Required review channels are selected explicitly before aggregate sufficiency can be reported; a jobs/messaging-only project needs no review executor setup. Repository binding still requires its documented provider identity verification.
 
 ## Acceptance scenarios
 
