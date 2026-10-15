@@ -246,3 +246,29 @@ func TestCLIReviewCaptureLineAndEventBounds(t *testing.T) {
 		})
 	}
 }
+
+func TestCLIReviewReviewedFilesCountBoundary(t *testing.T) {
+	for _, count := range []int{10000, 10001} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			files := make([]string, count)
+			for i := range files {
+				files[i] = "source-" + strconv.Itoa(i) + ".go"
+			}
+			complete := cliCompleteEvent(0)
+			complete["reviewedFiles"] = files
+			terminal := cliJSONLines(t, complete)
+			if len(bytes.TrimSpace(terminal)) >= cliLineMax {
+				t.Fatal("fixture hits the JSON line bound rather than the file-count boundary")
+			}
+			capture := cliJSONLines(t, cliContextEvent(), complete)
+			if count > 10000 {
+				requireCLIInvalid(t, capture, 0, syntheticCLIContext)
+				return
+			}
+			result, err := ParseCLIReview(capture, 0, syntheticCLIContext)
+			if err != nil || !result.Complete || result.Outcome != "completed" || len(result.ReviewedFiles) != count || result.ReviewedFiles[count-1] != files[count-1] {
+				t.Fatalf("valid maximum reviewed-file inventory rejected or truncated: complete=%t files=%d err=%v", result.Complete, len(result.ReviewedFiles), err)
+			}
+		})
+	}
+}
