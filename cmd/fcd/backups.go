@@ -18,6 +18,8 @@ func runBackupCommand(ctx context.Context, command string, args []string, stdout
 	flags.SetOutput(io.Discard) // Parser errors can reflect private argument values.
 	var dataDir, destination, bundle string
 	switch command {
+	case "backup-status":
+		flags.StringVar(&dataDir, "data-dir", "", "existing private source directory")
 	case "backup":
 		flags.StringVar(&dataDir, "data-dir", "", "existing private source directory")
 		flags.StringVar(&destination, "destination", "", "private backup root")
@@ -51,7 +53,7 @@ func runBackupCommand(ctx context.Context, command string, args []string, stdout
 			}
 		}
 	}
-	if flags.Parse(args) != nil || flags.NArg() != 0 || command == "backup" && (strings.TrimSpace(dataDir) == "" || strings.TrimSpace(destination) == "") || command == "backup-inspect" && strings.TrimSpace(bundle) == "" || command == "restore" && (strings.TrimSpace(bundle) == "" || strings.TrimSpace(dataDir) == "") {
+	if flags.Parse(args) != nil || flags.NArg() != 0 || command == "backup" && (strings.TrimSpace(dataDir) == "" || strings.TrimSpace(destination) == "") || command == "backup-status" && strings.TrimSpace(dataDir) == "" || command == "backup-inspect" && strings.TrimSpace(bundle) == "" || command == "restore" && (strings.TrimSpace(bundle) == "" || strings.TrimSpace(dataDir) == "") {
 		return invalid()
 	}
 	duration, err := time.ParseDuration(*timeout)
@@ -64,6 +66,10 @@ func runBackupCommand(ctx context.Context, command string, args []string, stdout
 	switch command {
 	case "backup":
 		summary, err = backup.CreateFromDirectory(operation, dataDir, destination)
+	case "backup-status":
+		if err = backup.CheckDataDirectory(dataDir); err == nil {
+			summary, err = backup.ReadStatus(operation, dataDir)
+		}
 	case "backup-inspect":
 		summary, err = backup.Inspect(operation, bundle)
 	case "restore":
@@ -74,7 +80,11 @@ func runBackupCommand(ctx context.Context, command string, args []string, stdout
 		return 3
 	}
 	data, err := json.Marshal(summary)
-	if err != nil || len(data)+1 > 4096 {
+	resultLimit := 4096
+	if command == "backup-status" {
+		resultLimit = 16 << 10
+	}
+	if err != nil || len(data)+1 > resultLimit {
 		diagnostic(stderr, "backup_unavailable", "The local backup result could not be reported safely; inspect the selected destination before retrying.")
 		return 3
 	}

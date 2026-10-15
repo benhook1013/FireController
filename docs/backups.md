@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Local operator bundle creation, read-only inspection and inactive restore are implemented with focused tests. Full checks and packaged-command proof are pending below. Scheduling, retention, activation and provider reconciliation remain unfinished. This is not yet an installed backup or disaster recovery workflow.
+Local operator bundle creation, read-only inspection and inactive restore are implemented with focused tests. Full checks and packaged-command proof are pending below. Managed scheduling, retention and read-only operator status have focused checks; their full integrated and packaged proof are pending. Activation and provider reconciliation remain unfinished. This is not yet an installed backup or disaster recovery workflow.
 
 ## Canonical data and local format
 
@@ -33,6 +33,18 @@ fcd restore --bundle BUNDLE_DIRECTORY --data-dir NEW_DESTINATION
 Each command accepts `--timeout DURATION`, defaults to five minutes and permits a positive duration up to twenty-four hours. Duplicate/unknown flags, positional arguments and invalid durations fail before filesystem work. The operator opens its live source read-only without initialization, migration or writer admission. A backup source must already be a valid private installation; a wrong path cannot silently bootstrap a new database. Restore never overlays an existing destination, including an empty directory.
 
 Commands use explicit local filesystem authority, bounded execution and compact JSON; they never load a provider catalog or make network calls. A caller may retain a long local command in its host background. These are operator actions, not per-worker coordination calls or a reason to return pending receipts for quick local mutations.
+
+Use a short private destination path. The bundled SQLite VFS imposes a smaller database-path limit than the filesystem; generated bundle and database names also consume that space. An unsupported destination remains a reported backup failure rather than a successful backup.
+
+## Managed scheduling and retention
+
+Scheduling is an explicitly configured daemon feature. The operator supplies `--backup-destination`, `--backup-interval` and `--backup-keep` together; no destination or automatic schedule is invented. The interval is one minute through thirty days and the retained count is one through one thousand. Optional `--backup-timeout` defaults to five minutes and accepts the same positive maximum twenty-four hours as the manual command. Invalid or incomplete configuration fails before creating installation state, including destinations whose encoded status could exceed the output budget. One active service replica remains the supported deployment.
+
+The daemon owns one serial backup worker using the existing store's read pool. After an attempt settles, it waits the configured interval; elapsed periods do not build a queue of catch-up work. On restart a due schedule can run immediately, and an interrupted prior attempt remains a failure rather than invented success. Shutdown cancels and joins the worker before closing storage. Destination failures do not stop ordinary coordination or readiness.
+
+A small versioned local ledger retains configuration, last attempted outcome, last verified success and managed bundle identities. A failed attempt preserves the previous success. Retention failure is reported independently of successful creation. `fcd backup-status --data-dir SOURCE` reads compact stored operator facts without snapshotting, hashing all bundles, calling providers or changing state. Stored success identifies a past verification; `backup-inspect` verifies present bytes. Status output is bounded to 16 KiB so long configured destinations and retained success locations remain reportable; manual backup, inspection and restore summaries keep their 4 KiB bound. It is not a per-worker tool or an automatic notice attached to unrelated calls.
+
+Retention runs only after a newly verified managed success and affects only ledger-owned bundles for that source instance and selected destination. Preserve at least the configured count, including the newest verified copy. Manual, foreign-instance, changed, unrecognized or unverified directories are never adopted or deleted. Verify every protected keeper before pruning older copies, then reinspect each deletion candidate against its stored identity and manifest binding. Suspicious or partial remnants remain explicit cleanup failures; a failed backup does not start pruning. Destination transfer and restore activation remain separate boundaries. These scheduling and retention controls are implemented with focused checks; full integrated and packaged proof remain pending at this checkpoint.
 
 ## Functional proof
 
