@@ -10,6 +10,10 @@ import (
 // reads as delivery authority. Callbacks run after read transactions finish.
 // Returning from a callback does not acknowledge processing on the client's behalf.
 func (s *Store) StreamMessageEvents(ctx context.Context, scope Scope, cursor string, limit int, deliver func(EventPage) error, heartbeat func() error) error {
+	return s.streamMessageEvents(ctx, scope, cursor, limit, deliver, heartbeat, 15*time.Second)
+}
+
+func (s *Store) streamMessageEvents(ctx context.Context, scope Scope, cursor string, limit int, deliver func(EventPage) error, heartbeat func() error, heartbeatInterval time.Duration) error {
 	if scope.WorkerID == "" || cursor == "" || limit < 1 || limit > 100 || deliver == nil || heartbeat == nil {
 		return Fail("validation_failed", "Use a selected worker, snapshot cursor, limit 1-100 and stream callbacks.", 400)
 	}
@@ -22,7 +26,7 @@ func (s *Store) StreamMessageEvents(ctx context.Context, scope Scope, cursor str
 		return err
 	}
 	defer release()
-	heartbeats := time.NewTicker(15 * time.Second)
+	heartbeats := time.NewTicker(heartbeatInterval)
 	defer heartbeats.Stop()
 	initial := true
 	for {
