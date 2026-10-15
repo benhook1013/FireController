@@ -1,6 +1,6 @@
 import type {
   Checkpoint, ConversationPage, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
-  JobSummary, Message, MessageEvent, MessageEventPage, Page, PageOptions,
+  JobSummary, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
   Project, WatchCallbacks, Worker,
   ReviewAttemptSummary, ReviewFinding, ReviewPull, ReviewPullSummary, ReviewQueue, ReviewRunDetail,
   ReviewRunOptions, ReviewRuns, ReviewRunSummary, ReviewPolicyAssessment,
@@ -167,6 +167,29 @@ function validCheckpoint(value: unknown, projectId: string, jobId: string): valu
   if (!checkpointText(value.done, 8 << 10, true) || !checkpointText(value.next, 8 << 10, true) || !checkpointText(value.blocker, 4 << 10, false) || !Array.isArray(value.evidence) || value.evidence.length > 10 || !value.evidence.every(item => checkpointText(item, 1024, true))) return false;
   const encoder = new TextEncoder();
   return [value.done, value.next, value.blocker, ...value.evidence].reduce((size, item) => size + encoder.encode(item).byteLength, 0) <= 16 << 10;
+}
+
+function validJobUpdate(value: unknown, projectId: string, jobId: string): value is JobUpdate {
+  if (!record(value) || !keys(value, ['id', 'project_id', 'job_id', 'job_revision', 'sequence', 'actor_id', 'worker_id', 'body', 'evidence', 'created_at']) || !id(value.id) || value.project_id !== projectId || value.job_id !== jobId || !positive(value.job_revision) || !positive(value.sequence) || !id(value.actor_id) || value.worker_id !== '' && !id(value.worker_id) || !assessmentTime(value.created_at)) return false;
+  if (!checkpointText(value.body, 8 << 10, true) || !Array.isArray(value.evidence) || value.evidence.length > 10 || !value.evidence.every(item => checkpointText(item, 1024, true))) return false;
+  const encoder = new TextEncoder();
+  return [value.body, ...value.evidence].reduce((size, item) => size + encoder.encode(item).byteLength, 0) <= 16 << 10;
+}
+function validChecklistItems(value: unknown): value is ChecklistItem[] {
+  if (!Array.isArray(value) || value.length > 100) return false;
+  const seen = new Set<string>();
+  const encoder = new TextEncoder();
+  let size = 0;
+  for (const item of value) {
+    if (!record(item) || !keys(item, ['id', 'text', 'done']) || typeof item.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(item.id) || seen.has(item.id) || !checkpointText(item.text, 1024, true) || typeof item.done !== 'boolean') return false;
+    seen.add(item.id);
+    size += encoder.encode(item.id).byteLength + encoder.encode(item.text).byteLength;
+    if (size > 16 << 10) return false;
+  }
+  return true;
+}
+function validChecklistHistoryEntry(value: unknown): value is ChecklistHistoryEntry {
+  return record(value) && keys(value, ['revision', 'job_revision', 'actor_id', 'worker_id', 'items', 'created_at']) && positive(value.revision) && positive(value.job_revision) && id(value.actor_id) && (value.worker_id === '' || id(value.worker_id)) && validChecklistItems(value.items) && assessmentTime(value.created_at);
 }
 function reviewEvidenceID(value: unknown): value is string { return typeof value === 'string' && /^review_evidence_[a-f0-9]{32}$/u.test(value); }
 // JSON.parse alone loses duplicate keys. This bounded response additionally
@@ -419,6 +442,35 @@ export class Api {
       previous = item.sequence;
     }
     return value as Page<Checkpoint>;
+  }
+  async jobUpdates(jobId: string, options: PageOptions = {}, signal?: AbortSignal): Promise<Page<JobUpdate>> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/updates`), pageOptions(options)), signal, undefined, 4 << 20, assessmentJSON);
+    if (!validPage(value, defaultLimit(options)) || !value.has_more && !!value.cursor) throw new ApiError('invalid_response', 'The service returned an invalid update page.');
+    let previous = Infinity;
+    const seen = new Set<string>();
+    for (const item of value.items) {
+      if (!validJobUpdate(item, this.projectId, jobId) || item.sequence >= previous || seen.has(item.id)) throw new ApiError('invalid_response', 'The service returned an invalid update page.');
+      previous = item.sequence; seen.add(item.id);
+    }
+    return value as Page<JobUpdate>;
+  }
+  async jobChecklist(jobId: string, signal?: AbortSignal): Promise<JobChecklist> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/checklist`), signal, undefined, 128 << 10, assessmentJSON);
+    if (!record(value) || !keys(value, ['job_id', 'job_revision', 'revision', 'items']) || value.job_id !== jobId || !positive(value.job_revision) || !nonnegative(value.revision) || !validChecklistItems(value.items) || value.revision === 0 && value.items.length !== 0) throw new ApiError('invalid_response', 'The service returned an invalid current checklist.');
+    return value as unknown as JobChecklist;
+  }
+  async jobChecklistHistory(jobId: string, options: PageOptions = {}, signal?: AbortSignal): Promise<Page<ChecklistHistoryEntry>> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/checklist/history`), pageOptions(options)), signal, undefined, 4 << 20, assessmentJSON);
+    if (!validPage(value, defaultLimit(options)) || !value.has_more && !!value.cursor) throw new ApiError('invalid_response', 'The service returned an invalid checklist history page.');
+    let previous = Infinity;
+    for (const entry of value.items) {
+      if (!validChecklistHistoryEntry(entry) || entry.revision >= previous) throw new ApiError('invalid_response', 'The service returned an invalid checklist history page.');
+      previous = entry.revision;
+    }
+    return value as Page<ChecklistHistoryEntry>;
   }
   async reviewQueue(options: PageOptions = {}, signal?: AbortSignal): Promise<ReviewQueue> {
     const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), pageOptions(options)), signal);

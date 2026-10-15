@@ -215,8 +215,11 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"jobs": 2, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"jobs": 3, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"job_updates":            {"jobs", 3, "sequence id project_id job_id job_revision actor_id worker_id body evidence_json created_at"},
+	"job_checklists":         {"jobs", 3, "project_id job_id revision job_revision actor_id worker_id items_json created_at"},
+	"job_checklist_history":  {"jobs", 3, "project_id job_id revision job_revision actor_id worker_id items_json created_at"},
 	"restore_history":        {"recovery_history", 1, "instance_id body_json"},
 	"managed_backup_state":   {"managed_backups", 1, "singleton body_json"},
 	"managed_backup_bundles": {"managed_backups", 1, "sequence id destination source_instance_id manifest_sha256 created_at state"},
@@ -637,6 +640,9 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"job_updates":                     {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"job_checklists":                  {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"job_checklist_history":           {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
 	"restore_history":                 {},
 	"workers":                         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"grants":                          {canonicalFK("credentials", "credential_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},

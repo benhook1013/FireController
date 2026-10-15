@@ -30,7 +30,7 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 45 || listed.NextCursor != "" {
+	if len(listed.Tools) != 50 || listed.NextCursor != "" {
 		t.Fatal("discovery count changed")
 	}
 	names := map[string]int{"review_execution_read": 0, "review_operation_read": 1, "review_request": 5}

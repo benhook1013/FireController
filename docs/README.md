@@ -22,6 +22,7 @@ The coordination slice implements a loopback service with scoped projects/worker
 - [Native review execution](review-execution.md): durable operations, provider adapters, isolated workspaces and the remaining dispatch/cutover boundary.
 - [Source refresh and observed policy](review-source.md): explicit background source reads, retained observations and provider-free policy assessment.
 - [Job checkpoints](job-checkpoints.md): immutable progress records, guarded appends, explicit latest/archive reads and integration status.
+- [Job progress](job-progress.md): separate narrative updates and guarded checklist state, history and proof requirements.
 - [Suggested agent workflow](agent-workflow.md): optional working practices for project instructions and a usage skill, separate from tool contracts.
 - [Product scope](product.md) defines the requirements.
 - [Architecture](architecture.md) owns service boundaries, project isolation, storage, and provider observation rules.

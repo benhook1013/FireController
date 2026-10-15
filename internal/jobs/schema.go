@@ -54,5 +54,44 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
  FOREIGN KEY (project_id, job_id) REFERENCES jobs(project_id, id) ON DELETE CASCADE
 );`,
 		`CREATE INDEX IF NOT EXISTS job_checkpoints_project_job_sequence ON job_checkpoints(project_id, job_id, sequence DESC);`,
+	}, []string{
+		`CREATE TABLE job_updates (
+ sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+ id TEXT NOT NULL UNIQUE,
+ project_id TEXT NOT NULL,
+ job_id TEXT NOT NULL,
+ job_revision INTEGER NOT NULL CHECK (job_revision >= 1),
+ actor_id TEXT NOT NULL,
+ worker_id TEXT NOT NULL,
+ body TEXT NOT NULL,
+ evidence_json TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ FOREIGN KEY (project_id, job_id) REFERENCES jobs(project_id, id) ON DELETE CASCADE
+);`,
+		`CREATE INDEX job_updates_project_job_sequence ON job_updates(project_id,job_id,sequence DESC);`,
+		`CREATE TABLE job_checklists (
+ project_id TEXT NOT NULL,
+ job_id TEXT NOT NULL,
+ revision INTEGER NOT NULL CHECK (revision >= 1),
+ job_revision INTEGER NOT NULL CHECK (job_revision >= 1),
+ actor_id TEXT NOT NULL,
+ worker_id TEXT NOT NULL,
+ items_json TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY (project_id,job_id),
+ FOREIGN KEY (project_id, job_id) REFERENCES jobs(project_id, id) ON DELETE CASCADE
+);`,
+		`CREATE TABLE job_checklist_history (
+ project_id TEXT NOT NULL,
+ job_id TEXT NOT NULL,
+ revision INTEGER NOT NULL CHECK (revision >= 1),
+ job_revision INTEGER NOT NULL CHECK (job_revision >= 1),
+ actor_id TEXT NOT NULL,
+ worker_id TEXT NOT NULL,
+ items_json TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY (project_id,job_id,revision),
+ FOREIGN KEY (project_id, job_id) REFERENCES jobs(project_id, id) ON DELETE CASCADE
+);`,
 	})
 }

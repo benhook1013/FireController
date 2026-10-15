@@ -84,7 +84,7 @@ func TestInventorySnapshotSchemaCompatibilityWithoutMigration(t *testing.T) {
 	if err = jobs.EnsureSchema(t.Context(), store); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.DB().Exec(`DROP TABLE job_checkpoints; UPDATE metadata SET value='1' WHERE key='schema:jobs'`); err != nil {
+	if _, err = store.DB().Exec(`DROP TABLE job_updates; DROP TABLE job_checklists; DROP TABLE job_checklist_history; DROP TABLE job_checkpoints; UPDATE metadata SET value='1' WHERE key='schema:jobs'`); err != nil {
 		t.Fatal(err)
 	}
 	created, err = Create(t.Context(), store, dir, filepath.Join(t.TempDir(), "bundles"))
@@ -356,7 +356,7 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 		domain  string
 		version int
 	}{
-		{"jobs", 1}, {"reviews", 1}, {"reviews", 2},
+		{"jobs", 1}, {"jobs", 2}, {"reviews", 1}, {"reviews", 2},
 		{"review_execution", 1}, {"review_execution", 2}, {"review_execution", 3}, {"review_execution", 4}, {"review_execution", 5},
 		{"review_evidence", 1}, {"review_evidence", 2}, {"review_adjudication", 1},
 		{"review_source_refresh", 1}, {"review_source_refresh", 2},
@@ -377,7 +377,10 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 			var statements []string
 			switch test.domain {
 			case "jobs":
-				statements = []string{`DROP TABLE job_checkpoints`}
+				statements = []string{`DROP TABLE job_updates`, `DROP TABLE job_checklists`, `DROP TABLE job_checklist_history`}
+				if test.version == 1 {
+					statements = append(statements, `DROP TABLE job_checkpoints`)
+				}
 			case "reviews":
 				statements = []string{`ALTER TABLE review_findings DROP COLUMN route_json`}
 				if test.version == 1 {

@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fcd` serves scoped projects, workers, access grants, basic jobs and durable messages. The CLI implements local `version`/`context` and the profile-bound [read commands](development.md#read-only-agent-commands). The [explicit-key CLI mutations](development.md#explicit-agent-mutations) create/edit jobs and send/seen/ack messages. The [stdio MCP adapter](mcp.md) exposes read and explicit-key mutation tools against these same endpoints. The [incoming-message event API](message-events.md) supplies scoped snapshot/replay, bounded waits and a persistent SSE transport. The [embedded read-only browser](browser-guide.md) displays projects, jobs/checkpoint details, workers, live incoming conversations and stored review queue, PR and run views. [Job checkpoints](job-checkpoints.md) provide immutable progress records through the same API and agent clients. The [review workspace](review-workspace.md) implements administrator observation and scoped read routes. Optional [native review execution](review-execution.md) and explicit [source refresh and observed policy](review-source.md) use separate project-scoped routes and owned background workers. Browser mutations, a project/job event feed, backup API, primary-job selection, checklist and deferred-note API remain unavailable in this slice.
+`fcd` serves scoped projects, workers, access grants, basic jobs and durable messages. The CLI implements local `version`/`context` and the profile-bound [read commands](development.md#read-only-agent-commands). The [explicit-key CLI mutations](development.md#explicit-agent-mutations) create/edit jobs and send/seen/ack messages. The [stdio MCP adapter](mcp.md) exposes read and explicit-key mutation tools against these same endpoints. The [incoming-message event API](message-events.md) supplies scoped snapshot/replay, bounded waits and a persistent SSE transport. The [embedded read-only browser](browser-guide.md) displays projects, jobs/checkpoint details, workers, live incoming conversations and stored review queue, PR and run views. [Job checkpoints](job-checkpoints.md) provide immutable progress records through the same API and agent clients. The [review workspace](review-workspace.md) implements administrator observation and scoped read routes. Optional [native review execution](review-execution.md) and explicit [source refresh and observed policy](review-source.md) use separate project-scoped routes and owned background workers. Browser mutations, a project/job event feed, backup API, primary-job selection and deferred-note API remain unavailable in this slice.
 
 The [architecture](architecture.md) owns target behavior. This page describes the current implementation and its limits.
 
@@ -70,6 +70,10 @@ Statuses are `active`, `parked`, `blocked` and `completed`; creation defaults to
 ## Job checkpoints
 
 [Job checkpoints](job-checkpoints.md) add guarded progress records independently of job state. That page owns append/latest/archive endpoints, content limits, current integration status and client commands.
+
+## Job updates and checklist
+
+[Job progress](job-progress.md) owns immutable narrative-update appends and explicit archive reads, plus independently versioned checklist replacement/current/history routes. Both preserve the job brief and revision history and require explicit mutation keys and current revision guards.
 
 ## Durable messages
 

@@ -80,6 +80,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if checkpointTool(name) {
 		return checkpointArguments(name, data)
 	}
+	if jobProgressTool(name) {
+		return jobProgressArguments(name, data)
+	}
 	if reviewControlTool(name) {
 		return reviewControlArguments(name, data)
 	}
@@ -174,6 +177,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 }
 
 func mutationTool(name string) bool {
+	if name == "job_update_append" || name == "job_checklist_replace" {
+		return true
+	}
 	switch name {
 	case "review_checkpoint_publish", "review_checkpoint_recover", "review_finding_route", "review_route_decide", "review_route_fix", "jobs_create", "job_edit", "job_checkpoint_append", "inbox_send", "inbox_seen", "inbox_ack", "review_finding_decide", "review_finding_fix", "review_source_finalize":
 		return true

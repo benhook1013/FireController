@@ -28,6 +28,8 @@ type arguments struct {
 	edit                       client.EditJobRequest
 	send                       client.SendMessageRequest
 	checkpoint                 client.AppendCheckpointRequest
+	update                     client.AppendUpdateRequest
+	checklist                  client.ReplaceChecklistRequest
 	reviewRoute                client.ReviewRouteRequest
 	reviewRouteDecision        client.ReviewRouteDecisionRequest
 	reviewRouteFix             client.ReviewRouteFixRequest
@@ -46,12 +48,13 @@ type definition struct {
 func boundServer(binding profile.Binding) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 64})
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
+	definitions = append(definitions, jobProgressDefinitions()...)
 	known := make(map[string]bool)
 	for _, tool := range definitions {
 		known[tool.name] = true
 		write := checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		openWorld := checkpointWrite(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		destructive := tool.name == "job_edit" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
+		destructive := tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, err := parseArguments(tool.name, request.Params.Arguments)
 			if err != nil {
@@ -149,6 +152,16 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.CheckpointHistory(ctx, args.id, options)
 			case "job_checkpoint_append":
 				value, err = service.AppendCheckpoint(ctx, args.key, args.id, args.checkpoint)
+			case "job_update_append":
+				value, err = service.AppendJobUpdate(ctx, args.key, args.id, args.update)
+			case "job_update_history":
+				value, err = service.JobUpdates(ctx, args.id, options)
+			case "job_checklist_read":
+				value, err = service.JobChecklist(ctx, args.id)
+			case "job_checklist_replace":
+				value, err = service.ReplaceJobChecklist(ctx, args.key, args.id, args.checklist)
+			case "job_checklist_history":
+				value, err = service.JobChecklistHistory(ctx, args.id, options)
 			case "inbox_list":
 				value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack})
 			case "inbox_snapshot":
