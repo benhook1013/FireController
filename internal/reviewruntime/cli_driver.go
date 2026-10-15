@@ -247,7 +247,11 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
 	usage, err := d.usage(ctx, workspace, plan.Repository.FullName, d.capability.Organization)
 	if err != nil {
-		return preparation, err
+		var failure *reviewprocess.Error
+		if errors.As(err, &failure) && failure.Code == "rate_limited" {
+			return preparation, cliDriverHold("allowance_exhausted")
+		}
+		return preparation, cliDriverHold("allowance_unavailable")
 	}
 	if err := d.engine.RecordCLIAllowance(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: int64(len(paths))}); err != nil {
 		return preparation, err
