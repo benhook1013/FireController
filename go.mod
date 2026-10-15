@@ -3,6 +3,7 @@ module github.com/benhook1013/FireController
 go 1.27.0
 
 require (
+	github.com/gorilla/securecookie v1.1.2
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	modernc.org/sqlite v1.60.1
 )

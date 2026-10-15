@@ -18,7 +18,7 @@ Terminate HTTPS in a reverse proxy such as Caddy or an existing Kubernetes ingre
 
 For a public hostname, configure DNS for the intended server and provision a publicly trusted certificate through that infrastructure. Browsers and agents verify the hostname and trust chain normally. A private LAN installation can instead use a private CA, but each accessing device must trust it explicitly. Never disable certificate verification as an installation step.
 
-Keep project authentication enabled behind the proxy. Forward authorization, instance and worker headers unchanged; do not put credentials in URLs or proxy access logs. Both local and remote access follow the same server authorization checks.
+Keep project authentication enabled behind the proxy. Preserve the public Host header and forward authorization, instance, worker and browser-session selector headers unchanged; do not put credentials in URLs or proxy access logs. Both local and remote access follow the same server authorization checks. Forward Set-Cookie responses and browser cookies without exposing them in logs; the [browser session API](local-api.md#browser-sessions) uses Secure cookies on public hostnames even when the application receives loopback HTTP from its TLS proxy.
 
 For a standalone host where Caddy owns the HTTP/HTTPS ports, the proxy configuration can be:
 

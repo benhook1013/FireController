@@ -6,6 +6,7 @@ import type {
   ReviewRunOptions, ReviewRuns, ReviewRunSummary,
 } from './types';
 import { runMessageWatch, type MessageWatchSource } from './events';
+import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
 
 const maxBytes = 1 << 20;
 const maxItems = 100;
@@ -226,6 +227,9 @@ export class Api {
   private closed = false;
   private verifiedInstanceId?: string;
   private activeWatch?: AbortController;
+  private browserSessionID?: string;
+  private pendingBrowserSessionID?: string;
+  private expectedInstanceID?: string;
 
   constructor(token: string, projectId: string) {
     if (!text(token, 4096) || !id(projectId)) throw new ApiError('invalid_binding', 'Select a valid project and credential.');
@@ -233,6 +237,17 @@ export class Api {
     this.projectId = projectId;
   }
   get instanceId(): string | undefined { return this.verifiedInstanceId; }
+
+  static resume(projectID: string, sessionID: string, expectedInstanceID: string): Api {
+    if (!sessionIdentity(projectID) || !sessionSelector(sessionID) || !sessionIdentity(expectedInstanceID)) throw new ApiError('invalid_binding', 'The saved project session is invalid.');
+    // The public nonce satisfies constructor admission but is never sent as a
+    // bearer credential: the factory switches mode synchronously before return.
+    const api = new Api(sessionID, projectID);
+    api.token = '';
+    api.browserSessionID = sessionID;
+    api.expectedInstanceID = expectedInstanceID;
+    return api;
+  }
 
   close(): void {
     if (this.closed) return;
@@ -248,12 +263,53 @@ export class Api {
     const budget = requestBudget([signal, this.session.signal], 5000);
     this.verifiedInstanceId = undefined;
     try {
-      const value = await this.getJson('/api/v1/instance', undefined, budget.signal);
+      const value = await this.getJson('/api/v1/instance', this.expectedInstanceID, budget.signal);
       if (!record(value) || !keys(value, ['instance_id']) || !id(value.instance_id)) throw new ApiError('invalid_response', 'The service returned an invalid instance identity.');
+      if (this.expectedInstanceID && value.instance_id !== this.expectedInstanceID) throw new ApiError('instance_mismatch', 'The service identity differs from this saved project session.', 409);
       const project = await this.getJson(this.projectRoute(''), value.instance_id, budget.signal);
       if (!validProject(project, this.projectId)) throw new ApiError('invalid_response', 'The service returned a project outside this binding.');
+      if (budget.signal.aborted) throw new ApiError('cancelled', 'The browser connection was cancelled.');
       this.verifiedInstanceId = value.instance_id;
       return project;
+    } catch (error) { throw this.transportError(error, budget.expired(), budget.signal); }
+    finally { budget.close(); }
+  }
+
+  async startBrowserSession(signal?: AbortSignal): Promise<{ session_id: string; instance_id: string; project_id: string; expires_at: string }> {
+    this.ensureOpen();
+    if (!this.verifiedInstanceId || !this.token || this.browserSessionID || this.pendingBrowserSessionID) throw new ApiError('not_connected', 'Verify the project credential before starting a browser session.');
+    const selector = newSessionID();
+    const instance = this.verifiedInstanceId;
+    const budget = requestBudget([signal, this.session.signal], 5000);
+    // Keep the selector for best-effort cleanup even if the POST response is lost.
+    this.pendingBrowserSessionID = selector;
+    this.expectedInstanceID = instance;
+    try {
+      const headers = new Headers({ Authorization: `Bearer ${this.token}`, Accept: 'application/json', 'Content-Type': 'application/json', 'X-FC-Instance': instance });
+      const response = await fetch(urlFor(this.projectRoute('browser-session')), { method: 'POST', headers, body: JSON.stringify({ session_id: selector }), redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
+      if (!response.ok) throw await readFailure(response, budget.signal);
+      const value = await readJson(response, budget.signal, 4096);
+      if (!record(value) || !keys(value, ['session_id', 'instance_id', 'project_id', 'expires_at']) || value.session_id !== selector || value.instance_id !== instance || value.project_id !== this.projectId || !sessionExpiry(value.expires_at) || Date.parse(value.expires_at) <= Date.now()) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
+      if (budget.signal.aborted) throw new ApiError('cancelled', 'The browser connection was cancelled.');
+      this.browserSessionID = selector;
+      this.pendingBrowserSessionID = undefined;
+      this.token = '';
+      return value as { session_id: string; instance_id: string; project_id: string; expires_at: string };
+    } catch (error) { throw this.transportError(error, budget.expired(), budget.signal); }
+    finally { budget.close(); }
+  }
+
+  async endBrowserSession(signal?: AbortSignal): Promise<void> {
+    const selector = this.browserSessionID ?? this.pendingBrowserSessionID;
+    if (!selector) return;
+    const budget = requestBudget([signal], 5000);
+    try {
+      const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/json', 'X-FC-Browser-Session': selector });
+      if (this.expectedInstanceID) headers.set('X-FC-Instance', this.expectedInstanceID);
+      const response = await fetch(urlFor(this.projectRoute('browser-session')), { method: 'DELETE', headers, body: '{}', redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
+      if (!response.ok) throw await readFailure(response, budget.signal);
+      const value = await readJson(response, budget.signal, 4096);
+      if (!record(value) || !keys(value, ['session_id', 'logged_out']) || value.session_id !== selector || value.logged_out !== true) throw new ApiError('invalid_response', 'The service returned an invalid logout response.');
     } catch (error) { throw this.transportError(error, budget.expired(), budget.signal); }
     finally { budget.close(); }
   }
@@ -396,12 +452,14 @@ export class Api {
     finally { request.close(); }
   }
   private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string, responseMaxBytes = maxBytes): Promise<unknown> {
-    const response = await fetch(urlFor(path), { method: 'GET', headers: this.headers(instanceId, worker), redirect: 'error', credentials: 'omit', cache: 'no-store', signal });
+    const response = await fetch(urlFor(path), { method: 'GET', headers: this.headers(instanceId, worker), redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal });
     if (!response.ok) throw await readFailure(response, signal);
     return readJson(response, signal, responseMaxBytes);
   }
   private headers(instanceId?: string, worker?: string): Headers {
-    const value = new Headers({ Authorization: `Bearer ${this.token}`, Accept: 'application/json' });
+    const value = new Headers({ Accept: 'application/json' });
+    if (this.browserSessionID) value.set('X-FC-Browser-Session', this.browserSessionID);
+    else value.set('Authorization', `Bearer ${this.token}`);
     if (instanceId) value.set('X-FC-Instance', instanceId);
     if (worker) value.set('X-FC-Worker', worker);
     return value;
@@ -416,7 +474,7 @@ export class Api {
     const timer = setTimeout(() => { expired = true; controller.abort(); }, 5000);
     try {
       const query = new URLSearchParams({ cursor: after, limit: String(limit) });
-      const response = await fetch(urlFor(`${this.projectRoute('message-events/stream')}?${query}`), { method: 'GET', headers: this.headers(this.verifiedInstanceId, worker), redirect: 'error', credentials: 'omit', cache: 'no-store', signal: controller.signal });
+      const response = await fetch(urlFor(`${this.projectRoute('message-events/stream')}?${query}`), { method: 'GET', headers: this.headers(this.verifiedInstanceId, worker), redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal: controller.signal });
       clearTimeout(timer);
       return { response, close: () => { signal.removeEventListener('abort', abort); controller.abort(); } };
     } catch (error) {

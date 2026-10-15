@@ -60,6 +60,8 @@ func New(store *core.Store, options ...Option) *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/projects", a.createProject)
 	mux.HandleFunc("GET /api/v1/projects", a.listProjects)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}", a.project)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/browser-session", a.createBrowserSession)
+	mux.HandleFunc("DELETE /api/v1/projects/{project_id}/browser-session", a.deleteBrowserSession)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/workers", a.createWorker)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers", a.listWorkers)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}", a.worker)

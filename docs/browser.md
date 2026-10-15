@@ -36,4 +36,6 @@ A migration inventory must enumerate actual JSON readers and writers, retained d
 
 Authenticated project access is the default. Briefs, detailed updates, checkpoints, notes, messages, credentials, session identifiers, and provider captures are private. Public projection is a separate field allowlist with project opt-in, not a JSON dump or an authenticated response with links removed.
 
+Private browser connections use the read-only [browser session API](local-api.md#browser-sessions); the [browser guide](browser-guide.md#connect-and-navigate) owns reload, tab isolation and disconnect behavior. Raw API credentials never enter browser storage; only connection metadata is retained per tab.
+
 Optional public live views and static exports consume only the public projection and separate public events. Private routes, identifiers that reveal private connections, note bodies, and detailed review captures are excluded. Safe Markdown rendering escapes raw HTML and rejects unsafe URL schemes. External images and artifact links require explicit handling rather than unrestricted embedding.
