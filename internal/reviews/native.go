@@ -99,7 +99,9 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 			return Receipt{}, err
 		}
 	} else {
-		if _, err = tx.ExecContext(ctx, `UPDATE review_pulls SET title=?,state=?,head_sha=?,base_ref=?,base_sha=?,ci_state=?,mergeability=? WHERE project_id=? AND snapshot_id=? AND number=?`, pull.Title, pull.State, pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, scope.ProjectID, id, pull.Number); err != nil {
+		// Native metadata does not assert a freshly complete inventory. Preserve
+		// that source fact only while it still describes the same head.
+		if _, err = tx.ExecContext(ctx, `UPDATE review_pulls SET title=?,state=?,complete=CASE WHEN head_sha=? THEN complete ELSE 0 END,head_sha=?,base_ref=?,base_sha=?,ci_state=?,mergeability=? WHERE project_id=? AND snapshot_id=? AND number=?`, pull.Title, pull.State, pull.HeadSHA, pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, scope.ProjectID, id, pull.Number); err != nil {
 			return Receipt{}, err
 		}
 	}
@@ -119,7 +121,7 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 	// Rebuild every compact projection from original rows. A copied pre-native
 	// JSON summary may lack per-run source; its new mixed snapshot must not
 	// use the publisher's label as a substitute for the original producer.
-	if err = rebuildNativeSummaries(ctx, tx, scope.ProjectID, id); err != nil {
+	if err = rebuildNativeSummaries(ctx, tx, scope.ProjectID, id, pull.Number); err != nil {
 		return Receipt{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO review_workspace(project_id,revision,snapshot_id) VALUES(?,?,?) ON CONFLICT(project_id) DO UPDATE SET revision=excluded.revision,snapshot_id=excluded.snapshot_id`, scope.ProjectID, next, id); err != nil {
@@ -261,7 +263,7 @@ func checkNativeCapacity(ctx context.Context, tx *sql.Tx, project, snapshot stri
 	return nil
 }
 
-func rebuildNativeSummaries(ctx context.Context, tx *sql.Tx, project, snapshot string) error {
+func rebuildNativeSummaries(ctx context.Context, tx *sql.Tx, project, snapshot string, selectedPull int64) error {
 	numbers, err := pullNumbersForSnapshot(ctx, tx, project, snapshot)
 	if err != nil {
 		return err
@@ -313,7 +315,7 @@ func rebuildNativeSummaries(ctx context.Context, tx *sql.Tx, project, snapshot s
 		if err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN complete=0 THEN 1 ELSE 0 END),0) FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=?`, project, snapshot, number).Scan(&runCount, &incomplete); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE review_pulls SET run_count=?,attempt_count=?,complete=CASE WHEN ? THEN complete ELSE 0 END,recent_runs_json=?,latest_attempts_json=? WHERE project_id=? AND snapshot_id=? AND number=?`, runCount, len(attempts), incomplete == 0, mustJSON(runs), mustJSON(latestAttempts(attempts)), project, snapshot, number)
+		_, err = tx.ExecContext(ctx, `UPDATE review_pulls SET run_count=?,attempt_count=?,complete=CASE WHEN ? THEN complete ELSE 0 END,recent_runs_json=?,latest_attempts_json=? WHERE project_id=? AND snapshot_id=? AND number=?`, runCount, len(attempts), number != selectedPull || incomplete == 0, mustJSON(runs), mustJSON(latestAttempts(attempts)), project, snapshot, number)
 		if err != nil {
 			return err
 		}
