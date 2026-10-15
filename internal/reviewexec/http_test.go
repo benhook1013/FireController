@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -247,5 +248,80 @@ func TestExecutionHTTPReceiptsReplayAndProjectScopedReads(t *testing.T) {
 	var n int
 	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_operations WHERE project_id='exec-project-one'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("operations after replay/conflict: count=%d err=%v", n, err)
+	}
+}
+
+func TestExecutionReadHTTPQueriesUseCommonValidationCodeWithoutEffects(t *testing.T) {
+	f := newHTTPFixture(t)
+	// No provider capability or driver is installed. A rejected query must not
+	// reach domain lookup or any projection mutation behind these public reads.
+	projections := 0
+	e, err := New(f.store, nil, func(e *Engine) {
+		e.publishAttempt = func(context.Context, *sql.Tx, Attempt) error {
+			projections++
+			return core.Fail("storage_unavailable", "Unexpected projection work.", 500)
+		}
+		e.publishAdjudication = func(context.Context, *sql.Tx, core.Scope, ReviewAdjudication) error {
+			projections++
+			return core.Fail("storage_unavailable", "Unexpected projection work.", 500)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	e.Register(mux)
+	service := httptest.NewServer(mux)
+	defer service.Close()
+	client := service.Client()
+	defer client.CloseIdleConnections()
+	for _, route := range []struct {
+		name, path    string
+		missingStatus int
+		missingCode   string
+	}{
+		{"configuration", "/api/v1/projects/exec-project-one/reviews/execution/configuration", http.StatusConflict, "review_not_configured"},
+		{"operation", "/api/v1/projects/exec-project-one/reviews/operations/review_operation_" + strings.Repeat("a", 32), http.StatusNotFound, "not_found"},
+	} {
+		for _, query := range []string{"?refresh=true", "?refresh=true&refresh=false", ""} {
+			t.Run(route.name+query, func(t *testing.T) {
+				request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, service.URL+route.path+query, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.Header.Set("Authorization", "Bearer "+f.reader)
+				request.Header.Set("X-FC-Instance", f.store.InstanceID())
+				response, err := client.Do(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer response.Body.Close()
+				var body struct {
+					Error struct {
+						Code string `json:"code"`
+					} `json:"error"`
+				}
+				if err = json.NewDecoder(response.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				expectedStatus, expectedCode := http.StatusBadRequest, "validation_failed"
+				if query == "" {
+					expectedStatus, expectedCode = route.missingStatus, route.missingCode
+				}
+				if response.StatusCode != expectedStatus || body.Error.Code != expectedCode {
+					t.Fatalf("GET %s%s: status=%d code=%q; wanted %d/%s", route.path, query, response.StatusCode, body.Error.Code, expectedStatus, expectedCode)
+				}
+				assertNoExecutionMutation(t, f.store)
+				for _, table := range []string{"review_execution_attempts", "review_execution_transitions", "review_execution_reservations"} {
+					var count int
+					if err = f.store.DB().QueryRow("SELECT count(*) FROM " + table).Scan(&count); err != nil || count != 0 {
+						t.Fatalf("read changed %s: count=%d error=%v", table, count, err)
+					}
+				}
+				if projections != 0 {
+					t.Fatal("read performed projection work")
+				}
+			})
+		}
 	}
 }

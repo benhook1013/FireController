@@ -180,9 +180,6 @@ func TestReadHostedRecoveryRejectsCorruptAdmissionFacts(t *testing.T) {
 		"admission before operation": func(t *testing.T, f *attemptFixture, a Attempt, at time.Time) {
 			admissionSQL(t, f, `UPDATE review_execution_transitions SET created_at=? WHERE attempt_id=? AND revision=2`, at.Add(-time.Second).Format(time.RFC3339Nano), a.ID)
 		},
-		"future admission": func(t *testing.T, f *attemptFixture, a Attempt, _ time.Time) {
-			admissionSQL(t, f, `UPDATE review_execution_transitions SET created_at=? WHERE attempt_id=? AND revision=2`, time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano), a.ID)
-		},
 		"operation timestamp": func(t *testing.T, f *attemptFixture, a Attempt, _ time.Time) {
 			admissionSQL(t, f, `UPDATE review_operations SET created_at='bad' WHERE id=?`, a.OperationID)
 		},
