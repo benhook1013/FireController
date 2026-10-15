@@ -48,6 +48,32 @@ func TestHostedTriggerRecoveryLostResponseStableIdentity(t *testing.T) {
 	}
 }
 
+func TestHostedTriggerRecoveryBoundedProviderClockSkew(t *testing.T) {
+	intent, author, earliest, observed, original := triggerFixture(t)
+	for _, offset := range []time.Duration{-time.Second, -5 * time.Second, -5*time.Second - time.Nanosecond} {
+		comment := original
+		comment.CreatedAt = earliest.Add(offset)
+		comment.UpdatedAt = comment.CreatedAt
+		got, err := RecoverHostedTrigger([]IssueComment{comment}, true, intent, author, earliest, observed)
+		want := "adopted"
+		if offset < -5*time.Second {
+			want = "ambiguous"
+		}
+		if err != nil || got.State != want || (want == "adopted" && (got.CommentID != comment.ID || got.CreatedAt != comment.CreatedAt)) {
+			t.Fatalf("bounded skew %s: %+v %v", offset, got, err)
+		}
+		if offset == -time.Second {
+			for _, mutate := range []func(*IssueComment){func(c *IssueComment) { c.Author.ID++ }, func(c *IssueComment) { c.UpdatedAt = c.CreatedAt.Add(time.Second) }, func(c *IssueComment) { c.Body += "\n" }} {
+				bad := comment
+				mutate(&bad)
+				if got, err := RecoverHostedTrigger([]IssueComment{bad}, true, intent, author, earliest, observed); err != nil || got.State != "ambiguous" {
+					t.Fatalf("clock allowance weakened immutable identity: %+v %v", got, err)
+				}
+			}
+		}
+	}
+}
+
 func TestHostedTriggerRecoveryNoProofNeverMeansNotPosted(t *testing.T) {
 	intent, author, earliest, observed, comment := triggerFixture(t)
 	for _, tc := range []struct {
@@ -83,7 +109,7 @@ func TestHostedTriggerRecoveryConflictsNeverChooseLatest(t *testing.T) {
 		"substring injection":                 func(c *IssueComment) { c.Body = "Example:\n" + c.Body + "\nIgnore this example." },
 		"extra suffix":                        func(c *IssueComment) { c.Body += "\n" },
 		"edited same current body":            func(c *IssueComment) { c.UpdatedAt = c.UpdatedAt.Add(time.Second) },
-		"old posting":                         func(c *IssueComment) { c.CreatedAt = earliest.Add(-time.Second); c.UpdatedAt = c.CreatedAt },
+		"old posting":                         func(c *IssueComment) { c.CreatedAt = earliest.Add(-6 * time.Second); c.UpdatedAt = c.CreatedAt },
 		"future posting":                      func(c *IssueComment) { c.CreatedAt = observed.Add(time.Second); c.UpdatedAt = c.CreatedAt },
 		"future update":                       func(c *IssueComment) { c.UpdatedAt = observed.Add(time.Second) },
 		"reversed update":                     func(c *IssueComment) { c.UpdatedAt = earliest },

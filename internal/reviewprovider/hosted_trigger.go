@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+// GitHub timestamps have second precision and may trail the admitting server's
+// wall clock. Only the recovery lower bound permits this fixed five-second skew;
+// original provider timestamps and all immutable ownership checks stay intact.
+const hostedProviderClockSkew = 5 * time.Second
+
 // HostedTriggerIntent binds the one fixed hosted command to a retained local
 // operation, attempt and candidate. It accepts no caller-supplied command prose.
 type HostedTriggerIntent struct {
@@ -82,6 +87,7 @@ func recoverHostedCommand(comments []IssueComment, complete bool, intent HostedT
 		return uncertain, nil
 	}
 	seen := make(map[int64]struct{}, len(comments))
+	lowerBound := earliestPosting.Add(-hostedProviderClockSkew)
 	total := 0
 	var match *IssueComment
 	for i := range comments {
@@ -101,7 +107,7 @@ func recoverHostedCommand(comments []IssueComment, complete bool, intent HostedT
 		if comment.Body != body && !ownedMarker {
 			continue
 		}
-		if comment.Body != body || comment.Author.ID != postingAuthor.ID || comment.Author.Kind != postingAuthor.Kind || comment.CreatedAt.Before(earliestPosting) || comment.CreatedAt.After(observedAt) || !comment.UpdatedAt.Equal(comment.CreatedAt) || match != nil {
+		if comment.Body != body || comment.Author.ID != postingAuthor.ID || comment.Author.Kind != postingAuthor.Kind || comment.CreatedAt.Before(lowerBound) || comment.CreatedAt.After(observedAt) || !comment.UpdatedAt.Equal(comment.CreatedAt) || match != nil {
 			return ambiguous, nil
 		}
 		match = comment
