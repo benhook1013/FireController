@@ -198,12 +198,17 @@ func (e *Engine) DecideReviewFinding(ctx context.Context, scope core.Scope, key,
 		if request.Disposition == "rejected" && f.FixSHA != "" {
 			return nil, conflict()
 		}
-		at := sourceStamp()
+		var at string
+		if f.Disposition == "routed" {
+			at = e.routeStamp("")
+		} else {
+			at = sourceStamp()
+		}
 		if f.Disposition == "routed" {
 			if err = routeRepository(ctx, tx, scope.ProjectID, evidence.Anchor.RepositoryID); err != nil {
 				return nil, err
 			}
-			if err = supersedeFindingRoute(ctx, tx, scope, evidence, state, *f, request.ExpectedRouteRevision, at); err != nil {
+			if at, err = supersedeFindingRoute(ctx, tx, scope, evidence, state, *f, request.ExpectedRouteRevision, at); err != nil {
 				return nil, err
 			}
 			f.RouteID = ""
