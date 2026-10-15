@@ -47,6 +47,7 @@ func streamServer(t *testing.T, f *fixture, shutdownContext context.Context) *ht
 	mux.Handle("/", f.handler)
 	server.RegisterMessageStream(mux, f.store, shutdownContext)
 	s := httptest.NewUnstartedServer(mux)
+	s.Config.ReadTimeout = 50 * time.Millisecond
 	s.Config.WriteTimeout = 50 * time.Millisecond
 	s.Start()
 	t.Cleanup(s.Close)
@@ -79,7 +80,7 @@ func readPage(t *testing.T, reader *bufio.Reader) core.EventPage {
 	return page
 }
 
-func TestMessageStreamActualHTTPReadyCommitReplayAndIdleWriteTimeout(t *testing.T) {
+func TestMessageStreamActualHTTPReadyCommitReplayAndIdleTimeouts(t *testing.T) {
 	f, project, sender, recipient, _ := messageSetup(t)
 	cursor := snapshotRequest(t, f, project, recipient)
 	s := streamServer(t, f, context.Background())
@@ -92,9 +93,9 @@ func TestMessageStreamActualHTTPReadyCommitReplayAndIdleWriteTimeout(t *testing.
 	if len(initial.Items) != 0 || initial.Cursor != cursor {
 		t.Fatal("initial ready page")
 	}
-	// Exceed the ordinary whole-response deadline. A frame must still flush
-	// after this idle period because only in-flight writes are bounded.
-	time.Sleep(120 * time.Millisecond)
+	// Exceed both ordinary request-read and whole-response deadlines. A frame
+	// must still flush after this idle period; only in-flight writes are bounded.
+	time.Sleep(3 * max(s.Config.ReadTimeout, s.Config.WriteTimeout))
 	message := sendMessage(t, f, project, sender, recipient, "private stream body", "stream-message-one")
 	page := readPage(t, reader)
 	if len(page.Items) != 1 || page.Items[0].ResourceID != message.ID || strings.Contains(string(page.Items[0].Payload), "private stream body") {

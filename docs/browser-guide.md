@@ -42,7 +42,7 @@ make check build
 
 Use Node.js 22.22 or newer for development. `make check` type-checks the app and runs focused API/SSE tests alongside Go race/vet and documentation checks. `make build` regenerates `internal/webui/assets` and embeds them in `fcd`. CI rebuilds the assets and rejects tracked differences or new untracked output. Commit the generated index, fingerprinted JavaScript/CSS and bundled third-party licenses with their source changes. Source maps and package manifests are not served. Bundled notices are available at `/third-party-licenses.txt`.
 
-Committed assets allow direct `go build ./cmd/fcd` or `go install` without Node; these commands use the checked-in browser build rather than regenerating it. The development Vite proxy targets `127.0.0.1:8080`; actual embedded-service browser proof is required before review.
+Committed assets allow direct `go build ./cmd/fcd` or `go install` without Node; these commands use the checked-in browser build rather than regenerating it. The development Vite proxy targets `127.0.0.1:8080`; Vite results do not substitute for embedded-service browser proof.
 
 ## Proof and limits
 
