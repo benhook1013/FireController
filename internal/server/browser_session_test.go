@@ -248,3 +248,56 @@ func TestBrowserSessionStrictOriginProxyAndAuthenticationFailures(t *testing.T) 
 		})
 	}
 }
+
+func TestBrowserSessionReadsRequireOneExpectedInstanceWithoutChangingBearerBootstrap(t *testing.T) {
+	f := setup(t)
+	project := f.project(t, "owner/one") // Explicit bearer bootstrap omits instance binding.
+	token := "synthetic-bound-browser-read-token-1234567"
+	f.grant(t, project, token, false)
+	id := strings.Repeat("b", 32)
+	cookie := browserLogin(t, f, project, token, id, "localhost")
+	events, receipts, calls := count(t, f.store, "events"), count(t, f.store, "receipts"), f.calls.Load()
+	for _, endpoint := range []struct{ method, path string }{
+		{"GET", "/api/v1/projects/" + project}, {"HEAD", "/api/v1/projects/" + project},
+		{"GET", "/api/v1/instance"}, {"HEAD", "/api/v1/instance"},
+	} {
+		for _, check := range []struct {
+			name   string
+			values []string
+			status int
+			code   string
+		}{
+			{"missing", nil, 400, "validation_failed"},
+			{"empty", []string{""}, 400, "validation_failed"},
+			{"duplicate", []string{f.store.InstanceID(), f.store.InstanceID()}, 400, "validation_failed"},
+			{"wrong", []string{"instance_other"}, 409, "instance_mismatch"},
+			{"invalid", []string{"malformed instance"}, 400, "validation_failed"},
+			{"valid", []string{f.store.InstanceID()}, 200, ""},
+		} {
+			t.Run(endpoint.method+endpoint.path+"/"+check.name, func(t *testing.T) {
+				r := httptest.NewRequest(endpoint.method, "http://localhost"+endpoint.path, nil)
+				r.Header.Set("X-FC-Browser-Session", id)
+				for _, value := range check.values {
+					r.Header.Add("X-FC-Instance", value)
+				}
+				r.AddCookie(cookie)
+				w := httptest.NewRecorder()
+				f.handler.ServeHTTP(w, r)
+				body := require(t, w, check.status)
+				if check.code != "" {
+					failure, ok := body["error"].(map[string]any)
+					if !ok || failure["code"] != check.code {
+						t.Fatal("wrong binding failure classification", body)
+					}
+				}
+			})
+		}
+	}
+	// This exception belongs to bearer bootstrap, never to session transport.
+	for _, path := range []string{"/api/v1/instance", "/api/v1/projects"} {
+		require(t, request(f.handler, "GET", path, f.admin, "", "", ""), 200)
+	}
+	if count(t, f.store, "events") != events || count(t, f.store, "receipts") != receipts || f.calls.Load() != calls {
+		t.Fatal("binding checks changed domain state or called provider")
+	}
+}

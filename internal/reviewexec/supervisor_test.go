@@ -704,3 +704,107 @@ func TestSupervisorAttemptStartStorageFailureStopsWithoutDispatch(t *testing.T) 
 		t.Fatal("failed attempt start changed queued identity", revision, attemptID, err)
 	}
 }
+
+func TestSupervisorAdmissionStorageFailureRetainsPreparingAttempt(t *testing.T) {
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "admission-storage-failure", "cli", 2, 1)
+	// StartAttempt and pending reads remain healthy. Only the real preparing to
+	// active admission statement fails, so a hold would falsely claim changed facts.
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_admission BEFORE UPDATE OF state ON review_execution_attempts WHEN OLD.state='preparing' AND NEW.state='active' BEGIN SELECT RAISE(ABORT,'synthetic-private-admission-diagnostic'); END`); err != nil {
+		t.Fatal(err)
+	}
+	driver := &controlledDriver{}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := f.e.Run(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	attemptCode(t, err, "review_persistence_failed")
+	if strings.Contains(err.Error(), "synthetic-private-admission-diagnostic") {
+		t.Fatal("admission infrastructure error exposed private diagnostics")
+	}
+	if ctx.Err() != nil || f.e.running.Load() || driver.prepares.Load() != 1 || driver.calls.Load() != 0 || supervisorOperationState(t, f, receipt.ID) != "preparing" || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 {
+		t.Fatal("infrastructure failure was hidden as a hold or lost recoverable preparation")
+	}
+	var state, anchor, intent, reason string
+	var revision int64
+	if err := f.store.DB().QueryRow(`SELECT a.state,a.revision,a.anchor_json,a.intent,o.reason FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id WHERE o.id=?`, receipt.ID).Scan(&state, &revision, &anchor, &intent, &reason); err != nil || state != "preparing" || revision != 1 || anchor != "null" || intent != "" || reason != "" {
+		t.Fatal("failed admission partially changed original facts", state, revision, anchor, intent, reason, err)
+	}
+	// Explicit normal startup recovery can cancel undispatched preparation; this
+	// failure path itself must not invent that later lifecycle decision.
+	if err := f.e.RecoverInterrupted(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if supervisorOperationState(t, f, receipt.ID) != "cancelled" || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || driver.calls.Load() != 0 {
+		t.Fatal("retained preparation was not safely recoverable")
+	}
+}
+
+func TestSupervisorShutdownAfterSuccessfulPrepareCancelsBeforeAdmission(t *testing.T) {
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "shutdown-before-admission", "cli", 2, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, _ Attempt) (Preparation, error) {
+		anchor := attemptAnchor(o.ProjectID, o.PullNumber)
+		cancel()
+		return Preparation{Anchor: anchor}, nil
+	}}
+	if err := f.e.Run(ctx, map[string]Driver{"test-capability": driver, "other-account": driver}); err != nil {
+		t.Fatal("shutdown after successful preflight failed", err)
+	}
+	var state, reason, anchor, intent string
+	var revision int64
+	if err := f.store.DB().QueryRow(`SELECT a.state,a.revision,a.anchor_json,a.intent,o.reason FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id WHERE o.id=?`, receipt.ID).Scan(&state, &revision, &anchor, &intent, &reason); err != nil || state != "cancelled" || revision != 2 || anchor != "null" || intent != "" || reason != "supervisor_stopping" || driver.prepares.Load() != 1 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+		t.Fatal("undispatched shutdown was incorrectly held or admitted", state, reason, revision, err)
+	}
+}
+
+func TestSupervisorAdmissionValidationRefusalRemainsHeld(t *testing.T) {
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "invalid-prepared-anchor", "cli", 2, 1)
+	driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, _ Attempt) (Preparation, error) {
+		anchor := attemptAnchor(o.ProjectID, o.PullNumber)
+		anchor.CandidateSHA = "invalid"
+		return Preparation{Anchor: anchor}, nil
+	}}
+	if err := f.e.processNext(context.Background(), map[string]Driver{"test-capability": driver, "other-account": driver}); err != nil {
+		t.Fatal("admission refusal became infrastructure failure", err)
+	}
+	var state, reason string
+	if err := f.store.DB().QueryRow(`SELECT state,reason FROM review_operations WHERE id=?`, receipt.ID).Scan(&state, &reason); err != nil || state != "held" || reason != "admission_changed" || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+		t.Fatal("invalid admission contract was not safely held", state, reason, err)
+	}
+}
+
+func TestSupervisorAdmissionWriterOverloadRetainsPreparation(t *testing.T) {
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "admission-writer-overload", "cli", 2, 1)
+	entered, release := make(chan struct{}), make(chan struct{})
+	writerDone := make(chan error, 1)
+	// Hold the real serialized writer after StartAttempt commits. The admission
+	// call must exhaust its own finite writer budget, independently of shutdown.
+	driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, _ Attempt) (Preparation, error) {
+		go func() {
+			writerDone <- f.store.BackgroundWrite(context.Background(), func(context.Context, *sql.Tx) error { close(entered); <-release; return nil })
+		}()
+		<-entered
+		return Preparation{Anchor: attemptAnchor(o.ProjectID, o.PullNumber)}, nil
+	}}
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+			<-writerDone
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	err := f.e.Run(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	close(release)
+	released = true
+	<-writerDone // Only this fixture's held transaction; it has no domain writes.
+	attemptCode(t, err, "review_persistence_failed")
+	if ctx.Err() != nil || f.e.running.Load() || supervisorOperationState(t, f, receipt.ID) != "preparing" || driver.prepares.Load() != 1 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 {
+		t.Fatal("writer overload was hidden as changed admission facts or retried externally")
+	}
+}

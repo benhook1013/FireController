@@ -208,7 +208,14 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		}
 		admitted, err := e.Admit(ctx, o.ProjectID, a.ID, a.Revision, prepared.Anchor, prepared.Intent)
 		if err != nil {
-			return e.finishPreparation(a, "held", "admission_changed")
+			if ctx.Err() != nil {
+				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
+			}
+			var refusal *core.Error
+			if errors.As(err, &refusal) && (refusal.Code == "review_conflict" || refusal.Code == "validation_failed") {
+				return e.finishPreparation(a, "held", "admission_changed")
+			}
+			return persistenceFailure()
 		}
 		a = admitted
 		var progressMu sync.Mutex
