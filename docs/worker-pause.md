@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The worker-pause API, storage, typed client, CLI and MCP adapters are implemented. Focused normal/race tests and vet pass; full combined validation and actual packaged proof are pending. Browser integration remains unfinished. [Primary focus](worker-focus.md) and ordinary job status already work independently.
+The worker-pause API, storage, typed client, CLI and MCP adapters are implemented. Focused normal/race tests, full combined validation and actual packaged proof pass at the checkpoints below. Browser integration remains unfinished. [Primary focus](worker-focus.md) and ordinary job status already work independently.
 
 ## Explicit state
 
@@ -40,4 +40,12 @@ Functional proof covers default state, pause/reason correction/resume, no-op, st
 
 Public API tests cover lifecycle and independent state, unchanged jobs/focus/inbox/review policy, paused assignments and progress, replay, races, rollback, guards, authorization, cursor binding and schema-four migration/restart. All jobs normal/race tests passed. Actual bundle tests preserve pause/history, accept older jobs schemas one through four, and reject sixteen rehashed malformed current/history table shapes before restore writes. Focused backup race tests and vet passed.
 
-Typed-client, CLI and official-SDK MCP normal/race tests pass against the actual API, including zero-revision conflict details, a lost committed response with original-key recovery, strict pre-credential validation, bounded paging, cancellation and the aggregate five-second budget. Current reads have an 8 KiB wire budget to accommodate JSON escaping of a valid 1024-byte reason. Discovery exposes fifty-six tools. These test executions do not establish a packaged build, installed pause surface, browser integration or model-host behavior.
+Typed-client, CLI and official-SDK MCP normal/race tests pass against the actual API, including zero-revision conflict details, a lost committed response with original-key recovery, strict pre-credential validation, bounded paging, cancellation and the aggregate five-second budget. Current reads have an 8 KiB wire budget to accommodate JSON escaping of a valid 1024-byte reason. Discovery exposes fifty-six tools. Packaged execution is recorded separately below; installed pause behavior, browser integration and model-host behavior remain separate.
+
+## Packaged and combined proof
+
+At clean source `c9df4624dd41e9b08fb7066d3548b59ebf9b1632`, full `make check build` passed: browser checks and 182 tests, all Go race tests, vet, documentation checks and 19 link-checker tests, generated assets and all three binaries. Their hashes exactly matched the independent private packaged build.
+
+Six actual packaged API/CLI/official-SDK MCP groups passed on the first run in 2.698 seconds. They exercised false/empty defaults and no-op receipts, a 1024-byte escaped reason, correction/resume, revision-zero conflicts, original-key recovery across adapters after a committed response was damaged, ordinary assignments/progress/focus while paused, manual history paging, access and instance refusals, restart and backup/inspection/inactive restore preserving one pause row and six history rows. The run made 42 CLI calls, four operator calls and ten helper calls, plus SDK adapter children and two owned daemons; its gateway recorded 95 HTTP requests. No external provider or Git calls occurred, and owned processes, listeners and disposable state were removed.
+
+These small local timings are not fleet or remote latency guarantees. The installed QA runtime remains the earlier job-progress checkpoint; this proof does not deploy pause state, establish browser presentation or prove host wakeup/resume. The retained old controller remains primary pending implementation completion and human GUI review.
