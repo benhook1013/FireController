@@ -13,6 +13,7 @@ The coordination slice implements a loopback service with scoped projects/worker
 - [Local MCP tools](mcp.md): bound read/write stdio tools and protocol/host proof limits.
 - [Local API](local-api.md): implemented coordination endpoints, bootstrap and limits.
 - [Native review workspace](review-workspace.md): stored queue, PR/run history, findings, fix proof and explicit administrator observations.
+- [Native review evidence controls](review-controls.md): explicit retained capture reads, guarded finding decisions, fix references and source finalization.
 - [Native review execution](review-execution.md): durable operations, provider adapters, isolated workspaces and the remaining dispatch/cutover boundary.
 - [Job checkpoints](job-checkpoints.md): immutable progress records, guarded appends, explicit latest/archive reads and integration status.
 - [Suggested agent workflow](agent-workflow.md): optional working practices for project instructions and a usage skill, separate from tool contracts.

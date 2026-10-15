@@ -88,6 +88,8 @@ The integrated Linux/WSL binaries passed 17 hands-on checks using a real loopbac
 
 Profile/credential errors and local command results remain separate from service authentication errors. Linux ordinary private-file controls do not establish hostile same-user filesystem isolation. Native Windows CLI/profile and MCP stdio smoke passed. Fifteen additional native Windows service-backed groups passed for doctor, scoped job/message reads and mutations, original-key replay, recipient seen/ack, MCP reads and job-create/replay, and service restart retaining instance identity and receipts. Platform access-control strength, native macOS execution and real host asynchronous delivery remain unproven.
 
+Native CLI evidence reads and guarded decision/fix/finalization commands are described in [review evidence controls](review-controls.md#bound-cli-and-mcp). They operate on native evidence IDs, independently of imported browser run IDs.
+
 ## Explicit agent mutations
 
 Mutations use the same private profile and one five-second command budget. They send one request and return a compact receipt; they do not reread full history. Each invocation requires an explicit `--key` of at most 128 printable ASCII bytes without surrounding whitespace. Use a distinct key for each intended action and preserve it with the exact normalized request and binding for recovery. No command silently generates a replacement key or retries after a transport failure.
