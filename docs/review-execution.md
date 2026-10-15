@@ -76,6 +76,8 @@ Attempt settlement retries only the same guarded local journal transition within
 
 A hosted attempt records its exact command body and unique intent marker before posting a GitHub comment. Retain the returned comment ID and posting time. On a lost response or restart, search the complete scoped provider history for that intent before deciding whether posting occurred. Never blindly repost an uncertain request.
 
+The implemented trigger helper generates only the fixed full-review command and a versioned marker binding operation, attempt and exact head. Its pure recovery resolver consumes an explicitly complete scoped comment collection and the configured posting actor's stable numeric identity and kind. It can identify one exact, unedited command in the known posting window. Missing or partial history remains uncertain; duplicates, edits and contradictory attribution remain ambiguous. Neither state permits automatic reposting, and adoption establishes a trigger only, not completion or review credit. This helper has focused normal/race proof; hosted daemon dispatch, durable hosted captures and observation-based journal recovery are still unimplemented.
+
 Observe completion against the admitted PR/head, trigger and configured provider actor identity. Import all review comments and the completed summary, including actionable summary-only and outside-diff findings. Empty status reviews and success checks alone are not completed coverage. Incomplete pagination, attribution or captures remain visible without credit.
 
 ## CLI adapter
