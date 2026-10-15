@@ -102,6 +102,52 @@ describe('Api stored review workspace', () => {
     }
   });
 
+  it('rejects uppercase and mixed-case review SHAs across public response views', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    for (const value of ['A'.repeat(40), `aB${'c'.repeat(38)}`]) {
+      const cases: Array<{ name: string; body: unknown; read: () => Promise<unknown> }> = [
+        { name: 'queue pull head', body: { ...reviewQueue, items: [{ ...reviewPull, head_sha: value }] }, read: () => client.reviewQueue() },
+        { name: 'pull base', body: { ...reviewSnapshot, pull: { ...reviewPull, base_sha: value }, attempts: [reviewAttempt] }, read: () => client.reviewPull(1) },
+        { name: 'queue run head', body: { ...reviewQueue, items: [{ ...reviewPull, recent_runs: [{ ...reviewRun, head_sha: value }] }] }, read: () => client.reviewQueue() },
+        { name: 'run page head', body: { ...reviewSnapshot, items: [{ ...reviewRun, head_sha: value }], has_more: false }, read: () => client.reviewRuns(1) },
+        { name: 'run detail head', body: { ...reviewDetail, run: { ...reviewRun, head_sha: value } }, read: () => client.reviewRun(reviewRun.id) },
+        { name: 'queue attempt head', body: { ...reviewQueue, items: [{ ...reviewPull, latest_attempts: [{ ...reviewAttempt, head_sha: value }] }] }, read: () => client.reviewQueue() },
+        { name: 'pull attempt head', body: { ...reviewSnapshot, pull: reviewPull, attempts: [{ ...reviewAttempt, head_sha: value }] }, read: () => client.reviewPull(1) },
+        { name: 'finding fix', body: { ...reviewDetail, findings: [{ ...reviewFinding, fix_sha: value }] }, read: () => client.reviewRun(reviewRun.id) },
+      ];
+      for (const test of cases) {
+        const fetchMock = vi.fn().mockResolvedValueOnce(json(test.body));
+        vi.stubGlobal('fetch', fetchMock);
+        await expect(test.read(), test.name).rejects.toMatchObject({ code: 'invalid_response' });
+        expect(fetchMock, test.name).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0][1].method ?? 'GET', test.name).toBe('GET');
+      }
+    }
+  });
+
+  it('preserves empty unknown review SHAs without inventing identities', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const run = { ...reviewRun, head_sha: '', fixed: 0 };
+    const attempt = { ...reviewAttempt, head_sha: '' };
+    const pull = { ...reviewPull, head_sha: '', base_sha: '', recent_runs: [run], latest_attempts: [attempt] };
+    const finding = { ...reviewFinding, fix_sha: '', proof_note: '', resolved_at: '' };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [run], has_more: false }))
+      .mockResolvedValueOnce(json({ ...reviewDetail, run, findings: [finding] }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await client.reviewQueue()).items[0].head_sha).toBe('');
+    expect((await client.reviewPull(1)).pull.base_sha).toBe('');
+    expect((await client.reviewRuns(1)).items[0].head_sha).toBe('');
+    expect((await client.reviewRun(run.id)).findings[0].fix_sha).toBe('');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it('rejects invalid review selectors and paging before any request', async () => {
     setupLocation();
     const client = api();
