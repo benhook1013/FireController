@@ -29,10 +29,18 @@ func RetainCLI(ctx context.Context, captures *CaptureStore, engine *reviewexec.E
 	if captures == nil || engine == nil || manager == nil || attempt.Anchor == nil {
 		return CapturedCLI{}, core.Fail("validation_failed", "Use the admitted attempt and its owned review workspace.", 400)
 	}
-	reference, err := captures.Save(ctx, attempt.ID, capture)
+	reference, err := captures.Save(ctx, attempt.ID, CaptureRecord{Capture: capture, StartedAt: started, FinishedAt: finished})
 	if err != nil {
 		return CapturedCLI{}, err
 	}
+	retained, readReference, err := captures.Read(ctx, attempt.ID)
+	if err != nil {
+		return CapturedCLI{}, err
+	}
+	if readReference != reference {
+		return CapturedCLI{}, captureError("capture_unavailable")
+	}
+	capture = retained.Capture
 	review, parseErr := reviewprovider.ParseCLIReview(capture.Stdout, capture.ExitCode, reviewprovider.CLIContext{BaseBranch: workspace.ComparisonRef, WorkingDirectory: workspace.Directory})
 	reason := "capture_retained"
 	if parseErr != nil {
@@ -58,7 +66,7 @@ func RetainCLI(ctx context.Context, captures *CaptureStore, engine *reviewexec.E
 			}
 		}
 	}
-	input := reviewexec.CLIEvidenceInput{CaptureID: reference.ID, CaptureSHA256: reference.SHA256, CaptureBytes: reference.Bytes, StartedAt: started.UTC().Format(time.RFC3339Nano), FinishedAt: finished.UTC().Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: review}
+	input := reviewexec.CLIEvidenceInput{CaptureID: reference.ID, CaptureSHA256: reference.SHA256, CaptureBytes: reference.Bytes, StartedAt: retained.StartedAt.Format(time.RFC3339Nano), FinishedAt: retained.FinishedAt.Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: review}
 	receipt, err := engine.RecordCLIEvidence(ctx, attempt.ProjectID, attempt.ID, input)
 	if err != nil {
 		return CapturedCLI{}, err

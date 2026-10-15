@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprocess"
@@ -29,6 +30,13 @@ type CaptureReference struct {
 	Bytes  int64
 }
 
+// CaptureRecord retains the measured invocation window with exact raw output.
+// StartedAt and FinishedAt describe capture observation, even if Started is false.
+type CaptureRecord struct {
+	Capture               reviewprocess.Capture
+	StartedAt, FinishedAt time.Time
+}
+
 // CaptureStore retains immutable private CLI artifacts independently of the journal.
 type CaptureStore struct{ root string }
 
@@ -36,9 +44,11 @@ func (*CaptureStore) String() string     { return "CaptureStore{private}" }
 func (s *CaptureStore) GoString() string { return s.String() }
 
 type captureEnvelope struct {
-	Version   int         `json:"version"`
-	AttemptID string      `json:"attempt_id"`
-	Capture   captureWire `json:"capture"`
+	Version    int         `json:"version"`
+	AttemptID  string      `json:"attempt_id"`
+	StartedAt  string      `json:"started_at"`
+	FinishedAt string      `json:"finished_at"`
+	Capture    captureWire `json:"capture"`
 }
 
 type captureWire struct {
@@ -63,19 +73,20 @@ func NewCaptureStore(root string) (*CaptureStore, error) {
 
 // Save publishes with an atomic no-replace hard link. An unavailable result can
 // follow publication; retrying the exact same capture reconciles that artifact.
-func (s *CaptureStore) Save(ctx context.Context, attemptID string, capture reviewprocess.Capture) (CaptureReference, error) {
+func (s *CaptureStore) Save(ctx context.Context, attemptID string, record CaptureRecord) (CaptureReference, error) {
 	var empty CaptureReference
 	if ctx.Err() != nil {
 		return empty, captureError("capture_unavailable")
 	}
-	if !validIdentifier(attemptID) || !validCapture(capture) {
+	if !validIdentifier(attemptID) || !validCapture(record.Capture) || !validCaptureTiming(record.StartedAt, record.FinishedAt) {
 		return empty, captureError("validation_failed")
 	}
 	if s == nil || captureDirectories(s.root, false) != nil {
 		return empty, captureError("capture_unavailable")
 	}
+	capture := record.Capture
 	wire := captureWire{base64.StdEncoding.EncodeToString(capture.Stdout), base64.StdEncoding.EncodeToString(capture.Stderr), capture.ExitCode, capture.Started}
-	data, err := json.Marshal(captureEnvelope{1, attemptID, wire})
+	data, err := json.Marshal(captureEnvelope{Version: 2, AttemptID: attemptID, StartedAt: record.StartedAt.UTC().Format(time.RFC3339Nano), FinishedAt: record.FinishedAt.UTC().Format(time.RFC3339Nano), Capture: wire})
 	if err != nil || len(data) > maxCaptureFile {
 		return empty, captureError("validation_failed")
 	}
@@ -140,21 +151,22 @@ func (s *CaptureStore) existingCapture(ctx context.Context, attemptID string, ex
 	return ref, nil
 }
 
-// Read validates the retained envelope and returns exact captured output bytes.
-func (s *CaptureStore) Read(ctx context.Context, attemptID string) (reviewprocess.Capture, CaptureReference, error) {
+// Read validates canonical version 2 timing and returns exact captured bytes.
+// Older envelopes remain untouched and unavailable; their times are not inferred.
+func (s *CaptureStore) Read(ctx context.Context, attemptID string) (CaptureRecord, CaptureReference, error) {
 	data, capture, err := s.readCapture(ctx, attemptID)
 	if err != nil {
-		return reviewprocess.Capture{}, CaptureReference{}, err
+		return CaptureRecord{}, CaptureReference{}, err
 	}
 	ref := captureReference(data)
 	if ctx.Err() != nil {
-		return reviewprocess.Capture{}, CaptureReference{}, captureError("capture_unavailable")
+		return CaptureRecord{}, CaptureReference{}, captureError("capture_unavailable")
 	}
 	return capture, ref, nil
 }
 
-func (s *CaptureStore) readCapture(ctx context.Context, attemptID string) ([]byte, reviewprocess.Capture, error) {
-	var empty reviewprocess.Capture
+func (s *CaptureStore) readCapture(ctx context.Context, attemptID string) ([]byte, CaptureRecord, error) {
+	var empty CaptureRecord
 	if ctx.Err() != nil {
 		return nil, empty, captureError("capture_unavailable")
 	}
@@ -171,7 +183,7 @@ func (s *CaptureStore) readCapture(ctx context.Context, attemptID string) ([]byt
 	}
 	data, _, err := readPrivateFile(path, maxCaptureFile)
 	var envelope captureEnvelope
-	if err != nil || strictjson.Decode(data, &envelope) != nil || envelope.Version != 1 || envelope.AttemptID != attemptID || !requiredNonNullObject(data, "version", "attempt_id", "capture") {
+	if err != nil || strictjson.Decode(data, &envelope) != nil || envelope.Version != 2 || envelope.AttemptID != attemptID || !requiredNonNullObject(data, "version", "attempt_id", "started_at", "finished_at", "capture") {
 		return nil, empty, captureError("capture_unavailable")
 	}
 	var root map[string]json.RawMessage
@@ -182,14 +194,21 @@ func (s *CaptureStore) readCapture(ctx context.Context, attemptID string) ([]byt
 	stdout, outErr := base64.StdEncoding.Strict().DecodeString(envelope.Capture.Stdout)
 	stderr, errErr := base64.StdEncoding.Strict().DecodeString(envelope.Capture.Stderr)
 	capture := reviewprocess.Capture{Stdout: stdout, Stderr: stderr, ExitCode: envelope.Capture.ExitCode, Started: envelope.Capture.Started}
-	if outErr != nil || errErr != nil || !validCapture(capture) || ctx.Err() != nil || captureDirectories(s.root, false) != nil {
+	start, startErr := time.Parse(time.RFC3339Nano, envelope.StartedAt)
+	finish, finishErr := time.Parse(time.RFC3339Nano, envelope.FinishedAt)
+	if outErr != nil || errErr != nil || !validCapture(capture) || startErr != nil || finishErr != nil || !validCaptureTiming(start, finish) || envelope.StartedAt != start.UTC().Format(time.RFC3339Nano) || envelope.FinishedAt != finish.UTC().Format(time.RFC3339Nano) || ctx.Err() != nil || captureDirectories(s.root, false) != nil {
 		return nil, empty, captureError("capture_unavailable")
 	}
 	after, err := os.Lstat(path)
 	if err != nil || !privateRegular(after) || !captureMode(after, 0600) || !os.SameFile(info, after) || ctx.Err() != nil {
 		return nil, empty, captureError("capture_unavailable")
 	}
-	return data, capture, nil
+	return data, CaptureRecord{Capture: capture, StartedAt: start.UTC(), FinishedAt: finish.UTC()}, nil
+}
+
+func validCaptureTiming(start, finish time.Time) bool {
+	start, finish = start.UTC(), finish.UTC()
+	return !start.IsZero() && !finish.IsZero() && start.Year() >= 1 && start.Year() <= 9999 && finish.Year() >= 1 && finish.Year() <= 9999 && !finish.Before(start)
 }
 
 func validCapture(c reviewprocess.Capture) bool {

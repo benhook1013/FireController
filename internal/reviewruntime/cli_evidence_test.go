@@ -1,6 +1,7 @@
 package reviewruntime
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,6 +24,7 @@ import (
 )
 
 type cliEvidenceFixture struct {
+	storeDir string
 	store    *core.Store
 	engine   *reviewexec.Engine
 	captures *CaptureStore
@@ -58,7 +60,7 @@ func newCLIEvidenceFixture(t *testing.T) *cliEvidenceFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &cliEvidenceFixture{store: store, admin: strings.TrimSpace(string(adminData)), writer: "runtime-evidence-writer-test-token-000000", reader: "runtime-evidence-reader-test-token-000000", project: "runtime-evidence-project"}
+	f := &cliEvidenceFixture{storeDir: storeDir, store: store, admin: strings.TrimSpace(string(adminData)), writer: "runtime-evidence-writer-test-token-000000", reader: "runtime-evidence-reader-test-token-000000", project: "runtime-evidence-project"}
 	if _, err := store.DB().Exec(`INSERT INTO projects(id,name,github_repository_id,repository) VALUES(?,?,?,?)`, f.project, f.project, 901, "owner/repo"); err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +326,7 @@ func TestRetainCLIWorkspaceCaptureAndImmutableEvidence(t *testing.T) {
 		}
 	}
 	loadedCapture, captureReference, err := f.captures.Read(context.Background(), attempt.ID)
-	if err != nil || captureReference.ID != stored.Capture.CaptureID || captureReference.SHA256 != stored.Capture.CaptureSHA256 || string(loadedCapture.Stdout) != string(capture.Stdout) {
+	if err != nil || captureReference.ID != stored.Capture.CaptureID || captureReference.SHA256 != stored.Capture.CaptureSHA256 || string(loadedCapture.Capture.Stdout) != string(capture.Stdout) {
 		t.Fatal("private artifact does not match its journal reference", err)
 	}
 
@@ -443,9 +445,85 @@ func TestRetainCLICallerAnchorMismatchRetainsArtifactButNotLedgerCredit(t *testi
 		t.Fatal("mismatched caller anchor received a ledger row or capture event")
 	}
 	loaded, reference, err := f.captures.Read(context.Background(), attempt.ID)
-	if err != nil || reference.Bytes < 1 || string(loaded.Stdout) != string(capture.Stdout) {
+	if err != nil || reference.Bytes < 1 || string(loaded.Capture.Stdout) != string(capture.Stdout) {
 		t.Fatalf("raw artifact was not retained for safe diagnosis: %v", err)
 	}
+}
+
+func TestRetainCLIRestartBetweenCaptureAndLedgerPreservesMeasuredTimes(t *testing.T) {
+	f := newCLIEvidenceFixture(t)
+	ctx := context.Background()
+	attempt, workspace := f.startAdmitted(t, 2)
+	record := CaptureRecord{Capture: makeCompleteCLICapture(t, workspace, mustChangedFiles(t, f.manager, workspace)), StartedAt: time.Now().Add(-2 * time.Second).UTC(), FinishedAt: time.Now().Add(-time.Second).UTC()}
+	reference, err := f.captures.Save(ctx, attempt.ID, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.captured'`) != 0 {
+		t.Fatal("saving an artifact unexpectedly ingested or credited evidence")
+	}
+	artifact := filepath.Join(f.captures.root, attempt.ID+".json")
+	artifactBytes, err := os.ReadFile(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate losing all process-local capture state at the exact durable gap.
+	// Reopen real SQLite, the capture store and the immutable workspace manager.
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.store, err = core.Open(ctx, f.storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.store.Close() })
+	f.engine, err = reviewexec.New(f.store, []reviewexec.Capability{{ID: "runtime-capability", Provider: "coderabbit", Account: "runtime-account", Channels: []string{"cli", "hosted"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.engine.RecoverInterrupted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := f.engine.ReadOperation(ctx, f.scopeWithAccess(t, f.reader, false, "read"), attempt.OperationID)
+	if err != nil || operation.State != "uncertain" {
+		t.Fatal("restart did not retain possible execution as uncertain", err)
+	}
+	f.captures, err = NewCaptureStore(filepath.Dir(artifact))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.manager, err = reviewworkspace.New(filepath.Dir(filepath.Dir(workspace.Directory)), "git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := *attempt.Anchor
+	workspace, err = f.manager.Open(ctx, attempt.ID, a.CandidateSHA, a.BaseSHA, a.MergeBaseSHA, a.PatchSHA256, a.Repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, restoredRef, err := f.captures.Read(ctx, attempt.ID)
+	if err != nil || restoredRef != reference || !restored.StartedAt.Equal(record.StartedAt) || !restored.FinishedAt.Equal(record.FinishedAt) {
+		t.Fatal("restart could not reconstruct original capture window", err)
+	}
+	before := cliAttemptState(t, f.store, attempt.ID)
+	result, err := RetainCLI(ctx, f.captures, f.engine, f.manager, attempt, workspace, restored.Capture, restored.StartedAt, restored.FinishedAt)
+	if err != nil || !result.Complete || result.Outcome != "completed" {
+		t.Fatal("retained capture could not be ingested after restart", err)
+	}
+	stored, err := f.engine.ReadCLIEvidence(ctx, f.scopeWithAccess(t, f.reader, false, "read"), result.Receipt.ID)
+	if err != nil || stored.Capture.StartedAt != record.StartedAt.Format(time.RFC3339Nano) || stored.Capture.FinishedAt != record.FinishedAt.Format(time.RFC3339Nano) || stored.Capture.CaptureID != reference.ID || stored.Capture.CaptureSHA256 != reference.SHA256 || stored.Capture.CaptureBytes != reference.Bytes {
+		t.Fatal("ledger invented times or changed retained capture identity", err)
+	}
+	replay, err := RetainCLI(ctx, f.captures, f.engine, f.manager, attempt, workspace, restored.Capture, restored.StartedAt, restored.FinishedAt)
+	if err != nil || replay != result || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 1 || cliCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.captured'`) != 1 || cliAttemptState(t, f.store, attempt.ID) != before {
+		t.Fatal("reconstructed replay changed receipt, evidence, events or journal", err)
+	}
+	after, err := os.ReadFile(artifact)
+	if err != nil || !bytes.Equal(artifactBytes, after) {
+		t.Fatal("ledger recovery replaced original artifact", err)
+	}
+	_, err = RetainCLI(ctx, f.captures, f.engine, f.manager, attempt, workspace, restored.Capture, restored.StartedAt.Add(time.Nanosecond), restored.FinishedAt)
+	assertCoreErrorCode(t, err, "capture_conflict")
 }
 
 func cliCount(t *testing.T, store *core.Store, query string, args ...any) int {
