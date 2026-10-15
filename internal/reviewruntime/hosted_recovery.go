@@ -2,6 +2,7 @@ package reviewruntime
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"time"
 
@@ -49,8 +50,14 @@ func RecoverHosted(ctx context.Context, reader HostedRecoveryReader, captures *H
 	finish := func(evidenceID string) (RecoveredHosted, error) {
 		result.EvidenceID = evidenceID
 		if _, err := engine.PublishEvidence(ctx, project, evidenceID, nil); err != nil {
-			result.Reason = "publication_pending"
-			return result, err
+			var failure *core.Error
+			if !errors.As(err, &failure) || failure.Code != "review_projection_missing" {
+				result.Reason = "publication_pending"
+				return result, err
+			}
+			// Current metadata may have been explicitly retired since dispatch.
+			// The immutable ledger still proves execution; do not invent PR facts
+			// or retain its reservation solely to populate the browser projection.
 		}
 		next, err := engine.Advance(ctx, project, attempt.ID, attempt.Revision, "completed", "hosted_evidence_recovered", attempt.ExternalID)
 		if err != nil {
