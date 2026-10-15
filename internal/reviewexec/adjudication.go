@@ -91,6 +91,9 @@ func loadReviewAdjudication(ctx context.Context, tx *sql.Tx, project, id string)
 	if !stateBody.Valid || len(stateBody.String) > 3<<20 || json.Unmarshal([]byte(stateBody.String), &state) != nil || state.EvidenceID != id || state.Revision != revision.Int64 || state.Revision < 1 || len(state.Findings) != len(evidence.Capture.Review.Findings) || state.Finalized != (state.FrozenCounts != nil) {
 		return evidence, state, adjudicationStorageError()
 	}
+	if state.Findings == nil {
+		state.Findings = []CLIFindingDecision{}
+	}
 	for i, finding := range state.Findings {
 		if finding.Finding != int64(i) || finding.Disposition != "unadjudicated" && finding.Disposition != "accepted" && finding.Disposition != "rejected" || !safeText(finding.Reason, 2048) || !safeText(finding.ProofNote, 2048) {
 			return evidence, state, adjudicationStorageError()
