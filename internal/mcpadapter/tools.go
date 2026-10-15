@@ -88,6 +88,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.ReviewSourceOperation(ctx, args.id)
 			case "review_source_policy_assess":
 				value, err = service.ReviewSourcePolicyAssessment(ctx, args.pullNumber)
+			case "review_source_ci_assess":
+				value, err = service.ReviewSourceCIAssessment(ctx, args.pullNumber)
 			case "review_queue":
 				value, err = service.ReviewQueue(ctx, options)
 			case "review_pull":

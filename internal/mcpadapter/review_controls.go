@@ -10,7 +10,7 @@ import (
 
 func reviewControlTool(name string) bool {
 	switch name {
-	case "review_policy_assess", "review_evidence_read", "review_adjudication_read", "review_finding_decide", "review_finding_fix", "review_source_finalize", "review_execution_read", "review_operation_read", "review_request", "review_source_refresh", "review_source_refresh_read", "review_source_policy_assess":
+	case "review_policy_assess", "review_evidence_read", "review_adjudication_read", "review_finding_decide", "review_finding_fix", "review_source_finalize", "review_execution_read", "review_operation_read", "review_request", "review_source_refresh", "review_source_refresh_read", "review_source_policy_assess", "review_source_ci_assess":
 		return true
 	}
 	return false
@@ -28,7 +28,7 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 		}
 		args.id = in.ID
 		return args, nil
-	case "review_source_policy_assess":
+	case "review_source_policy_assess", "review_source_ci_assess":
 		var in struct {
 			Number *int64 `json:"pull_number"`
 		}
@@ -39,11 +39,12 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 		return args, nil
 	case "review_source_refresh":
 		var in struct {
-			Key      string `json:"idempotency_key"`
-			Revision *int64 `json:"expected_configuration_revision"`
-			Number   *int64 `json:"pull_number"`
-			Head     string `json:"head_sha"`
-			Wait     *int   `json:"wait_seconds,omitempty"`
+			Key       string `json:"idempotency_key"`
+			Revision  *int64 `json:"expected_configuration_revision"`
+			Number    *int64 `json:"pull_number"`
+			Head      string `json:"head_sha"`
+			Wait      *int   `json:"wait_seconds,omitempty"`
+			IncludeCI *bool  `json:"include_ci,omitempty"`
 		}
 		if strictjson.Decode(data, &in) != nil || in.Revision == nil || in.Number == nil || !validKey(in.Key) {
 			return args, invalidArguments()
@@ -54,10 +55,10 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 			args.reviewSourceWait = *in.Wait
 		}
 		var fields map[string]json.RawMessage
-		if json.Unmarshal(data, &fields) != nil || fields["wait_seconds"] != nil && in.Wait == nil || client.ValidateReviewSourceWait(args.reviewSourceWait) != nil {
+		if json.Unmarshal(data, &fields) != nil || fields["wait_seconds"] != nil && in.Wait == nil || fields["include_ci"] != nil && in.IncludeCI == nil || client.ValidateReviewSourceWait(args.reviewSourceWait) != nil {
 			return args, invalidArguments()
 		}
-		args.reviewSource = client.ReviewSourceRequest{ExpectedConfigurationRevision: *in.Revision, PullNumber: *in.Number, HeadSHA: in.Head}
+		args.reviewSource = client.ReviewSourceRequest{ExpectedConfigurationRevision: *in.Revision, PullNumber: *in.Number, HeadSHA: in.Head, IncludeCI: in.IncludeCI != nil && *in.IncludeCI}
 		if client.ValidateReviewSourceRequest(args.reviewSource) != nil {
 			return args, invalidArguments()
 		}
@@ -185,15 +186,17 @@ func reviewExecutionDefinitions() []definition {
 		return result
 	}
 	return []definition{
-		{"review_source_refresh", "Enqueue source-only provider GETs for one configured PR and expected head. Returns a compact queued receipt; no review post, allowance query or execution. Retain the exact idempotency key and arguments after an unknown outcome; no automatic retry or polling.", schema(map[string]any{
+		{"review_source_refresh", "Collect source and optionally required CI for one configured PR and expected head. Return completed facts when quick, otherwise a compact operation receipt; no review post, allowance query or execution. Retain the exact idempotency key and arguments after an unknown outcome; no automatic retry or polling.", schema(map[string]any{
 			"idempotency_key":                 map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
 			"expected_configuration_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64)},
 			"pull_number":                     map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647},
 			"head_sha":                        map[string]any{"type": "string", "minLength": 40, "maxLength": 40, "pattern": "^[a-f0-9]{40}$"},
+			"include_ci":                      map[string]any{"type": "boolean", "default": false, "description": "Also collect required CI; ordinary reads remain provider-free."},
 			"wait_seconds":                    map[string]any{"type": "integer", "minimum": 0, "maximum": 60, "default": 2, "description": "Wait for terminal facts up to this many seconds; zero requests an immediate receipt. Extends this source-refresh call budget only."},
 		}, "idempotency_key", "expected_configuration_revision", "pull_number", "head_sha")},
 		{"review_source_refresh_read", "Read one explicit retained source-refresh operation. Local provider-free read; no automatic polling or source refresh.", schema(map[string]any{"refresh_id": map[string]any{"type": "string", "minLength": 47, "maxLength": 47, "pattern": "^review_refresh_[a-f0-9]{32}$"}}, "refresh_id")},
 		{"review_source_policy_assess", "Read current project review policy as of a retained source observation for one PR. Local provider-free read; no current remote-source verification, CI or merge-readiness verdict.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
+		{"review_source_ci_assess", "Read retained required-CI assessment for one PR. Local provider-free read; reports observation age and applicability, never merge readiness.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
 		{"review_execution_read", "Read stored project review execution configuration. No provider calls, execution, readiness verdict or automatic polling.", schema(map[string]any{})},
 		{"review_operation_read", "Read one explicit local review operation status. No provider refresh, execution or automatic polling.", schema(map[string]any{"operation_id": map[string]any{"type": "string", "pattern": "^review_operation_[a-f0-9]{32}$"}}, "operation_id")},
 		{"review_request", "Enqueue the selected external provider review, which can consume included allowance asynchronously. The compact queued receipt does not mean started or completed. Retain the exact idempotency key and arguments for uncertain-outcome recovery; no automatic retry, generated key or operation polling.", schema(map[string]any{

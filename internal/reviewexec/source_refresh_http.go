@@ -31,7 +31,9 @@ func (e *Engine) enqueueSourceRefreshHTTP(w http.ResponseWriter, r *http.Request
 		ExpectedConfigurationRevision *int64  `json:"expected_configuration_revision"`
 		PullNumber                    *int64  `json:"pull_number"`
 		HeadSHA                       *string `json:"head_sha"`
+		IncludeCI                     *bool   `json:"include_ci,omitempty"`
 	}
+	wire.IncludeCI = new(bool) // Omission selects source-only; explicit null is invalid.
 	if err = core.ReadJSON(w, r, &wire); err != nil {
 		core.WriteError(w, err)
 		return
@@ -40,12 +42,16 @@ func (e *Engine) enqueueSourceRefreshHTTP(w http.ResponseWriter, r *http.Request
 		core.WriteError(w, invalid())
 		return
 	}
+	if wire.IncludeCI == nil {
+		core.WriteError(w, invalid())
+		return
+	}
 	key, err := core.IdempotencyKey(r, "idempotency_key_required")
 	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	request := SourceRefreshRequest{ExpectedConfigurationRevision: *wire.ExpectedConfigurationRevision, PullNumber: *wire.PullNumber, HeadSHA: *wire.HeadSHA}
+	request := SourceRefreshRequest{ExpectedConfigurationRevision: *wire.ExpectedConfigurationRevision, PullNumber: *wire.PullNumber, HeadSHA: *wire.HeadSHA, IncludeCI: *wire.IncludeCI}
 	if !validRefreshRequest(request) {
 		core.WriteError(w, invalid())
 		return
@@ -55,7 +61,7 @@ func (e *Engine) enqueueSourceRefreshHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 	w.Header().Set("Preference-Applied", "wait="+strconv.Itoa(int(wait/time.Second)))
-	receipt, err := e.EnqueueSourceRefresh(r.Context(), scope, key, SourceRefreshRequest{ExpectedConfigurationRevision: *wire.ExpectedConfigurationRevision, PullNumber: *wire.PullNumber, HeadSHA: *wire.HeadSHA})
+	receipt, err := e.EnqueueSourceRefresh(r.Context(), scope, key, request)
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -158,4 +164,28 @@ func writeSourceWaitError(w http.ResponseWriter, err error) {
 	}
 	failure.Details = map[string]any{"outcome_unknown": true}
 	core.WriteError(w, &failure)
+}
+
+func (e *Engine) readSourceCIAssessmentHTTP(w http.ResponseWriter, r *http.Request) {
+	scope, err := e.store.Scope(r, "read")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if _, err = core.QueryKeys(r, "validation_failed"); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	raw := r.PathValue("pull_number")
+	number, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || strconv.FormatInt(number, 10) != raw || number < 1 || number > 2147483647 {
+		core.WriteError(w, invalid())
+		return
+	}
+	value, err := e.ReadSourceCIAssessment(r.Context(), scope, number)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, value)
 }

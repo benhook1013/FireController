@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fcmcp` exposes twenty-four read tools and eleven explicit mutations over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Checkpoint tools](job-checkpoints.md) append immutable progress and provide explicit latest/archive reads. Subscriptions, remote MCP and automatic chat wakeups remain unimplemented.
+`fcmcp` exposes twenty-five read tools and eleven explicit mutations over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Checkpoint tools](job-checkpoints.md) append immutable progress and provide explicit latest/archive reads. Subscriptions, remote MCP and automatic chat wakeups remain unimplemented.
 
 Execution tool arguments and recovery are owned by [review execution](review-execution.md#bound-execution-tools).
 
@@ -38,8 +38,9 @@ Startup validates configuration without opening the credential or contacting the
 | `review_execution_read` | No fields; stored execution configuration and revision, without provider work. |
 | `review_operation_read` | Required operation_id; retained native operation state and reason. |
 | `review_request` | Required idempotency_key/expected_configuration_revision/pull_number/channel/head_sha; compact queued receipt authorizing background provider work. |
-| `review_source_refresh` | Required idempotency_key/expected_configuration_revision/pull_number/head_sha; optional wait_seconds (default 2, range 0–60). Returns a completed outcome within the wait, otherwise an operation receipt; schedules only selected source reads, never a review. |
+| `review_source_refresh` | Required idempotency_key/expected_configuration_revision/pull_number/head_sha; optional wait_seconds (default 2, range 0–60) and include_ci (default false). Returns a completed outcome within the wait, otherwise an operation receipt; schedules selected source/CI reads, never a review. |
 | `review_source_refresh_read` | Required refresh_id; stored operation and observed comparison, no provider calls. |
+| `review_source_ci_assess` | Required pull_number; compact retained required-CI facts and local applicability, with observation age; no provider work or merge-readiness claim. |
 | `review_source_policy_assess` | Required pull_number; current local policy against the last completed source observation, with its age; no CI or merge-readiness claim. |
 | `review_queue` | Optional limit/cursor; stored queue, default five PRs. |
 | `review_pull` | Required pull_number, optional snapshot; explicit PR summary and attempts. |

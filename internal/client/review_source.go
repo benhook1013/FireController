@@ -14,6 +14,7 @@ type ReviewSourceRequest struct {
 	ExpectedConfigurationRevision int64  `json:"expected_configuration_revision"`
 	PullNumber                    int64  `json:"pull_number"`
 	HeadSHA                       string `json:"head_sha"`
+	IncludeCI                     bool   `json:"include_ci,omitempty"`
 }
 
 // ReviewSourceResult contains exactly one response. JSON stays flat so agents
@@ -79,6 +80,8 @@ type ReviewSourceOperation struct {
 	CreatedAt             string                   `json:"created_at"`
 	UpdatedAt             string                   `json:"updated_at"`
 	Observation           *ReviewSourceObservation `json:"observation,omitempty"`
+	IncludeCI             bool                     `json:"include_ci,omitempty"`
+	CI                    *ReviewSourceCISummary   `json:"ci,omitempty"`
 }
 
 // ReviewSourcePolicyAssessment evaluates policy as of a retained observation.
@@ -129,7 +132,7 @@ func validSourceObservation(value ReviewSourceObservation) bool {
 	return value.RepositoryID > 0 && validPullNumber(value.PullNumber) && controlHex(value.HeadSHA, 40) && controlHex(value.BaseSHA, 40) && controlHex(value.ParentSHA, 40) && value.ParentSHA == value.BaseSHA && controlText(value.BaseRef, 256, true) && value.ParentPullNumber >= 0 && value.ParentPullNumber <= 2147483647 && value.ParentPullNumber != value.PullNumber && controlTime(value.ObservedAt)
 }
 
-// RefreshReviewSource enqueues selected source-only provider reads. It does not
+// RefreshReviewSource enqueues selected source and optional CI provider reads. It does not
 // poll, retry, post a review or generate an idempotency key.
 func (c *Client) RefreshReviewSource(ctx context.Context, key string, request ReviewSourceRequest, waitSeconds int) (ReviewSourceResult, error) {
 	if !validMutationKey(key) || ValidateReviewSourceRequest(request) != nil || ValidateReviewSourceWait(waitSeconds) != nil {
@@ -157,7 +160,7 @@ func (c *Client) RefreshReviewSource(ctx context.Context, key string, request Re
 	}
 	if value.Operation != nil {
 		operation := value.Operation
-		if !c.validSourceOperation(*operation) || operation.PullNumber != request.PullNumber || operation.HeadSHA != request.HeadSHA || operation.ConfigurationRevision != request.ExpectedConfigurationRevision || !oneReviewOf(operation.State, "completed", "held") {
+		if !c.validSourceOperation(*operation) || operation.PullNumber != request.PullNumber || operation.HeadSHA != request.HeadSHA || operation.ConfigurationRevision != request.ExpectedConfigurationRevision || operation.IncludeCI != request.IncludeCI || !oneReviewOf(operation.State, "completed", "held") {
 			return ReviewSourceResult{}, unknownMutation("invalid_response", "The service returned invalid source refresh facts; its outcome is unknown.", status)
 		}
 	} else if value.Receipt == nil || ValidateReviewSourceRefreshID(value.Receipt.ID) != nil || value.Receipt.State != "queued" || value.Receipt.Revision != 1 {
@@ -186,7 +189,7 @@ func (c *Client) validSourceOperation(value ReviewSourceOperation) bool {
 	}
 	created, _ := time.Parse(time.RFC3339Nano, value.CreatedAt)
 	updated, _ := time.Parse(time.RFC3339Nano, value.UpdatedAt)
-	return !updated.Before(created) && (value.State == "completed") == (value.Observation != nil) && (value.Observation == nil || validSourceObservation(*value.Observation) && value.Observation.PullNumber == value.PullNumber && value.Observation.HeadSHA == value.HeadSHA)
+	return validSourceOperationCI(value) && !updated.Before(created) && (value.State == "completed") == (value.Observation != nil) && (value.Observation == nil || validSourceObservation(*value.Observation) && value.Observation.PullNumber == value.PullNumber && value.Observation.HeadSHA == value.HeadSHA)
 }
 
 func (c *Client) ReviewSourcePolicyAssessment(ctx context.Context, number int64) (ReviewSourcePolicyAssessment, error) {
