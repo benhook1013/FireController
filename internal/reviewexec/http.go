@@ -94,7 +94,7 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if _, err := core.QueryKeys(r, "invalid_query"); err != nil {
+	if _, err := core.QueryKeys(r, "validation_failed"); err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -117,7 +117,7 @@ func (e *Engine) readExecutionConfigurationHTTP(w http.ResponseWriter, r *http.R
 		core.WriteError(w, err)
 		return
 	}
-	if _, err := core.QueryKeys(r, "invalid_query"); err != nil {
+	if _, err := core.QueryKeys(r, "validation_failed"); err != nil {
 		core.WriteError(w, err)
 		return
 	}
