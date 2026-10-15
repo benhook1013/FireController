@@ -789,3 +789,148 @@ func TestCLIDriverPredecessorCorrectionAfterGitVerificationStopsReview(t *testin
 		})
 	}
 }
+
+func TestCLIDriverRetainedEvidenceSurvivesMissingCurrentProjection(t *testing.T) {
+	for _, mode := range []string{"missing_current_pull", "publication_storage_failure"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCLIDriverFixture(t)
+			review := f.driver.review
+			hookResult := make(chan error, 1)
+			f.driver.review = func(ctx context.Context, w reviewworkspace.Workspace) (reviewprocess.Capture, error) {
+				capture, err := review(ctx, w)
+				if err != nil {
+					return capture, err
+				}
+				if mode == "publication_storage_failure" {
+					_, err = f.store.DB().Exec(`CREATE TRIGGER fail_cli_native_publication BEFORE INSERT ON review_runs WHEN NEW.source='native-executor' BEGIN SELECT RAISE(ABORT,'synthetic publication storage failure'); END`)
+				} else {
+					// Replace only the current browser observation using the public importer;
+					// historical preparation metadata and the authoritative ledger survive.
+					var revision int64
+					err = f.store.DB().QueryRow(`SELECT revision FROM review_workspace WHERE project_id=?`, f.project).Scan(&revision)
+					if err == nil {
+						input := reviews.ObservationRequest{ExpectedRevision: &revision, RepositoryID: 901, Source: "synthetic-current-retirement", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Queue: []reviews.PullInput{}, Retired: []reviews.RetiredPull{{Number: 2, Reason: "superseded"}}}
+						body, marshalErr := json.Marshal(input)
+						err = marshalErr
+						if err == nil {
+							mux := http.NewServeMux()
+							reviews.Register(mux, f.store)
+							request := httptest.NewRequest("POST", "/api/v1/projects/"+f.project+"/reviews/observations", strings.NewReader(string(body)))
+							request.Header.Set("Authorization", "Bearer "+f.admin)
+							request.Header.Set("Idempotency-Key", "retire-current-during-review")
+							response := httptest.NewRecorder()
+							mux.ServeHTTP(response, request)
+							if response.Code != http.StatusCreated {
+								err = fmt.Errorf("synthetic retirement status%d", response.Code)
+							}
+						}
+					}
+				}
+				hookResult <- err
+				return capture, err
+			}
+			request := reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: f.headSHA}
+			raw, err := f.engine.Enqueue(t.Context(), f.scope(t, f.writer, false), "ledger-only-supervised-review", request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var receipt reviewexec.Receipt
+			if err = json.Unmarshal(raw, &receipt); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			done, err := f.engine.Start(ctx, map[string]reviewexec.Driver{f.capability.ID: f.driver})
+			if err != nil {
+				cancel()
+				t.Fatal(err)
+			}
+			var stopOnce sync.Once
+			stop := func() {
+				stopOnce.Do(func() {
+					cancel()
+					select {
+					case err := <-done:
+						if err != nil {
+							t.Error("supervisor stop", err)
+						}
+					case <-time.After(3 * time.Second):
+						t.Error("supervisor did not stop")
+					}
+				})
+			}
+			defer stop()
+			var operation reviewexec.Operation
+			deadline := time.NewTimer(5 * time.Second)
+			defer deadline.Stop()
+			tick := time.NewTicker(5 * time.Millisecond)
+			defer tick.Stop()
+		settled:
+			for {
+				operation, err = f.engine.ReadOperation(t.Context(), f.scope(t, f.writer, false), receipt.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch operation.State {
+				case "completed", "uncertain", "failed", "held", "cancelled":
+					break settled
+				}
+				select {
+				case <-deadline.C:
+					t.Fatal("supervisor did not settle retained source")
+				case <-tick.C:
+				}
+			}
+			stop()
+			select {
+			case err := <-hookResult:
+				if err != nil {
+					t.Fatal("deterministic publication fixture failed", err)
+				}
+			default:
+				t.Fatal("real review hook never ran")
+			}
+			want, reservations := "completed", 0
+			if mode == "publication_storage_failure" {
+				want, reservations = "uncertain", 1
+			}
+			if operation.State != want || mode == "missing_current_pull" && operation.Reason != "capture_retained" || mode == "publication_storage_failure" && operation.Reason != "capture_retention_failed" {
+				t.Fatal("publication error changed retained execution outcome", operation.State, operation.Reason)
+			}
+			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, operation.AttemptID) != reservations || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, operation.AttemptID) != 1 {
+				t.Fatal("settlement lost ledger or reservation policy")
+			}
+			var evidenceID string
+			if err = f.store.DB().QueryRow(`SELECT id FROM review_execution_evidence WHERE attempt_id=?`, operation.AttemptID).Scan(&evidenceID); err != nil {
+				t.Fatal(err)
+			}
+			evidence, err := f.engine.ReadReviewEvidence(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), evidenceID)
+			if err != nil || !evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed" {
+				t.Fatal("authoritative capture lost", err)
+			}
+			adjudication, err := f.engine.ReadReviewAdjudication(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), evidenceID)
+			if err != nil || adjudication.Finalized || len(adjudication.Findings) != 1 || adjudication.Findings[0].Disposition != "unadjudicated" {
+				t.Fatal("publication failure fabricated finding disposition/coverage", err)
+			}
+			if cliCount(t, f.store, `SELECT count(*) FROM review_runs WHERE project_id=? AND source='native-executor' AND source_run_id=?`, f.project, evidenceID) != 0 {
+				t.Fatal("driver invented a native browser row")
+			}
+			if mode == "missing_current_pull" {
+				if cliCount(t, f.store, `SELECT count(*) FROM review_workspace w JOIN review_pulls p ON p.project_id=w.project_id AND p.snapshot_id=w.snapshot_id WHERE w.project_id=? AND p.number=2`, f.project) != 0 {
+					t.Fatal("driver recreated retired current metadata")
+				}
+				comparison, err := f.engine.Comparison(t.Context(), f.project, reviewexec.SourcePlan{Repository: f.reader.repository, Pull: f.reader.pulls[2], ParentSHA: f.baseSHA, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}, "cli")
+				if err != nil || !comparison.Pending || comparison.Covered {
+					t.Fatal("completed ledger-only evidence escaped pending coverage", comparison, err)
+				}
+			}
+			log, err := os.ReadFile(f.log)
+			if err != nil || strings.Count(string(log), "usage --agent\n") != 1 || strings.Count(string(log), "review --agent --committed ") != 1 {
+				t.Fatal("review work was duplicated", err)
+			}
+			replay, err := f.engine.Enqueue(t.Context(), f.scope(t, f.writer, false), "ledger-only-supervised-review", request)
+			if err != nil || string(replay) != string(raw) || cliCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
+				t.Fatal("original request replay changed effect", err)
+			}
+		})
+	}
+}

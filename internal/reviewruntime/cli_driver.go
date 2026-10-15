@@ -213,6 +213,12 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 	retained, err := RetainCLI(retentionCtx, d.captures, d.engine, d.manager, attempt, prepared.workspace, capture, started, finished)
 	if err == nil {
 		_, err = d.engine.PublishEvidence(retentionCtx, operation.ProjectID, retained.Receipt.ID, nil)
+		// Authoritative retained evidence remains usable when current browser
+		// metadata disappeared. Other publication failures remain conservative.
+		var missing *core.Error
+		if errors.As(err, &missing) && missing.Code == "review_projection_missing" {
+			err = nil
+		}
 	}
 	if err != nil {
 		state := "failed"
