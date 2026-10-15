@@ -3,7 +3,63 @@ package reviewworkspace_test
 import (
 	"context"
 	"testing"
+	"time"
+
+	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
+
+func TestCanonicalBindingRejectsNilManagerAndContext(t *testing.T) {
+	f := newFixture(t)
+	w := prepare(t, f, "nil_binding")
+	origin := git(t, f.git, w.Directory, "remote", "get-url", "origin")
+	for _, input := range []struct {
+		name    string
+		manager *reviewworkspace.Manager
+		ctx     context.Context
+	}{
+		{"nil_manager", nil, context.Background()},
+		{"nil_context", f.manager, nil},
+		{"both_nil", nil, nil},
+	} {
+		t.Run(input.name, func(t *testing.T) {
+			if _, err := input.manager.BindRepository(input.ctx, w, "owner/project"); err == nil {
+				t.Fatal("nil binding argument accepted")
+			}
+			if got := git(t, f.git, w.Directory, "remote", "get-url", "origin"); got != origin {
+				t.Fatal("invalid binding changed origin")
+			}
+		})
+	}
+	if err := f.manager.Verify(context.Background(), w); err != nil {
+		t.Fatal("nil argument changed pinned workspace", err)
+	}
+}
+
+func TestCanonicalBindingRespectsCancelledAndExpiredParent(t *testing.T) {
+	f := newFixture(t)
+	w := prepare(t, f, "cancelled_binding")
+	origin := git(t, f.git, w.Directory, "remote", "get-url", "origin")
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, stop := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer stop()
+	for _, input := range []struct {
+		name string
+		ctx  context.Context
+	}{{"cancelled", cancelled}, {"expired", expired}} {
+		t.Run(input.name, func(t *testing.T) {
+			if _, err := f.manager.BindRepository(input.ctx, w, "owner/project"); err == nil {
+				t.Fatal("binding ignored terminated parent context")
+			}
+			if got := git(t, f.git, w.Directory, "remote", "get-url", "origin"); got != origin {
+				t.Fatal("cancelled binding changed origin")
+			}
+		})
+	}
+	if err := f.manager.Verify(context.Background(), w); err != nil {
+		t.Fatal("cancelled binding changed pinned workspace", err)
+	}
+}
 
 func TestCanonicalBindingPreservesPinnedSourceAndRejectsOriginDrift(t *testing.T) {
 	f := newFixture(t)
