@@ -36,7 +36,7 @@ fc reviews request 42 --key review-42-cli-a1 --expect-config 3 --channel cli --h
 fc reviews operation review_operation_0123456789abcdef0123456789abcdef
 ```
 
-`reviews execution` reads stored project configuration and its revision without checking provider availability. Missing configuration returns `review_not_configured`. `reviews request` explicitly authorizes background review work against the selected PR, channel, candidate and configuration revision. Its compact receipt contains only operation ID, initial `queued` state and revision; it does not mean a review started or completed. `reviews operation` reads current retained state and its stable reason. Reads make no provider calls and do not poll automatically.
+`reviews execution` reads stored project configuration and its revision without checking provider availability. Missing configuration returns `reviews_unconfigured` for reads and requests; `review_not_configured` identifies a selected PR or channel outside the stored configuration. `reviews request` explicitly authorizes background review work against the selected PR, channel, candidate and configuration revision. Its compact receipt contains only operation ID, initial `queued` state and revision; it does not mean a review started or completed. `reviews operation` reads current retained state and its stable reason. Reads make no provider calls and do not poll automatically.
 
 The corresponding MCP tools are `review_execution_read` with no fields, `review_operation_read` with `operation_id`, and `review_request` with `idempotency_key`, `expected_configuration_revision`, `pull_number`, `channel` and `head_sha`. Only the request tool authorizes external work. All calls use the shared five-second client budget; server preparation and execution continue independently of the request connection. Invalid selectors fail before loading credentials or contacting the service. After an unknown response, recover with the same explicit key and exact request; neither interface generates a new key or automatically retries.
 
@@ -121,6 +121,8 @@ Private captures preserve exact stdout/stderr bytes, process-start status, exit 
 Transport keepalives and routine process progress stay out of model-facing output. A dispatched command that loses its supervising process is recovered as interrupted or uncertain from retained state; a replacement process does not silently spend another review. Canceling local execution does not recover allowance or erase its evidence.
 
 Provider source reads retain the full validated UTF-8 title within a separate 4096-byte adapter bound. Browser PR metadata uses a trimmed prefix at a complete UTF-8 character boundary within its 500-byte display budget. That display limit does not reject an otherwise valid source comparison; the adapter bound is a local resource limit, not an asserted GitHub title maximum.
+
+Hosted trigger and allowance-query recovery permit a fixed five-second provider-clock lag at the retained admission lower boundary, in addition to flooring local sub-second precision. The upper observation bound, exact immutable command bytes, stable actor identity, unique match and complete collection remain required. Retain the original provider timestamp; an older or otherwise ambiguous match stays held and never authorizes reposting.
 
 ## Evidence and the native workspace
 
