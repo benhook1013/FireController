@@ -62,7 +62,7 @@ type fixHTTPRequest struct {
 	ProofNote        *string `json:"proof_note"`
 }
 
-func publicEvidence(value CLIEvidence) evidenceResponse {
+func publicEvidence(value ReviewEvidence) evidenceResponse {
 	capture := value.Capture
 	files := append([]string{}, capture.Review.ReviewedFiles...)
 	findings := make([]sourceFindingResponse, len(capture.Review.Findings))
@@ -101,7 +101,7 @@ func (e *Engine) readEvidenceHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	value, err := e.ReadCLIEvidence(r.Context(), scope, id)
+	value, err := e.ReadReviewEvidence(r.Context(), scope, id)
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -114,7 +114,7 @@ func (e *Engine) readAdjudicationHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	value, err := e.ReadCLIAdjudication(r.Context(), scope, id)
+	value, err := e.ReadReviewAdjudication(r.Context(), scope, id)
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -136,13 +136,13 @@ func (e *Engine) decideEvidenceHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, invalid())
 		return
 	}
-	request := CLIDecisionRequest{ExpectedRevision: wire.ExpectedRevision, Finding: *wire.Finding, Disposition: *wire.Disposition, Reason: *wire.Reason}
+	request := FindingDecisionRequest{ExpectedRevision: wire.ExpectedRevision, Finding: *wire.Finding, Disposition: *wire.Disposition, Reason: *wire.Reason}
 	key, err := core.IdempotencyKey(r, "idempotency_key_required")
 	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	receipt, err := e.DecideCLIFinding(r.Context(), scope, key, id, request)
+	receipt, err := e.DecideReviewFinding(r.Context(), scope, key, id, request)
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -164,13 +164,13 @@ func (e *Engine) fixEvidenceHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, invalid())
 		return
 	}
-	request := CLIFixRequest{ExpectedRevision: wire.ExpectedRevision, Finding: *wire.Finding, ExpectedSHA: wire.ExpectedSHA, FixSHA: *wire.FixSHA, ProofNote: *wire.ProofNote}
+	request := FindingFixRequest{ExpectedRevision: wire.ExpectedRevision, Finding: *wire.Finding, ExpectedSHA: wire.ExpectedSHA, FixSHA: *wire.FixSHA, ProofNote: *wire.ProofNote}
 	key, err := core.IdempotencyKey(r, "idempotency_key_required")
 	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	receipt, err := e.RecordCLIFix(r.Context(), scope, key, id, request)
+	receipt, err := e.RecordFindingFix(r.Context(), scope, key, id, request)
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -183,7 +183,7 @@ func (e *Engine) finalizeEvidenceHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var request CLIFinalizeRequest
+	var request FinalizeReviewRequest
 	if err := core.ReadJSON(w, r, &request); err != nil {
 		core.WriteError(w, err)
 		return
@@ -197,7 +197,7 @@ func (e *Engine) finalizeEvidenceHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	receipt, err := e.FinalizeCLI(r.Context(), scope, key, id, request)
+	receipt, err := e.FinalizeReviewEvidence(r.Context(), scope, key, id, request)
 	if err != nil {
 		core.WriteError(w, err)
 		return

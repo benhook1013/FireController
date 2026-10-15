@@ -11,18 +11,18 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-type CLIDecisionRequest struct {
+type FindingDecisionRequest struct {
 	ExpectedRevision *int64 `json:"expected_revision"`
 	Finding          int64  `json:"finding"`
 	Disposition      string `json:"disposition"`
 	Reason           string `json:"reason"`
 }
 
-type CLIFinalizeRequest struct {
+type FinalizeReviewRequest struct {
 	ExpectedRevision *int64 `json:"expected_revision"`
 }
 
-type CLIFixRequest struct {
+type FindingFixRequest struct {
 	ExpectedRevision *int64  `json:"expected_revision"`
 	Finding          int64   `json:"finding"`
 	ExpectedSHA      *string `json:"expected_sha"`
@@ -30,13 +30,13 @@ type CLIFixRequest struct {
 	ProofNote        string  `json:"proof_note"`
 }
 
-type CLICounts struct {
+type FindingCounts struct {
 	Found    int64 `json:"found"`
 	Accepted int64 `json:"accepted"`
 	Routed   int64 `json:"routed"`
 }
 
-type CLIFindingDecision struct {
+type FindingDecision struct {
 	Finding     int64  `json:"finding"`
 	Disposition string `json:"disposition"`
 	Reason      string `json:"reason"`
@@ -47,28 +47,28 @@ type CLIFindingDecision struct {
 	FixedAt     string `json:"fixed_at"`
 }
 
-// CLIAdjudication contains dispositions and proof references, not finding text.
+// ReviewAdjudication contains dispositions and proof references, not finding text.
 // FrozenCounts remain the original finalized source counts after corrections.
-type CLIAdjudication struct {
-	EvidenceID   string               `json:"evidence_id"`
-	Revision     int64                `json:"revision"`
-	Finalized    bool                 `json:"finalized"`
-	FrozenCounts *CLICounts           `json:"frozen_counts"`
-	Findings     []CLIFindingDecision `json:"findings"`
+type ReviewAdjudication struct {
+	EvidenceID   string            `json:"evidence_id"`
+	Revision     int64             `json:"revision"`
+	Finalized    bool              `json:"finalized"`
+	FrozenCounts *FindingCounts    `json:"frozen_counts"`
+	Findings     []FindingDecision `json:"findings"`
 }
 
 func adjudicationStorageError() error {
 	return core.Fail("storage_unavailable", "Stored review adjudication is unavailable.", 500)
 }
 
-// loadCLIAdjudication reads the immutable source and current projection in the
+// loadReviewAdjudication reads the immutable source and current projection in the
 // same snapshot. Source text is used internally and never included in the view.
-func loadCLIAdjudication(ctx context.Context, tx *sql.Tx, project, id string) (CLIEvidence, CLIAdjudication, error) {
+func loadReviewAdjudication(ctx context.Context, tx *sql.Tx, project, id string) (ReviewEvidence, ReviewAdjudication, error) {
 	var captureBody string
 	var stateBody sql.NullString
 	var revision sql.NullInt64
-	var evidence CLIEvidence
-	var state CLIAdjudication
+	var evidence ReviewEvidence
+	var state ReviewAdjudication
 	err := tx.QueryRowContext(ctx, `SELECT e.body_json,s.revision,s.body_json FROM review_execution_evidence e LEFT JOIN review_adjudication_state s ON s.evidence_id=e.id AND s.project_id=e.project_id WHERE e.project_id=? AND e.id=?`, project, id).Scan(&captureBody, &revision, &stateBody)
 	if errors.Is(err, sql.ErrNoRows) {
 		return evidence, state, core.Fail("not_found", "The review capture is unavailable in this project.", 404)
@@ -80,9 +80,9 @@ func loadCLIAdjudication(ctx context.Context, tx *sql.Tx, project, id string) (C
 		return evidence, state, adjudicationStorageError()
 	}
 	if !revision.Valid {
-		state = CLIAdjudication{EvidenceID: id, Findings: make([]CLIFindingDecision, len(evidence.Capture.Review.Findings))}
+		state = ReviewAdjudication{EvidenceID: id, Findings: make([]FindingDecision, len(evidence.Capture.Review.Findings))}
 		for i := range state.Findings {
-			state.Findings[i] = CLIFindingDecision{Finding: int64(i), Disposition: "unadjudicated"}
+			state.Findings[i] = FindingDecision{Finding: int64(i), Disposition: "unadjudicated"}
 		}
 		return evidence, state, nil
 	}
@@ -99,32 +99,32 @@ func loadCLIAdjudication(ctx context.Context, tx *sql.Tx, project, id string) (C
 	return evidence, state, nil
 }
 
-func (e *Engine) ReadCLIAdjudication(ctx context.Context, scope core.Scope, evidenceID string) (CLIAdjudication, error) {
+func (e *Engine) ReadReviewAdjudication(ctx context.Context, scope core.Scope, evidenceID string) (ReviewAdjudication, error) {
 	if !identifier.MatchString(evidenceID) {
-		return CLIAdjudication{}, invalid()
+		return ReviewAdjudication{}, invalid()
 	}
-	var state CLIAdjudication
+	var state ReviewAdjudication
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
-		_, state, err = loadCLIAdjudication(ctx, tx, scope.ProjectID, evidenceID)
+		_, state, err = loadReviewAdjudication(ctx, tx, scope.ProjectID, evidenceID)
 		return err
 	})
 	if err != nil {
-		return CLIAdjudication{}, err
+		return ReviewAdjudication{}, err
 	}
 	return state, nil
 }
 
 func validAdjudicationRevision(expected *int64) bool { return expected != nil && *expected >= 0 }
 
-func adjudicationMatches(state CLIAdjudication, expected int64) bool {
+func adjudicationMatches(state ReviewAdjudication, expected int64) bool {
 	return state.Revision == expected && state.Revision < math.MaxInt64
 }
 
-// persistCLIAdjudication atomically changes the disposition view, audit and
+// persistReviewAdjudication atomically changes the disposition view, audit and
 // event, plus an installed native browser projection. Mutate creates the receipt;
 // projection failure rolls back all changes without altering captured evidence.
-func (e *Engine) persistCLIAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, state CLIAdjudication, kind string, finding int64, request any, at string) (any, error) {
+func (e *Engine) persistReviewAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, state ReviewAdjudication, kind string, finding int64, request any, at string) (any, error) {
 	prior := state.Revision
 	state.Revision++
 	body, err := json.Marshal(state)
@@ -158,7 +158,7 @@ func (e *Engine) persistCLIAdjudication(ctx context.Context, tx *sql.Tx, scope c
 	return Receipt{ID: state.EvidenceID, State: kind, Revision: state.Revision}, nil
 }
 
-func (e *Engine) DecideCLIFinding(ctx context.Context, scope core.Scope, key, evidenceID string, request CLIDecisionRequest) (json.RawMessage, error) {
+func (e *Engine) DecideReviewFinding(ctx context.Context, scope core.Scope, key, evidenceID string, request FindingDecisionRequest) (json.RawMessage, error) {
 	if !identifier.MatchString(evidenceID) || !validAdjudicationRevision(request.ExpectedRevision) || request.Finding < 0 || request.Finding >= 100 || request.Disposition != "accepted" && request.Disposition != "rejected" || !safeText(request.Reason, 2048) || strings.TrimSpace(request.Reason) == "" {
 		return nil, invalid()
 	}
@@ -166,7 +166,7 @@ func (e *Engine) DecideCLIFinding(ctx context.Context, scope core.Scope, key, ev
 	expected := *request.ExpectedRevision
 	request.ExpectedRevision = &expected
 	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.decide", Target: evidenceID, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		_, state, err := loadCLIAdjudication(ctx, tx, scope.ProjectID, evidenceID)
+		_, state, err := loadReviewAdjudication(ctx, tx, scope.ProjectID, evidenceID)
 		if err != nil {
 			return nil, err
 		}
@@ -182,18 +182,18 @@ func (e *Engine) DecideCLIFinding(ctx context.Context, scope core.Scope, key, ev
 		}
 		at := stamp()
 		f.Disposition, f.Reason, f.ActorID, f.DecidedAt = request.Disposition, request.Reason, scope.PrincipalID, at
-		return e.persistCLIAdjudication(ctx, tx, scope, state, "adjudicated", request.Finding, request, at)
+		return e.persistReviewAdjudication(ctx, tx, scope, state, "adjudicated", request.Finding, request, at)
 	})
 }
 
-func (e *Engine) FinalizeCLI(ctx context.Context, scope core.Scope, key, evidenceID string, request CLIFinalizeRequest) (json.RawMessage, error) {
+func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, key, evidenceID string, request FinalizeReviewRequest) (json.RawMessage, error) {
 	if !identifier.MatchString(evidenceID) || !validAdjudicationRevision(request.ExpectedRevision) {
 		return nil, invalid()
 	}
 	expected := *request.ExpectedRevision
 	request.ExpectedRevision = &expected
 	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.finalize", Target: evidenceID, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		evidence, state, err := loadCLIAdjudication(ctx, tx, scope.ProjectID, evidenceID)
+		evidence, state, err := loadReviewAdjudication(ctx, tx, scope.ProjectID, evidenceID)
 		if err != nil {
 			return nil, err
 		}
@@ -207,7 +207,7 @@ func (e *Engine) FinalizeCLI(ctx context.Context, scope core.Scope, key, evidenc
 		if a.State != "completed" {
 			return nil, conflict()
 		}
-		counts := CLICounts{Found: int64(len(state.Findings))}
+		counts := FindingCounts{Found: int64(len(state.Findings))}
 		for _, f := range state.Findings {
 			switch f.Disposition {
 			case "accepted":
@@ -218,18 +218,18 @@ func (e *Engine) FinalizeCLI(ctx context.Context, scope core.Scope, key, evidenc
 			}
 		}
 		state.Finalized, state.FrozenCounts = true, &counts
-		return e.persistCLIAdjudication(ctx, tx, scope, state, "finalized", -1, request, stamp())
+		return e.persistReviewAdjudication(ctx, tx, scope, state, "finalized", -1, request, stamp())
 	})
 }
 
-func (e *Engine) RecordCLIFix(ctx context.Context, scope core.Scope, key, evidenceID string, request CLIFixRequest) (json.RawMessage, error) {
+func (e *Engine) RecordFindingFix(ctx context.Context, scope core.Scope, key, evidenceID string, request FindingFixRequest) (json.RawMessage, error) {
 	if !identifier.MatchString(evidenceID) || !validAdjudicationRevision(request.ExpectedRevision) || request.Finding < 0 || request.Finding >= 100 || request.ExpectedSHA == nil || *request.ExpectedSHA != "" && !sha.MatchString(*request.ExpectedSHA) || !sha.MatchString(request.FixSHA) || !safeText(request.ProofNote, 2048) || strings.TrimSpace(request.ProofNote) == "" {
 		return nil, invalid()
 	}
 	expected, expectedSHA := *request.ExpectedRevision, *request.ExpectedSHA
 	request.ExpectedRevision, request.ExpectedSHA = &expected, &expectedSHA
 	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.fix", Target: evidenceID, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		_, state, err := loadCLIAdjudication(ctx, tx, scope.ProjectID, evidenceID)
+		_, state, err := loadReviewAdjudication(ctx, tx, scope.ProjectID, evidenceID)
 		if err != nil {
 			return nil, err
 		}
@@ -245,6 +245,6 @@ func (e *Engine) RecordCLIFix(ctx context.Context, scope core.Scope, key, eviden
 		}
 		at := stamp()
 		f.FixSHA, f.ProofNote, f.FixedAt = request.FixSHA, request.ProofNote, at
-		return e.persistCLIAdjudication(ctx, tx, scope, state, "fix_recorded", request.Finding, request, at)
+		return e.persistReviewAdjudication(ctx, tx, scope, state, "fix_recorded", request.Finding, request, at)
 	})
 }

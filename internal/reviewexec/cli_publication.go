@@ -36,11 +36,11 @@ func (e *Engine) PublishCLI(ctx context.Context, project, evidenceID string, met
 	}
 	var receipt reviews.Receipt
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		evidence, state, err := loadCLIAdjudication(ctx, tx, project, evidenceID)
+		evidence, state, err := loadReviewAdjudication(ctx, tx, project, evidenceID)
 		if err != nil {
 			return err
 		}
-		if err := validateCLIEvidence(evidence.Capture); err != nil {
+		if err := validateReviewEvidence(evidence.Capture); err != nil {
 			return adjudicationStorageError()
 		}
 		attempt, err := readAttempt(ctx, tx, project, evidence.AttemptID)
@@ -102,7 +102,7 @@ func currentReviewPull(ctx context.Context, tx *sql.Tx, project string, number i
 	return pull, err
 }
 
-func cliPublicationRun(evidence CLIEvidence, state CLIAdjudication, attempt Attempt) (reviews.RunInput, error) {
+func cliPublicationRun(evidence ReviewEvidence, state ReviewAdjudication, attempt Attempt) (reviews.RunInput, error) {
 	capture := evidence.Capture
 	run := reviews.RunInput{SourceRunID: evidence.ID, Channel: "cli", HeadSHA: evidence.Anchor.CandidateSHA, Reviewer: attempt.Provider, Scope: "admitted comparison", Outcome: capture.Review.Outcome, Attributable: capture.Review.Complete, Complete: capture.Review.Complete, StartedAt: capture.StartedAt, FinishedAt: capture.FinishedAt, Found: capture.Review.ReportedFindings, Finalized: state.Finalized, CoverageLimits: []string{}, Findings: make([]reviews.Finding, 0, len(state.Findings))}
 	if !run.Complete {

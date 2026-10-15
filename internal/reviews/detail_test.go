@@ -40,9 +40,9 @@ func TestNativeDetailBudgetRejectsUpdateAtomicallyAndAllowsNearBudgetRead(t *tes
 	run := largeDetailRun()
 	// The immutable source is small enough for trusted CLI evidence ingestion;
 	// adding individually valid, escaped decision/proof text causes the overflow.
-	review := reviewprovider.CLIReview{Outcome: "completed", Complete: true, ReviewedFiles: []string{"source.go"}, ReportedFindings: 100}
+	review := reviewprovider.ParsedReview{Outcome: "completed", Complete: true, ReviewedFiles: []string{"source.go"}, ReportedFindings: 100}
 	for _, finding := range run.Findings {
-		review.Findings = append(review.Findings, reviewprovider.CLIFinding{Title: finding.Title, Detail: finding.Detail, Severity: finding.Severity, Path: "source.go", StartLine: 1, EndLine: 1})
+		review.Findings = append(review.Findings, reviewprovider.ParsedFinding{Title: finding.Title, Detail: finding.Detail, Severity: finding.Severity, Path: "source.go", StartLine: 1, EndLine: 1})
 	}
 	source, err := json.Marshal(review)
 	if err != nil || len(source)+8192 >= 2<<20 {

@@ -115,7 +115,7 @@ func reviewControlsFixture(t *testing.T) (*mutationAPI, http.Handler, string) {
 		t.Fatal(err)
 	}
 	digest := strings.Repeat("e", 64)
-	capture, err := engine.RecordCLIEvidence(ctx, f.project, attempt.ID, reviewexec.CLIEvidenceInput{CaptureID: "review_capture_" + digest[:32], CaptureSHA256: digest, CaptureBytes: 1024, StartedAt: now.Add(-time.Second).Format(time.RFC3339Nano), FinishedAt: now.Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: reviewprovider.CLIReview{Outcome: "completed", Complete: true, ReportedFindings: 1, ReviewedFiles: []string{"changed.go"}, Findings: []reviewprovider.CLIFinding{{Title: "Immutable source", Detail: "PRIVATE_FINDING_TEXT <script>literal</script>", Severity: "high", Path: "changed.go", StartLine: 1, EndLine: 1}}}})
+	capture, err := engine.RecordReviewEvidence(ctx, f.project, attempt.ID, reviewexec.ReviewEvidenceInput{CaptureID: "review_capture_" + digest[:32], CaptureSHA256: digest, CaptureBytes: 1024, StartedAt: now.Add(-time.Second).Format(time.RFC3339Nano), FinishedAt: now.Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: reviewprovider.ParsedReview{Outcome: "completed", Complete: true, ReportedFindings: 1, ReviewedFiles: []string{"changed.go"}, Findings: []reviewprovider.ParsedFinding{{Title: "Immutable source", Detail: "PRIVATE_FINDING_TEXT <script>literal</script>", Severity: "high", Path: "changed.go", StartLine: 1, EndLine: 1}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

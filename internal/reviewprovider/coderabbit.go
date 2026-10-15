@@ -17,17 +17,17 @@ type CLIContext struct {
 	WorkingDirectory string
 }
 
-type CLIFinding struct {
+type ParsedFinding struct {
 	Title, Detail, Severity, Path string
 	StartLine, EndLine            int64
 }
 
-// CLIReview contains derived plain evidence, never provider instructions or
+// ParsedReview contains derived plain evidence, never provider instructions or
 // diagnostics. Complete describes a valid completed capture, not policy credit.
-type CLIReview struct {
+type ParsedReview struct {
 	Outcome          string
 	Complete         bool
-	Findings         []CLIFinding
+	Findings         []ParsedFinding
 	ReviewedFiles    []string
 	ReportedFindings int64
 }
@@ -42,13 +42,13 @@ const (
 
 // ParseCLIReview parses bounded structured JSONL without running commands or
 // consulting configuration, the filesystem, credentials or provider state.
-func ParseCLIReview(capture []byte, exitCode int, expected CLIContext) (CLIReview, error) {
-	result := CLIReview{Outcome: "uncertain", Findings: []CLIFinding{}, ReviewedFiles: []string{}}
+func ParseCLIReview(capture []byte, exitCode int, expected CLIContext) (ParsedReview, error) {
+	result := ParsedReview{Outcome: "uncertain", Findings: []ParsedFinding{}, ReviewedFiles: []string{}}
 	if exitCode != 0 {
 		result.Outcome = "failed"
 	}
-	invalid := func() (CLIReview, error) {
-		return CLIReview{}, &Error{Code: "provider_invalid_response", Message: "The CLI capture is not valid structured review evidence."}
+	invalid := func() (ParsedReview, error) {
+		return ParsedReview{}, &Error{Code: "provider_invalid_response", Message: "The CLI capture is not valid structured review evidence."}
 	}
 	if len(capture) > cliCaptureMax || !utf8.Valid(capture) {
 		return invalid()
@@ -132,7 +132,7 @@ func ParseCLIReview(capture []byte, exitCode int, expected CLIContext) (CLIRevie
 			if _, exists := fields["comment"]; !exists || !cliProse(text["title"], 500, true) || !cliProse(text["comment"], 16<<10, false) || !cliProse(text["severity"], cliLineMax, false) || !cliPortablePath(text["fileName"], true) || numbers["endLine"] != 0 && numbers["startLine"] > numbers["endLine"] {
 				return invalid()
 			}
-			result.Findings = append(result.Findings, CLIFinding{Title: text["title"], Detail: text["comment"], Severity: cliSeverity(text["severity"]), Path: text["fileName"], StartLine: numbers["startLine"], EndLine: numbers["endLine"]})
+			result.Findings = append(result.Findings, ParsedFinding{Title: text["title"], Detail: text["comment"], Severity: cliSeverity(text["severity"]), Path: text["fileName"], StartLine: numbers["startLine"], EndLine: numbers["endLine"]})
 		case "complete", "error", "rate_limit", "rate_limited":
 			terminals++
 			if terminals != 1 {

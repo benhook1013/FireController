@@ -79,7 +79,7 @@ func TestReviewControlsNativeHTTPReceiptsReplayAndReadIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := strings.Repeat("e", 64)
-	capture, err := e.RecordCLIEvidence(ctx, f.project, attempt.ID, reviewexec.CLIEvidenceInput{CaptureID: "review_capture_" + hash[:32], CaptureSHA256: hash, CaptureBytes: 1024, ExpectedAnchor: anchor, StartedAt: now, FinishedAt: now, Review: reviewprovider.CLIReview{Outcome: "completed", Complete: true, ReportedFindings: 1, ReviewedFiles: []string{"source.go"}, Findings: []reviewprovider.CLIFinding{{Title: "Native source", Detail: "SOURCE_TEXT_NO_ECHO", Severity: "high"}}}})
+	capture, err := e.RecordReviewEvidence(ctx, f.project, attempt.ID, reviewexec.ReviewEvidenceInput{CaptureID: "review_capture_" + hash[:32], CaptureSHA256: hash, CaptureBytes: 1024, ExpectedAnchor: anchor, StartedAt: now, FinishedAt: now, Review: reviewprovider.ParsedReview{Outcome: "completed", Complete: true, ReportedFindings: 1, ReviewedFiles: []string{"source.go"}, Findings: []reviewprovider.ParsedFinding{{Title: "Native source", Detail: "SOURCE_TEXT_NO_ECHO", Severity: "high"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

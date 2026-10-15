@@ -293,7 +293,7 @@ func TestRetainCLIWorkspaceCaptureAndImmutableEvidence(t *testing.T) {
 		t.Fatal("first retained capture did not create exactly one ledger row and event")
 	}
 	readerScope := f.scopeWithAccess(t, f.reader, false, "read")
-	stored, err := f.engine.ReadCLIEvidence(context.Background(), readerScope, result.Receipt.ID)
+	stored, err := f.engine.ReadReviewEvidence(context.Background(), readerScope, result.Receipt.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func TestRetainCLIWithholdsCompleteCoverageOnCaptureOrWorkspaceMismatch(t *testi
 			if after := cliAttemptState(t, f.store, attempt.ID); after != before {
 				t.Fatalf("uncertain capture mutated attempt state: before=%s after=%s", before, after)
 			}
-			stored, err := f.engine.ReadCLIEvidence(context.Background(), f.scopeWithAccess(t, f.reader, false, "read"), result.Receipt.ID)
+			stored, err := f.engine.ReadReviewEvidence(context.Background(), f.scopeWithAccess(t, f.reader, false, "read"), result.Receipt.ID)
 			if err != nil || stored.Capture.Review.Outcome != tc.outcome || stored.Capture.Review.Complete || stored.Capture.CaptureBytes < 1 {
 				t.Fatalf("incomplete evidence was not retained honestly: %+v %v", stored, err)
 			}
@@ -515,7 +515,7 @@ func TestRetainCLIRestartBetweenCaptureAndLedgerPreservesMeasuredTimes(t *testin
 	if err != nil || !result.Complete || result.Outcome != "completed" {
 		t.Fatal("retained capture could not be ingested after restart", err)
 	}
-	stored, err := f.engine.ReadCLIEvidence(ctx, f.scopeWithAccess(t, f.reader, false, "read"), result.Receipt.ID)
+	stored, err := f.engine.ReadReviewEvidence(ctx, f.scopeWithAccess(t, f.reader, false, "read"), result.Receipt.ID)
 	if err != nil || stored.Capture.StartedAt != record.StartedAt.Format(time.RFC3339Nano) || stored.Capture.FinishedAt != record.FinishedAt.Format(time.RFC3339Nano) || stored.Capture.CaptureID != reference.ID || stored.Capture.CaptureSHA256 != reference.SHA256 || stored.Capture.CaptureBytes != reference.Bytes {
 		t.Fatal("ledger invented times or changed retained capture identity", err)
 	}
@@ -581,7 +581,7 @@ func TestRetainCLIExcessReviewedFilesRetainsInspectableInvalidCapture(t *testing
 	if err != nil || retained.Reason != "capture_invalid" || retained.Outcome != "uncertain" || retained.Complete || retained.Receipt.State != "captured" {
 		t.Fatalf("oversized inventory lost inspectable invalid evidence: %+v %v", retained, err)
 	}
-	stored, err := f.engine.ReadCLIEvidence(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), retained.Receipt.ID)
+	stored, err := f.engine.ReadReviewEvidence(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), retained.Receipt.ID)
 	if err != nil || stored.Capture.Review.Complete || stored.Capture.Review.Outcome != "uncertain" || len(stored.Capture.Review.ReviewedFiles) != 0 || len(stored.Capture.Review.Findings) != 0 || stored.Capture.Review.ReportedFindings != 0 {
 		t.Fatalf("invalid inventory escaped derived ledger bounds or acquired completed coverage: %+v %v", stored, err)
 	}

@@ -368,7 +368,7 @@ func TestVerifyActionRejectsAllHeadPendingAndLateCorrection(t *testing.T) {
 		t.Fatal("refused action mutated journal")
 	}
 	adjudicationDecide(t, f, id, "reject-old", 0, 0, "rejected")
-	body, err := f.e.FinalizeCLI(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-old", id, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(1)})
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-old", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
 	adjudicationReceipt(t, body, err, id, "finalized", 2)
 	if err := f.e.VerifyAction(t.Context(), attemptProject, next.ID, next.Revision); err != nil {
 		t.Fatal("closed old comparison blocked new head", err)

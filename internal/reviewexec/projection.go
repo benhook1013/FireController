@@ -24,7 +24,7 @@ func cliProjectionFindingID(evidenceID string, finding int64) string {
 	return evidenceID + ":finding:" + strconv.FormatInt(finding, 10)
 }
 
-func publishCLIAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, state CLIAdjudication) error {
+func publishCLIAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, state ReviewAdjudication) error {
 	input := reviews.NativeAdjudication{
 		SourceRunID: state.EvidenceID,
 		Finalized:   state.Finalized,

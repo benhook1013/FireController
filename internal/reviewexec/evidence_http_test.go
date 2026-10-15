@@ -304,7 +304,7 @@ func TestEvidenceHTTPEmptyCollectionsAreArrays(t *testing.T) {
 	f2, a, in := evidenceFixture(t, "cli", true)
 	in.Review.Outcome, in.Review.Complete = "failed", false
 	in.Review.ReviewedFiles = nil
-	r, err := f2.e.RecordCLIEvidence(t.Context(), attemptProject, a.ID, in)
+	r, err := f2.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestEvidenceHTTPFullDetailRetainsLedgerBound(t *testing.T) {
 	}
 	in.Review.ReportedFindings = 100
 	in.CaptureBytes = 2 << 20
-	r, err := f.e.RecordCLIEvidence(t.Context(), attemptProject, a.ID, in)
+	r, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, in)
 	if err != nil {
 		t.Fatal(err)
 	}

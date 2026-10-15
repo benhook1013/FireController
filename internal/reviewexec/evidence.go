@@ -18,26 +18,26 @@ import (
 
 const evidenceInputLimit = 2 << 20
 
-// CLIEvidenceInput is trusted parsed capture metadata, never a raw upload.
-type CLIEvidenceInput struct {
-	CaptureID      string                   `json:"capture_id"`
-	CaptureSHA256  string                   `json:"capture_sha256"`
-	CaptureBytes   int64                    `json:"capture_bytes"`
-	StartedAt      string                   `json:"started_at"`
-	FinishedAt     string                   `json:"finished_at"`
-	Review         reviewprovider.CLIReview `json:"review"`
-	ExpectedAnchor Anchor                   `json:"expected_anchor"`
+// ReviewEvidenceInput is trusted parsed capture metadata, never a raw upload.
+type ReviewEvidenceInput struct {
+	CaptureID      string                      `json:"capture_id"`
+	CaptureSHA256  string                      `json:"capture_sha256"`
+	CaptureBytes   int64                       `json:"capture_bytes"`
+	StartedAt      string                      `json:"started_at"`
+	FinishedAt     string                      `json:"finished_at"`
+	Review         reviewprovider.ParsedReview `json:"review"`
+	ExpectedAnchor Anchor                      `json:"expected_anchor"`
 }
 
-type CLIEvidence struct {
-	ID                    string           `json:"id"`
-	ProjectID             string           `json:"project_id"`
-	AttemptID             string           `json:"attempt_id"`
-	OperationID           string           `json:"operation_id"`
-	CapabilityFingerprint string           `json:"capability_fingerprint"`
-	Anchor                Anchor           `json:"anchor"`
-	Capture               CLIEvidenceInput `json:"capture"`
-	RecordedAt            string           `json:"recorded_at"`
+type ReviewEvidence struct {
+	ID                    string              `json:"id"`
+	ProjectID             string              `json:"project_id"`
+	AttemptID             string              `json:"attempt_id"`
+	OperationID           string              `json:"operation_id"`
+	CapabilityFingerprint string              `json:"capability_fingerprint"`
+	Anchor                Anchor              `json:"anchor"`
+	Capture               ReviewEvidenceInput `json:"capture"`
+	RecordedAt            string              `json:"recorded_at"`
 }
 
 func validEvidencePath(s string) bool {
@@ -62,7 +62,7 @@ func validEvidenceAnchor(a Anchor) bool {
 	return err == nil && !t.IsZero() && a.RepositoryID > 0 && repository.MatchString(a.Repository) && a.PullNumber > 0 && a.PullNumber <= 2147483647 && a.ParentPullNumber >= 0 && a.ParentPullNumber <= 2147483647 && a.BaseRef != "" && safeText(a.BaseRef, 256) && sha.MatchString(a.CandidateSHA) && sha.MatchString(a.BaseSHA) && sha.MatchString(a.ParentSHA) && sha.MatchString(a.MergeBaseSHA) && hash.MatchString(a.PatchSHA256)
 }
 
-func validateCLIEvidence(in CLIEvidenceInput) error {
+func validateReviewEvidence(in ReviewEvidenceInput) error {
 	if !hash.MatchString(in.CaptureSHA256) || in.CaptureID != "review_capture_"+in.CaptureSHA256[:32] || in.CaptureBytes < 1 || in.CaptureBytes > 24<<20 || !validEvidenceAnchor(in.ExpectedAnchor) {
 		return invalid()
 	}
@@ -100,21 +100,21 @@ func validateCLIEvidence(in CLIEvidenceInput) error {
 	return nil
 }
 
-// RecordCLIEvidence retains one immutable capture without settling or crediting
+// RecordReviewEvidence retains one immutable capture without settling or crediting
 // its attempt. Only trusted in-process capture integration may call this method.
-func (e *Engine) RecordCLIEvidence(ctx context.Context, project, attemptID string, input CLIEvidenceInput) (Receipt, error) {
+func (e *Engine) RecordReviewEvidence(ctx context.Context, project, attemptID string, input ReviewEvidenceInput) (Receipt, error) {
 	if !identifier.MatchString(project) || !identifier.MatchString(attemptID) {
 		return Receipt{}, invalid()
 	}
 	// Validate before JSON encoding, which otherwise replaces invalid UTF-8.
-	if err := validateCLIEvidence(input); err != nil {
+	if err := validateReviewEvidence(input); err != nil {
 		return Receipt{}, err
 	}
 	canonical, err := json.Marshal(input)
 	if err != nil || len(canonical) > evidenceInputLimit {
 		return Receipt{}, invalid()
 	}
-	var owned CLIEvidenceInput
+	var owned ReviewEvidenceInput
 	if json.Unmarshal(canonical, &owned) != nil {
 		return Receipt{}, invalid()
 	}
@@ -152,7 +152,7 @@ func (e *Engine) RecordCLIEvidence(ctx context.Context, project, attemptID strin
 		if repositoryID != a.Anchor.RepositoryID {
 			return conflict()
 		}
-		record := CLIEvidence{ID: core.NewID("review_evidence"), ProjectID: project, AttemptID: a.ID, OperationID: o.ID, CapabilityFingerprint: o.CapabilityFingerprint, Anchor: *a.Anchor, Capture: owned, RecordedAt: stamp()}
+		record := ReviewEvidence{ID: core.NewID("review_evidence"), ProjectID: project, AttemptID: a.ID, OperationID: o.ID, CapabilityFingerprint: o.CapabilityFingerprint, Anchor: *a.Anchor, Capture: owned, RecordedAt: stamp()}
 		body, err := json.Marshal(record)
 		if err != nil {
 			return invalid()
@@ -175,12 +175,12 @@ func (e *Engine) RecordCLIEvidence(ctx context.Context, project, attemptID strin
 	return receipt, nil
 }
 
-// ReadCLIEvidence explicitly reads full retained evidence with current access.
-func (e *Engine) ReadCLIEvidence(ctx context.Context, scope core.Scope, id string) (CLIEvidence, error) {
+// ReadReviewEvidence explicitly reads full retained evidence with current access.
+func (e *Engine) ReadReviewEvidence(ctx context.Context, scope core.Scope, id string) (ReviewEvidence, error) {
 	if !identifier.MatchString(id) {
-		return CLIEvidence{}, invalid()
+		return ReviewEvidence{}, invalid()
 	}
-	var result CLIEvidence
+	var result ReviewEvidence
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		var body string
 		err := tx.QueryRowContext(ctx, `SELECT body_json FROM review_execution_evidence WHERE project_id=? AND id=?`, scope.ProjectID, id).Scan(&body)
@@ -196,7 +196,7 @@ func (e *Engine) ReadCLIEvidence(ctx context.Context, scope core.Scope, id strin
 		return nil
 	})
 	if err != nil {
-		return CLIEvidence{}, err
+		return ReviewEvidence{}, err
 	}
 	return result, nil
 }

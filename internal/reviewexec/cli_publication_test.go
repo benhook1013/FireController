@@ -26,7 +26,7 @@ func (trap *cliPublicationHTTPTrap) RoundTrip(*http.Request) (*http.Response, er
 	return nil, fmt.Errorf("unexpected HTTP request during local publication")
 }
 
-func cliPublicationFixture(t *testing.T, count int, outcome string) (*attemptFixture, Attempt, CLIEvidence) {
+func cliPublicationFixture(t *testing.T, count int, outcome string) (*attemptFixture, Attempt, ReviewEvidence) {
 	t.Helper()
 	f, a, input := evidenceFixture(t, "cli", true)
 	if err := EnsureAdjudicationSchema(context.Background(), f.store); err != nil {
@@ -47,7 +47,7 @@ func cliPublicationFixture(t *testing.T, count int, outcome string) (*attemptFix
 	if input.Review.Complete {
 		input.Review.ReportedFindings = int64(count)
 	}
-	r, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, input)
+	r, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func cliPublicationFixture(t *testing.T, count int, outcome string) (*attemptFix
 	f.e.Register(mux)
 	reviews.Register(mux, f.store)
 	f.handler = mux
-	evidence, err := f.e.ReadCLIEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), r.ID)
+	evidence, err := f.e.ReadReviewEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), r.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,11 +157,11 @@ func TestPublishCLIPrepublicationFinalizationAndProofCorrection(t *testing.T) {
 	adjudicationDecide(t, f, evidence.ID, "before-reject", 1, 1, "rejected")
 	adjudicationComplete(t, f, a)
 	scope := f.scope(t, attemptProject, f.writer, false)
-	body, err := f.e.FinalizeCLI(ctx, scope, "before-finalize", evidence.ID, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(2)})
+	body, err := f.e.FinalizeReviewEvidence(ctx, scope, "before-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
 	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 3)
-	body, err = f.e.RecordCLIFix(ctx, scope, "before-fix", evidence.ID, CLIFixRequest{ExpectedRevision: adjudicationRevision(3), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Original retained proof"})
+	body, err = f.e.RecordFindingFix(ctx, scope, "before-fix", evidence.ID, FindingFixRequest{ExpectedRevision: adjudicationRevision(3), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Original retained proof"})
 	adjudicationReceipt(t, body, err, evidence.ID, "fix_recorded", 4)
-	body, err = f.e.RecordCLIFix(ctx, scope, "before-fix-correction", evidence.ID, CLIFixRequest{ExpectedRevision: adjudicationRevision(4), Finding: 0, ExpectedSHA: adjudicationSHA(strings.Repeat("f", 40)), FixSHA: strings.Repeat("e", 40), ProofNote: "Corrected retained proof"})
+	body, err = f.e.RecordFindingFix(ctx, scope, "before-fix-correction", evidence.ID, FindingFixRequest{ExpectedRevision: adjudicationRevision(4), Finding: 0, ExpectedSHA: adjudicationSHA(strings.Repeat("f", 40)), FixSHA: strings.Repeat("e", 40), ProofNote: "Corrected retained proof"})
 	adjudicationReceipt(t, body, err, evidence.ID, "fix_recorded", 5)
 	adjudicationDecide(t, f, evidence.ID, "before-decision-correction", 5, 1, "accepted")
 	ledger := adjudicationRead(t, f, evidence.ID)
@@ -400,21 +400,21 @@ func TestPublishCLIOversizedDetailRollsBackInitialProjection(t *testing.T) {
 		input.Review.Findings = append(input.Review.Findings, finding)
 	}
 	input.Review.ReportedFindings = 100
-	r, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, input)
+	r, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	scope := f.scope(t, attemptProject, f.writer, false)
 	for i := int64(0); i < 100; i++ {
-		body, err := f.e.DecideCLIFinding(context.Background(), scope, fmt.Sprintf("large-decision-%d", i), r.ID, CLIDecisionRequest{ExpectedRevision: adjudicationRevision(i * 2), Finding: i, Disposition: "accepted", Reason: strings.Repeat("<", 2048)})
+		body, err := f.e.DecideReviewFinding(context.Background(), scope, fmt.Sprintf("large-decision-%d", i), r.ID, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(i * 2), Finding: i, Disposition: "accepted", Reason: strings.Repeat("<", 2048)})
 		adjudicationReceipt(t, body, err, r.ID, "adjudicated", i*2+1)
-		body, err = f.e.RecordCLIFix(context.Background(), scope, fmt.Sprintf("large-fix-%d", i), r.ID, CLIFixRequest{ExpectedRevision: adjudicationRevision(i*2 + 1), Finding: i, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: strings.Repeat("<", 2048)})
+		body, err = f.e.RecordFindingFix(context.Background(), scope, fmt.Sprintf("large-fix-%d", i), r.ID, FindingFixRequest{ExpectedRevision: adjudicationRevision(i*2 + 1), Finding: i, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: strings.Repeat("<", 2048)})
 		adjudicationReceipt(t, body, err, r.ID, "fix_recorded", i*2+2)
 	}
 	// Demonstrate this fixture exceeds the existing native detail byte cap,
 	// rather than relying only on individually valid maximum field lengths.
-	evidence, state, err := func() (CLIEvidence, CLIAdjudication, error) {
-		evidence, err := f.e.ReadCLIEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), r.ID)
+	evidence, state, err := func() (ReviewEvidence, ReviewAdjudication, error) {
+		evidence, err := f.e.ReadReviewEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), r.ID)
 		return evidence, adjudicationRead(t, f, r.ID), err
 	}()
 	if err != nil {

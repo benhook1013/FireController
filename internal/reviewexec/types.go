@@ -100,7 +100,7 @@ type Engine struct {
 	capabilities        map[string]Capability
 	wake                chan struct{}
 	running             atomic.Bool
-	publishAdjudication func(context.Context, *sql.Tx, core.Scope, CLIAdjudication) error
+	publishAdjudication func(context.Context, *sql.Tx, core.Scope, ReviewAdjudication) error
 	publishAttempt      func(context.Context, *sql.Tx, Attempt) error
 }
 

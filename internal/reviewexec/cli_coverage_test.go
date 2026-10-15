@@ -28,7 +28,7 @@ func coverageFixture(t *testing.T, count int, partial bool) (*attemptFixture, At
 		t.Fatal(err)
 	}
 	original := in.Review.Findings[0]
-	in.Review.Findings = make([]reviewprovider.CLIFinding, count)
+	in.Review.Findings = make([]reviewprovider.ParsedFinding, count)
 	for i := range in.Review.Findings {
 		in.Review.Findings[i] = original
 	}
@@ -36,7 +36,7 @@ func coverageFixture(t *testing.T, count int, partial bool) (*attemptFixture, At
 	if partial {
 		in.Review.Outcome, in.Review.Complete = "failed", false
 	}
-	receipt, err := f.e.RecordCLIEvidence(t.Context(), attemptProject, a.ID, in)
+	receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,13 +47,13 @@ func coverageFixture(t *testing.T, count int, partial bool) (*attemptFixture, At
 func coverageFinalize(t *testing.T, f *attemptFixture, a Attempt, id string, revision int64) {
 	t.Helper()
 	adjudicationComplete(t, f, a)
-	body, err := f.e.FinalizeCLI(t.Context(), f.scope(t, attemptProject, f.writer, false), "coverage-finalize", id, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(revision)})
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "coverage-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(revision)})
 	adjudicationReceipt(t, body, err, id, "finalized", revision+1)
 }
 
 func coverageFix(t *testing.T, f *attemptFixture, id, key string, revision, finding int64, previous string) {
 	t.Helper()
-	body, err := f.e.RecordCLIFix(t.Context(), f.scope(t, attemptProject, f.writer, false), key, id, CLIFixRequest{ExpectedRevision: adjudicationRevision(revision), Finding: finding, ExpectedSHA: &previous, FixSHA: strings.Repeat("f", 40), ProofNote: "Explicit focused proof"})
+	body, err := f.e.RecordFindingFix(t.Context(), f.scope(t, attemptProject, f.writer, false), key, id, FindingFixRequest{ExpectedRevision: adjudicationRevision(revision), Finding: finding, ExpectedSHA: &previous, FixSHA: strings.Repeat("f", 40), ProofNote: "Explicit focused proof"})
 	adjudicationReceipt(t, body, err, id, "fix_recorded", revision+1)
 }
 
@@ -85,11 +85,11 @@ func TestCLICoverageCurrentProofAndFrozenCountsAcrossCorrections(t *testing.T) {
 	coverageRead(t, f, a, current, false)
 	coverageFix(t, f, id, "fix-second", 5, 1, "")
 	coverageRead(t, f, a, current, true)
-	body, err := f.e.RecordCLIFix(t.Context(), f.scope(t, attemptProject, f.writer, false), "correct-fix", id, CLIFixRequest{ExpectedRevision: adjudicationRevision(6), Finding: 0, ExpectedSHA: adjudicationSHA(strings.Repeat("f", 40)), FixSHA: strings.Repeat("e", 40), ProofNote: "Corrected immutable fix reference"})
+	body, err := f.e.RecordFindingFix(t.Context(), f.scope(t, attemptProject, f.writer, false), "correct-fix", id, FindingFixRequest{ExpectedRevision: adjudicationRevision(6), Finding: 0, ExpectedSHA: adjudicationSHA(strings.Repeat("f", 40)), FixSHA: strings.Repeat("e", 40), ProofNote: "Corrected immutable fix reference"})
 	adjudicationReceipt(t, body, err, id, "fix_recorded", 7)
 	coverageRead(t, f, a, current, true)
 	state := adjudicationRead(t, f, id)
-	if state.FrozenCounts == nil || *state.FrozenCounts != (CLICounts{Found: 2, Accepted: 1}) {
+	if state.FrozenCounts == nil || *state.FrozenCounts != (FindingCounts{Found: 2, Accepted: 1}) {
 		t.Fatal("coverage corrections altered frozen counts", state)
 	}
 	// Current actor authorization and current operator bindings are independent
@@ -213,26 +213,26 @@ func TestCLICoverageImportedWorkspaceDoesNotCreateNativeEvidence(t *testing.T) {
 func TestCLICoverageMalformedRetainedProofFailsClosed(t *testing.T) {
 	for _, test := range []struct {
 		name   string
-		change func(*CLIEvidence, *CLIAdjudication)
+		change func(*ReviewEvidence, *ReviewAdjudication)
 	}{
-		{"anchor", func(e *CLIEvidence, s *CLIAdjudication) { e.Anchor.PatchSHA256 = "invalid" }},
-		{"capture-count", func(e *CLIEvidence, s *CLIAdjudication) { e.Capture.Review.ReportedFindings++ }},
-		{"capture-identity", func(e *CLIEvidence, s *CLIAdjudication) { e.AttemptID = "other-attempt" }},
-		{"missing-finding", func(e *CLIEvidence, s *CLIAdjudication) { s.Findings = nil }},
-		{"frozen-counts", func(e *CLIEvidence, s *CLIAdjudication) { s.FrozenCounts.Found++ }},
-		{"invalid-reason", func(e *CLIEvidence, s *CLIAdjudication) { s.Findings[0].Reason = "" }},
-		{"invalid-actor", func(e *CLIEvidence, s *CLIAdjudication) { s.Findings[0].ActorID = "bad actor" }},
-		{"invalid-decision-time", func(e *CLIEvidence, s *CLIAdjudication) { s.Findings[0].DecidedAt = "not-a-time" }},
-		{"invalid-fix", func(e *CLIEvidence, s *CLIAdjudication) { s.Findings[0].FixSHA = "short" }},
-		{"invalid-proof", func(e *CLIEvidence, s *CLIAdjudication) { s.Findings[0].ProofNote = "" }},
-		{"invalid-fix-time", func(e *CLIEvidence, s *CLIAdjudication) { s.Findings[0].FixedAt = "not-a-time" }},
+		{"anchor", func(e *ReviewEvidence, s *ReviewAdjudication) { e.Anchor.PatchSHA256 = "invalid" }},
+		{"capture-count", func(e *ReviewEvidence, s *ReviewAdjudication) { e.Capture.Review.ReportedFindings++ }},
+		{"capture-identity", func(e *ReviewEvidence, s *ReviewAdjudication) { e.AttemptID = "other-attempt" }},
+		{"missing-finding", func(e *ReviewEvidence, s *ReviewAdjudication) { s.Findings = nil }},
+		{"frozen-counts", func(e *ReviewEvidence, s *ReviewAdjudication) { s.FrozenCounts.Found++ }},
+		{"invalid-reason", func(e *ReviewEvidence, s *ReviewAdjudication) { s.Findings[0].Reason = "" }},
+		{"invalid-actor", func(e *ReviewEvidence, s *ReviewAdjudication) { s.Findings[0].ActorID = "bad actor" }},
+		{"invalid-decision-time", func(e *ReviewEvidence, s *ReviewAdjudication) { s.Findings[0].DecidedAt = "not-a-time" }},
+		{"invalid-fix", func(e *ReviewEvidence, s *ReviewAdjudication) { s.Findings[0].FixSHA = "short" }},
+		{"invalid-proof", func(e *ReviewEvidence, s *ReviewAdjudication) { s.Findings[0].ProofNote = "" }},
+		{"invalid-fix-time", func(e *ReviewEvidence, s *ReviewAdjudication) { s.Findings[0].FixedAt = "not-a-time" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, a, id, current := coverageFixture(t, 1, false)
 			adjudicationDecide(t, f, id, "accepted", 0, 0, "accepted")
 			coverageFix(t, f, id, "fixed", 1, 0, "")
 			coverageFinalize(t, f, a, id, 2)
-			evidence, err := f.e.ReadCLIEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), id)
+			evidence, err := f.e.ReadReviewEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), id)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -397,7 +397,7 @@ func TestCLIComparisonOlderHeadPendingUntilClosed(t *testing.T) {
 	coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
 	adjudicationDecide(t, f, id, "accept-old", 0, 0, "accepted")
 	coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
-	body, err := f.e.FinalizeCLI(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-old", id, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(1)})
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-old", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
 	adjudicationReceipt(t, body, err, id, "finalized", 2)
 	coverageComparison(t, f, a, current, CLIComparisonState{Pending: true})
 	coverageFix(t, f, id, "fix-old", 2, 0, "")
@@ -408,20 +408,20 @@ func TestCLIComparisonOlderHeadPendingUntilClosed(t *testing.T) {
 func TestCLIComparisonReadyRunCannotMaskPendingRun(t *testing.T) {
 	f, a, id, current := coverageFixture(t, 0, false)
 	coverageFinalize(t, f, a, id, 0)
-	source, err := f.e.ReadCLIEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), id)
+	source, err := f.e.ReadReviewEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	next := coverageNextAttempt(t, f, "another-explicit-intent", "cli", current.Pull.HeadSHA)
 	capture := source.Capture
 	capture.ExpectedAnchor = *next.Anchor
-	receipt, err := f.e.RecordCLIEvidence(t.Context(), attemptProject, next.ID, capture)
+	receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, next.ID, capture)
 	if err != nil {
 		t.Fatal(err)
 	}
 	adjudicationComplete(t, f, next)
 	coverageComparison(t, f, a, current, CLIComparisonState{Covered: true, Pending: true})
-	body, err := f.e.FinalizeCLI(t.Context(), f.scope(t, attemptProject, f.writer, false), "close-second", receipt.ID, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(0)})
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "close-second", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
 	adjudicationReceipt(t, body, err, receipt.ID, "finalized", 1)
 	coverageComparison(t, f, a, current, CLIComparisonState{Covered: true})
 	// A completed intent with no retained capture also dominates ready credit.
