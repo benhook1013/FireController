@@ -78,3 +78,7 @@ Errors use compact JSON `{error: {code, message, details?}, request_id}`. Authen
 Writes wait at most two seconds for admission/transaction context. SQLite lock contention returns `overloaded` with no internal retry; retry using the same key after contention clears. Health/readiness are `/healthz` and `/readyz`; readiness depends on local storage rather than provider availability. These limits do not establish production throughput or a deadline for arbitrary filesystem I/O.
 
 See [development proof](development.md) for executed checks and unproven boundaries.
+
+## Domain schema startup
+
+Jobs and inbox schemas have separate ordered migration versions stored in instance metadata. Startup applies only missing migrations under the same exclusive transaction as their version records and refuses a newer domain version before running its DDL. Failed migrations roll back their schema changes and version updates together. The original unversioned domain tables enter this sequence at version zero using their idempotent initial DDL; this does not validate an arbitrarily modified database. Use a compatible binary for a newer schema rather than deleting version records. Migration checks run before serving requests, never during ordinary reads or writes.

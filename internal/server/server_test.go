@@ -426,7 +426,7 @@ func TestConcurrentKeysAndRepositoryBindingAreAtomic(t *testing.T) {
 
 func TestStartupMigrationAndMutationFailuresRollback(t *testing.T) {
 	f := setup(t)
-	if err := f.store.EnsureSchema(context.Background(), "CREATE TABLE startup_probe(id INTEGER)", "INVALID DDL"); err == nil {
+	if err := f.store.EnsureSchema(context.Background(), "startup_probe", []string{"CREATE TABLE startup_probe(id INTEGER)", "INVALID DDL"}); err == nil {
 		t.Fatal("failed startup schema succeeded")
 	}
 	var exists int
@@ -568,9 +568,11 @@ func TestWriteDeadlineInterruptsStagedSQLiteAndKeepsKeyRetryable(t *testing.T) {
 	for _, shortParent := range []bool{false, true} {
 		// workers.create stages its worker first, then AppendEvent executes this
 		// trigger. Both staged domain and event work must disappear on expiry.
-		if err := f.store.EnsureSchema(context.Background(), `CREATE TRIGGER deadline_probe AFTER INSERT ON events WHEN NEW.event_type='workers.created' BEGIN
+		domain := core.NewID("deadline")
+		createTrigger := []string{`CREATE TRIGGER deadline_probe AFTER INSERT ON events WHEN NEW.event_type='workers.created' BEGIN
 SELECT sum(x) FROM (WITH RECURSIVE counter(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM counter WHERE x<1000000000) SELECT x FROM counter);
-END`); err != nil {
+END`}
+		if err := f.store.EnsureSchema(context.Background(), domain, createTrigger); err != nil {
 			t.Fatal(err)
 		}
 		beforeWorkers, beforeEvents, beforeReceipts := count(t, f.store, "workers"), count(t, f.store, "events"), count(t, f.store, "receipts")
@@ -601,7 +603,7 @@ END`); err != nil {
 		if count(t, f.store, "workers") != beforeWorkers || count(t, f.store, "events") != beforeEvents || count(t, f.store, "receipts") != beforeReceipts {
 			t.Fatal("expired write left domain state, event or receipt")
 		}
-		if err := f.store.EnsureSchema(context.Background(), "DROP TRIGGER deadline_probe"); err != nil {
+		if err := f.store.EnsureSchema(context.Background(), domain, createTrigger, []string{"DROP TRIGGER deadline_probe"}); err != nil {
 			t.Fatal(err)
 		}
 		first := request(f.handler, "POST", path, f.admin, key, "", body)

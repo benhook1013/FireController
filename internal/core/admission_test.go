@@ -148,7 +148,7 @@ func TestQueryAdmissionAcrossPublicRoutes(t *testing.T) {
 	base := "/api/v1/projects/" + f.project
 	for _, route := range []struct{ path, code string }{
 		{"/api/v1/projects", "validation_failed"}, {base + "/workers", "validation_failed"},
-		{base + "/jobs", "invalid_query"}, {base + "/jobs/" + f.job + "/history", "invalid_query"},
+		{base + "/jobs", "invalid_query"}, {base + "/jobs/" + f.job, "invalid_query"}, {base + "/jobs/missing", "invalid_query"}, {base + "/jobs/missing/history", "invalid_query"}, {base + "/jobs/" + f.job + "/history", "invalid_query"},
 		{base + "/inbox/" + f.worker, "validation_failed"}, {base + "/conversations/missing", "validation_failed"},
 	} {
 		for _, query := range []string{"limit=%ZZ", "limit=1&%ZZ=private-value", "limit=1&limit=2", "cursor=a&cursor=b", "unsupported=private-value", "limit=1;cursor=x"} {
@@ -191,5 +191,27 @@ func TestSharedAdmissionPreservesValuesAndMutationKeyValidation(t *testing.T) {
 		w := httptest.NewRecorder()
 		core.WriteError(w, err)
 		admissionError(t, w, "validation_failed")
+	}
+}
+
+func TestJobMutationQueriesCannotWrite(t *testing.T) {
+	f := newAdmissionFixture(t)
+	base := "/api/v1/projects/" + f.project
+	for _, route := range []struct{ method, path, body string }{
+		{"POST", base + "/jobs", `{"title":"Query must not create"}`},
+		{"PATCH", base + "/jobs/" + f.job, `{"expected_revision":1,"title":"Query must not edit"}`},
+	} {
+		for _, query := range []string{"unknown=private-value", "unknown=1&unknown=2", "status=blocked", "x=%ZZ"} {
+			admissionError(t, f.request(route.method, route.path, route.body, []string{"reject-query"}, query), "invalid_query")
+		}
+	}
+	var receipts, events, jobs, history int
+	for table, dest := range map[string]*int{"receipts": &receipts, "events": &events, "jobs": &jobs, "job_history": &history} {
+		if err := f.store.DB().QueryRow("SELECT count(*) FROM " + table).Scan(dest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if receipts != 3 || events != 3 || jobs != 1 || history != 1 || f.providerCalls != 1 {
+		t.Fatalf("rejected query wrote state or called provider: %d %d %d %d %d", receipts, events, jobs, history, f.providerCalls)
 	}
 }
