@@ -11,6 +11,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	env := make(map[string]string)
@@ -18,5 +22,5 @@ func main() {
 		name, value, _ := strings.Cut(entry, "=")
 		env[name] = value
 	}
-	os.Exit(mcpadapter.Run(ctx, os.Args[1:], env, os.Stdin, os.Stdout, os.Stderr))
+	return mcpadapter.Run(ctx, os.Args[1:], env, os.Stdin, os.Stdout, os.Stderr)
 }
