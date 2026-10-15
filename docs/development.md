@@ -67,6 +67,8 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | --- | --- |
 | `fc doctor` | Verified instance/project/worker binding, without credentials or a PR scan. |
 | `fc workers list` | One compact worker page in the bound project. |
+| `fc workers pause-state` | Bound worker’s explicit pause, reason and independent revision. |
+| `fc workers pause-history` | One explicit bounded pause-history page. |
 | `fc jobs list` | One compact job page; optional worker/status filters. |
 | `fc jobs primary` | Bound worker’s compact primary-job selection and independent revision. |
 | `fc jobs primary-history` | One explicit bounded page of primary-job changes. |
@@ -107,6 +109,8 @@ Quick local mutations use the same private profile and one five-second command b
 
 | Command | Required and optional request fields |
 | --- | --- |
+| `fc workers pause --reason TEXT --key KEY --expect-revision N` | Guarded bound-worker coordination pause; reason is explicit, including an empty string. |
+| `fc workers resume --key KEY --expect-revision N` | Explicitly clear the pause and reason without changing jobs or focus. |
 | `fc jobs create --key KEY --title TITLE` | Optional `--brief TEXT`, `--worker ID`, `--status STATUS`; defaults to active. |
 | `fc jobs edit ID --key KEY --expect-revision N` | At least one of `--title`, `--brief`, `--worker`, `--status`; empty brief or worker explicitly clears that field. |
 | `fc jobs checkpoint ID --key KEY --expect-revision N --done TEXT --next TEXT` | Optional `--blocker TEXT`, repeatable `--evidence REF`; append immutable progress without editing the job. |

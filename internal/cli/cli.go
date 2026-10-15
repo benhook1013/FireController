@@ -152,6 +152,10 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		}{identity, true}
 	case call.command == "reviews":
 		value, err = executeReview(requestCtx, service, call)
+	case call.command == "workers" && call.subcommand == "pause-state":
+		value, err = service.WorkerPause(requestCtx)
+	case call.command == "workers" && call.subcommand == "pause-history":
+		value, err = service.WorkerPauseHistory(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "workers":
 		value, err = service.Workers(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "jobs" && call.subcommand == "primary":
@@ -256,7 +260,7 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	allowed := map[string]bool{}
 	switch call.command + " " + call.subcommand {
-	case "jobs primary-history", "workers list", "jobs history", "jobs checkpoints", "jobs updates", "jobs checklist-history", "inbox thread":
+	case "workers pause-history", "jobs primary-history", "workers list", "jobs history", "jobs checkpoints", "jobs updates", "jobs checklist-history", "inbox thread":
 		allowed["--limit"], allowed["--cursor"] = true, true
 	case "jobs list":
 		allowed["--limit"], allowed["--cursor"], allowed["--worker"], allowed["--status"] = true, true, true, true
@@ -268,7 +272,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"] = true, true, true, true
 	case "inbox events":
 		allowed["--cursor"], allowed["--limit"], allowed["--wait-ms"] = true, true, true
-	case "jobs primary", "jobs read", "jobs checkpoint-latest", "jobs checklist":
+	case "workers pause-state", "jobs primary", "jobs read", "jobs checkpoint-latest", "jobs checklist":
 	default:
 		return call, false
 	}
@@ -320,7 +324,7 @@ func parseInvocation(args []string) (invocation, bool) {
 				}
 				call.waitMS = waitMS
 			case "--cursor":
-				if call.command == "jobs" && call.subcommand == "primary-history" && (value != strings.TrimSpace(value) || strings.IndexFunc(value, unicode.IsControl) >= 0) {
+				if (call.command == "jobs" && call.subcommand == "primary-history" || call.command == "workers" && call.subcommand == "pause-history") && (value != strings.TrimSpace(value) || strings.IndexFunc(value, unicode.IsControl) >= 0) {
 					return call, false
 				}
 				if len(value) > 4096 || !utf8.ValidString(value) {

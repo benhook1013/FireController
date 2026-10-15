@@ -2,7 +2,9 @@
 
 ## Implemented boundary
 
-`fcmcp` exposes thirty-two read tools and eighteen explicit mutations over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Checkpoint tools](job-checkpoints.md) append immutable progress and provide explicit latest/archive reads. Subscriptions, remote MCP and automatic chat wakeups remain unimplemented.
+`fcmcp` exposes thirty-six read tools and twenty explicit mutations over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Checkpoint tools](job-checkpoints.md) append immutable progress and provide explicit latest/archive reads. Subscriptions, remote MCP and automatic chat wakeups remain unimplemented.
+
+[Worker pause](worker-pause.md) is explicit coordination state and does not stop agents or change jobs, focus, messages or review execution.
 
 Execution tool arguments and recovery are owned by [review execution](review-execution.md#bound-execution-tools).
 
@@ -25,6 +27,8 @@ Startup validates configuration without opening the credential or contacting the
 | `context` | No fields; configured local identity, without service verification. |
 | `doctor` | No fields; verified instance/project/worker identity. |
 | `workers_list` | Optional limit/cursor; one compact worker page. |
+| `worker_pause_read` | No fields; bound worker’s explicit pause, reason and independent revision. |
+| `worker_pause_history` | Optional limit/cursor; one explicit newest-first pause-history page. |
 | `jobs_list` | Optional worker_id/status/limit/cursor; one compact job page. |
 | `jobs_assigned` | Optional status/limit/cursor; one compact page assigned to the bound worker. |
 | `job_read` | Required job_id; explicit full job detail and brief. |
@@ -69,6 +73,7 @@ Startup validates configuration without opening the credential or contacting the
 | `jobs_create` | Required idempotency_key/title; optional brief/worker_id/status; compact job receipt. |
 | `job_edit` | Required idempotency_key/job_id/expected_revision plus selected title/brief/worker_id/status fields; compact receipt. |
 | `job_checkpoint_append` | Required idempotency_key/job_id/expected_job_revision/done/next; optional blocker/evidence; compact checkpoint receipt. |
+| `worker_pause_replace` | Required idempotency_key/expected_revision/paused/reason; guarded bound-worker pause, with empty reason required for resume. |
 | `job_primary_replace` | Required idempotency_key/expected_revision/job_id; bound worker’s guarded focus replacement, empty job ID clears. |
 | `job_update_append` | Required idempotency_key/job_id/expected_job_revision/body; optional evidence; immutable narrative update and compact receipt. |
 | `job_checklist_replace` | Required idempotency_key/job_id/expected_job_revision/expected_revision/items; guarded ordered replacement and compact changed/unchanged receipt. |

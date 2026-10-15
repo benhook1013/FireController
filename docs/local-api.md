@@ -110,3 +110,7 @@ The [source refresh contract](review-source.md) owns its explicit POST, operatio
 ## Worker primary job
 
 [Worker primary focus](worker-focus.md) owns the scoped current, guarded replacement and explicit history routes. Focus is optional and independent of job status; reassignment clears the old worker’s selection atomically. These reads do not load the selected brief or a resume packet automatically.
+
+## Worker pause
+
+[Worker pause state](worker-pause.md) owns the scoped current, guarded replacement and explicit history routes. Pause is independent of job status, primary focus and execution. Reads never fetch jobs or history automatically.

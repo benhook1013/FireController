@@ -84,7 +84,7 @@ func TestInventorySnapshotSchemaCompatibilityWithoutMigration(t *testing.T) {
 	if err = jobs.EnsureSchema(t.Context(), store); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.DB().Exec(`DROP TABLE worker_primary_job_history; DROP TABLE worker_primary_jobs; DROP TABLE job_updates; DROP TABLE job_checklists; DROP TABLE job_checklist_history; DROP TABLE job_checkpoints; UPDATE metadata SET value='1' WHERE key='schema:jobs'`); err != nil {
+	if _, err = store.DB().Exec(`DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; DROP TABLE worker_primary_job_history; DROP TABLE worker_primary_jobs; DROP TABLE job_updates; DROP TABLE job_checklists; DROP TABLE job_checklist_history; DROP TABLE job_checkpoints; UPDATE metadata SET value='1' WHERE key='schema:jobs'`); err != nil {
 		t.Fatal(err)
 	}
 	created, err = Create(t.Context(), store, dir, filepath.Join(t.TempDir(), "bundles"))
@@ -377,7 +377,7 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 			var statements []string
 			switch test.domain {
 			case "jobs":
-				statements = []string{`DROP TABLE worker_primary_job_history`, `DROP TABLE worker_primary_jobs`, `DROP TABLE job_updates`, `DROP TABLE job_checklists`, `DROP TABLE job_checklist_history`}
+				statements = []string{`DROP TABLE worker_pause_history`, `DROP TABLE worker_pause_state`, `DROP TABLE worker_primary_job_history`, `DROP TABLE worker_primary_jobs`, `DROP TABLE job_updates`, `DROP TABLE job_checklists`, `DROP TABLE job_checklist_history`}
 				if test.version == 1 {
 					statements = append(statements, `DROP TABLE job_checkpoints`)
 				}

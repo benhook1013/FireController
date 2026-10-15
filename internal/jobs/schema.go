@@ -116,5 +116,27 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
  FOREIGN KEY (project_id,worker_id) REFERENCES workers(project_id,id),
  FOREIGN KEY (project_id,job_id) REFERENCES jobs(project_id,id)
 );`,
+	}, []string{
+		`CREATE TABLE worker_pause_state (
+ project_id TEXT NOT NULL,
+ worker_id TEXT NOT NULL,
+ revision INTEGER NOT NULL CHECK (revision >= 1),
+ paused INTEGER NOT NULL CHECK (paused IN (0,1)),
+ reason TEXT NOT NULL CHECK (paused = 1 OR reason = ''),
+ PRIMARY KEY (project_id,worker_id),
+ FOREIGN KEY (project_id,worker_id) REFERENCES workers(project_id,id)
+);`,
+		`CREATE TABLE worker_pause_history (
+ project_id TEXT NOT NULL,
+ worker_id TEXT NOT NULL,
+ revision INTEGER NOT NULL CHECK (revision >= 1),
+ paused INTEGER NOT NULL CHECK (paused IN (0,1)),
+ reason TEXT NOT NULL CHECK (paused = 1 OR reason = ''),
+ actor_id TEXT NOT NULL,
+ actor_worker_id TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY (project_id,worker_id,revision),
+ FOREIGN KEY (project_id,worker_id) REFERENCES workers(project_id,id)
+);`,
 	})
 }

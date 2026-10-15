@@ -42,6 +42,9 @@ func Register(mux *http.ServeMux, store *core.Store) {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/primary-job", getPrimaryJob(store))
 	mux.HandleFunc("PUT /api/v1/projects/{project_id}/workers/{worker_id}/primary-job", replacePrimaryJob(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/primary-job/history", primaryJobHistory(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/pause", getWorkerPause(store))
+	mux.HandleFunc("PUT /api/v1/projects/{project_id}/workers/{worker_id}/pause", replaceWorkerPause(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/pause/history", workerPauseHistory(store))
 }
 
 type job struct {

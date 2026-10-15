@@ -215,8 +215,10 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"jobs": 4, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"jobs": 5, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"worker_pause_state":         {"jobs", 5, "project_id worker_id revision paused reason"},
+	"worker_pause_history":       {"jobs", 5, "project_id worker_id revision paused reason actor_id actor_worker_id created_at"},
 	"worker_primary_jobs":        {"jobs", 4, "project_id worker_id revision job_id"},
 	"worker_primary_job_history": {"jobs", 4, "project_id worker_id revision job_id actor_id actor_worker_id reason created_at"},
 	"job_updates":                {"jobs", 3, "sequence id project_id job_id job_revision actor_id worker_id body evidence_json created_at"},
@@ -237,12 +239,14 @@ var tables = map[string]tableVersion{
 	"review_checkpoint_publications": {"review_checkpoint_publication", 1, "id project_id evidence_id state revision created_at body_json"}, "review_checkpoint_revisions": {"review_checkpoint_publication", 1, "publication_id revision actor_id created_at body_json"}, "review_checkpoint_intents": {"review_checkpoint_publication", 1, "publication_id revision body_json"},
 }
 
-// primaryFocusColumn preserves the composite identities and explicit values
-// required by focus UPSERTs and immutable per-worker revision history.
-func primaryFocusColumn(table, column, kind string, notnull, pk int, defaultValue any) bool {
+// workerStateColumn preserves the composite identities and explicit values
+// required by worker-state UPSERTs and immutable per-worker revision history.
+func workerStateColumn(table, column, kind string, notnull, pk int, defaultValue any) bool {
 	if defaultValue != nil {
 		return false
 	}
+	history := table == "worker_primary_job_history" || table == "worker_pause_history"
+	pause := table == "worker_pause_state" || table == "worker_pause_history"
 	expectedKind, expectedNotNull, expectedPK := "TEXT", 1, 0
 	switch column {
 	case "project_id":
@@ -251,13 +255,25 @@ func primaryFocusColumn(table, column, kind string, notnull, pk int, defaultValu
 		expectedPK = 2
 	case "revision":
 		expectedKind = "INTEGER"
-		if table == "worker_primary_job_history" {
+		if history {
 			expectedPK = 3
 		}
 	case "job_id":
+		if pause {
+			return false
+		}
 		expectedNotNull = 0
-	case "actor_id", "actor_worker_id", "reason", "created_at":
-		if table != "worker_primary_job_history" {
+	case "paused":
+		if !pause {
+			return false
+		}
+		expectedKind = "INTEGER"
+	case "reason":
+		if !history && !pause {
+			return false
+		}
+	case "actor_id", "actor_worker_id", "created_at":
+		if !history {
 			return false
 		}
 	default:
@@ -393,7 +409,7 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
-			if (name == "worker_primary_jobs" || name == "worker_primary_job_history") && !primaryFocusColumn(name, col, kind, notnull, pk, defaultValue) {
+			if (name == "worker_primary_jobs" || name == "worker_primary_job_history" || name == "worker_pause_state" || name == "worker_pause_history") && !workerStateColumn(name, col, kind, notnull, pk, defaultValue) {
 				columnRows.Close()
 				return nil, invalid()
 			}
@@ -675,6 +691,8 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"worker_pause_state":              {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
+	"worker_pause_history":            {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
 	"worker_primary_jobs":             {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
 	"worker_primary_job_history":      {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
 	"job_updates":                     {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
