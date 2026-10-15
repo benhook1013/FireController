@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
@@ -266,7 +267,11 @@ func TestRetainHostedJournalRechecksStoredPostingFacts(t *testing.T) {
 			before := cliAttemptState(t, f.store, attempt.ID)
 			result, err := RetainHosted(t.Context(), captures, f.engine, attempt, record)
 			assertCoreErrorCode(t, err, "review_conflict")
-			if result.Complete || result.Receipt.ID != "" || !validHostedReference(result.Capture) || result.Reason != "evidence_unavailable" {
+			wantReason := "observation_unavailable"
+			if mismatch == "retained trigger" {
+				wantReason = "evidence_unavailable"
+			}
+			if result.Complete || result.Receipt.ID != "" || !validHostedReference(result.Capture) || result.Reason != wantReason {
 				t.Fatal("journal rejection lost retained ref or claimed completion")
 			}
 			if _, err := captures.Read(t.Context(), attempt.ID, result.Capture); err != nil {
@@ -316,5 +321,83 @@ func TestRetainHostedInvalidArgumentsNeverPanicOrStoreUnderAnotherAttempt(t *tes
 	entries, err := os.ReadDir(captures.root)
 	if err != nil || len(entries) != 0 {
 		t.Fatal("invalid calls stored capture artifacts", err)
+	}
+}
+
+func TestRetainHostedObservationReferencesRecoverPendingAndComplete(t *testing.T) {
+	f, captures, attempt, complete := hostedRetainFixture(t, false)
+	before := cliAttemptState(t, f.store, attempt.ID)
+	pending := hostedRetainClone(t, complete)
+	pending.Snapshot.Reviews[0].Body = strings.Replace(pending.Snapshot.Reviews[0].Body, hostedRetainPublicationMarker(), "", 1)
+	held, err := RetainHosted(t.Context(), captures, f.engine, attempt, pending)
+	if err != nil || held.Complete || !validHostedReference(held.Capture) {
+		t.Fatal("pending observation not retained", held, err)
+	}
+	refs, err := f.engine.ReadHostedObservations(t.Context(), f.project, attempt.ID)
+	if err != nil || len(refs) != 1 || refs[0].Input.CaptureSHA256 != held.Capture.SHA256 || refs[0].Input.StartedAt != pending.StartedAt.Format(time.RFC3339Nano) || refs[0].Input.ObservedAt != pending.Snapshot.ObservedAt.Format(time.RFC3339Nano) || refs[0].Input.FinishedAt != pending.FinishedAt.Format(time.RFC3339Nano) {
+		t.Fatal("pending reference missing measured observation facts", refs, err)
+	}
+	// Drop every process-local observation value. Recovery locates immutable raw
+	// bytes using only the durable journal, without listing files or provider I/O.
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.store, err = core.Open(t.Context(), f.storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.store.Close() })
+	if err := reviewexec.EnsureEvidenceSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	f.engine, err = reviewexec.New(f.store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captures, err = NewHostedCaptureStore(captures.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs, err = f.engine.ReadHostedObservations(t.Context(), f.project, attempt.ID)
+	if err != nil || len(refs) != 1 {
+		t.Fatal("restart lost pending source reference", err)
+	}
+	reference := CaptureReference{ID: refs[0].Input.CaptureID, SHA256: refs[0].Input.CaptureSHA256, Bytes: refs[0].Input.CaptureBytes}
+	recovered, err := captures.Read(t.Context(), attempt.ID, reference)
+	if err != nil || !reflect.DeepEqual(recovered, pending) {
+		t.Fatal("journal could not locate exact pending source", err)
+	}
+	heldReplay, err := RetainHosted(t.Context(), captures, f.engine, attempt, recovered)
+	if err != nil || heldReplay != held {
+		t.Fatal("restart pending replay changed capture", err)
+	}
+	final, err := RetainHosted(t.Context(), captures, f.engine, attempt, complete)
+	if err != nil || !final.Complete {
+		t.Fatal("later complete source blocked by pending reference", final, err)
+	}
+	refs, err = f.engine.ReadHostedObservations(t.Context(), f.project, attempt.ID)
+	if err != nil || len(refs) != 2 || refs[0].Input.CaptureSHA256 != held.Capture.SHA256 || refs[1].Input.CaptureSHA256 != final.Capture.SHA256 || refs[1].Position != 2 {
+		t.Fatal("pending and complete references not retained independently", err)
+	}
+	finalReplay, err := RetainHosted(t.Context(), captures, f.engine, attempt, complete)
+	if err != nil || finalReplay != final || cliCount(t, f.store, `SELECT count(*) FROM review_hosted_observations WHERE attempt_id=?`, attempt.ID) != 2 || cliCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.capture_observed'`) != 2 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, attempt.ID) != 1 || cliAttemptState(t, f.store, attempt.ID) != before {
+		t.Fatal("reference replay duplicated effects/settled attempt", err)
+	}
+	// Both source references and the unique final row survive a second restart.
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.store, err = core.Open(t.Context(), f.storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.store.Close() })
+	f.engine, err = reviewexec.New(f.store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs, err = f.engine.ReadHostedObservations(t.Context(), f.project, attempt.ID)
+	if err != nil || len(refs) != 2 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, attempt.ID) != 1 {
+		t.Fatal("restart lost observation/final evidence distinction", err)
 	}
 }
