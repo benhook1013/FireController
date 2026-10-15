@@ -977,7 +977,10 @@ func TestSupervisorAdmissionStorageFailureRetainsPreparingAttempt(t *testing.T) 
 	driver := &controlledDriver{}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err := f.e.Run(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	done, err := f.e.Start(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	if err == nil {
+		err = <-done
+	}
 	attemptCode(t, err, "review_persistence_failed")
 	if strings.Contains(err.Error(), "synthetic-private-admission-diagnostic") {
 		t.Fatal("admission infrastructure error exposed private diagnostics")
@@ -1010,7 +1013,15 @@ func TestSupervisorShutdownAfterSuccessfulPrepareCancelsBeforeAdmission(t *testi
 		cancel()
 		return Preparation{Anchor: anchor}, nil
 	}}
-	if err := f.e.Run(ctx, map[string]Driver{"test-capability": driver, "other-account": driver}); err != nil {
+	done, err := f.e.Start(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	if err == nil {
+		select {
+		case err = <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("shutdown after successful preflight did not finish")
+		}
+	}
+	if err != nil {
 		t.Fatal("shutdown after successful preflight failed", err)
 	}
 	var state, reason, anchor, intent string
@@ -1060,7 +1071,10 @@ func TestSupervisorAdmissionWriterOverloadRetainsPreparation(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
-	err := f.e.Run(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	done, err := f.e.Start(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	if err == nil {
+		err = <-done
+	}
 	close(release)
 	released = true
 	<-writerDone // Only this fixture's held transaction; it has no domain writes.
