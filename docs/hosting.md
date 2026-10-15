@@ -36,11 +36,13 @@ Replace the example hostname with the operator's configured hostname. Existing i
 
 Use an owner-private persistent data directory and one controller writer. A deployment update must stop the predecessor before starting its replacement; a one-replica rolling deployment can still overlap writers, so use a replacement strategy that prevents that overlap. Readiness checks use `/readyz`; provider outages do not make local coordination unready.
 
+A container with a read-only root filesystem also needs writable temporary storage for SQLite operations, including startup migrations. Mount a bounded temporary volume at `/tmp`; keep it separate from persistent data and proxy scratch files. The verified container configuration uses a controller-only 64 MiB memory-backed temporary volume while retaining the read-only root filesystem and non-root identity. A health check on an empty database does not prove that migrations of retained data can run under those filesystem constraints.
+
 The implemented browser feed uses SSE over HTTPS. Disable response buffering and allow idle intervals longer than its fifteen-second transport keepalive at every proxy. Verify actual frame delivery through the deployed route; a successful page load alone does not prove streaming. WebSocket transport and remote MCP endpoints remain separate, unimplemented capabilities.
 
 Before relocating an instance, stop its existing writer, capture a consistent database snapshot and required private files, and verify integrity, identities and retained records at the destination. Switch clients only after destination checks pass and keep the predecessor stopped. A stale predecessor is not a rollback database after new writes reach the destination. The [architecture recovery contract](architecture.md#storage-operations-and-growth) owns disaster restore, credential rotation and fencing; a planned relocation is distinct from disaster restore.
 
-The managed backup API and automatic off-host backup remain unimplemented. Migration snapshots and host persistence do not establish that backup capability.
+Local [operator backup, inspection, inactive restore and managed scheduling](backups.md) are implemented. Remote/browser backup controls and automatic off-host transfer remain unimplemented. A migration backup does not establish an installed recurring backup policy or off-host durability.
 
 ## Executed deployment proof
 
