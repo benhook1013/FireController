@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
+
+	"github.com/benhook1013/FireController/internal/core"
 )
 
 // Preparation is the adapter's verified exact target and action body. Preparing
@@ -55,6 +58,9 @@ func (e *Engine) Run(ctx context.Context, drivers map[string]Driver) error {
 	if err := e.RecoverInterrupted(ctx); err != nil {
 		return err
 	}
+	workCtx, cancelWork := context.WithCancel(ctx)
+	defer cancelWork()
+	failures := make(chan error, 1)
 	var workers sync.WaitGroup
 	for range 2 {
 		workers.Go(func() {
@@ -62,21 +68,33 @@ func (e *Engine) Run(ctx context.Context, drivers map[string]Driver) error {
 			defer timer.Stop()
 			for {
 				select {
-				case <-ctx.Done():
+				case <-workCtx.Done():
 					return
 				case <-e.wake:
 				case <-timer.C:
 				}
-				if ctx.Err() != nil {
+				if workCtx.Err() != nil {
 					return
 				}
-				e.processNext(ctx, owned)
+				if err := e.processNext(workCtx, owned); err != nil {
+					select {
+					case failures <- err:
+					default:
+					}
+					cancelWork()
+					return
+				}
 				timer.Reset(500 * time.Millisecond)
 			}
 		})
 	}
 	workers.Wait()
-	return nil
+	select {
+	case err := <-failures:
+		return err
+	default:
+		return nil
+	}
 }
 
 func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
@@ -121,14 +139,17 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	return out, nil
 }
 
-func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) {
+func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
 	operations, err := e.pending(ctx)
 	if err != nil {
-		return
+		if ctx.Err() != nil {
+			return nil
+		}
+		return persistenceFailure()
 	}
 	for _, o := range operations {
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 		a, err := e.StartAttempt(ctx, o.ProjectID, o.ID)
 		if err != nil || a.ID == "" {
@@ -138,13 +159,11 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) {
 		// has already checked that this is still the current configuration.
 		c, err := e.configurationRevision(ctx, o.ProjectID, o.ConfigurationRevision)
 		if err != nil {
-			e.finishPreparation(a, "held", "configuration_unavailable")
-			return
+			return e.finishPreparation(a, "held", "configuration_unavailable")
 		}
 		driver := drivers[c.CapabilityID]
 		if driver == nil {
-			e.finishPreparation(a, "held", "capability_unavailable")
-			return
+			return e.finishPreparation(a, "held", "capability_unavailable")
 		}
 		prepareCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		prepared, err := driver.Prepare(prepareCtx, o, c, a)
@@ -156,13 +175,11 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) {
 				state = "cancelled"
 				reason = "supervisor_stopping"
 			}
-			e.finishPreparation(a, state, reason)
-			return
+			return e.finishPreparation(a, state, reason)
 		}
 		admitted, err := e.Admit(ctx, o.ProjectID, a.ID, a.Revision, prepared.Anchor, prepared.Intent)
 		if err != nil {
-			e.finishPreparation(a, "held", "admission_changed")
-			return
+			return e.finishPreparation(a, "held", "admission_changed")
 		}
 		a = admitted
 		var progressMu sync.Mutex
@@ -175,7 +192,10 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) {
 			if a.State != "posting" {
 				return conflict()
 			}
-			next, err := e.Advance(progressCtx, o.ProjectID, a.ID, a.Revision, "active", "trigger_recorded", externalID)
+			if progressCtx.Err() != nil {
+				return progressCtx.Err()
+			}
+			next, err := e.persistAdvance(a, "active", "trigger_recorded", externalID)
 			if err == nil {
 				a = next
 			}
@@ -198,22 +218,19 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) {
 		// Hosted posting must retain its returned trigger before completion. A
 		// driver cannot erase a possible post with an invalid/empty result.
 		if a.State == "posting" && result.ExternalID != "" {
-			writeCtx, stop := context.WithTimeout(context.Background(), 2*time.Second)
-			next, advanceErr := e.Advance(writeCtx, o.ProjectID, a.ID, a.Revision, "active", "trigger_recorded", result.ExternalID)
-			stop()
+			next, advanceErr := e.persistAdvance(a, "active", "trigger_recorded", result.ExternalID)
 			if advanceErr != nil {
-				return
+				return advanceErr
 			}
 			a = next
 		}
 		if !allowedTransition(a.State, result.State) {
 			result = Result{State: "uncertain", Reason: "adapter_result_incomplete"}
 		}
-		writeCtx, stop := context.WithTimeout(context.Background(), 2*time.Second)
-		_, _ = e.Advance(writeCtx, o.ProjectID, a.ID, a.Revision, result.State, result.Reason, result.ExternalID)
-		stop()
-		return
+		_, err = e.persistAdvance(a, result.State, result.Reason, result.ExternalID)
+		return err
 	}
+	return nil
 }
 
 func (e *Engine) configurationRevision(ctx context.Context, project string, revision int64) (Configuration, error) {
@@ -231,8 +248,53 @@ func (e *Engine) configurationRevision(ctx context.Context, project string, revi
 	return c, nil
 }
 
-func (e *Engine) finishPreparation(a Attempt, state, reason string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+func (e *Engine) finishPreparation(a Attempt, state, reason string) error {
+	_, err := e.persistAdvance(a, state, reason, "")
+	return err
+}
+
+func persistenceFailure() error {
+	return core.Fail("review_persistence_failed", "Review execution stopped because an attempt outcome could not be recorded; inspect retained evidence before restarting.", 503)
+}
+
+// Retry only the same guarded local journal transition, never provider work.
+// Reconcile an ambiguous successful commit before considering another write.
+// A finite failure stops the supervisor visibly with reservations retained.
+func (e *Engine) persistAdvance(a Attempt, state, reason, externalID string) (Attempt, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, _ = e.Advance(ctx, a.ProjectID, a.ID, a.Revision, state, reason, "")
+	for attempt := range 3 {
+		next, err := e.Advance(ctx, a.ProjectID, a.ID, a.Revision, state, reason, externalID)
+		if err == nil {
+			return next, nil
+		}
+		tx, readErr := e.store.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if readErr == nil {
+			current, lookupErr := readAttempt(ctx, tx, a.ProjectID, a.ID)
+			var recordedReason string
+			if lookupErr == nil {
+				lookupErr = tx.QueryRowContext(ctx, `SELECT reason FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, current.Revision).Scan(&recordedReason)
+			}
+			_ = tx.Rollback()
+			wantID := externalID
+			if wantID == "" {
+				wantID = a.ExternalID
+			}
+			if lookupErr == nil && current.Revision == a.Revision+1 && current.State == state && current.ExternalID == wantID && recordedReason == reason {
+				return current, nil
+			}
+		}
+		var failure *core.Error
+		if ctx.Err() != nil || !errors.As(err, &failure) || failure.Code != "overloaded" || attempt == 2 {
+			return Attempt{}, persistenceFailure()
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return Attempt{}, persistenceFailure()
+		case <-timer.C:
+		}
+	}
+	return Attempt{}, persistenceFailure()
 }

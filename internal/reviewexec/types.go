@@ -4,10 +4,13 @@ package reviewexec
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 type Capability struct {
 	ID, Provider, Account string
 	Channels              []string
+	Fingerprint           string
 }
 
 type Configuration struct {
@@ -65,6 +69,7 @@ type Operation struct {
 	ActorID               string `json:"actor_id"`
 	WorkerID              string `json:"worker_id"`
 	ConfigurationRevision int64  `json:"configuration_revision"`
+	CapabilityFingerprint string `json:"capability_fingerprint"`
 	PullNumber            int64  `json:"pull_number"`
 	Channel               string `json:"channel"`
 	HeadSHA               string `json:"head_sha"`
@@ -118,6 +123,17 @@ func New(store *core.Store, capabilities []Capability) (*Engine, error) {
 			seen[channel] = true
 		}
 		c.Channels = append([]string(nil), c.Channels...)
+		slices.Sort(c.Channels)
+		if c.Fingerprint != "" && !hash.MatchString(c.Fingerprint) {
+			return nil, invalid()
+		}
+		canonical := struct {
+			ID, Provider, Account    string
+			Channels                 []string
+			ConfigurationFingerprint string
+		}{c.ID, c.Provider, c.Account, c.Channels, c.Fingerprint}
+		digest := sha256.Sum256([]byte(encoded(canonical)))
+		c.Fingerprint = hex.EncodeToString(digest[:])
 		e.capabilities[c.ID] = c
 	}
 	return e, nil

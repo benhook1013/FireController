@@ -35,6 +35,9 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if !ok || e.validateConfiguration(c) != nil {
 			return holdOperation(ctx, tx, o, "capability_unavailable")
 		}
+		if o.CapabilityFingerprint != capability.Fingerprint {
+			return holdOperation(ctx, tx, o, "capability_changed")
+		}
 		allowed, err := actorAllowed(ctx, tx, project, o.ActorID, o.WorkerID)
 		if err != nil {
 			return err
@@ -128,7 +131,7 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 			return conflict()
 		}
 		capability, ok := e.capabilities[c.CapabilityID]
-		if !ok || e.validateConfiguration(c) != nil || capability.Provider != a.Provider || capability.Account != a.Account {
+		if !ok || e.validateConfiguration(c) != nil || capability.Provider != a.Provider || capability.Account != a.Account || capability.Fingerprint != o.CapabilityFingerprint {
 			return conflict()
 		}
 		state := "active"

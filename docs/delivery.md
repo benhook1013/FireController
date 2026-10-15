@@ -10,13 +10,13 @@ The [native review workspace](review-workspace.md) implements stored queue, PR/r
 
 ## Next active boundary
 
-The profile-bound review read tools have passed packaged checks. Native hosted/CLI execution is now active: isolated request/attempt supervision, provider adapters, source preparation and capture parsing have focused proof, while actual daemon dispatch, evidence/adjudication integration and cutover remain. The [execution boundary](review-execution.md) records that distinction. This work removes the development executor dependency. Project maps, appearance polish and other extras follow that replacement; concrete usability regressions in existing views are fixed as they are found.
+The profile-bound review read tools have passed packaged checks. Native hosted/CLI execution is the active implementation boundary: isolated request/attempt supervision, provider adapters, source preparation and capture parsing have focused proof, while actual daemon dispatch, evidence/adjudication integration and cutover remain. The [execution boundary](review-execution.md) records that distinction. This work removes the development executor dependency. Project maps, appearance polish and other extras follow that replacement; concrete usability regressions in existing views are fixed as they are found.
 
 ## Development bootstrap
 
 Use a private pinned copy of the legacy controller with a context for this repository and its own SQLite database under this repository's Git common directory. Keep its original source notices and source hash. The distinct `firecontroller-dev` entrypoint selects only this repository's temporary development context.
 
-Before native cutover, jobs, inbox, review stack, reservations, captures, and review records belong to the new repository's private bootstrap state. Initialize and explicitly migrate base review state before bootstrapping its independent jobs, inbox, map, and records schemas. Prove local create/read plus combined snapshot/restore using a disposable destination. Internal legacy storage labels do not establish project identity; the explicit context and separate Git common directory select this project's state.
+Development jobs, inbox and checkpoints now belong to the native service. Review execution, reservations and original provider captures remain in the private bootstrap executor until their native cutover; the native browser displays an explicitly imported observation of those reviews. Preserve the original records and prove recovery before retiring that executor. Internal legacy storage labels do not establish project identity; the explicit context and separate Git common directory select this project's state.
 
 The temporary runtime is not shipped as the product and does not implement the new multi-project service. Review thresholds and marker conventions remain its inherited behavior until the replacement is proven. Initial hosted review is requested only after publishing a coherent PR and configuring its isolated stack.
 

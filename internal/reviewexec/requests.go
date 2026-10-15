@@ -10,9 +10,8 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-func (e *Engine) validateConfiguration(c Configuration) error {
-	capability, ok := e.capabilities[c.CapabilityID]
-	if !ok || c.ExpectedRevision == nil || *c.ExpectedRevision < 0 || c.Mode != "independent" && c.Mode != "stacked" || len(c.Queue) == 0 || len(c.Queue) > 100 || len(c.Channels) == 0 || len(c.Channels) > 2 {
+func validateConfigurationShape(c Configuration) error {
+	if !identifier.MatchString(c.CapabilityID) || c.ExpectedRevision == nil || *c.ExpectedRevision < 0 || c.Mode != "independent" && c.Mode != "stacked" || len(c.Queue) == 0 || len(c.Queue) > 100 || len(c.Channels) == 0 || len(c.Channels) > 2 {
 		return invalid()
 	}
 	numbers := map[int64]bool{}
@@ -24,7 +23,7 @@ func (e *Engine) validateConfiguration(c Configuration) error {
 	}
 	channels := map[string]bool{}
 	for _, s := range c.Channels {
-		if !validChannel(s) || channels[s] || !slices.Contains(capability.Channels, s) {
+		if !validChannel(s) || channels[s] {
 			return invalid()
 		}
 		channels[s] = true
@@ -32,10 +31,26 @@ func (e *Engine) validateConfiguration(c Configuration) error {
 	return nil
 }
 
+func (e *Engine) validateConfiguration(c Configuration) error {
+	if err := validateConfigurationShape(c); err != nil {
+		return err
+	}
+	capability, ok := e.capabilities[c.CapabilityID]
+	if !ok {
+		return invalid()
+	}
+	for _, channel := range c.Channels {
+		if !slices.Contains(capability.Channels, channel) {
+			return invalid()
+		}
+	}
+	return nil
+}
+
 // Configure retains every configuration revision. An update never silently
 // rebinds an already queued request to another provider or source policy.
 func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c Configuration) (json.RawMessage, error) {
-	if err := e.validateConfiguration(c); err != nil {
+	if err := validateConfigurationShape(c); err != nil {
 		return nil, err
 	}
 	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.configure", Target: "configuration", Key: key, Request: c}, func(ctx context.Context, tx *sql.Tx) (any, error) {
@@ -46,6 +61,9 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 		}
 		if admin != 1 {
 			return nil, core.Fail("forbidden", "Administrative permission is required.", 403)
+		}
+		if err := e.validateConfiguration(c); err != nil {
+			return nil, err
 		}
 		var revision int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM review_execution_config WHERE project_id=?`, scope.ProjectID).Scan(&revision); err != nil {
@@ -113,7 +131,7 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 			return nil, core.Fail("overloaded", "Review request capacity is occupied; recover or finish existing operations.", 503)
 		}
 		id, at := core.NewID("review_operation"), stamp()
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'queued',1,'','',?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, revision, r.PullNumber, r.Channel, r.HeadSHA, at, at); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'queued',1,'','',?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, revision, e.capabilities[c.CapabilityID].Fingerprint, r.PullNumber, r.Channel, r.HeadSHA, at, at); err != nil {
 			return nil, err
 		}
 		if err = core.AppendEvent(ctx, tx, scope, "review.requested", id, 1, map[string]any{"pull_number": r.PullNumber, "channel": r.Channel}); err != nil {
@@ -132,7 +150,7 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 
 func readOperation(ctx context.Context, tx *sql.Tx, project, id string) (Operation, error) {
 	var o Operation
-	err := tx.QueryRowContext(ctx, `SELECT id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at FROM review_operations WHERE project_id=? AND id=?`, project, id).Scan(&o.ID, &o.ProjectID, &o.ActorID, &o.WorkerID, &o.ConfigurationRevision, &o.PullNumber, &o.Channel, &o.HeadSHA, &o.State, &o.Revision, &o.Reason, &o.AttemptID, &o.CreatedAt, &o.UpdatedAt)
+	err := tx.QueryRowContext(ctx, `SELECT id,project_id,actor_id,worker_id,configuration_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at FROM review_operations WHERE project_id=? AND id=?`, project, id).Scan(&o.ID, &o.ProjectID, &o.ActorID, &o.WorkerID, &o.ConfigurationRevision, &o.CapabilityFingerprint, &o.PullNumber, &o.Channel, &o.HeadSHA, &o.State, &o.Revision, &o.Reason, &o.AttemptID, &o.CreatedAt, &o.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return o, core.Fail("not_found", "The review operation is unavailable in this project.", 404)
 	}
