@@ -792,3 +792,33 @@ func TestReadOnlyServiceCommandsUseBoundProfileAndPublicAPIs(t *testing.T) {
 		t.Fatalf("cancellation contract: code=%d stdout=%q stderr=%q", code, canceledOut.String(), canceledErr.String())
 	}
 }
+
+func TestReadOptionDashValuesReachTheirExistingFieldValidation(t *testing.T) {
+	f := setupServiceFixture(t)
+	project := f.project(t, "read-dash-values")
+	worker := f.worker(t, project, "Builder")
+	var reads atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/jobs") {
+			reads.Add(1)
+			if r.URL.Query().Get("cursor") != "--key" {
+				t.Error("read parser changed opaque cursor value")
+			}
+		}
+		f.handler.ServeHTTP(w, r)
+	}))
+	defer service.Close()
+	path := mutationProfiles(t, f, service.URL, map[string][2]string{"chosen": {project, worker}})
+	providerCalls := f.resolverHit.Load()
+	for _, args := range [][]string{
+		{"jobs", "list", "--cursor", "--key"},
+		{"jobs", "list", "--cursor=--key"},
+	} {
+		// This is deliberately not a valid signed cursor: the existing service
+		// cursor check must reject it, rather than a dash-prefix heuristic.
+		failure(t, append([]string{"--profiles-file", path, "--profile", "chosen"}, args...), nil, cli.ExitUsage, "validation_failed")
+	}
+	if reads.Load() != 2 || f.resolverHit.Load() != providerCalls {
+		t.Fatal("read values bypassed field validation or performed provider work")
+	}
+}
