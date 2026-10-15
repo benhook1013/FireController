@@ -550,3 +550,53 @@ func cliAttemptState(t *testing.T, store *core.Store, attemptID string) string {
 	}
 	return fmt.Sprintf("%s/%d/%s/%d/%s/reservations=%d/transitions=%d", attemptState, attemptRevision, anchor, operationRevision, operationState, reservations, transitions)
 }
+
+func TestRetainCLIExcessReviewedFilesRetainsInspectableInvalidCapture(t *testing.T) {
+	f := newCLIEvidenceFixture(t)
+	attempt, workspace := f.startAdmitted(t, 2)
+	files := make([]string, 10001)
+	for i := range files {
+		files[i] = fmt.Sprintf("source-%d.go", i)
+	}
+	capture := makeCompleteCLICapture(t, workspace, files)
+	for _, line := range strings.Split(string(capture.Stdout), "\n") {
+		if len(line) >= 256<<10 {
+			t.Fatal("fixture exceeds the line bound instead of the reviewed-file count")
+		}
+	}
+	// Save exact raw evidence first, establishing the artifact that RetainCLI
+	// must reconcile without rewriting when its derived parser rejects input.
+	started, finished := time.Now().Add(-time.Second).UTC(), time.Now().UTC()
+	reference, err := f.captures.Save(t.Context(), attempt.ID, CaptureRecord{Capture: capture, StartedAt: started, FinishedAt: finished})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := filepath.Join(f.captures.root, attempt.ID+".json")
+	beforeArtifact, err := os.ReadFile(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeState := cliAttemptState(t, f.store, attempt.ID)
+	retained, err := RetainCLI(t.Context(), f.captures, f.engine, f.manager, attempt, workspace, capture, started, finished)
+	if err != nil || retained.Reason != "capture_invalid" || retained.Outcome != "uncertain" || retained.Complete || retained.Receipt.State != "captured" {
+		t.Fatalf("oversized inventory lost inspectable invalid evidence: %+v %v", retained, err)
+	}
+	stored, err := f.engine.ReadCLIEvidence(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), retained.Receipt.ID)
+	if err != nil || stored.Capture.Review.Complete || stored.Capture.Review.Outcome != "uncertain" || len(stored.Capture.Review.ReviewedFiles) != 0 || len(stored.Capture.Review.Findings) != 0 || stored.Capture.Review.ReportedFindings != 0 {
+		t.Fatalf("invalid inventory escaped derived ledger bounds or acquired completed coverage: %+v %v", stored, err)
+	}
+	if stored.Capture.CaptureID != reference.ID || stored.Capture.CaptureSHA256 != reference.SHA256 || stored.Capture.CaptureBytes != reference.Bytes {
+		t.Fatal("invalid ledger evidence lost its exact raw artifact identity")
+	}
+	loaded, afterReference, err := f.captures.Read(t.Context(), attempt.ID)
+	if err != nil || afterReference != reference || string(loaded.Capture.Stdout) != string(capture.Stdout) || string(loaded.Capture.Stderr) != string(capture.Stderr) || loaded.Capture.ExitCode != capture.ExitCode || loaded.Capture.Started != capture.Started {
+		t.Fatal("raw oversized capture was changed or lost", err)
+	}
+	afterArtifact, err := os.ReadFile(artifact)
+	if err != nil || string(beforeArtifact) != string(afterArtifact) {
+		t.Fatal("retention rewrote the immutable raw capture", err)
+	}
+	if cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence WHERE project_id=? AND attempt_id=?`, f.project, attempt.ID) != 1 || cliCount(t, f.store, `SELECT count(*) FROM events WHERE resource_id=? AND event_type='review.captured'`, retained.Receipt.ID) != 1 || cliAttemptState(t, f.store, attempt.ID) != beforeState {
+		t.Fatal("invalid retention lost its single ledger/event or changed attempt state")
+	}
+}

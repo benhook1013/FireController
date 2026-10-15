@@ -33,10 +33,11 @@ type CLIReview struct {
 }
 
 const (
-	cliCaptureMax = 16 << 20
-	cliLineMax    = 256 << 10
-	cliEventsMax  = 4096
-	cliFindingMax = 100
+	cliCaptureMax       = 16 << 20
+	cliLineMax          = 256 << 10
+	cliEventsMax        = 4096
+	cliFindingMax       = 100
+	cliReviewedFilesMax = 10000
 )
 
 // ParseCLIReview parses bounded structured JSONL without running commands or
@@ -103,7 +104,7 @@ func ParseCLIReview(capture []byte, exitCode int, expected CLIContext) (CLIRevie
 		}
 		var files []string
 		if raw, exists := fields["reviewedFiles"]; exists {
-			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &files) != nil || files == nil {
+			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &files) != nil || files == nil || len(files) > cliReviewedFilesMax {
 				return invalid()
 			}
 			seen := make(map[string]bool)
