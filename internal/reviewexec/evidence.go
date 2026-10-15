@@ -18,6 +18,10 @@ import (
 
 const evidenceInputLimit = 2 << 20
 
+// MaxEvidenceInputBytes bounds canonical JSON accepted by the evidence ledger.
+// Trusted capture integrations use this same budget before attempting ingestion.
+const MaxEvidenceInputBytes = evidenceInputLimit
+
 // ReviewEvidenceInput is trusted parsed capture metadata, never a raw upload.
 type ReviewEvidenceInput struct {
 	CaptureID      string                      `json:"capture_id"`

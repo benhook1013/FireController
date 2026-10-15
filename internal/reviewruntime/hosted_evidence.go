@@ -2,6 +2,7 @@ package reviewruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -79,6 +80,18 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		metadata.Sources = append(metadata.Sources, reviewexec.HostedFindingSource{SourceKey: finding.SourceKey, Fingerprint: finding.Fingerprint, Kind: finding.Kind, Side: finding.Side, ReviewID: finding.ReviewID, CommentID: finding.CommentID})
 	}
 	input := reviewexec.ReviewEvidenceInput{CaptureID: ref.ID, CaptureSHA256: ref.SHA256, CaptureBytes: ref.Bytes, StartedAt: publication.Trigger.CreatedAt.Format(time.RFC3339Nano), FinishedAt: publication.FinishedAt.Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: review, Hosted: metadata}
+	canonical, err := json.Marshal(input)
+	if err != nil {
+		result.Reason = "evidence_unavailable"
+		return result, core.Fail("validation_failed", "The parsed review capture could not be encoded.", 400)
+	}
+	// Source-level finding bounds do not bound canonical JSON: HTML characters
+	// expand when encoded. Keep the raw journaled observation inspectable while
+	// leaving the unique final-evidence slot free if the ledger cannot hold it.
+	if len(canonical) > reviewexec.MaxEvidenceInputBytes {
+		result.Reason = "finding_inventory_limit"
+		return result, nil
+	}
 	result.Receipt, err = engine.RecordReviewEvidence(ctx, attempt.ProjectID, attempt.ID, input)
 	if err != nil {
 		result.Reason = "evidence_unavailable"
