@@ -208,3 +208,87 @@ func TestCLICommittedDisconnectRequiresSameKeyRecoveryWithoutRetry(t *testing.T)
 		t.Fatal("pre-dispatch cancellation was mislabeled or sent")
 	}
 }
+
+func TestMutationFreeformValuesPreserveLeadingDashes(t *testing.T) {
+	f := setupServiceFixture(t)
+	project := f.project(t, "dash-values")
+	sender, recipient := f.worker(t, project, "Builder"), f.worker(t, project, "Reviewer")
+	service := httptest.NewServer(f.handler)
+	defer service.Close()
+	path := mutationProfiles(t, f, service.URL, map[string][2]string{"sender": {project, sender}})
+	providerCalls := f.resolverHit.Load()
+	for _, form := range []string{"separate", "equals"} {
+		for _, value := range []struct{ name, title, brief, body string }{
+			{"markdown", "--- release title", "---\n# Brief\n--key\n", "---\n## Message\n--status literal\n"},
+			{"literal-option", "--key", "--key", "--key"},
+		} {
+			t.Run(form+"/"+value.name, func(t *testing.T) {
+				option := func(flag, text string) []string {
+					if form == "equals" {
+						return []string{flag + "=" + text}
+					}
+					return []string{flag, text}
+				}
+				key := form + "-" + value.name
+				args := []string{"jobs", "create", "--key", key + "-create"}
+				args = append(args, option("--title", value.title)...)
+				args = append(args, option("--brief", value.brief)...)
+				created := mutationSuccess(t, path, "sender", args...)
+				jobID := created["id"].(string)
+				job := f.call(t, "GET", "/api/v1/projects/"+project+"/jobs/"+jobID, f.admin, "", nil)
+				if job["title"] != value.title || job["brief"] != value.brief {
+					t.Fatal("create changed freeform value bytes")
+				}
+				title, brief := value.title+" edited", value.brief+"\n--literal-after-edit"
+				args = []string{"jobs", "edit", jobID, "--key", key + "-edit", "--expect-revision", "1"}
+				args = append(args, option("--title", title)...)
+				args = append(args, option("--brief", brief)...)
+				mutationSuccess(t, path, "sender", args...)
+				job = f.call(t, "GET", "/api/v1/projects/"+project+"/jobs/"+jobID, f.admin, "", nil)
+				if job["title"] != title || job["brief"] != brief || job["revision"] != float64(2) {
+					t.Fatal("edit changed freeform value bytes or revision")
+				}
+				args = []string{"inbox", "send", "--key", key + "-send", "--to", recipient}
+				args = append(args, option("--body", value.body)...)
+				sent := mutationSuccess(t, path, "sender", args...)
+				thread := f.call(t, "GET", "/api/v1/projects/"+project+"/conversations/"+sent["conversation_id"].(string), f.admin, "", nil)
+				items := thread["items"].([]any)
+				if len(items) != 1 || items[0].(map[string]any)["body"] != value.body {
+					t.Fatal("send changed freeform message bytes")
+				}
+			})
+		}
+	}
+	if f.resolverHit.Load() != providerCalls {
+		t.Fatal("freeform command workflow contacted a provider")
+	}
+}
+
+func TestDashLikeMalformedOptionsRejectBeforeCredentialsAndHTTP(t *testing.T) {
+	var requests atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer service.Close()
+	config := profiles()
+	entry := config["profiles"].(map[string]any)["alpha-overseer"].(map[string]any)
+	entry["server_url"] = service.URL
+	entry["credential_file"] = filepath.Join(t.TempDir(), "absent-private-credential")
+	path := fixture(t, encode(t, config))
+	for _, args := range [][]string{
+		{"jobs", "create", "--key", "key", "--title"},
+		{"jobs", "create", "--key", "key", "--title", "Task", "--brief"},
+		{"inbox", "send", "--key", "key", "--to", "worker-one", "--body"},
+		{"jobs", "create", "--key", "key", "--title", "--key", "--unexpected"},
+		{"inbox", "send", "--key", "key", "--to", "worker-one", "--body", "--key", "--key", "duplicate"},
+		{"jobs", "create", "--key", "key", "--title", "Task", "--status", "--key"},
+		{"inbox", "send", "--key", "key", "--to", "../worker", "--body", "--key"},
+		{"jobs", "list", "--limit", "--key"},
+		{"jobs", "list", "--cursor", "--opaque", "--unexpected"},
+		{"workers", "list", "--cursor"},
+		{"jobs", "list", "--worker", "../worker"},
+	} {
+		failure(t, append([]string{"--profiles-file", path, "--profile", "alpha-overseer"}, args...), nil, cli.ExitUsage, "invalid_arguments")
+	}
+	if requests.Load() != 0 {
+		t.Fatal("malformed option interpretation contacted HTTP")
+	}
+}

@@ -268,7 +268,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		default:
 			if !assigned {
 				i++
-				if i >= len(operationArgs) || strings.HasPrefix(operationArgs[i], "-") {
+				if i >= len(operationArgs) {
 					return call, false
 				}
 				value = operationArgs[i]
