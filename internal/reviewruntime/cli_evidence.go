@@ -2,6 +2,7 @@ package reviewruntime
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"time"
 
@@ -60,6 +61,16 @@ func RetainCLI(ctx context.Context, captures *CaptureStore, engine *reviewexec.E
 	}
 	input := reviewexec.CLIEvidenceInput{CaptureID: reference.ID, CaptureSHA256: reference.SHA256, CaptureBytes: reference.Bytes, StartedAt: started.UTC().Format(time.RFC3339Nano), FinishedAt: finished.UTC().Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: review}
 	receipt, err := engine.RecordCLIEvidence(ctx, attempt.ProjectID, attempt.ID, input)
+	var failure *core.Error
+	if errors.As(err, &failure) && failure.Code == "validation_failed" {
+		// The raw artifact remains authoritative when parsed projection fields
+		// exceed the ledger's stricter text or aggregate bounds. Retry only this
+		// local recording step, retaining the original capture, anchor and times.
+		review = reviewprovider.CLIReview{Outcome: "uncertain", Findings: []reviewprovider.CLIFinding{}, ReviewedFiles: []string{}}
+		input.Review = review
+		reason = "capture_invalid"
+		receipt, err = engine.RecordCLIEvidence(ctx, attempt.ProjectID, attempt.ID, input)
+	}
 	if err != nil {
 		return CapturedCLI{}, err
 	}
