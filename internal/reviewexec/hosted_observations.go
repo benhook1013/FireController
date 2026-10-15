@@ -58,13 +58,15 @@ func hostedObservationTime(value string) (time.Time, bool) {
 	return t, err == nil && !t.IsZero() && value == t.UTC().Format(time.RFC3339Nano)
 }
 
+// Stored observations retain their validity across clock corrections; this
+// validator checks immutable UTC timing, structure and identity fields only.
 func validHostedObservationInput(in HostedObservationInput) bool {
 	start, startOK := hostedObservationTime(in.StartedAt)
 	finish, finishOK := hostedObservationTime(in.FinishedAt)
 	observed, observedOK := hostedObservationTime(in.ObservedAt)
 	return hash.MatchString(in.CaptureSHA256) && in.CaptureID == "review_capture_"+in.CaptureSHA256[:32] &&
 		in.CaptureBytes > 0 && in.CaptureBytes <= 48<<20 && validEvidenceAnchor(in.ExpectedAnchor) &&
-		safeText(in.Intent, 4096) && startOK && finishOK && observedOK && !observed.Before(start) && !finish.Before(observed) && !finish.After(time.Now().Add(5*time.Second))
+		safeText(in.Intent, 4096) && startOK && finishOK && observedOK && !observed.Before(start) && !finish.Before(observed)
 }
 
 func hostedObservationIdentity(a Attempt, o Operation, in HostedObservationInput) bool {
@@ -126,6 +128,10 @@ func decodeHostedObservation(body, id, project, attempt, operation string, posit
 // RecordHostedObservation retains a trusted private reference without changing
 // attempt state, reserving work, interpreting findings or recording final credit.
 func (e *Engine) RecordHostedObservation(ctx context.Context, project, attemptID string, input HostedObservationInput) (Receipt, error) {
+	return e.recordHostedObservationAt(ctx, project, attemptID, input, time.Now())
+}
+
+func (e *Engine) recordHostedObservationAt(ctx context.Context, project, attemptID string, input HostedObservationInput, now time.Time) (Receipt, error) {
 	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(project) || !hostedObservationID(attemptID, "review_attempt_") || !validHostedObservationInput(input) {
 		return Receipt{}, invalid()
 	}
@@ -169,6 +175,12 @@ func (e *Engine) RecordHostedObservation(ctx context.Context, project, attemptID
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		// Fresh ingestion is clock-bounded; an exact retained replay above
+		// remains available even after the recording host's clock moves back.
+		finished, _ := hostedObservationTime(owned.FinishedAt)
+		if finished.After(now.Add(5 * time.Second)) {
+			return invalid()
 		}
 		if !hostedObservationIdentity(a, o, owned) || owned.Kind != "allowance_query" && a.State != "posting" && a.State != "active" && a.State != "uncertain" {
 			return conflict()
