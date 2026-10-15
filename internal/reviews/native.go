@@ -327,11 +327,18 @@ func rebuildNativeSummaries(ctx context.Context, tx *sql.Tx, project, snapshot s
 }
 
 // NativeAttemptCapacity reports whether appending one attempt to the current
-// snapshot fits both retained-history bounds. It does not reserve a slot or
-// mutate history; callers must check and append in the same serialized write.
+// snapshot fits retained attempt bounds and, for a missing target, the pull-row
+// bound. It does not reserve a slot or mutate history; callers must check and
+// append in the same serialized write.
 func NativeAttemptCapacity(ctx context.Context, tx *sql.Tx, project string, pullNumber int64) (bool, error) {
 	var total, local int
 	err := tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN a.pull_number=? THEN 1 ELSE 0 END),0)
  FROM review_workspace w JOIN review_attempts a ON a.project_id=w.project_id AND a.snapshot_id=w.snapshot_id WHERE w.project_id=?`, pullNumber, project).Scan(&total, &local)
-	return err == nil && total < maxSnapshotAttempts && local < maxPullAttempts, err
+	if err != nil {
+		return false, err
+	}
+	var pulls, selected int
+	err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN p.number=? THEN 1 ELSE 0 END),0)
+ FROM review_workspace w JOIN review_pulls p ON p.project_id=w.project_id AND p.snapshot_id=w.snapshot_id WHERE w.project_id=?`, pullNumber, project).Scan(&pulls, &selected)
+	return err == nil && total < maxSnapshotAttempts && local < maxPullAttempts && (selected != 0 || pulls < maxQueuePulls), err
 }

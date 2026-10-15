@@ -38,6 +38,11 @@ Startup validates configuration without opening the credential or contacting the
 | `review_execution_read` | No fields; stored execution configuration and revision, without provider work. |
 | `review_operation_read` | Required operation_id; retained native operation state and reason. |
 | `review_request` | Required idempotency_key/expected_configuration_revision/pull_number/channel/head_sha; compact queued receipt authorizing background provider work. |
+| `review_evidence_read` | Required evidence_id; explicit full retained native capture and parsed findings, excluding raw diagnostics. |
+| `review_adjudication_read` | Required evidence_id; current guarded decisions and fix references without repeating finding text. |
+| `review_finding_decide` | Required idempotency_key/evidence_id/expected_revision/finding/disposition/reason; completed adjudication result. |
+| `review_finding_fix` | Required idempotency_key/evidence_id/expected_revision/finding/expected_sha/fix_sha/proof_note; completed fix-reference result. |
+| `review_source_finalize` | Required idempotency_key/evidence_id/expected_revision; completed source-count finalization result. |
 | `review_queue` | Optional limit/cursor; stored queue, default five PRs. |
 | `review_pull` | Required pull_number, optional snapshot; explicit PR summary and attempts. |
 | `review_runs` | Required pull_number, optional snapshot/limit/cursor; default five stored run summaries. |
