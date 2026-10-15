@@ -411,7 +411,7 @@ func nextPage(linkHeaders []string, baseURL, path string, current int64) (int64,
 	if err != nil {
 		return 0, false, errors.New("invalid base")
 	}
-	expectedPath := strings.TrimRight(base.Path, "/") + path
+	basePath := strings.TrimRight(base.Path, "/")
 	var next int64
 	found := false
 	for _, header := range linkHeaders {
@@ -431,7 +431,7 @@ func nextPage(linkHeaders []string, baseURL, path string, current int64) (int64,
 			}
 			found = true
 			target, err := url.Parse(link.target)
-			if err != nil || target.Scheme != base.Scheme || !strings.EqualFold(target.Host, base.Host) || target.User != nil || target.Fragment != "" || target.Path != expectedPath {
+			if err != nil || target.Scheme != base.Scheme || !strings.EqualFold(target.Host, base.Host) || target.User != nil || target.Fragment != "" || !validPaginationPath(target, basePath, path) {
 				return 0, false, errors.New("untrusted next")
 			}
 			query, err := url.ParseQuery(target.RawQuery)
@@ -446,6 +446,32 @@ func nextPage(linkHeaders []string, baseURL, path string, current int64) (int64,
 		}
 	}
 	return next, found, nil
+}
+
+// GitHub may canonicalize a named repository Link to its numeric identity.
+// Accept only that collection alias, and use it solely to validate a page
+// number: getPages always reconstructs the original named request path.
+func validPaginationPath(target *url.URL, basePath, path string) bool {
+	if target.EscapedPath() != target.Path {
+		return false
+	}
+	if target.Path == basePath+path {
+		return true
+	}
+	if !strings.HasPrefix(path, "/repos/") {
+		return false
+	}
+	parts := strings.SplitN(strings.TrimPrefix(path, "/repos/"), "/", 3)
+	if len(parts) != 3 || !validRepositorySelector(parts[0]+"/"+parts[1]) || parts[2] == "" {
+		return false
+	}
+	prefix := basePath + "/repositories/"
+	if !strings.HasPrefix(target.Path, prefix) {
+		return false
+	}
+	id, suffix, found := strings.Cut(strings.TrimPrefix(target.Path, prefix), "/")
+	number, err := strconv.ParseInt(id, 10, 64)
+	return found && err == nil && number > 0 && strconv.FormatInt(number, 10) == id && suffix == parts[2]
 }
 
 type githubLink struct {
