@@ -423,6 +423,42 @@ func TestGitHubBodyControlBounds(t *testing.T) {
 	}
 }
 
+// The normalized body limit counts Unicode scalar values, while collection and
+// response byte budgets continue to bound the untrusted HTTP representation.
+func TestGitHubMultibyteBodyNormalization(t *testing.T) {
+	for _, kind := range []string{"issues", "reviews", "review-comments"} {
+		for _, character := range []string{"é", "界", "🔥"} {
+			for _, count := range []int{githubMaxText/2 + 1, githubMaxText, githubMaxText + 1} {
+				t.Run(fmt.Sprintf("%s/%d-byte/%d-scalars", kind, len(character), count), func(t *testing.T) {
+					body := strings.Repeat(character, count)
+					var calls atomic.Int64
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						calls.Add(1)
+						if r.Method != http.MethodGet || r.URL.Path != "/repos/owner/repo/"+numericPaginationSuffix(kind) {
+							t.Error("normalization changed the selected collection or performed a write")
+						}
+						w.Header().Set("Content-Type", "application/json")
+						item := strings.Replace(numericPaginationItem(kind, 1), strconv.Quote("page one"), strconv.Quote(body), 1)
+						_, _ = ioWriteString(w, "["+item+"]")
+					}))
+					defer server.Close()
+					bodies, err := readNumericPaginationCollection(t, testGitHub(server, ""), kind)
+					if count <= githubMaxText {
+						if err != nil || len(bodies) != 1 || bodies[0] != body {
+							t.Fatalf("valid multibyte evidence rejected or changed: scalars=%d bytes=%d error=%v", count, len(body), err)
+						}
+					} else if !hasCode(err, "provider_invalid_response") || bodies != nil {
+						t.Fatal("over-limit evidence was accepted or returned truncated", err)
+					}
+					if calls.Load() != 1 {
+						t.Fatal("body normalization retried provider reads", calls.Load())
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestGitHubStatusUnknownForWriteOnlyAtAmbiguousBoundaries(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity} {
 		response := &http.Response{StatusCode: status, Header: make(http.Header)}
