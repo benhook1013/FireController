@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewruntime"
 )
 
@@ -33,6 +34,9 @@ func privateTestCatalog(t *testing.T, channels []string) (string, reviewruntime.
 	if slices.Contains(channels, "hosted") {
 		capability["hosted"] = map[string]any{"provider_actor_id": 20, "provider_login": "synthetic-provider", "progress_mode": "commit_status"}
 	}
+	if !slices.Contains(channels, "cli") {
+		delete(capability, "cli_executable")
+	}
 	data, err := json.Marshal(map[string]any{"version": 1, "capabilities": []any{capability}})
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +53,7 @@ func privateTestCatalog(t *testing.T, channels []string) (string, reviewruntime.
 }
 
 func TestReviewExecutionCompositionIsExplicit(t *testing.T) {
-	for _, mode := range []string{"disabled", "cli", "unsupported-hosted"} {
+	for _, mode := range []string{"disabled", "cli", "hosted", "dual"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "private")
 			store, err := core.Open(context.Background(), dir)
@@ -57,33 +61,64 @@ func TestReviewExecutionCompositionIsExplicit(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer store.Close()
+			if err := reviewexec.EnsureSchema(t.Context(), store); err != nil {
+				t.Fatal(err)
+			}
 			catalog, err := reviewruntime.LoadCatalog("")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if mode != "disabled" {
 				channels := []string{"cli"}
-				if mode == "unsupported-hosted" {
+				if mode == "hosted" {
+					channels = []string{"hosted"}
+				}
+				if mode == "dual" {
 					channels = []string{"cli", "hosted"}
 				}
 				_, catalog = privateTestCatalog(t, channels)
 			}
 			engine, drivers, err := buildReviewExecution(store, dir, catalog)
-			if mode == "unsupported-hosted" {
-				if err == nil || engine != nil || drivers != nil || !strings.Contains(err.Error(), "CLI execution only") {
-					t.Fatal("unsupported channel silently became runnable", err)
-				}
-			} else if err != nil || engine == nil || len(drivers) != map[string]int{"disabled": 0, "cli": 1}[mode] {
+			if err != nil || engine == nil || len(drivers) != map[string]int{"disabled": 0, "cli": 1, "hosted": 1, "dual": 1}[mode] {
 				t.Fatal("runtime composition failed", err)
 			}
-			for _, name := range []string{"review-captures", "review-workspaces"} {
+			for _, name := range []string{"review-captures", "hosted-review-captures", "review-workspaces"} {
 				info, err := os.Stat(filepath.Join(dir, name))
-				if mode == "cli" {
+				wanted := mode != "disabled" && (name == "review-workspaces" || name == "review-captures" && mode != "hosted" || name == "hosted-review-captures" && mode != "cli")
+				if wanted {
 					if err != nil || !info.IsDir() {
 						t.Fatal("explicit native storage missing", err)
 					}
 				} else if !os.IsNotExist(err) {
 					t.Fatal("disabled or rejected runtime created native execution storage", err)
+				}
+			}
+			if mode == "hosted" {
+				if _, ok := drivers["local-cli"].(*reviewruntime.HostedDriver); !ok {
+					t.Fatal("hosted-only capability did not compose its driver")
+				}
+			}
+			if mode == "dual" {
+				router, ok := drivers["local-cli"].(*reviewChannelDriver)
+				if !ok || router.selectChannel("cli") != router.cli || router.selectChannel("hosted") != router.hosted || router.selectChannel("unknown") != nil {
+					t.Fatal("dual capability did not retain explicit channel routing")
+				}
+			}
+			workerCtx, cancel := context.WithCancel(t.Context())
+			done, err := startReviewWorkers(workerCtx, engine, drivers)
+			if err != nil || (done == nil) != (mode == "disabled") {
+				cancel()
+				t.Fatal("worker startup failed", err)
+			}
+			cancel()
+			if done != nil {
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatal("worker shutdown failed", err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("worker owner did not wait for shutdown")
 				}
 			}
 		})

@@ -80,6 +80,20 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	if bound.EvidenceID != "" {
 		return finish(bound.EvidenceID)
 	}
+	observations, err := engine.ReadHostedObservations(ctx, project, attempt.ID)
+	if err != nil {
+		result.Reason = "observation_unavailable"
+		return result, err
+	}
+	// A full journal cannot retain another response. Stop before external reads
+	// or artifact creation; an existing final capture above still settles offline.
+	if len(observations) >= 200 {
+		result.State, result.Reason = "uncertain", "hosted_observation_capacity"
+		if settle && attempt.State != "uncertain" {
+			_, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, "uncertain", result.Reason, attempt.ExternalID)
+		}
+		return result, err
+	}
 	anchor := *attempt.Anchor
 	repository, err := reader.Repository(ctx, anchor.RepositoryID)
 	if err != nil {

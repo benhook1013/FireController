@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -40,6 +41,7 @@ type HostedDriver struct {
 	wait       func(context.Context, time.Duration) error
 	mu         sync.Mutex
 	prepared   map[string]*hostedPrepared
+	recovering atomic.Bool
 }
 
 type hostedPrepared struct {
@@ -300,6 +302,9 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 		}
 		if observed.State == "completed" {
 			return reviewexec.Result{State: "completed", Reason: "hosted_evidence_retained", ExternalID: externalID}, nil
+		}
+		if observed.Reason == "hosted_observation_capacity" {
+			return reviewexec.Result{State: "uncertain", Reason: observed.Reason, ExternalID: externalID}, nil
 		}
 		if observed.Reason == "conflicting_trigger_evidence" || observed.Reason == "trigger_identity_changed" {
 			return reviewexec.Result{State: "uncertain", Reason: "hosted_observation_conflict", ExternalID: externalID}, nil
