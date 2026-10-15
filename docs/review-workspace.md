@@ -4,7 +4,7 @@
 
 The service stores project-scoped review observations and serves queue, PR history, run, finding, decision and fix-proof views from its own indexed database. Importing an observation is an explicit administrator action. Ordinary reads and browser refresh make no provider calls and do not construct another controller or renderer. Jobs and messaging do not depend on the reviews domain.
 
-This slice provides the read model for the [review engine](reviews.md); native execution, automatic provider refresh, policy admission and merge-readiness assessment remain unimplemented. Historical counts, a completed attempt, CI success and a matching head are separate facts. This API never returns a merge-ready verdict or authorizes a merge. Projects without observations return an explicitly unconfigured workspace.
+This slice provides the read model for the [review engine](reviews.md). Optional native execution and revision-bound policy admission are described in the [execution boundary](review-execution.md); automatic provider refresh, aggregate policy and merge-readiness assessment remain unimplemented. Historical counts, a completed attempt, CI success and a matching head are separate facts. This API never returns a merge-ready verdict or authorizes a merge. Projects without observations return an explicitly unconfigured workspace.
 
 ## API and scope
 
