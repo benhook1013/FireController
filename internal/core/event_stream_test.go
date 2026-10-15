@@ -178,12 +178,13 @@ func TestStreamSharesWaitCapacityAndReleasesCanceledSlots(t *testing.T) {
 func TestStreamHeartbeatReauthorizesWithoutReplayScan(t *testing.T) {
 	s, scope, cursor := streamFixture(t)
 	stop := errors.New("heartbeat completed")
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	ready := false
 	heartbeats := 0
+	const heartbeatInterval = 20 * time.Millisecond
 	start := time.Now()
-	err := s.StreamMessageEvents(ctx, scope, cursor, 1, func(page EventPage) error {
+	err := s.streamMessageEvents(ctx, scope, cursor, 1, func(page EventPage) error {
 		if ready {
 			t.Error("unexpected repeated delivery")
 		}
@@ -192,8 +193,26 @@ func TestStreamHeartbeatReauthorizesWithoutReplayScan(t *testing.T) {
 		// heartbeat's authorization-only transaction must not reference events.
 		_, err := s.DB().Exec("DROP TABLE events")
 		return err
-	}, func() error { heartbeats++; return stop })
-	if !errors.Is(err, stop) || heartbeats != 1 || time.Since(start) < 14*time.Second || streamSlots(s) != 0 {
+	}, func() error { heartbeats++; return stop }, heartbeatInterval)
+	if !errors.Is(err, stop) || heartbeats != 1 || time.Since(start) < heartbeatInterval || streamSlots(s) != 0 {
 		t.Fatalf("heartbeat scanned replay or leaked: %v beats=%d", err, heartbeats)
+	}
+}
+
+func TestStreamHeartbeatRejectsRevokedAccessWithoutReplayScan(t *testing.T) {
+	s, scope, cursor := streamFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	deliveries, heartbeats := 0, 0
+	err := s.streamMessageEvents(ctx, scope, cursor, 1, func(EventPage) error {
+		deliveries++
+		// Change access without a notification: the next heartbeat must check it
+		// independently, and cannot obtain authorization through event replay.
+		_, err := s.DB().Exec("DROP TABLE events; DELETE FROM grants")
+		return err
+	}, func() error { heartbeats++; return nil }, 20*time.Millisecond)
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Code != "forbidden" || deliveries != 1 || heartbeats != 0 || streamSlots(s) != 0 {
+		t.Fatalf("heartbeat authorization/release: %v deliveries=%d beats=%d", err, deliveries, heartbeats)
 	}
 }
