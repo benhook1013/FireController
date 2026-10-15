@@ -25,11 +25,12 @@ func browserCoreSession(t *testing.T, s *Store) (string, *http.Cookie) {
 	return id, cookie
 }
 
-func browserCoreRequest(id string, cookie *http.Cookie) *http.Request {
+func browserCoreRequest(s *Store, id string, cookie *http.Cookie) *http.Request {
 	r := httptest.NewRequest("GET", "http://localhost/api/v1/projects/project", nil)
 	r.SetPathValue("project_id", "project")
 	r.Header.Set("X-FC-Browser-Session", id)
 	r.Header.Set("X-FC-Worker", "worker")
+	r.Header.Set("X-FC-Instance", s.InstanceID())
 	r.AddCookie(cookie)
 	return r
 }
@@ -45,7 +46,7 @@ func browserCoreCode(t *testing.T, err error, code string) {
 func TestBrowserSessionClaimsReadOnlyAndReauthorization(t *testing.T) {
 	s, _, _ := streamFixture(t)
 	id, cookie := browserCoreSession(t, s)
-	scope, err := s.Scope(browserCoreRequest(id, cookie), "read")
+	scope, err := s.Scope(browserCoreRequest(s, id, cookie), "read")
 	if err != nil || !scope.readOnly || scope.sessionProject != "project" || scope.tokenHash == "" || scope.admin {
 		t.Fatal("cookie scope lost restriction", err)
 	}
@@ -67,7 +68,7 @@ func TestBrowserSessionClaimsReadOnlyAndReauthorization(t *testing.T) {
 	}
 	err = s.Read(context.Background(), scope, func(context.Context, *sql.Tx) error { return nil })
 	browserCoreCode(t, err, "forbidden")
-	instance := browserCoreRequest(id, cookie)
+	instance := browserCoreRequest(s, id, cookie)
 	instance.SetPathValue("project_id", "")
 	instance.URL.Path = "/api/v1/instance"
 	_, err = s.Authenticate(instance)
@@ -103,13 +104,13 @@ func TestBrowserSessionRejectsInvalidClaimsAndTransport(t *testing.T) {
 			if err != nil {
 				t.Fatal("fixture encode failed")
 			}
-			_, err = s.Scope(browserCoreRequest(id, &c), "read")
+			_, err = s.Scope(browserCoreRequest(s, id, &c), "read")
 			browserCoreCode(t, err, "unauthorized")
 		})
 	}
 	for _, name := range []string{"tamper", "duplicate_cookie", "duplicate_selector", "no_selector", "bad_bearer", "ambiguity", "wrong_name", "write", "admin", "listing"} {
 		t.Run(name, func(t *testing.T) {
-			r := browserCoreRequest(id, cookie)
+			r := browserCoreRequest(s, id, cookie)
 			code := "unauthorized"
 			switch name {
 			case "tamper":
@@ -150,7 +151,7 @@ func TestBrowserSessionStreamReauthorizesExpiryRevocationAndGrants(t *testing.T)
 		t.Run(name, func(t *testing.T) {
 			s, _, _ := streamFixture(t)
 			id, cookie := browserCoreSession(t, s)
-			scope, err := s.Scope(browserCoreRequest(id, cookie), "read")
+			scope, err := s.Scope(browserCoreRequest(s, id, cookie), "read")
 			if err != nil {
 				t.Fatal(err)
 			}
