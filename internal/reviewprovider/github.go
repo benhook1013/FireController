@@ -963,7 +963,7 @@ func validIdentifierText(value string, max int) bool {
 }
 
 func validBody(value string) bool {
-	if len(value) > githubMaxText || !utf8.ValidString(value) {
+	if len(value) > 4*githubMaxText || !utf8.ValidString(value) || utf8.RuneCountInString(value) > githubMaxText {
 		return false
 	}
 	for _, r := range value {
