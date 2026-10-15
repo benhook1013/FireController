@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -137,6 +138,49 @@ func TestConfigurationRejectsNonLoopbackBeforeCreatingState(t *testing.T) {
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
 			t.Fatal("invalid configuration created state")
 		}
+	}
+}
+
+func TestInvalidGitHubCredentialRejectsBeforeCreatingState(t *testing.T) {
+	for _, kind := range []string{"missing", "directory", "empty", "malformed", "nonprivate"} {
+		t.Run(kind, func(t *testing.T) {
+			if kind == "nonprivate" && runtime.GOOS == "windows" {
+				t.Skip("Unix permission bits are not Windows access-control proof")
+			}
+			root := t.TempDir()
+			tokenPath := filepath.Join(root, "operator.token")
+			switch kind {
+			case "directory":
+				if err := os.Mkdir(tokenPath, 0700); err != nil {
+					t.Fatal(err)
+				}
+			case "empty", "malformed", "nonprivate":
+				data := ""
+				if kind == "malformed" {
+					data = "synthetic token with spaces"
+				}
+				if kind == "nonprivate" {
+					data = "synthetic-private-token"
+				}
+				if err := os.WriteFile(tokenPath, []byte(data), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if kind == "nonprivate" {
+					if err := os.Chmod(tokenPath, 0644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			dataDir := filepath.Join(root, "must-remain-absent")
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), []string{"--data-dir", dataDir, "--listen", "127.0.0.1:0", "--github-token-file", tokenPath}, &stdout, &stderr)
+			if code != 3 || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"configuration_invalid"`) || strings.Contains(stderr.String(), tokenPath) || strings.Contains(stderr.String(), "synthetic") {
+				t.Fatalf("invalid credential diagnostic or exit: code=%d", code)
+			}
+			if _, err := os.Lstat(dataDir); !os.IsNotExist(err) {
+				t.Fatal("invalid optional credential created persistent state")
+			}
+		})
 	}
 }
 

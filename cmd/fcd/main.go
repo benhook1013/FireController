@@ -42,17 +42,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		diagnostic(stderr, "configuration_invalid", "Provide --data-dir and a loopback --listen address.")
 		return 2
 	}
+	resolver, err := server.GitHubResolver(*tokenFile)
+	if err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
 	store, err := core.Open(ctx, *dataDir)
 	if err != nil {
 		diagnosticError(stderr, err)
 		return 3
 	}
 	defer store.Close()
-	resolver, err := server.GitHubResolver(*tokenFile)
-	if err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
 	if err = jobs.EnsureSchema(ctx, store); err != nil {
 		diagnosticError(stderr, err)
 		return 3
