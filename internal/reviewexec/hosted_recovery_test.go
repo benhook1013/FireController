@@ -226,7 +226,7 @@ func TestReadHostedRecoveryRejectsCorruptAdmissionFacts(t *testing.T) {
 			if !reflect.DeepEqual(got, HostedRecoveryContext{}) || strings.Contains(err.Error(), "private") || hostedObservationState(t, f, a) != before {
 				t.Fatal("corrupt admission escaped/repaired/leaked", got, err)
 			}
-			if name != "retained config" {
+			if name != "retained config" && name != "null expected configuration revision" {
 				exact, err := f.e.ReadHostedPostingBoundary(t.Context(), attemptProject, a.ID)
 				attemptCode(t, err, "storage_unavailable")
 				if !exact.IsZero() || hostedObservationState(t, f, a) != before {

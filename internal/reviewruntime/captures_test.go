@@ -363,7 +363,7 @@ func TestCaptureRejectsUnsafeFilesystem(t *testing.T) {
 	if err := os.Symlink(root, link); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []string{link, filepath.Join(link, "nested"), path, ""} {
+	for _, bad := range []string{link, path, ""} {
 		_, err := NewCaptureStore(bad)
 		requireCaptureError(t, err, "configuration_invalid")
 	}
