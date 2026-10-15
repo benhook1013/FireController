@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-This document owns the service contract. The coordination slice implements local SQLite storage, scoped project/worker/access endpoints, basic jobs/history and durable messages with atomic receipts/events. See the [local API](local-api.md) for that boundary. The [incoming-message feed](message-events.md) implements scoped snapshot/replay, bounded waits and browser SSE; the [embedded browser](browser-guide.md) provides read-only jobs, workers and live incoming conversations. [Job checkpoints](job-checkpoints.md) record immutable progress independently of current job state. Provider orchestration, backups and remaining advanced job features are unimplemented. Design decisions are recorded in [decisions](decisions.md).
+This document owns the service contract. The coordination slice implements local SQLite storage, scoped project/worker/access endpoints, basic jobs/history and durable messages with atomic receipts/events. See the [local API](local-api.md) for that boundary. Event delivery, provider orchestration, backups, advanced job features and the new browser remain unimplemented. Design decisions are recorded in [decisions](decisions.md).
 
 ## Boundaries
 

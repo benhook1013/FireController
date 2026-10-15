@@ -37,21 +37,5 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
  PRIMARY KEY (project_id, job_id, revision),
  FOREIGN KEY (project_id, job_id) REFERENCES jobs(project_id, id) ON DELETE CASCADE
 );`,
-		`CREATE TABLE IF NOT EXISTS job_checkpoints (
- sequence INTEGER PRIMARY KEY AUTOINCREMENT,
- id TEXT NOT NULL UNIQUE,
- project_id TEXT NOT NULL,
- job_id TEXT NOT NULL,
- job_revision INTEGER NOT NULL CHECK (job_revision >= 1),
- actor_id TEXT NOT NULL,
- worker_id TEXT NOT NULL,
- done TEXT NOT NULL,
- next TEXT NOT NULL,
- blocker TEXT NOT NULL,
- evidence_json TEXT NOT NULL,
- created_at TEXT NOT NULL,
- FOREIGN KEY (project_id, job_id) REFERENCES jobs(project_id, id) ON DELETE CASCADE
-);`,
-		`CREATE INDEX IF NOT EXISTS job_checkpoints_project_job_sequence ON job_checkpoints(project_id, job_id, sequence DESC);`,
 	)
 }

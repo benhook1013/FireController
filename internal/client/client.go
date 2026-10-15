@@ -116,9 +116,6 @@ func requestOperation(method string, segments []string) string {
 		return "service mutation"
 	}
 	resource := segments[4:]
-	if len(resource) == 3 && resource[0] == "jobs" && resource[2] == "checkpoints" && method == http.MethodPost {
-		return "checkpoint append"
-	}
 	if len(resource) == 1 && resource[0] == "jobs" {
 		return "job creation"
 	}
@@ -205,20 +202,6 @@ func (c *Client) get(ctx context.Context, segments []string, query url.Values, s
 }
 
 func (c *Client) request(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any) error {
-	return c.requestBounded(ctx, method, segments, query, scoped, key, body, expectedStatus, mutation, dst, maxResponseBytes, decodeResponse)
-}
-
-func decodeResponse(data []byte, dst any) error {
-	if err := strictjson.Decode(data, dst); err != nil {
-		return err
-	}
-	if !completeShape(data, dst) {
-		return strictjson.ErrSyntax
-	}
-	return nil
-}
-
-func (c *Client) requestBounded(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error) error {
 	operation := requestOperation(method, segments)
 	if err := ctx.Err(); err != nil {
 		if mutation {
@@ -289,7 +272,7 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 		}
 		return invalidResponse()
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, int64(maxBytes)+1))
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
 		if ctx.Err() != nil {
 			if mutation {
@@ -302,7 +285,7 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 		}
 		return invalidResponse()
 	}
-	if len(data) > maxBytes {
+	if len(data) > maxResponseBytes {
 		if mutation {
 			return unknownRequest("invalid_response", operation, "response was oversized", response.StatusCode)
 		}
@@ -320,7 +303,7 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 		failure, _ := c.serviceError(data, response.StatusCode)
 		return failure
 	}
-	if decode(data, dst) != nil || c.hasSensitive(dst) {
+	if strictjson.Decode(data, dst) != nil || !completeShape(data, dst) || c.hasSensitive(dst) {
 		if mutation {
 			return unknownRequest("invalid_response", operation, "receipt was invalid", response.StatusCode)
 		}

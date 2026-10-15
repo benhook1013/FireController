@@ -139,13 +139,11 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(tools.Tools) != 19 || tools.NextCursor != "" {
+			if len(tools.Tools) != 16 || tools.NextCursor != "" {
 				t.Fatal("tool discovery incomplete")
 			}
 			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_snapshot": true, "inbox_events": true, "inbox_thread": true, "jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
-			expected["job_checkpoint_append"], expected["job_checkpoint_latest"], expected["job_checkpoint_history"] = true, true, true
 			writes := map[string]bool{"jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
-			writes["job_checkpoint_append"] = true
 			for _, tool := range tools.Tools {
 				if !expected[tool.Name] {
 					t.Fatal("unexpected tool")

@@ -11,7 +11,6 @@ The coordination slice implements a loopback service with scoped projects/worker
 - [Incoming message events](message-events.md): scoped inbox snapshots, replay and bounded waits.
 - [Local MCP tools](mcp.md): bound read/write stdio tools and protocol/host proof limits.
 - [Local API](local-api.md): implemented coordination endpoints, bootstrap and limits.
-- [Job checkpoints](job-checkpoints.md): immutable progress records, guarded appends, explicit latest/archive reads and integration status.
 - [Suggested agent workflow](agent-workflow.md): optional working practices for project instructions and a usage skill, separate from tool contracts.
 - [Product scope](product.md) defines the requirements.
 - [Architecture](architecture.md) owns service boundaries, project isolation, storage, and provider observation rules.

@@ -92,9 +92,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		dst = new(jobsInput)
 	case "jobs_assigned":
 		dst = new(assignedInput)
-	case "job_read", "job_checkpoint_latest":
+	case "job_read":
 		dst = new(jobInput)
-	case "job_history", "job_checkpoint_history":
+	case "job_history":
 		dst = new(historyInput)
 	case "inbox_list":
 		dst = new(inboxInput)
@@ -156,7 +156,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if _, ok := fields["status"]; ok && args.status != "active" && args.status != "parked" && args.status != "blocked" && args.status != "completed" {
 		return args, invalidArguments()
 	}
-	if name == "job_read" || name == "job_history" || name == "job_checkpoint_latest" || name == "job_checkpoint_history" || name == "inbox_thread" {
+	if name == "job_read" || name == "job_history" || name == "inbox_thread" {
 		if !validID(args.id) {
 			return args, invalidArguments()
 		}
@@ -166,7 +166,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 
 func mutationTool(name string) bool {
 	switch name {
-	case "jobs_create", "job_edit", "job_checkpoint_append", "inbox_send", "inbox_seen", "inbox_ack":
+	case "jobs_create", "job_edit", "inbox_send", "inbox_seen", "inbox_ack":
 		return true
 	}
 	return false
@@ -195,24 +195,6 @@ func validTitle(value string) bool {
 func mutationArguments(name string, data json.RawMessage) (arguments, error) {
 	var args arguments
 	switch name {
-	case "job_checkpoint_append":
-		var input struct {
-			Key                 string   `json:"idempotency_key"`
-			JobID               string   `json:"job_id"`
-			ExpectedJobRevision int64    `json:"expected_job_revision"`
-			Done                string   `json:"done"`
-			Next                string   `json:"next"`
-			Blocker             string   `json:"blocker,omitempty"`
-			Evidence            []string `json:"evidence,omitempty"`
-		}
-		if strictjson.Decode(data, &input) != nil || !validID(input.JobID) {
-			return args, invalidArguments()
-		}
-		args.checkpoint = client.AppendCheckpointRequest{ExpectedJobRevision: input.ExpectedJobRevision, Done: input.Done, Next: input.Next, Blocker: input.Blocker, Evidence: input.Evidence}
-		if client.ValidateCheckpointRequest(args.checkpoint) != nil {
-			return args, invalidArguments()
-		}
-		args.key, args.id = input.Key, input.JobID
 	case "jobs_create":
 		var input struct {
 			Key    string `json:"idempotency_key"`
@@ -332,13 +314,6 @@ func toolDefinitions() []definition {
 	brief := map[string]any{"type": "string", "maxLength": 32 << 10, "description": "Explicit UTF-8 brief, at most 32 KiB; empty clears it on edit."}
 	workerEdit := map[string]any{"type": "string", "maxLength": 128, "description": "Worker in the bound project; empty clears assignment."}
 	workerCreate := map[string]any{"type": "string", "maxLength": 128, "description": "Worker in the bound project; omission or empty leaves the job unassigned."}
-	checkpointText := func(max int, required bool) map[string]any {
-		value := map[string]any{"type": "string", "maxLength": max, "description": "Exact UTF-8 text; byte limits and the 16 KiB aggregate bound apply. C0 controls except tab, CR and LF, and DEL, are forbidden."}
-		if required {
-			value["minLength"] = 1
-		}
-		return value
-	}
 	schema := func(props map[string]any, required ...string) map[string]any {
 		v := map[string]any{"type": "object", "properties": props, "additionalProperties": false}
 		if len(required) > 0 {
@@ -359,9 +334,6 @@ func toolDefinitions() []definition {
 		{"jobs_assigned", "Read one compact job page assigned to the bound worker; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": status})},
 		{"job_read", "Read explicit full detail and brief for one job.", schema(map[string]any{"job_id": id}, "job_id")},
 		{"job_history", "Read one explicit bounded full-state history page for a job.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
-		{"job_checkpoint_append", "Append an immutable checkpoint with an explicit key and current expected job revision; return a compact receipt without changing the job or automatically retrying.", schema(map[string]any{"job_id": id, "idempotency_key": key, "expected_job_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64)}, "done": checkpointText(8<<10, true), "next": checkpointText(8<<10, true), "blocker": checkpointText(4<<10, false), "evidence": map[string]any{"type": "array", "maxItems": 10, "items": checkpointText(1024, true)}}, "job_id", "idempotency_key", "expected_job_revision", "done", "next")},
-		{"job_checkpoint_latest", "Read the current job revision and latest checkpoint, or explicit null when none exists; the captured checkpoint revision may be older.", schema(map[string]any{"job_id": id}, "job_id")},
-		{"job_checkpoint_history", "Read one explicit full checkpoint archive page in descending sequence order; no automatic archive reads.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
 		{"inbox_list", "Read one compact preview page for the bound worker; never mark seen or acknowledged.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
 		{"inbox_snapshot", "Read one bounded compact inbox page and its explicit scoped event cursor; no cursor is saved, no messages are marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
 		{"inbox_events", "Read one bounded incoming-message event page after an explicit cursor, optionally waiting up to 4000 ms. No cursor is saved, no automatic polling or subscription occurs, messages are never marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Required explicit cursor from a scoped snapshot or replay page."}, "limit": limit, "wait_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 4000, "description": "One bounded wait; omission returns immediately."}}, "cursor")},

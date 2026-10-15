@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The embedded [read-only browser](browser-guide.md) consumes the same API and persistent message stream. [Job checkpoints](job-checkpoints.md) implement guarded progress records, latest reads and explicit archives. CLI/MCP persistent subscriptions, provider review execution, backups and the remaining advanced job features are unimplemented.
+`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The embedded [read-only browser](browser-guide.md) consumes the same API and persistent message stream. CLI/MCP persistent subscriptions, provider review execution, backups and advanced job features remain unimplemented.
 
 ## Build and checks
 
@@ -69,8 +69,6 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc jobs assigned` | One compact page filtered to the bound worker; optional status filter. |
 | `fc jobs read ID` | Explicit full job detail and brief. |
 | `fc jobs history ID` | Explicit bounded revision-history page. |
-| `fc jobs checkpoint-latest ID` | Explicit latest checkpoint with current job revision, or an explicit null checkpoint. |
-| `fc jobs checkpoints ID` | Explicit newest-first checkpoint archive page. |
 | `fc inbox list` | Bound worker's compact message previews; optional unread/unacknowledged filters. |
 | `fc inbox thread ID` | Explicit bounded conversation page with full bodies. |
 
@@ -90,7 +88,6 @@ Mutations use the same private profile and one five-second command budget. They 
 | --- | --- |
 | `fc jobs create --key KEY --title TITLE` | Optional `--brief TEXT`, `--worker ID`, `--status STATUS`; defaults to active. |
 | `fc jobs edit ID --key KEY --expect-revision N` | At least one of `--title`, `--brief`, `--worker`, `--status`; empty brief or worker explicitly clears that field. |
-| `fc jobs checkpoint ID --key KEY --expect-revision N --done TEXT --next TEXT` | Optional `--blocker TEXT`, repeatable `--evidence REF`; append immutable progress without editing the job. |
 | `fc inbox send --key KEY --to WORKER_ID --body TEXT` | Optional `--reply-to MESSAGE_ID`; the bound worker is the sender. |
 | `fc inbox seen MESSAGE_ID --key KEY` | Only the bound actual recipient can change seen state. |
 | `fc inbox ack MESSAGE_ID --key KEY` | Only the bound actual recipient can acknowledge; acknowledgment also establishes seen state. |
@@ -110,11 +107,3 @@ This slice does not persist a client retry journal. Callers retain the key, requ
 The combined implementation checkpoint passed `make check build` and reproducible embedded-asset checks, followed by seven actual browser groups and seven actual MCP groups against the same packaged service. Both suites preserved source and binary hashes and cleaned their owned processes/state. The browser run also inspected seven desktop/phone screenshots, observed zero browser writes and zero JSON polling during a 16.2-second idle window, and exercised the first-read/live-reply race and real service restart.
 
 The combined 64-file Go/module digest was `a894280351e85316561b1850d18c4a776411be59c99454f288960bc7f76f5bf2`; the 83-file manifest including browser source/config/locks/embedded assets was `f33e653c8bac544fa6dff0052cfd06af825003e5e185d8bab17881c6b64a6a2f`. These identify the tested bytes rather than imply proof for subsequent edits. The earlier detailed [MCP](mcp.md#proof-and-limitations) and [browser](browser-guide.md#proof-and-limits) scenarios and platform/host limitations still apply. Browser testing used the available Chromium 153 headless shell with Playwright 1.64.1; local stdio concurrency does not establish installed-host wakeup behavior.
-
-## Small agent-call calibration
-
-On the checkpoint source identified in [checkpoint proof](job-checkpoints.md#proof-and-limits), thirty actual CLI latest-checkpoint reads had a 4.51 ms median, 7.73 ms observed p95 and 8.13 ms maximum. Thirty sequential reads through one actual MCP stdio connection had a 1.83 ms median, 2.57 ms observed p95 and 2.83 ms maximum. All sixty succeeded; six additional outstanding MCP reads completed in 4.87 ms total. The fixture's SQLite row counts stayed unchanged.
-
-Each compact checkpoint contained 560 bytes of structured JSON; CLI stdout added one newline, while MCP's structured result plus compatibility text and JSON-RPC framing totaled 1,267–1,268 bytes. Transport size is not measured model-token cost. The reference was WSL2 x86-64 on an i7-12700KF, ten exposed logical CPUs, about 9.7 GiB memory, Go 1.27.2 and the packaged development binaries. Source and binary hashes stayed unchanged throughout; disposable state/processes were cleaned.
-
-These small samples use one small checkpoint on one developer machine. They establish neither fleet throughput, a release latency budget, remote-network behavior, provider isolation measurements nor installed-model scheduling. The broader [performance plan](acceptance.md#performance-proof) remains unmeasured.

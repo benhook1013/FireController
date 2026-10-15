@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fcd` serves scoped projects, workers, access grants, basic jobs and durable messages. The CLI implements local `version`/`context` and the profile-bound [read commands](development.md#read-only-agent-commands). The [explicit-key CLI mutations](development.md#explicit-agent-mutations) create/edit jobs and send/seen/ack messages. The [stdio MCP adapter](mcp.md) exposes read and explicit-key mutation tools against these same endpoints. The [incoming-message event API](message-events.md) supplies scoped snapshot/replay, bounded waits and a persistent SSE transport. The service also embeds the [read-only browser](browser-guide.md). [Job checkpoints](job-checkpoints.md) provide immutable progress records through the same API and agent clients. There is no project/job event feed, review executor, backup API, primary-job selection, checklist or deferred-note API in this slice.
+`fcd` serves scoped projects, workers, access grants, basic jobs and durable messages. The CLI implements local `version`/`context` and the profile-bound [read commands](development.md#read-only-agent-commands). The [explicit-key CLI mutations](development.md#explicit-agent-mutations) create/edit jobs and send/seen/ack messages. The [stdio MCP adapter](mcp.md) exposes read and explicit-key mutation tools against these same endpoints. The [incoming-message event API](message-events.md) supplies scoped snapshot/replay, bounded waits and a persistent SSE transport. There is no standalone browser, project/job event feed, review executor, backup API, primary-job selection, checklist, checkpoint or deferred-note API in this slice.
 
 The [architecture](architecture.md) owns target behavior. This page describes the current implementation and its limits.
 
@@ -54,10 +54,6 @@ Routes below are relative to `/api/v1/projects/{project_id}`.
 | `GET /jobs/{job_id}/history` | Explicit bounded revision history with retained full job state. |
 
 Statuses are `active`, `parked`, `blocked` and `completed`; creation defaults to `active`. Title is bounded to 240 bytes and brief to 32 KiB. Assignments reference workers in the selected project. Creation starts revision 1. A guarded edit atomically changes the job, appends history/event metadata and stores its receipt; a losing revision race writes none of them. An empty worker ID clears an assignment on edit.
-
-## Job checkpoints
-
-[Job checkpoints](job-checkpoints.md) add guarded progress records independently of job state. That page owns append/latest/archive endpoints, content limits, current integration status and client commands.
 
 ## Durable messages
 
