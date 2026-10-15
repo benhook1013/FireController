@@ -295,17 +295,22 @@ func TestCLICoverageCandidateCapacityAndCancellation(t *testing.T) {
 
 func coverageSeedOperations(t *testing.T, f *attemptFixture, a Attempt, count int, state string) {
 	t.Helper()
-	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		for i := 0; i < count; i++ {
-			operation, attempt := fmt.Sprintf("history-operation-%d", i), fmt.Sprintf("history-attempt-%d", i)
-			if _, err := tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,?,revision,reason,?,created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations WHERE id=?`, operation, state, attempt, a.OperationID); err != nil {
-				return err
+	// Fixture setup must respect each production write's finite budget even on
+	// slower race-enabled runners, without reducing the history being tested.
+	const batchSize = 64
+	for start := 0; start < count; start += batchSize {
+		err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			for i := start; i < min(start+batchSize, count); i++ {
+				operation, attempt := fmt.Sprintf("history-operation-%d", i), fmt.Sprintf("history-attempt-%d", i)
+				if _, err := tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,?,revision,reason,?,created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations WHERE id=?`, operation, state, attempt, a.OperationID); err != nil {
+					return err
+				}
 			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 }
 
