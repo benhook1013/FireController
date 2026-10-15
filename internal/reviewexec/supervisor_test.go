@@ -974,6 +974,13 @@ func TestSupervisorPreparationReasonsAreSafeAndInspectable(t *testing.T) {
 		{"standing baseline", &core.Error{Code: "review_held", Details: map[string]string{"reason": "standing_baseline_unproven"}}, "standing_baseline_unproven"},
 		{"unsafe details", &core.Error{Code: "review_held", Details: map[string]string{"reason": "private_path_or_token"}}, "preparation_failed"},
 		{"unrelated code", &core.Error{Code: "other", Details: map[string]string{"reason": "target_already_covered"}}, "preparation_failed"},
+		{"capacity", core.Fail("review_capacity", "private diagnostic", 409), "review_capacity"},
+		{"wrapped capacity", fmt.Errorf("private wrapper: %w", core.Fail("review_capacity", "private diagnostic", 409)), "review_capacity"},
+		{"repository changed", &core.Error{Code: "review_held", Details: map[string]string{"reason": "repository_changed"}}, "repository_changed"},
+		{"allowance exhausted", &core.Error{Code: "review_held", Details: map[string]string{"reason": "allowance_exhausted"}}, "allowance_exhausted"},
+		{"wrapped allowance unavailable", fmt.Errorf("private wrapper: %w", &core.Error{Code: "review_held", Details: map[string]string{"reason": "allowance_unavailable"}}), "allowance_unavailable"},
+		{"unrelated allowance code", &core.Error{Code: "other", Details: map[string]string{"reason": "allowance_exhausted"}}, "preparation_failed"},
+		{"text is not typed", errors.New("rate_limited private diagnostic"), "preparation_failed"},
 		{"raw error", errors.New("private provider diagnostic"), "preparation_failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -989,6 +996,9 @@ func TestSupervisorPreparationReasonsAreSafeAndInspectable(t *testing.T) {
 			var operation Operation
 			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &operation) != nil || operation.Reason != tc.want {
 				t.Fatalf("held classification: %d %s", response.Code, response.Body.String())
+			}
+			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+				t.Fatal("held preparation kept reservation")
 			}
 			if driver.calls.Load() != 0 || strings.Contains(response.Body.String(), "private") {
 				t.Fatal("unsafe hold diagnostic or provider dispatch")
