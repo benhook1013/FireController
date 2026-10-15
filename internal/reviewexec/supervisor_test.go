@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,10 +16,168 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/server"
 )
+
+func TestSupervisorPendingSkipsBusyBeforeLimitAndWakesAfterRelease(t *testing.T) {
+	f := supervisorFixture(t)
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	busy := f.start(t, attemptProject, f.enqueue(t, attemptProject, "reserved", "cli", 2, 1))
+	seed := f.enqueue(t, attemptProject, "busy-seed", "cli", 4, 1)
+	other := f.enqueue(t, otherAttemptProject, "other-account", "cli", 2, 1)
+	hosted := f.enqueue(t, attemptProject, "other-channel", "hosted", 4, 1)
+	// Exercise the selection bound independently of public admission's smaller
+	// capacity, proving busy prefixes cannot hide later eligible work.
+	for i := range 299 {
+		if _, err := f.store.DB().Exec(`INSERT INTO review_operations (id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations WHERE id=?`, fmt.Sprintf("busy-%03d", i), seed.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := attemptState(t, f, busy)
+	operations, err := f.e.pending(context.Background())
+	if err != nil || len(operations) != 2 {
+		t.Fatalf("busy prefix hid eligible account/channel: count=%d err=%v", len(operations), err)
+	}
+	found := map[string]bool{}
+	for _, o := range operations {
+		found[o.ID] = true
+	}
+	if !found[other.ID] || !found[hosted.ID] || before != attemptState(t, f, busy) {
+		t.Fatal("pending changed reservations or selected reserved work")
+	}
+	if _, err := f.e.Advance(context.Background(), attemptProject, busy.ID, busy.Revision, "cancelled", "synthetic_release", ""); err != nil {
+		t.Fatal(err)
+	}
+	operations, err = f.e.pending(context.Background())
+	if err != nil || len(operations) != 256 {
+		t.Fatalf("released reservation did not make bounded queued work eligible: %d %v", len(operations), err)
+	}
+}
+
+func TestSupervisorPendingUsesRetainedAccountAndStableTarget(t *testing.T) {
+	f := supervisorFixture(t)
+	f.start(t, attemptProject, f.enqueue(t, attemptProject, "reserved", "cli", 2, 1))
+	f.enqueue(t, attemptProject, "original-account", "cli", 4, 1)
+	f.configure(t, attemptProject, "other-account", 1, false)
+	f.enqueue(t, attemptProject, "reserved-target-other-account", "cli", 2, 2)
+	free := f.enqueue(t, attemptProject, "free-target-other-account", "cli", 4, 2)
+	hosted := f.enqueue(t, attemptProject, "independent-channel", "hosted", 2, 2)
+	if _, err := f.store.DB().Exec(`UPDATE projects SET repository='renamed/repository' WHERE id=?`, attemptProject); err != nil {
+		t.Fatal(err)
+	}
+	operations, err := f.e.pending(context.Background())
+	if err != nil || len(operations) != 2 {
+		t.Fatalf("retained account/target filtering failed: %d %v", len(operations), err)
+	}
+	for _, o := range operations {
+		if o.ID != free.ID && o.ID != hosted.ID {
+			t.Fatal("selected reserved original account or stable target after rename")
+		}
+	}
+	// Removed capabilities still reach StartAttempt's normal hold handling;
+	// absence of a binding is not proof that a current account is occupied.
+	withoutCapabilities, err := New(f.store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations, err = withoutCapabilities.pending(context.Background())
+	if err != nil || len(operations) != 4 {
+		t.Fatalf("unavailable capabilities were silently hidden: %d %v", len(operations), err)
+	}
+}
+
+func TestSupervisorBusyQueueDoesNotEnterWriterAndCoordinationStaysUsable(t *testing.T) {
+	f := supervisorFixture(t)
+	if err := inbox.EnsureSchema(context.Background(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	inbox.Register(f.handler.(*http.ServeMux), f.store)
+	for _, worker := range []string{"sender", "recipient"} {
+		if _, err := f.store.DB().Exec(`INSERT INTO workers(project_id,id,name) VALUES(?,?,?)`, attemptProject, worker, worker); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := f.enqueue(t, attemptProject, "reserved", "cli", 2, 1)
+	busy := f.start(t, attemptProject, r)
+	if _, err := f.e.Admit(context.Background(), attemptProject, busy.ID, busy.Revision, attemptAnchor(attemptProject, 2), ""); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 31 {
+		f.enqueue(t, attemptProject, fmt.Sprintf("busy-%02d", i), "cli", 4, 1)
+	}
+	f.configure(t, otherAttemptProject, "test-capability", 0, false)
+	for i := range 8 {
+		f.enqueue(t, otherAttemptProject, fmt.Sprintf("other-project-busy-%02d", i), "cli", 2, 1)
+	}
+	// Occupy the real writer admission slot. A read-only busy scan must finish
+	// without waiting for it; a failed StartAttempt would still wait here.
+	entered, release := make(chan struct{}), make(chan struct{})
+	writerDone := make(chan error, 1)
+	go func() {
+		writerDone <- f.store.BackgroundWrite(context.Background(), func(context.Context, *sql.Tx) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	driver := &controlledDriver{}
+	go func() { done <- f.e.processNext(ctx, map[string]Driver{"test-capability": driver}) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("reserved queue attempted writer admission")
+		cancel()
+		<-done
+	}
+	cancel()
+	close(release)
+	if err := <-writerDone; err != nil {
+		t.Fatal(err)
+	}
+	ready := make(chan struct{}, 1)
+	driver.prepare = func(ctx context.Context, _ Operation, _ Configuration, _ Attempt) (Preparation, error) {
+		ready <- struct{}{}
+		<-ctx.Done()
+		return Preparation{}, ctx.Err()
+	}
+	stop := runSupervisor(t, f, driver)
+	waitOperationState(t, f, r.ID, "uncertain")
+	started := time.Now()
+	for i := range 5 {
+		proveOrdinaryCoordination(t, f, fmt.Sprintf("busy-job-%d", i), r.ID)
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+attemptProject+"/messages", strings.NewReader(`{"recipient_worker_id":"recipient","body":"Synthetic busy-queue coordination"}`))
+		request.Header.Set("Authorization", "Bearer "+f.writer)
+		request.Header.Set("X-FC-Worker", "sender")
+		request.Header.Set("Idempotency-Key", fmt.Sprintf("busy-message-%d", i))
+		response := httptest.NewRecorder()
+		f.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("message write failed during busy scheduling: %d %s", response.Code, response.Body.String())
+		}
+	}
+	t.Logf("five job/message write pairs with busy supervisor: %s", time.Since(started))
+	if time.Since(started) > time.Second || driver.prepares.Load() != 0 || driver.calls.Load() != 0 {
+		t.Fatal("busy queue delayed coordination or performed provider work")
+	}
+	if _, err := f.e.Advance(context.Background(), attemptProject, busy.ID, busy.Revision+2, "cancelled", "synthetic_release", ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("supervisor did not resume queued work after reservation release")
+	}
+	stop()
+}
 
 type controlledDriver struct {
 	prepare  func(context.Context, Operation, Configuration, Attempt) (Preparation, error)

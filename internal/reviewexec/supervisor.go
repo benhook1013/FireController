@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -117,7 +118,29 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	rows, err := e.store.DB().QueryContext(ctx, `SELECT project_id,id FROM review_operations WHERE state='queued' ORDER BY created_at,id LIMIT 256`)
+	// Snapshot candidates and reservations together, without entering writer
+	// admission. StartAttempt still rechecks reservations transactionally.
+	tx, err := e.store.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	args := make([]any, 0, 4*len(e.capabilities))
+	for _, capability := range e.capabilities {
+		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint)
+	}
+	// Only matching retained bindings can be skipped as busy. Missing/changed
+	// capabilities remain candidates for StartAttempt's normal hold handling.
+	query := `WITH installed(id,provider,account,fingerprint) AS (VALUES (NULL,NULL,NULL,NULL)` + strings.Repeat(`,(?,?,?,?)`, len(e.capabilities)) + `)
+	SELECT o.project_id,o.id FROM review_operations o
+	JOIN review_execution_config c ON c.project_id=o.project_id AND c.revision=o.configuration_revision
+	JOIN projects p ON p.id=o.project_id
+	LEFT JOIN installed i ON i.id=CASE WHEN json_valid(c.body_json) THEN json_extract(c.body_json,'$.capability_id') END AND i.fingerprint=o.capability_fingerprint
+	WHERE o.state='queued'
+	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel)
+	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)
+	ORDER BY o.created_at,o.id LIMIT 256`
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -136,13 +159,6 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Snapshot local records in one short read transaction; there is no provider
-	// activity or process waiting under a database transaction.
-	tx, err := e.store.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
 	out := make([]Operation, 0, len(ids))
 	for _, i := range ids {
 		o, err := readOperation(ctx, tx, i.project, i.operation)
