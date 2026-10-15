@@ -21,6 +21,7 @@ type mutationInvocation struct {
 	checkpoint               client.AppendCheckpointRequest
 	update                   client.AppendUpdateRequest
 	checklist                client.ReplaceChecklistRequest
+	primary                  client.ReplacePrimaryJobRequest
 	reviewRoute              client.ReviewRouteRequest
 	reviewRouteDecision      client.ReviewRouteDecisionRequest
 	reviewRouteFix           client.ReviewRouteFixRequest
@@ -33,6 +34,9 @@ type mutationInvocation struct {
 }
 
 func isMutation(command, operation string) bool {
+	if command == "jobs" && (operation == "primary-set" || operation == "primary-clear") {
+		return true
+	}
 	if command == "jobs" && (operation == "update" || operation == "checklist-set") {
 		return true
 	}
@@ -47,6 +51,9 @@ func isMutation(command, operation string) bool {
 // keys make retries recoverable across separate CLI processes without a global
 // retry identity or silently regenerated key.
 func parseMutation(command, operation string, args []string) (*mutationInvocation, bool) {
+	if command == "jobs" && (operation == "primary-set" || operation == "primary-clear") {
+		return parsePrimaryJob(operation, args)
+	}
 	if command == "jobs" && (operation == "update" || operation == "checklist-set") {
 		return parseJobProgress(operation, args)
 	}
@@ -164,6 +171,8 @@ func validMutationKey(key string) bool {
 
 func executeMutation(ctx context.Context, service *client.Client, call *mutationInvocation) (any, error) {
 	switch call.operation {
+	case "jobs primary-set", "jobs primary-clear":
+		return service.ReplacePrimaryJob(ctx, call.key, call.primary)
 	case "jobs create":
 		return service.CreateJob(ctx, call.key, call.create)
 	case "jobs edit":

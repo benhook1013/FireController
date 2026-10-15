@@ -39,6 +39,9 @@ func Register(mux *http.ServeMux, store *core.Store) {
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints", appendCheckpoint(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints/latest", latestCheckpoint(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints", checkpointHistory(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/primary-job", getPrimaryJob(store))
+	mux.HandleFunc("PUT /api/v1/projects/{project_id}/workers/{worker_id}/primary-job", replacePrimaryJob(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/primary-job/history", primaryJobHistory(store))
 }
 
 type job struct {
@@ -317,6 +320,9 @@ func editJob(store *core.Store) http.HandlerFunc {
 				if err := core.CheckWorker(ctx, tx, scope.ProjectID, next.WorkerID); err != nil {
 					return nil, err
 				}
+			}
+			if err := clearReassignedPrimary(ctx, tx, scope, current, next); err != nil {
+				return nil, err
 			}
 			next.Revision++
 			next.UpdatedAt = timestamp()

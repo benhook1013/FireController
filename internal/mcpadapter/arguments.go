@@ -80,6 +80,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if checkpointTool(name) {
 		return checkpointArguments(name, data)
 	}
+	if primaryJobTool(name) {
+		return primaryJobArguments(name, data)
+	}
 	if jobProgressTool(name) {
 		return jobProgressArguments(name, data)
 	}
@@ -177,7 +180,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 }
 
 func mutationTool(name string) bool {
-	if name == "job_update_append" || name == "job_checklist_replace" {
+	if name == "job_primary_replace" || name == "job_update_append" || name == "job_checklist_replace" {
 		return true
 	}
 	switch name {

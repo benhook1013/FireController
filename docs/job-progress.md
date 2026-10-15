@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The API, typed client, CLI, MCP and read-only browser implement separate narrative updates and a guarded checklist. Full repository checks/build, focused API/client/adapter race tests and actual packaged CLI/MCP/browser proof pass. Basic jobs and [checkpoints](job-checkpoints.md) remain available. Primary focus, worker pause state, deferred notes and a combined resume read remain separate unfinished requirements.
+The API, typed client, CLI, MCP and read-only browser implement separate narrative updates and a guarded checklist. Full repository checks/build, focused API/client/adapter race tests and actual packaged CLI/MCP/browser proof pass. Basic jobs and [checkpoints](job-checkpoints.md) remain available. [Optional primary-job focus](worker-focus.md) has a separate API and proof boundary. Worker pause state, deferred notes and a combined resume read remain unfinished.
 
 ## Separate progress from standing instructions
 

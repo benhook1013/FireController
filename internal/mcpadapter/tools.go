@@ -30,6 +30,7 @@ type arguments struct {
 	checkpoint                 client.AppendCheckpointRequest
 	update                     client.AppendUpdateRequest
 	checklist                  client.ReplaceChecklistRequest
+	primary                    client.ReplacePrimaryJobRequest
 	reviewRoute                client.ReviewRouteRequest
 	reviewRouteDecision        client.ReviewRouteDecisionRequest
 	reviewRouteFix             client.ReviewRouteFixRequest
@@ -49,6 +50,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 64})
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
 	definitions = append(definitions, jobProgressDefinitions()...)
+	definitions = append(definitions, primaryJobDefinitions()...)
 	known := make(map[string]bool)
 	for _, tool := range definitions {
 		known[tool.name] = true
@@ -142,6 +144,12 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.Jobs(ctx, options, client.JobFilter{WorkerID: args.worker, Status: args.status})
 			case "jobs_assigned":
 				value, err = service.Jobs(ctx, options, client.JobFilter{WorkerID: binding.Context.WorkerID, Status: args.status})
+			case "job_primary_read":
+				value, err = service.PrimaryJob(ctx)
+			case "job_primary_history":
+				value, err = service.PrimaryJobHistory(ctx, options)
+			case "job_primary_replace":
+				value, err = service.ReplacePrimaryJob(ctx, args.key, args.primary)
 			case "job_read":
 				value, err = service.Job(ctx, args.id)
 			case "job_history":

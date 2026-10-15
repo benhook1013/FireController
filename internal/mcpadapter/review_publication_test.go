@@ -112,7 +112,7 @@ func TestReviewCheckpointMCPDiscoveryAndInvalidBeforeCredentials(t *testing.T) {
 			t.Fatal("incorrect checkpoint schema/effects", tool.Name)
 		}
 	}
-	if len(want) != 0 || len(tools.Tools) != 50 || reads != 32 || writes != 18 {
+	if len(want) != 0 || len(tools.Tools) != 53 || reads != 34 || writes != 19 {
 		t.Fatal("discovery totals wrong", want, reads, writes)
 	}
 	id := "review_publication_" + strings.Repeat("a", 32)

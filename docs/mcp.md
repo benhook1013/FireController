@@ -31,6 +31,8 @@ Startup validates configuration without opening the credential or contacting the
 | `job_history` | Required job_id and optional limit/cursor; explicit full-state history page. |
 | `job_checkpoint_latest` | Required job_id; explicit latest checkpoint and current job revision, including null when none exists. |
 | `job_checkpoint_history` | Required job_id and optional limit/cursor; explicit newest-first checkpoint archive. |
+| `job_primary_read` | No fields; bound worker’s optional primary job and independent focus revision. |
+| `job_primary_history` | Optional limit/cursor; one page of the bound worker’s focus history. |
 | `job_update_history` | Required job_id and optional limit/cursor; one newest-first narrative-update page. |
 | `job_checklist_read` | Required job_id; current ordered checklist and current job revision. |
 | `job_checklist_history` | Required job_id and optional limit/cursor; one newest-first full checklist revision page. |
@@ -67,6 +69,7 @@ Startup validates configuration without opening the credential or contacting the
 | `jobs_create` | Required idempotency_key/title; optional brief/worker_id/status; compact job receipt. |
 | `job_edit` | Required idempotency_key/job_id/expected_revision plus selected title/brief/worker_id/status fields; compact receipt. |
 | `job_checkpoint_append` | Required idempotency_key/job_id/expected_job_revision/done/next; optional blocker/evidence; compact checkpoint receipt. |
+| `job_primary_replace` | Required idempotency_key/expected_revision/job_id; bound worker’s guarded focus replacement, empty job ID clears. |
 | `job_update_append` | Required idempotency_key/job_id/expected_job_revision/body; optional evidence; immutable narrative update and compact receipt. |
 | `job_checklist_replace` | Required idempotency_key/job_id/expected_job_revision/expected_revision/items; guarded ordered replacement and compact changed/unchanged receipt. |
 | `inbox_send` | Required idempotency_key/recipient_worker_id/body; optional reply_to_message_id; compact message receipt. |
@@ -98,3 +101,5 @@ These checks establish the SDK/protocol and service boundary, not compatibility 
 The [native evidence controls](review-controls.md#bound-cli-and-mcp) add explicit retained capture/adjudication reads and keyed finding decision, fix-reference and source-finalization tools. These local operations do not dispatch a review or contact providers. The [readiness tool](review-readiness.md#service-and-bound-tools) combines retained observations and current local policy without provider work; `include_readiness` on explicit source refresh requests its collection. The five [finding-route tools](review-routes.md#bound-controls) add explicit creation, incoming lists, full route reads, receiving decisions and guarded fix references. They are local, profile-bound operations with independent source and receiving revisions.
 
 The three [public review checkpoint tools](review-publication.md#bound-controls) distinguish explicit GitHub publication from local source finalization. Their bounded wait returns useful terminal facts when available and a compact pending receipt otherwise. A lost response preserves the same source, request and key; observation-only recovery does not authorize a repost.
+
+The [worker primary-job contract](worker-focus.md) owns focus semantics and proof. Current primary reads are compact selectors; they do not imply that the job brief, checkpoint or messages have been loaded. Zero revision is valid for an initial focus or checklist conflict and remains visible in safe error details.
