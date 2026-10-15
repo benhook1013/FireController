@@ -7,12 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/reviews"
+	"github.com/benhook1013/FireController/internal/server"
 )
 
 type controlledDriver struct {
@@ -308,8 +311,13 @@ func TestSupervisorPreparationChangesAndFailuresNeverDispatch(t *testing.T) {
 				f.configure(t, attemptProject, "test-capability", 1, false)
 			}
 			if change == "revocation" {
-				if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`); err != nil {
-					t.Fatal(err)
+				r := httptest.NewRequest(http.MethodDelete, "/api/v1/projects/"+attemptProject+"/credentials/exec-writer-cred", strings.NewReader(`{}`))
+				r.Header.Set("Authorization", "Bearer "+f.admin)
+				r.Header.Set("Idempotency-Key", "revoke-during-preflight")
+				response := httptest.NewRecorder()
+				server.New(f.store).ServeHTTP(response, r)
+				if response.Code != http.StatusOK {
+					t.Fatalf("credential revocation: %d %s", response.Code, response.Body.String())
 				}
 			}
 			close(release)
