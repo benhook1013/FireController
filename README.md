@@ -82,7 +82,7 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm run docs:check
 ```
 
-The check runs Markdown lint, focused link-checker tests, and repository-link validation. For the local CLI, install Go 1.27, Make and a C compiler such as `gcc`, with cgo enabled for the race-enabled checks, then run:
+The check runs Markdown lint, focused link-checker tests, and repository-link validation. For the local CLI, install Go 1.27, Make and a C compiler such as `gcc`, with cgo enabled for the race-enabled checks. `make check` also runs the documentation checks, so complete the Node.js setup and `npm ci` above before running:
 
 ```sh
 make check build
