@@ -57,6 +57,12 @@ func (e *Engine) Run(ctx context.Context, drivers map[string]Driver) error {
 		}
 	}
 	if err := e.RecoverInterrupted(ctx); err != nil {
+		// Run owns both startup and worker lifetime. A cooperative stop while
+		// startup waits for the writer is cancellation, not a storage failure.
+		var failure *core.Error
+		if ctx.Err() != nil && errors.As(err, &failure) && failure.Code == "overloaded" {
+			return nil
+		}
 		return err
 	}
 	workCtx, cancelWork := context.WithCancel(ctx)

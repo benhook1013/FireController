@@ -637,6 +637,63 @@ func TestSupervisorRejectsInvalidDriverMapsAndDuplicateOwner(t *testing.T) {
 	stop()
 }
 
+func TestSupervisorRunShutdownDuringStartupRecoveryPreservesInterruptedAttempt(t *testing.T) {
+	f := supervisorFixture(t)
+	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "startup-cancellation", "cli", 2, 1))
+	before := attemptState(t, f, a)
+	entered, release := make(chan struct{}), make(chan struct{})
+	writerDone := make(chan error, 1)
+	// Delay actual startup recovery at the serialized writer boundary. Ownership
+	// is already visible, but no recovery statement has been allowed to run.
+	go func() {
+		writerDone <- f.store.BackgroundWrite(context.Background(), func(context.Context, *sql.Tx) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	defer func() {
+		close(release)
+		if err := <-writerDone; err != nil {
+			t.Error("fixture writer failed", err)
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	driver := &controlledDriver{}
+	done := make(chan error, 1)
+	go func() { done <- f.e.Run(ctx, map[string]Driver{"test-capability": driver, "other-account": driver}) }()
+	waitSupervisor(t, "startup ownership", func() bool { return f.e.running.Load() })
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Error("cooperative startup shutdown failed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("startup cancellation waited for unrelated writer")
+	}
+	if f.e.running.Load() || driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptState(t, f, a) != before {
+		t.Fatal("startup shutdown changed retained preparation/reservation or started provider work")
+	}
+}
+
+func TestSupervisorRunStartupRecoveryStorageFailureRemainsVisible(t *testing.T) {
+	f := supervisorFixture(t)
+	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "startup-storage-failure", "cli", 2, 1))
+	before := attemptState(t, f, a)
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_startup_recovery BEFORE UPDATE OF state ON review_execution_attempts BEGIN SELECT RAISE(ABORT,'synthetic-private-startup-diagnostic'); END`); err != nil {
+		t.Fatal(err)
+	}
+	driver := &controlledDriver{}
+	err := f.e.Run(context.Background(), map[string]Driver{"test-capability": driver, "other-account": driver})
+	attemptCode(t, err, "storage_unavailable")
+	if strings.Contains(err.Error(), "synthetic-private-startup-diagnostic") || f.e.running.Load() || driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptState(t, f, a) != before {
+		t.Fatal("startup storage failure was hidden, leaked diagnostics or changed retained preparation")
+	}
+}
+
 func TestSupervisorBackgroundWriteCancelsRealSQLiteAndRollsBackJournal(t *testing.T) {
 	f := supervisorFixture(t)
 	r := f.enqueue(t, attemptProject, "rollback-expensive-sql", "cli", 2, 1)
