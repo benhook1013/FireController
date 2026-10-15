@@ -153,6 +153,9 @@ func (s *Store) authenticateBrowserSession(r *http.Request) (Scope, error) {
 	if len(r.Header.Values("X-FC-Worker")) > 1 || len(scope.WorkerID) > 128 {
 		return Scope{}, Fail("validation_failed", "Select at most one valid worker identity.", 400)
 	}
+	if len(r.Header.Values("X-FC-Instance")) != 1 {
+		return Scope{}, Fail("validation_failed", "Provide one expected instance identity.", 400)
+	}
 	if err := s.checkExpectedInstance(r); err != nil {
 		return Scope{}, err
 	}
