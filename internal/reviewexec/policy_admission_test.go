@@ -311,7 +311,7 @@ func TestPolicyAdmissionVersionTwoMigrationRetainsUnboundJournal(t *testing.T) {
 	admissionSQL(t, f, `DROP TABLE review_hosted_allowance_queries`)
 	admissionSQL(t, f, `DROP INDEX review_operations_completed_comparison`)
 	admissionSQL(t, f, `DROP TABLE review_cli_preflight`)
-	admissionSQL(t, f, `DROP INDEX review_operations_coverage`)
+	admissionSQL(t, f, `DROP INDEX IF EXISTS review_operations_coverage`)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN policy_revision`)
 	admissionSQL(t, f, `UPDATE metadata SET value='2' WHERE key='schema:review_execution'`)
 	var sequence int
