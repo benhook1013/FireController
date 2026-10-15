@@ -148,6 +148,113 @@ describe('Api stored review workspace', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it.each<Array<[string, Partial<typeof reviewRun>]>[number]>([
+    ['completed missing start', { complete: false, started_at: '' }],
+    ['completed missing finish', { complete: false, finished_at: '' }],
+    ['completed missing both', { complete: false, started_at: '', finished_at: '' }],
+    ['complete unknown missing start', { outcome: 'unknown', started_at: '' }],
+    ['complete unknown missing finish', { outcome: 'unknown', finished_at: '' }],
+    ['complete unknown missing both', { outcome: 'unknown', started_at: '', finished_at: '' }],
+  ])('rejects %s across all stored review views', async (_name, patch) => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const run = { ...reviewRun, ...patch };
+    const pull = { ...reviewPull, recent_runs: [run] };
+    const views: Array<[unknown, () => Promise<unknown>]> = [
+      [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
+      [{ ...reviewSnapshot, pull, attempts: [reviewAttempt] }, () => client.reviewPull(1)],
+      [{ ...reviewSnapshot, items: [run], has_more: false }, () => client.reviewRuns(1)],
+      [{ ...reviewDetail, run }, () => client.reviewRun(run.id)],
+    ];
+    for (const [body, read] of views) {
+      const fetchMock = vi.fn().mockResolvedValueOnce(json(body));
+      vi.stubGlobal('fetch', fetchMock);
+      await expect(read()).rejects.toMatchObject({ code: 'invalid_response' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][1].method ?? 'GET').toBe('GET');
+    }
+  });
+
+  it.each([
+    ['start', '', reviewAttempt.finished_at],
+    ['finish', reviewAttempt.started_at, ''],
+    ['both', '', ''],
+  ])('rejects completed attempts missing %s timestamps in queue and pull views', async (_name, start, finish) => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const attempt = { ...reviewAttempt, started_at: start, finished_at: finish };
+    const pull = { ...reviewPull, latest_attempts: [attempt] };
+    for (const [body, read] of [
+      [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
+      [{ ...reviewSnapshot, pull, attempts: [attempt] }, () => client.reviewPull(1)],
+    ] as Array<[unknown, () => Promise<unknown>]>) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(body)));
+      await expect(read()).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
+
+  it.each(['runs', 'attempts'])('rejects positive %s counts with an empty corresponding summary', async kind => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const pull = kind === 'runs' ? { ...reviewPull, recent_runs: [] } : { ...reviewPull, latest_attempts: [] };
+    for (const [body, read] of [
+      [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
+      [{ ...reviewSnapshot, pull, attempts: [reviewAttempt] }, () => client.reviewPull(1)],
+    ] as Array<[unknown, () => Promise<unknown>]>) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(body)));
+      await expect(read()).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
+
+  it('rejects a resolved accepted finding without its effective fix SHA', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    // Keep the fixed count consistent so this isolates the missing SHA guard.
+    const body = { ...reviewDetail, run: { ...reviewRun, fixed: 0 }, findings: [{ ...reviewFinding, fix_sha: '', proof_note: '' }] };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(body)));
+    await expect(client.reviewRun(reviewRun.id)).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  it.each(['unknown', 'ordered complete', 'completed'])('retains legitimate %s history and unresolved accepted findings', async shape => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const run = { ...reviewRun, fixed: 0, ...(shape === 'unknown' ? { complete: false, outcome: 'unknown', started_at: '', finished_at: '' } : shape === 'ordered complete' ? { outcome: 'unknown' } : {}) };
+    const attempt = { ...reviewAttempt, ...(shape === 'unknown' ? { state: 'unknown', started_at: '', finished_at: '', duration_seconds: null } : {}) };
+    const finding = { ...reviewFinding, fix_sha: '', proof_note: 'Accepted; fix evidence remains unknown.', resolved_at: '' };
+    const pull = { ...reviewPull, recent_runs: [run], latest_attempts: [attempt] };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [run], has_more: false }))
+      .mockResolvedValueOnce(json({ ...reviewDetail, run, findings: [finding] }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await client.reviewQueue()).items[0].recent_runs[0]).toEqual(run);
+    expect((await client.reviewPull(1)).attempts[0]).toEqual(attempt);
+    expect((await client.reviewRuns(1)).items[0]).toEqual(run);
+    expect((await client.reviewRun(run.id)).findings[0]).toEqual(finding);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    for (const call of fetchMock.mock.calls) expect(call[1].method ?? 'GET').toBe('GET');
+  });
+
+  it('retains genuinely empty zero-count review histories', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const pull = { ...reviewPull, run_count: 0, attempt_count: 0, recent_runs: [], latest_attempts: [] };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [], has_more: false })));
+    expect((await client.reviewQueue()).items[0]).toEqual(pull);
+    expect((await client.reviewPull(1)).attempts).toEqual([]);
+    expect((await client.reviewRuns(1)).items).toEqual([]);
+  });
+
   it('rejects invalid review selectors and paging before any request', async () => {
     setupLocation();
     const client = api();
