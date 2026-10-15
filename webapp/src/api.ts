@@ -175,7 +175,7 @@ function nonnegative(value: unknown): value is number { return Number.isSafeInte
 function pullNumber(value: unknown): value is number { return positive(value) && value <= 2147483647; }
 function reviewSnapshotID(value: unknown): value is string { return typeof value === 'string' && /^review_snapshot_[a-f0-9]{32}$/u.test(value); }
 function reviewRunID(value: unknown): value is string { return typeof value === 'string' && /^review_run_[a-f0-9]{32}$/u.test(value); }
-function sha(value: unknown): value is string { return typeof value === 'string' && (value === '' || /^[a-f0-9]{40}$/iu.test(value)); }
+function sha(value: unknown): value is string { return typeof value === 'string' && (value === '' || /^[a-f0-9]{40}$/u.test(value)); }
 function maybeTimestamp(value: unknown): value is string { return value === '' || timestamp(value); }
 function orderedTimes(start: string, finish: string): boolean { return !start || !finish || Date.parse(start) <= Date.parse(finish); }
 function validReviewSnapshot(value: Record<string, unknown>, project: string, expected?: string): boolean {
