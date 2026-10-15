@@ -74,13 +74,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	// Retained evidence controls are local operations; the empty capability set
 	// deliberately leaves provider execution unavailable until its runtime is wired.
-	for _, ensure := range []func(context.Context, *core.Store) error{reviewexec.EnsureSchema, reviewexec.EnsureEvidenceSchema, reviewexec.EnsureAdjudicationSchema} {
+	for _, ensure := range []func(context.Context, *core.Store) error{reviewexec.EnsureSchema, reviewexec.EnsureEvidenceSchema, reviewexec.EnsureAdjudicationSchema, reviewexec.EnsurePolicySchema} {
 		if err = ensure(ctx, store); err != nil {
 			diagnosticError(stderr, err)
 			return 3
 		}
 	}
-	execution, err := reviewexec.New(store, nil)
+	execution, err := reviewexec.New(store, nil, reviewexec.WithNativeProjection())
 	if err != nil {
 		diagnosticError(stderr, err)
 		return 3

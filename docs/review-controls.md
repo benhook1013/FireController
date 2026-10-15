@@ -4,7 +4,7 @@
 
 The service exposes retained native CLI evidence and its decision/fix ledger through project-scoped API, CLI and MCP operations. These controls use the same authorization and private client binding as jobs and messages. They do not start a review, upload a capture, refresh GitHub or publish a public checkpoint. The [execution contract](review-execution.md) owns trusted capture ingestion and provider admission; the [review workspace](review-workspace.md) owns stored browser projections.
 
-The daemon installs the execution/evidence/adjudication schemas and registers the local routes. Its capability set remains empty: provider execution and configuration are unavailable until the supervised driver and admission integration are delivered. Adding these controls does not complete native review cutover or change the separately running development executor.
+The daemon installs the execution/evidence/adjudication and project-policy schemas and registers the local routes. Its capability set remains empty: runnable provider configuration and execution are unavailable until the supervised driver and admission integration are delivered. Adding these controls does not complete native review cutover or change the separately running development executor.
 
 ## Explicit reads and stable finding identity
 
@@ -28,6 +28,22 @@ Fields are explicit and non-null, including finding zero and an empty `expected_
 
 Finalization requires a completed attempt, complete retained capture and a decision for every finding. It freezes the original source counts, including a valid zero-finding run. Later decision/fix corrections append audit records and retain the original capture and frozen counts. An accepted finding with a fix reference cannot be rejected silently. Finalization establishes source counts; policy sufficiency, fixed findings and merge readiness remain separate facts. Humans perform merges.
 
+## Browser consistency
+
+When a native run has already been published to the stored review workspace, a decision, fix reference or finalization updates its browser projection in the same transaction as the authoritative ledger, audit, event and receipt. A failed projection leaves all of them unchanged. The browser shows the new observation on refresh; these controls do not make provider requests.
+
+The native run's original source identity and zero-based finding indexes bind that update. It preserves captured finding text, historical snapshots, imported runs, merged queue history and current PR facts. Finalized source counts remain the original counts even when a later audited correction changes an effective decision or fix. Updating a decision does not claim a fresh provider observation for other PRs.
+
+Evidence without an initial native workspace publication remains usable through the ledger controls. A decision does not invent a browser run or convert imported historical evidence into native execution. Initial publication from real provider execution remains part of the driver integration.
+
+## Explicit project policy
+
+`GET /api/v1/projects/{project_id}/reviews/policy` requires project read permission and returns `{project_id,revision,actor_id,recorded_at,policy}`. An unconfigured policy returns `reviews_policy_unconfigured` with HTTP 409; absence never means that review requirements passed.
+
+`POST` to that path requires administrator permission, an explicit idempotency key and four non-null JSON fields: `expected_revision`, `required_channels`, `paused_channels` and `max_review_files`. Initial revision is zero. Required channels are an explicit nonempty unique subset of `cli` and `hosted`; paused channels are an explicit unique subset and may be empty. `max_review_files` is zero for no additional project ceiling, or 1–100000 for a project ceiling. It neither asserts a provider's actual limit nor bypasses one. Unknown fields and query parameters are rejected.
+
+Successful configuration returns `{id,state:"policy_configured",revision}` with HTTP 200. Changes retain immutable administrator-attributed revisions and a compact event; same-key recovery and stale-revision rejection follow the other guarded writes. Policy currently has storage and API controls only. Admission, aggregate sufficiency and merge-readiness assessment do not yet consume it; no policy CLI/MCP tools are exposed in this slice.
+
 ## Bound CLI and MCP
 
 The CLI uses its selected private profile without project or worker flags on each operation:
@@ -48,4 +64,4 @@ These tools record local review evidence. Project instructions and the optional 
 
 ## Validation boundary
 
-Focused public-handler, typed-client, CLI and actual stdio MCP checks must cover project/read-write isolation, instance mismatch, strict fields, exact keyed replay, stale revisions, guarded fix corrections, retained source counts and bounded failures. Packaged-service checks must verify daemon route registration and the complete local evidence workflow before claiming that the executable provides it. Passing local controls does not establish provider admission, hosted recovery, projection publication or native cutover.
+Focused public-handler, typed-client, CLI and actual stdio MCP checks must cover project/read-write isolation, instance mismatch, strict fields, exact keyed replay, stale revisions, guarded fix corrections, retained source counts and bounded failures. Policy handlers also cover administrator authority, explicit empty arrays/zero, immutable revisions and the unconfigured state. Integration checks must verify atomic ledger/projection rollback and retained history. Packaged-service checks must verify daemon registration and actual browser refresh before claiming executable projection consistency. Passing these controls does not establish initial provider publication, admission, hosted recovery or native cutover.

@@ -95,18 +95,23 @@ type Attempt struct {
 }
 
 type Engine struct {
-	store        *core.Store
-	capabilities map[string]Capability
-	wake         chan struct{}
-	running      atomic.Bool
+	store               *core.Store
+	capabilities        map[string]Capability
+	wake                chan struct{}
+	running             atomic.Bool
+	publishAdjudication func(context.Context, *sql.Tx, core.Scope, CLIAdjudication) error
 }
+
+// EngineOption composes trusted application integrations before an engine is
+// exposed to handlers or supervised workers.
+type EngineOption func(*Engine)
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 var sha = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var hash = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var repository = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$`)
 
-func New(store *core.Store, capabilities []Capability) (*Engine, error) {
+func New(store *core.Store, capabilities []Capability, options ...EngineOption) (*Engine, error) {
 	e := &Engine{store: store, capabilities: map[string]Capability{}, wake: make(chan struct{}, 1)}
 	for _, c := range capabilities {
 		if !identifier.MatchString(c.ID) || !identifier.MatchString(c.Provider) || !identifier.MatchString(c.Account) || len(c.Channels) == 0 || len(c.Channels) > 2 {
@@ -135,6 +140,12 @@ func New(store *core.Store, capabilities []Capability) (*Engine, error) {
 		digest := sha256.Sum256([]byte(encoded(canonical)))
 		c.Fingerprint = hex.EncodeToString(digest[:])
 		e.capabilities[c.ID] = c
+	}
+	for _, option := range options {
+		if option == nil {
+			return nil, invalid()
+		}
+		option(e)
 	}
 	return e, nil
 }
