@@ -349,7 +349,7 @@ function githubLink(project: Project, path: string): string | undefined {
   return `https://github.com/${project.repository.split('/').map(encodeURIComponent).join('/')}/${path}`;
 }
 function ReviewNotice() {
-  return <p className="review-boundary">Stored observations only. Native review execution and policy checks are unconfigured. These records do not establish current-head coverage or merge authorization.<span className="review-count-key">Round counts: found / accepted / routed. Oldest to newest within each channel. Completed totals are historical, not coverage credit.</span></p>;
+  return <p className="review-boundary">Stored review history. Attempt completion, current-comparison coverage and merge readiness are separate. These pages do not authorize a merge.<span className="review-count-key">Round counts: found / accepted / routed. Oldest to newest within each channel. Completed totals are historical, not coverage credit.</span></p>;
 }
 function ReviewProvenance({ value }: { value: ReviewSnapshot }) {
   const age = Math.max(0, Math.floor((Date.now() - Date.parse(value.observed_at)) / 3600000));

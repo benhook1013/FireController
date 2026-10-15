@@ -156,6 +156,24 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	return out, nil
 }
 
+// preparationReason exposes only selected stable classifications, never adapter
+// diagnostics, paths, provider response text or arbitrary error details.
+func preparationReason(err error) string {
+	var failure *core.Error
+	if errors.As(err, &failure) {
+		if failure.Code == "review_evidence_pending" {
+			return "review_evidence_pending"
+		}
+		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
+			switch reason := details["reason"]; reason {
+			case "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "execution_binding_changed", "preparation_duplicate", "source_unavailable", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit":
+				return reason
+			}
+		}
+	}
+	return "preparation_failed"
+}
+
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
 	operations, err := e.pending(ctx)
 	if err != nil {
@@ -187,7 +205,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		cancel()
 		if err != nil {
 			state := "held"
-			reason := "preparation_failed"
+			reason := preparationReason(err)
 			if ctx.Err() != nil {
 				state = "cancelled"
 				reason = "supervisor_stopping"

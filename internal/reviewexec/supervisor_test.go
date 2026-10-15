@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/server"
@@ -735,4 +736,38 @@ func TestSupervisorBackgroundWriteCancelsRealSQLiteAndRollsBackJournal(t *testin
 		t.Fatal("cancelled transaction committed staged journal effects")
 	}
 	proveOrdinaryCoordination(t, f, "write-after-sql-cancel", r.ID)
+}
+
+func TestSupervisorPreparationReasonsAreSafeAndInspectable(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		failure error
+		want    string
+	}{
+		{"pending", core.Fail("review_evidence_pending", "private diagnostic", 409), "review_evidence_pending"},
+		{"covered", &core.Error{Code: "review_held", Details: map[string]string{"reason": "target_already_covered"}}, "target_already_covered"},
+		{"unavailable", &core.Error{Code: "review_held", Details: map[string]string{"reason": "source_unavailable"}}, "source_unavailable"},
+		{"unsafe details", &core.Error{Code: "review_held", Details: map[string]string{"reason": "private_path_or_token"}}, "preparation_failed"},
+		{"unrelated code", &core.Error{Code: "other", Details: map[string]string{"reason": "target_already_covered"}}, "preparation_failed"},
+		{"raw error", errors.New("private provider diagnostic"), "preparation_failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := supervisorFixture(t)
+			driver := &controlledDriver{prepare: func(context.Context, Operation, Configuration, Attempt) (Preparation, error) {
+				return Preparation{}, tc.failure
+			}}
+			stop := runSupervisor(t, f, driver)
+			receipt, _ := supervisorRequest(t, f, "inspect-held-reason", "cli", 2)
+			waitOperationState(t, f, receipt.ID, "held")
+			stop()
+			response := f.request(http.MethodGet, "/api/v1/projects/"+attemptProject+"/reviews/operations/"+receipt.ID, f.reader, "", "")
+			var operation Operation
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &operation) != nil || operation.Reason != tc.want {
+				t.Fatalf("held classification: %d %s", response.Code, response.Body.String())
+			}
+			if driver.calls.Load() != 0 || strings.Contains(response.Body.String(), "private") {
+				t.Fatal("unsafe hold diagnostic or provider dispatch")
+			}
+		})
+	}
 }
