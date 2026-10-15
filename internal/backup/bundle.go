@@ -368,7 +368,11 @@ func CreateFromDirectory(ctx context.Context, dataDir, destinationRoot string) (
 	return create(ctx, db, identity, dataDir, destinationRoot)
 }
 
-func create(ctx context.Context, sourceDB *sql.DB, identity, dataDir, destinationRoot string) (out Summary, err error) {
+func create(ctx context.Context, sourceDB *sql.DB, identity, dataDir, destinationRoot string) (Summary, error) {
+	return createWithClock(ctx, sourceDB, identity, dataDir, destinationRoot, time.Now, time.Since)
+}
+
+func createWithClock(ctx context.Context, sourceDB *sql.DB, identity, dataDir, destinationRoot string, now func() time.Time, since func(time.Time) time.Duration) (out Summary, err error) {
 	if checkContext(ctx) != nil || sourceDB == nil {
 		return out, unavailable()
 	}
@@ -438,11 +442,14 @@ func create(ctx context.Context, sourceDB *sql.DB, identity, dataDir, destinatio
 			}
 		}
 	}()
-	m := Manifest{Version: 1, ID: id, SourceInstanceID: identity, SnapshotStartedAt: time.Now().UTC().Format(time.RFC3339Nano), Artifacts: []Artifact{}}
+	// Retain the monotonic anchor before converting to public UTC timestamps.
+	// A wall-clock adjustment cannot reverse or inflate the snapshot window.
+	started := now()
+	m := Manifest{Version: 1, ID: id, SourceInstanceID: identity, SnapshotStartedAt: started.UTC().Format(time.RFC3339Nano), Artifacts: []Artifact{}}
 	if err = core.SnapshotDatabase(ctx, sourceDB, filepath.Join(final, "firecontroller.sqlite")); err != nil {
 		return out, unavailable()
 	}
-	m.SnapshotFinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	m.SnapshotFinishedAt = started.Add(since(started)).UTC().Format(time.RFC3339Nano)
 	m.Database, err = hashPrivate(ctx, filepath.Join(final, "firecontroller.sqlite"), maxDatabaseBytes)
 	if err != nil {
 		return out, err

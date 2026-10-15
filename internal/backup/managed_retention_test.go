@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -253,7 +254,8 @@ func TestManagedRetentionVerifiesAllKeepersBeforePruning(t *testing.T) {
 			reports := runManaged(t, m, 1)
 			current, err := ReadStatus(t.Context(), f.dir)
 			if err != nil || current.LastAttempt.State != "complete" || current.LastSuccess.ID == second.LastSuccess.ID {
-				t.Fatal("new success was not retained independently", current, err)
+				status, _ := json.Marshal(current)
+				t.Fatalf("new success was not retained independently: status=%s previous_success_id=%s reports=%v read_error=%v", status, second.LastSuccess.ID, reports, err)
 			}
 			if _, err := Inspect(t.Context(), current.LastSuccess.Path); err != nil {
 				t.Fatal(err)

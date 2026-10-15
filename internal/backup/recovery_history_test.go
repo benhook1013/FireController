@@ -190,23 +190,23 @@ func secondGenerationFixture(t *testing.T) (*activationFixture, ActivationSummar
 	t.Helper()
 	f := activationTestFixture(t)
 	if _, err := Activate(t.Context(), f.dir, f.request); err != nil {
-		t.Fatal(err)
+		t.Fatal("first activation", err)
 	}
 	bundle, err := CreateFromDirectory(t.Context(), f.dir, filepath.Join(t.TempDir(), "bundles"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("active source backup", err)
 	}
 	next := filepath.Join(t.TempDir(), "second")
 	restored, err := Restore(t.Context(), bundle.Path, next)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("second restore", err)
 	}
 	token, file := generationToken(t)
 	f.dir, f.token = next, token
 	f.request = ActivationRequest{ExpectedInstanceID: restored.InstanceID, FencedPredecessorID: restored.SourceInstanceID, AdminTokenFile: file}
 	active, err := Activate(t.Context(), next, f.request)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("second activation", err)
 	}
 	return f, active
 }
