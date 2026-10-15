@@ -130,7 +130,7 @@ func (f processFixture) runnerExecutable(t *testing.T, executable string) *Runne
 }
 
 func usageJSON(repository, organization string, remaining, limit, full, rolling int64) string {
-	return fmt.Sprintf(`{"type":"status","phase":"usage","status":"complete","organization":%q,"includedReviews":{"state":"available","repository":%q,"remaining":%d,"limit":%d,"fullCapacityInMs":%d,"rollingWindowMs":%d}}`, organization, repository, remaining, limit, full, rolling)
+	return fmt.Sprintf(`{"type":"status","phase":"usage","status":"complete","organization":%q,"includedReviews":{"state":"available","repository":%q,"remaining":%d,"limit":%d,"fullCapacityInMs":%d,"rollingWindowMs":%d},"billingPeriod":{"state":"available","usageBillingStatus":"inactive"}}`, organization, repository, remaining, limit, full, rolling)
 }
 
 func TestUsageAndReviewUseExactCommandsAndClosedEnvironment(t *testing.T) {
@@ -189,7 +189,7 @@ func TestUsageParserRejectsMissingAmbiguousAndUntrustedFacts(t *testing.T) {
 		"null known field":      strings.Replace(valid, `"remaining":3`, `"remaining":null`, 1),
 		"duplicate key":         strings.Replace(valid, `"remaining":3`, `"remaining":3,"remaining":3`, 1),
 		"case alias":            strings.Replace(valid, `"phase":"usage"`, `"Phase":"usage","phase":"usage"`, 1),
-		"incomplete object":     `{"type":"status","phase":"usage","status":"complete","organization":"owner","includedReviews":{"state":"available","repository":"owner/repo","remaining":1,"limit":2,"fullCapacityInMs":0}}`,
+		"incomplete object":     `{"type":"status","phase":"usage","status":"complete","organization":"owner","includedReviews":{"state":"available","repository":"owner/repo","remaining":1,"limit":2,"fullCapacityInMs":0},"billingPeriod":{"state":"available","usageBillingStatus":"inactive"}}`,
 		"multiple events":       valid + valid,
 		"array root":            "[" + valid + "]",
 		"wrong state":           strings.Replace(valid, `"state":"available"`, `"state":"unknown"`, 1),
@@ -203,6 +203,7 @@ func TestUsageParserRejectsMissingAmbiguousAndUntrustedFacts(t *testing.T) {
 	}
 	future := strings.Replace(valid, `"type":"status"`, `"futureField":{"note":"ignored"},"type":"status"`, 1)
 	future = strings.Replace(future, `"rollingWindowMs":86400000`, `"rollingWindowMs":86400000,"billingPeriod":"not authorization"`, 1)
+	future = strings.Replace(future, `"usageBillingStatus":"inactive"`, `"usageBillingStatus":"inactive","scope":"user","user":"review-user","futureField":true`, 1)
 	if _, err := parseUsage([]byte(future), "owner/repo", "owner"); err != nil {
 		t.Fatalf("unrelated future fields were not ignored: %v", err)
 	}
@@ -212,6 +213,86 @@ func TestUsageParserRejectsMissingAmbiguousAndUntrustedFacts(t *testing.T) {
 				t.Fatalf("accepted repository selector %q", input)
 			}
 		})
+	}
+}
+
+func TestUsageParserRequiresAvailableInactiveBilling(t *testing.T) {
+	valid := usageJSON("owner/repo", "owner", 1, 3, 0, 3600000)
+	const safeBilling = `"billingPeriod":{"state":"available","usageBillingStatus":"inactive"}`
+	bad := map[string]string{
+		"missing":                  strings.Replace(valid, ","+safeBilling, "", 1),
+		"null":                     strings.Replace(valid, safeBilling, `"billingPeriod":null`, 1),
+		"string":                   strings.Replace(valid, safeBilling, `"billingPeriod":"inactive"`, 1),
+		"array":                    strings.Replace(valid, safeBilling, `"billingPeriod":[]`, 1),
+		"empty object":             strings.Replace(valid, safeBilling, `"billingPeriod":{}`, 1),
+		"missing state":            strings.Replace(valid, safeBilling, `"billingPeriod":{"usageBillingStatus":"inactive"}`, 1),
+		"missing status":           strings.Replace(valid, safeBilling, `"billingPeriod":{"state":"available"}`, 1),
+		"null state":               strings.Replace(valid, safeBilling, `"billingPeriod":{"state":null,"usageBillingStatus":"inactive"}`, 1),
+		"null status":              strings.Replace(valid, `"usageBillingStatus":"inactive"`, `"usageBillingStatus":null`, 1),
+		"invalid state type":       strings.Replace(valid, safeBilling, `"billingPeriod":{"state":true,"usageBillingStatus":"inactive"}`, 1),
+		"invalid status type":      strings.Replace(valid, `"usageBillingStatus":"inactive"`, `"usageBillingStatus":false`, 1),
+		"unavailable":              strings.Replace(valid, safeBilling, `"billingPeriod":{"state":"unavailable","usageBillingStatus":"inactive"}`, 1),
+		"unknown state":            strings.Replace(valid, safeBilling, `"billingPeriod":{"state":"unknown","usageBillingStatus":"inactive"}`, 1),
+		"active":                   strings.Replace(valid, `"usageBillingStatus":"inactive"`, `"usageBillingStatus":"active"`, 1),
+		"unknown status":           strings.Replace(valid, `"usageBillingStatus":"inactive"`, `"usageBillingStatus":"unknown"`, 1),
+		"root alias only":          strings.Replace(valid, `"billingPeriod":`, `"BillingPeriod":`, 1),
+		"root alias alongside":     strings.Replace(valid, safeBilling, safeBilling+`,"BillingPeriod":{}`, 1),
+		"state alias only":         strings.Replace(valid, safeBilling, `"billingPeriod":{"State":"available","usageBillingStatus":"inactive"}`, 1),
+		"state alias alongside":    strings.Replace(valid, safeBilling, `"billingPeriod":{"state":"available","State":"available","usageBillingStatus":"inactive"}`, 1),
+		"status alias only":        strings.Replace(valid, `"usageBillingStatus":"inactive"`, `"UsageBillingStatus":"inactive"`, 1),
+		"status alias alongside":   strings.Replace(valid, `"usageBillingStatus":"inactive"`, `"usageBillingStatus":"inactive","UsageBillingStatus":"inactive"`, 1),
+		"duplicate billing object": strings.Replace(valid, safeBilling, safeBilling+","+safeBilling, 1),
+		"duplicate status":         strings.Replace(valid, `"usageBillingStatus":"inactive"`, `"usageBillingStatus":"active","usageBillingStatus":"inactive"`, 1),
+	}
+	for name, input := range bad {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseUsage([]byte(input), "owner/repo", "owner"); !errorCode(err, "usage_unavailable") || outcomeUnknown(err) {
+				t.Fatalf("unsafe billing facts were not refused before dispatch: %v", err)
+			}
+		})
+	}
+}
+
+func TestUnsafeBillingRefreshClearsPermitWithoutReview(t *testing.T) {
+	f := newProcessFixture(t)
+	usageFile := filepath.Join(f.dir, "usage.json")
+	count := filepath.Join(f.dir, "review.count")
+	r := f.runner(t, fmt.Sprintf(`if [ "$1" = usage ]; then cat %q; else echo review >> %q; fi`, usageFile, count))
+	valid := usageJSON("owner/repo", "owner", 1, 3, 0, 3600000)
+	for _, unsafe := range []string{
+		strings.Replace(valid, `"usageBillingStatus":"inactive"`, `"usageBillingStatus":"active"`, 1),
+		strings.Replace(valid, `,"billingPeriod":{"state":"available","usageBillingStatus":"inactive"}`, "", 1),
+	} {
+		if err := os.WriteFile(usageFile, []byte(valid), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Usage(context.Background(), f.workspace, "owner/repo", "owner"); err != nil {
+			t.Fatalf("safe usage: %v", err)
+		}
+		if err := os.WriteFile(usageFile, []byte(unsafe), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Usage(context.Background(), f.workspace, "owner/repo", "owner"); !errorCode(err, "usage_unavailable") {
+			t.Fatalf("unsafe billing refresh: %v", err)
+		}
+		if _, err := r.Review(context.Background(), f.workspace); !errorCode(err, "permit_required") {
+			t.Fatalf("unsafe billing refresh left old permit: %v", err)
+		}
+		if _, err := os.Stat(count); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unsafe billing refresh launched a review: %v", err)
+		}
+	}
+	if err := os.WriteFile(usageFile, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Usage(context.Background(), f.workspace, "owner/repo", "owner"); err != nil {
+		t.Fatalf("restored safe usage: %v", err)
+	}
+	if _, err := r.Review(context.Background(), f.workspace); err != nil {
+		t.Fatalf("restored safe permit: %v", err)
+	}
+	if data, err := os.ReadFile(count); err != nil || string(data) != "review\n" {
+		t.Fatalf("safe recovery did not launch exactly one review: %q %v", data, err)
 	}
 }
 

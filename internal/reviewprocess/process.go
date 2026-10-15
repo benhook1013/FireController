@@ -311,7 +311,7 @@ func parseUsage(data []byte, expectedRepository, expectedOrganization string) (U
 		return zero, processError("usage_unavailable", false)
 	}
 	var root map[string]json.RawMessage
-	if json.Unmarshal(trimmed, &root) != nil || root == nil || hasAliases(root, "type", "phase", "status", "organization", "includedReviews") {
+	if json.Unmarshal(trimmed, &root) != nil || root == nil || hasAliases(root, "type", "phase", "status", "organization", "includedReviews", "billingPeriod") {
 		return zero, processError("usage_unavailable", false)
 	}
 	var event struct {
@@ -321,6 +321,14 @@ func parseUsage(data []byte, expectedRepository, expectedOrganization string) (U
 		Organization string `json:"organization"`
 	}
 	if json.Unmarshal(trimmed, &event) != nil || event.Type != "status" || event.Phase != "usage" || event.Status != "complete" || event.Organization != expectedOrganization {
+		return zero, processError("usage_unavailable", false)
+	}
+	var billing map[string]json.RawMessage
+	if json.Unmarshal(root["billingPeriod"], &billing) != nil || billing == nil || hasAliases(billing, "state", "usageBillingStatus") {
+		return zero, processError("usage_unavailable", false)
+	}
+	var billingState, billingStatus string
+	if decodeExact(billing, "state", &billingState) != nil || decodeExact(billing, "usageBillingStatus", &billingStatus) != nil || billingState != "available" || billingStatus != "inactive" {
 		return zero, processError("usage_unavailable", false)
 	}
 	var raw json.RawMessage
