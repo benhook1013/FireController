@@ -141,5 +141,12 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
  UNIQUE (project_id, snapshot_id, position),
  FOREIGN KEY (project_id, snapshot_id) REFERENCES review_snapshots(project_id, snapshot_id) ON DELETE CASCADE
 );`,
+	}, []string{
+		`ALTER TABLE review_runs ADD COLUMN snapshot_revision INTEGER NOT NULL DEFAULT 0`,
+		`UPDATE review_runs SET snapshot_revision=(SELECT revision FROM review_snapshots s WHERE s.project_id=review_runs.project_id AND s.snapshot_id=review_runs.snapshot_id)`,
+		`DROP INDEX review_runs_project_source_id`,
+		`CREATE INDEX review_runs_project_source_id ON review_runs(project_id,source,source_run_id,finalized,snapshot_revision DESC)`,
+		`CREATE TRIGGER review_runs_snapshot_revision_insert BEFORE INSERT ON review_runs WHEN NEW.snapshot_revision IS NOT (SELECT revision FROM review_snapshots WHERE project_id=NEW.project_id AND snapshot_id=NEW.snapshot_id) BEGIN SELECT RAISE(ABORT,'invalid review snapshot revision'); END`,
+		`CREATE TRIGGER review_runs_snapshot_revision_update BEFORE UPDATE OF project_id,snapshot_id,snapshot_revision ON review_runs WHEN NEW.snapshot_revision IS NOT (SELECT revision FROM review_snapshots WHERE project_id=NEW.project_id AND snapshot_id=NEW.snapshot_id) BEGIN SELECT RAISE(ABORT,'invalid review snapshot revision'); END`,
 	})
 }
