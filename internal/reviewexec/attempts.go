@@ -12,6 +12,63 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
+func (e *Engine) sampleAttemptTime() time.Time {
+	now := time.Now
+	if e.attemptNow != nil {
+		now = e.attemptNow
+	}
+	return now()
+}
+func attemptTimingError() error {
+	return core.Fail("storage_unavailable", "Stored review attempt timing is unavailable.", 500)
+}
+func attemptRecordedTime(value string) (time.Time, bool) {
+	at, err := time.Parse(time.RFC3339Nano, value)
+	return at, err == nil && !at.IsZero() && value == at.UTC().Format(time.RFC3339Nano)
+}
+
+// Validate retained local timing before choosing a new effective recording
+// timestamp. Only the selected operation and indexed first/current transitions
+// are read; malformed history is refused rather than silently rewritten.
+func attemptRecordingStamp(ctx context.Context, tx *sql.Tx, o Operation, a *Attempt, now time.Time) (string, error) {
+	created, createdOK := attemptRecordedTime(o.CreatedAt)
+	updated, updatedOK := attemptRecordedTime(o.UpdatedAt)
+	if !createdOK || !updatedOK || updated.Before(created) {
+		return "", attemptTimingError()
+	}
+	minimum := updated
+	if a != nil {
+		var firstRevision int64
+		var firstAt, currentAt, currentState string
+		err := tx.QueryRowContext(ctx, `SELECT revision,created_at FROM review_execution_transitions WHERE attempt_id=? ORDER BY revision LIMIT 1`, a.ID).Scan(&firstRevision, &firstAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", attemptTimingError()
+		}
+		if err != nil {
+			return "", err
+		}
+		err = tx.QueryRowContext(ctx, `SELECT state,created_at FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&currentState, &currentAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", attemptTimingError()
+		}
+		if err != nil {
+			return "", err
+		}
+		first, firstOK := attemptRecordedTime(firstAt)
+		current, currentOK := attemptRecordedTime(currentAt)
+		if firstRevision != 1 || currentState != a.State || !firstOK || !currentOK || first.Before(created) || current.Before(first) {
+			return "", attemptTimingError()
+		}
+		if current.After(minimum) {
+			minimum = current
+		}
+	}
+	if now.Before(minimum) {
+		now = minimum
+	}
+	return now.UTC().Format(time.RFC3339Nano), nil
+}
+
 // StartAttempt reserves both the external target and the provider account.
 // It does no provider work; preparing has not authorized an external action.
 func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt, error) {
@@ -24,26 +81,30 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if o.State != "queued" {
 			return conflict()
 		}
+		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleAttemptTime())
+		if err != nil {
+			return err
+		}
 		c, revision, err := readConfiguration(ctx, tx, project)
 		if err != nil {
 			return err
 		}
 		if c.Paused || revision != o.ConfigurationRevision {
-			return holdOperation(ctx, tx, o, "configuration_changed")
+			return holdOperation(ctx, tx, o, "configuration_changed", at)
 		}
 		capability, ok := e.capabilities[c.CapabilityID]
 		if !ok || e.validateConfiguration(c) != nil {
-			return holdOperation(ctx, tx, o, "capability_unavailable")
+			return holdOperation(ctx, tx, o, "capability_unavailable", at)
 		}
 		if o.CapabilityFingerprint != capability.Fingerprint {
-			return holdOperation(ctx, tx, o, "capability_changed")
+			return holdOperation(ctx, tx, o, "capability_changed", at)
 		}
 		allowed, err := actorAllowed(ctx, tx, project, o.ActorID, o.WorkerID)
 		if err != nil {
 			return err
 		}
 		if !allowed {
-			return holdOperation(ctx, tx, o, "authorization_changed")
+			return holdOperation(ctx, tx, o, "authorization_changed", at)
 		}
 		var repositoryID int64
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
@@ -63,16 +124,16 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if _, err = tx.ExecContext(ctx, `INSERT INTO review_execution_reservations(provider,repository_id,pull_number,action_class,account,attempt_id) VALUES(?,?,?,?,?,?)`, result.Provider, repositoryID, o.PullNumber, o.Channel, result.Account, result.ID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state='preparing',attempt_id=?,revision=revision+1,updated_at=? WHERE id=?`, result.ID, stamp(), o.ID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state='preparing',attempt_id=?,revision=revision+1,updated_at=? WHERE id=?`, result.ID, at, o.ID); err != nil {
 			return err
 		}
-		return transitionRow(ctx, tx, result, "preparing")
+		return e.transitionRow(ctx, tx, result, "preparing", at)
 	})
 	return result, err
 }
 
-func holdOperation(ctx context.Context, tx *sql.Tx, o Operation, reason string) error {
-	_, err := tx.ExecContext(ctx, `UPDATE review_operations SET state='held',reason=?,revision=revision+1,updated_at=? WHERE id=?`, reason, stamp(), o.ID)
+func holdOperation(ctx context.Context, tx *sql.Tx, o Operation, reason, at string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE review_operations SET state='held',reason=?,revision=revision+1,updated_at=? WHERE id=?`, reason, at, o.ID)
 	return err
 }
 
@@ -143,6 +204,10 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		} else if intent != "" {
 			return invalid()
 		}
+		at, err := attemptRecordingStamp(ctx, tx, o, &a, e.sampleAttemptTime())
+		if err != nil {
+			return err
+		}
 		a.State = state
 		a.Revision++
 		a.Anchor = &anchor
@@ -150,10 +215,10 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if _, err = tx.ExecContext(ctx, `UPDATE review_execution_attempts SET state=?,revision=?,anchor_json=?,intent=? WHERE id=?`, a.State, a.Revision, encoded(anchor), intent, a.ID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,updated_at=? WHERE id=?`, state, stamp(), o.ID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,updated_at=? WHERE id=?`, state, at, o.ID); err != nil {
 			return err
 		}
-		if err = transitionRow(ctx, tx, a, "admitted"); err != nil {
+		if err = e.transitionRow(ctx, tx, a, "admitted", at); err != nil {
 			return err
 		}
 		result = a
@@ -174,8 +239,8 @@ func safeText(s string, max int) bool {
 	return true
 }
 
-func transitionRow(ctx context.Context, tx *sql.Tx, a Attempt, reason string) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO review_execution_transitions(attempt_id,revision,state,reason,external_id,created_at) VALUES(?,?,?,?,?,?)`, a.ID, a.Revision, a.State, reason, a.ExternalID, stamp())
+func (e *Engine) transitionRow(ctx context.Context, tx *sql.Tx, a Attempt, reason, at string) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO review_execution_transitions(attempt_id,revision,state,reason,external_id,created_at) VALUES(?,?,?,?,?,?)`, a.ID, a.Revision, a.State, reason, a.ExternalID, at)
 	return err
 }
 
@@ -197,6 +262,14 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 		if a.ExternalID != "" && externalID != "" && externalID != a.ExternalID {
 			return conflict()
 		}
+		o, err := readOperation(ctx, tx, project, a.OperationID)
+		if err != nil {
+			return err
+		}
+		at, err := attemptRecordingStamp(ctx, tx, o, &a, e.sampleAttemptTime())
+		if err != nil {
+			return err
+		}
 		if externalID != "" {
 			a.ExternalID = externalID
 		}
@@ -208,7 +281,7 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 		if _, err = tx.ExecContext(ctx, `UPDATE review_execution_attempts SET state=?,revision=?,external_id=? WHERE id=?`, state, a.Revision, a.ExternalID, a.ID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,updated_at=? WHERE id=?`, state, reason, stamp(), a.OperationID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,updated_at=? WHERE id=?`, state, reason, at, a.OperationID); err != nil {
 			return err
 		}
 		if state != "posting" && state != "active" && state != "uncertain" {
@@ -216,7 +289,7 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 				return err
 			}
 		}
-		if err = transitionRow(ctx, tx, a, reason); err != nil {
+		if err = e.transitionRow(ctx, tx, a, reason, at); err != nil {
 			return err
 		}
 		result = a
@@ -263,8 +336,20 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if len(ids) == 0 {
+			return nil
+		}
+		now := e.sampleAttemptTime()
 		for _, x := range ids {
 			a, err := readAttempt(ctx, tx, x.project, x.id)
+			if err != nil {
+				return err
+			}
+			o, err := readOperation(ctx, tx, x.project, a.OperationID)
+			if err != nil {
+				return err
+			}
+			at, err := attemptRecordingStamp(ctx, tx, o, &a, now)
 			if err != nil {
 				return err
 			}
@@ -277,7 +362,7 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			if _, err = tx.ExecContext(ctx, `UPDATE review_execution_attempts SET state=?,revision=? WHERE id=?`, state, a.Revision, a.ID); err != nil {
 				return err
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,reason='supervisor_interrupted',revision=revision+1,updated_at=? WHERE id=?`, state, stamp(), a.OperationID); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,reason='supervisor_interrupted',revision=revision+1,updated_at=? WHERE id=?`, state, at, a.OperationID); err != nil {
 				return err
 			}
 			if state == "cancelled" {
@@ -285,7 +370,7 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 					return err
 				}
 			}
-			if err = transitionRow(ctx, tx, a, "supervisor_interrupted"); err != nil {
+			if err = e.transitionRow(ctx, tx, a, "supervisor_interrupted", at); err != nil {
 				return err
 			}
 		}
