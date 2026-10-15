@@ -87,7 +87,7 @@ func newCLIDriverFixture(t *testing.T) *cliDriverFixture {
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> ` + cliShellQuote(f.log) + `
 if [ "$1" = usage ]; then
- printf '%s\n' '{"type":"status","phase":"usage","status":"complete","organization":"fixture-org","includedReviews":{"state":"available","repository":"owner/repo","remaining":2,"limit":3,"fullCapacityInMs":0,"rollingWindowMs":60000}}'
+ printf '%s\n' '{"type":"status","phase":"usage","status":"complete","organization":"fixture-org","includedReviews":{"state":"available","repository":"owner/repo","remaining":2,"limit":3,"fullCapacityInMs":0,"rollingWindowMs":60000},"billingPeriod":{"state":"available","usageBillingStatus":"inactive"}}'
  exit 0
 fi
 printf '{"type":"review_context","reviewType":"committed","currentBranch":"HEAD","baseBranch":"%s","workingDirectory":"%s"}\n' "$5" "$PWD"
