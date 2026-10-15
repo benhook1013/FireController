@@ -17,6 +17,7 @@ func hostedRecoveryFixture(t *testing.T) (*attemptFixture, Attempt, time.Time) {
 	second := time.Now().UTC().Truncate(time.Second).Add(-10 * time.Second)
 	admitted := second.Add(700 * time.Millisecond)
 	admissionSQL(t, f, `UPDATE review_operations SET created_at=? WHERE id=?`, second.Add(100*time.Millisecond).Format(time.RFC3339Nano), a.OperationID)
+	admissionSQL(t, f, `UPDATE review_execution_transitions SET created_at=? WHERE attempt_id=? AND revision=1`, second.Add(200*time.Millisecond).Format(time.RFC3339Nano), a.ID)
 	admissionSQL(t, f, `UPDATE review_execution_transitions SET created_at=? WHERE attempt_id=? AND revision=2`, admitted.Format(time.RFC3339Nano), a.ID)
 	return f, a, admitted
 }
@@ -195,6 +196,18 @@ func TestReadHostedRecoveryRejectsCorruptAdmissionFacts(t *testing.T) {
 		},
 		"missing fingerprint": func(t *testing.T, f *attemptFixture, a Attempt, _ time.Time) {
 			admissionSQL(t, f, `UPDATE review_operations SET capability_fingerprint='' WHERE id=?`, a.OperationID)
+		},
+		"null expected configuration revision": func(t *testing.T, f *attemptFixture, a Attempt, _ time.Time) {
+			var body string
+			if err := f.store.DB().QueryRow(`SELECT body_json FROM review_execution_config WHERE project_id=? AND revision=1`, attemptProject).Scan(&body); err != nil {
+				t.Fatal(err)
+			}
+			var c Configuration
+			if err := json.Unmarshal([]byte(body), &c); err != nil {
+				t.Fatal(err)
+			}
+			c.ExpectedRevision = nil
+			admissionSQL(t, f, `UPDATE review_execution_config SET body_json=? WHERE project_id=? AND revision=1`, encoded(c), attemptProject)
 		},
 		"retained config": func(t *testing.T, f *attemptFixture, a Attempt, _ time.Time) {
 			admissionSQL(t, f, `UPDATE review_execution_config SET body_json='private invalid config' WHERE project_id=? AND revision=1`, attemptProject)
