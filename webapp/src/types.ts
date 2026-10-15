@@ -30,3 +30,7 @@ export interface ReviewPull extends ReviewSnapshot {pull: ReviewPullSummary; att
 export interface ReviewRunOptions extends PageOptions {snapshot?: string}
 export interface ReviewRuns extends ReviewSnapshot, Page<ReviewRunSummary> {}
 export interface ReviewRunDetail extends ReviewSnapshot {pull_number: number; run: ReviewRunSummary; findings: ReviewFinding[]}
+
+export interface ReviewAnchor {repository_id: number; repository: string; pull_number: number; parent_pull_number: number; candidate_sha: string; base_sha: string; parent_sha: string; merge_base_sha: string; patch_sha256: string; base_ref: string; observed_at: string}
+export interface ReviewPolicyAssessmentChannel {channel: 'cli'|'hosted'; covered: boolean; pending: boolean}
+export interface ReviewPolicyAssessment {project_id: string; evidence_id: string; anchor: ReviewAnchor; source: 'captured_comparison'; policy_revision: number; evaluated_at: string; state: 'sufficient'|'held'|'unconfigured'; channels: ReviewPolicyAssessmentChannel[]}
