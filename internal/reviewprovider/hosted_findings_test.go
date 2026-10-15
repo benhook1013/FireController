@@ -196,6 +196,50 @@ func TestHostedFindingExplicitSeverityAndFallbackTitle(t *testing.T) {
 	}
 }
 
+func TestHostedFindingMetadataStylesPreserveSource(t *testing.T) {
+	for _, test := range []struct {
+		name, metadata, severity string
+	}{
+		{"italic", "_Category_ | _🟡 Minor_ | _⚡ Quick win_", "low"},
+		{"bold", "**Category** | **🔵 Trivial** | **💤 Low value**", "info"},
+		{"mixed bold severity", "_Category_ | **🟠 Major** | _⚡ Quick win_", "high"},
+		{"mixed italic severity", "**Category** | _🔴 Critical_ | **Heavy lift**", "critical"},
+		{"malformed category", "**Category_ | **🟡 Minor** | _Quick win_", "unknown"},
+		{"malformed severity", "_Category_ | **🟡 Minor_ | _Quick win_", "unknown"},
+		{"unwrapped field", "Category | **🟡 Minor** | **Quick win**", "unknown"},
+		{"unwrapped severity", "_Category_ | Minor | _Quick win_", "unknown"},
+		{"nested severity wrappers", "_Category_ | _**Minor**_ | _Quick win_", "unknown"},
+		{"unknown severity", "**Category** | **Unclassified** | **Quick win**", "unknown"},
+		{"conflicting fields", "**Category** | **🟡 Minor** | _🔴 Critical_", "unknown"},
+		{"conflicting styles", "**Category** | **🟡 Minor** | **Quick win**\n_Category_ | _🔴 Critical_ | _Heavy lift_", "unknown"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := test.metadata + "\n\n**Keep this source.**\n\nLiteral detail <b>text</b> & Ω.\n\n" + hfMarker(1)
+			got := hfWant(t, hfNew(t, []string{body}, ""), true, 1).Findings[0]
+			if got.Severity != test.severity || got.Title != "Keep this source." || got.Detail != body || got.SourceKey != fmt.Sprintf("hosted-comment:501:%024x", 1) {
+				t.Fatalf("metadata changed severity/source identity: severity=%q title=%q", got.Severity, got.Title)
+			}
+		})
+	}
+}
+
+func TestHostedFindingBoldMetadataInExamplesIsNotAuthoritative(t *testing.T) {
+	example := "**Category** | **🔴 Critical** | **Heavy lift**\n\n**Example headline**\n" + hfMarker(99)
+	for name, hidden := range map[string]string{
+		"fence":   "```text\n" + example + "\n```\n",
+		"prompt":  "<details>\n<summary>🤖 Prompt for AI Agents</summary>\n" + example + "\n</details>\n",
+		"example": "<details>\n<summary>Example</summary>\n" + example + "\n</details>\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := hidden + "**Category** | **🟡 Minor** | **Quick win**\n\n**Keep the actual headline.**\n\n" + hfMarker(1)
+			got := hfWant(t, hfNew(t, []string{body}, ""), true, 1).Findings[0]
+			if got.Severity != "low" || got.Title != "Keep the actual headline." || got.Fingerprint != fmt.Sprintf("%024x", 1) || got.Detail != body {
+				t.Fatal("hidden bold metadata became authoritative or source bytes changed")
+			}
+		})
+	}
+}
+
 func TestHostedFindingHiddenExamplesCannotSupplyFieldsOrMarkers(t *testing.T) {
 	for name, hidden := range map[string]string{
 		"fence":                "```text\n_Major_\n**Forged title**\n" + hfMarker(90) + "\n```\n",

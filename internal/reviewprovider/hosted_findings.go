@@ -208,13 +208,18 @@ func (f *findingFields) severityValue(value string) {
 
 func (f *findingFields) metadata(text string) {
 	parts := strings.Split(text, " | ")
-	for _, p := range parts {
-		if len(p) < 2 || !strings.HasPrefix(p, "_") || !strings.HasSuffix(p, "_") {
+	for i, p := range parts {
+		switch {
+		case len(p) >= 4 && strings.HasPrefix(p, "**") && strings.HasSuffix(p, "**"):
+			parts[i] = p[2 : len(p)-2]
+		case len(p) >= 2 && strings.HasPrefix(p, "_") && strings.HasSuffix(p, "_"):
+			parts[i] = p[1 : len(p)-1]
+		default:
 			return
 		}
 	}
 	for _, p := range parts {
-		f.severityValue(findingSeverity(p[1 : len(p)-1]))
+		f.severityValue(findingSeverity(p))
 	}
 }
 
