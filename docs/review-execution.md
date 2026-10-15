@@ -40,6 +40,12 @@ The corresponding MCP tools are `review_execution_read` with no fields, `review_
 
 `GET /api/v1/projects/{project_id}/reviews/execution/configuration` returns stored `project_id`, `revision`, `capability_id`, `mode`, `queue`, `channels` and `paused`. It is a project-scoped read with instance/authorization checks, including when no runnable capability is installed. It exposes no account credentials or private paths and makes no sufficiency or CI assertion.
 
+### Packaged agent-tool proof
+
+The built `fc`, `fcmcp` and `fcd` binaries passed a controlled end-to-end execution check in 7.917 seconds. Actual SDK stdio discovery exposed 31 tools. Execution configuration and operation reads made no provider calls; CLI-created requests replayed through MCP, and MCP-created requests replayed through CLI, preserving the original queued receipt and one operation. Requests took 13–24 ms, and ordinary coordination calls stayed below 6 ms during blocked execution. Fresh SDK connections, including initialization, took 9–51 ms locally.
+
+The same fixture exercised pending and covered holds, source movement before dispatch, actual finding controls and interruption/restart recovery through the new agent surfaces. It made 19 controlled source GETs, three allowance invocations and two review invocations, with no real provider calls or credits. This adds packaged agent-tool proof to the pipeline checks above. Focused tests separately prove total five-second deadlines, strict validation before credentials, lost-response recovery and cancellation; those faults were not reinjected in this packaged run. Local timings do not establish remote or fleet performance.
+
 ## Operator capabilities and project configuration
 
 Private startup configuration supplies named provider capabilities: the GitHub credential reference, CLI executable and its protected authentication context, and explicit provider-account scheduler identities. These are operator-owned settings. Project administration selects permitted capability IDs and channels, queue mode/order, required channels and allowed source configuration through revision-guarded service records. New requests bind both their execution configuration and current project-policy revisions. Local preparation, admission and the final action guard recheck those bindings, actor access and channel pauses; older unbound requests remain held. Project content and worker requests cannot select arbitrary server files, environment variables or commands.
