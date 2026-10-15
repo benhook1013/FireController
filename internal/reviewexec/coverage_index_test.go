@@ -29,7 +29,7 @@ func TestCoverageIndexRemovalRetainsJournalAndReplayAcrossRestart(t *testing.T) 
 	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != beforeVersion {
 		t.Fatal("index migration renumbered execution-table migrations", version, err)
 	}
-	if attemptCount(t, f.store, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name='review_operations_coverage'`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name IN ('review_operations_cli_admission','review_operations_completed_comparison')`) != 1 || attemptState(t, f, a) != journal {
+	if attemptCount(t, f.store, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name='review_operations_coverage'`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name='review_operations_completed_comparison'`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name='review_operations_cli_admission'`) != 0 || attemptState(t, f, a) != journal {
 		t.Fatal("index migration changed retained journal or active scan index")
 	}
 	var retained []byte
