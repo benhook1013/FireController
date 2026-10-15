@@ -56,6 +56,8 @@ The CLI adapter verifies included allowance, prepares the admitted candidate/com
 
 Private captures preserve exact stdout/stderr bytes, process-start status and exit code in a versioned envelope. Their references carry a checksum and byte count rather than a filesystem path. Publication is immutable: an exact retry reconciles the existing artifact, while different bytes or a corrupt existing artifact fail without replacement. Capture storage bounds stdout to 16 MiB and stderr to 64 KiB. Retention alone establishes neither successful execution nor completed coverage.
 
+Capture-store construction resolves existing parent aliases once and retains the canonical root, including when child directories must first be created. An existing requested capture root must itself be a private directory rather than a symlink. Later alias changes cannot redirect an opened store. File and directory checks do not establish protection against a hostile same-user filesystem race.
+
 Transport keepalives and routine process progress stay out of model-facing output. A dispatched command that loses its supervising process is recovered as interrupted or uncertain from retained state; a replacement process does not silently spend another review. Canceling local execution does not recover allowance or erase its evidence.
 
 ## Evidence and the native workspace
