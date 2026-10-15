@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-This document owns the service contract. None of the application endpoints or storage described here is implemented yet. Design decisions are recorded in [decisions](decisions.md).
+This document owns the service contract. The coordination slice implements local SQLite storage, scoped project/worker/access endpoints, basic jobs/history and durable messages with atomic receipts/events. See the [local API](local-api.md) for that boundary. Event delivery, provider orchestration, backups, advanced job features and the new browser remain unimplemented. Design decisions are recorded in [decisions](decisions.md).
 
 ## Boundaries
 

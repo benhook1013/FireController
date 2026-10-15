@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The service-backed profiles, native tools, generated CLI aliases, and subscriptions described here are not implemented on this branch. The temporary legacy bootstrap is documented separately in [delivery](delivery.md). Codex host behavior has not yet been established by the application proof.
+The [local CLI foundation](development.md) implements version output, explicit profile selection and local context inspection. The [local API](local-api.md) implements service authentication and instance inspection, scoped projects/workers, basic jobs and durable messages. Client-side instance verification, service commands, native tools, generated aliases and subscriptions remain unimplemented. The temporary legacy bootstrap is documented separately in [delivery](delivery.md). Codex host behavior has not yet been established by the application proof.
 
 ## Profiles and identity
 

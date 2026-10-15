@@ -4,6 +4,8 @@
 
 The public repository and Apache-2.0 baseline exist. [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the design and repository validation scaffold. Repeated deliberately requested hosted and CLI reviews have produced recorded corrections; current-head coverage and outstanding obligations belong to the PR's review evidence, rather than a fixed round count in this document. Three serial Sol high whole-PR direction passes support the core design; the first two identified narrow contracts now incorporated, and the third found no new material gap. Implementation arrives in stacked PRs, with executed proof and remaining limits recorded in each owning contract. The temporary controller remains the development runtime until replacement proof and explicit cutover.
 
+[PR #2](https://github.com/benhook1013/FireController/pull/2) combines the local CLI/profile foundation with the loopback service, scoped projects/workers, basic jobs and durable messages. Its implemented contract and proof limits are in the [local API](local-api.md) and [development guide](development.md). The new browser and later orchestration features remain unimplemented.
+
 ## Development bootstrap
 
 Use a private pinned copy of the legacy controller with a context for this repository and its own SQLite database under this repository's Git common directory. Keep its original source notices and source hash. The distinct `firecontroller-dev` entrypoint selects only this repository's temporary development context.
@@ -32,6 +34,7 @@ The temporary runtime is not shipped as the product and does not implement the n
 | Temporary project controller | Separate private native runtime/context; own SQLite bootstrap and combined snapshot/restore passed; queue/review records and worker lane verified; copied site has 200 passing tests and desktop/mobile route proof | Replacement by the native service after its proof |
 | Design validation | Markdown lint, local links, and focused checker tests passed, including nested badge and reference-definition targets; first CLI missing-lockfile claim rejected against committed source/CI | Every later head needs validation; these checks do not prove standalone runtime behavior |
 | Local CLI foundation | PR #2 has local profile/version commands and passing Go/CI proof | Malformed UTF-8 and FIFO corrections tested and published; native Windows/macOS execution and service integration remain unproven |
-| Standalone replacement | Native capabilities and proof are recorded in their implementation PRs; this project's temporary private dashboard remains operational | Browser/events, remaining [acceptance](acceptance.md) scenarios and explicit cutover |
+| Coordination service | Scoped project/access/worker APIs, guarded jobs/history, durable message/thread/inbox/seen/ack, atomic receipts/events; combined race/vet/docs, packaged Linux restart/domain-route proof, native Windows bootstrap/health/instance/reopening checks and CGO-free Windows/macOS cross-builds passed | Published PR/CI and provider review coverage, Windows domain operations and filesystem access-control guarantees, native macOS execution, performance calibration and remaining [acceptance](acceptance.md) scenarios |
+| Standalone browser | None; the temporary private legacy dashboard remains operational with this project's own worker/review state | New live browser and event transport |
 
 Record proof in the owning slice and PR; do not silently turn planned commands into passing evidence. Main-branch merge remains a human action.
