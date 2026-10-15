@@ -132,17 +132,18 @@ type ReviewAttempt struct {
 }
 
 type ReviewFinding struct {
-	SourceFindingID string `json:"source_finding_id"`
-	Title           string `json:"title"`
-	Detail          string `json:"detail"`
-	Severity        string `json:"severity"`
-	Disposition     string `json:"disposition"`
-	DecisionReason  string `json:"decision_reason"`
-	Actor           string `json:"actor"`
-	DecidedAt       string `json:"decided_at"`
-	FixSHA          string `json:"fix_sha"`
-	ProofNote       string `json:"proof_note"`
-	ResolvedAt      string `json:"resolved_at"`
+	Route           *ReviewFindingRoute `json:"route,omitempty"`
+	SourceFindingID string              `json:"source_finding_id"`
+	Title           string              `json:"title"`
+	Detail          string              `json:"detail"`
+	Severity        string              `json:"severity"`
+	Disposition     string              `json:"disposition"`
+	DecisionReason  string              `json:"decision_reason"`
+	Actor           string              `json:"actor"`
+	DecidedAt       string              `json:"decided_at"`
+	FixSHA          string              `json:"fix_sha"`
+	ProofNote       string              `json:"proof_note"`
+	ResolvedAt      string              `json:"resolved_at"`
 }
 
 // ReviewQueue returns the compact, ordered review queue from one stored snapshot.
@@ -262,7 +263,7 @@ func (c *Client) ReviewRun(ctx context.Context, id, snapshot string) (ReviewRunD
 	seen := make(map[string]struct{}, len(value.Findings))
 	fixed := int64(0)
 	for _, finding := range value.Findings {
-		if !validReviewFinding(finding) {
+		if !validReviewFinding(finding) || value.Run.Source == "native-executor" && ((finding.Disposition == "routed") != (finding.Route != nil) || finding.Route != nil && (finding.Route.State != "active" || finding.Route.TargetPullNumber == value.PullNumber)) {
 			return ReviewRunDetail{}, invalidResponse()
 		}
 		if _, exists := seen[finding.SourceFindingID]; exists {
@@ -375,6 +376,9 @@ func validReviewAttempt(value ReviewAttempt) bool {
 }
 
 func validReviewFinding(value ReviewFinding) bool {
+	if value.Route != nil && (value.Disposition != "routed" || !validFindingRoute(*value.Route)) {
+		return false
+	}
 	if !cleanReviewText(value.SourceFindingID, 256, true) || !cleanReviewText(value.Title, 500, true) || !cleanReviewText(value.Detail, 16<<10, false) ||
 		!oneReviewOf(value.Severity, "info", "low", "medium", "high", "critical", "unknown") || !oneReviewOf(value.Disposition, "unadjudicated", "accepted", "routed", "rejected") ||
 		!cleanReviewText(value.DecisionReason, 2<<10, false) || !cleanReviewText(value.Actor, 128, false) || !validReviewSHA(value.FixSHA) || !cleanReviewText(value.ProofNote, 2<<10, false) {

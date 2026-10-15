@@ -8,14 +8,17 @@ import (
 // ReviewPolicyAssessment evaluates current project requirements against a
 // captured comparison. It does not establish current-source or merge readiness.
 type ReviewPolicyAssessment struct {
-	ProjectID      string                          `json:"project_id"`
-	EvidenceID     string                          `json:"evidence_id"`
-	Anchor         ReviewAnchor                    `json:"anchor"`
-	Source         string                          `json:"source"`
-	PolicyRevision int64                           `json:"policy_revision"`
-	EvaluatedAt    string                          `json:"evaluated_at"`
-	State          string                          `json:"state"`
-	Channels       []ReviewPolicyAssessmentChannel `json:"channels"`
+	IncomingRoutesPending  int64                           `json:"incoming_routes_pending,omitempty"`
+	IncomingRoutesCapacity bool                            `json:"incoming_routes_capacity,omitempty"`
+	Reason                 string                          `json:"reason,omitempty"`
+	ProjectID              string                          `json:"project_id"`
+	EvidenceID             string                          `json:"evidence_id"`
+	Anchor                 ReviewAnchor                    `json:"anchor"`
+	Source                 string                          `json:"source"`
+	PolicyRevision         int64                           `json:"policy_revision"`
+	EvaluatedAt            string                          `json:"evaluated_at"`
+	State                  string                          `json:"state"`
+	Channels               []ReviewPolicyAssessmentChannel `json:"channels"`
 }
 
 type ReviewPolicyAssessmentChannel struct {
@@ -35,8 +38,11 @@ func (c *Client) ReviewPolicyAssessment(ctx context.Context, id string) (ReviewP
 	if value.ProjectID != c.identity.ProjectID || value.EvidenceID != id || !validControlAnchor(value.Anchor) || value.Source != "captured_comparison" || !controlTime(value.EvaluatedAt) || value.Channels == nil || len(value.Channels) > 2 {
 		return ReviewPolicyAssessment{}, invalidResponse()
 	}
+	if !validIncomingRoutePolicy(value.IncomingRoutesPending, value.IncomingRoutesCapacity, value.Reason) {
+		return ReviewPolicyAssessment{}, invalidResponse()
+	}
 	if value.State == "unconfigured" {
-		if value.PolicyRevision != 0 || len(value.Channels) != 0 {
+		if value.PolicyRevision != 0 || len(value.Channels) != 0 || value.Reason != "" {
 			return ReviewPolicyAssessment{}, invalidResponse()
 		}
 		return value, nil
@@ -45,7 +51,7 @@ func (c *Client) ReviewPolicyAssessment(ctx context.Context, id string) (ReviewP
 		return ReviewPolicyAssessment{}, invalidResponse()
 	}
 	seen := map[string]bool{}
-	sufficient := true
+	sufficient := value.IncomingRoutesPending == 0 && !value.IncomingRoutesCapacity
 	for _, channel := range value.Channels {
 		if !oneReviewOf(channel.Channel, "cli", "hosted") || seen[channel.Channel] {
 			return ReviewPolicyAssessment{}, invalidResponse()

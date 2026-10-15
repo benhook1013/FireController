@@ -10,6 +10,11 @@ import (
 // Provider work always runs outside these request handlers.
 func (e *Engine) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/source/{pull_number}/readiness", e.readSourceReadinessHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/routes", e.createFindingRouteHTTP)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/routes", e.listFindingRoutesHTTP)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/routes/{route_id}", e.readFindingRouteHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/routes/{route_id}/decisions", e.decideFindingRouteHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/routes/{route_id}/fixes", e.fixFindingRouteHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/source-refreshes", e.enqueueSourceRefreshHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/source-refreshes/{refresh_id}", e.readSourceRefreshHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/source/{pull_number}/policy", e.readSourcePolicyAssessmentHTTP)

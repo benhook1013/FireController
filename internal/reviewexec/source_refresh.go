@@ -496,17 +496,19 @@ func sourceRefreshReason(err error) string {
 }
 
 type SourcePolicyAssessment struct {
-	ProjectID             string                    `json:"project_id"`
-	RefreshID             string                    `json:"refresh_id"`
-	Source                string                    `json:"source"`
-	ConfigurationRevision int64                     `json:"configuration_revision"`
-	PolicyRevision        int64                     `json:"policy_revision"`
-	SourceObservedAt      string                    `json:"source_observed_at"`
-	EvaluatedAt           string                    `json:"evaluated_at"`
-	State                 string                    `json:"state"`
-	Reason                string                    `json:"reason,omitempty"`
-	Target                SourceObservation         `json:"target"`
-	Channels              []PolicyAssessmentChannel `json:"channels"`
+	IncomingRoutesPending  int64                     `json:"incoming_routes_pending,omitempty"`
+	IncomingRoutesCapacity bool                      `json:"incoming_routes_capacity,omitempty"`
+	ProjectID              string                    `json:"project_id"`
+	RefreshID              string                    `json:"refresh_id"`
+	Source                 string                    `json:"source"`
+	ConfigurationRevision  int64                     `json:"configuration_revision"`
+	PolicyRevision         int64                     `json:"policy_revision"`
+	SourceObservedAt       string                    `json:"source_observed_at"`
+	EvaluatedAt            string                    `json:"evaluated_at"`
+	State                  string                    `json:"state"`
+	Reason                 string                    `json:"reason,omitempty"`
+	Target                 SourceObservation         `json:"target"`
+	Channels               []PolicyAssessmentChannel `json:"channels"`
 }
 
 func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scope, number int64) (SourcePolicyAssessment, error) {
@@ -572,6 +574,15 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 		}
 		result.State = "sufficient"
 		anchor := Anchor{RepositoryID: observation.RepositoryID, Repository: observation.RepositoryName, PullNumber: number, CandidateSHA: observation.HeadSHA, BaseSHA: observation.BaseSHA, BaseRef: observation.BaseRef, ParentPullNumber: observation.ParentPullNumber, ParentSHA: observation.ParentSHA, ObservedAt: observation.ObservedAt}
+		result.IncomingRoutesPending, result.IncomingRoutesCapacity, err = incomingRoutePolicyFacts(ctx, tx, scope.ProjectID, number)
+		if err != nil {
+			return err
+		}
+		if result.IncomingRoutesCapacity {
+			result.State, result.Reason = "held", "routed_findings_capacity"
+		} else if result.IncomingRoutesPending > 0 {
+			result.State, result.Reason = "held", "routed_findings_pending"
+		}
 		for _, channel := range policy.Policy.RequiredChannels {
 			state, err := comparison(ctx, tx, scope.ProjectID, r.repositoryID, number, anchor, channel)
 			if err != nil {

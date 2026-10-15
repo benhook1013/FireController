@@ -75,6 +75,9 @@ func (e *Engine) PublishEvidence(ctx context.Context, project, evidenceID string
 		if err != nil {
 			return err
 		}
+		if err := attachFindingRoutes(ctx, tx, evidence, state, &run); err != nil {
+			return err
+		}
 		current, exists, err := publicationReplay(ctx, tx, project, pull.Number, run)
 		if err != nil {
 			return err
@@ -118,12 +121,14 @@ func publicationRun(evidence ReviewEvidence, state ReviewAdjudication, attempt A
 		decision := state.Findings[i]
 		if decision.Disposition == "accepted" {
 			run.Accepted++
+		} else if decision.Disposition == "routed" {
+			run.Routed++
 		}
 		run.Findings = append(run.Findings, reviews.Finding{SourceFindingID: projectionFindingID(evidence.ID, int64(i)), Title: source.Title, Detail: source.Detail, Severity: source.Severity, Disposition: decision.Disposition, DecisionReason: decision.Reason, Actor: decision.ActorID, DecidedAt: decision.DecidedAt, FixSHA: decision.FixSHA, ProofNote: decision.ProofNote, ResolvedAt: decision.FixedAt})
 	}
 	if state.Finalized {
 		counts := state.FrozenCounts
-		if !run.Complete || run.Outcome != "completed" || attempt.State != "completed" || counts == nil || counts.Found != int64(len(run.Findings)) || counts.Accepted < 0 || counts.Accepted > counts.Found || counts.Routed != 0 {
+		if !run.Complete || run.Outcome != "completed" || attempt.State != "completed" || counts == nil || counts.Found != int64(len(run.Findings)) || counts.Accepted < 0 || counts.Routed < 0 || counts.Accepted > counts.Found-counts.Routed {
 			return run, publicationConflict()
 		}
 		run.Found, run.Accepted, run.Routed = counts.Found, counts.Accepted, counts.Routed
@@ -159,13 +164,18 @@ func publicationReplay(ctx context.Context, tx *sql.Tx, project string, number i
 		return reviews.Receipt{}, false, publicationConflict()
 	}
 	actual.Findings = []reviews.Finding{}
-	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=? ORDER BY position LIMIT 101`, project, receipt.ID, number, runID)
+	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=? ORDER BY position LIMIT 101`, project, receipt.ID, number, runID)
 	if err != nil {
 		return reviews.Receipt{}, false, err
 	}
 	for rows.Next() {
 		var finding reviews.Finding
-		if err = rows.Scan(&finding.SourceFindingID, &finding.Title, &finding.Detail, &finding.Severity, &finding.Disposition, &finding.DecisionReason, &finding.Actor, &finding.DecidedAt, &finding.FixSHA, &finding.ProofNote, &finding.ResolvedAt); err != nil {
+		var routeJSON string
+		if err = rows.Scan(&finding.SourceFindingID, &finding.Title, &finding.Detail, &finding.Severity, &finding.Disposition, &finding.DecisionReason, &finding.Actor, &finding.DecidedAt, &finding.FixSHA, &finding.ProofNote, &finding.ResolvedAt, &routeJSON); err != nil {
+			break
+		}
+		if len(routeJSON) > 32<<10 || json.Unmarshal([]byte(routeJSON), &finding.Route) != nil || encoded(finding.Route) != routeJSON {
+			err = publicationConflict()
 			break
 		}
 		actual.Findings = append(actual.Findings, finding)

@@ -65,6 +65,11 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 	}
 	pull = request.Queue[0]
 	if p.Run != nil {
+		for _, finding := range pull.Runs[0].Findings {
+			if finding.Disposition == "routed" && !validFindingRoute(finding.Route, pull.Number, true) || finding.Disposition != "routed" && finding.Route != nil {
+				return Receipt{}, validationError("Native routed findings require their active receiving route.")
+			}
+		}
 		if err = validateFinalizedCounts(ctx, tx, scope.ProjectID, nativeSource, []PullInput{pull}); err != nil {
 			return Receipt{}, err
 		}
@@ -144,7 +149,7 @@ func copyNativeSnapshot(ctx context.Context, tx *sql.Tx, project, previous, next
 	for _, table := range []struct{ name, columns string }{
 		{"review_pulls", "position,number,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json"},
 		{"review_runs", "pull_number,run_order,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json"},
-		{"review_findings", "pull_number,run_id,position,source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at"},
+		{"review_findings", "pull_number,run_id,position,source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json"},
 		{"review_attempts", "pull_number,position,source,source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id"},
 		{"review_retired_pulls", "position,number,reason"},
 	} {
@@ -185,7 +190,7 @@ func appendNativeRun(ctx context.Context, tx *sql.Tx, project, snapshot string, 
 		return err
 	}
 	for i, f := range run.Findings {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO review_findings(project_id,snapshot_id,pull_number,run_id,position,source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, project, snapshot, number, summary.ID, i, f.SourceFindingID, f.Title, f.Detail, f.Severity, f.Disposition, f.DecisionReason, f.Actor, f.DecidedAt, f.FixSHA, f.ProofNote, f.ResolvedAt); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO review_findings(project_id,snapshot_id,pull_number,run_id,position,source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, project, snapshot, number, summary.ID, i, f.SourceFindingID, f.Title, f.Detail, f.Severity, f.Disposition, f.DecisionReason, f.Actor, f.DecidedAt, f.FixSHA, f.ProofNote, f.ResolvedAt, mustJSON(f.Route)); err != nil {
 			return err
 		}
 	}

@@ -142,7 +142,7 @@ func comparison(ctx context.Context, tx *sql.Tx, project string, repositoryID, n
 		if channel == "hosted" && validateHostedEvidenceIdentity(attempt, operation, evidence.Capture) != nil {
 			return ComparisonState{}, adjudicationStorageError()
 		}
-		ready, err := coverageProof(evidence, state, channel)
+		ready, err := coverageProof(ctx, tx, evidence, state, channel)
 		if err != nil {
 			return ComparisonState{}, err
 		}
@@ -159,19 +159,22 @@ func comparison(ctx context.Context, tx *sql.Tx, project string, repositoryID, n
 	return result, nil
 }
 
-func coverageProof(evidence ReviewEvidence, state ReviewAdjudication, channel string) (bool, error) {
+func coverageProof(ctx context.Context, tx *sql.Tx, evidence ReviewEvidence, state ReviewAdjudication, channel string) (bool, error) {
 	if channel != "cli" && channel != "hosted" || channel == "cli" && evidence.Capture.Hosted != nil || channel == "hosted" && validateHostedEvidenceMetadata(evidence.Capture.Hosted, evidence.Anchor, evidence.Capture.Review) != nil {
 		return false, adjudicationStorageError()
 	}
 	complete := evidence.Capture.Review.Complete && evidence.Capture.Review.Outcome == "completed"
 	if state.Finalized {
 		counts := state.FrozenCounts
-		if !complete || counts == nil || counts.Found != int64(len(evidence.Capture.Review.Findings)) || counts.Accepted < 0 || counts.Accepted > counts.Found || counts.Routed != 0 {
+		if !complete || counts == nil || counts.Found != int64(len(evidence.Capture.Review.Findings)) || counts.Accepted < 0 || counts.Routed < 0 || counts.Accepted > counts.Found-counts.Routed {
 			return false, adjudicationStorageError()
 		}
 	}
 	ready := complete && state.Finalized
 	for _, finding := range state.Findings {
+		if finding.Disposition != "routed" && finding.RouteID != "" {
+			return false, adjudicationStorageError()
+		}
 		if finding.Disposition == "unadjudicated" {
 			if state.Finalized || finding.Reason != "" || finding.ActorID != "" || finding.DecidedAt != "" || finding.FixSHA != "" || finding.ProofNote != "" || finding.FixedAt != "" {
 				return false, adjudicationStorageError()
@@ -182,6 +185,18 @@ func coverageProof(evidence ReviewEvidence, state ReviewAdjudication, channel st
 		decided, err := time.Parse(time.RFC3339Nano, finding.DecidedAt)
 		if strings.TrimSpace(finding.Reason) == "" || !identifier.MatchString(finding.ActorID) || err != nil || decided.IsZero() {
 			return false, adjudicationStorageError()
+		}
+		if finding.Disposition == "routed" {
+			route, err := projectedFindingRoute(ctx, tx, evidence, finding)
+			if err != nil {
+				return false, err
+			}
+			resolved, err := receivingRouteResolved(route)
+			if err != nil {
+				return false, err
+			}
+			ready = ready && resolved
+			continue
 		}
 		if finding.FixSHA == "" {
 			if finding.ProofNote != "" || finding.FixedAt != "" {

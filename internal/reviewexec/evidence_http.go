@@ -60,10 +60,11 @@ type sourceFindingResponse struct {
 // Pointers enforce the public request's required scalar presence. The domain
 // request remains unchanged, including its canonical receipt fingerprint.
 type decisionHTTPRequest struct {
-	ExpectedRevision *int64  `json:"expected_revision"`
-	Finding          *int64  `json:"finding"`
-	Disposition      *string `json:"disposition"`
-	Reason           *string `json:"reason"`
+	ExpectedRouteRevision *int64  `json:"expected_route_revision,omitempty"`
+	ExpectedRevision      *int64  `json:"expected_revision"`
+	Finding               *int64  `json:"finding"`
+	Disposition           *string `json:"disposition"`
+	Reason                *string `json:"reason"`
 }
 
 type fixHTTPRequest struct {
@@ -153,15 +154,16 @@ func (e *Engine) decideEvidenceHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var wire decisionHTTPRequest
+	wire.ExpectedRouteRevision = new(int64)
 	if err := core.ReadJSON(w, r, &wire); err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	if wire.ExpectedRevision == nil || wire.Finding == nil || wire.Disposition == nil || wire.Reason == nil {
+	if wire.ExpectedRevision == nil || wire.Finding == nil || wire.Disposition == nil || wire.Reason == nil || wire.ExpectedRouteRevision == nil {
 		core.WriteError(w, invalid())
 		return
 	}
-	request := FindingDecisionRequest{ExpectedRevision: wire.ExpectedRevision, Finding: *wire.Finding, Disposition: *wire.Disposition, Reason: *wire.Reason}
+	request := FindingDecisionRequest{ExpectedRevision: wire.ExpectedRevision, Finding: *wire.Finding, Disposition: *wire.Disposition, Reason: *wire.Reason, ExpectedRouteRevision: *wire.ExpectedRouteRevision}
 	key, err := core.IdempotencyKey(r, "idempotency_key_required")
 	if err != nil {
 		core.WriteError(w, err)

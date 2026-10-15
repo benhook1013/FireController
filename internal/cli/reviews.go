@@ -20,9 +20,9 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 		call.pullNumber = number
 		return call, err == nil && number >= 1 && number <= 2147483647 && strconv.FormatInt(number, 10) == values["--pr"]
 	}
-	list := call.subcommand == "queue" || call.subcommand == "runs"
+	list := call.subcommand == "queue" || call.subcommand == "runs" || call.subcommand == "routes"
 	switch call.subcommand {
-	case "queue", "pull", "runs", "run", "evidence", "adjudication", "operation", "assess", "source-operation":
+	case "queue", "pull", "runs", "run", "evidence", "adjudication", "operation", "assess", "source-operation", "route", "routes":
 	case "execution":
 		return call, len(args) == 0
 	default:
@@ -39,7 +39,7 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 			continue
 		}
 		flag, value, assigned := strings.Cut(argument, "=")
-		if seen[flag] || !(list && (flag == "--limit" || flag == "--cursor") || (call.subcommand == "pull" || call.subcommand == "runs" || call.subcommand == "run") && flag == "--snapshot") {
+		if seen[flag] || !(list && (flag == "--limit" || flag == "--cursor") || call.subcommand == "routes" && flag == "--pr" || (call.subcommand == "pull" || call.subcommand == "runs" || call.subcommand == "run") && flag == "--snapshot") {
 			return call, false
 		}
 		seen[flag] = true
@@ -51,6 +51,12 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 			value = args[i]
 		}
 		switch flag {
+		case "--pr":
+			number, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || number < 1 || number > 2147483647 || strconv.FormatInt(number, 10) != value {
+				return call, false
+			}
+			call.pullNumber = number
 		case "--limit":
 			limit, err := strconv.Atoi(value)
 			if err != nil || limit < 1 || limit > 100 {
@@ -69,11 +75,17 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 			call.snapshot = value
 		}
 	}
+	if call.subcommand == "routes" {
+		return call, len(call.position) == 0 && call.pullNumber > 0
+	}
 	if call.subcommand == "queue" {
 		return call, len(call.position) == 0
 	}
 	if len(call.position) != 1 {
 		return call, false
+	}
+	if call.subcommand == "route" {
+		return call, client.ValidateReviewRouteID(call.position[0]) == nil
 	}
 	if call.subcommand == "operation" {
 		return call, client.ValidateReviewOperationID(call.position[0]) == nil
@@ -109,6 +121,10 @@ func reviewID(value, prefix string) bool {
 
 func executeReview(ctx context.Context, service *client.Client, call invocation) (any, error) {
 	switch call.subcommand {
+	case "route":
+		return service.ReviewFindingRoute(ctx, call.position[0])
+	case "routes":
+		return service.ReviewFindingRoutes(ctx, call.pullNumber, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case "execution":
 		return service.ReviewExecution(ctx)
 	case "operation":
@@ -194,6 +210,7 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 	allowed := map[string]bool{"--key": true, "--expect-revision": true}
 	switch operation {
 	case "decide":
+		allowed["--expect-route-revision"] = true
 		for _, flag := range []string{"--finding", "--disposition", "--reason"} {
 			allowed[flag] = true
 		}
@@ -201,6 +218,14 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		for _, flag := range []string{"--finding", "--expect-sha", "--fix-sha", "--proof"} {
 			allowed[flag] = true
 		}
+	case "route-create":
+		for _, flag := range []string{"--finding", "--target-pr", "--reason", "--expect-route-revision"} {
+			allowed[flag] = true
+		}
+	case "route-decide":
+		allowed["--disposition"], allowed["--reason"] = true, true
+	case "route-fix":
+		allowed["--expect-sha"], allowed["--fix-sha"], allowed["--proof"] = true, true, true
 	case "finalize":
 	default:
 		return nil, false
@@ -228,12 +253,22 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		}
 		values[flag] = value
 	}
-	if len(positions) != 1 || client.ValidateReviewEvidenceID(positions[0]) != nil || !validMutationKey(values["--key"]) {
+	if len(positions) != 1 || !validMutationKey(values["--key"]) {
+		return nil, false
+	}
+	if operation == "route-decide" || operation == "route-fix" {
+		if client.ValidateReviewRouteID(positions[0]) != nil {
+			return nil, false
+		}
+	} else if client.ValidateReviewEvidenceID(positions[0]) != nil {
 		return nil, false
 	}
 	// Presence is independent of value: index zero and an empty prior SHA are
 	// legitimate explicit assertions, never implicit defaults.
 	for flag := range allowed {
+		if flag == "--expect-route-revision" {
+			continue
+		}
 		if _, present := values[flag]; !present {
 			return nil, false
 		}
@@ -242,8 +277,15 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 	if err != nil || revision < 0 || revision == (1<<63)-1 || strconv.FormatInt(revision, 10) != values["--expect-revision"] {
 		return nil, false
 	}
+	var routeRevision int64
+	if value, present := values["--expect-route-revision"]; present {
+		routeRevision, err = strconv.ParseInt(value, 10, 64)
+		if err != nil || routeRevision < 0 || routeRevision == (1<<63)-1 || strconv.FormatInt(routeRevision, 10) != value {
+			return nil, false
+		}
+	}
 	var finding int64
-	if operation != "finalize" {
+	if operation == "decide" || operation == "fix" || operation == "route-create" {
 		finding, err = strconv.ParseInt(values["--finding"], 10, 64)
 		if err != nil || finding < 0 || finding >= 100 || strconv.FormatInt(finding, 10) != values["--finding"] {
 			return nil, false
@@ -252,13 +294,32 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 	call.id, call.key = positions[0], values["--key"]
 	switch operation {
 	case "decide":
-		call.reviewDecision = client.ReviewDecisionRequest{ExpectedRevision: revision, Finding: finding, Disposition: values["--disposition"], Reason: values["--reason"]}
+		call.reviewDecision = client.ReviewDecisionRequest{ExpectedRouteRevision: routeRevision, ExpectedRevision: revision, Finding: finding, Disposition: values["--disposition"], Reason: values["--reason"]}
 		if client.ValidateReviewDecisionRequest(call.reviewDecision) != nil {
 			return nil, false
 		}
 	case "fix":
 		call.reviewFix = client.ReviewFixRequest{ExpectedRevision: revision, Finding: finding, ExpectedSHA: values["--expect-sha"], FixSHA: values["--fix-sha"], ProofNote: values["--proof"]}
 		if client.ValidateReviewFixRequest(call.reviewFix) != nil {
+			return nil, false
+		}
+	case "route-create":
+		target, err := strconv.ParseInt(values["--target-pr"], 10, 64)
+		if err != nil || strconv.FormatInt(target, 10) != values["--target-pr"] {
+			return nil, false
+		}
+		call.reviewRoute = client.ReviewRouteRequest{ExpectedRevision: revision, ExpectedRouteRevision: routeRevision, Finding: finding, TargetPullNumber: target, Reason: values["--reason"]}
+		if client.ValidateReviewRouteRequest(call.reviewRoute) != nil {
+			return nil, false
+		}
+	case "route-decide":
+		call.reviewRouteDecision = client.ReviewRouteDecisionRequest{ExpectedRevision: revision, Disposition: values["--disposition"], Reason: values["--reason"]}
+		if client.ValidateReviewRouteDecisionRequest(call.reviewRouteDecision) != nil {
+			return nil, false
+		}
+	case "route-fix":
+		call.reviewRouteFix = client.ReviewRouteFixRequest{ExpectedRevision: revision, ExpectedSHA: values["--expect-sha"], FixSHA: values["--fix-sha"], ProofNote: values["--proof"]}
+		if client.ValidateReviewRouteFixRequest(call.reviewRouteFix) != nil {
 			return nil, false
 		}
 	case "finalize":

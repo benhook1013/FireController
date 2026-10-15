@@ -12,10 +12,11 @@ import (
 )
 
 type FindingDecisionRequest struct {
-	ExpectedRevision *int64 `json:"expected_revision"`
-	Finding          int64  `json:"finding"`
-	Disposition      string `json:"disposition"`
-	Reason           string `json:"reason"`
+	ExpectedRevision      *int64 `json:"expected_revision"`
+	Finding               int64  `json:"finding"`
+	Disposition           string `json:"disposition"`
+	Reason                string `json:"reason"`
+	ExpectedRouteRevision int64  `json:"expected_route_revision,omitempty"`
 }
 
 type FinalizeReviewRequest struct {
@@ -45,6 +46,7 @@ type FindingDecision struct {
 	FixSHA      string `json:"fix_sha"`
 	ProofNote   string `json:"proof_note"`
 	FixedAt     string `json:"fixed_at"`
+	RouteID     string `json:"route_id,omitempty"`
 }
 
 // ReviewAdjudication contains dispositions and proof references, not finding text.
@@ -92,7 +94,20 @@ func loadReviewAdjudication(ctx context.Context, tx *sql.Tx, project, id string)
 		return evidence, state, adjudicationStorageError()
 	}
 	for i, finding := range state.Findings {
-		if finding.Finding != int64(i) || finding.Disposition != "unadjudicated" && finding.Disposition != "accepted" && finding.Disposition != "rejected" || !safeText(finding.Reason, 2048) || !safeText(finding.ProofNote, 2048) {
+		if finding.Finding != int64(i) || finding.Disposition != "unadjudicated" && finding.Disposition != "accepted" && finding.Disposition != "rejected" && finding.Disposition != "routed" || !safeText(finding.Reason, 2048) || !safeText(finding.ProofNote, 2048) {
+			return evidence, state, adjudicationStorageError()
+		}
+		if finding.Disposition == "routed" {
+			if !validFindingRouteID(finding.RouteID) || finding.FixSHA != "" || finding.ProofNote != "" || finding.FixedAt != "" {
+				return evidence, state, adjudicationStorageError()
+			}
+		} else if finding.RouteID != "" {
+			return evidence, state, adjudicationStorageError()
+		}
+	}
+	if state.FrozenCounts != nil {
+		c := state.FrozenCounts
+		if c.Found != int64(len(state.Findings)) || c.Accepted < 0 || c.Routed < 0 || c.Accepted > c.Found || c.Routed > c.Found-c.Accepted {
 			return evidence, state, adjudicationStorageError()
 		}
 	}
@@ -159,14 +174,14 @@ func (e *Engine) persistReviewAdjudication(ctx context.Context, tx *sql.Tx, scop
 }
 
 func (e *Engine) DecideReviewFinding(ctx context.Context, scope core.Scope, key, evidenceID string, request FindingDecisionRequest) (json.RawMessage, error) {
-	if !identifier.MatchString(evidenceID) || !validAdjudicationRevision(request.ExpectedRevision) || request.Finding < 0 || request.Finding >= 100 || request.Disposition != "accepted" && request.Disposition != "rejected" || !safeText(request.Reason, 2048) || strings.TrimSpace(request.Reason) == "" {
+	if !identifier.MatchString(evidenceID) || !validAdjudicationRevision(request.ExpectedRevision) || request.Finding < 0 || request.Finding >= 100 || request.ExpectedRouteRevision < 0 || request.ExpectedRouteRevision == math.MaxInt64 || request.Disposition != "accepted" && request.Disposition != "rejected" || !safeText(request.Reason, 2048) || strings.TrimSpace(request.Reason) == "" {
 		return nil, invalid()
 	}
 	// Copy pointer values so the callback and receipt fingerprint use one input.
 	expected := *request.ExpectedRevision
 	request.ExpectedRevision = &expected
 	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.decide", Target: evidenceID, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		_, state, err := loadReviewAdjudication(ctx, tx, scope.ProjectID, evidenceID)
+		evidence, state, err := loadReviewAdjudication(ctx, tx, scope.ProjectID, evidenceID)
 		if err != nil {
 			return nil, err
 		}
@@ -180,7 +195,18 @@ func (e *Engine) DecideReviewFinding(ctx context.Context, scope core.Scope, key,
 		if request.Disposition == "rejected" && f.FixSHA != "" {
 			return nil, conflict()
 		}
-		at := stamp()
+		at := sourceStamp()
+		if f.Disposition == "routed" {
+			if err = routeRepository(ctx, tx, scope.ProjectID, evidence.Anchor.RepositoryID); err != nil {
+				return nil, err
+			}
+			if err = supersedeFindingRoute(ctx, tx, scope, evidence, state, *f, request.ExpectedRouteRevision, at); err != nil {
+				return nil, err
+			}
+			f.RouteID = ""
+		} else if request.ExpectedRouteRevision != 0 {
+			return nil, conflict()
+		}
 		f.Disposition, f.Reason, f.ActorID, f.DecidedAt = request.Disposition, request.Reason, scope.PrincipalID, at
 		return e.persistReviewAdjudication(ctx, tx, scope, state, "adjudicated", request.Finding, request, at)
 	})
@@ -212,6 +238,15 @@ func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, k
 			switch f.Disposition {
 			case "accepted":
 				counts.Accepted++
+			case "routed":
+				route, err := readFindingRoute(ctx, tx, scope.ProjectID, f.RouteID)
+				if err != nil {
+					return nil, err
+				}
+				if !routeMatchesSource(route, evidence, state, true) {
+					return nil, routeStorageError()
+				}
+				counts.Routed++
 			case "rejected":
 			default:
 				return nil, conflict()

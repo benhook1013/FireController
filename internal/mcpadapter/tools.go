@@ -26,6 +26,9 @@ type arguments struct {
 	edit                       client.EditJobRequest
 	send                       client.SendMessageRequest
 	checkpoint                 client.AppendCheckpointRequest
+	reviewRoute                client.ReviewRouteRequest
+	reviewRouteDecision        client.ReviewRouteDecisionRequest
+	reviewRouteFix             client.ReviewRouteFixRequest
 	reviewDecision             client.ReviewDecisionRequest
 	reviewFix                  client.ReviewFixRequest
 	reviewFinalize             client.ReviewFinalizeRequest
@@ -46,7 +49,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 		known[tool.name] = true
 		write := mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		openWorld := tool.name == "review_request" || tool.name == "review_source_refresh"
-		destructive := tool.name == "job_edit" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix"
+		destructive := tool.name == "job_edit" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, err := parseArguments(tool.name, request.Params.Arguments)
 			if err != nil {
@@ -104,6 +107,16 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.ReviewEvidence(ctx, args.id)
 			case "review_adjudication_read":
 				value, err = service.ReviewAdjudication(ctx, args.id)
+			case "review_finding_route":
+				value, err = service.CreateReviewFindingRoute(ctx, args.key, args.id, args.reviewRoute)
+			case "review_route_read":
+				value, err = service.ReviewFindingRoute(ctx, args.id)
+			case "review_routes_list":
+				value, err = service.ReviewFindingRoutes(ctx, args.pullNumber, options)
+			case "review_route_decide":
+				value, err = service.DecideReviewFindingRoute(ctx, args.key, args.id, args.reviewRouteDecision)
+			case "review_route_fix":
+				value, err = service.FixReviewFindingRoute(ctx, args.key, args.id, args.reviewRouteFix)
 			case "review_finding_decide":
 				value, err = service.DecideReviewFinding(ctx, args.key, args.id, args.reviewDecision)
 			case "review_finding_fix":
