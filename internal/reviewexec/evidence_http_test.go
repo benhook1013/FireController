@@ -72,8 +72,8 @@ func TestEvidenceHTTPPublicShapeAndProviderFreeReads(t *testing.T) {
 	before := adjudicationState(t, f, a)
 	w := f.request("GET", path, f.reader, "", "")
 	value := evidenceHTTPRequire(t, w, 200, "")
-	evidenceHTTPKeys(t, value, "id", "project_id", "attempt_id", "operation_id", "capability_fingerprint", "anchor", "capture", "recorded_at")
-	if value["id"] != id || value["project_id"] != attemptProject || value["attempt_id"] != a.ID || value["operation_id"] != a.OperationID {
+	evidenceHTTPKeys(t, value, "id", "channel", "project_id", "attempt_id", "operation_id", "capability_fingerprint", "anchor", "capture", "recorded_at")
+	if value["channel"] != "cli" || value["id"] != id || value["project_id"] != attemptProject || value["attempt_id"] != a.ID || value["operation_id"] != a.OperationID {
 		t.Fatal("evidence identity changed")
 	}
 	capture, ok := value["capture"].(map[string]any)
@@ -335,5 +335,34 @@ func TestEvidenceHTTPFullDetailRetainsLedgerBound(t *testing.T) {
 	findings := capture["findings"].([]any)
 	if w.Body.Len() <= 1<<20 || len(findings) != 100 || findings[99].(map[string]any)["finding"] != float64(99) || findings[99].(map[string]any)["detail"] != strings.Repeat("d", 16<<10) {
 		t.Fatal("full-detail HTTP response truncated valid retained evidence")
+	}
+}
+
+// A private stored-record failure must not become a panic or a new decision.
+func TestEvidenceHTTPRejectsCorruptHostedSourceInventory(t *testing.T) {
+	f, a, in := hostedPublicationFixture(t, false)
+	receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body string
+	if err := f.store.DB().QueryRow(`SELECT body_json FROM review_execution_evidence WHERE id=?`, receipt.ID).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	var record ReviewEvidence
+	if err := json.Unmarshal([]byte(body), &record); err != nil {
+		t.Fatal(err)
+	}
+	record.Capture.Hosted.Sources = nil
+	if _, err := f.store.DB().Exec(`UPDATE review_execution_evidence SET body_json=? WHERE id=?`, encoded(record), receipt.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := adjudicationState(t, f, a)
+	path := "/api/v1/projects/" + attemptProject + "/reviews/evidence/" + receipt.ID
+	evidenceHTTPRequire(t, f.request("GET", path, f.reader, "", ""), 500, "storage_unavailable")
+	evidenceHTTPRequire(t, f.request("GET", path+"/adjudication", f.reader, "", ""), 500, "storage_unavailable")
+	evidenceHTTPRequire(t, f.request("POST", path+"/decisions", f.writer, "corrupt-source-decision", `{"expected_revision":0,"finding":0,"disposition":"accepted","reason":"Must not commit"}`), 500, "storage_unavailable")
+	if adjudicationState(t, f, a) != before {
+		t.Fatal("corrupt source read or decision changed durable state")
 	}
 }

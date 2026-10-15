@@ -315,7 +315,7 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 	defer cancel()
 	retained, err := RetainCLI(retentionCtx, d.captures, d.engine, d.manager, attempt, prepared.workspace, capture, started, finished)
 	if err == nil {
-		_, err = d.engine.PublishCLI(retentionCtx, operation.ProjectID, retained.Receipt.ID, nil)
+		_, err = d.engine.PublishEvidence(retentionCtx, operation.ProjectID, retained.Receipt.ID, nil)
 	}
 	if err != nil {
 		state := "failed"

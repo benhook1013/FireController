@@ -27,6 +27,7 @@ type ReviewEvidenceInput struct {
 	FinishedAt     string                      `json:"finished_at"`
 	Review         reviewprovider.ParsedReview `json:"review"`
 	ExpectedAnchor Anchor                      `json:"expected_anchor"`
+	Hosted         *HostedEvidenceMetadata     `json:"hosted,omitempty"`
 }
 
 type ReviewEvidence struct {
@@ -38,6 +39,13 @@ type ReviewEvidence struct {
 	Anchor                Anchor              `json:"anchor"`
 	Capture               ReviewEvidenceInput `json:"capture"`
 	RecordedAt            string              `json:"recorded_at"`
+}
+
+func evidenceChannel(in ReviewEvidenceInput) string {
+	if in.Hosted != nil {
+		return "hosted"
+	}
+	return "cli"
 }
 
 func validEvidencePath(s string) bool {
@@ -63,7 +71,11 @@ func validEvidenceAnchor(a Anchor) bool {
 }
 
 func validateReviewEvidence(in ReviewEvidenceInput) error {
-	if !hash.MatchString(in.CaptureSHA256) || in.CaptureID != "review_capture_"+in.CaptureSHA256[:32] || in.CaptureBytes < 1 || in.CaptureBytes > 24<<20 || !validEvidenceAnchor(in.ExpectedAnchor) {
+	limit := int64(24 << 20)
+	if in.Hosted != nil {
+		limit = 48 << 20
+	}
+	if !hash.MatchString(in.CaptureSHA256) || in.CaptureID != "review_capture_"+in.CaptureSHA256[:32] || in.CaptureBytes < 1 || in.CaptureBytes > limit || !validEvidenceAnchor(in.ExpectedAnchor) {
 		return invalid()
 	}
 	start, err := time.Parse(time.RFC3339Nano, in.StartedAt)
@@ -77,7 +89,7 @@ func validateReviewEvidence(in ReviewEvidenceInput) error {
 	default:
 		return invalid()
 	}
-	if r.Complete != (r.Outcome == "completed") || len(r.Findings) > 100 || len(r.ReviewedFiles) > 10000 || r.ReportedFindings < 0 || r.Complete && (r.ReportedFindings != int64(len(r.Findings)) || len(r.ReviewedFiles) == 0) {
+	if r.Complete != (r.Outcome == "completed") || len(r.Findings) > 100 || len(r.ReviewedFiles) > 10000 || r.ReportedFindings < 0 || r.Complete && (r.ReportedFindings != int64(len(r.Findings)) || in.Hosted == nil && len(r.ReviewedFiles) == 0) {
 		return invalid()
 	}
 	seen := make(map[string]bool, len(r.ReviewedFiles))
@@ -96,6 +108,9 @@ func validateReviewEvidence(in ReviewEvidenceInput) error {
 		default:
 			return invalid()
 		}
+	}
+	if in.Hosted != nil {
+		return validateHostedEvidenceMetadata(in.Hosted, in.ExpectedAnchor, r)
 	}
 	return nil
 }
@@ -142,7 +157,10 @@ func (e *Engine) RecordReviewEvidence(ctx context.Context, project, attemptID st
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if o.Channel != "cli" || a.State != "active" && a.State != "uncertain" || a.Anchor == nil || !validEvidenceAnchor(*a.Anchor) || *a.Anchor != owned.ExpectedAnchor || a.Anchor.PullNumber != o.PullNumber || a.Anchor.CandidateSHA != o.HeadSHA || !hash.MatchString(o.CapabilityFingerprint) {
+		if !validChannel(o.Channel) || a.State != "active" && a.State != "uncertain" || a.Anchor == nil || !validEvidenceAnchor(*a.Anchor) || *a.Anchor != owned.ExpectedAnchor || a.Anchor.PullNumber != o.PullNumber || a.Anchor.CandidateSHA != o.HeadSHA || !hash.MatchString(o.CapabilityFingerprint) {
+			return conflict()
+		}
+		if o.Channel == "cli" && owned.Hosted != nil || o.Channel == "hosted" && validateHostedEvidenceBinding(a, o, owned) != nil {
 			return conflict()
 		}
 		var repositoryID int64
@@ -190,7 +208,7 @@ func (e *Engine) ReadReviewEvidence(ctx context.Context, scope core.Scope, id st
 		if err != nil {
 			return err
 		}
-		if len(body) > evidenceInputLimit+8192 || json.Unmarshal([]byte(body), &result) != nil {
+		if len(body) > evidenceInputLimit+8192 || json.Unmarshal([]byte(body), &result) != nil || validateReviewEvidence(result.Capture) != nil {
 			return core.Fail("storage_unavailable", "Stored review capture is unavailable.", 500)
 		}
 		return nil

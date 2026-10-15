@@ -130,7 +130,7 @@ func cliComparison(ctx context.Context, tx *sql.Tx, project string, repositoryID
 		if err != nil {
 			return CLIComparisonState{}, err
 		}
-		if validateReviewEvidence(evidence.Capture) != nil || !identifier.MatchString(evidence.ID) || !identifier.MatchString(evidence.AttemptID) || !identifier.MatchString(evidence.OperationID) || !identifier.MatchString(operation.ActorID) || operation.WorkerID != "" && !identifier.MatchString(operation.WorkerID) || evidence.AttemptID != attempt.ID || evidence.OperationID != operation.ID || attempt.OperationID != operation.ID || operation.AttemptID != attempt.ID || operation.Channel != "cli" || operation.State != "completed" || attempt.State != "completed" || operation.ConfigurationRevision < 1 ||
+		if evidence.Capture.Hosted != nil || validateReviewEvidence(evidence.Capture) != nil || !identifier.MatchString(evidence.ID) || !identifier.MatchString(evidence.AttemptID) || !identifier.MatchString(evidence.OperationID) || !identifier.MatchString(operation.ActorID) || operation.WorkerID != "" && !identifier.MatchString(operation.WorkerID) || evidence.AttemptID != attempt.ID || evidence.OperationID != operation.ID || attempt.OperationID != operation.ID || operation.AttemptID != attempt.ID || operation.Channel != "cli" || operation.State != "completed" || attempt.State != "completed" || operation.ConfigurationRevision < 1 ||
 			!identifier.MatchString(attempt.Provider) || !identifier.MatchString(attempt.Account) || !hash.MatchString(evidence.CapabilityFingerprint) || evidence.CapabilityFingerprint != operation.CapabilityFingerprint || attempt.Anchor == nil || !validEvidenceAnchor(evidence.Anchor) || *attempt.Anchor != evidence.Anchor || evidence.Capture.ExpectedAnchor != evidence.Anchor || operation.PullNumber != evidence.Anchor.PullNumber || operation.HeadSHA != evidence.Anchor.CandidateSHA || evidence.Anchor.RepositoryID != repositoryID {
 			return CLIComparisonState{}, adjudicationStorageError()
 		}
@@ -152,6 +152,9 @@ func cliComparison(ctx context.Context, tx *sql.Tx, project string, repositoryID
 }
 
 func cliCoverageProof(evidence ReviewEvidence, state ReviewAdjudication) (bool, error) {
+	if evidence.Capture.Hosted != nil {
+		return false, adjudicationStorageError()
+	}
 	complete := evidence.Capture.Review.Complete && evidence.Capture.Review.Outcome == "completed"
 	if state.Finalized {
 		counts := state.FrozenCounts

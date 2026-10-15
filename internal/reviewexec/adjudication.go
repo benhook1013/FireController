@@ -76,7 +76,7 @@ func loadReviewAdjudication(ctx context.Context, tx *sql.Tx, project, id string)
 	if err != nil {
 		return evidence, state, err
 	}
-	if len(captureBody) > evidenceInputLimit+8192 || json.Unmarshal([]byte(captureBody), &evidence) != nil || evidence.ID != id || evidence.ProjectID != project || len(evidence.Capture.Review.Findings) > 100 {
+	if len(captureBody) > evidenceInputLimit+8192 || json.Unmarshal([]byte(captureBody), &evidence) != nil || evidence.ID != id || evidence.ProjectID != project || validateReviewEvidence(evidence.Capture) != nil {
 		return evidence, state, adjudicationStorageError()
 	}
 	if !revision.Valid {

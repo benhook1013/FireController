@@ -46,7 +46,7 @@ func projectionPull(number int64) reviews.PullInput {
 func projectionRun(e ReviewEvidence) reviews.RunInput {
 	r := reviews.RunInput{SourceRunID: e.ID, Channel: "cli", HeadSHA: e.Anchor.CandidateSHA, Reviewer: "Synthetic retained reviewer", Scope: "exact patch", Outcome: e.Capture.Review.Outcome, Attributable: true, Complete: e.Capture.Review.Complete, StartedAt: e.Capture.StartedAt, FinishedAt: e.Capture.FinishedAt, Found: e.Capture.Review.ReportedFindings, CoverageLimits: []string{"Synthetic source limitation"}}
 	for i, f := range e.Capture.Review.Findings {
-		r.Findings = append(r.Findings, reviews.Finding{SourceFindingID: cliProjectionFindingID(e.ID, int64(i)), Title: f.Title, Detail: f.Detail, Severity: f.Severity, Disposition: "unadjudicated"})
+		r.Findings = append(r.Findings, reviews.Finding{SourceFindingID: projectionFindingID(e.ID, int64(i)), Title: f.Title, Detail: f.Detail, Severity: f.Severity, Disposition: "unadjudicated"})
 	}
 	return r
 }

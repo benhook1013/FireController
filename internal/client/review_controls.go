@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -28,28 +29,46 @@ type ReviewAnchor struct {
 	PatchSHA256      string `json:"patch_sha256"`
 	ObservedAt       string `json:"observed_at"`
 }
+type ReviewHostedPublication struct {
+	PublicationID     string  `json:"publication_id"`
+	ProviderAttemptID string  `json:"provider_attempt_id"`
+	TriggerCommentID  int64   `json:"trigger_comment_id"`
+	ReviewIDs         []int64 `json:"review_ids"`
+	ObservedBaseSHA   string  `json:"observed_base_sha"`
+}
+type ReviewHostedFindingSource struct {
+	SourceKey   string `json:"source_key"`
+	Fingerprint string `json:"fingerprint"`
+	Kind        string `json:"kind"`
+	Side        string `json:"side"`
+	ReviewID    int64  `json:"review_id"`
+	CommentID   int64  `json:"comment_id"`
+}
 type ReviewEvidenceFinding struct {
-	Finding   int64  `json:"finding"`
-	Title     string `json:"title"`
-	Detail    string `json:"detail"`
-	Severity  string `json:"severity"`
-	Path      string `json:"path"`
-	StartLine int64  `json:"start_line"`
-	EndLine   int64  `json:"end_line"`
+	Finding   int64                      `json:"finding"`
+	Source    *ReviewHostedFindingSource `json:"source,omitempty"`
+	Title     string                     `json:"title"`
+	Detail    string                     `json:"detail"`
+	Severity  string                     `json:"severity"`
+	Path      string                     `json:"path"`
+	StartLine int64                      `json:"start_line"`
+	EndLine   int64                      `json:"end_line"`
 }
 type ReviewEvidenceCapture struct {
-	CaptureID        string                  `json:"capture_id"`
-	CaptureSHA256    string                  `json:"capture_sha256"`
-	CaptureBytes     int64                   `json:"capture_bytes"`
-	StartedAt        string                  `json:"started_at"`
-	FinishedAt       string                  `json:"finished_at"`
-	Outcome          string                  `json:"outcome"`
-	Complete         bool                    `json:"complete"`
-	ReportedFindings int64                   `json:"reported_findings"`
-	ReviewedFiles    []string                `json:"reviewed_files"`
-	Findings         []ReviewEvidenceFinding `json:"findings"`
+	Hosted           *ReviewHostedPublication `json:"hosted,omitempty"`
+	CaptureID        string                   `json:"capture_id"`
+	CaptureSHA256    string                   `json:"capture_sha256"`
+	CaptureBytes     int64                    `json:"capture_bytes"`
+	StartedAt        string                   `json:"started_at"`
+	FinishedAt       string                   `json:"finished_at"`
+	Outcome          string                   `json:"outcome"`
+	Complete         bool                     `json:"complete"`
+	ReportedFindings int64                    `json:"reported_findings"`
+	ReviewedFiles    []string                 `json:"reviewed_files"`
+	Findings         []ReviewEvidenceFinding  `json:"findings"`
 }
 type ReviewEvidence struct {
+	Channel               string                `json:"channel"`
 	ID                    string                `json:"id"`
 	ProjectID             string                `json:"project_id"`
 	AttemptID             string                `json:"attempt_id"`
@@ -183,12 +202,23 @@ func (c *Client) ReviewEvidence(ctx context.Context, id string) (ReviewEvidence,
 		return ReviewEvidence{}, err
 	}
 	r := value.Capture
-	if value.ID != id || value.ProjectID != c.identity.ProjectID || !validReviewOpaqueID(value.AttemptID, "review_attempt_") || !validReviewOpaqueID(value.OperationID, "review_operation_") || !controlHex(value.CapabilityFingerprint, 64) || !validControlAnchor(value.Anchor) || !controlTime(value.RecordedAt) || !controlHex(r.CaptureSHA256, 64) || r.CaptureID != "review_capture_"+r.CaptureSHA256[:32] || r.CaptureBytes < 1 || r.CaptureBytes > 24<<20 || !controlTime(r.StartedAt) || !controlTime(r.FinishedAt) || !oneReviewOf(r.Outcome, "completed", "failed", "cancelled", "rate_limited", "uncertain") || r.Complete != (r.Outcome == "completed") || r.ReportedFindings < 0 || r.Findings == nil || len(r.Findings) > 100 || r.ReviewedFiles == nil || len(r.ReviewedFiles) > 10000 {
+	captureLimit := int64(24 << 20)
+	if value.Channel == "hosted" {
+		captureLimit = 48 << 20
+	}
+	if !oneReviewOf(value.Channel, "cli", "hosted") || value.ID != id || value.ProjectID != c.identity.ProjectID || !validReviewOpaqueID(value.AttemptID, "review_attempt_") || !validReviewOpaqueID(value.OperationID, "review_operation_") || !controlHex(value.CapabilityFingerprint, 64) || !validControlAnchor(value.Anchor) || !controlTime(value.RecordedAt) || !controlHex(r.CaptureSHA256, 64) || r.CaptureID != "review_capture_"+r.CaptureSHA256[:32] || r.CaptureBytes < 1 || r.CaptureBytes > captureLimit || !controlTime(r.StartedAt) || !controlTime(r.FinishedAt) || !oneReviewOf(r.Outcome, "completed", "failed", "cancelled", "rate_limited", "uncertain") || r.Complete != (r.Outcome == "completed") || r.ReportedFindings < 0 || r.Findings == nil || len(r.Findings) > 100 || r.ReviewedFiles == nil || len(r.ReviewedFiles) > 10000 {
 		return ReviewEvidence{}, invalidResponse()
 	}
 	start, _ := time.Parse(time.RFC3339Nano, r.StartedAt)
 	finish, _ := time.Parse(time.RFC3339Nano, r.FinishedAt)
-	if finish.Before(start) || r.Complete && (r.ReportedFindings != int64(len(r.Findings)) || len(r.ReviewedFiles) == 0) {
+	if finish.Before(start) || r.Complete && r.ReportedFindings != int64(len(r.Findings)) {
+		return ReviewEvidence{}, invalidResponse()
+	}
+	if value.Channel == "cli" {
+		if r.Hosted != nil || r.Complete && len(r.ReviewedFiles) == 0 {
+			return ReviewEvidence{}, invalidResponse()
+		}
+	} else if !validHostedControlCapture(r, value.Anchor) {
 		return ReviewEvidence{}, invalidResponse()
 	}
 	seen := make(map[string]bool)
@@ -199,11 +229,48 @@ func (c *Client) ReviewEvidence(ctx context.Context, id string) (ReviewEvidence,
 		seen[path] = true
 	}
 	for i, f := range r.Findings {
+		if value.Channel == "cli" && f.Source != nil {
+			return ReviewEvidence{}, invalidResponse()
+		}
 		if f.Finding != int64(i) || !controlText(f.Title, 500, true) || !controlText(f.Detail, 16<<10, false) || !oneReviewOf(f.Severity, "info", "low", "medium", "high", "critical", "unknown") || f.Path != "" && !controlPath(f.Path) || f.StartLine < 0 || f.EndLine < 0 || f.StartLine != 0 && f.EndLine != 0 && f.EndLine < f.StartLine {
 			return ReviewEvidence{}, invalidResponse()
 		}
 	}
 	return value, nil
+}
+
+func controlUUID(value string) bool {
+	return len(value) == 36 && value[8] == '-' && value[13] == '-' && value[18] == '-' && value[23] == '-' && controlHex(value[:8]+value[9:13]+value[14:18]+value[19:23]+value[24:], 32)
+}
+
+func validHostedControlCapture(capture ReviewEvidenceCapture, anchor ReviewAnchor) bool {
+	hosted := capture.Hosted
+	if hosted == nil || !capture.Complete || capture.Outcome != "completed" || len(capture.ReviewedFiles) != 0 || capture.ReportedFindings != int64(len(capture.Findings)) || !controlUUID(hosted.PublicationID) || !controlUUID(hosted.ProviderAttemptID) || hosted.TriggerCommentID <= 0 || len(hosted.ReviewIDs) < 1 || len(hosted.ReviewIDs) > 200 || !controlHex(hosted.ObservedBaseSHA, 40) || hosted.ObservedBaseSHA != anchor.ParentSHA && hosted.ObservedBaseSHA != anchor.MergeBaseSHA {
+		return false
+	}
+	reviews := make(map[int64]bool, len(hosted.ReviewIDs))
+	for _, id := range hosted.ReviewIDs {
+		if id <= 0 || reviews[id] {
+			return false
+		}
+		reviews[id] = true
+	}
+	fingerprints := make(map[string]bool, len(capture.Findings))
+	for _, finding := range capture.Findings {
+		source := finding.Source
+		if source == nil || !controlHex(source.Fingerprint, 24) || fingerprints[source.Fingerprint] || !reviews[source.ReviewID] || !oneReviewOf(source.Kind, "inline", "outside_diff", "duplicate") || !oneReviewOf(source.Side, "", "LEFT", "RIGHT") || finding.Path == "" {
+			return false
+		}
+		fingerprints[source.Fingerprint] = true
+		if source.Kind == "inline" {
+			if source.CommentID <= 0 || source.SourceKey != "hosted-comment:"+strconv.FormatInt(source.CommentID, 10)+":"+source.Fingerprint {
+				return false
+			}
+		} else if source.CommentID != 0 || source.SourceKey != "hosted-review:"+strconv.FormatInt(source.ReviewID, 10)+":"+source.Kind+":"+source.Fingerprint || finding.StartLine <= 0 || finding.EndLine < finding.StartLine {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Client) ReviewAdjudication(ctx context.Context, id string) (ReviewAdjudication, error) {

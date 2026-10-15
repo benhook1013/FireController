@@ -277,7 +277,7 @@ func TestAttemptProjectionCaptureLinkRequiresCurrentPublishedRun(t *testing.T) {
 	if before.SourceRunID != "" {
 		t.Fatal("retained capture alone became published run link")
 	}
-	if _, err := f.e.PublishCLI(t.Context(), attemptProject, evidence.ID, nil); err != nil {
+	if _, err := f.e.PublishEvidence(t.Context(), attemptProject, evidence.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	receipt, err := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, nil)
