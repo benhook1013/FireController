@@ -19,6 +19,7 @@ type SourceRefreshRequest struct {
 	PullNumber                    int64  `json:"pull_number"`
 	HeadSHA                       string `json:"head_sha"`
 	IncludeCI                     bool   `json:"include_ci,omitempty"`
+	IncludeReadiness              bool   `json:"include_readiness,omitempty"`
 }
 
 // SourceObservation is a complete selected comparison as of ObservedAt, not a
@@ -36,19 +37,21 @@ type SourceObservation struct {
 }
 
 type SourceRefreshOperation struct {
-	ID                    string             `json:"id"`
-	ProjectID             string             `json:"project_id"`
-	PullNumber            int64              `json:"pull_number"`
-	HeadSHA               string             `json:"head_sha"`
-	ConfigurationRevision int64              `json:"configuration_revision"`
-	State                 string             `json:"state"`
-	Revision              int64              `json:"revision"`
-	Reason                string             `json:"reason"`
-	CreatedAt             string             `json:"created_at"`
-	UpdatedAt             string             `json:"updated_at"`
-	Observation           *SourceObservation `json:"observation,omitempty"`
-	IncludeCI             bool               `json:"include_ci,omitempty"`
-	CI                    *SourceCISummary   `json:"ci,omitempty"`
+	ID                    string                    `json:"id"`
+	ProjectID             string                    `json:"project_id"`
+	PullNumber            int64                     `json:"pull_number"`
+	HeadSHA               string                    `json:"head_sha"`
+	ConfigurationRevision int64                     `json:"configuration_revision"`
+	State                 string                    `json:"state"`
+	Revision              int64                     `json:"revision"`
+	Reason                string                    `json:"reason"`
+	CreatedAt             string                    `json:"created_at"`
+	UpdatedAt             string                    `json:"updated_at"`
+	Observation           *SourceObservation        `json:"observation,omitempty"`
+	IncludeCI             bool                      `json:"include_ci,omitempty"`
+	CI                    *SourceCISummary          `json:"ci,omitempty"`
+	IncludeReadiness      bool                      `json:"include_readiness,omitempty"`
+	ReviewState           *SourceReviewStateSummary `json:"review_state,omitempty"`
 }
 
 type sourceRefresh struct {
@@ -56,6 +59,7 @@ type sourceRefresh struct {
 	repositoryID                           int64
 	actor, worker, capability, fingerprint string
 	ciObservation                          *reviewprovider.CIObservation
+	reviewObservation                      *reviewprovider.PullReviewObservation
 }
 
 func validRefreshRequest(r SourceRefreshRequest) bool {
@@ -99,7 +103,7 @@ func (e *Engine) EnqueueSourceRefresh(ctx context.Context, scope core.Scope, key
 		}
 		cap := e.capabilities[c.CapabilityID]
 		var id string
-		err = tx.QueryRowContext(ctx, `SELECT id FROM review_source_refreshes WHERE project_id=? AND repository_id=? AND pull_number=? AND head_sha=? AND configuration_revision=? AND capability_fingerprint=? AND actor_id=? AND worker_id=? AND include_ci=? AND state IN ('queued','running') ORDER BY state LIMIT 1`, scope.ProjectID, repositoryID, r.PullNumber, r.HeadSHA, revision, cap.Fingerprint, scope.PrincipalID, scope.WorkerID, r.IncludeCI).Scan(&id)
+		err = tx.QueryRowContext(ctx, `SELECT id FROM review_source_refreshes WHERE project_id=? AND repository_id=? AND pull_number=? AND head_sha=? AND configuration_revision=? AND capability_fingerprint=? AND actor_id=? AND worker_id=? AND include_ci=? AND include_readiness=? AND state IN ('queued','running') ORDER BY state LIMIT 1`, scope.ProjectID, repositoryID, r.PullNumber, r.HeadSHA, revision, cap.Fingerprint, scope.PrincipalID, scope.WorkerID, r.IncludeCI, r.IncludeReadiness).Scan(&id)
 		if err == nil {
 			return Receipt{ID: id, State: "queued", Revision: 1}, nil
 		}
@@ -118,7 +122,7 @@ func (e *Engine) EnqueueSourceRefresh(ctx context.Context, scope core.Scope, key
 		}
 		id = core.NewID("review_refresh")
 		at := sourceStamp()
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_source_refreshes(id,project_id,repository_id,actor_id,worker_id,configuration_revision,capability_id,capability_fingerprint,pull_number,head_sha,state,revision,reason,created_at,updated_at,observation_json,include_ci) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',1,'',?,?,'null',?)`, id, scope.ProjectID, repositoryID, scope.PrincipalID, scope.WorkerID, revision, cap.ID, cap.Fingerprint, r.PullNumber, r.HeadSHA, at, at, r.IncludeCI); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO review_source_refreshes(id,project_id,repository_id,actor_id,worker_id,configuration_revision,capability_id,capability_fingerprint,pull_number,head_sha,state,revision,reason,created_at,updated_at,observation_json,include_ci,include_readiness) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',1,'',?,?,'null',?,?)`, id, scope.ProjectID, repositoryID, scope.PrincipalID, scope.WorkerID, revision, cap.ID, cap.Fingerprint, r.PullNumber, r.HeadSHA, at, at, r.IncludeCI, r.IncludeReadiness); err != nil {
 			return nil, err
 		}
 		if err = core.AppendEvent(ctx, tx, scope, "review.source_refresh_requested", id, 1, map[string]any{"pull_number": r.PullNumber}); err != nil {
@@ -135,13 +139,13 @@ func (e *Engine) EnqueueSourceRefresh(ctx context.Context, scope core.Scope, key
 	return result, err
 }
 
-const refreshColumns = `id,project_id,repository_id,actor_id,worker_id,configuration_revision,capability_id,capability_fingerprint,pull_number,head_sha,state,revision,reason,created_at,updated_at,observation_json,include_ci,ci_observation_json`
+const refreshColumns = `id,project_id,repository_id,actor_id,worker_id,configuration_revision,capability_id,capability_fingerprint,pull_number,head_sha,state,revision,reason,created_at,updated_at,observation_json,include_ci,ci_observation_json,include_readiness,review_state_json`
 
 func readSourceRefresh(ctx context.Context, tx *sql.Tx, project, id string) (sourceRefresh, error) {
 	var r sourceRefresh
-	var body, ciBody string
-	var includeCI int64
-	err := tx.QueryRowContext(ctx, `SELECT `+refreshColumns+` FROM review_source_refreshes WHERE project_id=? AND id=?`, project, id).Scan(&r.ID, &r.ProjectID, &r.repositoryID, &r.actor, &r.worker, &r.ConfigurationRevision, &r.capability, &r.fingerprint, &r.PullNumber, &r.HeadSHA, &r.State, &r.Revision, &r.Reason, &r.CreatedAt, &r.UpdatedAt, &body, &includeCI, &ciBody)
+	var body, ciBody, reviewBody string
+	var includeCI, includeReadiness int64
+	err := tx.QueryRowContext(ctx, `SELECT `+refreshColumns+` FROM review_source_refreshes WHERE project_id=? AND id=?`, project, id).Scan(&r.ID, &r.ProjectID, &r.repositoryID, &r.actor, &r.worker, &r.ConfigurationRevision, &r.capability, &r.fingerprint, &r.PullNumber, &r.HeadSHA, &r.State, &r.Revision, &r.Reason, &r.CreatedAt, &r.UpdatedAt, &body, &includeCI, &ciBody, &includeReadiness, &reviewBody)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, core.Fail("not_found", "The source refresh is unavailable in this project.", 404)
 	}
@@ -160,11 +164,15 @@ func readSourceRefresh(ctx context.Context, tx *sql.Tx, project, id string) (sou
 	if r.Observation != nil && (!validSourceObservation(*r.Observation) || r.Observation.RepositoryID != r.repositoryID || r.Observation.PullNumber != r.PullNumber || r.Observation.HeadSHA != r.HeadSHA) {
 		return r, refreshStorageError()
 	}
-	if includeCI != 0 && includeCI != 1 {
+	if includeCI != 0 && includeCI != 1 || includeReadiness != 0 && includeReadiness != 1 {
 		return r, refreshStorageError()
 	}
 	r.IncludeCI = includeCI == 1
+	r.IncludeReadiness = includeReadiness == 1
 	if err := decodeSourceCI(ciBody, &r); err != nil {
+		return r, err
+	}
+	if err := decodeSourceReviewState(reviewBody, &r); err != nil {
 		return r, err
 	}
 	return r, nil
@@ -257,8 +265,8 @@ func sourceConfiguration(ctx context.Context, tx *sql.Tx, project string, revisi
 	}
 	return c, nil
 }
-func (e *Engine) updateSourceRefresh(ctx context.Context, tx *sql.Tx, r sourceRefresh, state, reason string, observation *SourceObservation, ciBody string) error {
-	result, err := tx.ExecContext(ctx, `UPDATE review_source_refreshes SET state=?,reason=?,revision=revision+1,updated_at=?,observation_json=?,ci_observation_json=? WHERE id=? AND project_id=? AND revision=? AND state=?`, state, reason, sourceStamp(), encoded(observation), ciBody, r.ID, r.ProjectID, r.Revision, r.State)
+func (e *Engine) updateSourceRefresh(ctx context.Context, tx *sql.Tx, r sourceRefresh, state, reason string, observation *SourceObservation, ciBody, reviewBody string) error {
+	result, err := tx.ExecContext(ctx, `UPDATE review_source_refreshes SET state=?,reason=?,revision=revision+1,updated_at=?,observation_json=?,ci_observation_json=?,review_state_json=? WHERE id=? AND project_id=? AND revision=? AND state=?`, state, reason, sourceStamp(), encoded(observation), ciBody, reviewBody, r.ID, r.ProjectID, r.Revision, r.State)
 	if err != nil {
 		return err
 	}
@@ -322,7 +330,7 @@ func (e *Engine) StartSourceRefresh(ctx context.Context, readers map[string]Targ
 			if err != nil {
 				return err
 			}
-			if err = e.updateSourceRefresh(ctx, tx, r, "queued", "source_read_interrupted", nil, "null"); err != nil {
+			if err = e.updateSourceRefresh(ctx, tx, r, "queued", "source_read_interrupted", nil, "null", "null"); err != nil {
 				return err
 			}
 			recovered = append(recovered, r.ID)
@@ -403,9 +411,9 @@ func (e *Engine) refreshNext(ctx context.Context, readers map[string]TargetReade
 		}
 		if reason != "" {
 			changed = r.ID
-			return e.updateSourceRefresh(ctx, tx, r, "held", reason, nil, "null")
+			return e.updateSourceRefresh(ctx, tx, r, "held", reason, nil, "null", "null")
 		}
-		if err = e.updateSourceRefresh(ctx, tx, r, "running", "", nil, "null"); err != nil {
+		if err = e.updateSourceRefresh(ctx, tx, r, "running", "", nil, "null", "null"); err != nil {
 			return err
 		}
 		changed = r.ID
@@ -422,7 +430,9 @@ func (e *Engine) refreshNext(ctx context.Context, readers map[string]TargetReade
 	}
 	r := *selected
 	budget := 15 * time.Second
-	if r.IncludeCI {
+	if r.IncludeReadiness {
+		budget = 45 * time.Second
+	} else if r.IncludeCI {
 		budget = 30 * time.Second
 	}
 	operationCtx, cancel := context.WithTimeout(ctx, budget)
@@ -431,12 +441,17 @@ func (e *Engine) refreshNext(ctx context.Context, readers map[string]TargetReade
 	plan, readErr := ResolveSourceObservation(readCtx, readers[r.capability], r.repositoryID, configuration, r.PullNumber, r.HeadSHA)
 	sourceCancel()
 	var ci *reviewprovider.CIObservation
-	if readErr == nil && r.IncludeCI && ctx.Err() == nil {
+	if readErr == nil && (r.IncludeCI || r.IncludeReadiness) && ctx.Err() == nil {
 		ci = observeSourceCI(operationCtx, readers[r.capability], plan)
+	}
+	var review *reviewprovider.PullReviewObservation
+	if readErr == nil && r.IncludeReadiness && ctx.Err() == nil {
+		review = observeSourceReviewState(operationCtx, readers[r.capability], plan)
 	}
 	if ctx.Err() != nil {
 		return true, nil
 	}
+	reviewBody := encoded(review)
 	ciBody := encoded(ci) // Serialize bounded private inventories before taking the writer.
 	err = e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		current, err := readSourceRefresh(ctx, tx, r.ProjectID, r.ID)
@@ -454,13 +469,13 @@ func (e *Engine) refreshNext(ctx context.Context, readers map[string]TargetReade
 			reason = sourceRefreshReason(readErr)
 		}
 		if reason != "" {
-			return e.updateSourceRefresh(ctx, tx, r, "held", reason, nil, "null")
+			return e.updateSourceRefresh(ctx, tx, r, "held", reason, nil, "null", "null")
 		}
 		observation := SourceObservation{RepositoryID: plan.Repository.ID, RepositoryName: plan.Repository.FullName, PullNumber: plan.Pull.Number, HeadSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, BaseRef: plan.Pull.BaseRef, ParentPullNumber: plan.ParentPullNumber, ParentSHA: plan.ParentSHA, ObservedAt: plan.ObservedAt}
 		if !validSourceObservation(observation) || observation.RepositoryID != r.repositoryID || observation.PullNumber != r.PullNumber || observation.HeadSHA != r.HeadSHA {
-			return e.updateSourceRefresh(ctx, tx, r, "held", "source_unavailable", nil, "null")
+			return e.updateSourceRefresh(ctx, tx, r, "held", "source_unavailable", nil, "null", "null")
 		}
-		return e.updateSourceRefresh(ctx, tx, r, "completed", "", &observation, ciBody)
+		return e.updateSourceRefresh(ctx, tx, r, "completed", "", &observation, ciBody, reviewBody)
 	})
 	if err == nil {
 		e.notifySourceRefresh(r.ID)

@@ -87,12 +87,12 @@ func decodeSourceCI(body string, r *sourceRefresh) error {
 		return refreshStorageError()
 	}
 	if body == "null" {
-		if r.IncludeCI && r.State == "completed" {
+		if (r.IncludeCI || r.IncludeReadiness) && r.State == "completed" {
 			return refreshStorageError()
 		}
 		return nil
 	}
-	if !r.IncludeCI || r.State != "completed" || r.Observation == nil {
+	if !(r.IncludeCI || r.IncludeReadiness) || r.State != "completed" || r.Observation == nil {
 		return refreshStorageError()
 	}
 	var observation reviewprovider.CIObservation
@@ -234,7 +234,7 @@ func (e *Engine) ReadSourceCIAssessment(ctx context.Context, scope core.Scope, n
 	var result SourceCIAssessment
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		var id string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM review_source_refreshes WHERE project_id=? AND pull_number=? AND state='completed' AND include_ci=1 ORDER BY created_at DESC,id DESC LIMIT 1`, scope.ProjectID, number).Scan(&id)
+		err := tx.QueryRowContext(ctx, `SELECT id FROM review_source_refreshes WHERE project_id=? AND pull_number=? AND state='completed' AND (include_ci=1 OR include_readiness=1) ORDER BY created_at DESC,id DESC LIMIT 1`, scope.ProjectID, number).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return core.Fail("reviews_ci_unavailable", "Explicitly refresh selected source with CI before assessing it.", 409)
 		}

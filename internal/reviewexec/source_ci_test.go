@@ -92,8 +92,12 @@ func TestSourceCIOptionCoalescingFingerprintAndRestartMigration(t *testing.T) {
 	// Reconstruct the actual prior v1 table shape with retained queued facts. V2
 	// must preserve those rows/receipts while defaulting their new flag to false.
 	admissionSQL(t, f, `DELETE FROM review_source_refreshes WHERE id=?`, ci.ID)
-	admissionSQL(t, f, `DROP INDEX review_source_refresh_ci_target`)
 	admissionSQL(t, f, `DROP INDEX review_source_refresh_coalesce`)
+	admissionSQL(t, f, `DROP INDEX review_source_refresh_ci_latest`)
+	admissionSQL(t, f, `DROP INDEX review_source_refresh_readiness`)
+	admissionSQL(t, f, `ALTER TABLE review_source_refreshes DROP COLUMN include_readiness`)
+	admissionSQL(t, f, `ALTER TABLE review_source_refreshes DROP COLUMN review_state_json`)
+	admissionSQL(t, f, `DROP INDEX review_source_refresh_ci_target`)
 	admissionSQL(t, f, `ALTER TABLE review_source_refreshes DROP COLUMN include_ci`)
 	admissionSQL(t, f, `ALTER TABLE review_source_refreshes DROP COLUMN ci_observation_json`)
 	admissionSQL(t, f, `CREATE INDEX review_source_refresh_coalesce ON review_source_refreshes(project_id,repository_id,pull_number,head_sha,configuration_revision,capability_fingerprint,actor_id,worker_id,state) WHERE state IN ('queued','running')`)

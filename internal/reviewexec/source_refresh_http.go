@@ -32,7 +32,9 @@ func (e *Engine) enqueueSourceRefreshHTTP(w http.ResponseWriter, r *http.Request
 		PullNumber                    *int64  `json:"pull_number"`
 		HeadSHA                       *string `json:"head_sha"`
 		IncludeCI                     *bool   `json:"include_ci,omitempty"`
+		IncludeReadiness              *bool   `json:"include_readiness,omitempty"`
 	}
+	wire.IncludeReadiness = new(bool)
 	wire.IncludeCI = new(bool) // Omission selects source-only; explicit null is invalid.
 	if err = core.ReadJSON(w, r, &wire); err != nil {
 		core.WriteError(w, err)
@@ -42,7 +44,7 @@ func (e *Engine) enqueueSourceRefreshHTTP(w http.ResponseWriter, r *http.Request
 		core.WriteError(w, invalid())
 		return
 	}
-	if wire.IncludeCI == nil {
+	if wire.IncludeCI == nil || wire.IncludeReadiness == nil {
 		core.WriteError(w, invalid())
 		return
 	}
@@ -51,7 +53,7 @@ func (e *Engine) enqueueSourceRefreshHTTP(w http.ResponseWriter, r *http.Request
 		core.WriteError(w, err)
 		return
 	}
-	request := SourceRefreshRequest{ExpectedConfigurationRevision: *wire.ExpectedConfigurationRevision, PullNumber: *wire.PullNumber, HeadSHA: *wire.HeadSHA, IncludeCI: *wire.IncludeCI}
+	request := SourceRefreshRequest{ExpectedConfigurationRevision: *wire.ExpectedConfigurationRevision, PullNumber: *wire.PullNumber, HeadSHA: *wire.HeadSHA, IncludeCI: *wire.IncludeCI, IncludeReadiness: *wire.IncludeReadiness}
 	if !validRefreshRequest(request) {
 		core.WriteError(w, invalid())
 		return
