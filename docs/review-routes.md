@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Native routing implements the same-project ledger, source/receiving guards, transactional browser projection, incoming-policy holds and bound CLI/MCP controls described below. Focused SQLite, HTTP, client and SDK tests pass. Clean packaged CLI/MCP/browser proof is still pending; this slice does not establish native operational cutover.
+Native routing implements the same-project ledger, source/receiving guards, transactional browser projection, incoming-policy holds and bound CLI/MCP controls described below. Focused SQLite, HTTP, client and SDK tests, full repository checks and clean packaged CLI/MCP/browser proof pass. This slice does not establish native operational cutover.
 
 ## Source and receiving authority
 
@@ -35,3 +35,15 @@ The bound CLI and MCP use the same private profile and typed client as other rev
 Required proof covers same-project identity and authorization, source/receiving revision races, exact replay, wrong-key conflicts, receiving acceptance/rejection and guarded fixes, reroute and proof protection, source finalization before and after receiving action, pending obligations on both PRs, historical counts and captures, projection rollback and ledger-only operation. Stored corruption must fail closed. Index-backed pagination must not scan unrelated projects or disclose their routes. Restart and packaged CLI/MCP/browser checks must demonstrate the claimed executable boundary before native cutover.
 
 Focused proof covers real source/receiver revision and replay races, all five projection rollback boundaries, ledger-only operation, source freeze and capture preservation, schema reopening, scoped pagination, guarded proof conservation and corrupted stored records. Policy tests retain a fully covered receiving channel while incoming obligations hold the PR, then clear that hold on receiver rejection or guarded fix. Client and HTTP tests cover strict fields, nulls, source/target binding and compact mutation results. These tests do not establish fleet performance or live-provider behavior.
+
+## Executed packaged proof
+
+Clean runtime checkpoint `2f78f160e9b4a81359ebe26479b0217443864475` passed five actual packaged-service groups in 5.278 seconds, using `fc`, `fcd`, the official SDK over packaged `fcmcp`, and Chromium with embedded assets. All binaries identified that exact clean commit. Source/assets manifest SHA-256 `b8c617ab8cc1cf1546fb5b1a92513a88842db7f759e9d46af63bedd63e2754c9` and all binary hashes stayed unchanged; tested `fcd` SHA-256 was `4f3348f436a215f3303a59e868f8e4ea43d2a72829161ad0b74a1371554509a8`.
+
+Actual CLI creation and source finalization retained original found/accepted/routed counts. An independently acting receiver accepted and fixed the routed finding through CLI and SDK controls, without changing source attribution, revision or frozen counts. Both source and otherwise-covered receiving policies held until the obligation was satisfied. Desktop and 390px pages showed the receiving target, state, actor and fix proof after manual refresh. Eight screenshots and DOM checks covered both widths; three screenshots were visually inspected. Browser reads caused no domain writes, overflow, script execution, credential persistence or JavaScript/HTTP/CSP errors.
+
+All five SDK route tools passed. A deliberately lost committed response dispatched one POST; explicit original-key recovery retained exactly one effect. Incoming pagination remained compact. Guarded rerouting retained readable superseded history and refused superseded/proof-discarding writes without changes. Local reads, exact replay and restart preserved route history, original captures, execution journals and imported merged history. The run made zero provider or external calls, with owned processes and fixture state removed afterward.
+
+CLI creation took 13.013 ms and concurrent job/inbox reads took 4.506/4.452 ms in this small local fixture. These observations are not fleet or network latency guarantees. Full repository checks/build passed with 175 browser tests, all Go race tests, vet, documentation and embedded assets. An initial shared-machine run exceeded a supervisor timing assertion; the focused rerun and full suite passed with `GOMAXPROCS=2`, without changing product timeouts or test assertions.
+
+This proof uses synthetic trusted captures through the real capture/engine boundary. It does not establish live provider execution, a physical phone, an incoming-route browser-list page, combined readiness, fleet performance or operational cutover.
