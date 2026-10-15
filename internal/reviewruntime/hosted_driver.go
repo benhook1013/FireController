@@ -212,7 +212,7 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 		if !errors.As(err, &missing) || missing.Code != "review_projection_missing" {
 			return preparation, err
 		}
-		metadata := reviews.PullInput{Number: plan.Pull.Number, Title: plan.Pull.Title, State: plan.Pull.State, HeadSHA: plan.Pull.HeadSHA, BaseRef: plan.Pull.BaseRef, BaseSHA: plan.Pull.BaseSHA, CIState: "unknown", Mergeability: "unknown", Complete: false}
+		metadata := reviews.PullInput{Number: plan.Pull.Number, Title: pullDisplayTitle(plan.Pull.Title), State: plan.Pull.State, HeadSHA: plan.Pull.HeadSHA, BaseRef: plan.Pull.BaseRef, BaseSHA: plan.Pull.BaseSHA, CIState: "unknown", Mergeability: "unknown", Complete: false}
 		if _, err = d.engine.PublishAttempt(ctx, operation.ProjectID, attempt.ID, &metadata); err != nil {
 			return preparation, err
 		}
