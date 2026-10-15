@@ -139,3 +139,26 @@ func TestHostedComparisonBoundsAndMalformedPublicationNeverMutate(t *testing.T) 
 		t.Fatal("excess batches accepted")
 	}
 }
+
+func TestHostedComparisonNestedExampleAndProposalScopesAreNotProviderFacts(t *testing.T) {
+	head, parent, merge := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	line := hostedScopeDeclaration(parent, head)
+	for _, label := range []string{"Example", "Proposed wording", "Suggested change", "Proposed fix", "📝 Committable suggestion", "🤖 Prompt for AI Agents"} {
+		for _, decorated := range []string{label, "<em>" + label + "</em>", strings.ReplaceAll(label, " ", " <strong></strong>")} {
+			wrapper := func(declaration string) string {
+				return "<details>\n<summary>ℹ️ Review info</summary>\n<details>\n<summary class=\"metadata\">" + decorated + "</summary>\n" + declaration + "\n</details>\n</details>"
+			}
+			if base, ok := ResolveHostedComparison(hostedScopePublication(wrapper(line)), head, parent, merge); ok || base != "" {
+				t.Fatalf("%s established source scope", label)
+			}
+			body := "<details>\n<summary>ℹ️ Review info</summary>\n" + line + "\n</details>\n" + wrapper(hostedScopeDeclaration(merge, head))
+			if base, ok := ResolveHostedComparison(hostedScopePublication(body), head, parent, merge); !ok || base != parent {
+				t.Fatalf("%s hid legitimate provider header", label)
+			}
+			body = wrapper(hostedScopeDeclaration(merge, head)) + "\n<details>\n<summary>ℹ️ Review info</summary>\n" + line + "\n</details>"
+			if base, ok := ResolveHostedComparison(hostedScopePublication(body), head, parent, merge); !ok || base != parent {
+				t.Fatalf("%s exclusion leaked into later provider metadata", label)
+			}
+		}
+	}
+}
