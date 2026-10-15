@@ -210,7 +210,7 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 	if _, err := f.store.DB().Exec(`DROP TABLE review_cli_preflight`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.store.DB().Exec(`DROP INDEX review_operations_coverage`); err != nil {
+	if _, err := f.store.DB().Exec(`DROP INDEX IF EXISTS review_operations_coverage`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.store.DB().Exec(`ALTER TABLE review_operations DROP COLUMN policy_revision`); err != nil {
@@ -243,11 +243,11 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := EnsureSchema(context.Background(), reopened); err != nil {
-		t.Fatal("second version4 startup was not idempotent", err)
+		t.Fatal("second startup was not idempotent", err)
 	}
 	bindEngine(t, f, bindingCapability())
 	var version, title, brief, worker string
-	if err := reopened.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "4" {
+	if err := reopened.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "5" {
 		t.Fatal("migration did not advance only the domain version", err)
 	}
 	if err := reopened.DB().QueryRow(`SELECT title,brief,worker_id FROM jobs WHERE id='retained-job'`).Scan(&title, &brief, &worker); err != nil || title != "Retained title" || brief != "Retained exact brief" || worker != "retained-worker" {

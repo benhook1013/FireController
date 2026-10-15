@@ -18,10 +18,11 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		`CREATE TABLE review_execution_transitions(attempt_id TEXT NOT NULL REFERENCES review_execution_attempts(id),revision INTEGER NOT NULL,state TEXT NOT NULL,reason TEXT NOT NULL,external_id TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(attempt_id,revision))`,
 	}, []string{`ALTER TABLE review_operations ADD COLUMN capability_fingerprint TEXT NOT NULL DEFAULT ''`}, []string{
 		`ALTER TABLE review_operations ADD COLUMN policy_revision INTEGER NOT NULL DEFAULT 0`,
-		`CREATE INDEX review_operations_coverage ON review_operations(project_id,pull_number,channel,head_sha,state,id)`,
 	}, []string{
 		`CREATE TABLE review_cli_preflight(attempt_id TEXT PRIMARY KEY REFERENCES review_execution_attempts(id),project_id TEXT NOT NULL REFERENCES projects(id),body_json TEXT NOT NULL)`,
 		`CREATE INDEX review_operations_cli_admission ON review_operations(project_id,pull_number,channel,state,id)`,
+	}, []string{
+		`DROP INDEX IF EXISTS review_operations_coverage`,
 	}); err != nil {
 		return err
 	}
