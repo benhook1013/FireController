@@ -65,3 +65,5 @@ The 90-file Go/browser/config/embedded-asset digest was `0816a5eca380d82f9e77d25
 ## Review browser proof
 
 The native review addition passed the integrated build with thirty-two browser tests and three actual browser groups, including explicit empty state, retained merged queue history, lazy PR/run/finding detail, source limits, unknown attempt duration, historical snapshot links, safe literal HTML and 390px layouts. The [review workspace](review-workspace.md#validation-status) records exact tested manifests, request counts and limits. Only incoming messages currently have live transport; stored review refresh remains explicit.
+
+The subsequent channel-history correction replaces the mixed last-three summary with compact Hosted/CLI rows and all retained rounds in chronological order; manual/subagent evidence stays separate. It reads native summaries only for nonempty histories. Packaged API/browser checks passed again; the [workspace proof](review-workspace.md#agent-reads-and-restored-review-history) records the source/binary digests and limits.

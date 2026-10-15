@@ -80,6 +80,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if mutationTool(name) {
 		return mutationArguments(name, data)
 	}
+	if reviewTool(name) {
+		return reviewArguments(name, data, fields)
+	}
 	var limit *int
 	var waitMS *int
 	var dst any
@@ -351,7 +354,7 @@ func toolDefinitions() []definition {
 		map[string]any{"required": []string{"title"}}, map[string]any{"required": []string{"brief"}},
 		map[string]any{"required": []string{"worker_id"}}, map[string]any{"required": []string{"status"}},
 	}
-	return []definition{
+	return append([]definition{
 		{"context", "Inspect the immutable local profile configuration; no service verification or credential read.", schema(map[string]any{})},
 		{"doctor", "Verify the configured service instance, project and worker without provider work.", schema(map[string]any{})},
 		{"workers_list", "Read one compact worker page in the bound project.", schema(map[string]any{"limit": limit, "cursor": cursor})},
@@ -371,5 +374,5 @@ func toolDefinitions() []definition {
 		{"inbox_send", "Send an immutable message as the bound worker with an explicit key, optionally replying to a message; return a compact receipt.", schema(map[string]any{"idempotency_key": key, "recipient_worker_id": id, "body": map[string]any{"type": "string", "minLength": 1, "maxLength": 16 << 10}, "reply_to_message_id": id}, "idempotency_key", "recipient_worker_id", "body")},
 		{"inbox_seen", "Explicitly mark a message seen as its bound recipient worker using the supplied key.", schema(map[string]any{"idempotency_key": key, "message_id": id}, "idempotency_key", "message_id")},
 		{"inbox_ack", "Explicitly acknowledge a message as its bound recipient worker, also establishing seen, using the supplied key.", schema(map[string]any{"idempotency_key": key, "message_id": id}, "idempotency_key", "message_id")},
-	}
+	}, reviewDefinitions()...)
 }

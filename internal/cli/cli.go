@@ -57,6 +57,8 @@ type invocation struct {
 	status     string
 	unread     bool
 	unack      bool
+	snapshot   string
+	pullNumber int64
 	mutation   *mutationInvocation
 }
 
@@ -137,6 +139,8 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 			profile.Context
 			Verified bool `json:"verified"`
 		}{identity, true}
+	case call.command == "reviews":
+		value, err = executeReview(requestCtx, service, call)
 	case call.command == "workers":
 		value, err = service.Workers(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "jobs" && call.subcommand == "list":
@@ -207,11 +211,14 @@ func parseInvocation(args []string) (invocation, bool) {
 	if call.command == "version" || call.command == "context" || call.command == "doctor" {
 		return call, len(remaining) == 1
 	}
-	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" || len(remaining) < 2 {
+	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" || len(remaining) < 2 {
 		return call, false
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if call.command == "reviews" {
+		return parseReview(call, operationArgs)
+	}
 	if isMutation(call.command, call.subcommand) {
 		mutation, valid := parseMutation(call.command, call.subcommand, operationArgs)
 		call.mutation = mutation

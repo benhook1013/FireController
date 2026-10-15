@@ -71,8 +71,14 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc jobs history ID` | Explicit bounded revision-history page. |
 | `fc jobs checkpoint-latest ID` | Explicit latest checkpoint with current job revision, or an explicit null checkpoint. |
 | `fc jobs checkpoints ID` | Explicit newest-first checkpoint archive page. |
+| `fc reviews queue` | Stored review queue; defaults to five compact PR entries. |
+| `fc reviews pull NUMBER` | Explicit PR summary and attempt history; optional `--snapshot`. |
+| `fc reviews runs NUMBER` | Stored run summaries, default five; optional `--snapshot`. |
+| `fc reviews run ID` | Explicit full findings, decisions and fix evidence; optional `--snapshot`. |
 | `fc inbox list` | Bound worker's compact message previews; optional unread/unacknowledged filters. |
 | `fc inbox thread ID` | Explicit bounded conversation page with full bodies. |
+
+Review queue/run lists accept `--limit` and `--cursor`; omitted limits select five entries. Review selectors validate before credentials or HTTP, and reads perform no provider refresh or review execution. Source timestamps and completeness remain observations, not readiness.
 
 List/history/thread reads accept `--limit` and `--cursor`; jobs accept `--status`, and `jobs list` also accepts `--worker`. Assigned jobs are a compact assignment list, without primary-job, checkpoint or full resume-context claims. Reads never change seen/ack state, job status or configuration. Unknown flags, repeated options and unsupported commands fail before credential loading or network work.
 

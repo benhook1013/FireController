@@ -19,6 +19,8 @@ type arguments struct {
 	waitMS                     int
 	cursor, worker, status, id string
 	unread, unack              bool
+	snapshot                   string
+	pullNumber                 int64
 	key                        string
 	create                     client.CreateJobRequest
 	edit                       client.EditJobRequest
@@ -31,7 +33,7 @@ type definition struct {
 }
 
 func boundServer(binding profile.Binding) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 20})
+	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 32})
 	definitions := toolDefinitions()
 	known := make(map[string]bool)
 	for _, tool := range definitions {
@@ -64,6 +66,14 @@ func boundServer(binding profile.Binding) *mcp.Server {
 						Verified bool `json:"verified"`
 					}{service.Identity(), true}
 				}
+			case "review_queue":
+				value, err = service.ReviewQueue(ctx, options)
+			case "review_pull":
+				value, err = service.ReviewPull(ctx, args.pullNumber, args.snapshot)
+			case "review_runs":
+				value, err = service.ReviewRuns(ctx, args.pullNumber, client.ReviewRunOptions{PageOptions: options, Snapshot: args.snapshot})
+			case "review_run":
+				value, err = service.ReviewRun(ctx, args.id, args.snapshot)
 			case "workers_list":
 				value, err = service.Workers(ctx, options)
 			case "jobs_list":
