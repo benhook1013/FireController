@@ -113,7 +113,7 @@ func TestReadinessClientRejectsFalseGreenAndMalformedObservations(t *testing.T) 
 	}
 	before := calls.Load()
 	_, err := c.ReviewSourceReadiness(t.Context(), 0)
-	checkError(t, err, "invalid_request")
+	checkError(t, err, "validation_failed")
 	if calls.Load() != before {
 		t.Fatal("invalid selector contacted service")
 	}

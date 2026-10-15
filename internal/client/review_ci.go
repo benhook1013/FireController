@@ -85,7 +85,7 @@ func validCISummary(value ReviewSourceCISummary, allowHeld bool) bool {
 }
 
 func validSourceOperationCI(value ReviewSourceOperation) bool {
-	if !value.IncludeCI {
+	if !value.IncludeCI && !value.IncludeReadiness {
 		return value.CI == nil
 	}
 	if value.State != "completed" {

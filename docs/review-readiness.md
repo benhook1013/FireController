@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-This slice is in progress. Source, CI, review coverage and finding routes already have separate implemented boundaries. A combined verdict must also retain complete thread-resolution and provider merge-state facts; it must never infer them from flat review comments or a cached browser label.
+Explicit readiness collection and a compact combined local assessment are implemented through API, CLI and MCP. Focused provider, SQLite, strict-client and SDK tests pass. Full integrated checks and clean packaged proof are in progress; operational cutover remains separate. Complete thread-resolution and provider merge-state facts are retained independently of flat comments and browser labels.
 
 ## Explicit work and compact reads
 
@@ -22,7 +22,7 @@ The collector performs only GraphQL queries, with no mutations, comments, allowa
 
 A combined assessment must evaluate current local policy, applicable finalized native review coverage, accepted and routed obligations, complete retained thread state, required CI, provider merge state and explicitly applicable holds in one authorized local snapshot. Imported browser history grants no native review credit. Pausing review execution does not erase previously valid credit. Missing or contradictory inputs remain holds; an unconfigured review policy cannot pass vacuously. Humans perform merges.
 
-Exact request fields, public combined response and executable proof will be documented with their implementation. The provider collector alone does not implement this composition or establish operational cutover.
+The public contract below owns request and response fields. Executed proof records the tested boundary separately. The collector alone cannot establish operational cutover; the service composition and its executable proof remain separate boundaries.
 
 ## Service and bound tools
 

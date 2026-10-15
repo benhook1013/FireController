@@ -103,3 +103,16 @@ func (c *Client) ReviewSourceReadiness(ctx context.Context, number int64) (Revie
 	}
 	return value, nil
 }
+
+func validSourceOperationReadiness(value ReviewSourceOperation) bool {
+	if !value.IncludeReadiness || value.State != "completed" {
+		return value.ReviewState == nil
+	}
+	if value.ReviewState == nil || !validSourceReviewState(*value.ReviewState) || value.Observation == nil {
+		return false
+	}
+	sourceAt, _ := time.Parse(time.RFC3339Nano, value.Observation.ObservedAt)
+	reviewAt, _ := time.Parse(time.RFC3339Nano, value.ReviewState.ObservedAt)
+	completedAt, _ := time.Parse(time.RFC3339Nano, value.UpdatedAt)
+	return !reviewAt.Before(sourceAt) && !completedAt.Before(reviewAt)
+}

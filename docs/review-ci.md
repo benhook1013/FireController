@@ -6,7 +6,7 @@ The provider collector, pure assessment, durable service storage and bound API/C
 
 ## Explicit collection
 
-Source refresh accepts optional `include_ci: true`; the bound CLI exposes `--ci` and MCP exposes `include_ci`. Omitting it keeps source-only collection. CI collection uses the same durable operation, two-second default result wait and optional longer wait described in [source refresh](review-source.md). Adding CI changes the action identity: source-only work cannot silently fulfill a CI request. Ordinary operation and assessment reads never contact GitHub.
+Source refresh accepts optional `include_ci: true`; the bound CLI exposes `--ci` and MCP exposes `include_ci`. Readiness collection also requests CI; omitting both options keeps source-only collection. CI collection uses the same durable operation, two-second default result wait and optional longer wait described in [source refresh](review-source.md). Adding CI changes the action identity: source-only work cannot silently fulfill a CI request. Ordinary operation and assessment reads never contact GitHub.
 
 Source-only collection retains its fifteen-second provider budget. A refresh including CI has one thirty-second aggregate budget, with at most fifteen seconds for its initial source phase. Provider work runs outside database transactions. Cancellation of the caller's result wait does not cancel the accepted operation. Restart may repeat interrupted provider reads, using the same operation identity; collection never posts a review or reserves provider review allowance.
 
@@ -32,7 +32,7 @@ Collection is finite: at most 128 required contexts and sixteen relevant workflo
 
 `GET /api/v1/projects/{project_id}/reviews/source/{pull_number}/ci`, `fc reviews ci-assess --pr N` and `review_source_ci_assess` require current project read permission and perform no provider work. The local CI assessment reports the refresh identity, selected source, CI commit, observation time, state and compact counts. It checks applicability against current local repository, source configuration and capability binding and the latest stored source comparison. A changed head or base cannot inherit earlier CI success. Full typed inventories are private retained evidence with a bounded storage budget, separate from the ordinary response.
 
-States distinguish satisfied, failed, pending, unproven and not required. Review-channel coverage remains a separate [policy assessment](review-source.md#local-assessment). Neither assessment authorizes a merge or constitutes a combined merge-readiness verdict.
+States distinguish satisfied, failed, pending, unproven and not required. Review-channel coverage remains a separate [policy assessment](review-source.md#local-assessment). Neither assessment authorizes a merge. The separately selected [readiness assessment](review-readiness.md) combines applicable retained observations with current local policy.
 
 ## Executed proof
 

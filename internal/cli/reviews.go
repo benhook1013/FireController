@@ -11,7 +11,7 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
-	if call.subcommand == "source-assess" || call.subcommand == "ci-assess" {
+	if call.subcommand == "source-assess" || call.subcommand == "ci-assess" || call.subcommand == "readiness" {
 		values, ok := reviewSourceFlags(args, "--pr")
 		if !ok {
 			return call, false
@@ -133,6 +133,8 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 		return service.ReviewSourceOperation(ctx, call.position[0])
 	case "source-assess":
 		return service.ReviewSourcePolicyAssessment(ctx, call.pullNumber)
+	case "readiness":
+		return service.ReviewSourceReadiness(ctx, call.pullNumber)
 	case "ci-assess":
 		return service.ReviewSourceCIAssessment(ctx, call.pullNumber)
 	case "queue":
@@ -158,8 +160,16 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		var filtered []string
 		seenWait := false
 		includeCI := false
+		includeReadiness := false
 		for i := 0; i < len(args); i++ {
 			flag, value, assigned := strings.Cut(args[i], "=")
+			if flag == "--readiness" {
+				if assigned || includeReadiness {
+					return nil, false
+				}
+				includeReadiness = true
+				continue
+			}
 			if flag == "--ci" {
 				if assigned || includeCI {
 					return nil, false
@@ -197,7 +207,7 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 			return nil, false
 		}
 		revision, err := strconv.ParseInt(values["--expect-config"], 10, 64)
-		request := client.ReviewSourceRequest{ExpectedConfigurationRevision: revision, PullNumber: number, HeadSHA: values["--head"], IncludeCI: includeCI}
+		request := client.ReviewSourceRequest{ExpectedConfigurationRevision: revision, PullNumber: number, HeadSHA: values["--head"], IncludeCI: includeCI, IncludeReadiness: includeReadiness}
 		if err != nil || strconv.FormatInt(revision, 10) != values["--expect-config"] || client.ValidateReviewSourceRequest(request) != nil {
 			return nil, false
 		}

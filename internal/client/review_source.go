@@ -15,6 +15,7 @@ type ReviewSourceRequest struct {
 	PullNumber                    int64  `json:"pull_number"`
 	HeadSHA                       string `json:"head_sha"`
 	IncludeCI                     bool   `json:"include_ci,omitempty"`
+	IncludeReadiness              bool   `json:"include_readiness,omitempty"`
 }
 
 // ReviewSourceResult contains exactly one response. JSON stays flat so agents
@@ -69,19 +70,21 @@ type ReviewSourceObservation struct {
 }
 
 type ReviewSourceOperation struct {
-	ID                    string                   `json:"id"`
-	ProjectID             string                   `json:"project_id"`
-	PullNumber            int64                    `json:"pull_number"`
-	HeadSHA               string                   `json:"head_sha"`
-	ConfigurationRevision int64                    `json:"configuration_revision"`
-	State                 string                   `json:"state"`
-	Revision              int64                    `json:"revision"`
-	Reason                string                   `json:"reason"`
-	CreatedAt             string                   `json:"created_at"`
-	UpdatedAt             string                   `json:"updated_at"`
-	Observation           *ReviewSourceObservation `json:"observation,omitempty"`
-	IncludeCI             bool                     `json:"include_ci,omitempty"`
-	CI                    *ReviewSourceCISummary   `json:"ci,omitempty"`
+	ID                    string                          `json:"id"`
+	ProjectID             string                          `json:"project_id"`
+	PullNumber            int64                           `json:"pull_number"`
+	HeadSHA               string                          `json:"head_sha"`
+	ConfigurationRevision int64                           `json:"configuration_revision"`
+	State                 string                          `json:"state"`
+	Revision              int64                           `json:"revision"`
+	Reason                string                          `json:"reason"`
+	CreatedAt             string                          `json:"created_at"`
+	UpdatedAt             string                          `json:"updated_at"`
+	Observation           *ReviewSourceObservation        `json:"observation,omitempty"`
+	IncludeCI             bool                            `json:"include_ci,omitempty"`
+	IncludeReadiness      bool                            `json:"include_readiness,omitempty"`
+	ReviewState           *ReviewSourceReviewStateSummary `json:"review_state,omitempty"`
+	CI                    *ReviewSourceCISummary          `json:"ci,omitempty"`
 }
 
 // ReviewSourcePolicyAssessment evaluates policy as of a retained observation.
@@ -162,7 +165,7 @@ func (c *Client) RefreshReviewSource(ctx context.Context, key string, request Re
 	}
 	if value.Operation != nil {
 		operation := value.Operation
-		if !c.validSourceOperation(*operation) || operation.PullNumber != request.PullNumber || operation.HeadSHA != request.HeadSHA || operation.ConfigurationRevision != request.ExpectedConfigurationRevision || operation.IncludeCI != request.IncludeCI || !oneReviewOf(operation.State, "completed", "held") {
+		if !c.validSourceOperation(*operation) || operation.PullNumber != request.PullNumber || operation.HeadSHA != request.HeadSHA || operation.ConfigurationRevision != request.ExpectedConfigurationRevision || operation.IncludeCI != request.IncludeCI || operation.IncludeReadiness != request.IncludeReadiness || !oneReviewOf(operation.State, "completed", "held") {
 			return ReviewSourceResult{}, unknownMutation("invalid_response", "The service returned invalid source refresh facts; its outcome is unknown.", status)
 		}
 	} else if value.Receipt == nil || ValidateReviewSourceRefreshID(value.Receipt.ID) != nil || value.Receipt.State != "queued" || value.Receipt.Revision != 1 {
@@ -191,7 +194,7 @@ func (c *Client) validSourceOperation(value ReviewSourceOperation) bool {
 	}
 	created, _ := time.Parse(time.RFC3339Nano, value.CreatedAt)
 	updated, _ := time.Parse(time.RFC3339Nano, value.UpdatedAt)
-	return validSourceOperationCI(value) && !updated.Before(created) && (value.State == "completed") == (value.Observation != nil) && (value.Observation == nil || validSourceObservation(*value.Observation) && value.Observation.PullNumber == value.PullNumber && value.Observation.HeadSHA == value.HeadSHA)
+	return validSourceOperationCI(value) && validSourceOperationReadiness(value) && !updated.Before(created) && (value.State == "completed") == (value.Observation != nil) && (value.Observation == nil || validSourceObservation(*value.Observation) && value.Observation.PullNumber == value.PullNumber && value.Observation.HeadSHA == value.HeadSHA)
 }
 
 func (c *Client) ReviewSourcePolicyAssessment(ctx context.Context, number int64) (ReviewSourcePolicyAssessment, error) {

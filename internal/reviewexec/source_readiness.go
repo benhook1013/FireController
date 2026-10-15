@@ -108,7 +108,9 @@ func validSourceReviewState(o reviewprovider.PullReviewObservation, source Sourc
 	return true
 }
 func summarizeSourceReviewState(o reviewprovider.PullReviewObservation) SourceReviewStateSummary {
-	if o.State != "complete" { return SourceReviewStateSummary{State:o.State, Reason:o.Reason, ObservedAt:o.ObservedAt.UTC().Format(time.RFC3339Nano)} }
+	if o.State != "complete" {
+		return SourceReviewStateSummary{State: o.State, Reason: o.Reason, ObservedAt: o.ObservedAt.UTC().Format(time.RFC3339Nano)}
+	}
 	s := SourceReviewStateSummary{State: o.State, Reason: o.Reason, ObservedAt: o.ObservedAt.UTC().Format(time.RFC3339Nano), PullState: o.PullState, Draft: o.Draft, Mergeable: o.Mergeable, MergeStateStatus: o.MergeStateStatus, TotalThreads: int64(len(o.Threads))}
 	if o.ReviewDecision != nil {
 		decision := *o.ReviewDecision
@@ -227,13 +229,15 @@ func (e *Engine) ReadSourceReadiness(ctx context.Context, scope core.Scope, numb
 		if err = tx.QueryRowContext(ctx, `SELECT id FROM review_source_refreshes WHERE project_id=? AND pull_number=? AND state='completed' ORDER BY created_at DESC,id DESC LIMIT 1`, scope.ProjectID, number).Scan(&latestID); err != nil {
 			return err
 		}
-		latest, err := readSourceRefresh(ctx, tx, scope.ProjectID, latestID)
-		if err != nil {
-			return err
-		}
-		if !sameSourceComparison(*latest.Observation, *r.Observation) {
-			out.Reasons = append(out.Reasons, "source_comparison_changed")
-			return nil
+		if latestID != r.ID {
+			latest, err := readSourceRefresh(ctx, tx, scope.ProjectID, latestID)
+			if err != nil {
+				return err
+			}
+			if !sameSourceComparison(*latest.Observation, *r.Observation) {
+				out.Reasons = append(out.Reasons, "source_comparison_changed")
+				return nil
+			}
 		}
 		if policyErr != nil {
 			out.State = "unconfigured"
@@ -274,6 +278,9 @@ func (e *Engine) ReadSourceReadiness(ctx context.Context, scope core.Scope, numb
 			out.Reasons = append(out.Reasons, "ci_pending")
 		default:
 			out.Reasons = append(out.Reasons, "ci_unproven")
+		}
+		if out.CI.MergeState != "verified" {
+			out.Reasons = append(out.Reasons, "ci_merge_state_unproven")
 		}
 		review := out.ReviewState
 		if review.State != "complete" {
