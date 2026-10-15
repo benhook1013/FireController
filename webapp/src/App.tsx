@@ -1,11 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Link, NavLink, Route, Routes, useMatch, useNavigate, useParams } from 'react-router';
+import { Link, NavLink, Route, Routes, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Api, ApiError } from './api';
 import { refreshEventQueries } from './queries';
 import flameEmber from './flame-ember.svg?no-inline';
-import type { Checkpoint, InboxItem, JobSummary, LiveStatus, Page, Project, Worker } from './types';
+import type { Checkpoint, InboxItem, JobSummary, LiveStatus, Page, Project, Worker, ReviewAttemptSummary, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
 
 const pageSize = 20;
 type Session = { api: Api; project: Project; instanceId: string; nonce: string; controller: AbortController; worker: Worker | null };
@@ -160,9 +160,9 @@ function Workspace({ session, selectWorker, disconnect, fail }: { session: Sessi
   return <WorkspaceContext.Provider value={value}><main className="workspace">
     <section className="hero"><div className="hero-project"><p className="eyebrow">Project workspace <span className="read-only">Read only</span></p><h1>{session.project.name}</h1><p className="repository">{session.project.repository}</p><p className="identity">Project {session.project.id}</p></div>
       <div className="hero-side"><div className="connection-card"><span className="eyebrow">Connected project</span><strong>Work, with context.</strong><p>Browse jobs and read worker conversations.</p><div className="hero-actions"><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh visible data'}</button><button className="quiet-button" type="button" onClick={disconnect}>Disconnect</button></div></div></div></section>
-    <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>Jobs</NavLink><NavLink to={`${home}/workers`}>Workers</NavLink><NavLink to={`${home}/inbox`}>Inbox</NavLink><span className="connection-note">Connected</span></nav>
+    <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>Jobs</NavLink><NavLink to={`${home}/workers`}>Workers</NavLink><NavLink to={`${home}/inbox`}>Inbox</NavLink><NavLink to={`${home}/reviews`}>Reviews</NavLink><span className="connection-note">Connected</span></nav>
     <div className="workspace-grid"><aside className="sidebar"><WorkerList compact /><section className="feed-card" aria-label="Inbox connection"><span className={`status-dot ${live === 'live' && session.worker ? 'online' : ''}`} /><strong role="status">{liveLabel}</strong><p>{session.worker ? session.worker.name : 'Select a worker to follow incoming messages.'}</p>{Boolean(feedError) && <><p className="error-copy">{errorText(feedError)}</p><button type="button" onClick={() => { setReady(false); setAttempt(value => value + 1); }}>Reconnect inbox</button></>}</section></aside>
-      <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Jobs />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to project jobs</Link></section>} /></Routes></div></div>
+      <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Jobs />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to project jobs</Link></section>} /></Routes></div></div>
   </main></WorkspaceContext.Provider>;
 }
 
@@ -264,4 +264,76 @@ function ConversationMessages({ id }: { id: string }) {
   const paging = usePaging();
   const query = useQuery({ queryKey: [...key, 'thread', id, paging.cursor], queryFn: ({ signal }) => session.api.thread(id, { limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
   return <section className="panel"><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ol className="conversation-list">{query.data?.items.map(message => <li key={message.id}><div className="message-top"><strong>{message.sender_worker_id}<span className="message-direction"> to {message.recipient_worker_id}</span></strong><time dateTime={message.created_at}>{time(message.created_at)}</time></div><p className="full-text">{message.body}</p></li>)}</ol></ReadState><Pager paging={paging} page={query.data} label="messages" busy={query.isFetching} /></section>;
+}
+
+function useReviewSnapshot(): string | undefined {
+  const [params] = useSearchParams();
+  const values = params.getAll('snapshot');
+  return values.length === 0 ? undefined : values.length === 1 ? values[0] : '';
+}
+function reviewLink(home: string, kind: 'pulls'|'runs', id: string | number, snapshot: string): string {
+  return `${home}/reviews/${kind}/${encodeURIComponent(String(id))}?${new URLSearchParams({ snapshot })}`;
+}
+function githubLink(project: Project, path: string): string | undefined {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(project.repository) || project.repository.split('/').some(part => part === '.' || part === '..')) return undefined;
+  return `https://github.com/${project.repository.split('/').map(encodeURIComponent).join('/')}/${path}`;
+}
+function ReviewNotice() {
+  return <p className="review-boundary">Stored observations only. Native review execution and policy checks are unconfigured. These records do not establish current-head coverage or merge authorization.</p>;
+}
+function ReviewProvenance({ value }: { value: ReviewSnapshot }) {
+  const age = Math.max(0, Math.floor((Date.now() - Date.parse(value.observed_at)) / 3600000));
+  return <section className="review-provenance" aria-label="Review observation"><dl><div><dt>Source</dt><dd>{value.source}</dd></div><div><dt>Observed</dt><dd><time dateTime={value.observed_at}>{time(value.observed_at)}</time><small>{age < 1 ? 'Less than an hour ago' : `${age} hours ago`} · reread does not refresh the source</small></dd></div><div><dt>Recorded</dt><dd><time dateTime={value.recorded_at}>{time(value.recorded_at)}</time></dd></div></dl><details><summary>Snapshot · revision {value.revision}</summary><code>{value.snapshot_id}</code></details></section>;
+}
+function RunPill({ run, snapshot, head }: { run: ReviewRunSummary; snapshot: string; head: string }) {
+  const { home } = useWorkspace();
+  const mismatch = !!head && !!run.head_sha && head !== run.head_sha;
+  return <Link className={`review-round review-outcome-${run.outcome}`} to={reviewLink(home, 'runs', run.id, snapshot)} aria-label={`Open ${run.channel} run ${run.source_run_id}`}><span className="review-channel">{run.channel}</span><strong>{run.found}<small>found</small></strong><span>{run.outcome.replaceAll('_', ' ')}</span><small>{run.accepted} accepted · {run.routed} routed · {run.fixed} fixed</small>{!run.complete && <span className="review-warning">Incomplete record</span>}{!run.finalized && <span className="review-warning">Counts not finalized</span>}{!run.attributable && <span className="review-warning">Attribution unconfirmed</span>}{mismatch && <span className="review-warning">Different observed head</span>}</Link>;
+}
+function PullFacts({ pull }: { pull: ReviewPullSummary }) {
+  return <div className="review-pull-facts"><span className={`badge ${pull.state === 'merged' ? 'neutral' : 'status-active'}`}>{pull.state}{pull.state === 'merged' ? ' · retained history' : ''}</span><span>Observed CI: {pull.ci_state}</span><span>Observed mergeability: {pull.mergeability}</span><span>{pull.run_count} runs · {pull.attempt_count} attempts</span>{!pull.complete && <span className="review-warning">Incomplete PR observation</span>}</div>;
+}
+function ReviewQueueView() {
+  const { session, key, home } = useWorkspace();
+  const paging = usePaging();
+  const [continuationSnapshot, setContinuationSnapshot] = useState('current');
+  const query = useQuery({ queryKey: [...key, 'reviews', paging.number === 1 ? 'current' : continuationSnapshot, 'queue', paging.cursor], queryFn: ({ signal }) => session.api.reviewQueue({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
+  const page = query.data;
+  const navigation = { ...paging, next: (cursor: string) => { if (page) setContinuationSnapshot(page.snapshot_id); paging.next(cursor); } };
+  return <><div className="page-heading"><p className="eyebrow">Review workspace</p><h2>Reviews</h2><p>Stored queue, review rounds and finding evidence.</p></div><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{page && (page.configured ? <><ReviewProvenance value={page} /><section className="panel"><ul className="review-queue">{page.items.map(pull => <li key={pull.number}><div className="review-pull-heading"><span className="review-number">#{pull.number}</span><h3><Link to={reviewLink(home, 'pulls', pull.number, page.snapshot_id)}>{pull.title}</Link></h3></div><PullFacts pull={pull} /><p className="review-head">Observed head: <code>{pull.head_sha || 'Unknown'}</code></p>{pull.recent_runs.length > 0 ? <div className="review-rounds">{pull.recent_runs.map(run => <RunPill key={run.id} run={run} snapshot={page.snapshot_id} head={pull.head_sha} />)}</div> : <p className="review-empty">No review runs recorded. Coverage is unknown.</p>}{pull.latest_attempts.length > 0 && <div className="review-attempt-latest">{pull.latest_attempts.map(attempt => <span key={attempt.channel}>{attempt.channel}: {attempt.state.replaceAll('_', ' ')}</span>)}</div>}<Link className="detail-link" to={reviewLink(home, 'pulls', pull.number, page.snapshot_id)}>Read PR #{pull.number} history →</Link></li>)}</ul>{page.items.length === 0 && <p className="empty">No pull requests in this stored queue.</p>}<Pager paging={navigation} page={page} label="review queue" busy={query.isFetching} /></section></> : <section className="panel empty"><h3>Review workspace unconfigured</h3><p>No review observation has been recorded for this project.</p></section>)}</ReadState></>;
+}
+function ReviewAttempts({ attempts }: { attempts: ReviewAttemptSummary[] }) {
+  return <section className="panel review-attempts"><details><summary>Attempts ({attempts.length})</summary>{attempts.length === 0 ? <p className="review-empty">No attempts recorded.</p> : <ul>{[...attempts].reverse().map(attempt => <li key={attempt.source_attempt_id}><div><span className="review-channel">{attempt.channel}</span><strong>{attempt.state.replaceAll('_', ' ')}</strong></div><div><small>Started</small>{attempt.started_at ? time(attempt.started_at) : 'Unknown'}</div><div><small>Duration</small>{attempt.duration_seconds === null ? 'Unknown' : `${attempt.duration_seconds}s`}</div><div><small>Head</small><code>{attempt.head_sha || 'Unknown'}</code></div><div><small>Source attempt / run</small><span>{attempt.source_attempt_id}</span><span>{attempt.source_run_id || 'No run attached'}</span></div></li>)}</ul>}</details></section>;
+}
+function ReviewPullView() {
+  const { number: rawNumber = '' } = useParams();
+  const number = /^[1-9][0-9]*$/u.test(rawNumber) ? Number(rawNumber) : NaN;
+  const snapshot = useReviewSnapshot();
+  const { session, key, home } = useWorkspace();
+  const query = useQuery({ queryKey: [...key, 'reviews', snapshot ?? 'current', 'pull', number], queryFn: ({ signal }) => session.api.reviewPull(number, snapshot, signalFor(session, signal)), staleTime: Infinity });
+  const value = query.data;
+  return <><Link className="back-link" to={`${home}/reviews`}>← Review queue</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">Pull request #{value.pull.number}</p><h2>{value.pull.title}</h2>{githubLink(session.project, `pull/${value.pull.number}`) && <a href={githubLink(session.project, `pull/${value.pull.number}`)} target="_blank" rel="noopener noreferrer">Open PR #{value.pull.number} on GitHub ↗</a>}</div><ReviewProvenance value={value} /><section className="panel review-pull-summary"><PullFacts pull={value.pull} /><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div></dl></section><ReviewRunsView key={`${value.snapshot_id}:${number}`} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} /><ReviewAttempts attempts={value.attempts} /></>}</ReadState></>;
+}
+function ReviewRunsView({ number, snapshot, head }: { number: number; snapshot: string; head: string }) {
+  const { session, key } = useWorkspace();
+  const paging = usePaging();
+  const query = useQuery({ queryKey: [...key, 'reviews', snapshot, 'pull', number, 'runs', paging.cursor], queryFn: ({ signal }) => session.api.reviewRuns(number, { snapshot, limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
+  return <section className="panel review-history"><div className="section-heading"><h3>Review rounds</h3><span className="small-label">Newest recorded first</span></div><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && (query.data.items.length ? <div className="review-rounds">{query.data.items.map(run => <RunPill key={run.id} run={run} snapshot={snapshot} head={head} />)}</div> : <p className="empty">No review runs recorded. Coverage is unknown.</p>)}</ReadState><Pager paging={paging} page={query.data} label="review runs" busy={query.isFetching} /></section>;
+}
+function FindingView({ finding }: { finding: ReviewFinding }) {
+  const { session } = useWorkspace();
+  return <li className="review-finding"><div className="review-finding-heading"><span className={`badge review-severity-${finding.severity}`}>{finding.severity}</span><span className="badge neutral">{finding.disposition}</span></div><h3>{finding.title}</h3><p className="full-text">{finding.detail || 'No additional detail recorded.'}</p><div className="review-decision"><h4>Decision</h4><p className="full-text">{finding.decision_reason || 'No decision reason recorded.'}</p><p className="item-meta">{finding.actor || 'Actor unknown'} · {finding.decided_at ? time(finding.decided_at) : 'Decision time unknown'}</p></div><div className="review-proof"><h4>Fix proof</h4>{finding.fix_sha ? <p>{githubLink(session.project, `commit/${finding.fix_sha}`) ? <a href={githubLink(session.project, `commit/${finding.fix_sha}`)} target="_blank" rel="noopener noreferrer"><code>{finding.fix_sha}</code> ↗</a> : <code>{finding.fix_sha}</code>}</p> : <p className="muted">No fix commit recorded.</p>}<p className="full-text">{finding.proof_note || 'No proof note recorded.'}</p><p className="item-meta">{finding.resolved_at ? `Resolved: ${time(finding.resolved_at)}` : 'Resolution time unknown'}</p></div></li>;
+}
+function ReviewCoverageLimits({ limits }: { limits: string[] }) {
+  return limits.length ? <section className="panel review-coverage"><h3>Source coverage limitations</h3><ul>{limits.map((limit, index) => <li key={index}>{limit}</li>)}</ul></section> : null;
+}
+function ReviewRunView() {
+  const { runId = '' } = useParams();
+  const snapshot = useReviewSnapshot();
+  const { session, key, home } = useWorkspace();
+  const query = useQuery({ queryKey: [...key, 'reviews', snapshot ?? 'current', 'run', runId], queryFn: ({ signal }) => session.api.reviewRun(runId, snapshot, signalFor(session, signal)), staleTime: Infinity });
+  const value = query.data;
+  const pull = useQuery({ queryKey: [...key, 'reviews', value?.snapshot_id ?? snapshot ?? 'current', 'pull', value?.pull_number ?? 'unknown'], queryFn: ({ signal }) => session.api.reviewPull(value!.pull_number, value!.snapshot_id, signalFor(session, signal)), enabled: !!value, staleTime: Infinity });
+  const mismatch = !!value?.run.head_sha && !!pull.data?.pull.head_sha && value.run.head_sha !== pull.data.pull.head_sha;
+  return <><Link className="back-link" to={value ? reviewLink(home, 'pulls', value.pull_number, value.snapshot_id) : `${home}/reviews`}>← {value ? `PR #${value.pull_number} history` : 'Review queue'}</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">PR #{value.pull_number} · {value.run.channel} run</p><h2>Review findings</h2><p>{value.run.reviewer || 'Reviewer unknown'} · {value.run.scope}</p></div><ReviewProvenance value={value} /><section className="panel review-run-summary"><RunPill run={value.run} snapshot={value.snapshot_id} head={pull.data?.pull.head_sha ?? ''} /><dl className="review-ref-grid"><div><dt>Run head</dt><dd><code>{value.run.head_sha || 'Unknown'}</code></dd></div><div><dt>Observed PR head</dt><dd><code>{pull.data?.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Started / finished</dt><dd>{value.run.started_at ? time(value.run.started_at) : 'Unknown'}<br />{value.run.finished_at ? time(value.run.finished_at) : 'Unknown'}</dd></div></dl>{mismatch && <p className="notice">This run belongs to a different head than the PR head in this observation. It does not establish coverage for that head.</p>}{(!value.run.complete || !value.run.attributable || !value.run.finalized) && <p className="notice">This run has incomplete, unattributed or unfinalized source evidence. Counts are historical observations.</p>}<ReadState error={pull.error} loading={pull.isPending} empty={false}>{!value.run.head_sha || !pull.data?.pull.head_sha ? <p className="review-warning">Head association is unknown.</p> : null}</ReadState></section><ReviewCoverageLimits limits={value.run.coverage_limits} /><section className="panel review-findings"><div className="section-heading"><h3>Findings ({value.findings.length} recorded / {value.run.found} reported)</h3></div>{value.findings.length ? <ul>{value.findings.map(finding => <FindingView key={finding.source_finding_id} finding={finding} />)}</ul> : <p className="empty">No findings recorded for this run.{!value.run.complete ? ' The source record is incomplete.' : ''}</p>}</section></>}</ReadState></>;
 }

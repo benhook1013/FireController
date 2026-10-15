@@ -85,6 +85,10 @@ func TestExecutableBootIdentityAndGracefulRestart(t *testing.T) {
 		for _, route := range []string{
 			"/api/v1/projects/untrusted/jobs",
 			"/api/v1/projects/untrusted/inbox/untrusted",
+			"/api/v1/projects/untrusted/reviews/queue",
+			"/api/v1/projects/untrusted/reviews/pulls/1",
+			"/api/v1/projects/untrusted/reviews/pulls/1/runs",
+			"/api/v1/projects/untrusted/reviews/runs/review_run_" + strings.Repeat("a", 32),
 		} {
 			response, err = client.Get("http://" + started["address"] + route)
 			if err != nil {

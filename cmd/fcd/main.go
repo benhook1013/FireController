@@ -17,6 +17,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/server"
 	"github.com/benhook1013/FireController/internal/webui"
 )
@@ -66,9 +67,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		diagnosticError(stderr, err)
 		return 3
 	}
+	if err = reviews.EnsureSchema(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
 	mux := server.New(store, server.WithRepositoryResolver(resolver), server.WithBrowser(webui.Handler()))
 	jobs.Register(mux, store)
 	inbox.Register(mux, store)
+	reviews.Register(mux, store)
 	server.RegisterMessageStream(mux, store, ctx)
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp", address)

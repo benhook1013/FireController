@@ -86,3 +86,5 @@ See [development proof](development.md) for executed checks and unproven boundar
 ## Domain schema startup
 
 Jobs and inbox schemas have separate ordered migration versions stored in instance metadata. Startup applies only missing migrations under the same exclusive transaction as their version records and refuses a newer domain version before running its DDL. Failed migrations roll back their schema changes and version updates together. The original unversioned domain tables enter this sequence at version zero using their idempotent initial DDL; this does not validate an arbitrarily modified database. Use a compatible binary for a newer schema rather than deleting version records. Migration checks run before serving requests, never during ordinary reads or writes.
+
+The [native review workspace](review-workspace.md) owns its administrator observation and project-scoped queue/PR/run read routes. Those handlers read indexed stored evidence without provider refresh or job/message effects.
