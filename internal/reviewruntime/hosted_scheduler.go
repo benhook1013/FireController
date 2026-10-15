@@ -46,10 +46,14 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			return err
+			var failure *core.Error
+			if !errors.As(err, &failure) || failure.Code != "overloaded" {
+				return err
+			}
+			candidate = nil
 		}
 		delay := hostedRecoveryInterval
-		normal := candidate == nil
+		normal := candidate == nil && err == nil
 		if candidate != nil {
 			query, queryErr := d.engine.ReadHostedAllowanceQuery(ctx, candidate.ProjectID, candidate.AttemptID)
 			err = queryErr
