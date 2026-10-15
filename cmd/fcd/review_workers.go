@@ -60,6 +60,7 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 		})
 	}
 	go func() {
+		defer cancel()
 		workers.Wait()
 		result <- failure
 		close(result)
