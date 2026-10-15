@@ -267,6 +267,67 @@ func TestAttemptProjectionMissingPRExplicitPublicationAndReplay(t *testing.T) {
 	}
 }
 
+func TestAttemptProjectionInitialFallbackPreservesInterveningCurrentObservation(t *testing.T) {
+	f := attemptProjectionFixture(t, false)
+	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "fallback-race", "hosted", 2, 1))
+	_, err := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, nil)
+	attemptCode(t, err, "review_projection_missing")
+	// Another legitimate publisher establishes current facts after the caller's
+	// missing-row read but before its initial-metadata fallback transaction.
+	current, merged := projectionPull(2), projectionPull(1)
+	current.Title, current.State, current.HeadSHA = "New merged observation", "merged", strings.Repeat("9", 40)
+	current.BaseRef, current.BaseSHA, current.CIState = "current-base", strings.Repeat("8", 40), "failure"
+	current.Mergeability = "unknown"
+	current.Attempts = []reviews.Attempt{{SourceAttemptID: "intervening-imported-attempt", Channel: "cli", HeadSHA: current.HeadSHA, State: "prepared"}}
+	merged.State = "merged"
+	request := reviews.ObservationRequest{ExpectedRevision: adjudicationRevision(0), RepositoryID: 801, Source: "intervening-import", ObservedAt: stamp(), Queue: []reviews.PullInput{merged, current}}
+	w := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/observations", f.admin, "intervening-current-facts", encoded(request))
+	if w.Code != 201 {
+		t.Fatal("intervening import", w.Code, w.Body.String())
+	}
+	var initial, initialMerged reviews.PullResponse
+	projectionRead(t, f, "/pulls/2", &initial)
+	projectionRead(t, f, "/pulls/1", &initialMerged)
+	history := projectionDigest(t, f, initial.SnapshotID)
+	old := projectionPull(2)
+	old.Title, old.CIState, old.Mergeability, old.Complete = "Older prepared plan", "unknown", "unknown", false
+	receipt, err := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, &old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, projected := projectedAttempt(t, f, a)
+	if after.Pull.Title != current.Title || after.Pull.State != current.State || after.Pull.HeadSHA != current.HeadSHA || after.Pull.BaseRef != current.BaseRef || after.Pull.BaseSHA != current.BaseSHA || after.Pull.CIState != current.CIState || after.Pull.Mergeability != current.Mergeability || after.Pull.Complete != current.Complete || projected.HeadSHA != strings.Repeat("a", 40) || after.ObservedAt != initial.ObservedAt {
+		t.Fatal("initial fallback overwrote intervening current PR facts", after.Pull)
+	}
+	if len(after.Attempts) != len(initial.Attempts)+1 || history != projectionDigest(t, f, initial.SnapshotID) {
+		t.Fatal("fallback lost imported attempts or changed historical snapshot")
+	}
+	foundImported := false
+	for _, value := range after.Attempts {
+		if value.SourceAttemptID == "intervening-imported-attempt" {
+			foundImported = reflect.DeepEqual(value, initial.Attempts[0])
+		}
+	}
+	var afterMerged reviews.PullResponse
+	projectionRead(t, f, "/pulls/1", &afterMerged)
+	if !foundImported || !reflect.DeepEqual(initialMerged.Pull, afterMerged.Pull) {
+		t.Fatal("fallback changed imported/merged history")
+	}
+	before, events := projectionDigest(t, f, ""), attemptCount(t, f.store, `SELECT count(*) FROM events`)
+	if replay, err := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, &old); err != nil || replay != receipt || projectionDigest(t, f, "") != before || attemptCount(t, f.store, `SELECT count(*) FROM events`) != events {
+		t.Fatal("fallback replay changed projection/events", replay, err)
+	}
+	for _, number := range []int64{0, 4} {
+		invalid := old
+		invalid.Number = number
+		_, err := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, &invalid)
+		attemptCode(t, err, "observation_conflict")
+		if projectionDigest(t, f, "") != before || attemptCount(t, f.store, `SELECT count(*) FROM events`) != events {
+			t.Fatal("invalid fallback selector had effects")
+		}
+	}
+}
+
 func TestAttemptProjectionCaptureLinkRequiresCurrentPublishedRun(t *testing.T) {
 	f, a, evidence := cliPublicationFixture(t, 0, "completed")
 	pull := projectionPull(2)
