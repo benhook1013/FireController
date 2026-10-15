@@ -121,7 +121,8 @@ function Workspace({ session, selectWorker, disconnect, fail }: { session: Sessi
   const [feedError, setFeedError] = useState<unknown>(null);
   const [attempt, setAttempt] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
-  const failRef = useRef(fail); failRef.current = fail;
+  const failRef = useRef(fail);
+  useEffect(() => { failRef.current = fail; }, [fail]);
   const onFailure = useCallback((error: unknown) => failRef.current(error), []);
   useEffect(() => {
     if (!session.worker) return;

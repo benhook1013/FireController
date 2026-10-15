@@ -64,6 +64,12 @@ function keys(value: Record<string, unknown>, required: string[], optional: stri
 function text(value: unknown, max: number, empty = false): value is string {
   return typeof value === 'string' && (empty || value.length > 0) && new TextEncoder().encode(value).byteLength <= max && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value);
 }
+function contentText(value: unknown, max: number, empty = false): value is string {
+  return typeof value === 'string' && (empty || value.length > 0) && !/[\uD800-\uDFFF]/u.test(value) && new TextEncoder().encode(value).byteLength <= max;
+}
+function displayName(value: unknown): value is string {
+  return contentText(value, 200) && !/^\p{White_Space}|\p{White_Space}$/u.test(value);
+}
 function id(value: unknown): value is string { return typeof value === 'string' && idPattern.test(value); }
 function cursor(value: unknown, optional = false): value is string | undefined {
   return optional && value === undefined || typeof value === 'string' && value.length > 0 && value.length <= 4096 && value.trim() === value && !/[\u0000-\u001f\u007f]/u.test(value);
@@ -132,22 +138,22 @@ async function readFailure(response: Response, signal: AbortSignal): Promise<Api
 }
 
 function validProject(value: unknown, expected: string): value is Project {
-  return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository']) && value.id === expected && text(value.name, 200) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
+  return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository']) && value.id === expected && displayName(value.name) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
 }
 function validWorker(value: unknown, projectId: string): value is Worker {
-  return record(value) && keys(value, ['id', 'project_id', 'name']) && id(value.id) && value.project_id === projectId && text(value.name, 200);
+  return record(value) && keys(value, ['id', 'project_id', 'name']) && id(value.id) && value.project_id === projectId && displayName(value.name);
 }
 function validSummary(value: unknown): value is JobSummary {
-  return record(value) && keys(value, ['id', 'title', 'worker_id', 'status', 'revision']) && id(value.id) && text(value.title, 240) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0;
+  return record(value) && keys(value, ['id', 'title', 'worker_id', 'status', 'revision']) && id(value.id) && contentText(value.title, 240) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0;
 }
 function validJob(value: unknown, projectId: string): value is Job {
-  return record(value) && keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at']) && value.project_id === projectId && id(value.id) && text(value.title, 240) && text(value.brief, 32768, true) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && timestamp(value.created_at) && timestamp(value.updated_at);
+  return record(value) && keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at']) && value.project_id === projectId && id(value.id) && contentText(value.title, 240) && contentText(value.brief, 32768, true) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && timestamp(value.created_at) && timestamp(value.updated_at);
 }
 function validInboxItem(value: unknown, worker: string): value is InboxItem {
-  return record(value) && keys(value, ['id', 'conversation_id', 'sender_worker_id', 'recipient_worker_id', 'preview', 'preview_truncated', 'seen', 'acknowledged', 'created_at']) && id(value.id) && id(value.conversation_id) && id(value.sender_worker_id) && value.recipient_worker_id === worker && text(value.preview, 1024, true) && [...value.preview].length <= 160 && typeof value.preview_truncated === 'boolean' && typeof value.seen === 'boolean' && typeof value.acknowledged === 'boolean' && (!value.acknowledged || value.seen) && timestamp(value.created_at);
+  return record(value) && keys(value, ['id', 'conversation_id', 'sender_worker_id', 'recipient_worker_id', 'preview', 'preview_truncated', 'seen', 'acknowledged', 'created_at']) && id(value.id) && id(value.conversation_id) && id(value.sender_worker_id) && value.recipient_worker_id === worker && contentText(value.preview, 1024, true) && [...value.preview].length <= 160 && typeof value.preview_truncated === 'boolean' && typeof value.seen === 'boolean' && typeof value.acknowledged === 'boolean' && (!value.acknowledged || value.seen) && timestamp(value.created_at);
 }
 function validMessage(value: unknown, conversation: string): value is Message {
-  return record(value) && keys(value, ['id', 'conversation_id', 'sender_worker_id', 'recipient_worker_id', 'body', 'created_at'], ['reply_to_message_id']) && id(value.id) && value.conversation_id === conversation && id(value.sender_worker_id) && id(value.recipient_worker_id) && (value.reply_to_message_id === undefined || id(value.reply_to_message_id)) && text(value.body, 16384) && timestamp(value.created_at);
+  return record(value) && keys(value, ['id', 'conversation_id', 'sender_worker_id', 'recipient_worker_id', 'body', 'created_at'], ['reply_to_message_id']) && id(value.id) && value.conversation_id === conversation && id(value.sender_worker_id) && id(value.recipient_worker_id) && (value.reply_to_message_id === undefined || id(value.reply_to_message_id)) && contentText(value.body, 16384) && timestamp(value.created_at);
 }
 function validEvent(value: unknown, project: string, worker: string): value is MessageEvent {
   if (!record(value) || !keys(value, ['sequence', 'project_id', 'type', 'resource_id', 'revision', 'actor_id', 'payload', 'created_at']) || !Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1 || value.project_id !== project || !id(value.resource_id) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || !id(value.actor_id) || !timestamp(value.created_at) || !record(value.payload)) return false;
