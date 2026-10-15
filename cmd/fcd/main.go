@@ -43,6 +43,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		diagnostic(stderr, "configuration_invalid", "Provide --data-dir and a loopback --listen address.")
 		return 2
 	}
+	address := *listen
+	if host, port, _ := net.SplitHostPort(address); host == "localhost" {
+		address = net.JoinHostPort("127.0.0.1", port)
+	}
 	resolver, err := server.GitHubResolver(*tokenFile)
 	if err != nil {
 		diagnosticError(stderr, err)
@@ -66,10 +70,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	jobs.Register(mux, store)
 	inbox.Register(mux, store)
 	server.RegisterMessageStream(mux, store, ctx)
-	listener, err := net.Listen("tcp", *listen)
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(ctx, "tcp", address)
 	if err != nil {
 		diagnostic(stderr, "listen_failed", "The loopback listener could not be started.")
 		return 3
+	}
+	if !validateLoopbackListener(listener) {
+		diagnostic(stderr, "configuration_invalid", "The bound listener must use a loopback TCP address.")
+		return 2
 	}
 	srv := newHTTPServer(ctx, mux)
 	_ = json.NewEncoder(stdout).Encode(map[string]string{"event": "listening", "address": listener.Addr().String(), "instance_id": store.InstanceID()})
@@ -89,6 +98,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		<-done
 	}
 	return 0
+}
+
+func validateLoopbackListener(listener net.Listener) bool {
+	address, ok := listener.Addr().(*net.TCPAddr)
+	if ok && address != nil && address.IP.IsLoopback() {
+		return true
+	}
+	_ = listener.Close()
+	return false
 }
 
 func newHTTPServer(signalContext context.Context, handler http.Handler) *http.Server {
