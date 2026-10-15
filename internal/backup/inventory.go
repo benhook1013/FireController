@@ -237,6 +237,35 @@ var tables = map[string]tableVersion{
 	"review_checkpoint_publications": {"review_checkpoint_publication", 1, "id project_id evidence_id state revision created_at body_json"}, "review_checkpoint_revisions": {"review_checkpoint_publication", 1, "publication_id revision actor_id created_at body_json"}, "review_checkpoint_intents": {"review_checkpoint_publication", 1, "publication_id revision body_json"},
 }
 
+// primaryFocusColumn preserves the composite identities and explicit values
+// required by focus UPSERTs and immutable per-worker revision history.
+func primaryFocusColumn(table, column, kind string, notnull, pk int, defaultValue any) bool {
+	if defaultValue != nil {
+		return false
+	}
+	expectedKind, expectedNotNull, expectedPK := "TEXT", 1, 0
+	switch column {
+	case "project_id":
+		expectedPK = 1
+	case "worker_id":
+		expectedPK = 2
+	case "revision":
+		expectedKind = "INTEGER"
+		if table == "worker_primary_job_history" {
+			expectedPK = 3
+		}
+	case "job_id":
+		expectedNotNull = 0
+	case "actor_id", "actor_worker_id", "reason", "created_at":
+		if table != "worker_primary_job_history" {
+			return false
+		}
+	default:
+		return false
+	}
+	return kind == expectedKind && notnull == expectedNotNull && pk == expectedPK
+}
+
 func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[string]int, error) {
 	var version int
 	if db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version) != nil || (version != 1 && version != 2) {
@@ -361,6 +390,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				return nil, invalid()
 			}
 			if name == "restore_history" && !recoveryHistoryColumn(col, kind, notnull, pk, hidden, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
+			if (name == "worker_primary_jobs" || name == "worker_primary_job_history") && !primaryFocusColumn(name, col, kind, notnull, pk, defaultValue) {
 				columnRows.Close()
 				return nil, invalid()
 			}

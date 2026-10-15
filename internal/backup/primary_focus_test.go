@@ -1,9 +1,12 @@
 package backup
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -111,5 +114,49 @@ func TestPrimaryFocusOlderJobSchemaBundlesRemainReadOnly(t *testing.T) {
 				t.Fatal("older source/bundle modified")
 			}
 		})
+	}
+}
+
+func TestPrimaryFocusBackupRejectsNoncanonicalColumnKeys(t *testing.T) {
+	f := newRestoreFixture(t)
+	job := restoreRows(t, f.store.DB(), `SELECT id FROM jobs LIMIT 1`)[0][0].(string)
+	path := "/api/v1/projects/" + f.project + "/workers/" + f.worker + "/primary-job"
+	f.request(t, "PUT", path, map[string]any{"expected_revision": 0, "job_id": job})
+	f.request(t, "PUT", path, map[string]any{"expected_revision": 1, "job_id": ""})
+	current := `project_id TEXT NOT NULL,worker_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1),job_id TEXT,PRIMARY KEY(project_id,worker_id)`
+	history := `project_id TEXT NOT NULL,worker_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1),job_id TEXT,actor_id TEXT NOT NULL,actor_worker_id TEXT NOT NULL,reason TEXT NOT NULL CHECK(reason IN ('selected','cleared','job_reassigned')),created_at TEXT NOT NULL,PRIMARY KEY(project_id,worker_id,revision)`
+	foreignKeys := `,FOREIGN KEY(project_id,worker_id) REFERENCES workers(project_id,id),FOREIGN KEY(project_id,job_id) REFERENCES jobs(project_id,id)`
+	for _, table := range []string{"worker_primary_jobs", "worker_primary_job_history"} {
+		columns, key, moved := current, `PRIMARY KEY(project_id,worker_id)`, `PRIMARY KEY(project_id,job_id)`
+		if table == "worker_primary_job_history" {
+			columns, key, moved = history, `PRIMARY KEY(project_id,worker_id,revision)`, `PRIMARY KEY(project_id,worker_id,job_id)`
+		}
+		for _, test := range []struct{ name, columns string }{
+			{"missing-primary-key", strings.Replace(columns, ","+key, "", 1)},
+			{"moved-primary-key", strings.Replace(columns, key, moved, 1)},
+			{"wrong-revision-type", strings.Replace(columns, "revision INTEGER", "revision REAL", 1)},
+			{"nullable-worker", strings.Replace(columns, "worker_id TEXT NOT NULL", "worker_id TEXT", 1)},
+			{"unexpected-default", strings.Replace(columns, "revision INTEGER NOT NULL", "revision INTEGER NOT NULL DEFAULT 1", 1)},
+		} {
+			t.Run(table+"/"+test.name, func(t *testing.T) {
+				bundle, err := Create(t.Context(), f.store, f.dir, filepath.Join(t.TempDir(), "bundles"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				mutateBundleSQL(t, bundle.Path, `CREATE TABLE altered_focus (`+test.columns+foreignKeys+`);INSERT INTO altered_focus SELECT * FROM `+table+`;DROP TABLE `+table+`;ALTER TABLE altered_focus RENAME TO `+table)
+				immutable := restoreTree(t, bundle.Path)
+				_, err = Inspect(t.Context(), bundle.Path)
+				backupCode(t, err, "backup_invalid")
+				destination := filepath.Join(t.TempDir(), "must-not-exist")
+				_, err = Restore(t.Context(), bundle.Path, destination)
+				backupCode(t, err, "backup_invalid")
+				if _, err = os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("invalid schema created restore destination", err)
+				}
+				if !reflect.DeepEqual(immutable, restoreTree(t, bundle.Path)) {
+					t.Fatal("invalid inventory inspection or restore changed bundle")
+				}
+			})
+		}
 	}
 }
