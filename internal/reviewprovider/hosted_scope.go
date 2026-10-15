@@ -28,6 +28,7 @@ type hostedComparisonFrame struct {
 // One scanner owns both visibility and HTML scopes: removing blockquote lines
 // before matching their details closers would corrupt the surrounding context.
 type hostedComparisonScanner struct {
+	standing                  bool
 	frames                    []hostedComparisonFrame
 	blocked                   int
 	comment, summary          bool
@@ -105,7 +106,7 @@ func (s *hostedComparisonScanner) token(token string) bool {
 		if tag == "summary" && closing {
 			frame := &s.frames[len(s.frames)-1]
 			label := hostedComparisonLabel(s.label.String())
-			frame.metadata = label == "review info" || label == "commits"
+			frame.metadata = label == "review info" || label == "commits" || s.standing && label == "recent review info"
 			frame.labelled = true
 			if frame.metadata {
 				s.blocked--
@@ -144,8 +145,13 @@ func (s *hostedComparisonScanner) token(token string) bool {
 	if strings.HasSuffix(token, "/>") && tag != "details" && tag != "blockquote" && tag != "pre" {
 		return true
 	}
-	s.frames = append(s.frames, hostedComparisonFrame{tag: tag})
-	s.blocked++
+	frame := hostedComparisonFrame{tag: tag}
+	if s.standing && (tag == "dl" || tag == "dd") && len(s.frames) > 0 && s.frames[len(s.frames)-1].metadata {
+		frame.metadata = true
+	} else {
+		s.blocked++
+	}
+	s.frames = append(s.frames, frame)
 	return true
 }
 
@@ -206,7 +212,20 @@ func ResolveHostedComparison(publication HostedPublication, headSHA, parentSHA, 
 			return "", false
 		}
 	}
-	if publication.State != "attributed" || len(publication.Batches) == 0 || len(publication.Batches) > 200 {
+	if publication.State != "attributed" {
+		return "", false
+	}
+	if standing := publication.StandingZero; standing != nil {
+		if len(publication.Batches) != 0 || len(publication.Roots) != 0 || publication.PublicationID != "" || publication.ProviderAttemptID != "" || !validBody(standing.RecentReviewBody) {
+			return "", false
+		}
+		scanner := hostedComparisonScanner{standing: true, head: headSHA, parent: parentSHA, merge: mergeBaseSHA}
+		if !scanner.body(standing.RecentReviewBody) {
+			return "", false
+		}
+		return scanner.base, scanner.base != ""
+	}
+	if len(publication.Batches) == 0 || len(publication.Batches) > 200 {
 		return "", false
 	}
 	scanner := hostedComparisonScanner{head: headSHA, parent: parentSHA, merge: mergeBaseSHA}

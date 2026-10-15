@@ -1,21 +1,65 @@
 package reviewexec
 
 import (
+	"bytes"
+	"encoding/json"
 	"regexp"
 	"strconv"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 // HostedEvidenceMetadata binds a proven final capture to its provider inventory.
 // It does not establish current coverage, policy sufficiency or readiness.
 type HostedEvidenceMetadata struct {
-	PublicationID     string                `json:"publication_id"`
-	ProviderAttemptID string                `json:"provider_attempt_id"`
-	TriggerCommentID  int64                 `json:"trigger_comment_id"`
-	ReviewIDs         []int64               `json:"review_ids"`
-	ObservedBaseSHA   string                `json:"observed_base_sha"`
-	Sources           []HostedFindingSource `json:"sources"`
+	StandingZero      *HostedStandingZeroMetadata `json:"standing_zero,omitempty"`
+	PublicationID     string                      `json:"publication_id,omitempty"`
+	ProviderAttemptID string                      `json:"provider_attempt_id,omitempty"`
+	TriggerCommentID  int64                       `json:"trigger_comment_id"`
+	ReviewIDs         []int64                     `json:"review_ids,omitempty"`
+	ObservedBaseSHA   string                      `json:"observed_base_sha"`
+	Sources           []HostedFindingSource       `json:"sources"`
+}
+
+// HostedStandingZeroMetadata preserves real issue-comment identities. It is
+// mutually exclusive with marked review batches and carries no finding counts.
+type HostedStandingZeroMetadata struct {
+	BaselineCaptureID     string `json:"baseline_capture_id"`
+	BaselineCaptureSHA256 string `json:"baseline_capture_sha256"`
+	CommentID             int64  `json:"comment_id"`
+	CompletionCommentID   int64  `json:"completion_comment_id"`
+	RunID                 string `json:"run_id"`
+}
+
+func (h *HostedEvidenceMetadata) UnmarshalJSON(data []byte) error {
+	type plain HostedEvidenceMetadata
+	var value plain
+	if err := strictjson.Decode(data, &value); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil || fields == nil {
+		return strictjson.ErrSyntax
+	}
+	if raw, present := fields["standing_zero"]; present {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return strictjson.ErrSyntax
+		}
+		for _, key := range []string{"publication_id", "provider_attempt_id", "review_ids"} {
+			if _, mixed := fields[key]; mixed {
+				return strictjson.ErrSyntax
+			}
+		}
+	} else {
+		for _, key := range []string{"publication_id", "provider_attempt_id", "review_ids"} {
+			if _, present := fields[key]; !present {
+				return strictjson.ErrSyntax
+			}
+		}
+	}
+	*h = HostedEvidenceMetadata(value)
+	return nil
 }
 
 type HostedFindingSource struct {
@@ -31,9 +75,18 @@ var hostedEvidenceUUID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4
 var hostedEvidenceFingerprint = regexp.MustCompile(`^[a-f0-9]{24}$`)
 
 func validateHostedEvidenceMetadata(h *HostedEvidenceMetadata, anchor Anchor, review reviewprovider.ParsedReview) error {
-	if h == nil || !hostedEvidenceUUID.MatchString(h.PublicationID) || !hostedEvidenceUUID.MatchString(h.ProviderAttemptID) || h.TriggerCommentID <= 0 || len(h.ReviewIDs) < 1 || len(h.ReviewIDs) > 200 ||
+	if h == nil || h.TriggerCommentID <= 0 ||
 		h.Sources == nil || len(h.Sources) != len(review.Findings) || len(h.Sources) > 100 || review.Outcome != "completed" || !review.Complete || len(review.ReviewedFiles) != 0 || review.ReportedFindings != int64(len(review.Findings)) ||
 		!sha.MatchString(h.ObservedBaseSHA) || h.ObservedBaseSHA != anchor.ParentSHA && h.ObservedBaseSHA != anchor.MergeBaseSHA {
+		return invalid()
+	}
+	if zero := h.StandingZero; zero != nil {
+		if !hash.MatchString(zero.BaselineCaptureSHA256) || zero.BaselineCaptureID != "review_capture_"+zero.BaselineCaptureSHA256[:32] || h.PublicationID != "" || h.ProviderAttemptID != "" || len(h.ReviewIDs) != 0 || zero.CommentID <= 0 || zero.CompletionCommentID <= 0 || zero.CommentID == zero.CompletionCommentID || zero.CommentID == h.TriggerCommentID || zero.CompletionCommentID == h.TriggerCommentID || !hostedEvidenceUUID.MatchString(zero.RunID) || review.Findings == nil || len(review.Findings) != 0 || review.ReviewedFiles == nil || len(h.Sources) != 0 || review.ReportedFindings != 0 {
+			return invalid()
+		}
+		return nil
+	}
+	if !hostedEvidenceUUID.MatchString(h.PublicationID) || !hostedEvidenceUUID.MatchString(h.ProviderAttemptID) || len(h.ReviewIDs) < 1 || len(h.ReviewIDs) > 200 {
 		return invalid()
 	}
 	reviews := make(map[int64]bool, len(h.ReviewIDs))

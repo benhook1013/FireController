@@ -36,6 +36,20 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		result.Reason = "capture_invalid"
 		return result, nil
 	}
+	var baselineRef CaptureReference
+	if inventory.Reason == "standing_zero_baseline_missing" {
+		baseline, ref, baselineErr := hostedStandingBaseline(ctx, captures, engine, attempt, retained, result.Capture)
+		if baselineErr != nil {
+			result.Reason = "evidence_unavailable"
+			return result, baselineErr
+		}
+		baselineRef = ref
+		inventory, err = reviewprovider.ExtractHostedFindingsWithBaseline(retained.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting, baseline)
+		if err != nil {
+			result.Reason = "capture_invalid"
+			return result, nil
+		}
+	}
 	if !inventory.Complete || inventory.Publication.State != "attributed" {
 		result.Reason = inventory.Reason
 		if result.Reason == "" {
@@ -51,6 +65,9 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 	}
 	review := reviewprovider.ParsedReview{Outcome: "completed", Complete: true, ReportedFindings: int64(len(inventory.Findings)), ReviewedFiles: []string{}, Findings: make([]reviewprovider.ParsedFinding, 0, len(inventory.Findings))}
 	metadata := &reviewexec.HostedEvidenceMetadata{PublicationID: publication.PublicationID, ProviderAttemptID: publication.ProviderAttemptID, TriggerCommentID: publication.Trigger.CommentID, ReviewIDs: make([]int64, 0, len(publication.Batches)), ObservedBaseSHA: base, Sources: make([]reviewexec.HostedFindingSource, 0, len(inventory.Findings))}
+	if zero := publication.StandingZero; zero != nil {
+		metadata.StandingZero = &reviewexec.HostedStandingZeroMetadata{CommentID: zero.CommentID, CompletionCommentID: zero.CompletionCommentID, RunID: zero.RunID, BaselineCaptureID: baselineRef.ID, BaselineCaptureSHA256: baselineRef.SHA256}
+	}
 	for _, batch := range publication.Batches {
 		metadata.ReviewIDs = append(metadata.ReviewIDs, batch.ID)
 	}
@@ -130,4 +147,44 @@ func retainHostedObservation(ctx context.Context, captures *HostedCaptureStore, 
 		return result, HostedCaptureRecord{}, err
 	}
 	return result, retained, nil
+}
+
+// hostedStandingBaseline uses the first earlier review observation by journal
+// position. A later, more convenient baseline must never replace it. Query
+// observations and the current artifact cannot establish this causal boundary.
+func hostedStandingBaseline(ctx context.Context, captures *HostedCaptureStore, engine *reviewexec.Engine, attempt reviewexec.Attempt, current HostedCaptureRecord, currentRef CaptureReference) (*reviewprovider.HostedPublicationBaseline, CaptureReference, error) {
+	observations, err := engine.ReadHostedObservations(ctx, attempt.ProjectID, attempt.ID)
+	if err != nil {
+		return nil, CaptureReference{}, err
+	}
+	var currentPosition int64
+	for _, observation := range observations {
+		in := observation.Input
+		if in.Kind == "" && in.CaptureID == currentRef.ID && in.CaptureSHA256 == currentRef.SHA256 && in.CaptureBytes == currentRef.Bytes {
+			currentPosition = observation.Position
+			break
+		}
+	}
+	if currentPosition == 0 {
+		return nil, CaptureReference{}, core.Fail("storage_unavailable", "Stored hosted baseline binding is unavailable.", 500)
+	}
+	for _, observation := range observations {
+		if observation.Position >= currentPosition {
+			break
+		}
+		in := observation.Input
+		if in.Kind != "" {
+			continue
+		}
+		ref := CaptureReference{ID: in.CaptureID, SHA256: in.CaptureSHA256, Bytes: in.CaptureBytes}
+		record, err := captures.Read(ctx, attempt.ID, ref)
+		if err != nil {
+			return nil, CaptureReference{}, err
+		}
+		if observation.ProjectID != attempt.ProjectID || observation.AttemptID != attempt.ID || observation.OperationID != attempt.OperationID || in.ExpectedAnchor != *attempt.Anchor || in.Intent != attempt.Intent || record.Intent != current.Intent || record.RepositoryID != current.RepositoryID || record.Repository != current.Repository || record.PullNumber != current.PullNumber || record.PostingActor != current.PostingActor || record.ProviderActor != current.ProviderActor || !record.EarliestPosting.Equal(current.EarliestPosting) || record.StartedAt.Format(time.RFC3339Nano) != in.StartedAt || record.FinishedAt.Format(time.RFC3339Nano) != in.FinishedAt || record.Snapshot.ObservedAt.Format(time.RFC3339Nano) != in.ObservedAt {
+			return nil, CaptureReference{}, core.Fail("storage_unavailable", "Stored hosted baseline binding is unavailable.", 500)
+		}
+		return &reviewprovider.HostedPublicationBaseline{Snapshot: record.Snapshot, StartedAt: record.StartedAt}, ref, nil
+	}
+	return nil, CaptureReference{}, nil
 }

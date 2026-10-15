@@ -22,7 +22,15 @@ type HostedPublicationSnapshot struct {
 // inventory only. Even State="attributed" grants no review coverage, finding
 // extraction/adjudication, allowance, readiness or merge credit. Bodies remain
 // verbatim, including markers and unclassified summary/outside-diff evidence.
+type HostedStandingZero struct {
+	CommentID           int64
+	CompletionCommentID int64
+	RunID               string
+	RecentReviewBody    string
+}
+
 type HostedPublication struct {
+	StandingZero      *HostedStandingZero
 	State             string
 	Reason            string
 	Trigger           HostedTriggerRecovery
@@ -216,6 +224,17 @@ func validPublicationSnapshot(s HostedPublicationSnapshot) bool {
 // ResolveHostedPublication performs no I/O and does not initiate or retry any
 // provider action. Incomplete/ambiguous evidence never proves absence of a post.
 func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedTriggerIntent, postingAuthor, providerAuthor Author, earliestPosting time.Time) (HostedPublication, error) {
+	return ResolveHostedPublicationWithBaseline(snapshot, intent, postingAuthor, providerAuthor, earliestPosting, nil)
+}
+
+// HostedPublicationBaseline is an earlier complete post-trigger observation.
+// Its trusted retained provenance is owned by the runtime, not this pure resolver.
+type HostedPublicationBaseline struct {
+	Snapshot  HostedPublicationSnapshot
+	StartedAt time.Time
+}
+
+func ResolveHostedPublicationWithBaseline(snapshot HostedPublicationSnapshot, intent HostedTriggerIntent, postingAuthor, providerAuthor Author, earliestPosting time.Time, baseline *HostedPublicationBaseline) (HostedPublication, error) {
 	result := HostedPublication{State: "uncertain", Reason: "publication_not_proven", Batches: []HostedReview{}, Roots: []ReviewComment{}, EligibleReviews: []HostedReview{}}
 	if !publicationValidActor(providerAuthor) || publicationActor(providerAuthor, postingAuthor) {
 		return result, invalidSelector()
@@ -307,6 +326,9 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		batches[marker.ordinal] = review
 	}
 	if total == 0 {
+		if resolveHostedStandingZero(&result, snapshot, intent, postingAuthor, providerAuthor, earliestPosting, closing, baseline) {
+			return result, nil
+		}
 		if !closing.IsZero() {
 			result.State, result.Reason = "uncertain", "attribution_window_closed"
 		}

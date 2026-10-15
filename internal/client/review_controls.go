@@ -30,12 +30,51 @@ type ReviewAnchor struct {
 	ObservedAt       string `json:"observed_at"`
 }
 type ReviewHostedPublication struct {
-	PublicationID     string  `json:"publication_id"`
-	ProviderAttemptID string  `json:"provider_attempt_id"`
-	TriggerCommentID  int64   `json:"trigger_comment_id"`
-	ReviewIDs         []int64 `json:"review_ids"`
-	ObservedBaseSHA   string  `json:"observed_base_sha"`
+	StandingZero      *ReviewHostedStandingZero `json:"standing_zero,omitempty"`
+	PublicationID     string                    `json:"publication_id,omitempty"`
+	ProviderAttemptID string                    `json:"provider_attempt_id,omitempty"`
+	TriggerCommentID  int64                     `json:"trigger_comment_id"`
+	ReviewIDs         []int64                   `json:"review_ids,omitempty"`
+	ObservedBaseSHA   string                    `json:"observed_base_sha"`
 }
+type ReviewHostedStandingZero struct {
+	BaselineCaptureID     string `json:"baseline_capture_id"`
+	BaselineCaptureSHA256 string `json:"baseline_capture_sha256"`
+	CommentID             int64  `json:"comment_id"`
+	CompletionCommentID   int64  `json:"completion_comment_id"`
+	RunID                 string `json:"run_id"`
+}
+
+func (h *ReviewHostedPublication) UnmarshalJSON(data []byte) error {
+	type plain ReviewHostedPublication
+	var value plain
+	if err := strictjson.Decode(data, &value); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil || fields == nil {
+		return strictjson.ErrSyntax
+	}
+	if raw, present := fields["standing_zero"]; present {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return strictjson.ErrSyntax
+		}
+		for _, key := range []string{"publication_id", "provider_attempt_id", "review_ids"} {
+			if _, mixed := fields[key]; mixed {
+				return strictjson.ErrSyntax
+			}
+		}
+	} else {
+		for _, key := range []string{"publication_id", "provider_attempt_id", "review_ids"} {
+			if _, present := fields[key]; !present {
+				return strictjson.ErrSyntax
+			}
+		}
+	}
+	*h = ReviewHostedPublication(value)
+	return nil
+}
+
 type ReviewHostedFindingSource struct {
 	SourceKey   string `json:"source_key"`
 	Fingerprint string `json:"fingerprint"`
@@ -245,7 +284,13 @@ func controlUUID(value string) bool {
 
 func validHostedControlCapture(capture ReviewEvidenceCapture, anchor ReviewAnchor) bool {
 	hosted := capture.Hosted
-	if hosted == nil || !capture.Complete || capture.Outcome != "completed" || len(capture.ReviewedFiles) != 0 || capture.ReportedFindings != int64(len(capture.Findings)) || !controlUUID(hosted.PublicationID) || !controlUUID(hosted.ProviderAttemptID) || hosted.TriggerCommentID <= 0 || len(hosted.ReviewIDs) < 1 || len(hosted.ReviewIDs) > 200 || !controlHex(hosted.ObservedBaseSHA, 40) || hosted.ObservedBaseSHA != anchor.ParentSHA && hosted.ObservedBaseSHA != anchor.MergeBaseSHA {
+	if hosted == nil || !capture.Complete || capture.Outcome != "completed" || len(capture.ReviewedFiles) != 0 || capture.ReportedFindings != int64(len(capture.Findings)) || hosted.TriggerCommentID <= 0 || !controlHex(hosted.ObservedBaseSHA, 40) || hosted.ObservedBaseSHA != anchor.ParentSHA && hosted.ObservedBaseSHA != anchor.MergeBaseSHA {
+		return false
+	}
+	if zero := hosted.StandingZero; zero != nil {
+		return controlHex(zero.BaselineCaptureSHA256, 64) && zero.BaselineCaptureID == "review_capture_"+zero.BaselineCaptureSHA256[:32] && zero.BaselineCaptureID != capture.CaptureID && hosted.PublicationID == "" && hosted.ProviderAttemptID == "" && len(hosted.ReviewIDs) == 0 && zero.CommentID > 0 && zero.CompletionCommentID > 0 && zero.CommentID != zero.CompletionCommentID && zero.CommentID != hosted.TriggerCommentID && zero.CompletionCommentID != hosted.TriggerCommentID && controlUUID(zero.RunID) && capture.Findings != nil && len(capture.Findings) == 0 && capture.ReviewedFiles != nil && capture.ReportedFindings == 0
+	}
+	if !controlUUID(hosted.PublicationID) || !controlUUID(hosted.ProviderAttemptID) || len(hosted.ReviewIDs) < 1 || len(hosted.ReviewIDs) > 200 {
 		return false
 	}
 	reviews := make(map[int64]bool, len(hosted.ReviewIDs))
