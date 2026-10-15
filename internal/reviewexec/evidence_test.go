@@ -428,7 +428,13 @@ func TestCLIEvidenceValidationIsBoundedAndAtomic(t *testing.T) {
 	}
 	// Full boundary-sized fields, offset times and all supported severities remain valid.
 	in.CaptureBytes = 24 << 20
-	in.StartedAt = time.Now().Add(-2 * time.Second).In(time.FixedZone("offset", 12*3600)).Format(time.RFC3339Nano)
+	finishedAt, err := time.Parse(time.RFC3339Nano, in.FinishedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the interval valid even when the preceding rejection cases take
+	// longer than the fixture's original one-second interval.
+	in.StartedAt = finishedAt.Add(-time.Second).In(time.FixedZone("offset", 12*3600)).Format(time.RFC3339Nano)
 	in.Review.Findings[0].Title = strings.Repeat("x", 500)
 	in.Review.Findings[0].Detail = strings.Repeat("x", 16<<10)
 	for _, severity := range []string{"info", "low", "medium", "high", "critical", "unknown"} {
