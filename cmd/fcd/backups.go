@@ -63,14 +63,7 @@ func runBackupCommand(ctx context.Context, command string, args []string, stdout
 	var summary any
 	switch command {
 	case "backup":
-		if err = backup.ValidateSource(operation, dataDir); err == nil {
-			var store *core.Store
-			store, err = core.Open(operation, dataDir)
-			if err == nil {
-				summary, err = backup.Create(operation, store, dataDir, destination)
-				_ = store.Close()
-			}
-		}
+		summary, err = backup.CreateFromDirectory(operation, dataDir, destination)
 	case "backup-inspect":
 		summary, err = backup.Inspect(operation, bundle)
 	case "restore":

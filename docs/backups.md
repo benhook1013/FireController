@@ -30,7 +30,7 @@ fcd backup-inspect --bundle BUNDLE_DIRECTORY
 fcd restore --bundle BUNDLE_DIRECTORY --data-dir NEW_DESTINATION
 ```
 
-Each command accepts `--timeout DURATION`, defaults to five minutes and permits a positive duration up to twenty-four hours. Duplicate/unknown flags, positional arguments and invalid durations fail before filesystem work. A backup source must already be a valid private installation; a wrong path cannot silently bootstrap a new database. Restore never overlays an existing destination, including an empty directory.
+Each command accepts `--timeout DURATION`, defaults to five minutes and permits a positive duration up to twenty-four hours. Duplicate/unknown flags, positional arguments and invalid durations fail before filesystem work. The operator opens its live source read-only without initialization, migration or writer admission. A backup source must already be a valid private installation; a wrong path cannot silently bootstrap a new database. Restore never overlays an existing destination, including an empty directory.
 
 Commands use explicit local filesystem authority, bounded execution and compact JSON; they never load a provider catalog or make network calls. A caller may retain a long local command in its host background. These are operator actions, not per-worker coordination calls or a reason to return pending receipts for quick local mutations.
 

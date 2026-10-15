@@ -5,11 +5,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/backup"
 	"github.com/benhook1013/FireController/internal/core"
@@ -210,5 +212,83 @@ func TestBackupOperatorCancellationAndIncompleteRestoreFence(t *testing.T) {
 				t.Fatal("partial restore bootstrapped database", err)
 			}
 		})
+	}
+}
+
+func TestBackupOperatorReadsCommittedPrefixWhileLiveWriterHeld(t *testing.T) {
+	source, instance := backupCommandSource(t)
+	live, err := core.Open(t.Context(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer live.Close()
+	if err = live.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, "INSERT INTO metadata(key,value) VALUES('operator_backup_probe','committed')")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(source, "bootstrap-admin.token")
+	tokenBefore, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := live.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if _, err = writer.ExecContext(t.Context(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	rolledBack := false
+	defer func() {
+		if !rolledBack {
+			_, _ = writer.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	if _, err = writer.ExecContext(t.Context(), "UPDATE metadata SET value='uncommitted' WHERE key='operator_backup_probe'"); err != nil {
+		t.Fatal(err)
+	}
+	// This call must complete while the writer remains held. Releasing it only
+	// afterward makes accidental writer admission/bootstrap deterministic failure.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var out, diagnostics bytes.Buffer
+	code := run(ctx, []string{"backup", "--data-dir", source, "--destination", filepath.Join(t.TempDir(), "bundles")}, &out, &diagnostics)
+	if code != 0 || diagnostics.Len() != 0 || out.Len() > 4096 {
+		t.Fatalf("online backup failed with live writer held: code=%d diagnostics=%s", code, diagnostics.String())
+	}
+	var created backup.Summary
+	if err = json.Unmarshal(out.Bytes(), &created); err != nil || created.State != "complete" || created.SourceInstanceID != instance {
+		t.Fatal("invalid online backup summary", err)
+	}
+	if _, err = backup.Inspect(ctx, created.Path); err != nil {
+		t.Fatal("online bundle failed inspection", err)
+	}
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(created.Path, "firecontroller.sqlite"))}
+	u.RawQuery = url.Values{"mode": {"ro"}, "immutable": {"1"}}.Encode()
+	snapshot, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	var value, snapshotInstance string
+	if err = snapshot.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key='operator_backup_probe'").Scan(&value); err != nil || value != "committed" {
+		t.Fatal("snapshot exposed an uncommitted write", err)
+	}
+	if err = snapshot.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key='instance_id'").Scan(&snapshotInstance); err != nil || snapshotInstance != instance {
+		t.Fatal("snapshot changed instance", err)
+	}
+	if _, err = writer.ExecContext(t.Context(), "ROLLBACK"); err != nil {
+		t.Fatal(err)
+	}
+	rolledBack = true
+	if err = live.DB().QueryRowContext(t.Context(), "SELECT value FROM metadata WHERE key='operator_backup_probe'").Scan(&value); err != nil || value != "committed" || live.InstanceID() != instance {
+		t.Fatal("backup changed live state", err)
+	}
+	tokenAfter, err := os.ReadFile(tokenPath)
+	if err != nil || !bytes.Equal(tokenBefore, tokenAfter) {
+		t.Fatal("backup changed bootstrap credential", err)
 	}
 }

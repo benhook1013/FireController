@@ -311,3 +311,106 @@ func TestBundleReadOnlyPreflightNeverBootstrapsOrMigrates(t *testing.T) {
 		t.Fatal("preflight mutated source")
 	}
 }
+
+func TestCreateFromDirectoryDuringUncommittedWriter(t *testing.T) {
+	f := newRestoreFixture(t)
+	bundleNativeReferences(t, f)
+	before := backupRows(t, f.store.DB())
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	writer, err := f.store.DB().Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if _, err = writer.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = writer.ExecContext(context.Background(), `ROLLBACK`) }()
+	if _, err = writer.ExecContext(ctx, `UPDATE jobs SET brief='Uncommitted writer change'`); err != nil {
+		t.Fatal(err)
+	}
+	created, err := CreateFromDirectory(ctx, f.dir, filepath.Join(t.TempDir(), "bundles"))
+	if err != nil {
+		t.Fatalf("read-only backup contended with the held writer: %v", err)
+	}
+	if created.State != "complete" || created.SourceInstanceID != f.store.InstanceID() {
+		t.Fatal("backup identity or state changed")
+	}
+	// The same transaction is still owned: backup must neither wait for its
+	// commit nor roll it back, and cannot include its uncommitted records.
+	var brief string
+	if err = writer.QueryRowContext(ctx, `SELECT brief FROM jobs LIMIT 1`).Scan(&brief); err != nil || brief != "Uncommitted writer change" {
+		t.Fatal("backup disturbed the writer transaction", err)
+	}
+	if !reflect.DeepEqual(before, backupRows(t, f.store.DB())) {
+		t.Fatal("backup changed committed source history")
+	}
+	snapshot, err := openSnapshot(ctx, filepath.Join(created.Path, "firecontroller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	if !reflect.DeepEqual(before, backupRows(t, snapshot)) {
+		t.Fatal("snapshot did not preserve precisely the committed prefix")
+	}
+	verified, err := Inspect(ctx, created.Path)
+	if err != nil || verified.State != "verified" || verified.ArtifactCount != created.ArtifactCount {
+		t.Fatal("read-only snapshot is not a complete verified bundle", err)
+	}
+	if _, err = writer.ExecContext(ctx, `ROLLBACK`); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, backupRows(t, f.store.DB())) {
+		t.Fatal("source history changed after rollback")
+	}
+}
+
+func TestCreateFromDirectoryInvalidSourceNeverBootstraps(t *testing.T) {
+	for _, kind := range []string{"missing-directory", "missing-database", "empty", "foreign"} {
+		t.Run(kind, func(t *testing.T) {
+			selected := filepath.Join(t.TempDir(), "source")
+			if kind != "missing-directory" {
+				if err := os.Mkdir(selected, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path := filepath.Join(selected, "firecontroller.sqlite")
+			if kind == "empty" || kind == "foreign" {
+				if err := os.WriteFile(path, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if kind == "foreign" {
+					db, err := sql.Open("sqlite", path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, err = db.Exec(`CREATE TABLE foreign_data (value TEXT); INSERT INTO foreign_data VALUES ('preserved')`)
+					db.Close()
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			before, _ := os.ReadFile(path)
+			destination := filepath.Join(t.TempDir(), "never-created")
+			_, err := CreateFromDirectory(t.Context(), selected, destination)
+			backupCode(t, err, "backup_invalid")
+			after, _ := os.ReadFile(path)
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("invalid source bytes changed")
+			}
+			if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+				t.Fatal("invalid source created a backup destination")
+			}
+			if _, err := os.Lstat(filepath.Join(selected, "bootstrap-admin.token")); !os.IsNotExist(err) {
+				t.Fatal("invalid source bootstrapped a credential")
+			}
+			if kind == "missing-directory" || kind == "missing-database" {
+				if _, err := os.Lstat(path); !os.IsNotExist(err) {
+					t.Fatal("missing source initialized a database")
+				}
+			}
+		})
+	}
+}

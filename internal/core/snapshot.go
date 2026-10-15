@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,8 +11,17 @@ import (
 // Snapshot writes a self-contained SQLite snapshot through the read pool. WAL
 // writers remain independent; copying the open database file is never used.
 // The caller owns the private staging directory and the operation deadline.
-func (s *Store) Snapshot(ctx context.Context, destination string) (err error) {
-	if ctx == nil || s == nil || s.db == nil || !filepath.IsAbs(destination) || filepath.Clean(destination) != destination {
+func (s *Store) Snapshot(ctx context.Context, destination string) error {
+	if s == nil {
+		return snapshotUnavailable()
+	}
+	return SnapshotDatabase(ctx, s.db, destination)
+}
+
+// SnapshotDatabase also supports a read-only SQLite source. Operator backups
+// must not acquire the live writer merely to initialize a second Store.
+func SnapshotDatabase(ctx context.Context, source *sql.DB, destination string) (err error) {
+	if ctx == nil || source == nil || !filepath.IsAbs(destination) || filepath.Clean(destination) != destination {
 		return Fail("configuration_invalid", "A snapshot requires an absolute destination in a private staging directory.", 400)
 	}
 	if ctx.Err() != nil {
@@ -37,7 +47,7 @@ func (s *Store) Snapshot(ctx context.Context, destination string) (err error) {
 			_ = os.Remove(destination)
 		}
 	}()
-	if _, err = s.db.ExecContext(ctx, "VACUUM INTO ?", destination); err != nil {
+	if _, err = source.ExecContext(ctx, "VACUUM INTO ?", destination); err != nil {
 		return snapshotUnavailable()
 	}
 	reserved, err := file.Stat()

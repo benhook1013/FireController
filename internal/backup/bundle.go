@@ -342,8 +342,34 @@ func within(path, parent string) bool {
 // Create snapshots the supplied Store and inventories recognized immutable raw
 // capture files. The final directory is exclusively reserved; its durable
 // checksum marker is written last, making incomplete reservations unusable.
-func Create(ctx context.Context, store *core.Store, dataDir, destinationRoot string) (out Summary, err error) {
+func Create(ctx context.Context, store *core.Store, dataDir, destinationRoot string) (Summary, error) {
 	if checkContext(ctx) != nil || store == nil {
+		return Summary{}, unavailable()
+	}
+	return create(ctx, store.DB(), store.InstanceID(), dataDir, destinationRoot)
+}
+
+// CreateFromDirectory opens an existing installation read-only, without Store
+// initialization, migration or writer admission. SQLite reads the committed WAL
+// prefix while a concurrent writer may retain an uncommitted transaction.
+func CreateFromDirectory(ctx context.Context, dataDir, destinationRoot string) (Summary, error) {
+	if err := ValidateSource(ctx, dataDir); err != nil {
+		return Summary{}, err
+	}
+	db, err := openDatabase(ctx, filepath.Join(dataDir, "firecontroller.sqlite"), false)
+	if err != nil {
+		return Summary{}, err
+	}
+	defer db.Close()
+	var identity string
+	if db.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='instance_id'`).Scan(&identity) != nil || !instanceID.MatchString(identity) {
+		return Summary{}, invalid()
+	}
+	return create(ctx, db, identity, dataDir, destinationRoot)
+}
+
+func create(ctx context.Context, sourceDB *sql.DB, identity, dataDir, destinationRoot string) (out Summary, err error) {
+	if checkContext(ctx) != nil || sourceDB == nil {
 		return out, unavailable()
 	}
 	if strings.TrimSpace(dataDir) == "" || strings.TrimSpace(destinationRoot) == "" {
@@ -361,7 +387,7 @@ func Create(ctx context.Context, store *core.Store, dataDir, destinationRoot str
 		return out, err
 	}
 	var livePath string
-	rows, err := store.DB().QueryContext(ctx, `PRAGMA database_list`)
+	rows, err := sourceDB.QueryContext(ctx, `PRAGMA database_list`)
 	if err != nil {
 		return out, unavailable()
 	}
@@ -412,8 +438,8 @@ func Create(ctx context.Context, store *core.Store, dataDir, destinationRoot str
 			}
 		}
 	}()
-	m := Manifest{Version: 1, ID: id, SourceInstanceID: store.InstanceID(), SnapshotStartedAt: time.Now().UTC().Format(time.RFC3339Nano), Artifacts: []Artifact{}}
-	if err = store.Snapshot(ctx, filepath.Join(final, "firecontroller.sqlite")); err != nil {
+	m := Manifest{Version: 1, ID: id, SourceInstanceID: identity, SnapshotStartedAt: time.Now().UTC().Format(time.RFC3339Nano), Artifacts: []Artifact{}}
+	if err = core.SnapshotDatabase(ctx, sourceDB, filepath.Join(final, "firecontroller.sqlite")); err != nil {
 		return out, unavailable()
 	}
 	m.SnapshotFinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
