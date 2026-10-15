@@ -338,3 +338,24 @@ func TestEvidenceHTTPFullDetailRetainsLedgerBound(t *testing.T) {
 		t.Fatal("full-detail HTTP response truncated valid retained evidence")
 	}
 }
+
+func TestEvidenceHTTPStoredNullFindingsAreArrayWithoutWrites(t *testing.T) {
+	f, a, id, path := evidenceHTTPFixture(t, 0)
+	adjudicationComplete(t, f, a)
+	evidenceHTTPRequire(t, f.request("POST", path+"/finalization", f.writer, "zero-finalize", `{"expected_revision":0}`), 200, "")
+	if _, err := f.store.DB().Exec(`UPDATE review_adjudication_state SET body_json=json_set(body_json,'$.findings',NULL) WHERE evidence_id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	before := adjudicationState(t, f, a)
+	value := evidenceHTTPRequire(t, f.request("GET", path+"/adjudication", f.reader, "", ""), 200, "")
+	if findings, ok := value["findings"].([]any); !ok || len(findings) != 0 {
+		t.Fatal("stored zero findings must be encoded as []")
+	}
+	state, err := f.e.ReadCLIAdjudication(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), id)
+	if err != nil || state.Findings == nil || len(state.Findings) != 0 {
+		t.Fatal("direct ledger view retained null collection", err)
+	}
+	if adjudicationState(t, f, a) != before {
+		t.Fatal("collection normalization rewrote retained state")
+	}
+}
