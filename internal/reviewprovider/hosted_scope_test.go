@@ -162,3 +162,50 @@ func TestHostedComparisonNestedExampleAndProposalScopesAreNotProviderFacts(t *te
 		}
 	}
 }
+
+func TestHostedComparisonCategoryClosersCannotPoisonMetadataScopes(t *testing.T) {
+	head, parent, merge := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	header := hostedScopeDeclaration(parent, head)
+	metadata := "<details>\n<summary>ℹ️ Review info</summary>\n<details>\n<summary>📥 Commits</summary>\n" + header + "\n</details>\n</details>"
+	outside := hfOutsideCategory(1, hfOutside(2, "a/source.go", "3-4", "Synthetic full title."))
+	duplicate := hfDuplicateCategory(1, hfDuplicateGroup("b/source.md", 1, hfDuplicateItem(3, "8-8", "Independent duplicate.")))
+	for _, body := range []string{outside + "\n" + duplicate + "\n" + metadata, metadata + "\n" + outside + "\n" + duplicate, outside + "\n" + metadata + "\n" + duplicate} {
+		if base, ok := ResolveHostedComparison(hostedScopePublication(body), head, parent, merge); !ok || base != parent {
+			t.Fatal("category scopes hid/poisoned genuine metadata declaration")
+		}
+	}
+	// Structural tokens in raw pre examples must not escape into the metadata
+	// stack. Closing pre and details on the same line still closes both scopes.
+	example := "<details><summary>Unknown illustration</summary><pre>\n<details>\n<!-- example\n" + hostedScopeDeclaration(merge, head) + "\n</pre></details>"
+	if base, ok := ResolveHostedComparison(hostedScopePublication(example+"\n"+metadata), head, parent, merge); !ok || base != parent {
+		t.Fatal("skipped pre example poisoned following metadata")
+	}
+}
+
+func TestHostedComparisonOnlyRecognizedMetadataAncestorsCanProveScope(t *testing.T) {
+	head, parent, merge := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	header := hostedScopeDeclaration(parent, head)
+	for _, label := range []string{"Illustration", "Unrecognized template", "<em>Illustration</em>", "Review info example", "Commits example"} {
+		unknown := "<details><summary>ℹ️ Review info</summary><details><summary>" + label + "</summary>\n" + header + "\n</details></details>"
+		if base, ok := ResolveHostedComparison(hostedScopePublication(unknown), head, parent, merge); ok || base != "" {
+			t.Fatalf("unknown %s granted provider scope", label)
+		}
+		if base, ok := ResolveHostedComparison(hostedScopePublication(unknown+"\n"+header), head, parent, merge); !ok || base != parent {
+			t.Fatal("unknown unrelated section blocked genuine top-level declaration")
+		}
+	}
+	for _, wrapper := range []string{
+		"<details>\n" + header + "\n</details>",
+		"<details><summary>Illustration</summary><details><summary>📥 Commits</summary>\n" + header + "\n</details></details>",
+		"<section><blockquote>\n" + header + "\n</blockquote></section>",
+	} {
+		if base, ok := ResolveHostedComparison(hostedScopePublication(wrapper), head, parent, merge); ok || base != "" {
+			t.Fatal("unowned ancestor was laundered through metadata")
+		}
+	}
+	conflict := hostedScopeDeclaration(merge, head)
+	sameLine := "<details><summary>Illustration</summary><blockquote>\n" + conflict + "\n</blockquote></details><details><summary><em>ℹ️ Review info</em></summary><details><summary>📥 Commits</summary>\n" + header + "\n</details></details>"
+	if base, ok := ResolveHostedComparison(hostedScopePublication(sameLine), head, parent, merge); !ok || base != parent {
+		t.Fatal("same-line close/open scope order changed declaration authority")
+	}
+}

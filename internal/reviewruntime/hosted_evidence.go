@@ -44,6 +44,16 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		result.Reason = "source_changed"
 		return result, nil
 	}
+	command, _ := reviewprovider.HostedTriggerBody(intent)
+	_, err = engine.RecordHostedObservation(ctx, attempt.ProjectID, attempt.ID, reviewexec.HostedObservationInput{
+		CaptureID: ref.ID, CaptureSHA256: ref.SHA256, CaptureBytes: ref.Bytes,
+		StartedAt: retained.StartedAt.Format(time.RFC3339Nano), FinishedAt: retained.FinishedAt.Format(time.RFC3339Nano), ObservedAt: retained.Snapshot.ObservedAt.Format(time.RFC3339Nano),
+		ExpectedAnchor: anchor, Intent: command,
+	})
+	if err != nil {
+		result.Reason = "observation_unavailable"
+		return result, err
+	}
 	inventory, err := reviewprovider.ExtractHostedFindings(retained.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
 	if err != nil {
 		result.Reason = "capture_invalid"
