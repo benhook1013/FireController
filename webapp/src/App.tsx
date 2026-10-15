@@ -4,6 +4,7 @@ import { Link, NavLink, Route, Routes, useMatch, useNavigate, useParams } from '
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Api, ApiError } from './api';
 import { refreshEventQueries } from './queries';
+import flameEmber from './flame-ember.svg?no-inline';
 import type { Checkpoint, InboxItem, JobSummary, LiveStatus, Page, Project, Worker } from './types';
 
 const pageSize = 20;
@@ -93,7 +94,7 @@ export default function App() {
   </>;
 }
 
-function Flame() { return <svg className="flame" viewBox="0 0 24 28" aria-hidden="true"><path fill="currentColor" d="M13 0c2 7-3 9-3 13 0 2 1 3 2 3 3 0 3-5 5-7 1 4 6 7 6 12 0 5-5 7-11 7S1 25 1 20C1 12 10 10 13 0Z" /></svg>; }
+function Flame() { return <img className="flame" src={flameEmber} alt="" aria-hidden="true" />; }
 function Connect({ projectId, busy, notice, onConnect, cancel }: { projectId: string; busy: boolean; notice: string; onConnect(project: string, token: string): void; cancel(): void }) {
   const [project, setProject] = useState(projectId);
   const [token, setToken] = useState('');
