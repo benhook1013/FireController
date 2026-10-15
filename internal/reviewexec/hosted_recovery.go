@@ -111,8 +111,10 @@ func (e *Engine) ReadHostedRecovery(ctx context.Context, project, attemptID, cap
 		if err != nil {
 			return err
 		}
+		// This is retained history, not permission for a new post. A clock
+		// correction cannot invalidate its original admission boundary.
 		created, valid := hostedObservationTime(o.CreatedAt)
-		if count != 1 || !valid || admittedAt.Before(created) || admittedAt.After(time.Now().Add(5*time.Second)) {
+		if count != 1 || !valid || admittedAt.Before(created) {
 			return hostedRecoveryUnavailable()
 		}
 		// GitHub comment timestamps have second precision. Compare the retained
