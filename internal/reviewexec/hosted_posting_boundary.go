@@ -97,8 +97,9 @@ func readHostedAdmissionTime(ctx context.Context, tx *sql.Tx, a Attempt, o Opera
 	if err != nil {
 		return time.Time{}, err
 	}
+	// Retained history is independent of the current clock, including after rollback.
 	created, valid := hostedObservationTime(o.CreatedAt)
-	if count != 1 || !valid || admittedAt.Before(created) || admittedAt.After(time.Now().Add(5*time.Second)) {
+	if count != 1 || !valid || admittedAt.Before(created) {
 		return time.Time{}, hostedRecoveryUnavailable()
 	}
 
