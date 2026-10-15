@@ -489,3 +489,129 @@ func TestReviewClientProofNotesRequireAcceptedDisposition(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewClientRejectsNoncanonicalSHAsInPublicResponses(t *testing.T) {
+	f := newReviewClientFixture(t)
+	f.importSnapshot(t)
+	queue, err := f.client.ReviewQueue(t.Context(), client.PageOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pull, err := f.client.ReviewPull(t.Context(), 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs, err := f.client.ReviewRuns(t.Context(), 1, client.ReviewRunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := f.client.ReviewRun(t.Context(), runs.Items[0].ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var beforeEvents, beforeReceipts int
+	if err := f.store.DB().QueryRow("SELECT count(*) FROM events").Scan(&beforeEvents); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow("SELECT count(*) FROM receipts").Scan(&beforeReceipts); err != nil {
+		t.Fatal(err)
+	}
+	views := []struct {
+		name, path string
+		value      any
+		fields     []string
+		read       func(*client.Client) error
+	}{
+		{"queue", "/api/v1/projects/project-one/reviews/queue", queue, []string{"items.0.head_sha", "items.0.base_sha", "items.0.recent_runs.0.head_sha", "items.0.latest_attempts.0.head_sha"}, func(c *client.Client) error { _, err := c.ReviewQueue(t.Context(), client.PageOptions{}); return err }},
+		{"pull", "/api/v1/projects/project-one/reviews/pulls/1", pull, []string{"pull.head_sha", "pull.base_sha", "pull.recent_runs.0.head_sha", "pull.latest_attempts.0.head_sha", "attempts.0.head_sha"}, func(c *client.Client) error { _, err := c.ReviewPull(t.Context(), 1, ""); return err }},
+		{"runs", "/api/v1/projects/project-one/reviews/pulls/1/runs", runs, []string{"items.0.head_sha"}, func(c *client.Client) error {
+			_, err := c.ReviewRuns(t.Context(), 1, client.ReviewRunOptions{})
+			return err
+		}},
+		{"run", "/api/v1/projects/project-one/reviews/runs/" + detail.Run.ID, detail, []string{"run.head_sha", "findings.0.fix_sha"}, func(c *client.Client) error { _, err := c.ReviewRun(t.Context(), detail.Run.ID, ""); return err }},
+	}
+	for _, view := range views {
+		original, err := json.Marshal(view.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range view.fields {
+			for _, sha := range []string{strings.Repeat("A", 40), strings.Repeat("a", 39) + "B"} {
+				t.Run(view.name+"/"+field+"/"+sha[:1]+sha[39:], func(t *testing.T) {
+					var body map[string]any
+					if err := json.Unmarshal(original, &body); err != nil {
+						t.Fatal(err)
+					}
+					var node any = body
+					parts := strings.Split(field, ".")
+					for _, part := range parts[:len(parts)-1] {
+						if object, ok := node.(map[string]any); ok {
+							node = object[part]
+						} else {
+							index, err := strconv.Atoi(part)
+							if err != nil {
+								t.Fatal(err)
+							}
+							node = node.([]any)[index]
+						}
+					}
+					node.(map[string]any)[parts[len(parts)-1]] = sha
+					encoded, err := json.Marshal(body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					mock := newReviewMock(t, string(encoded), view.path)
+					checkError(t, view.read(mock.client), "invalid_response")
+				})
+			}
+		}
+		// Empty source SHAs are deliberately retained as unknown. Clear only the
+		// resolution timestamp that independently requires a known fix SHA.
+		var empty map[string]any
+		if err := json.Unmarshal(original, &empty); err != nil {
+			t.Fatal(err)
+		}
+		var clear func(any)
+		clear = func(node any) {
+			switch value := node.(type) {
+			case map[string]any:
+				for k, v := range value {
+					if k == "head_sha" || k == "base_sha" || k == "fix_sha" || k == "resolved_at" {
+						value[k] = ""
+					} else if k == "fixed" {
+						value[k] = 0
+					} else {
+						clear(v)
+					}
+				}
+			case []any:
+				for _, v := range value {
+					clear(v)
+				}
+			}
+		}
+		clear(empty)
+		encoded, err := json.Marshal(empty)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mock := newReviewMock(t, string(encoded), view.path)
+		if err := view.read(mock.client); err != nil {
+			t.Fatalf("%s unknown SHA rejected: %v", view.name, err)
+		}
+	}
+	var afterEvents, afterReceipts int
+	if err := f.store.DB().QueryRow("SELECT count(*) FROM events").Scan(&afterEvents); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow("SELECT count(*) FROM receipts").Scan(&afterReceipts); err != nil {
+		t.Fatal(err)
+	}
+	if beforeEvents != afterEvents || beforeReceipts != afterReceipts {
+		t.Fatal("typed reads mutated durable records")
+	}
+	current, err := f.client.ReviewQueue(t.Context(), client.PageOptions{})
+	if err != nil || current.Items[0].HeadSHA != queue.Items[0].HeadSHA {
+		t.Fatal("invalid response handling changed retained source", err)
+	}
+}

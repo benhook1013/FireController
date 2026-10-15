@@ -152,9 +152,7 @@ func pull(store *core.Store) http.HandlerFunc {
 			if !found {
 				return notFound("The review snapshot is unavailable.")
 			}
-			if err := setMetaPull(&response, meta); err != nil {
-				return err
-			}
+			setMetaPull(&response, meta)
 			var complete int
 			var recentJSON, latestJSON string
 			err = tx.QueryRowContext(ctx, `SELECT number,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=?`, scope.ProjectID, meta.SnapshotID, number).Scan(
@@ -386,11 +384,17 @@ func runDetail(store *core.Store) http.HandlerFunc {
 			return
 		}
 		body, err := json.Marshal(response)
-		if err != nil || len(body) > 4<<20 {
+		if err != nil || len(body)+1 > 4<<20 {
 			core.WriteError(w, core.Fail("response_too_large", "The review run detail exceeds its bounded response size.", 500))
 			return
 		}
-		core.WriteJSON(w, http.StatusOK, response)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if w.Header().Get("X-Request-ID") == "" {
+			w.Header().Set("X-Request-ID", core.NewID("request"))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(append(body, '\n'))
 	}
 }
 
@@ -455,14 +459,13 @@ func setMetaQueue(response *QueueResponse, meta snapshotMeta) {
 	response.ObservedAt = meta.ObservedAt
 	response.RecordedAt = meta.RecordedAt
 }
-func setMetaPull(response *PullResponse, meta snapshotMeta) error {
+func setMetaPull(response *PullResponse, meta snapshotMeta) {
 	response.ProjectID = meta.ProjectID
 	response.Revision = meta.Revision
 	response.SnapshotID = meta.SnapshotID
 	response.Source = meta.Source
 	response.ObservedAt = meta.ObservedAt
 	response.RecordedAt = meta.RecordedAt
-	return nil
 }
 func setMetaRuns(response *RunsResponse, meta snapshotMeta) {
 	response.ProjectID = meta.ProjectID

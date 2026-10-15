@@ -426,7 +426,7 @@ func validReviewSHA(value string) bool {
 	if value == "" {
 		return true
 	}
-	if len(value) != 40 {
+	if len(value) != 40 || value != strings.ToLower(value) {
 		return false
 	}
 	_, err := hex.DecodeString(value)
