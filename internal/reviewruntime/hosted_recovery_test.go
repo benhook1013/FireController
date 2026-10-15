@@ -1,9 +1,13 @@
 package reviewruntime
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -142,9 +146,15 @@ func TestRecoverHostedAdoptsAndPublishesWithoutReposting(t *testing.T) {
 
 func TestRecoverHostedRetainedEvidenceRepairsPublicationBeforeNewObservation(t *testing.T) {
 	f, captures, a, reader := recoveryRuntimeFixture(t, "uncertain")
+	recoveryRuntimeMetadata(t, f, a)
+	// A genuine non-missing projection failure must retain the final evidence
+	// and reservation for a later local retry, even after the exception below.
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER fail_hosted_publication BEFORE INSERT ON review_runs BEGIN SELECT RAISE(ABORT,'synthetic publication failure'); END`); err != nil {
+		t.Fatal(err)
+	}
 	first, err := recoverRuntime(t, f, captures, a, reader)
 	if err == nil || first.Reason != "publication_pending" || first.EvidenceID == "" || first.State != "active" {
-		t.Fatal("missing projection was silently settled", first, err)
+		t.Fatal("non-missing projection failure was silently settled", first, err)
 	}
 	if recoveryRuntimeCount(t, f, "review_execution_reservations") != 1 {
 		t.Fatal("reservation lost before publication")
@@ -170,7 +180,12 @@ func TestRecoverHostedRetainedEvidenceRepairsPublicationBeforeNewObservation(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	recoveryRuntimeMetadata(t, f, bound.Attempt)
+	if _, err := f.store.DB().Exec(`DROP TRIGGER fail_hosted_publication`); err != nil {
+		t.Fatal(err)
+	}
+	if bound.EvidenceID != first.EvidenceID {
+		t.Fatal("retained final evidence lost on reopen", bound)
+	}
 	// No provider must be needed after the final capture was committed.
 	reader.failure = errors.New("provider offline")
 	second, err := recoverRuntime(t, f, captures, a, reader)
@@ -242,5 +257,88 @@ func TestRecoverHostedIncompleteOrUnattributedSourceNeverSettles(t *testing.T) {
 				t.Fatal("raw source retention mismatch", got)
 			}
 		})
+	}
+}
+
+// Retiring the PR through the ordinary administrator import is a valid current
+// observation. It must not turn authoritative retained execution into a second
+// provider action or require fabricated browser metadata to release ownership.
+func TestRecoverHostedMissingCurrentPullIsLedgerOnly(t *testing.T) {
+	for _, settle := range []bool{false, true} {
+		for _, retained := range []bool{false, true} {
+			t.Run(fmt.Sprintf("settle=%t/retained=%t", settle, retained), func(t *testing.T) {
+				f, captures, a, reader := recoveryRuntimeFixture(t, "active")
+				recoveryRuntimeMetadata(t, f, a)
+				var evidenceID string
+				if retained {
+					capture, err := RetainHosted(t.Context(), captures, f.engine, a, reader.record)
+					if err != nil || !capture.Complete {
+						t.Fatal("retain authoritative capture", capture, err)
+					}
+					evidenceID = capture.Receipt.ID
+					reader.failure = errors.New("provider must remain offline")
+				}
+				var revision int64
+				if err := f.store.DB().QueryRow(`SELECT revision FROM review_workspace WHERE project_id=?`, f.project).Scan(&revision); err != nil {
+					t.Fatal(err)
+				}
+				body, err := json.Marshal(reviews.ObservationRequest{ExpectedRevision: &revision, RepositoryID: 901, Source: "synthetic-retirement", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Queue: []reviews.PullInput{}, Retired: []reviews.RetiredPull{{Number: 2, Reason: "defunct"}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				mux := http.NewServeMux()
+				reviews.Register(mux, f.store)
+				r := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+f.project+"/reviews/observations", bytes.NewReader(body))
+				r.Header.Set("Authorization", "Bearer "+f.admin)
+				r.Header.Set("X-FC-Instance", f.store.InstanceID())
+				r.Header.Set("Content-Type", "application/json")
+				r.Header.Set("Idempotency-Key", "remove-current-hosted-pull")
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, r)
+				if w.Code != http.StatusCreated {
+					t.Fatalf("administrator retirement: %d %s", w.Code, w.Body.String())
+				}
+				snapshots := recoveryRuntimeCount(t, f, "review_snapshots")
+				got, err := observeHostedAttempt(t.Context(), reader, captures, f.engine, f.project, a.ID, "runtime-capability", reader.record.PostingActor, reader.record.ProviderActor, settle)
+				if err != nil || got.State != "completed" || got.EvidenceID == "" || retained && got.EvidenceID != evidenceID {
+					t.Fatal("missing current PR prevented proven execution settlement", got, err)
+				}
+				if retained && len(reader.calls) != 0 {
+					t.Fatal("retained final evidence caused provider reads", reader.calls)
+				}
+				bound, err := f.engine.ReadHostedRecovery(t.Context(), f.project, a.ID, "runtime-capability")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !settle {
+					if bound.Attempt.State != "active" || recoveryRuntimeCount(t, f, "review_execution_reservations") != 1 {
+						t.Fatal("live observation settled outside the supervisor", bound)
+					}
+					if _, err := f.engine.Advance(t.Context(), f.project, a.ID, bound.Attempt.Revision, "completed", "synthetic_supervisor_completion", bound.Attempt.ExternalID); err != nil {
+						t.Fatal("supervisor could not settle ledger-only result", err)
+					}
+				}
+				bound, err = f.engine.ReadHostedRecovery(t.Context(), f.project, a.ID, "runtime-capability")
+				if err != nil || bound.Attempt.State != "completed" || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 {
+					t.Fatal("completed execution retained reservation", bound, err)
+				}
+				adjudication, err := f.engine.ReadReviewAdjudication(t.Context(), f.scope(t, f.writer, false), got.EvidenceID)
+				if err != nil || adjudication.Finalized || adjudication.FrozenCounts != nil {
+					t.Fatal("execution granted finalization", adjudication, err)
+				}
+				plan := reviewexec.SourcePlan{Repository: reviewprovider.Repository{ID: 901, FullName: "owner/repo", DefaultBranch: "main"}, Pull: reviewprovider.Pull{RepositoryID: 901, Number: 2, HeadSHA: f.headSHA, BaseSHA: f.baseSHA, BaseRef: "main", State: "open", ChangedFiles: 1}, ParentSHA: f.baseSHA, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+				comparison, err := f.engine.Comparison(t.Context(), f.project, plan, "hosted")
+				if err != nil || comparison.Covered || !comparison.Pending {
+					t.Fatal("unadjudicated ledger-only execution granted coverage", comparison, err)
+				}
+				var currentPulls int
+				if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_workspace w JOIN review_pulls p ON p.project_id=w.project_id AND p.snapshot_id=w.snapshot_id WHERE w.project_id=?`, f.project).Scan(&currentPulls); err != nil {
+					t.Fatal(err)
+				}
+				if currentPulls != 0 || recoveryRuntimeCount(t, f, "review_snapshots") != snapshots || recoveryRuntimeCount(t, f, "review_execution_evidence") != 1 {
+					t.Fatal("ledger-only finish invented metadata/snapshot or duplicate evidence")
+				}
+			})
+		}
 	}
 }
