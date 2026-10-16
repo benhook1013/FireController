@@ -48,7 +48,6 @@ The final backup resumption tests passed normally in 9.575 seconds and under the
 
 The operator command passed focused race checks in 11.842 seconds after the final helper freeze. Actual restored-state calls cover strict pre-filesystem arguments, held versus released startup, original-result recovery after failed or short output, exact replay and changed-input conflict. Scoped vet, formatting and documentation/link checks passed. These are in-process real SQLite/command/API checks. The packaged recovery proof below complements these focused checks.
 
-
 ## Integrated and packaged recovery proof
 
 Clean runtime checkpoint `34d7951c10bee0f870923c4d510984372374313f` passed full `make check build`: 189 browser tests, all Go race tests and vet, documentation/link checks, embedded assets and all three binaries. The backup race package passed in 311.791 seconds, the execution package in 403.039 seconds and the runtime package in 196.921 seconds. These complete-suite timings are distinct from agent command latency.
