@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type ReviewSourceRequest struct {
@@ -189,9 +188,8 @@ func (c *Client) validSourceOperation(value ReviewSourceOperation) bool {
 	if ValidateReviewSourceRefreshID(value.ID) != nil || value.ProjectID != c.identity.ProjectID || !validPullNumber(value.PullNumber) || !controlHex(value.HeadSHA, 40) || value.ConfigurationRevision < 1 || !oneReviewOf(value.State, "queued", "running", "completed", "held") || value.Revision < 1 || value.Reason != "" && !validExecutionIdentifier(value.Reason) || !controlTime(value.CreatedAt) || !controlTime(value.UpdatedAt) {
 		return false
 	}
-	created, _ := time.Parse(time.RFC3339Nano, value.CreatedAt)
-	updated, _ := time.Parse(time.RFC3339Nano, value.UpdatedAt)
-	return validSourceOperationCI(value) && !updated.Before(created) && (value.State == "completed") == (value.Observation != nil) && (value.Observation == nil || validSourceObservation(*value.Observation) && value.Observation.PullNumber == value.PullNumber && value.Observation.HeadSHA == value.HeadSHA)
+	// Retained timestamps may cross a backward host-clock step; revisions order state.
+	return validSourceOperationCI(value) && (value.State == "completed") == (value.Observation != nil) && (value.Observation == nil || validSourceObservation(*value.Observation) && value.Observation.PullNumber == value.PullNumber && value.Observation.HeadSHA == value.HeadSHA)
 }
 
 func (c *Client) ReviewSourcePolicyAssessment(ctx context.Context, number int64) (ReviewSourcePolicyAssessment, error) {
@@ -203,11 +201,6 @@ func (c *Client) ReviewSourcePolicyAssessment(ctx context.Context, number int64)
 		return ReviewSourcePolicyAssessment{}, err
 	}
 	if value.ProjectID != c.identity.ProjectID || ValidateReviewSourceRefreshID(value.RefreshID) != nil || value.Source != "observed_comparison" || value.ConfigurationRevision < 0 || value.ConfigurationRevision == 0 && value.Reason != "source_configuration_changed" || !validSourceObservation(value.Target) || value.Target.PullNumber != number || value.SourceObservedAt != value.Target.ObservedAt || !controlTime(value.EvaluatedAt) || value.Channels == nil || len(value.Channels) > 2 || value.Reason != "" && !oneReviewOf(value.Reason, "source_configuration_changed", "routed_findings_pending", "routed_findings_capacity") {
-		return ReviewSourcePolicyAssessment{}, invalidResponse()
-	}
-	observed, _ := time.Parse(time.RFC3339Nano, value.SourceObservedAt)
-	evaluated, _ := time.Parse(time.RFC3339Nano, value.EvaluatedAt)
-	if evaluated.Before(observed) {
 		return ReviewSourcePolicyAssessment{}, invalidResponse()
 	}
 	if value.State == "unconfigured" {
