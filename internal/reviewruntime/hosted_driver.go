@@ -250,12 +250,14 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 		return failed("execution_binding_changed")
 	}
 	reads := newSourceReads(d.provider)
-	if err := reviewexec.RecheckSource(ctx, reads, prepared.anchor.RepositoryID, prepared.configuration, operationRequest(operation), prepared.plan); err != nil {
-		return failed("source_changed")
-	}
-	_, predecessors, err := resolveReviewSource(ctx, d.engine, reads, prepared.anchor.RepositoryID, prepared.configuration, operation)
+	currentSource, predecessors, err := resolveReviewSource(ctx, d.engine, reads, prepared.anchor.RepositoryID, prepared.configuration, operation)
 	if err != nil {
 		return failed("source_admission_changed")
+	}
+	// Preserve the exact semantic comparison checked by RecheckSource while
+	// keeping the current plan and using this phase's single provider read set.
+	if currentSource.Repository != prepared.plan.Repository || currentSource.Pull.Number != prepared.plan.Pull.Number || currentSource.Pull.RepositoryID != prepared.plan.Pull.RepositoryID || currentSource.Pull.HeadSHA != prepared.plan.Pull.HeadSHA || currentSource.Pull.BaseSHA != prepared.plan.Pull.BaseSHA || currentSource.Pull.BaseRef != prepared.plan.Pull.BaseRef || currentSource.ParentSHA != prepared.plan.ParentSHA || currentSource.ParentPullNumber != prepared.plan.ParentPullNumber {
+		return failed("source_changed")
 	}
 	if err := d.verify(ctx, prepared.workspace); err != nil {
 		return failed("workspace_changed")
@@ -264,14 +266,14 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 	if err != nil || actor.ID != prepared.postingActor.ID || actor.Kind != prepared.postingActor.Kind {
 		return failed("provider_actor_changed")
 	}
-	if err := d.checkIdle(ctx, prepared.plan); err != nil {
+	if err := d.checkIdle(ctx, currentSource); err != nil {
 		return failed("provider_activity_changed")
 	}
 	bound, err := d.engine.ReadHostedRecovery(ctx, operation.ProjectID, attempt.ID, d.capability.ID)
 	if err != nil || bound.Attempt.Revision != attempt.Revision || bound.Attempt.Intent != body {
 		return failed("execution_binding_changed")
 	}
-	if err := d.engine.VerifyHostedAction(ctx, operation.ProjectID, attempt.ID, attempt.Revision, predecessors...); err != nil {
+	if err := d.engine.VerifyHostedAction(ctx, operation.ProjectID, attempt.ID, attempt.Revision, currentSource, predecessors...); err != nil {
 		return failed("admission_changed")
 	}
 	comment, err := d.provider.PostIssueComment(ctx, prepared.plan.Repository.FullName, operation.PullNumber, body)
