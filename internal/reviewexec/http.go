@@ -12,6 +12,7 @@ func (e *Engine) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/source-refreshes", e.enqueueSourceRefreshHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/source-refreshes/{refresh_id}", e.readSourceRefreshHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/source/{pull_number}/policy", e.readSourcePolicyAssessmentHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/attempts/{attempt_id}/settlement", e.settleHostedHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/policy", e.readPolicyHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/policy", e.configurePolicyHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/execution/configuration", e.readExecutionConfigurationHTTP)

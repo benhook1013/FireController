@@ -14,6 +14,7 @@ The coordination slice implements a loopback service with scoped projects/worker
 - [Local API](local-api.md): implemented coordination endpoints, bootstrap and limits.
 - [Native review workspace](review-workspace.md): stored queue, PR/run history, findings, fix proof and explicit administrator observations.
 - [Native review evidence controls](review-controls.md): explicit retained capture reads, guarded finding decisions, fix references and source finalization.
+- [Hosted capacity settlement](hosted-settlement.md): guarded administrator recovery after verified external termination, preserving evidence and preventing automatic reposts.
 - [Native review execution](review-execution.md): durable operations, provider adapters, isolated workspaces and the remaining dispatch/cutover boundary.
 - [Source refresh and observed policy](review-source.md): explicit background source reads, retained observations and provider-free policy assessment.
 - [Job checkpoints](job-checkpoints.md): immutable progress records, guarded appends, explicit latest/archive reads and integration status.
