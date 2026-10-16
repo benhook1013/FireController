@@ -49,7 +49,7 @@ func validHostedQueryComment(query HostedAllowanceQuery, comment reviewprovider.
 	return valid && comment.ID > 0 && comment.Body == query.Intent && comment.Author.ID == query.PostingActor.ID && comment.Author.Kind == query.PostingActor.Kind &&
 		validHostedQueryActors(intent, comment.Author, query.ProviderActor, earliest) && comment.CreatedAt.Location() == time.UTC && comment.UpdatedAt.Location() == time.UTC &&
 		!comment.CreatedAt.IsZero() && comment.CreatedAt.Year() >= 1 && comment.CreatedAt.Year() <= 9999 && comment.UpdatedAt.Equal(comment.CreatedAt) &&
-		!comment.CreatedAt.Before(earliest.Truncate(time.Second))
+		!comment.CreatedAt.Before(earliest.Truncate(time.Second).Add(-reviewprovider.HostedProviderClockSkew))
 }
 
 // readHostedQuery validates indexed facts against canonical owned JSON and the
