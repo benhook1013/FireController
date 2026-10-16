@@ -91,7 +91,7 @@ func TestReviewRoutesClientRejectsWrongSourceOrReceiverProof(t *testing.T) {
 			v.Route.DecidedAt = v.Route.UpdatedAt
 		}},
 		{"orphan-proof", func(v *client.ReviewRouteDetail) { v.Route.ProofNote = "orphan" }},
-		{"reversed-time", func(v *client.ReviewRouteDetail) { v.Route.CreatedAt = "2026-10-16T00:00:00Z" }},
+		{"malformed-time", func(v *client.ReviewRouteDetail) { v.Route.CreatedAt = "not-a-time" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			v := sampleRouteDetail()
@@ -348,6 +348,55 @@ func TestReviewRoutesClientBrowserReceiverProofStaysSeparate(t *testing.T) {
 				}
 			} else {
 				checkError(t, err, "invalid_response")
+			}
+		})
+	}
+}
+
+func TestReviewRoutesCoherentFutureHistoryKeepsChronologyValidation(t *testing.T) {
+	for _, bad := range []string{"", "created", "updated", "decided", "fixed", "reversed_update", "decision_before_origin", "fix_after_update"} {
+		t.Run(bad, func(t *testing.T) {
+			value := sampleRouteDetail()
+			value.Route.Revision = 3
+			value.Route.Disposition = "accepted"
+			value.Route.Reason = "Receiver accepts"
+			value.Route.ActorID = "receiver"
+			value.Route.CreatedAt = "2099-01-01T00:00:00Z"
+			value.Route.DecidedAt = "2099-01-02T00:00:00Z"
+			value.Route.FixedAt = "2099-01-03T00:00:00Z"
+			value.Route.UpdatedAt = "2099-01-03T00:00:00Z"
+			value.Route.FixSHA = strings.Repeat("f", 40)
+			value.Route.ProofNote = "Exact retained fix proof"
+			switch bad {
+			case "created":
+				value.Route.CreatedAt = "bad"
+			case "updated":
+				value.Route.UpdatedAt = "bad"
+			case "decided":
+				value.Route.DecidedAt = "bad"
+			case "fixed":
+				value.Route.FixedAt = "bad"
+			case "reversed_update":
+				value.Route.UpdatedAt = "2026-01-01T00:00:00Z"
+			case "decision_before_origin":
+				value.Route.DecidedAt = "2026-01-01T00:00:00Z"
+			case "fix_after_update":
+				value.Route.FixedAt = "2099-01-04T00:00:00Z"
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				write(w, 200, value)
+			}))
+			defer server.Close()
+			c := newClient(t, server)
+			got, err := c.ReviewFindingRoute(t.Context(), routeClientID)
+			if bad != "" {
+				checkError(t, err, "invalid_response")
+			} else if err != nil || got.Route != value.Route {
+				t.Fatal("coherent future history became unreadable", got, err)
 			}
 		})
 	}

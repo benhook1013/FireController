@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"strconv"
-	"time"
 )
 
 // ReviewSourceCISummary is deliberately compact. Zero required checks while
@@ -107,12 +106,6 @@ func (c *Client) ReviewSourceCIAssessment(ctx context.Context, number int64) (Re
 		return ReviewSourceCIAssessment{}, err
 	}
 	if value.ProjectID != c.identity.ProjectID || ValidateReviewSourceRefreshID(value.RefreshID) != nil || value.Source != "observed_ci" || value.ConfigurationRevision < 0 || value.ConfigurationRevision == 0 && (value.State != "held" || value.Reason != "source_configuration_changed") || !validSourceObservation(value.Target) || value.Target.PullNumber != number || value.SourceObservedAt != value.Target.ObservedAt || !controlTime(value.EvaluatedAt) || !validCISummary(value.summary(), true) || value.Selection == "head" && value.SelectedCommitSHA != value.Target.HeadSHA {
-		return ReviewSourceCIAssessment{}, invalidResponse()
-	}
-	observed, _ := time.Parse(time.RFC3339Nano, value.ObservedAt)
-	source, _ := time.Parse(time.RFC3339Nano, value.SourceObservedAt)
-	evaluated, _ := time.Parse(time.RFC3339Nano, value.EvaluatedAt)
-	if evaluated.Before(observed) || evaluated.Before(source) {
 		return ReviewSourceCIAssessment{}, invalidResponse()
 	}
 	return value, nil
