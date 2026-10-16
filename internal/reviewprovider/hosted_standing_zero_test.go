@@ -444,3 +444,127 @@ func TestHostedStandingZeroCoverageRequiresCanonicalMergeRiskAncestry(t *testing
 		})
 	}
 }
+
+func standingTestIgnoredBlock(t *testing.T, body string) string {
+	t.Helper()
+	start := strings.Index(body, "<details>\n<summary><strong>⛔ Files ignored due to path filters:")
+	if start < 0 {
+		t.Fatal("ignored fixture block missing")
+	}
+	end := strings.Index(body[start:], "</details>")
+	if end < 0 {
+		t.Fatal("ignored fixture block unclosed")
+	}
+	return body[start : start+end+len("</details>\n")]
+}
+
+func TestHostedStandingZeroObservedMinimalAndOmittedIgnored(t *testing.T) {
+	for _, label := range []string{"🔵 Low", "⚪ Minimal"} {
+		for _, ignored := range []string{"listed", "empty", "omitted"} {
+			t.Run(label+"/"+ignored, func(t *testing.T) {
+				s, intent, poster, bot, earliest := standingTestFixture(t)
+				body := strings.Replace(s.IssueComments[1].Body, "🔵 Low", label, 1)
+				block := standingTestIgnoredBlock(t, body)
+				wantIgnored := int64(1)
+				switch ignored {
+				case "empty":
+					body = strings.Replace(body, block, strings.ReplaceAll(strings.Replace(block, "path filters: 1", "path filters: 0", 1), "* `build/generated.js` is excluded by `!build/**`\n", ""), 1)
+					wantIgnored = 0
+				case "omitted":
+					body = strings.Replace(body, block, "", 1)
+					wantIgnored = 0
+				}
+				s.IssueComments[1].Body = body
+				parsed, ok := parseStandingZero(body)
+				if !ok || parsed.IgnoredFiles != wantIgnored || parsed.SelectedFiles != 2 {
+					t.Fatalf("observed shape rejected: parsed=%v ignored=%d selected=%d", ok, parsed.IgnoredFiles, parsed.SelectedFiles)
+				}
+				inventory, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+				if err != nil || !inventory.Complete || inventory.Findings == nil || len(inventory.Findings) != 0 || inventory.Publication.StandingZero == nil {
+					t.Fatalf("zero inventory unavailable: %s %v", inventory.Reason, err)
+				}
+				base, proven := ResolveHostedComparison(inventory.Publication, intent.HeadSHA, strings.Repeat("b", 40), strings.Repeat("d", 40))
+				if !proven || base != strings.Repeat("b", 40) {
+					t.Fatal("exact scope lost")
+				}
+			})
+		}
+	}
+}
+
+func TestHostedStandingZeroOptionalIgnoredNeverHidesMalformedInventory(t *testing.T) {
+	changes := map[string]func(string) string{
+		"malformed ignored header":   func(b string) string { return strings.Replace(b, "path filters: 1", "path filters: unknown", 1) },
+		"leading zero ignored count": func(b string) string { return strings.Replace(b, "path filters: 1", "path filters: 01", 1) },
+		"negative ignored count":     func(b string) string { return strings.Replace(b, "path filters: 1", "path filters: -1", 1) },
+		"ignored overflow":           func(b string) string { return strings.Replace(b, "path filters: 1", "path filters: 10001", 1) },
+		"extra ignored path": func(b string) string {
+			return strings.Replace(b, "* `build/generated.js` is excluded by `!build/**`", "* `build/generated.js` is excluded by `!build/**`\n* `build/other.js` is excluded by `!build/**`", 1)
+		},
+		"ignored count zero with path": func(b string) string { return strings.Replace(b, "path filters: 1", "path filters: 0", 1) },
+		"unknown ignored category": func(b string) string {
+			return strings.Replace(b, "Files ignored due to path filters", "Files otherwise skipped", 1)
+		},
+		"duplicate ignored block": func(b string) string {
+			block := standingTestIgnoredBlock(t, b)
+			return strings.Replace(b, block, block+block, 1)
+		},
+		"orphan ignored path": func(b string) string {
+			block := standingTestIgnoredBlock(t, b)
+			return strings.Replace(b, block, "* `build/generated.js` is excluded by `!build/**`\n", 1)
+		},
+		"missing selected after omission": func(b string) string {
+			b = strings.Replace(b, standingTestIgnoredBlock(t, b), "", 1)
+			return strings.Replace(b, "Files selected for processing: 2", "Unexpected files: 2", 1)
+		},
+		"selected zero after omission": func(b string) string {
+			b = strings.Replace(b, standingTestIgnoredBlock(t, b), "", 1)
+			return strings.Replace(b, "processing: 2", "processing: 0", 1)
+		},
+		"selected count after omission": func(b string) string {
+			b = strings.Replace(b, standingTestIgnoredBlock(t, b), "", 1)
+			return strings.Replace(b, "processing: 2", "processing: 3", 1)
+		},
+		"selected unsafe after omission": func(b string) string {
+			b = strings.Replace(b, standingTestIgnoredBlock(t, b), "", 1)
+			return strings.Replace(b, "pkg/alpha.go", "../alpha.go", 1)
+		},
+		"selected duplicate after omission": func(b string) string {
+			b = strings.Replace(b, standingTestIgnoredBlock(t, b), "", 1)
+			return strings.Replace(b, "docs/guide.md", "pkg/alpha.go", 1)
+		},
+		"unknown risk label": func(b string) string { return strings.Replace(b, "🔵 Low", "🟡 Moderate", 1) },
+		"mismatched minimal prefix": func(b string) string {
+			b = strings.Replace(b, "🔵 Low", "⚪ Minimal", 1)
+			return strings.Replace(b, "<code>ccccc</code>", "<code>ddddd</code>", 1)
+		},
+		"duplicate coverage minimal": func(b string) string {
+			b = strings.Replace(b, "🔵 Low", "⚪ Minimal", 1)
+			line := ""
+			for _, candidate := range strings.Split(b, "\n") {
+				if standingCoverage.MatchString(candidate) {
+					line = candidate
+					break
+				}
+			}
+			if line == "" {
+				t.Fatal("coverage fixture missing")
+			}
+			return strings.Replace(b, line, line+"\n"+line, 1)
+		},
+	}
+	for name, change := range changes {
+		t.Run(name, func(t *testing.T) {
+			s, intent, poster, bot, earliest := standingTestFixture(t)
+			before := s.IssueComments[1].Body
+			s.IssueComments[1].Body = change(before)
+			if before == s.IssueComments[1].Body {
+				t.Fatal("fixture unchanged")
+			}
+			got, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+			if err != nil || got.Complete || got.Publication.State == "attributed" {
+				t.Fatalf("malformed optional inventory credited: %s %v", got.Reason, err)
+			}
+		})
+	}
+}
