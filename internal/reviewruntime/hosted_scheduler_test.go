@@ -156,7 +156,7 @@ func TestHostedSchedulerAdoptsPendingThenCompletesWithOriginalActor(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	gate.interval(t, 15*time.Second)
+	gate.interval(t, 30*time.Second)
 	if hostedDriverJournal(t, f, a.ID) != "active" || f.provider.observations != 1 || p.currentActors.Load() != 0 || p.repositories.Load() != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 {
 		t.Fatal("pending adoption lost observation ownership/reservation")
 	}
@@ -306,13 +306,14 @@ func TestHostedSchedulerProviderBackoffCapsAndHonorsRetryAfter(t *testing.T) {
 	p.repositoryError = nil
 	f.provider.partial = true
 	gate.resume(t)
-	gate.interval(t, 15*time.Second)
-	p.repositoryError = &reviewprovider.Error{Code: "provider_rate_limited", Message: "synthetic reset retry", RetryAfterSeconds: 120}
+	// A successful but pending capture does not reset the accumulated backoff.
+	gate.interval(t, 5*time.Minute)
+	p.repositoryError = &reviewprovider.Error{Code: "provider_rate_limited", Message: "synthetic shorter retry after pending", RetryAfterSeconds: 120}
 	gate.resume(t)
-	gate.interval(t, 2*time.Minute)
+	gate.interval(t, 5*time.Minute)
 	p.repositoryError = &reviewprovider.Error{Code: "provider_unavailable", Message: "synthetic continued failure"}
 	gate.resume(t)
-	gate.interval(t, 60*time.Second)
+	gate.interval(t, 5*time.Minute)
 	if f.provider.queries != 1 || f.provider.reviews != 1 || p.currentActors.Load() != 0 {
 		t.Fatal("provider backoff invoked another action")
 	}
