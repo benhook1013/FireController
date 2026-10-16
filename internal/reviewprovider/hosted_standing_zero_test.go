@@ -99,6 +99,27 @@ func standingTestFixture(t *testing.T) (HostedPublicationSnapshot, HostedTrigger
 	return s, intent, poster, bot, earliest
 }
 
+func TestHostedStandingZeroCRLFAcknowledgement(t *testing.T) {
+	for _, summaryCRLF := range []bool{false, true} {
+		t.Run(fmt.Sprintf("summary_CRLF_%t", summaryCRLF), func(t *testing.T) {
+			s, intent, poster, bot, earliest := standingTestFixture(t)
+			s.IssueComments[2].Body = strings.ReplaceAll(s.IssueComments[2].Body, "\n", "\r\n")
+			if summaryCRLF {
+				s.IssueComments[1].Body = strings.ReplaceAll(s.IssueComments[1].Body, "\n", "\r\n")
+			}
+			inventory, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+			if err != nil || !inventory.Complete || inventory.Findings == nil || len(inventory.Findings) != 0 || inventory.Publication.StandingZero == nil || inventory.Publication.StandingZero.ProviderRunID != standingTestRun {
+				t.Fatal("CRLF acknowledgement lost attributed empty inventory", inventory, err)
+			}
+			s.IssueComments[2].Body += "\r\nOne unresolved finding remains."
+			inventory, err = ExtractHostedFindings(s, intent, poster, bot, earliest)
+			if err != nil || inventory.Complete || inventory.Publication.State == "attributed" {
+				t.Fatal("CRLF normalization accepted an unknown acknowledgement trailer", inventory, err)
+			}
+		})
+	}
+}
+
 func TestHostedStandingZeroAttributionInventoryAndComparison(t *testing.T) {
 	s, intent, poster, bot, earliest := standingTestFixture(t)
 	before := append([]IssueComment(nil), s.IssueComments...)
