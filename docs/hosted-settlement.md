@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-This contract adds an explicit administrator action for a hosted attempt whose bounded observation journal is full. The administrator HTTP action is implemented. Focused public-route normal/race tests, vet and formatting pass; full combined validation and actual packaged proof are pending. Automatic recovery keeps uncertain work reserved; reaching a limit is not evidence that the external action stopped.
+This contract adds an explicit administrator action for a hosted attempt whose bounded observation journal is full. The administrator HTTP action is implemented. Focused public-route normal/race tests, full combined validation and actual packaged proof pass at the source checkpoint below. Automatic recovery keeps uncertain work reserved; reaching a limit is not evidence that the external action stopped.
 
 ## Operator responsibility
 
@@ -37,3 +37,11 @@ A stale guard returns HTTP 409 `review_attempt_revision_conflict` with `details.
 ## Proof boundary
 
 Required proof uses public HTTP controls and actual retained capacity-bound attempts. Verify administrator-only access, revocation, instance/project isolation, explicit field/target/guard validation, exact replay after later work and restart, concurrent operator/completion guards, event-failure rollback, unchanged original observations/intent and no completed credit or provider work. Prove a different account/target reservation remains occupied and normal subsequent admission still checks provider activity. Packaged service proof must exercise the real route before provider review. The operator's external verification is a trust prerequisite; tests must distinguish a controlled fixture's known stopped action from the service's recording of that assertion. This does not implement general restore reconciliation, automatic expiry or provider cancellation.
+
+## Executed proof
+
+Clean source `d5c624c9f50301901b40c2a1cc585c3a2c312fb5` passed full `make check build`: 128 browser tests, all Go race tests and vet, formatting, documentation and 19 link tests, embedded assets and all three release binaries. Focused route tests cover current administrator authority and revocation, strict fields and target guards, exact 4096-byte audit acceptance and 4097-byte refusal, a different reservation, concurrent completion/operator actions, event-failure rollback and replay after later work/restart. They establish no external stop verification by the service.
+
+Two actual packaged groups passed on their first run in 13.862 seconds. A controlled provider accepted the original review POST and lost its response. With the daemon stopped, actual recovery calls through the real provider adapter and capture store filled all 200 journal slots (one allowance query and 199 review observations); the next capacity pass preserved uncertainty and its reservation without provider work. A separate operator observation then verified the original controlled action's terminal publication without retaining final evidence. The restarted daemon refused seven public-route controls, accepted the explicit administrator assertion, and preserved all original observations, intent and artifact bytes. A damaged response after commit recovered by the original key, including after another restart, with one audit and reservation release, no provider calls during settlement/replay and no completed review credit. The tested `fc` and `fcd` binaries match the full-build artifacts.
+
+The same run proved direct and lost-response query confirmation at the exact five-second provider-clock lower bound, preserving original timestamps and avoiding extra query/review posts on recovery replay. Greater-than-bound, actor/body/edit and future-time refusals have focused normal/race proof. The expensive controlled journal fill is setup, not a production latency claim; the actual settlement request took 68.206 ms on this developer machine. All owned fixture processes and state were removed. These checks do not establish real-provider stop verification, restored-provider resumption, fleet throughput or operational cutover.
