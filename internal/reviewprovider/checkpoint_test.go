@@ -185,6 +185,42 @@ func TestFindCheckpointStableAuthorCopiesAndNeutralEdits(t *testing.T) {
 	}
 }
 
+func TestFindCheckpointIgnoresProvenForeignCommentContent(t *testing.T) {
+	p := checkpointFixture()
+	own := checkpointComment(t, 31, p)
+	foreign := IssueComment{ID: 32, Author: Author{ID: 99, Kind: "User", Login: "bad login"}, Body: "unrelated\x00\x1b"}
+	for _, comments := range [][]IssueComment{{foreign, own}, {own, foreign}} {
+		got, found, err := FindCheckpoint(p, checkpointActor(), comments)
+		if err != nil || !found || got != own {
+			t.Fatal("proven foreign content blocked original checkpoint", found, err)
+		}
+	}
+	for _, mutate := range []func(*IssueComment){
+		func(c *IssueComment) { c.ID = own.ID },
+		func(c *IssueComment) { c.Author.ID = 0 },
+		func(c *IssueComment) { c.Author.Kind = "" },
+		func(c *IssueComment) { c.Author.Kind = "bad kind" },
+	} {
+		bad := foreign
+		mutate(&bad)
+		if _, found, err := FindCheckpoint(p, checkpointActor(), []IssueComment{own, bad}); err == nil || found {
+			t.Fatal("unproven identity or duplicate ignored", found, err)
+		}
+	}
+	for _, count := range []int{githubMaxItems + 1, githubMaxAggregate/githubMaxText + 1} {
+		comments := make([]IssueComment, count)
+		body := strings.Repeat("x", githubMaxText)
+		for i := range comments {
+			comments[i] = foreign
+			comments[i].ID = int64(i + 1)
+			comments[i].Body = body
+		}
+		if _, found, err := FindCheckpoint(p, checkpointActor(), comments); err == nil || found {
+			t.Fatal("foreign projection bypassed inventory capacity", found, err)
+		}
+	}
+}
+
 func TestFindCheckpointAmbiguityConflictAndMalformedInventory(t *testing.T) {
 	p := checkpointFixture()
 	a := checkpointComment(t, 31, p)
