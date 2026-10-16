@@ -437,11 +437,19 @@ function CapturedComparisonAssessment({ evidenceId }: { evidenceId: string }) {
   }
   return <section className="panel review-assessment" aria-label="Captured comparison assessment"><div className="section-heading"><div><h3>Captured comparison policy</h3><p>Current project requirements for this captured comparison.</p></div><button type="button" aria-expanded={open} onClick={() => open ? close() : setOpen(true)}>{open ? 'Close assessment' : 'Assess captured comparison'}</button></div>{open && <CapturedComparisonResult evidenceId={evidenceId} />}</section>;
 }
+export function CapturedComparisonRefusal({ code }: { code: 'review_held' | 'review_capacity' }) {
+  return <div className="notice" role="alert">{code === 'review_held'
+    ? 'The project repository no longer matches this captured comparison. Ask an administrator to verify the repository binding.'
+    : 'This assessment exceeds the supported review-history capacity. Ask an operator to address the retained history limit.'}</div>;
+}
 function CapturedComparisonResult({ evidenceId }: { evidenceId: string }) {
   const { session, key } = useWorkspace();
   // Unmounting consumes the request signal and removes this query immediately.
   // Every explicit reopen reads current policy, rather than showing cached proof.
   const query = useQuery({ queryKey: [...key, 'reviews', 'policy-assessment', evidenceId], queryFn: ({ signal }) => session.api.reviewPolicyAssessment(evidenceId, signalFor(session, signal)), staleTime: Infinity, gcTime: 0, refetchOnMount: 'always' });
+  // Durable refusals need operator action. Authorization and cancellation keep
+  // their existing ReadState/session handling, independent of the refusal code.
+  if (query.error instanceof ApiError && !terminal(query.error) && (query.error.code === 'review_held' || query.error.code === 'review_capacity')) return <CapturedComparisonRefusal code={query.error.code} />;
   const value = query.data;
   return <ReadState error={query.error} loading={query.isPending} empty={false}>{value && <div className="review-assessment-result">{query.isFetching && <p role="status">Refreshing assessment…</p>}<dl className="review-ref-grid"><div><dt>Assessment state</dt><dd><span className="badge neutral">{value.state}</span></dd></div><div><dt>Policy revision</dt><dd>{value.policy_revision}</dd></div><div><dt>Captured target</dt><dd>PR #{value.anchor.pull_number}<code>{value.anchor.candidate_sha}</code></dd></div><div><dt>Captured source observed</dt><dd>{time(value.anchor.observed_at)}</dd></div><div><dt>Captured comparison base</dt><dd><code>{value.anchor.base_sha}</code></dd></div><div><dt>Policy evaluated</dt><dd>{time(value.evaluated_at)}</dd></div></dl>{value.state === 'unconfigured' ? <p className="notice">Project review requirements are unconfigured.</p> : <div className="review-assessment-channels">{value.channels.map(channel => <section key={channel.channel} aria-label={`${channel.channel === 'hosted' ? 'Hosted' : 'CLI'} assessment`}><h4>{channel.channel === 'hosted' ? 'Hosted' : 'CLI'}</h4><dl><div><dt>Covered</dt><dd>{channel.covered ? 'Yes' : 'No'}</dd></div><div><dt>Pending</dt><dd>{channel.pending ? 'Yes' : 'No'}</dd></div></dl></section>)}</div>}<p className="item-meta">This evaluates the captured comparison only. It does not refresh GitHub, assess CI or declare merge readiness.</p></div>}</ReadState>;
 }
