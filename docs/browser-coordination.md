@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Read-only browser views over the existing [notes](notes.md), [worker pause](worker-pause.md) and [primary-job focus](worker-focus.md) contracts are implemented. TypeScript, focused client/component tests and actual packaged-browser proof pass at the checkpoints below; full integrated validation of the combined slice remains outstanding. This slice changes no domain state, assignment, message handling or provider behavior. Human GUI review and operational cutover remain separate.
+Read-only browser views over the existing [notes](notes.md), [worker pause](worker-pause.md) and [primary-job focus](worker-focus.md) contracts are implemented. TypeScript, focused client/component tests, actual packaged-browser proof and full integrated validation pass at the checkpoints below. This slice changes no domain state, assignment, message handling or provider behavior. Human GUI review and operational cutover remain separate.
 
 ## Explicit reads
 
@@ -32,4 +32,6 @@ At clean `9f7a9242b21151caacfdcc469d85e1b939b5b4fb`, the actual embedded browser
 
 The run followed two reproduced product defects: direct coordination URLs were absent from the embedded server's route allowlist, and Refresh reused a pending initial response instead of obtaining post-click state. Route tests failed before the allowlist correction and pass with the race detector afterward. Actual Chromium reproduced the Refresh failure, then proved cancellation and a fresh second read before the old response was released after switching to the existing refresh helper. Three separate harness failures involved missing required seed fields and incorrect exact selectors; those attempts were preserved and corrected without changing assertions or time bounds.
 
-This is local packaged behavior, not installed hosting, human GUI acceptance, general accessibility, physical-phone or fleet proof. Full combined validation after integration remains outstanding. At `765ccdf384b9f08c8f3d8136b4807cf80b73c172`, a follow-up applying the existing panel spacing passed the same actual matrix in 12.284 seconds with unchanged request counts and limits. All eight screenshots were inspected again, including the corrected card padding and text bounds; source, supplied binary and prior proof artifacts remained unchanged and owned cleanup completed.
+This is local packaged behavior, not installed hosting, human GUI acceptance, general accessibility, physical-phone or fleet proof. At `765ccdf384b9f08c8f3d8136b4807cf80b73c172`, a follow-up applying the existing panel spacing passed the same actual matrix in 12.284 seconds with unchanged request counts and limits. All eight screenshots were inspected again, including the corrected card padding and text bounds; source, supplied binary and prior proof artifacts remained unchanged and owned cleanup completed.
+
+The combined checkpoint `265af4a5bc48f354516ee73bc578e586f4d2fcde` passed full `make check build`, including all 222 browser tests, Go race tests, vet, documentation checks, generated assets and three binaries. The resulting bytes exactly matched the inputs that passed the canonical packaged and Chromium lifecycle smoke targets. The separate full browser matrix above establishes coordination behavior; the narrow lifecycle smoke does not replace it.
