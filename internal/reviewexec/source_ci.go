@@ -80,7 +80,15 @@ func observeSourceCI(ctx context.Context, reader TargetReader, plan SourcePlan) 
 	sourceAt, sourceTimeErr := time.Parse(time.RFC3339Nano, source.ObservedAt)
 	// These checks concern adoption of newly collected evidence. Retained
 	// observations remain readable if the local wall clock later moves back.
-	if json.Unmarshal(body, &owned) != nil || !validSourceCI(owned, source) || sourceTimeErr != nil || owned.StartedAt.Before(sourceAt) || owned.ObservedAt.Before(owned.StartedAt) || owned.ObservedAt.After(time.Now().Add(5*time.Second)) {
+	if json.Unmarshal(body, &owned) != nil || sourceTimeErr != nil || !refreshTime(source.ObservedAt) || owned.StartedAt.IsZero() || owned.ObservedAt.IsZero() || owned.StartedAt.Before(sourceAt) || owned.ObservedAt.Before(owned.StartedAt) || owned.ObservedAt.After(time.Now().Add(5*time.Second)) {
+		return unavailableSourceCI(target, started, "ci_observation_unproven")
+	}
+	// The collector stops before result collection at this supported boundary.
+	// Preserve only the scoped capacity outcome, never its oversized inventory.
+	if owned.Target == target && owned.State == "unproven" && owned.Reason == "ci_required_context_capacity" && len(owned.Authority.Checks) > 128 && owned.Authority.State == "complete" && owned.Authority.Reason == "" && owned.Authority.Repository == target.Repository && owned.Authority.Branch == target.BaseRef && !owned.Authority.ObservedAt.IsZero() {
+		return unavailableSourceCI(target, started, "ci_required_context_capacity")
+	}
+	if !validSourceCI(owned, source) {
 		return unavailableSourceCI(target, started, "ci_observation_unproven")
 	}
 	return &owned
