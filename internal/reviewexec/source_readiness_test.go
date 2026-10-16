@@ -650,3 +650,56 @@ func TestSourceReadinessFreshFutureAndBackwardsReviewRemainUnproven(t *testing.T
 		})
 	}
 }
+
+func TestSourceReadinessComparisonReadsOnlyLatestSourceMetadata(t *testing.T) {
+	for _, changed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("changed_%t", changed), func(t *testing.T) {
+			f, a, _, reader, selected := readinessFixture(t)
+			if changed {
+				reader.pull = func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+					return reviewprovider.Pull{RepositoryID: 801, Number: n, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("d", 40), BaseRef: "main", ChangedFiles: 1}, nil
+				}
+			}
+			latest := refreshEnqueue(t, f, "latest-metadata", refreshRequest())
+			cancel, done := refreshStart(t, f, reader)
+			refreshWait(t, f, latest.ID, "completed")
+			refreshStop(t, cancel, done)
+			at, err := time.Parse(time.RFC3339Nano, selected.CreatedAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			admissionSQL(t, f, `UPDATE review_source_refreshes SET created_at=? WHERE id=?`, at.Add(time.Second).UTC().Format(time.RFC3339Nano), latest.ID)
+			expected := readReadiness(t, f, reader, a, 2)
+			if expected.RefreshID != selected.ID || changed && (expected.State != "held" || !slices.Contains(expected.Reasons, "source_comparison_changed")) || !changed && expected.State != "ready_as_observed" {
+				t.Fatal("fixture comparison was not selected", expected)
+			}
+			for _, corrupt := range []string{"{", strings.Repeat("x", sourceReviewMaxBytes+1)} {
+				admissionSQL(t, f, `UPDATE review_source_refreshes SET ci_observation_json=?,review_state_json=? WHERE id=?`, corrupt, corrupt, latest.ID)
+				got := readReadiness(t, f, reader, a, 2)
+				got.EvaluatedAt = expected.EvaluatedAt
+				if !reflect.DeepEqual(got, expected) {
+					t.Fatal("unrelated latest inventory changed readiness")
+				}
+				before, calls, ciCalls, reviewCalls := readinessDurable(t, f, a), reader.calls.Load(), reader.ciCalls.Load(), reader.reviewCalls.Load()
+				w := f.request(http.MethodGet, "/api/v1/projects/"+attemptProject+"/reviews/source/2/readiness", f.reader, "", "")
+				var public SourceReadinessAssessment
+				if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &public) != nil {
+					t.Fatal("HTTP decoded unrelated latest inventory", w.Code)
+				}
+				public.EvaluatedAt = expected.EvaluatedAt
+				if !reflect.DeepEqual(public, expected) {
+					t.Fatal("HTTP changed selected readiness")
+				}
+				_, err = f.e.ReadSourceRefresh(t.Context(), sourceCIScope(t, f), latest.ID)
+				attemptCode(t, err, "storage_unavailable")
+				if before != readinessDurable(t, f, a) || calls != reader.calls.Load() || ciCalls != reader.ciCalls.Load() || reviewCalls != reader.reviewCalls.Load() {
+					t.Fatal("local assessment wrote state or called a provider")
+				}
+			}
+			// Skipping unrelated inventories must not skip latest metadata checks.
+			admissionSQL(t, f, `UPDATE review_source_refreshes SET capability_fingerprint='malformed' WHERE id=?`, latest.ID)
+			_, err = f.e.ReadSourceReadiness(t.Context(), sourceCIScope(t, f), 2)
+			attemptCode(t, err, "storage_unavailable")
+		})
+	}
+}
