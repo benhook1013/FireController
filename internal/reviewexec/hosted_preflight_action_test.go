@@ -2,16 +2,29 @@ package reviewexec
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
+func hostedActionAllowanceFixture(t *testing.T) (*attemptFixture, Attempt, HostedAllowanceQuery, HostedAllowanceInput) {
+	t.Helper()
+	f, a, q, in := hostedAllowanceFixture(t)
+	// The older generic admission fixture used an arbitrary parent SHA. Final
+	// source witnesses must model a realizable comparison: effective parent=base.
+	q.Anchor.ParentSHA = q.Anchor.BaseSHA
+	in.Anchor = q.Anchor
+	admissionSQL(t, f, `UPDATE review_hosted_allowance_queries SET body_json=? WHERE attempt_id=?`, encoded(q), a.ID)
+	return f, a, q, in
+}
+
 func hostedActionFixture(t *testing.T) (*attemptFixture, Attempt, HostedAllowanceInput) {
 	t.Helper()
-	f, a, _, in := hostedAllowanceFixture(t)
+	f, a, _, in := hostedActionAllowanceFixture(t)
 	if err := f.e.RecordHostedAllowance(t.Context(), attemptProject, a.ID, 1, in); err != nil {
 		t.Fatal(err)
 	}
@@ -29,10 +42,15 @@ func hostedActionFixture(t *testing.T) (*attemptFixture, Attempt, HostedAllowanc
 	return f, a, in
 }
 
+func hostedActionSource(a Attempt) SourcePlan {
+	anchor := *a.Anchor
+	return SourcePlan{Repository: reviewprovider.Repository{ID: anchor.RepositoryID, FullName: anchor.Repository, DefaultBranch: anchor.BaseRef}, Pull: reviewprovider.Pull{Number: anchor.PullNumber, RepositoryID: anchor.RepositoryID, State: "open", HeadSHA: anchor.CandidateSHA, BaseSHA: anchor.BaseSHA, BaseRef: anchor.BaseRef, ChangedFiles: 1}, ParentSHA: anchor.ParentSHA, ParentPullNumber: anchor.ParentPullNumber, ObservedAt: stamp()}
+}
+
 func TestHostedAllowanceFinalGuardAndReadReplayAfterSettlement(t *testing.T) {
 	f, a, in := hostedActionFixture(t)
 	before := hostedAllowanceState(t, f, a)
-	if err := f.e.VerifyHostedAction(t.Context(), attemptProject, a.ID, a.Revision); err != nil || hostedAllowanceState(t, f, a) != before {
+	if err := f.e.VerifyHostedAction(t.Context(), attemptProject, a.ID, a.Revision, hostedActionSource(a)); err != nil || hostedAllowanceState(t, f, a) != before {
 		t.Fatal("fresh exact source guard failed or wrote state", err)
 	}
 	read, err := f.e.ReadHostedAllowance(t.Context(), attemptProject, a.ID)
@@ -67,7 +85,7 @@ func TestHostedAllowanceFinalGuardAndReadReplayAfterSettlement(t *testing.T) {
 func TestHostedAllowanceFinalGuardRequiresExactUnpostedReviewIntent(t *testing.T) {
 	for _, change := range []string{"arbitrary command", "markerless full review", "altered head marker", "altered attempt marker", "already recorded external ID"} {
 		t.Run(change, func(t *testing.T) {
-			f, a, _, in := hostedAllowanceFixture(t)
+			f, a, _, in := hostedActionAllowanceFixture(t)
 			if err := f.e.RecordHostedAllowance(t.Context(), attemptProject, a.ID, 1, in); err != nil {
 				t.Fatal(err)
 			}
@@ -97,7 +115,7 @@ func TestHostedAllowanceFinalGuardRequiresExactUnpostedReviewIntent(t *testing.T
 				admissionSQL(t, f, `UPDATE review_execution_attempts SET external_id='123' WHERE id=?`, a.ID)
 			}
 			before := hostedAllowanceState(t, f, a)
-			attemptCode(t, f.e.VerifyHostedAction(t.Context(), attemptProject, a.ID, a.Revision), "review_conflict")
+			attemptCode(t, f.e.VerifyHostedAction(t.Context(), attemptProject, a.ID, a.Revision, hostedActionSource(a)), "review_conflict")
 			if hostedAllowanceState(t, f, a) != before {
 				t.Fatal("invalid intent guard changed retained source or attempt")
 			}
@@ -139,7 +157,7 @@ func TestHostedAllowanceFinalGuardRejectsInvalidCurrentBinding(t *testing.T) {
 			f, a, _ := hostedActionFixture(t)
 			test.change(t, f, &a)
 			before := hostedAllowanceState(t, f, a)
-			attemptCode(t, f.e.VerifyHostedAction(t.Context(), attemptProject, a.ID, a.Revision), test.code)
+			attemptCode(t, f.e.VerifyHostedAction(t.Context(), attemptProject, a.ID, a.Revision, hostedActionSource(a)), test.code)
 			if hostedAllowanceState(t, f, a) != before {
 				t.Fatal("failed final guard changed state")
 			}
@@ -148,7 +166,7 @@ func TestHostedAllowanceFinalGuardRejectsInvalidCurrentBinding(t *testing.T) {
 }
 
 func TestHostedAllowanceStaleGuardCannotRefreshRetainedRead(t *testing.T) {
-	for _, stale := range []string{"answer", "fetch", "source", "admitted source"} {
+	for _, stale := range []string{"answer", "fetch"} {
 		t.Run(stale, func(t *testing.T) {
 			f, a, _ := hostedActionFixture(t)
 			record, _ := hostedAllowanceRead(t, f, a)
@@ -167,17 +185,11 @@ func TestHostedAllowanceStaleGuardCannotRefreshRetainedRead(t *testing.T) {
 				if stale == "fetch" {
 					record.Input.ObservedAt = old.Add(time.Second).Format(time.RFC3339Nano)
 				}
-			case "source":
-				record.Input.Anchor.ObservedAt = old.Format(time.RFC3339Nano)
-			case "admitted source":
-				anchor := *a.Anchor
-				anchor.ObservedAt = old.Format(time.RFC3339Nano)
-				admissionSQL(t, f, `UPDATE review_execution_attempts SET anchor_json=? WHERE id=?`, encoded(anchor), a.ID)
 			}
 			admissionSQL(t, f, `UPDATE review_hosted_preflight SET body_json=? WHERE attempt_id=?`, encoded(record), a.ID)
 			before := hostedAllowanceState(t, f, a)
 			for range 2 {
-				attemptCode(t, f.e.VerifyHostedAction(t.Context(), attemptProject, a.ID, a.Revision), "review_held")
+				attemptCode(t, f.e.VerifyHostedAction(t.Context(), attemptProject, a.ID, a.Revision, hostedActionSource(a)), "review_held")
 				read, err := f.e.ReadHostedAllowance(t.Context(), attemptProject, a.ID)
 				if err != nil || read != record.Input || hostedAllowanceState(t, f, a) != before {
 					t.Fatal("stale guard/read updated source or observation time", read, err)
@@ -193,5 +205,66 @@ func TestHostedAllowanceStaleGuardCannotRefreshRetainedRead(t *testing.T) {
 				t.Fatal("owned read lost canonical source metadata")
 			}
 		})
+	}
+}
+
+func TestHostedActionRequiresFreshExactSourceWitness(t *testing.T) {
+	for name, test := range map[string]struct {
+		change       func(*SourcePlan)
+		code, reason string
+	}{
+		"missing":         {func(p *SourcePlan) { *p = SourcePlan{} }, "validation_failed", ""},
+		"malformed time":  {func(p *SourcePlan) { p.ObservedAt = "bad" }, "validation_failed", ""},
+		"closed":          {func(p *SourcePlan) { p.Pull.State = "closed" }, "validation_failed", ""},
+		"invalid parent":  {func(p *SourcePlan) { p.ParentSHA = strings.Repeat("f", 40) }, "validation_failed", ""},
+		"stale":           {func(p *SourcePlan) { p.ObservedAt = time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339Nano) }, "review_held", "source_stale"},
+		"future":          {func(p *SourcePlan) { p.ObservedAt = time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano) }, "review_held", "source_stale"},
+		"repository ID":   {func(p *SourcePlan) { p.Repository.ID++; p.Pull.RepositoryID = p.Repository.ID }, "review_held", "source_changed"},
+		"repository name": {func(p *SourcePlan) { p.Repository.FullName = "other/repository" }, "review_held", "source_changed"},
+		"pull":            {func(p *SourcePlan) { p.Pull.Number++ }, "review_held", "source_changed"},
+		"head":            {func(p *SourcePlan) { p.Pull.HeadSHA = strings.Repeat("f", 40) }, "review_held", "source_changed"},
+		"base":            {func(p *SourcePlan) { p.Pull.BaseSHA = strings.Repeat("f", 40); p.ParentSHA = p.Pull.BaseSHA }, "review_held", "source_changed"},
+		"base ref":        {func(p *SourcePlan) { p.Pull.BaseRef = "other"; p.Repository.DefaultBranch = "other" }, "review_held", "source_changed"},
+		"parent number":   {func(p *SourcePlan) { p.ParentPullNumber = 10 }, "review_held", "source_changed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, a, _ := hostedActionFixture(t)
+			source := hostedActionSource(a)
+			test.change(&source)
+			before := hostedAllowanceState(t, f, a)
+			err := f.e.VerifyHostedAction(t.Context(), attemptProject, a.ID, a.Revision, source)
+			attemptCode(t, err, test.code)
+			if test.reason != "" {
+				var failure *core.Error
+				if !errors.As(err, &failure) || failure.Details.(map[string]string)["reason"] != test.reason {
+					t.Fatal("unstable hold", err)
+				}
+			}
+			if hostedAllowanceState(t, f, a) != before {
+				t.Fatal("invalid current witness changed retained facts")
+			}
+		})
+	}
+}
+
+func TestHostedActionFreshWitnessPreservesHistoricalSourceTimes(t *testing.T) {
+	f, a, _ := hostedActionFixture(t)
+	source := hostedActionSource(a)
+	record, _ := hostedAllowanceRead(t, f, a)
+	old := time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339Nano)
+	record.Input.Anchor.ObservedAt = old
+	admitted := *a.Anchor
+	admitted.ObservedAt = old
+	admissionSQL(t, f, `UPDATE review_execution_attempts SET anchor_json=? WHERE id=?`, encoded(admitted), a.ID)
+	admissionSQL(t, f, `UPDATE review_hosted_preflight SET body_json=? WHERE attempt_id=?`, encoded(record), a.ID)
+	before := hostedAllowanceState(t, f, a)
+	for range 2 {
+		if err := f.e.VerifyHostedAction(t.Context(), attemptProject, a.ID, a.Revision, source); err != nil {
+			t.Fatal("fresh exact witness rejected for historical timestamp", err)
+		}
+	}
+	read, err := f.e.ReadHostedAllowance(t.Context(), attemptProject, a.ID)
+	if err != nil || read != record.Input || hostedAllowanceState(t, f, a) != before {
+		t.Fatal("current source check refreshed historical facts", err)
 	}
 }

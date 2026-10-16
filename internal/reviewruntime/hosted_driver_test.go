@@ -449,7 +449,22 @@ func staleHostedDriverAllowance(t *testing.T, f *hostedDriverFixture, a reviewex
 	if err != nil {
 		t.Fatal(err)
 	}
-	in.Anchor.ObservedAt = time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339Nano)
+	oldResponse := time.Now().Add(-2 * time.Minute).UTC()
+	query, err := f.engine.ReadHostedAllowanceQuery(t.Context(), f.project, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query.EarliestPosting = oldResponse.Add(-time.Minute).Format(time.RFC3339Nano)
+	query.Comment.CreatedAt, query.Comment.UpdatedAt = oldResponse.Add(-time.Second), oldResponse.Add(-time.Second)
+	encodedQuery, err := json.Marshal(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.store.DB().Exec(`UPDATE review_hosted_allowance_queries SET body_json=? WHERE attempt_id=?`, string(encodedQuery), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	in.Observation.QueryCreatedAt = query.Comment.CreatedAt
+	in.Observation.ResponseCreatedAt = oldResponse
 	changed, err := json.Marshal(in)
 	if err != nil {
 		t.Fatal(err)
@@ -466,12 +481,13 @@ func staleHostedDriverAllowance(t *testing.T, f *hostedDriverFixture, a reviewex
 		t.Fatal(err)
 	}
 	// Confirm this remains a valid retained record, rather than a corrupt-body
-	// refusal. The final action guard must reject its stale source observation.
+	// refusal. The final action guard must reject the actual old response, even
+	// though the retained fetch and freshly rechecked source remain current.
 	retained, err := f.engine.ReadHostedAllowance(t.Context(), f.project, a.ID)
-	if err != nil || retained.Anchor.ObservedAt != in.Anchor.ObservedAt {
+	if err != nil || !retained.Observation.ResponseCreatedAt.Equal(oldResponse) {
 		t.Fatal("stale fixture invalid", err)
 	}
-	assertCoreErrorCode(t, f.engine.VerifyHostedAction(t.Context(), f.project, a.ID, a.Revision), "review_held")
+	assertCoreErrorCode(t, f.engine.VerifyHostedAction(t.Context(), f.project, a.ID, a.Revision, f.hosted.prepared[a.ID].plan), "review_held")
 }
 
 func TestHostedDriverCallbackMustPersistTriggerBeforeCompletion(t *testing.T) {
