@@ -178,7 +178,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	reviewCtx, cancelReviews := context.WithCancel(ctx)
 	var reviewDone <-chan error
 	if !recovery.ProvidersHeld {
-		reviewDone, err = startReviewWorkers(reviewCtx, execution, drivers)
+		reviewDone, err = startReviewWorkers(reviewCtx, execution, drivers, stderr)
 	}
 	defer func() {
 		cancelReviews()
