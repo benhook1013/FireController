@@ -66,7 +66,10 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
 					// survives credential revocation, policy pauses and a changed login actor.
 					var observed RecoveredHosted
 					observed, err = RecoverHosted(ctx, d.provider, d.captures, d.engine, candidate.ProjectID, candidate.AttemptID, d.capability.ID, query.PostingActor, actor)
-					normal = err == nil && (observed.State == "completed" || observed.State == "active" && (observed.Reason == "publication_not_proven" || observed.Reason == "missing_publication_batches"))
+					// Pending observations retain useful raw source but consume the
+					// finite reference journal. Keep their cadence on bounded backoff;
+					// only completion or no candidate restores the idle interval.
+					normal = err == nil && observed.State == "completed"
 				}
 			}
 		}
