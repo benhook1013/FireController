@@ -26,6 +26,8 @@ The browser includes a small “Powered by FireController” attribution linked 
 
 The [project map contract](project-map.md) owns workstreams, return points, stable phases, history and job references.
 
+The [presentation and project-metadata contract](project-presentation.md) owns the concrete settings, validation, scoped live updates and reset behavior.
+
 ## Legacy disk inputs
 
 The inspected current private website documents `status.json` as runtime configuration and `progress.json` as editorial structure, while mutable jobs and map state are already stored in controller SQLite. However, the retained map importer also reads legacy lanes, tasks, next steps, blockers, and brief provenance from a status input. Do not classify all historical status files as configuration-only. The site generates HTML, reads external tracker Markdown, and can synchronize completed hosted-review captures during refresh. This establishes a classification starting point, not a complete inventory of every private file.

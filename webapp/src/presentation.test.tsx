@@ -1,0 +1,117 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
+import { Api } from './api';
+import { applyPresentationRoot, heading, presentationDefaults, validMetadataPage, validPresentationSnapshot } from './presentation';
+import { PresentationContext, useProjectHeading } from './presentation-context';
+import { isCurrentProjectView, refreshProjectMetadata } from './project-metadata';
+import type { Presentation, PresentationSnapshot, ProjectMetadataPage } from './types';
+
+const project = { id: 'project_one', name: 'Project one', github_repository_id: 1, repository: 'owner/repo' };
+const presentation: Presentation = { project_id: project.id, revision: 0, name: project.name, brand_name: 'FireController', tagline: 'Project workspace', headings: {}, theme: {}, updated_at: '' };
+const snapshot: PresentationSnapshot = { presentation, event_cursor: 'snapshot_cursor' };
+const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
+const flush = async () => { for (let i = 0; i < 60; i++) await Promise.resolve(); };
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
+
+describe('project appearance and metadata boundary', () => {
+  it('keeps every original fallback color/layout byte and covers the shared token vocabulary', async () => {
+    const fs = await vi.importActual<{ readFileSync(path: URL, encoding: 'utf8'): string }>('node:fs');
+    const styles = fs.readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+    const base = styles.split('\n/* Bounded presentation text. */')[0];
+    const original = base.replace(/var\(--fc-[a-z_]+,([^()]+)\)/gu, '$1');
+    const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(original));
+    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('723a8ad8312d157a0b357cde763b1d16e9b59f477b4ea51c97a3327700e4f54f');
+    const tokens = new Set(Array.from(styles.matchAll(/--fc-([a-z_]+)/gu), match => match[1]));
+    expect([...tokens].sort()).toEqual(Object.keys(presentationDefaults.theme).sort());
+    // Decorative shadows may stay literal. All informative declarations use
+    // bounded roles, including colors added by stored-review views.
+    for (const declaration of base.matchAll(/([a-z-]+):([^;{}]+)/gu)) {
+      if (declaration[1] === 'box-shadow' && !declaration[2].includes('inset')) continue;
+      const unbound = declaration[2].replace(/var\(--fc-[a-z_]+,[^()]+\)/gu, '');
+      expect(unbound, declaration[0]).not.toMatch(/#[0-9a-f]{3,8}\b|\bwhite\b/iu);
+    }
+  });
+
+  it('validates implicit defaults and rejects malformed configuration and metadata shapes', () => {
+    expect(validPresentationSnapshot(snapshot, project.id)).toBe(true);
+    const changed = { ...presentation, revision: 1, updated_at: '2026-10-16T01:00:00.000000000Z', theme: { surface_text: '#000000' }, headings: { jobs: '<literal>' } };
+    expect(validPresentationSnapshot({ presentation: changed, event_cursor: 'new_cursor' }, project.id)).toBe(true);
+    for (const value of [
+      { ...presentation, revision: null }, { ...presentation, revision: 1.1 }, { ...presentation, revision: 1, updated_at: '' },
+      { ...changed, updated_at: '2026-02-30T01:00:00Z' }, { ...changed, updated_at: '0001-01-01T00:00:00Z' },
+      { ...presentation, project_id: 'foreign' }, { ...presentation, theme: null }, { ...changed, theme: { extra: '#ffffff' } },
+      { ...changed, theme: { surface_text: 'red' } }, { ...changed, theme: { surface_text: '#FFFFFF' } }, { ...changed, theme: { surface_text: '#f7f6f3' } },
+      { ...changed, theme: { surface_text: 'url(https://example.test)' } }, { ...changed, headings: { jobs: null } },
+      { ...changed, theme: { accent_soft_background: '#000000' } },
+      { ...changed, headings: { jobs: 'x\n' } }, { ...changed, headings: { unowned: 'title' } }, { ...changed, brand_name: '' },
+      { ...presentation, updated_at: changed.updated_at }, { ...presentation, headings: { jobs: 'override at zero' } },
+    ]) expect(validPresentationSnapshot({ presentation: value, event_cursor: 'cursor' }, project.id), JSON.stringify(value)).toBe(false);
+    const page: ProjectMetadataPage = { items: [{ event_type: 'map.entry_updated', resource_id: 'entry_one', revision: 2, event_cursor: 'event_cursor' }], event_cursor: 'event_cursor', has_more: true };
+    expect(validMetadataPage(page, 25)).toBe(true);
+    for (const value of [{ ...page, cursor: 'message_cursor' }, { ...page, event_cursor: null }, { ...page, items: null }, { ...page, has_more: true, items: [] }, { ...page, event_cursor: 'wrong_last' }, { ...page, items: [...page.items, ...page.items] }, { ...page, items: [{ ...page.items[0], event_type: 'message.sent' }] }, { ...page, items: [{ ...page.items[0], revision: Number.MAX_SAFE_INTEGER + 1 }] }, { ...page, items: [{ ...page.items[0], body: 'not metadata' }] }]) expect(validMetadataPage(value, 25)).toBe(false);
+  });
+
+  it('resets root overrides/title without changing fallback CSS or retaining another project', () => {
+    const properties = new Map<string, string>();
+    const root = { style: { setProperty: (key: string, value: string) => properties.set(key, value), removeProperty: (key: string) => { properties.delete(key); return ''; } } };
+    const doc = { title: 'FireController' };
+    applyPresentationRoot(root as unknown as HTMLElement, doc, { ...presentation, name: 'One', theme: { surface_text: '#000000' } });
+    expect(properties.get('--fc-surface_text')).toBe('#000000'); expect(doc.title).toBe('One · FireController');
+    applyPresentationRoot(root as unknown as HTMLElement, doc, { ...presentation, name: 'Two', theme: { canvas_text: '#111111' } });
+    expect(properties.has('--fc-surface_text')).toBe(false); expect(properties.get('--fc-canvas_text')).toBe('#111111');
+    applyPresentationRoot(root as unknown as HTMLElement, doc);
+    expect(properties.size).toBe(0); expect(doc.title).toBe('FireController');
+    const one = new AbortController(), two = new AbortController();
+    expect(isCurrentProjectView(project.id, '/projects/project_one/map', one, one)).toBe(true);
+    expect(isCurrentProjectView(project.id, '/projects/project_one_extra', one, one)).toBe(false);
+    expect(isCurrentProjectView(project.id, '/projects/foreign', one, one)).toBe(false);
+    expect(isCurrentProjectView(project.id, '/projects/project_one', one, two)).toBe(false);
+    one.abort(); expect(isCurrentProjectView(project.id, '/projects/project_one', one, one)).toBe(false);
+  });
+
+  it('renders configured headings literally with exact shared defaults', () => {
+    function Headings() { return <><h2>{useProjectHeading('jobs')}</h2><h3>{useProjectHeading('hero_title')}</h3></>; }
+    const html = renderToStaticMarkup(<PresentationContext.Provider value={{ ...presentation, headings: { jobs: '<img src=x>', hero_title: '<script>Literal</script>' } }}><Headings /></PresentationContext.Provider>);
+    expect(html).toContain('&lt;img src=x&gt;'); expect(html).toContain('&lt;script&gt;Literal&lt;/script&gt;'); expect(html).not.toContain('<img');
+    expect(heading(undefined, 'hero_title')).toBe(presentationDefaults.headings.hero_title);
+  });
+
+  it('uses scoped strict GET snapshots and rejects unknown/duplicate/private response fields', async () => {
+    vi.stubGlobal('location', { origin: 'https://service.example' });
+    let body = JSON.stringify(snapshot);
+    const requests: { url: string; headers: Headers }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); requests.push({ url, headers: new Headers(init?.headers) });
+      if (url.endsWith('/instance')) return json({ instance_id: 'instance_one' });
+      if (url.endsWith('/project_one')) return json(project);
+      return new Response(body, { headers: { 'content-type': 'application/json' } });
+    }));
+    const api = new Api('private-test-token', project.id); await api.connect();
+    await expect(api.presentation()).resolves.toEqual(snapshot);
+    expect(requests.at(-1)?.url).toBe('https://service.example/api/v1/projects/project_one/presentation');
+    expect(requests.at(-1)?.headers.get('x-fc-instance')).toBe('instance_one');
+    expect(requests.at(-1)?.headers.get('x-fc-worker')).toBeNull();
+    for (const invalid of [JSON.stringify({ ...snapshot, private: 'body' }), JSON.stringify({ ...snapshot, presentation: { ...presentation, theme: null } }), JSON.stringify(snapshot).replace('"revision":0', '"revision":0,"revision":0'), JSON.stringify(snapshot).replace('Project one', '\\ud800')]) {
+      body = invalid; await expect(api.presentation()).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    api.close();
+  });
+
+  it('cancels pre-event map reads, marks inactive pages stale and never fetches unrelated bodies', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } });
+    const key = ['fc', 'session', 'instance', project.id, 'worker'];
+    let late!: (value: string) => void; let calls = 0; let oldSignal: AbortSignal | undefined;
+    const old = new Promise<string>(resolve => { late = resolve; });
+    const observer = new QueryObserver(client, { queryKey: [...key, 'map-entry', 'entry_one'], queryFn: ({ signal }) => { if (++calls === 1) { oldSignal = signal; return old; } return Promise.resolve('new'); } });
+    const unsubscribe = observer.subscribe(() => {});
+    client.setQueryData([...key, 'map', 'inactive'], 'older page'); client.setQueryData([...key, 'reviews'], 'untouched');
+    try {
+      await refreshProjectMetadata(client, key, { items: [{ event_type: 'map.entry_updated', resource_id: 'entry_one', revision: 2, event_cursor: 'cursor' }], event_cursor: 'cursor', has_more: false }, new AbortController().signal);
+      expect(oldSignal?.aborted).toBe(true); expect(calls).toBe(2); expect(client.getQueryData([...key, 'map-entry', 'entry_one'])).toBe('new');
+      expect(client.getQueryState([...key, 'map', 'inactive'])?.isInvalidated).toBe(true);
+      expect(client.getQueryState([...key, 'reviews'])?.isInvalidated).toBe(false);
+      late('old'); await flush(); expect(client.getQueryData([...key, 'map-entry', 'entry_one'])).toBe('new');
+    } finally { unsubscribe(); client.clear(); }
+  });
+});

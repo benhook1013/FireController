@@ -1,0 +1,24 @@
+{
+  "headings": {
+    "jobs": "Jobs",
+    "workers": "Workers",
+    "inbox": "Inbox",
+    "reviews": "Reviews",
+    "map": "Map",
+    "hero_eyebrow": "Connected project",
+    "hero_title": "Work, with context.",
+    "hero_description": "Browse jobs and read worker conversations."
+  },
+  "theme": {
+    "canvas_background": "#e8e7e4", "canvas_text": "#252833", "canvas_muted": "#666874", "canvas_border": "#c8c7c4",
+    "surface_background": "#f7f6f3", "surface_text": "#252833", "surface_muted": "#666874", "surface_border": "#cfccc7",
+    "accent_background": "#a51e28", "accent_text": "#ffffff", "accent_soft_background": "#f0dfd8",
+    "header_background": "#a21f29", "header_text": "#ffffff", "header_muted": "#f3cbc8",
+    "hero_background": "#a11c26", "hero_text": "#ffffff", "hero_muted": "#f6c5bc",
+    "focus": "#e68151",
+    "active_background": "#f3dcd4", "active_text": "#a3382c",
+    "blocked_background": "#ecd9dc", "blocked_text": "#a32234",
+    "parked_background": "#e5e0d4", "parked_text": "#82704c",
+    "completed_background": "#e1e7db", "completed_text": "#597048"
+  }
+}

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-type messageTopic struct{ project, worker string }
+type messageTopic struct{ project, worker, feed string }
 type eventChangesKey struct{}
 type eventChanges struct {
 	topics  map[messageTopic]struct{}
@@ -42,6 +42,10 @@ func (s *Store) notifyEvents(changes *eventChanges) {
 }
 
 func (s *Store) addMessageWaiter(scope Scope) (*messageWaiter, func(), error) {
+	return s.addEventWaiter(scope, messageTopic{project: scope.ProjectID, worker: scope.WorkerID, feed: messageFeed})
+}
+
+func (s *Store) addEventWaiter(scope Scope, topic messageTopic) (*messageWaiter, func(), error) {
 	s.eventMu.Lock()
 	defer s.eventMu.Unlock()
 	if s.eventCount >= 1024 || s.principalWaiters[scope.PrincipalID] >= 16 {
@@ -51,7 +55,6 @@ func (s *Store) addMessageWaiter(scope Scope) (*messageWaiter, func(), error) {
 		s.eventGroups = make(map[messageTopic]map[*messageWaiter]struct{})
 		s.principalWaiters = make(map[string]int)
 	}
-	topic := messageTopic{scope.ProjectID, scope.WorkerID}
 	if s.eventGroups[topic] == nil {
 		s.eventGroups[topic] = make(map[*messageWaiter]struct{})
 	}
@@ -96,7 +99,11 @@ func (s *Store) MessageEvents(ctx context.Context, scope Scope, cursor string, l
 }
 
 func (s *Store) messageEventPosition(scope Scope, cursor string) (int64, error) {
-	position, err := s.ParseCursor(scope, messageFeed+scope.WorkerID, cursor)
+	return s.eventPosition(scope, messageFeed+scope.WorkerID, cursor)
+}
+
+func (s *Store) eventPosition(scope Scope, feed, cursor string) (int64, error) {
+	position, err := s.ParseCursor(scope, feed, cursor)
 	if err != nil {
 		return 0, err
 	}

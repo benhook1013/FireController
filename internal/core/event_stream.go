@@ -17,11 +17,29 @@ func (s *Store) streamMessageEvents(ctx context.Context, scope Scope, cursor str
 	if scope.WorkerID == "" || cursor == "" || limit < 1 || limit > 100 || deliver == nil || heartbeat == nil {
 		return Fail("validation_failed", "Use a selected worker, snapshot cursor, limit 1-100 and stream callbacks.", 400)
 	}
-	after, err := s.messageEventPosition(scope, cursor)
+	return s.streamEvents(ctx, scope, cursor, messageFeed+scope.WorkerID,
+		messageTopic{project: scope.ProjectID, worker: scope.WorkerID, feed: messageFeed},
+		func(after int64) (streamEventPage, error) {
+			page, err := s.readMessageEvents(ctx, scope, after, limit)
+			return streamEventPage{page.Cursor, page.HasMore, len(page.Items), func() error { return deliver(page) }}, err
+		}, heartbeat, heartbeatInterval)
+}
+
+// Both feeds share subscription ownership, authorization heartbeats and delivery
+// advancement. Typed readers retain each feed's independent wire and filtering.
+type streamEventPage struct {
+	cursor  string
+	hasMore bool
+	count   int
+	deliver func() error
+}
+
+func (s *Store) streamEvents(ctx context.Context, scope Scope, cursor, feed string, topic messageTopic, read func(int64) (streamEventPage, error), heartbeat func() error, heartbeatInterval time.Duration) error {
+	after, err := s.eventPosition(scope, feed, cursor)
 	if err != nil {
 		return err
 	}
-	waiter, release, err := s.addMessageWaiter(scope)
+	waiter, release, err := s.addEventWaiter(scope, topic)
 	if err != nil {
 		return err
 	}
@@ -33,24 +51,24 @@ func (s *Store) streamMessageEvents(ctx context.Context, scope Scope, cursor str
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		page, err := s.readMessageEvents(ctx, scope, after, limit)
+		page, err := read(after)
 		if err != nil {
 			return err
 		}
-		if initial || len(page.Items) > 0 || page.Cursor != cursor {
-			if err = deliver(page); err != nil {
+		if initial || page.count > 0 || page.cursor != cursor {
+			if err = page.deliver(); err != nil {
 				return err
 			}
 			// Advance only after delivery. The client still owns its processed
 			// cursor and may reconnect with an older one for at-least-once replay.
-			cursor = page.Cursor
-			after, err = s.messageEventPosition(scope, cursor)
+			cursor = page.cursor
+			after, err = s.eventPosition(scope, feed, cursor)
 			if err != nil {
 				return err
 			}
 		}
 		initial = false
-		if page.HasMore {
+		if page.hasMore {
 			continue
 		}
 		for {

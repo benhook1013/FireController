@@ -6,6 +6,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 
 ## Documents
 
+- [Project presentation and metadata](project-presentation.md): selected appearance records, semantic theme validation and isolated live project updates.
 - [Project map](project-map.md): revisioned workstreams, return points and explicit job references, with implementation status at the owner.
 - [Browser guide](browser-guide.md): embedded UI, connection privacy and build/proof limits.
 - [Development](development.md): implemented profile-bound CLI reads/mutations, build/check commands, and current proof limits.

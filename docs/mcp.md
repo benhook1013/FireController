@@ -29,6 +29,7 @@ Startup validates configuration without opening the credential or contacting the
 | Tool | Input and result |
 | --- | --- |
 | `context` | No fields; configured local identity, without service verification. |
+| `presentation_read` | Explicit bound-project appearance snapshot and project-metadata watermark; no provider work or mutation. |
 | `doctor` | No fields; verified instance/project/worker identity. |
 | `workers_list` | Optional limit/cursor; one compact worker page. |
 | `worker_pause_read` | No fields; bound worker’s explicit pause, reason and independent revision. |

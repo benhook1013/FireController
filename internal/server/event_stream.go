@@ -19,8 +19,17 @@ const maxMessageStreamFrame = 1 << 20
 // The shutdown signal cancels persistent streams without interrupting ordinary
 // requests that are draining gracefully.
 func RegisterMessageStream(mux *http.ServeMux, store *core.Store, shutdownContext context.Context) {
+	registerEventStream(mux, store, shutdownContext, "GET /api/v1/projects/{project_id}/message-events/stream", false)
+}
+
+// RegisterProjectStream registers the worker-independent project metadata feed.
+func RegisterProjectStream(mux *http.ServeMux, store *core.Store, shutdownContext context.Context) {
+	registerEventStream(mux, store, shutdownContext, "GET /api/v1/projects/{project_id}/project-events/stream", true)
+}
+
+func registerEventStream(mux *http.ServeMux, store *core.Store, shutdownContext context.Context, pattern string, project bool) {
 	a := &api{store: store}
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/message-events/stream", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		streamContext, cancel := context.WithCancel(r.Context())
 		stop := context.AfterFunc(shutdownContext, cancel)
 		if shutdownContext.Err() != nil {
@@ -30,14 +39,18 @@ func RegisterMessageStream(mux *http.ServeMux, store *core.Store, shutdownContex
 			stop()
 			cancel()
 		}()
-		a.messageEventStream(w, r.WithContext(streamContext))
+		a.eventStream(w, r.WithContext(streamContext), project)
 	})
 }
 
-func (a *api) messageEventStream(w http.ResponseWriter, r *http.Request) {
+func (a *api) eventStream(w http.ResponseWriter, r *http.Request, project bool) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
-		core.WriteError(w, core.Fail("method_not_allowed", "Use GET for the message event stream.", http.StatusMethodNotAllowed))
+		message := "Use GET for the message event stream."
+		if project {
+			message = "Use GET for the project event stream."
+		}
+		core.WriteError(w, core.Fail("method_not_allowed", message, http.StatusMethodNotAllowed))
 		return
 	}
 	authCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -48,7 +61,10 @@ func (a *api) messageEventStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	invalid := core.Fail("validation_failed", "Use one snapshot cursor and optional limit 1-100 for the selected worker's stream.", 400)
-	if scope.WorkerID == "" || len(r.URL.RawQuery) > 16<<10 {
+	if project {
+		invalid = core.Fail("validation_failed", "Use one project snapshot cursor and optional limit 1-100.", 400)
+	}
+	if !project && scope.WorkerID == "" || len(r.URL.RawQuery) > 16<<10 {
 		core.WriteError(w, invalid)
 		return
 	}
@@ -71,6 +87,9 @@ func (a *api) messageEventStream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		core.WriteError(w, err)
 		return
+	}
+	if project && !query.Has("limit") {
+		limit = 25
 	}
 	controller := http.NewResponseController(w)
 	// Clear fcd's ordinary whole-response WriteTimeout. Every actual stream
@@ -126,13 +145,24 @@ func (a *api) messageEventStream(w http.ResponseWriter, r *http.Request) {
 		b.WriteString("\n\n")
 		return write(b.Bytes())
 	}
-	err = a.store.StreamMessageEvents(r.Context(), scope, query.Get("cursor"), limit, func(page core.EventPage) error {
-		data, err := json.Marshal(page)
-		if err != nil {
-			return core.Fail("stream_failed", "The event batch could not be encoded.", 500)
-		}
-		return frame("message-events", page.Cursor, data)
-	}, func() error { return write([]byte(": keepalive\n\n")) })
+	heartbeat := func() error { return write([]byte(": keepalive\n\n")) }
+	if project {
+		err = a.store.StreamProjectEvents(r.Context(), scope, query.Get("cursor"), limit, func(page core.ProjectEventPage) error {
+			data, err := json.Marshal(page)
+			if err != nil {
+				return core.Fail("stream_failed", "The event batch could not be encoded.", 500)
+			}
+			return frame("project-events", page.EventCursor, data)
+		}, heartbeat)
+	} else {
+		err = a.store.StreamMessageEvents(r.Context(), scope, query.Get("cursor"), limit, func(page core.EventPage) error {
+			data, err := json.Marshal(page)
+			if err != nil {
+				return core.Fail("stream_failed", "The event batch could not be encoded.", 500)
+			}
+			return frame("message-events", page.Cursor, data)
+		}, heartbeat)
+	}
 	if err == nil || r.Context().Err() != nil || transportFailed {
 		return
 	}
@@ -142,6 +172,9 @@ func (a *api) messageEventStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	failure := &core.Error{Code: "stream_failed", Message: "The message event stream could not continue."}
+	if project {
+		failure.Message = "The project event stream could not continue."
+	}
 	var known *core.Error
 	if errors.As(err, &known) {
 		failure = &core.Error{Code: known.Code, Message: known.Message}

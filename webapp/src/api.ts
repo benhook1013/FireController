@@ -5,7 +5,9 @@ import type {
   ReviewAttemptSummary, ReviewFinding, ReviewPull, ReviewPullSummary, ReviewQueue, ReviewRunDetail,
   ReviewRunOptions, ReviewRuns, ReviewRunSummary, ReviewPolicyAssessment,
 } from './types';
-import { runMessageWatch, type MessageWatchSource } from './events';
+import { runMessageWatch, runEventWatch, type MessageWatchSource, type EventWatchCallbacks } from './events';
+import { validPresentationSnapshot, validPresentation, validMetadataPage } from './presentation';
+import type { PresentationSnapshot, PresentationRevision, ProjectMetadataPage } from './types';
 import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
 
 const maxBytes = 1 << 20;
@@ -354,6 +356,7 @@ export class Api {
   private closed = false;
   private verifiedInstanceId?: string;
   private activeWatch?: AbortController;
+  private activeMetadataWatch?: AbortController;
   private browserSessionID?: string;
   private pendingBrowserSessionID?: string;
   private expectedInstanceID?: string;
@@ -383,6 +386,7 @@ export class Api {
     this.token = '';
     this.session.abort();
     this.activeWatch?.abort();
+    this.activeMetadataWatch?.abort();
   }
 
   async connect(signal?: AbortSignal): Promise<Project> {
@@ -618,6 +622,38 @@ export class Api {
     return value as unknown as InboxSnapshot;
   }
 
+  async presentation(signal?: AbortSignal): Promise<PresentationSnapshot> {
+    const value = await this.finiteGet(this.projectRoute('presentation'), signal, undefined, 32 << 10, assessmentJSON);
+    if (!validPresentationSnapshot(value, this.projectId)) throw new ApiError('invalid_response', 'The service returned an invalid presentation snapshot.');
+    return value;
+  }
+  async presentationRevision(revision: number, signal?: AbortSignal): Promise<PresentationRevision> {
+    if (!positive(revision)) throw new ApiError('invalid_request', 'Select a positive presentation revision.');
+    const value = await this.finiteGet(this.projectRoute(`presentation/history/${revision}`), signal, undefined, 32 << 10, assessmentJSON);
+    if (!record(value) || !keys(value, ['revision', 'actor_id', 'created_at', 'state']) || value.revision !== revision || !id(value.actor_id) || !assessmentTime(value.created_at) || !validPresentation(value.state, this.projectId) || value.state.revision !== revision || value.state.updated_at !== value.created_at) throw new ApiError('invalid_response', 'The service returned an invalid presentation revision.');
+    return value as unknown as PresentationRevision;
+  }
+  async watchProjectMetadata(initial: PresentationSnapshot, callbacks: EventWatchCallbacks<PresentationSnapshot, ProjectMetadataPage>, signal: AbortSignal): Promise<void> {
+    this.ensureOpen();
+    if (!validPresentationSnapshot(initial, this.projectId)) throw new ApiError('invalid_request', 'Use a verified presentation snapshot.');
+    this.activeMetadataWatch?.abort();
+    const controller = new AbortController();
+    this.activeMetadataWatch = controller;
+    const abort = () => controller.abort();
+    if (signal.aborted || this.session.signal.aborted) controller.abort();
+    else { signal.addEventListener('abort', abort, { once: true }); this.session.signal.addEventListener('abort', abort, { once: true }); }
+    let first: PresentationSnapshot | undefined = initial;
+    try {
+      await runEventWatch<PresentationSnapshot, ProjectMetadataPage>({
+        event: 'project-events', snapshot: selected => { if (first) { const value = first; first = undefined; return Promise.resolve(value); } return this.presentation(selected); },
+        snapshotCursor: value => value.event_cursor, openStream: (after, selected) => this.openEventStream('project-events', after, 25, selected),
+        readFailure: async (response, selected) => { const request = requestBudget([selected], 5000); try { return await readFailure(response, request.signal); } finally { request.close(); } },
+        decodePage: data => { const value = assessmentJSON(data); if (!validMetadataPage(value, 25)) throw new ApiError('invalid_response', 'The project event page is invalid.'); return value; },
+        pageCursor: page => page.event_cursor, substantive: page => page.items.length > 0,
+        parseStreamError: data => { try { return serverError(assessmentJSON(data), 0); } catch { return new ApiError('invalid_response', 'The project stream error is invalid.'); } },
+      }, callbacks, controller.signal);
+    } finally { signal.removeEventListener('abort', abort); this.session.signal.removeEventListener('abort', abort); if (this.activeMetadataWatch === controller) this.activeMetadataWatch = undefined; }
+  }
   async watchMessages(worker: string, options: InboxOptions, callbacks: WatchCallbacks, signal: AbortSignal): Promise<void> {
     this.ensureOpen();
     if (!id(worker)) throw new ApiError('invalid_request', 'The inbox worker is invalid.');
@@ -636,7 +672,7 @@ export class Api {
     const source: MessageWatchSource = {
       projectId: this.projectId,
       snapshot: (target, page, selectedSignal) => this.snapshot(target, page, selectedSignal),
-      openStream: (target, after, limit, selectedSignal) => this.openStream(target, after, limit, selectedSignal),
+      openStream: (target, after, limit, selectedSignal) => this.openEventStream('message-events', after, limit, selectedSignal, target),
       readFailure: async (response, selectedSignal) => {
         const request = requestBudget([selectedSignal], 5000);
         try { return await readFailure(response, request.signal); }
@@ -679,8 +715,8 @@ export class Api {
     if (worker) value.set('X-FC-Worker', worker);
     return value;
   }
-  private async openStream(worker: string, after: string, limit: number, signal: AbortSignal): Promise<{ response: Response; close: () => void }> {
-    if (!id(worker) || !cursor(after) || !Number.isInteger(limit) || limit < 1 || limit > maxItems) throw new ApiError('invalid_request', 'The event stream request is invalid.');
+  private async openEventStream(feed: string, after: string, limit: number, signal: AbortSignal, worker?: string): Promise<{ response: Response; close: () => void }> {
+    if (worker !== undefined && !id(worker) || !cursor(after) || !Number.isInteger(limit) || limit < 1 || limit > maxItems) throw new ApiError('invalid_request', 'The event stream request is invalid.');
     if (!this.verifiedInstanceId) throw new ApiError('not_connected', 'Connect to the selected project before watching messages.');
     const controller = new AbortController();
     const abort = () => controller.abort();
@@ -689,7 +725,7 @@ export class Api {
     const timer = setTimeout(() => { expired = true; controller.abort(); }, 5000);
     try {
       const query = new URLSearchParams({ cursor: after, limit: String(limit) });
-      const response = await fetch(urlFor(`${this.projectRoute('message-events/stream')}?${query}`), { method: 'GET', headers: this.headers(this.verifiedInstanceId, worker), redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal: controller.signal });
+      const response = await fetch(urlFor(`${this.projectRoute(`${feed}/stream`)}?${query}`), { method: 'GET', headers: this.headers(this.verifiedInstanceId, worker), redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal: controller.signal });
       clearTimeout(timer);
       return { response, close: () => { signal.removeEventListener('abort', abort); controller.abort(); } };
     } catch (error) {
