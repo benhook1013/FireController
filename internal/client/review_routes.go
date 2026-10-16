@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 // ReviewFindingRoute is receiver state attached to a stored source finding.
@@ -150,6 +151,19 @@ func (c *Client) ReviewFindingRoute(ctx context.Context, id string) (ReviewRoute
 	r, a, f := value.Route, value.SourceAnchor, value.SourceFinding
 	if r.ID != id || r.ProjectID != c.identity.ProjectID || r.RepositoryID <= 0 || ValidateReviewEvidenceID(r.SourceEvidenceID) != nil || r.Finding < 0 || r.Finding >= 100 || !validPullNumber(r.SourcePullNumber) || r.SourcePullNumber == r.TargetPullNumber || !controlHex(r.SourceHeadSHA, 40) || !controlText(r.RoutingReason, 2048, true) || !validID(r.RoutingActorID) || !controlTime(r.CreatedAt) || !controlTime(r.UpdatedAt) || !validControlAnchor(a) || a.RepositoryID != r.RepositoryID || a.PullNumber != r.SourcePullNumber || a.CandidateSHA != r.SourceHeadSHA || f.Finding != r.Finding || !validRouteSourceFinding(f) || !validFindingRoute(ReviewFindingRoute{ID: r.ID, TargetPullNumber: r.TargetPullNumber, Revision: r.Revision, State: r.State, Disposition: r.Disposition, Reason: r.Reason, Actor: r.ActorID, DecidedAt: r.DecidedAt, FixSHA: r.FixSHA, ProofNote: r.ProofNote, FixedAt: r.FixedAt}) {
 		return ReviewRouteDetail{}, invalidResponse()
+	}
+	created, _ := time.Parse(time.RFC3339Nano, r.CreatedAt)
+	updated, _ := time.Parse(time.RFC3339Nano, r.UpdatedAt)
+	if updated.Before(created) {
+		return ReviewRouteDetail{}, invalidResponse()
+	}
+	for _, stamp := range []string{r.DecidedAt, r.FixedAt} {
+		if stamp != "" {
+			t, _ := time.Parse(time.RFC3339Nano, stamp)
+			if t.Before(created) || t.After(updated) {
+				return ReviewRouteDetail{}, invalidResponse()
+			}
+		}
 	}
 	return value, nil
 }

@@ -87,6 +87,22 @@ type findingRouteReceipt struct {
 	SourceRevision int64  `json:"source_revision"`
 }
 
+// routeStamp samples only local mutation recording time. Route timestamps use
+// one fixed-width UTC representation, so their lexical order is chronological.
+func (e *Engine) routeStamp(minimum string) string {
+	now := time.Now
+	if e.routeNow != nil {
+		now = e.routeNow
+	}
+	return routeStampAtLeast(now().UTC().Format("2006-01-02T15:04:05.000000000Z"), minimum)
+}
+func routeStampAtLeast(at, minimum string) string {
+	if at < minimum {
+		return minimum
+	}
+	return at
+}
+
 func validFindingRouteID(id string) bool { return hostedObservationID(id, "review_route_") }
 func validRoutePull(n int64) bool        { return n > 0 && n <= 2147483647 }
 func routeStorageError() error {
@@ -97,9 +113,9 @@ func routeTimestamp(s string) (time.Time, bool) {
 	return at, err == nil && !at.IsZero() && s == at.UTC().Format("2006-01-02T15:04:05.000000000Z")
 }
 func validReviewRoute(r ReviewRoute) bool {
-	_, createdOK := routeTimestamp(r.CreatedAt)
-	_, updatedOK := routeTimestamp(r.UpdatedAt)
-	if !validFindingRouteID(r.ID) || !identifier.MatchString(r.ProjectID) || r.RepositoryID <= 0 || !hostedObservationID(r.SourceEvidenceID, "review_evidence_") || r.Finding < 0 || r.Finding >= 100 || !validRoutePull(r.SourcePullNumber) || !validRoutePull(r.TargetPullNumber) || r.SourcePullNumber == r.TargetPullNumber || !sha.MatchString(r.SourceHeadSHA) || r.Revision < 1 || !safeText(r.RoutingReason, 2048) || strings.TrimSpace(r.RoutingReason) == "" || !identifier.MatchString(r.RoutingActorID) || !createdOK || !updatedOK || !safeText(r.Reason, 2048) || !safeText(r.ProofNote, 2048) {
+	created, createdOK := routeTimestamp(r.CreatedAt)
+	updated, updatedOK := routeTimestamp(r.UpdatedAt)
+	if !validFindingRouteID(r.ID) || !identifier.MatchString(r.ProjectID) || r.RepositoryID <= 0 || !hostedObservationID(r.SourceEvidenceID, "review_evidence_") || r.Finding < 0 || r.Finding >= 100 || !validRoutePull(r.SourcePullNumber) || !validRoutePull(r.TargetPullNumber) || r.SourcePullNumber == r.TargetPullNumber || !sha.MatchString(r.SourceHeadSHA) || r.Revision < 1 || !safeText(r.RoutingReason, 2048) || strings.TrimSpace(r.RoutingReason) == "" || !identifier.MatchString(r.RoutingActorID) || !createdOK || !updatedOK || updated.Before(created) || !safeText(r.Reason, 2048) || !safeText(r.ProofNote, 2048) {
 		return false
 	}
 	if r.State != "active" && r.State != "superseded" {
@@ -111,16 +127,16 @@ func validReviewRoute(r ReviewRoute) bool {
 			return false
 		}
 	case "accepted", "rejected":
-		_, ok := routeTimestamp(r.DecidedAt)
-		if !ok || !identifier.MatchString(r.ActorID) || strings.TrimSpace(r.Reason) == "" {
+		decided, ok := routeTimestamp(r.DecidedAt)
+		if !ok || decided.Before(created) || decided.After(updated) || !identifier.MatchString(r.ActorID) || strings.TrimSpace(r.Reason) == "" {
 			return false
 		}
 	default:
 		return false
 	}
 	if r.FixSHA != "" {
-		_, ok := routeTimestamp(r.FixedAt)
-		if r.Disposition != "accepted" || r.State != "active" || !sha.MatchString(r.FixSHA) || strings.TrimSpace(r.ProofNote) == "" || !ok {
+		fixed, ok := routeTimestamp(r.FixedAt)
+		if r.Disposition != "accepted" || r.State != "active" || !sha.MatchString(r.FixSHA) || strings.TrimSpace(r.ProofNote) == "" || !ok || fixed.Before(created) || fixed.After(updated) {
 			return false
 		}
 	} else if r.ProofNote != "" || r.FixedAt != "" {
@@ -253,22 +269,25 @@ func persistFindingRoute(ctx context.Context, tx *sql.Tx, scope core.Scope, rout
 		TargetPullNumber int64  `json:"target_pull_number"`
 	}{route.SourceEvidenceID, route.Finding, route.TargetPullNumber})
 }
-func supersedeFindingRoute(ctx context.Context, tx *sql.Tx, scope core.Scope, evidence ReviewEvidence, state ReviewAdjudication, finding FindingDecision, expected int64, at string) error {
+func supersedeFindingRoute(ctx context.Context, tx *sql.Tx, scope core.Scope, evidence ReviewEvidence, state ReviewAdjudication, finding FindingDecision, expected int64, at string) (string, error) {
 	route, err := readFindingRoute(ctx, tx, scope.ProjectID, finding.RouteID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !routeMatchesSource(route, evidence, state, true) {
-		return routeStorageError()
+		return "", routeStorageError()
 	}
 	if route.Revision != expected || route.Revision == math.MaxInt64 || route.FixSHA != "" {
-		return conflict()
+		return "", conflict()
 	}
 	prior := route.Revision
 	route.Revision++
 	route.State = "superseded"
-	route.UpdatedAt = at
-	return persistFindingRoute(ctx, tx, scope, route, prior, "superseded")
+	route.UpdatedAt = routeStampAtLeast(at, route.UpdatedAt)
+	if err = persistFindingRoute(ctx, tx, scope, route, prior, "superseded"); err != nil {
+		return "", err
+	}
+	return route.UpdatedAt, nil
 }
 
 func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, evidenceID string, request FindingRouteRequest) (json.RawMessage, error) {
@@ -305,9 +324,9 @@ func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, 
 		if f.FixSHA != "" {
 			return nil, conflict()
 		}
-		at := sourceStamp()
+		at := e.routeStamp("")
 		if f.Disposition == "routed" {
-			if err = supersedeFindingRoute(ctx, tx, scope, evidence, state, *f, request.ExpectedRouteRevision, at); err != nil {
+			if at, err = supersedeFindingRoute(ctx, tx, scope, evidence, state, *f, request.ExpectedRouteRevision, at); err != nil {
 				return nil, err
 			}
 		} else if request.ExpectedRouteRevision != 0 {
@@ -344,7 +363,7 @@ func (e *Engine) mutateFindingRoute(ctx context.Context, scope core.Scope, key, 
 		if !routeMatchesSource(route, evidence, state, true) {
 			return nil, routeStorageError()
 		}
-		at := sourceStamp()
+		at := e.routeStamp(route.UpdatedAt)
 		if err = change(&route, at); err != nil {
 			return nil, err
 		}

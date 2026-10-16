@@ -353,18 +353,18 @@ func TestReviewRoutesClientBrowserReceiverProofStaysSeparate(t *testing.T) {
 	}
 }
 
-func TestReviewRoutesRetainedClockRollbackKeepsIndividualTimeValidation(t *testing.T) {
-	for _, bad := range []string{"", "created", "updated", "decided", "fixed"} {
+func TestReviewRoutesCoherentFutureHistoryKeepsChronologyValidation(t *testing.T) {
+	for _, bad := range []string{"", "created", "updated", "decided", "fixed", "reversed_update", "decision_before_origin", "fix_after_update"} {
 		t.Run(bad, func(t *testing.T) {
 			value := sampleRouteDetail()
 			value.Route.Revision = 3
 			value.Route.Disposition = "accepted"
 			value.Route.Reason = "Receiver accepts"
 			value.Route.ActorID = "receiver"
-			value.Route.CreatedAt = "2099-01-03T00:00:00Z"
+			value.Route.CreatedAt = "2099-01-01T00:00:00Z"
 			value.Route.DecidedAt = "2099-01-02T00:00:00Z"
-			value.Route.FixedAt = "2099-01-01T00:00:00Z"
-			value.Route.UpdatedAt = "2026-01-01T00:00:00Z"
+			value.Route.FixedAt = "2099-01-03T00:00:00Z"
+			value.Route.UpdatedAt = "2099-01-03T00:00:00Z"
 			value.Route.FixSHA = strings.Repeat("f", 40)
 			value.Route.ProofNote = "Exact retained fix proof"
 			switch bad {
@@ -376,6 +376,12 @@ func TestReviewRoutesRetainedClockRollbackKeepsIndividualTimeValidation(t *testi
 				value.Route.DecidedAt = "bad"
 			case "fixed":
 				value.Route.FixedAt = "bad"
+			case "reversed_update":
+				value.Route.UpdatedAt = "2026-01-01T00:00:00Z"
+			case "decision_before_origin":
+				value.Route.DecidedAt = "2026-01-01T00:00:00Z"
+			case "fix_after_update":
+				value.Route.FixedAt = "2099-01-04T00:00:00Z"
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/api/v1/instance" {
@@ -390,7 +396,7 @@ func TestReviewRoutesRetainedClockRollbackKeepsIndividualTimeValidation(t *testi
 			if bad != "" {
 				checkError(t, err, "invalid_response")
 			} else if err != nil || got.Route != value.Route {
-				t.Fatal("clock rollback erased retained route", got, err)
+				t.Fatal("coherent future history became unreadable", got, err)
 			}
 		})
 	}
