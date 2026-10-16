@@ -1206,6 +1206,30 @@ describe('captured comparison policy assessment', () => {
     await expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'response_too_large' });
     client.close();
   });
+  it.each(['review_held', 'review_capacity'])('preserves %s assessment refusals without provider diagnostics', async code => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({ error: { code, message: 'PRIVATE_PROVIDER_DIAGNOSTIC <script>', details: { reason: 'repository_changed', private: 'PRIVATE_CAPTURE' } } }, 409));
+    vi.stubGlobal('fetch', fetchMock);
+    const failure = await client.reviewPolicyAssessment(evidenceID).catch(error => error as ApiError);
+    expect(failure).toMatchObject({ code, status: 409 });
+    expect(String(failure)).not.toMatch(/PRIVATE_|script|repository_changed/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    client.close();
+  });
+  it.each([[401, 'unauthorized'], [403, 'forbidden'], [500, 'storage_unavailable']] as const)('keeps assessment error %s/%s scoped and safe', async (status, code) => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({ error: { code, message: 'PRIVATE_DIAGNOSTIC' } }, status));
+    vi.stubGlobal('fetch', fetchMock);
+    const failure = await client.reviewPolicyAssessment(evidenceID).catch(error => error as ApiError);
+    expect(failure).toMatchObject({ code, status });
+    expect(String(failure)).not.toContain('PRIVATE_DIAGNOSTIC');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    client.close();
+  });
   it('obeys caller/session cancellation and one finite five-second deadline without retry', async () => {
     setupLocation();
     const client = api();

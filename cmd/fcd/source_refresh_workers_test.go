@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -160,7 +161,7 @@ func TestSourceRefreshWorkersAreOwnedAndIdleReadsStayLocal(t *testing.T) {
 	driver := &sourceBoundDriver{reader: reader}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done, err := startReviewWorkers(ctx, engine, map[string]reviewexec.Driver{"source-capability": driver})
+	done, err := startReviewWorkers(ctx, engine, map[string]reviewexec.Driver{"source-capability": driver}, io.Discard)
 	if err != nil || done == nil {
 		t.Fatal("worker startup", err)
 	}
@@ -191,7 +192,7 @@ func TestSourceRefreshSourceLessFakeDriverKeepsExistingLifecycle(t *testing.T) {
 	_, engine := sourceWorkersFixture(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done, err := startReviewWorkers(ctx, engine, map[string]reviewexec.Driver{"source-capability": &sourceWorkerDriver{}})
+	done, err := startReviewWorkers(ctx, engine, map[string]reviewexec.Driver{"source-capability": &sourceWorkerDriver{}}, io.Discard)
 	if err != nil || done == nil {
 		t.Fatal(err)
 	}
@@ -215,7 +216,7 @@ func TestSourceRefreshStartupFailureCancelsAndAwaitsObserver(t *testing.T) {
 	driver := &sourceStartupObserver{canceled: make(chan struct{}), release: make(chan struct{})}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done, err := startReviewWorkers(ctx, engine, map[string]reviewexec.Driver{"source-capability": driver})
+	done, err := startReviewWorkers(ctx, engine, map[string]reviewexec.Driver{"source-capability": driver}, io.Discard)
 	if err == nil || done == nil {
 		close(driver.release)
 		t.Fatal("invalid source binding did not return owned startup failure", err)
@@ -245,7 +246,7 @@ func TestSourceRefreshRuntimeFailureCancelsAndAwaitsAllWorkers(t *testing.T) {
 	driver := &sourceStartupObserver{sourceBoundDriver: sourceBoundDriver{reader: reader}, canceled: make(chan struct{}), release: make(chan struct{})}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done, err := startReviewWorkers(ctx, engine, map[string]reviewexec.Driver{"source-capability": driver})
+	done, err := startReviewWorkers(ctx, engine, map[string]reviewexec.Driver{"source-capability": driver}, io.Discard)
 	if err != nil || done == nil {
 		close(driver.release)
 		t.Fatal("worker startup", err)
