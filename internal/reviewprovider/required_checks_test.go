@@ -225,7 +225,11 @@ func TestRequiredCheckAuthorityPermissionsPartialPagesAndNoRedirect(t *testing.T
 			}))
 			defer server.Close()
 			result, err := testGitHub(server, "").RequiredCheckAuthority(t.Context(), "owner/repo", "main")
-			if err == nil || result.State != "unproven" || result.Checks != nil || calls.Load() != 1 || strings.Contains(err.Error(), "PRIVATE") {
+			wantCalls := int64(1)
+			if status == 404 {
+				wantCalls++ // The selected branch also returns 404: absence remains unproven.
+			}
+			if err == nil || result.State != "unproven" || result.Checks != nil || calls.Load() != wantCalls || strings.Contains(err.Error(), "PRIVATE") {
 				t.Fatal("missing/forbidden authority became empty proof", result, err)
 			}
 		})
