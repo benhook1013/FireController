@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The API, typed client, CLI, MCP and backup integration implement the contract below. Focused backend, client, adapter and backup tests pass, including race checks. Full combined validation and actual packaged proof are pending. Browser presentation and combined resume context remain unfinished. Existing jobs, updates, checklists, checkpoints, primary focus and worker pause remain independent.
+The API, typed client, CLI, MCP and backup integration implement the contract below. Focused backend, client, adapter and backup tests pass, including race checks. Full combined validation and six actual packaged groups pass at the checkpoint recorded below. Browser presentation and combined resume context remain unfinished. Existing jobs, updates, checklists, checkpoints, primary focus and worker pause remain independent.
 
 ## Scope and state
 
@@ -50,3 +50,13 @@ MCP tools are `note_create`, `note_update`, `note_read`, `note_list`, `note_hist
 ## Proof boundary
 
 Required proof covers all scope combinations and invalid/foreign targets, assignment-independent scope, default pending selection and AND filters, explicit assignment expansion after reassignment, safe previews, guarded body/scope/status corrections, dismissal reasons and reopening, immutable earlier states, no-op, concurrent/stale writes, changed-key conflicts and original-key replay after later edits/restart. Authorization, revocation, project isolation, cursor binding, overflow and transactional failures must preserve unrelated jobs, messages, focus, pause and review state. Backup inspection and inactive restore preserve current notes and every revision and reject malformed schemas before writes. Actual CLI and official-SDK MCP calls exercise the API before provider review, including lost committed responses and large escaped text. Browser presentation, combined resume packets and host wakeup remain separate boundaries.
+
+## Executed proof and limits
+
+Clean checkpoint `34a7f66ab62d7936b3dc85c4fc1bd16cdf312fc9` passed full `make check build`: 182 browser tests, all Go race tests, vet, formatting/documentation checks and 19 link-checker tests, generated assets and all three release binaries. Focused tests additionally cover missing/null response fields, legal large escaped pages, immutable history, revision races, transactional failures and strict backup schema/content inspection.
+
+Six actual packaged groups passed in 3.611 seconds against isolated SQLite using `fc`, `fcd`, `fcmcp` and the official Go MCP SDK. They exercised all seven scope combinations, current-assignment expansion and exact filters, a full 16 KiB escaped UTF-8 body, safe previews and explicit 20+1 paging, body-free status patches, immutable earlier bodies/reasons/scope, no-op, stale guards, cross-adapter original-key recovery after a committed response was corrupted, authorization and instance isolation, revocation, daemon restart and backup/inspection/inactive restore. The restored copy retained 23 notes and 32 full revisions plus unrelated domain data, with a new identity and revoked credentials; inactive startup remained refused. Reads and note effects preserved independent jobs, focus, pause, messages and review policy.
+
+An initial harness assertion counted four total HTTP calls for four note reads; the actual clients also made four required instance handshakes. The preserved diagnostic run showed correct note results. Correcting only the endpoint-count assertion produced the passing run without product changes or relaxed timeouts. The run used 73 subprocess invocations and 134 loopback HTTP requests; maximum observed subprocess and HTTP times were 73.316 ms and 9.131 ms. These short local observations do not establish fleet performance. No provider work occurred. Source and executable hashes stayed unchanged; full-build binaries exactly matched the independently tested binaries, and owned processes/listeners were cleaned up.
+
+The lost-response case corrupted a post-commit HTTP result rather than disconnecting TCP. Browser note presentation, combined resume context, actual agent-host wakeup, installed deployment and operational cutover remain separate proof boundaries. The retained development controller and website remain primary.
