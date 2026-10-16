@@ -99,6 +99,7 @@ type Attempt struct {
 type Engine struct {
 	attemptNow                 func() time.Time
 	routeNow                   func() time.Time
+	checkpointNow              func() time.Time
 	checkpointWake             chan struct{}
 	checkpointRunning          atomic.Bool
 	checkpointMu               sync.Mutex

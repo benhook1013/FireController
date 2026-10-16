@@ -81,7 +81,7 @@ func (e *Engine) StartCheckpointPublications(ctx context.Context, providers map[
 					r.View.State = "recover_queued"
 				}
 				r.View.Revision++
-				r.View.UpdatedAt = sourceStamp()
+				r.View.UpdatedAt = e.checkpointStamp(r.View.UpdatedAt)
 				r.View.Reason = "interrupted"
 				if err = persistCheckpoint(ctx, tx, r, previous); err != nil {
 					return err
@@ -166,7 +166,7 @@ func (e *Engine) checkpointNext(ctx context.Context, providers map[string]Checkp
 				r.View.State = "recovering"
 			}
 			r.View.Revision++
-			r.View.UpdatedAt = sourceStamp()
+			r.View.UpdatedAt = e.checkpointStamp(r.View.UpdatedAt)
 			r.View.Reason = ""
 			if err = persistCheckpoint(ctx, tx, r, prior); err != nil {
 				return err
@@ -246,7 +246,7 @@ func (e *Engine) checkpointNext(ctx context.Context, providers map[string]Checkp
 			prior := next.View.Revision
 			next.View.Revision++
 			next.View.State = "posting"
-			next.View.UpdatedAt = sourceStamp()
+			next.View.UpdatedAt = e.checkpointStamp(next.View.UpdatedAt)
 			next.Unposted = false
 			render, _ := reviewprovider.RenderCheckpoint(payload)
 			next.Intent = &checkpointIntent{Revision: next.View.Revision, CapabilityID: next.CapabilityID, Fingerprint: next.Fingerprint, Provider: next.Provider, Account: next.Account, Repository: repo.FullName, Actor: actor, EarliestPosting: next.View.UpdatedAt, Body: render.Body}
@@ -371,7 +371,7 @@ func (e *Engine) finishCheckpoint(ctx context.Context, r checkpointRecord, state
 			next := current
 			next.View.State, next.View.Reason, next.Unposted = state, reason, unposted
 			next.View.Revision++
-			next.View.UpdatedAt = sourceStamp()
+			next.View.UpdatedAt = e.checkpointStamp(next.View.UpdatedAt)
 			if comment != nil {
 				next.ConfirmationRepository = r.ConfirmationRepository
 				next.View.CommentID = comment.ID
