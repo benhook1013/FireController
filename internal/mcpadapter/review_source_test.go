@@ -29,7 +29,7 @@ func TestReviewSourceMCPDiscoveryAndInvalidArgumentsBeforeCredentials(t *testing
 	binding := localContext()
 	binding.ServerURL = service.URL
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": binding}, "missing-source-credential"), "chosen")
-	listed, err := session.ListTools(t.Context(), nil)
+	listed, err := allDiscoveredTools(t, session)
 	if err != nil {
 		t.Fatal(err)
 	}

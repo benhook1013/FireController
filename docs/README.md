@@ -6,6 +6,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 
 ## Documents
 
+- [Project map](project-map.md): revisioned workstreams, return points and explicit job references, with implementation status at the owner.
 - [Browser guide](browser-guide.md): embedded UI, connection privacy and build/proof limits.
 - [Development](development.md): implemented profile-bound CLI reads/mutations, build/check commands, and current proof limits.
 - [Managed backups](backups.md): verified local bundles, managed scheduling/retention and inactive restore, with activation limits.

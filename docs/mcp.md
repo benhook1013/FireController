@@ -45,6 +45,15 @@ Startup validates configuration without opening the credential or contacting the
 | `job_update_history` | Required job_id and optional limit/cursor; one newest-first narrative-update page. |
 | `job_checklist_read` | Required job_id; current ordered checklist and current job revision. |
 | `job_checklist_history` | Required job_id and optional limit/cursor; one newest-first full checklist revision page. |
+| `map_entry_list` | Optional kind/archived/limit/cursor; one compact map page, no phases or descriptions. |
+| `map_entry_read` | Required entry_id; one complete current workstream or return point. |
+| `map_entry_history` | Required entry_id and optional limit/cursor; compact newest-first revision summaries. |
+| `map_entry_revision_read` | Required entry_id/revision; one complete immutable editorial snapshot. |
+| `map_entry_create` | Required idempotency_key/entry; create one bounded workstream or return point. |
+| `map_entry_replace` | Required idempotency_key/entry_id/expected_revision/entry; full guarded replacement, preserving retained phase IDs. |
+| `job_workstream_read` | Required job_id; independent association revision and captured-at-association title. |
+| `job_workstream_replace` | Required idempotency_key/job_id/expected_revision/workstream_id; select a scoped active workstream or explicitly clear with empty text. |
+| `job_workstream_history` | Required job_id and optional limit/cursor; one compact captured-association history page. |
 | `note_read` | Required note_id; one full current note. |
 | `note_list` | Optional worker_id/all_workers/direct_only/job_id/phase/kind/status/limit/cursor; compact notes for the bound worker and its currently assigned jobs by default. |
 | `note_history` | Required note_id and optional limit/cursor; one compact revision page. |

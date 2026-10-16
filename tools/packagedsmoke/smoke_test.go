@@ -232,17 +232,29 @@ func TestPackagedSmoke(t *testing.T) {
 	}
 	t.Cleanup(closeMCP)
 	toolCtx, cancelTools := context.WithTimeout(ctx, stepTimeout)
-	tools, err := session.ListTools(toolCtx, nil)
-	cancelTools()
-	if err != nil {
-		t.Fatal("actual fcmcp tool discovery failed")
-	}
+	defer cancelTools()
 	needed := map[string]bool{"job_read": false, "inbox_snapshot": false, "wait_for_messages": false}
-	for _, tool := range tools.Tools {
-		if _, exists := needed[tool.Name]; exists {
-			needed[tool.Name] = true
+	params, seen := &mcp.ListToolsParams{}, map[string]bool{}
+	for {
+		tools, err := session.ListTools(toolCtx, params)
+		if err != nil {
+			t.Fatal("actual fcmcp tool discovery failed")
 		}
+		for _, tool := range tools.Tools {
+			if _, exists := needed[tool.Name]; exists {
+				needed[tool.Name] = true
+			}
+		}
+		if tools.NextCursor == "" {
+			break
+		}
+		if seen[tools.NextCursor] {
+			t.Fatal("actual fcmcp discovery repeated a page cursor")
+		}
+		seen[tools.NextCursor] = true
+		params.Cursor = tools.NextCursor
 	}
+	cancelTools()
 	for name, found := range needed {
 		if !found {
 			t.Fatalf("needed packaged tool %s is missing", name)

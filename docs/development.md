@@ -136,6 +136,8 @@ A disconnected, timed-out or canceled write can already have committed. Such dia
 
 This slice does not persist a client retry journal. Callers retain the key, request and originating binding; changing a profile or rebinding to a restored instance is not recovery of that pending action.
 
+The [project-map agent commands](project-map.md#agent-commands) add explicit compact map reads, full guarded editorial replacements and independent job/workstream references. Ordinary job/context reads do not expand map content.
+
 ## Incoming message replay
 
 `fc inbox snapshot` and `fc inbox events` expose the scoped [message-event API](message-events.md). Snapshot includes a compact inbox page and its same-transaction event cursor. Events replays one page or waits up to four seconds for a relevant change, within the normal five-second command budget. Full message bodies and explicit seen/ack actions remain separate calls. The explicit [quiet wait](message-wait.md), `fc inbox wait --cursor CURSOR`, consumes the persistent stream and returns the first new incoming-message event page or a bounded timeout; its default wait is 25 seconds, with no intermediate heartbeat output.

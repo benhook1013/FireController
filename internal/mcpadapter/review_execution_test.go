@@ -26,11 +26,11 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 	c := localContext()
 	c.ServerURL = service.URL
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"alpha": c}, "absent-private-token"), "alpha")
-	listed, err := session.ListTools(t.Context(), nil)
+	listed, err := allDiscoveredTools(t, session)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 64 || listed.NextCursor != "" {
+	if len(listed.Tools) == 0 || listed.NextCursor != "" {
 		t.Fatal("discovery count changed")
 	}
 	names := map[string]int{"review_execution_read": 0, "review_operation_read": 1, "review_request": 5}

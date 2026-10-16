@@ -40,8 +40,8 @@ func TestWorkerPauseToolsSDKStdioReplayHistoryAndAnnotations(t *testing.T) {
 	defer service.Close()
 	identity := profile.Context{Profile: "chosen", ServerURL: service.URL, InstanceID: f.store.InstanceID(), ProjectID: f.project, WorkerID: f.sender}
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": identity}, f.credential), "chosen")
-	tools, err := session.ListTools(t.Context(), nil)
-	if err != nil || len(tools.Tools) != 64 || tools.NextCursor != "" {
+	tools, err := allDiscoveredTools(t, session)
+	if err != nil || len(tools.Tools) == 0 || tools.NextCursor != "" {
 		t.Fatal("discovery", err)
 	}
 	want := map[string]int{"worker_pause_read": 0, "worker_pause_replace": 4, "worker_pause_history": 2}

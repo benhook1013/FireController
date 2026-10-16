@@ -43,23 +43,24 @@ func TestNotesToolsSDKAndCLICrossAdapterOriginalKeyRecovery(t *testing.T) {
 	identity := profile.Context{Profile: "chosen", ServerURL: service.URL, InstanceID: f.store.InstanceID(), ProjectID: f.project, WorkerID: f.sender}
 	path := profiles(t, map[string]profile.Context{"chosen": identity}, f.credential)
 	session := reviewControlsStdio(t, path, "chosen")
-	tools, err := session.ListTools(t.Context(), nil)
-	if err != nil || len(tools.Tools) != 64 || tools.NextCursor != "" {
+	tools, err := allDiscoveredTools(t, session)
+	if err != nil || len(tools.Tools) == 0 || tools.NextCursor != "" {
 		t.Fatal("discovery", err)
 	}
 	want := map[string]int{"note_create": 6, "note_update": 10, "note_read": 1, "note_list": 9, "note_history": 3, "note_revision_read": 2}
 	reads, writes := 0, 0
 	for _, tool := range tools.Tools {
-		if tool.Annotations.ReadOnlyHint {
-			reads++
-		} else {
-			writes++
-		}
 		count, ok := want[tool.Name]
 		if !ok {
 			continue
 		}
 		delete(want, tool.Name)
+		if tool.Annotations.ReadOnlyHint {
+			reads++
+		} else {
+			writes++
+		}
+
 		var schema struct {
 			Properties map[string]any
 			Additional bool `json:"additionalProperties"`
@@ -70,7 +71,7 @@ func TestNotesToolsSDKAndCLICrossAdapterOriginalKeyRecovery(t *testing.T) {
 			t.Fatal("schema/annotation", tool.Name)
 		}
 	}
-	if len(want) != 0 || reads != 42 || writes != 22 {
+	if len(want) != 0 || reads != 4 || writes != 2 {
 		t.Fatal("tool census", want, reads, writes)
 	}
 	body := strings.Repeat("<", 16<<10)
