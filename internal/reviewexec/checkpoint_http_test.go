@@ -124,7 +124,7 @@ func (p *checkpointHTTPProvider) PostIssueComment(_ context.Context, _ string, _
 	now := time.Now().UTC().Truncate(time.Second)
 	return reviewprovider.IssueComment{ID: 91, Body: body, Author: reviewprovider.Author{ID: 71, Kind: "User", Login: "poster"}, CreatedAt: now, UpdatedAt: now}, nil
 }
-func (p *checkpointHTTPProvider) IssueComments(context.Context, string, int64) ([]reviewprovider.IssueComment, error) {
+func (p *checkpointHTTPProvider) CheckpointComments(context.Context, string, int64, reviewprovider.Author) ([]reviewprovider.IssueComment, error) {
 	p.reads.Add(1)
 	return []reviewprovider.IssueComment{}, nil
 }
