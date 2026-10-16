@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The worker-pause API, storage, typed client, CLI and MCP adapters are implemented. Focused normal/race tests, full combined validation and actual packaged proof pass at the checkpoints below. Browser integration remains unfinished. [Primary focus](worker-focus.md) and ordinary job status already work independently.
+The worker-pause API, storage, typed client, CLI and MCP adapters are implemented. Focused normal/race tests, full combined validation and actual packaged proof pass at the checkpoints below. Read-only [worker browser views](browser-coordination.md) expose current pause and explicit history; that owner records their separate proof. [Primary focus](worker-focus.md) and ordinary job status already work independently.
 
 ## Explicit state
 
@@ -30,7 +30,7 @@ This slice adds jobs schema five with `worker_pause_state` and `worker_pause_his
 
 Typed client operations read, replace and page history. Profile-bound CLI commands are `workers pause-state`, `workers pause-history`, `workers pause --reason TEXT --expect-revision N --key KEY`, and `workers resume --expect-revision N --key KEY`. `--reason` is explicit for pause, including an empty string. MCP tools are `worker_pause_read`, `worker_pause_replace` and `worker_pause_history`; replacement requires the same full state as the API. Tool calls inherit project/worker from the private profile. Strict validation precedes credential/network access, the existing five-second total budget applies, and uncertain responses recover with the original key. Reads perform no provider work, durable writes, automatic history reads or message acknowledgments.
 
-A later browser view shows explicit pause and its reason for the selected worker without inferring agent presence or changing job presentation. Until that integration is implemented, the API and bound tools are the pause surface. Do not add one automatic pause request per worker to routine project lists.
+The explicit [worker-details browser view](browser-coordination.md) reads pause and its reason without inferring agent presence or changing job presentation. History is deliberately opened and cursor-paged. Routine project and worker lists do not add one automatic pause request per worker.
 
 ## Required proof
 

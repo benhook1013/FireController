@@ -9,6 +9,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Project presentation and metadata](project-presentation.md): selected appearance records, semantic theme validation and isolated live project updates.
 - [Project map](project-map.md): revisioned workstreams, return points and explicit job references, with implementation status at the owner.
 - [Browser guide](browser-guide.md): embedded UI, connection privacy and build/proof limits.
+- [Browser coordination views](browser-coordination.md): explicit note/history and worker pause/focus views over the existing read contracts.
 - [Development](development.md): implemented profile-bound CLI reads/mutations, build/check commands, and current proof limits.
 - [Managed backups](backups.md): verified local bundles, managed scheduling/retention and inactive restore, with activation limits.
 - [Provider resumption](provider-resumption.md): explicit operator reconciliation, retained-work abandonment and release after restore; implementation and proof status are recorded at that owner.

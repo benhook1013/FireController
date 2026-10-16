@@ -55,3 +55,15 @@ export interface PresentationSnapshot {presentation: Presentation; event_cursor:
 export interface PresentationRevision {revision: number; actor_id: string; created_at: string; state: Presentation}
 export interface ProjectMetadataEvent {event_type: 'project.presentation_changed' | 'map.entry_created' | 'map.entry_updated' | 'job.workstream_changed'; resource_id: string; revision: number; event_cursor: string}
 export interface ProjectMetadataPage {items: ProjectMetadataEvent[]; event_cursor: string; has_more: boolean}
+
+export interface WorkerPrimary {worker_id: string; revision: number; job_id: string}
+export interface WorkerPrimaryHistoryEntry extends WorkerPrimary {actor_id: string; actor_worker_id: string; reason: 'selected'|'cleared'|'job_reassigned'; created_at: string}
+export interface WorkerPause {worker_id: string; revision: number; paused: boolean; reason: string}
+export interface WorkerPauseHistoryEntry extends WorkerPause {actor_id: string; actor_worker_id: string; created_at: string}
+export type NoteKind = 'reminder'|'source';
+export type NoteStatus = 'pending'|'consumed'|'dismissed';
+export interface NoteOptions extends PageOptions {worker_id?: string; job_id?: string; phase?: string; kind?: NoteKind; status?: NoteStatus|'all'; include_assigned_jobs?: boolean}
+export interface NoteSummary {id: string; project_id: string; revision: number; worker_id: string; job_id: string; phase: string; kind: NoteKind; status: NoteStatus; created_at: string; updated_at: string; body_preview: string; body_truncated: boolean}
+export interface Note {id: string; project_id: string; revision: number; worker_id: string; job_id: string; phase: string; kind: NoteKind; status: NoteStatus; created_at: string; updated_at: string; body: string; status_reason: string}
+export interface NoteHistorySummary extends NoteSummary {actor_id: string; actor_worker_id: string; recorded_at: string}
+export interface NoteRevision extends Note {actor_id: string; actor_worker_id: string; recorded_at: string}
