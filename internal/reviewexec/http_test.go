@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -27,28 +28,33 @@ func newHTTPFixture(t *testing.T) *httpFixture { return newHTTPFixtureWithPolicy
 func newHTTPFixtureWithPolicy(t *testing.T, configured bool) *httpFixture {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "private")
+	phaseStarted := time.Now()
 	store, err := core.Open(context.Background(), dir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("fixture store open after %s: %v", time.Since(phaseStarted), err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	t.Logf("fixture store open completed in %s", time.Since(phaseStarted))
+	phaseStarted = time.Now()
 	if err := EnsureSchema(context.Background(), store); err != nil {
-		t.Fatal(err)
+		t.Fatalf("fixture execution schema after %s: %v", time.Since(phaseStarted), err)
 	}
+	t.Logf("fixture execution schema completed in %s", time.Since(phaseStarted))
+	phaseStarted = time.Now()
 	adminBytes, err := os.ReadFile(filepath.Join(dir, "bootstrap-admin.token"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("fixture seed rows after %s: %v", time.Since(phaseStarted), err)
 	}
 	f := &httpFixture{store: store, admin: strings.TrimSpace(string(adminBytes)), writer: "exec-writer-test-token-000000000000", reader: "exec-reader-test-token-000000000000", other: "exec-other-test-token-000000000000"}
 	for i, project := range []string{"exec-project-one", "exec-project-two"} {
 		if _, err := store.DB().Exec(`INSERT INTO projects(id,name,github_repository_id,repository) VALUES(?,?,?,?)`, project, project, 801+i, "owner/repo"); err != nil {
-			t.Fatal(err)
+			t.Fatalf("fixture seed rows after %s: %v", time.Since(phaseStarted), err)
 		}
 	}
 	if configured {
 		for _, project := range []string{attemptProject, otherAttemptProject} {
 			if _, err := store.DB().Exec(`INSERT INTO review_policy_config(project_id,revision,body_json,actor_id,created_at) VALUES(?,1,?,'synthetic-admin',?)`, project, encoded(Policy{RequiredChannels: []string{"cli", "hosted"}, PausedChannels: []string{}}), stamp()); err != nil {
-				t.Fatal(err)
+				t.Fatalf("fixture seed rows after %s: %v", time.Since(phaseStarted), err)
 			}
 		}
 	}
@@ -56,23 +62,26 @@ func newHTTPFixtureWithPolicy(t *testing.T, configured bool) *httpFixture {
 		t.Helper()
 		sum := sha256.Sum256([]byte(token))
 		if _, err := store.DB().Exec(`INSERT INTO credentials(id,principal_id,token_sha256,is_admin,revoked) VALUES(?,?,?,0,0)`, id, principal, hex.EncodeToString(sum[:])); err != nil {
-			t.Fatal(err)
+			t.Fatalf("fixture seed rows after %s: %v", time.Since(phaseStarted), err)
 		}
 		canWrite := 0
 		if write {
 			canWrite = 1
 		}
 		if _, err := store.DB().Exec(`INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES(?,?,1,?)`, id, project, canWrite); err != nil {
-			t.Fatal(err)
+			t.Fatalf("fixture seed rows after %s: %v", time.Since(phaseStarted), err)
 		}
 	}
 	insertCredential("exec-writer-cred", "exec-writer-principal", f.writer, "exec-project-one", true)
 	insertCredential("exec-reader-cred", "exec-reader-principal", f.reader, "exec-project-one", false)
 	insertCredential("exec-other-cred", "exec-other-principal", f.other, "exec-project-two", true)
+	t.Logf("fixture seed rows completed in %s", time.Since(phaseStarted))
+	phaseStarted = time.Now()
 	e, err := New(store, []Capability{{ID: "test-capability", Provider: "coderabbit", Account: "test-account", Channels: []string{"cli", "hosted"}}})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("fixture HTTP engine construction after %s: %v", time.Since(phaseStarted), err)
 	}
+	t.Logf("fixture HTTP engine construction completed in %s", time.Since(phaseStarted))
 	mux := http.NewServeMux()
 	e.Register(mux)
 	f.handler = mux

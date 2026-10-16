@@ -95,6 +95,19 @@ func contextError(err error) *Error {
 	return fail("deadline_exceeded", "The service read deadline expired.", "Check the service connection and retry the read when needed.", 0)
 }
 
+// Transport and enclosing-context timers can expire in either order. Keep
+// timeout classification stable without waiting for another timer to fire.
+func requestContextError(ctx context.Context, err error) error {
+	if canceled := ctx.Err(); canceled != nil {
+		return canceled
+	}
+	var timed net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timed) && timed.Timeout() {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 func mutationContextError(err error, operation string, unknown bool) *Error {
 	code := "deadline_exceeded"
 	message := "The " + operation + " request deadline expired."
@@ -310,11 +323,11 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	}
 	response, err := httpClient.Do(r)
 	if err != nil {
-		if ctx.Err() != nil {
+		if cause := requestContextError(ctx, err); cause != nil {
 			if mutation {
-				return mutationContextError(ctx.Err(), operation, true)
+				return mutationContextError(cause, operation, true)
 			}
-			return contextError(ctx.Err())
+			return contextError(cause)
 		}
 		if mutation {
 			return unknownRequest("connection_failed", operation, "request connection failed", 0)
@@ -342,11 +355,11 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, int64(responseLimit)+1))
 	if err != nil {
-		if ctx.Err() != nil {
+		if cause := requestContextError(ctx, err); cause != nil {
 			if mutation {
-				return mutationContextError(ctx.Err(), operation, true)
+				return mutationContextError(cause, operation, true)
 			}
-			return contextError(ctx.Err())
+			return contextError(cause)
 		}
 		if mutation {
 			return unknownRequest("invalid_response", operation, "response could not be read", response.StatusCode)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/server"
 )
 
 func sourceHTTPFixture(t *testing.T) *attemptFixture {
@@ -107,6 +108,42 @@ func TestSourceRefreshHTTPStrictScopedBoundariesAndImmediateReceipt(t *testing.T
 		t.Fatal("instance mismatch accepted", w.Code)
 	}
 }
+
+func TestSourceRefreshHTTPWriteGrantRequiresReadBeforeAdmission(t *testing.T) {
+	f := sourceHTTPFixture(t)
+	mux := http.NewServeMux()
+	mux.Handle("/", server.New(f.store))
+	f.e.Register(mux)
+	f.handler = mux
+	counts := func() []int {
+		t.Helper()
+		result := make([]int, 0, 5)
+		for _, table := range []string{"credentials", "grants", "review_source_refreshes", "receipts", "events"} {
+			result = append(result, attemptCount(t, f.store, "SELECT count(*) FROM "+table))
+		}
+		return result
+	}
+	before := fmt.Sprint(counts())
+	// The public grant API cannot create an initially write-only principal.
+	w := sourceHTTPRequest(f, "POST", "/api/v1/projects/"+attemptProject+"/credentials", f.admin, "write-only-grant", `{"token_sha256":"`+strings.Repeat("f", 64)+`","permissions":["write"]}`, nil)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), `"code":"validation_failed"`) || fmt.Sprint(counts()) != before {
+		t.Fatal("write-only grant was admitted or changed storage", w.Code, w.Body.String())
+	}
+	// Although the base table permits this shape, both write and read
+	// authorization require can_read. A damaged/manual grant must be refused
+	// before enqueue, rather than becoming a post-commit wait failure.
+	admissionSQL(t, f, `UPDATE grants SET can_read=0,can_write=1 WHERE credential_id='exec-writer-cred'`)
+	before = fmt.Sprint(counts())
+	path := "/api/v1/projects/" + attemptProject + "/reviews/source-refreshes"
+	zero := "wait=0"
+	for _, prefer := range []*string{nil, &zero} {
+		w = sourceHTTPRequest(f, "POST", path, f.writer, "no-admission", encoded(refreshRequest()), prefer)
+		if w.Code != 403 || !strings.Contains(w.Body.String(), `"code":"forbidden"`) || strings.Contains(w.Body.String(), "outcome_unknown") || strings.Contains(w.Body.String(), "review_refresh_") || fmt.Sprint(counts()) != before {
+			t.Fatal("write-only caller reached admission/wait or changed storage", w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestSourceRefreshHTTPDefaultWaitReturnsFastTerminalAndExactReplay(t *testing.T) {
 	f := sourceHTTPFixture(t)
 	path := "/api/v1/projects/" + attemptProject + "/reviews/source-refreshes"
