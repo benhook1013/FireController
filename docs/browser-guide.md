@@ -4,7 +4,7 @@
 
 `fcd` serves a read-only project browser from the same origin as its API. It displays project identity, paginated workers and basic jobs, explicit full job briefs and checkpoint details, worker inboxes and explicit conversation pages, plus the [native review workspace](review-workspace.md) for stored queue, PR/run history, findings and fix proof. Incoming messages update through the persistent [message stream](message-events.md). Reads never mark messages seen or acknowledged, edit jobs or contact GitHub. The existing development dashboard remains separate until replacement and migration proof are complete.
 
-The [browser design](browser.md) owns the broader target. The [project map](project-map.md) adds compact workstream/return-point lists, explicit current and historical editorial snapshots, and deliberately loaded recorded job references. Project appearance settings and browser mutations remain outside this slice. Map views use explicit visible-data refresh; incoming-message SSE does not automatically invalidate maps. Latest checkpoint display and explicit archives passed the focused API tests and actual packaged browser checks described below. The default fire palette and dense responsive layout apply until project presentation records are implemented. A small repository attribution remains in the footer.
+The [browser design](browser.md) owns the broader target. The [project map](project-map.md) adds compact workstream/return-point lists, explicit current and historical editorial snapshots, and deliberately loaded recorded job references. [Project presentation and live metadata](project-presentation.md) add explicit project settings and a separate scoped feed for settings/map/reference updates, with packaged proof at that owner. Browser mutations remain outside this slice; incoming-message events keep their independent worker scope. Latest checkpoint display and explicit archives passed the focused API tests and actual packaged browser checks described below. Empty presentation overrides preserve the default fire palette and dense responsive layout; configured themes use the validated semantic palette. A small repository attribution remains in the footer.
 
 ## Connect and navigate
 
@@ -24,7 +24,7 @@ Native run details include an explicit **Assess captured comparison** panel for 
 
 Job details also show the current read-only ordered [checklist](job-progress.md), with explicit controls for narrative updates and checklist history. Archives load one page only when opened; closing cancels that view and removes it from refresh, and reopening reads current stored data. Brief/checklist revision differences prompt a refresh without hiding the standing brief. Progress text and evidence remain escaped plain text.
 
-“Refresh visible data” rereads only active stored-data queries. There is no timer-based JSON polling, focus-triggered refresh or provider refresh. Jobs and workers update when explicitly refreshed. Only incoming message changes currently have live transport; a connected inbox indicator does not claim that jobs, reviews or maps are live.
+“Refresh visible data” rereads only active stored-data queries. There is no timer-based JSON polling, focus-triggered refresh or provider refresh. Jobs and workers update when explicitly refreshed. Incoming messages and project presentation/map/reference changes have separate live feeds. Jobs, workers and stored review evidence still require explicit refresh; each feed indicator describes its own scope.
 
 ## Live delivery and failures
 
@@ -72,7 +72,7 @@ The 90-file Go/browser/config/embedded-asset digest was `0816a5eca380d82f9e77d25
 
 ## Review browser proof
 
-The native review addition passed the integrated build with thirty-two browser tests and three actual browser groups, including explicit empty state, retained merged queue history, lazy PR/run/finding detail, source limits, unknown attempt duration, historical snapshot links, safe literal HTML and 390px layouts. The [review workspace](review-workspace.md#validation-status) records exact tested manifests, request counts and limits. Only incoming messages currently have live transport; stored review refresh remains explicit.
+The native review addition passed the integrated build with thirty-two browser tests and three actual browser groups, including explicit empty state, retained merged queue history, lazy PR/run/finding detail, source limits, unknown attempt duration, historical snapshot links, safe literal HTML and 390px layouts. The [review workspace](review-workspace.md#validation-status) records exact tested manifests, request counts and limits. This historical review-browser checkpoint predates the [project-metadata feed](project-presentation.md). Stored review refresh remains explicit.
 
 The subsequent channel-history correction replaces the mixed last-three summary with compact Hosted/CLI rows and all retained rounds in chronological order; manual/subagent evidence stays separate. It reads native summaries only for nonempty histories. Packaged API/browser checks passed again; the [workspace proof](review-workspace.md#agent-reads-and-restored-review-history) records the source/binary digests and limits.
 

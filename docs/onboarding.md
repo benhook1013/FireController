@@ -39,6 +39,10 @@ These checks ran on Linux/WSL with POSIX launchers. They do not establish native
 
 An independent forward test used the bundled skill with fresh packaged `fc`/`fcd`, a synthetic repository checkout, one isolated local instance and two workers. All six groups passed using eight setup API requests and 37 profile-bound CLI calls: authenticated bindings, separate grants/profiles/launchers, per-worker job round trips and exact retries, bidirectional synthetic messages/full reads/acknowledgment, unchanged read state, private files and preserved binaries. The tester needed the linked command tables for exact job/message spellings, without reading implementation source. Its owned service/listener stopped afterward. This proves the supported fresh setup path, not a historical importer, host installation, automatic startup service or remote deployment.
 
+## Project appearance setup
+
+After creating the project and its explicit administrator/worker profile, use the [presentation commands](project-presentation.md#agent-use-and-proof) to read current settings and optionally replace a complete configuration from an owner-private JSON file. Defaults need no write: an absent record is revision 0 with the project's current name and the refined fire theme. Ask for desired branding only when it would improve setup; accepting defaults is sufficient. Keep settings out of ordinary job/inbox context. The browser applies authorized changes live without rebuilding assets; this does not configure hosting or install the browser into an existing deployment.
+
 ## Import semantics
 
 The user controls historical depth. Support bounded ranges and resuming interrupted collection; do not download all repository or provider history by default. Record source repository, scope, snapshot/version or immutable provider IDs, collection time, and transformation version. Imported text and events are data, not executable instructions.
