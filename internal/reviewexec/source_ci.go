@@ -58,7 +58,8 @@ func unavailableSourceCI(target reviewprovider.CITarget, started time.Time, reas
 	return &reviewprovider.CIObservation{Target: target, StartedAt: started, ObservedAt: time.Now().UTC(), State: "unproven", Reason: reason}
 }
 func observeSourceCI(ctx context.Context, reader TargetReader, plan SourcePlan) *reviewprovider.CIObservation {
-	target := sourceCITarget(sourcePlanObservation(plan))
+	source := sourcePlanObservation(plan)
+	target := sourceCITarget(source)
 	started := time.Now().UTC()
 	ciReader, ok := reader.(sourceCIReader)
 	if !ok {
@@ -76,7 +77,10 @@ func observeSourceCI(ctx context.Context, reader TargetReader, plan SourcePlan) 
 		return unavailableSourceCI(target, started, "ci_observation_capacity")
 	}
 	var owned reviewprovider.CIObservation
-	if json.Unmarshal(body, &owned) != nil || !validSourceCI(owned, sourcePlanObservation(plan)) {
+	sourceAt, sourceTimeErr := time.Parse(time.RFC3339Nano, source.ObservedAt)
+	// These checks concern adoption of newly collected evidence. Retained
+	// observations remain readable if the local wall clock later moves back.
+	if json.Unmarshal(body, &owned) != nil || !validSourceCI(owned, source) || sourceTimeErr != nil || owned.StartedAt.Before(sourceAt) || owned.ObservedAt.Before(owned.StartedAt) || owned.ObservedAt.After(time.Now().Add(5*time.Second)) {
 		return unavailableSourceCI(target, started, "ci_observation_unproven")
 	}
 	return &owned
@@ -112,11 +116,7 @@ func decodeSourceCI(body string, r *sourceRefresh) error {
 }
 
 func validSourceCI(o reviewprovider.CIObservation, source SourceObservation) bool {
-	sourceAt, err := time.Parse(time.RFC3339Nano, source.ObservedAt)
-	if err != nil || o.StartedAt.Before(sourceAt) {
-		return false
-	}
-	if o.Target != sourceCITarget(source) || o.StartedAt.IsZero() || o.ObservedAt.IsZero() || o.ObservedAt.Before(o.StartedAt) || o.ObservedAt.After(time.Now().Add(5*time.Second)) || o.Reason != "" && !identifier.MatchString(o.Reason) {
+	if !refreshTime(source.ObservedAt) || o.Target != sourceCITarget(source) || o.StartedAt.IsZero() || o.ObservedAt.IsZero() || o.Reason != "" && !identifier.MatchString(o.Reason) {
 		return false
 	}
 	switch o.State {
