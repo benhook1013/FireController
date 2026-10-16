@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The combined API, typed client, CLI and MCP read implement the contract below. Focused public-handler, typed-client and official-SDK adapter tests pass, including race checks. Full combined validation and actual packaged proof are pending. The individual current-state and explicit archive reads remain independent.
+The combined API, typed client, CLI and MCP read implement the contract below. Focused public-handler, typed-client and official-SDK adapter tests pass, including race checks. Full combined validation and actual packaged CLI/service/official-SDK proof pass at the source checkpoint recorded below. The individual current-state and explicit archive reads remain independent.
 
 ## Deliberate selection
 
@@ -53,3 +53,14 @@ The operation makes no durable write, note consumption, message seen/ack transit
 ## Proof boundary
 
 Required proof covers complete empty coordination, latest versus absent checkpoints, authoritative large escaped briefs, current checklist/focus/pause, worker and assigned-job note scope, seen-but-unacknowledged messages, exact omission disclosure, manual continuation without repeating briefs, and snapshot-to-event replay. Verify same-snapshot consistency under concurrent reassignment/coordination changes, project isolation, revocation, instance replacement, strict missing/null responses, invalid local input before credentials/network, bounded cancellation/deadlines and zero durable/provider effects. Current reads must not expand archives. Actual packaged CLI and official-SDK MCP calls must exercise the combined service endpoint before provider review. This does not establish model-host wakeup, browser integration or operational cutover.
+
+
+## Executed proof
+
+At clean source `9a262f8c75d81dbeccd58a95abb36e79481a7bb7`, full `make check build` passed: 189 browser tests, all Go race tests and vet, formatting, documentation and 19 link tests, generated assets and all three release binaries. The independently built packaged binaries match those full-build binaries byte for byte.
+
+Four actual packaged groups passed on their first run in 9.200 seconds. Actual CLI/service and official Go MCP SDK processes proved complete empty coordination, explicit null and older checkpoints, current checklist/focus/pause, exact 32 KiB escaped briefs, bound-worker note/message scope, the four omission markers, manual pending-page continuation, selected full reads and snapshot-to-event replay. Restart, scoped access/revocation, invalid local inputs before credential/network access and read-only logical-state comparisons passed. Ordinary logged subprocesses took at most 87.458 ms on this developer machine; that small sample is not a fleet latency guarantee.
+
+A gateway separately held the response of an already completed context read: cancellation returned in 8.916 ms and the existing total deadline returned `deadline_exceeded` in 5006.721 ms, each with one domain read, no retry and no durable effect. These cases prove response-transport cancellation/deadlines, not database fault injection. All owned processes and ports closed after proof. Provider and review executable traps stayed at zero.
+
+This is local Linux packaged proof with controlled identities. Model-host wakeup/resume, browser integration, installed-service deployment, physical-phone use, fleet throughput and operational cutover are not established by these checks. The installed QA site and primary development controller are unchanged.
