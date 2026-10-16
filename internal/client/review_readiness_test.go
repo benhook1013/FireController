@@ -64,7 +64,7 @@ func TestReadinessClientRejectsFalseGreenAndMalformedObservations(t *testing.T) 
 			ci["selection"] = "head"
 			ci["selected_commit_sha"] = strings.Repeat("f", 40)
 		},
-		"CI future": func(v map[string]any) { v["ci"].(map[string]any)["observed_at"] = "2030-01-01T00:00:00Z" },
+		"CI malformed time": func(v map[string]any) { v["ci"].(map[string]any)["observed_at"] = "not-a-time" },
 		"unresolved current": func(v map[string]any) {
 			r := v["review_state"].(map[string]any)
 			r["total_threads"] = 1
@@ -116,5 +116,69 @@ func TestReadinessClientRejectsFalseGreenAndMalformedObservations(t *testing.T) 
 	checkError(t, err, "validation_failed")
 	if calls.Load() != before {
 		t.Fatal("invalid selector contacted service")
+	}
+}
+
+func TestReviewReadinessRetainedClocksRemainReadable(t *testing.T) {
+	assessment := sampleReadiness()
+	assessment.Target.ObservedAt = "2099-01-03T00:00:00Z"
+	assessment.SourceObservedAt = assessment.Target.ObservedAt
+	assessment.EvaluatedAt = "2020-01-01T00:00:00Z"
+	assessment.CI.ObservedAt = "2099-01-02T00:00:00Z"
+	assessment.ReviewState.ObservedAt = "2099-01-01T00:00:00Z"
+	operation := sampleSourceOperation()
+	operation.IncludeReadiness = true
+	operation.Observation = &assessment.Target
+	operation.CI = &assessment.CI
+	operation.ReviewState = &assessment.ReviewState
+	var response atomic.Value
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(response.Load().(string)))
+	}))
+	defer service.Close()
+	c := newClient(t, service)
+	for _, kind := range []string{"readiness", "operation"} {
+		t.Run(kind, func(t *testing.T) {
+			var value any = assessment
+			if kind == "operation" {
+				value = operation
+			}
+			raw, _ := json.Marshal(value)
+			response.Store(string(raw))
+			invoke := func() error {
+				if kind == "operation" {
+					got, err := c.ReviewSourceOperation(t.Context(), sourceRefreshID)
+					if err == nil && (got.ReviewState.ObservedAt != operation.ReviewState.ObservedAt || got.Observation.ObservedAt != operation.Observation.ObservedAt) {
+						t.Fatal("operation rewrote retained times")
+					}
+					return err
+				}
+				got, err := c.ReviewSourceReadiness(t.Context(), 2)
+				if err == nil && (got.State != "ready_as_observed" || got.EvaluatedAt != assessment.EvaluatedAt || got.SourceObservedAt != assessment.SourceObservedAt) {
+					t.Fatal("readiness changed retained state")
+				}
+				return err
+			}
+			if err := invoke(); err != nil {
+				t.Fatal("retained facts rejected after local clock rollback", err)
+			}
+			for _, mutation := range []func(map[string]any){
+				func(v map[string]any) { v["review_state"].(map[string]any)["observed_at"] = "0001-01-01T00:00:00Z" },
+				func(v map[string]any) { v["review_state"].(map[string]any)["unresolved_current"] = 1 },
+				func(v map[string]any) { v["project_id"] = "foreign" },
+			} {
+				var malformed map[string]any
+				_ = json.Unmarshal(raw, &malformed)
+				mutation(malformed)
+				body, _ := json.Marshal(malformed)
+				response.Store(string(body))
+				checkError(t, invoke(), "invalid_response")
+			}
+		})
 	}
 }
