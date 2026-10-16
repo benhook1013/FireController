@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The API, typed client, CLI/MCP, read-only browser and backup integration are implemented with focused checks. Full integration and actual packaged proof remain pending. The inherited source/test inventory informs observable behavior; it does not require the old file layout or controller internals. Prepared historical map import remains a separate explicit preview/apply boundary under [onboarding](onboarding.md).
+The API, typed client, CLI/MCP, read-only browser and backup integration are implemented. Focused checks and actual packaged CLI/MCP/browser checks passed; full validation remains incomplete because combined runs encountered review-engine setup deadlines and CI exposed a client timeout-classification defect. The timeout defect is fixed with direct regression proof; fixture failures now report their setup phase, without changed deadlines or assertions. A new combined run is pending. The inherited source/test inventory informs observable behavior; it does not require the old file layout or controller internals. Prepared historical map import remains a separate explicit preview/apply boundary under [onboarding](onboarding.md).
 
 ## Records and authority
 
@@ -74,3 +74,11 @@ Typed-client groups pass normal/race in 0.252/1.563 seconds. Actual-handler CLI 
 Backup/inspection/inactive-restore integration passes race checks in 12.199 seconds, preserving full editorial history and captured association titles through rename/archive. Resealed inconsistent current/history records are refused. Browser TypeScript and 198 unit tests pass, including strict map API and literal rendering cases. Native map deep-link/history route checks pass race tests in 1.021 seconds. These are focused proofs; a full build and real packaged CLI/MCP/Chromium run remain separate.
 
 The read-only browser adds Map lists and explicit current/history views using existing panels and navigation. Job references are loaded deliberately. Existing explicit visible-data refresh invalidates scoped map queries; message SSE is unchanged and does not imply automatic live map invalidation. No custom theme or cosmetic redesign is included.
+
+## Executed packaged proof
+
+Clean map checkpoint `cf0baef` passed six actual CLI/operator/MCP groups in 2.812 seconds, using 24 CLI calls, three operator calls and 11 official SDK sessions. Discovery followed both pages (64 and 9 tools). The checks covered original-key replay after lost output, full editorial and phase history, compact pagination, scoped/CAS refusals, captured job-reference titles, restart and backup/inspection/inactive restore. Source, supplied binaries and earlier evidence stayed unchanged; owned processes were joined and no external/provider calls occurred. Independent canonical builds later matched all three supplied binary hashes.
+
+Actual Chromium checks at 1440 and 390 pixels passed the map navigation, history, filtering, recorded job reference, explicit refresh, reload and project-isolation cases. They also found a real narrow-title clipping defect. Checkpoint `22a2ea5` adds only wrapping for that title; a separate packaged Chromium retest inspected current/historical titles at both widths and confirmed full text remained inside the panel without changing its font size. The targeted fix retest does not repin the entire earlier browser matrix.
+
+These checks do not establish full-suite success, physical-phone behavior, fleet throughput, installed deployment or human GUI acceptance. The retained operational website is unchanged. Broad historical map import remains separate.
