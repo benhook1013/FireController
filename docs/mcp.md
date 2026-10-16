@@ -16,7 +16,7 @@ Build with `make build`. Configure the host to launch this command with this age
 
 A repeatable process `FC_PROFILE` can replace the profile argument. The default profile file and credential-reference rules match the [CLI](development.md#private-profile-file). This connection keeps its startup instance/project/worker binding. There is no per-tool profile selector or workspace-wide current worker. Different grants or agent identities use separately bound processes/connections. Restart explicitly to select another binding.
 
-Startup validates configuration without opening the credential or contacting the service. Initialization, discovery and local `context` also need no credential or network. Service calls load the selected protected credential and normally share a five-second budget across authenticated instance verification and the scoped operation. An explicitly longer source-refresh wait has its selected wait plus five seconds; it does not change other tool deadlines. Argument validation precedes credential and network access.
+Startup validates configuration without opening the credential or contacting the service. Initialization, discovery and local `context` also need no credential or network. Service calls load the selected protected credential and normally share a five-second budget across authenticated instance verification and the scoped operation. An explicitly longer `review_source_refresh`, `review_checkpoint_publish` or `review_checkpoint_recover` wait has its selected wait plus five seconds; it does not change other tool deadlines. Argument validation precedes credential and network access.
 
 ## Tools and output
 
