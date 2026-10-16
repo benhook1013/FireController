@@ -13,7 +13,6 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
-	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
 
@@ -158,26 +157,9 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	if err := d.checkIdle(ctx, plan); err != nil {
 		return preparation, err
 	}
-	if err := d.fetch(ctx, current.RepositoryID, plan.Repository.FullName, plan.Pull.HeadSHA, plan.Pull.BaseSHA, d.capability.GitHubCredential()); err != nil {
-		return preparation, reviewHold("source_unavailable")
-	}
-	workspace, err := d.manager.Prepare(ctx, current.RepositoryID, attempt.ID, plan.Pull.HeadSHA, plan.Pull.BaseSHA)
+	workspace, fileCount, err := prepareReviewWorkspace(ctx, d.fetch, d.verify, d.manager, d.capability.GitHubCredential(), current, plan, attempt.ID)
 	if err != nil {
-		return preparation, reviewHold("workspace_unavailable")
-	}
-	workspace, err = d.manager.BindRepository(ctx, workspace, plan.Repository.FullName)
-	if err != nil {
-		return preparation, reviewHold("workspace_unavailable")
-	}
-	if err := d.verify(ctx, workspace); err != nil {
-		return preparation, reviewHold("workspace_changed")
-	}
-	paths, err := d.manager.ChangedFiles(ctx, workspace)
-	if err != nil || len(paths) == 0 {
-		return preparation, reviewHold("comparison_unavailable")
-	}
-	if ceiling := current.Policy.Policy.MaxReviewFiles; ceiling > 0 && int64(len(paths)) > ceiling {
-		return preparation, reviewHold("project_file_limit")
+		return preparation, err
 	}
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
 	actor, err := d.provider.CurrentActor(ctx)
@@ -203,19 +185,11 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 			return preparation, err
 		}
 	}
-	if err := RetainHostedAllowance(ctx, d.captures, d.engine, attempt, anchor, int64(len(paths)), observed.Capture); err != nil {
+	if err := RetainHostedAllowance(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture); err != nil {
 		return preparation, reviewHold("hosted_allowance_unproven")
 	}
-	_, err = d.engine.PublishAttempt(ctx, operation.ProjectID, attempt.ID, nil)
-	if err != nil {
-		var missing *core.Error
-		if !errors.As(err, &missing) || missing.Code != "review_projection_missing" {
-			return preparation, err
-		}
-		metadata := reviews.PullInput{Number: plan.Pull.Number, Title: pullDisplayTitle(plan.Pull.Title), State: plan.Pull.State, HeadSHA: plan.Pull.HeadSHA, BaseRef: plan.Pull.BaseRef, BaseSHA: plan.Pull.BaseSHA, CIState: "unknown", Mergeability: "unknown", Complete: false}
-		if _, err = d.engine.PublishAttempt(ctx, operation.ProjectID, attempt.ID, &metadata); err != nil {
-			return preparation, err
-		}
+	if err := publishPreparedAttempt(ctx, d.engine, operation.ProjectID, attempt.ID, plan); err != nil {
+		return preparation, err
 	}
 	intent, err := reviewprovider.HostedTriggerBody(reviewprovider.HostedTriggerIntent{OperationID: operation.ID, AttemptID: attempt.ID, HeadSHA: operation.HeadSHA})
 	if err != nil {
@@ -295,13 +269,11 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 	if err != nil {
 		return reviewexec.Result{State: "uncertain", Reason: "trigger_recording_pending", ExternalID: externalID}, nil
 	}
-	// Supervision waits outside agent calls and SQL transactions. Each bounded
-	// pass retains source before interpretation and never reposts the command.
-	for pass := 0; pass < 80; pass++ {
-		observed, err := observeHostedAttempt(ctx, d.provider, d.captures, d.engine, operation.ProjectID, attempt.ID, d.capability.ID, prepared.postingActor, d.providerActor(), false)
-		if err != nil {
-			return reviewexec.Result{State: "uncertain", Reason: "hosted_observation_pending", ExternalID: externalID}, nil
-		}
+	// Retain at most one observation while owning a supervisor slot. The
+	// supervisor journals uncertainty; scheduled recovery owns further reads
+	// through the original trigger and reservation, without another post.
+	observed, err := observeHostedAttempt(ctx, d.provider, d.captures, d.engine, operation.ProjectID, attempt.ID, d.capability.ID, prepared.postingActor, d.providerActor(), false)
+	if err == nil {
 		if observed.State == "completed" {
 			return reviewexec.Result{State: "completed", Reason: "hosted_evidence_retained", ExternalID: externalID}, nil
 		}
@@ -310,9 +282,6 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 		}
 		if observed.Reason == "conflicting_trigger_evidence" || observed.Reason == "trigger_identity_changed" {
 			return reviewexec.Result{State: "uncertain", Reason: "hosted_observation_conflict", ExternalID: externalID}, nil
-		}
-		if pass == 79 || d.wait(ctx, 15*time.Second) != nil {
-			break
 		}
 	}
 	return reviewexec.Result{State: "uncertain", Reason: "hosted_observation_pending", ExternalID: externalID}, nil
