@@ -54,7 +54,6 @@ The operation makes no durable write, note consumption, message seen/ack transit
 
 Required proof covers complete empty coordination, latest versus absent checkpoints, authoritative large escaped briefs, current checklist/focus/pause, worker and assigned-job note scope, seen-but-unacknowledged messages, exact omission disclosure, manual continuation without repeating briefs, and snapshot-to-event replay. Verify same-snapshot consistency under concurrent reassignment/coordination changes, project isolation, revocation, instance replacement, strict missing/null responses, invalid local input before credentials/network, bounded cancellation/deadlines and zero durable/provider effects. Current reads must not expand archives. Actual packaged CLI and official-SDK MCP calls must exercise the combined service endpoint before provider review. This does not establish model-host wakeup, browser integration or operational cutover.
 
-
 ## Executed proof
 
 At clean source `9a262f8c75d81dbeccd58a95abb36e79481a7bb7`, full `make check build` passed: 189 browser tests, all Go race tests and vet, formatting, documentation and 19 link tests, generated assets and all three release binaries. The independently built packaged binaries match those full-build binaries byte for byte.
