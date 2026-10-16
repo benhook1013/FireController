@@ -257,8 +257,8 @@ func TestHostedQueryConfirmationValidationAndReplayConflict(t *testing.T) {
 		"wrong kind":    func(c *reviewprovider.IssueComment) { c.Author.Kind = "Bot" },
 		"bad login":     func(c *reviewprovider.IssueComment) { c.Author.Login = "bad\nlogin" },
 		"edited":        func(c *reviewprovider.IssueComment) { c.UpdatedAt = c.CreatedAt.Add(time.Second) },
-		"before intent": func(c *reviewprovider.IssueComment) {
-			c.CreatedAt = c.CreatedAt.Add(-time.Second)
+		"beyond provider skew": func(c *reviewprovider.IssueComment) {
+			c.CreatedAt = c.CreatedAt.Add(-5*time.Second - time.Nanosecond)
 			c.UpdatedAt = c.CreatedAt
 		},
 		"future": func(c *reviewprovider.IssueComment) {
