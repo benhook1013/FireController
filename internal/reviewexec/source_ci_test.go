@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -583,5 +585,97 @@ func TestSourceCIFreshFutureObservationRemainsUnproven(t *testing.T) {
 	refreshStop(t, cancel, done)
 	if operation.CI == nil || operation.CI.State != "unproven" || operation.CI.Reason != "ci_observation_unproven" || operation.Observation == nil {
 		t.Fatal("future ingestion gained credit", operation)
+	}
+}
+
+func TestSourceCIRequiredContextCapacityRetainsExplicitReason(t *testing.T) {
+	for _, name := range []string{"capacity129", "supported128", "foreign_target", "foreign_authority", "wrong_reason", "malformed_context", "malformed_app", "unexpected_results", "future_clock", "byte_capacity_first"} {
+		t.Run(name, func(t *testing.T) {
+			f := newAttemptFixture(t)
+			f.configure(t, attemptProject, "test-capability", 0, false)
+			reader := &sourceCITestReader{ci: func(_ context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
+				n := 129
+				if name == "supported128" {
+					n = 128
+				}
+				now := time.Now().UTC()
+				checks := make([]reviewprovider.RequiredCheck, n)
+				for i := range checks {
+					checks[i] = reviewprovider.RequiredCheck{Context: fmt.Sprintf("context-%03d", i), AppID: 0}
+				}
+				o := reviewprovider.CIObservation{Target: target, State: "unproven", Reason: "ci_required_context_capacity", StartedAt: now, ObservedAt: now, Authority: reviewprovider.RequiredCheckAuthority{State: "complete", Repository: target.Repository, Branch: target.BaseRef, ObservedAt: now, Checks: checks}}
+				switch name {
+				case "supported128":
+					o = sourceCITestObservation(target, "satisfied")
+					o.Authority.Checks = checks
+					o.Results.Statuses = nil
+					for i, check := range checks {
+						o.Results.Statuses = append(o.Results.Statuses, reviewprovider.CICommitStatus{ID: int64(i + 1), Context: check.Context, State: "success", CreatedAt: now, UpdatedAt: now})
+					}
+					var err error
+					o.Assessment, err = reviewprovider.AssessRequiredCI(o.Authority, *o.Results, *o.Actions, o.Attempts)
+					if err != nil {
+						t.Fatal(err)
+					}
+					o.State, o.Reason = o.Assessment.State, o.Assessment.Reason
+				case "foreign_target":
+					o.Target.RepositoryID++
+				case "foreign_authority":
+					o.Authority.Repository = "other/repo"
+				case "wrong_reason":
+					o.Reason = "ci_authority_unproven"
+				case "malformed_context":
+					o.Authority.Checks[0].Context = "\x00invalid"
+				case "malformed_app":
+					o.Authority.Checks[0].AppID = -1
+				case "unexpected_results":
+					o.Results = &reviewprovider.CIResultInventory{Repository: "other/repo"}
+				case "future_clock":
+					o.ObservedAt = time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+				case "byte_capacity_first":
+					o.Authority.Reason = strings.Repeat("x", sourceCIMaxBytes)
+				}
+				return o, nil
+			}}
+			receipt := refreshEnqueue(t, f, "contexts", sourceCIRequest())
+			cancel, done := refreshStart(t, f, reader)
+			got := refreshWait(t, f, receipt.ID, "completed")
+			refreshStop(t, cancel, done)
+			wantState, wantReason, wantRequired := "unproven", "ci_observation_unproven", int64(0)
+			switch name {
+			case "capacity129", "malformed_context", "malformed_app", "unexpected_results":
+				// Discarded inventory does not need certification to report
+				// capacity; no context, result or passing count is retained.
+				wantReason = "ci_required_context_capacity"
+			case "supported128":
+				wantState, wantReason, wantRequired = "satisfied", "", 128
+			case "byte_capacity_first":
+				wantReason = "ci_observation_capacity"
+			}
+			if got.Observation == nil || got.CI == nil || got.CI.State != wantState || got.CI.Reason != wantReason || got.CI.Required != wantRequired {
+				t.Fatal("CI capacity lost or gained credit", got)
+			}
+			var raw string
+			if err := f.store.DB().QueryRow(`SELECT ci_observation_json FROM review_source_refreshes WHERE id=?`, receipt.ID).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			if name != "supported128" && (len(raw) > 4096 || strings.Contains(raw, "context-")) {
+				t.Fatal("oversized or malformed inventory retained", len(raw))
+			}
+			before, calls, ciCalls := sourceCITestState(t, f), reader.calls.Load(), reader.ciCalls.Load()
+			assessment := readSourceCI(t, f)
+			if assessment.State != wantState || assessment.Reason != wantReason || assessment.Required != wantRequired {
+				t.Fatal("local read changed capacity reason", assessment)
+			}
+			path := "/api/v1/projects/" + attemptProject + "/reviews/source/2/ci"
+			w := f.request(http.MethodGet, path, f.reader, "", "")
+			var public SourceCIAssessment
+			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &public) != nil || public.State != wantState || public.Reason != wantReason || public.Required != wantRequired {
+				t.Fatal("HTTP lost capacity reason", w.Code, w.Body.String())
+			}
+			if sourceCITestState(t, f) != before || reader.calls.Load() != calls || reader.ciCalls.Load() != ciCalls || ciCalls != 1 {
+				t.Fatal("local read wrote or fetched")
+			}
+		})
 	}
 }
