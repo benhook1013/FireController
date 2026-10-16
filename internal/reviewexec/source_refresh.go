@@ -139,13 +139,15 @@ func (e *Engine) EnqueueSourceRefresh(ctx context.Context, scope core.Scope, key
 	return result, err
 }
 
-const refreshColumns = `id,project_id,repository_id,actor_id,worker_id,configuration_revision,capability_id,capability_fingerprint,pull_number,head_sha,state,revision,reason,created_at,updated_at,observation_json,include_ci,ci_observation_json,include_readiness,review_state_json`
+const refreshMetadataColumns = `id,project_id,repository_id,actor_id,worker_id,configuration_revision,capability_id,capability_fingerprint,pull_number,head_sha,state,revision,reason,created_at,updated_at,observation_json,include_ci,include_readiness`
 
-func readSourceRefresh(ctx context.Context, tx *sql.Tx, project, id string) (sourceRefresh, error) {
+// readSourceRefreshMetadata reads only source and action identity. Policy and
+// comparison-only reads never select or decode the private CI inventory.
+func readSourceRefreshMetadata(ctx context.Context, tx *sql.Tx, project, id string) (sourceRefresh, error) {
 	var r sourceRefresh
-	var body, ciBody, reviewBody string
+	var body string
 	var includeCI, includeReadiness int64
-	err := tx.QueryRowContext(ctx, `SELECT `+refreshColumns+` FROM review_source_refreshes WHERE project_id=? AND id=?`, project, id).Scan(&r.ID, &r.ProjectID, &r.repositoryID, &r.actor, &r.worker, &r.ConfigurationRevision, &r.capability, &r.fingerprint, &r.PullNumber, &r.HeadSHA, &r.State, &r.Revision, &r.Reason, &r.CreatedAt, &r.UpdatedAt, &body, &includeCI, &ciBody, &includeReadiness, &reviewBody)
+	err := tx.QueryRowContext(ctx, `SELECT `+refreshMetadataColumns+` FROM review_source_refreshes WHERE project_id=? AND id=?`, project, id).Scan(&r.ID, &r.ProjectID, &r.repositoryID, &r.actor, &r.worker, &r.ConfigurationRevision, &r.capability, &r.fingerprint, &r.PullNumber, &r.HeadSHA, &r.State, &r.Revision, &r.Reason, &r.CreatedAt, &r.UpdatedAt, &body, &includeCI, &includeReadiness)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, core.Fail("not_found", "The source refresh is unavailable in this project.", 404)
 	}
@@ -169,6 +171,20 @@ func readSourceRefresh(ctx context.Context, tx *sql.Tx, project, id string) (sou
 	}
 	r.IncludeCI = includeCI == 1
 	r.IncludeReadiness = includeReadiness == 1
+	return r, nil
+}
+
+// Full operation and selected-inventory consumers keep strict validation inside
+// the caller's same authorized snapshot, including background recovery reads.
+func readSourceRefresh(ctx context.Context, tx *sql.Tx, project, id string) (sourceRefresh, error) {
+	r, err := readSourceRefreshMetadata(ctx, tx, project, id)
+	if err != nil {
+		return r, err
+	}
+	var ciBody, reviewBody string
+	if err = tx.QueryRowContext(ctx, `SELECT ci_observation_json,review_state_json FROM review_source_refreshes WHERE project_id=? AND id=?`, project, id).Scan(&ciBody, &reviewBody); err != nil {
+		return r, err
+	}
 	if err := decodeSourceCI(ciBody, &r); err != nil {
 		return r, err
 	}
@@ -629,7 +645,7 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 		if err != nil {
 			return err
 		}
-		r, err := readSourceRefresh(ctx, tx, scope.ProjectID, id)
+		r, err := readSourceRefreshMetadata(ctx, tx, scope.ProjectID, id)
 		if err != nil {
 			return err
 		}
