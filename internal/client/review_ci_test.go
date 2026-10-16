@@ -39,16 +39,16 @@ func TestReviewCILocalReadRejectsContradictoryOrCrossScopeFacts(t *testing.T) {
 		t.Fatal(got, err, calls.Load())
 	}
 	mutations := map[string]func(map[string]any){
-		"wrong project":      func(v map[string]any) { v["project_id"] = "other" },
-		"wrong pull":         func(v map[string]any) { v["target"].(map[string]any)["pull_number"] = 3 },
-		"wrong commit":       func(v map[string]any) { v["selected_commit_sha"] = strings.Repeat("c", 40) },
-		"wrong count":        func(v map[string]any) { v["required"] = 2 },
-		"false pass":         func(v map[string]any) { v["satisfied"] = 0; v["pending"] = 1 },
-		"unknown field":      func(v map[string]any) { v["raw_provider_capture"] = "private" },
-		"missing count":      func(v map[string]any) { delete(v, "failed") },
-		"null state":         func(v map[string]any) { v["state"] = nil },
-		"future observation": func(v map[string]any) { v["observed_at"] = "2030-01-01T00:00:00Z" },
-		"zero revision pass": func(v map[string]any) { v["configuration_revision"] = 0 },
+		"wrong project":         func(v map[string]any) { v["project_id"] = "other" },
+		"wrong pull":            func(v map[string]any) { v["target"].(map[string]any)["pull_number"] = 3 },
+		"wrong commit":          func(v map[string]any) { v["selected_commit_sha"] = strings.Repeat("c", 40) },
+		"wrong count":           func(v map[string]any) { v["required"] = 2 },
+		"false pass":            func(v map[string]any) { v["satisfied"] = 0; v["pending"] = 1 },
+		"unknown field":         func(v map[string]any) { v["raw_provider_capture"] = "private" },
+		"missing count":         func(v map[string]any) { delete(v, "failed") },
+		"null state":            func(v map[string]any) { v["state"] = nil },
+		"malformed observation": func(v map[string]any) { v["observed_at"] = "not-a-time" },
+		"zero revision pass":    func(v map[string]any) { v["configuration_revision"] = 0 },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
@@ -93,4 +93,25 @@ func TestReviewCIRefreshPreservesOptionAndRejectsMismatchedOutcome(t *testing.T)
 	include.Store(false)
 	_, err := c.RefreshReviewSource(t.Context(), "explicit-ci", request, 2)
 	checkError(t, err, "invalid_response")
+}
+
+func TestReviewCIRetainedClockRollbackDoesNotChangeApplicability(t *testing.T) {
+	value := sampleCIAssessment()
+	value.ObservedAt = "2099-01-02T00:00:00Z"
+	value.SourceObservedAt = "2099-01-03T00:00:00Z"
+	value.Target.ObservedAt = value.SourceObservedAt
+	value.EvaluatedAt = "2026-01-01T00:00:00Z"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		write(w, 200, value)
+	}))
+	defer server.Close()
+	c := newClient(t, server)
+	got, err := c.ReviewSourceCIAssessment(t.Context(), 2)
+	if err != nil || got.ObservedAt != value.ObservedAt || got.EvaluatedAt != value.EvaluatedAt || got.State != "satisfied" {
+		t.Fatal("retained observation became unreadable after clock rollback", got, err)
+	}
 }
