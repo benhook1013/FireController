@@ -52,6 +52,8 @@ Adjudication checks the exact candidate public run detail, including escaped nes
 
 ## Effective receiving-journal timestamps
 
+Administrator observations use the same route shapes as native and bound clients: a decided actor is a native identifier, and fix proof requires an active accepted route. Superseded routes without fix proof remain valid historical observations. Imports reject malformed shapes transactionally; malformed retained rows fail closed rather than becoming unreadable successful responses for clients. Actual administrator-import/public-read normal and race regressions cover both refused shapes, valid historical controls and conserved snapshots/domain state.
+
 Route mutations use one effective UTC recording time shared by the decision or fix, route update and linked source adjudication. It is at least the previous valid retained route update, including after a backward host clock correction. Route revisions establish mutation order; individual timestamp validity, coherent retained chronology, source identity, expected revisions and current/history agreement remain enforced. Effective journal time does not adjust provider, source or capture timestamps or establish physical elapsed duration.
 
 Deterministic regressions exercise backward steps between route mutations and the former double-sampling boundary, receiving decisions/fix proof, rerouting and source replacement. Original revisions, linked source state, public reads and exact receipt replay remain intact. These checks use a private per-engine clock seam and retained synthetic times; they do not change the host clock.
