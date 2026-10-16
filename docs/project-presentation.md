@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Project appearance records and the separate project-metadata feed are implemented with focused model, authenticated HTTP, client/CLI/MCP, stream, browser-unit and backup/restore checks. Actual packaged CLI/MCP and Chromium checks passed at the checkpoint recorded below. Full integration validation and deployment remain pending. The metadata feed refreshes map/reference views in the new browser; this has not been installed on the retained operational website. The existing incoming-message feed, agent message wait, project identity and provider workers retain their owning contracts. The new feed does not turn metadata events into messages or provide host chat wakeups.
+Project appearance records and the separate project-metadata feed are implemented with focused model, authenticated HTTP, client/CLI/MCP, stream, browser-unit and backup/restore checks. Actual packaged CLI/MCP, Chromium and full integration checks passed at the checkpoints recorded below. Validation of the later combined [coordination browser views](browser-coordination.md) and installed deployment remain separate. The metadata feed refreshes map/reference views in the new browser; this has not been installed on the retained operational website. The existing incoming-message feed, agent message wait, project identity and provider workers retain their owning contracts. The new feed does not turn metadata events into messages or provide host chat wakeups.
 
 ## Stored presentation
 
