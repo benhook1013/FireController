@@ -683,3 +683,119 @@ func TestSourceCIRequiredContextCapacityRetainsExplicitReason(t *testing.T) {
 		})
 	}
 }
+
+func TestSourceCIPolicyReadsMetadataWithoutUnrelatedCIInventory(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	reader := &sourceCITestReader{}
+	receipt := refreshEnqueue(t, f, "policy-ci-isolation", sourceCIRequest())
+	cancel, done := refreshStart(t, f, reader)
+	refreshWait(t, f, receipt.ID, "completed")
+	refreshStop(t, cancel, done)
+	scope := sourceCIScope(t, f)
+	expected, err := f.e.ReadSourcePolicyAssessment(t.Context(), scope, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expected.State != "held" || len(expected.Channels) != 2 {
+		t.Fatal("fixture lacks policy result", expected)
+	}
+	calls, ciCalls := reader.calls.Load(), reader.ciCalls.Load()
+	var ciBody string
+	if err = f.store.DB().QueryRow(`SELECT ci_observation_json FROM review_source_refreshes WHERE id=?`, receipt.ID).Scan(&ciBody); err != nil {
+		t.Fatal(err)
+	}
+	for _, corrupt := range []string{"{", strings.Repeat("x", sourceCIMaxBytes+1)} {
+		admissionSQL(t, f, `UPDATE review_source_refreshes SET ci_observation_json=? WHERE id=?`, corrupt, receipt.ID)
+		before := sourceCITestState(t, f)
+		got, err := f.e.ReadSourcePolicyAssessment(t.Context(), scope, 2)
+		if err != nil {
+			t.Fatal("policy read decoded unrelated CI", err)
+		}
+		got.EvaluatedAt = expected.EvaluatedAt
+		if !reflect.DeepEqual(got, expected) {
+			t.Fatal("CI corruption changed policy", got, expected)
+		}
+		w := f.request(http.MethodGet, "/api/v1/projects/"+attemptProject+"/reviews/source/2/policy", f.reader, "", "")
+		var public SourcePolicyAssessment
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &public) != nil {
+			t.Fatal("policy HTTP decoded unrelated CI", w.Code, w.Body.String())
+		}
+		public.EvaluatedAt = expected.EvaluatedAt
+		if !reflect.DeepEqual(public, expected) {
+			t.Fatal("policy HTTP changed result", public, expected)
+		}
+		_, err = f.e.ReadSourceCIAssessment(t.Context(), scope, 2)
+		attemptCode(t, err, "storage_unavailable")
+		_, err = f.e.ReadSourceRefresh(t.Context(), scope, receipt.ID)
+		attemptCode(t, err, "storage_unavailable")
+		for _, path := range []string{"/reviews/source/2/ci", "/reviews/source-refreshes/" + receipt.ID} {
+			if w = f.request(http.MethodGet, "/api/v1/projects/"+attemptProject+path, f.reader, "", ""); w.Code != http.StatusInternalServerError {
+				t.Fatal("explicit CI read bypassed corruption", w.Code, w.Body.String())
+			}
+		}
+		if sourceCITestState(t, f) != before || reader.calls.Load() != calls || reader.ciCalls.Load() != ciCalls {
+			t.Fatal("local read wrote or fetched")
+		}
+	}
+	admissionSQL(t, f, `UPDATE review_source_refreshes SET ci_observation_json=?,capability_fingerprint='malformed' WHERE id=?`, ciBody, receipt.ID)
+	before := sourceCITestState(t, f)
+	_, err = f.e.ReadSourcePolicyAssessment(t.Context(), scope, 2)
+	attemptCode(t, err, "storage_unavailable")
+	if w := f.request(http.MethodGet, "/api/v1/projects/"+attemptProject+"/reviews/source/2/policy", f.reader, "", ""); w.Code != http.StatusInternalServerError {
+		t.Fatal("metadata corruption escaped policy validation", w.Code, w.Body.String())
+	}
+	if sourceCITestState(t, f) != before || reader.calls.Load() != calls || reader.ciCalls.Load() != ciCalls {
+		t.Fatal("corrupt metadata read wrote or fetched")
+	}
+}
+
+func TestSourceCIComparisonReadsOnlyLatestSourceMetadata(t *testing.T) {
+	for _, changed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("changed_%t", changed), func(t *testing.T) {
+			f := newAttemptFixture(t)
+			f.configure(t, attemptProject, "test-capability", 0, false)
+			reader := &sourceCITestReader{}
+			selected := refreshEnqueue(t, f, "selected-ci", sourceCIRequest())
+			cancel, done := refreshStart(t, f, reader)
+			old := refreshWait(t, f, selected.ID, "completed")
+			refreshStop(t, cancel, done)
+			latest := refreshEnqueue(t, f, "latest-source", refreshRequest())
+			if changed {
+				reader.pull = func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+					return reviewprovider.Pull{RepositoryID: 801, Number: n, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("d", 40), BaseRef: "main", ChangedFiles: 1}, nil
+				}
+			}
+			cancel, done = refreshStart(t, f, reader)
+			refreshWait(t, f, latest.ID, "completed")
+			refreshStop(t, cancel, done)
+			// Pin which collected row is latest without relying on host wall-clock order.
+			at, err := time.Parse(time.RFC3339Nano, old.CreatedAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			admissionSQL(t, f, `UPDATE review_source_refreshes SET created_at=?,ci_observation_json='malformed-unrelated-inventory' WHERE id=?`, at.Add(time.Second).UTC().Format(time.RFC3339Nano), latest.ID)
+			before, calls, ciCalls := sourceCITestState(t, f), reader.calls.Load(), reader.ciCalls.Load()
+			got, err := f.e.ReadSourceCIAssessment(t.Context(), sourceCIScope(t, f), 2)
+			wantState, wantReason := "satisfied", ""
+			if changed {
+				wantState, wantReason = "held", "source_comparison_changed"
+			}
+			if err != nil || got.RefreshID != selected.ID || got.State != wantState || got.Reason != wantReason || got.Satisfied != 1 || got.Target != *old.Observation {
+				t.Fatal("unrelated latest CI affected selected CI", got, err)
+			}
+			w := f.request(http.MethodGet, "/api/v1/projects/"+attemptProject+"/reviews/source/2/ci", f.reader, "", "")
+			var public SourceCIAssessment
+			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &public) != nil || public.RefreshID != selected.ID || public.State != wantState || public.Reason != wantReason || public.Satisfied != 1 {
+				t.Fatal("CI HTTP read decoded latest unrelated inventory", w.Code, w.Body.String())
+			}
+			if before != sourceCITestState(t, f) || calls != reader.calls.Load() || ciCalls != reader.ciCalls.Load() || ciCalls != 1 {
+				t.Fatal("CI assessment wrote or fetched")
+			}
+			// Metadata-only comparison does not make the selected CI optional.
+			admissionSQL(t, f, `UPDATE review_source_refreshes SET ci_observation_json='malformed-selected-inventory' WHERE id=?`, selected.ID)
+			_, err = f.e.ReadSourceCIAssessment(t.Context(), sourceCIScope(t, f), 2)
+			attemptCode(t, err, "storage_unavailable")
+		})
+	}
+}
