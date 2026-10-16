@@ -56,8 +56,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				return result(binding.Context, false), nil
 			}
 			timeout := 5 * time.Second
-			if tool.name == "review_source_refresh" && args.reviewSourceWait > 2 {
-				timeout = time.Duration(args.reviewSourceWait+5) * time.Second
+			if tool.name == "review_source_refresh" {
+				timeout = client.SourceRefreshBudget(args.reviewSourceWait)
 			}
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()

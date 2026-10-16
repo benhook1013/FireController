@@ -445,17 +445,11 @@ func (e *Engine) refreshNext(ctx context.Context, readers map[string]TargetReade
 	if ctx.Err() != nil {
 		return true, nil
 	}
-	var recorded *sourceRefresh
 	err = retrySourceRefreshLocal(ctx, func() error {
 		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			current, err := readSourceRefresh(ctx, tx, r.ProjectID, r.ID)
 			if err != nil {
 				return err
-			}
-			// A commit may have succeeded despite an overloaded result. Accept only
-			// the exact canonical record produced by this retained completion.
-			if recorded != nil && reflect.DeepEqual(current, *recorded) {
-				return nil
 			}
 			if current.State != r.State || current.Revision != r.Revision {
 				return conflict()
@@ -477,14 +471,7 @@ func (e *Engine) refreshNext(ctx context.Context, readers map[string]TargetReade
 					state, retained = "completed", &observation
 				}
 			}
-			if err := e.updateSourceRefresh(ctx, tx, r, state, reason, retained); err != nil {
-				return err
-			}
-			exact, err := readSourceRefresh(ctx, tx, r.ProjectID, r.ID)
-			if err == nil {
-				recorded = &exact
-			}
-			return err
+			return e.updateSourceRefresh(ctx, tx, r, state, reason, retained)
 		})
 	})
 	if err == nil {
