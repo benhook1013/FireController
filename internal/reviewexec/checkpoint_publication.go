@@ -95,6 +95,21 @@ func checkpointTime(s string) (time.Time, bool) {
 	return t, err == nil && !t.IsZero() && s == t.UTC().Format("2006-01-02T15:04:05.000000000Z")
 }
 
+// checkpointStamp samples local journal recording time only. The minimum comes
+// from a strictly validated retained record; fixed-width UTC strings preserve
+// chronological order. Provider times and the action budget remain independent.
+func (e *Engine) checkpointStamp(minimum string) string {
+	now := time.Now
+	if e.checkpointNow != nil {
+		now = e.checkpointNow
+	}
+	at := now().UTC().Format("2006-01-02T15:04:05.000000000Z")
+	if at < minimum {
+		return minimum
+	}
+	return at
+}
+
 func checkpointSource(ctx context.Context, tx *sql.Tx, project, id, pubID string) (ReviewEvidence, ReviewAdjudication, reviewprovider.CheckpointPayload, error) {
 	ev, state, err := sourceRouteState(ctx, tx, project, id)
 	if err != nil {
@@ -309,7 +324,7 @@ func (e *Engine) RequestCheckpointPublication(ctx context.Context, scope core.Sc
 			return nil, err
 		}
 		render, _ := reviewprovider.RenderCheckpoint(payload)
-		now := sourceStamp()
+		now := e.checkpointStamp("")
 		r := checkpointRecord{View: CheckpointPublication{ID: id, ProjectID: scope.ProjectID, EvidenceID: in.EvidenceID, State: "queued", Revision: 1, SourceRevision: state.Revision, Anchor: ev.Anchor, Counts: *state.FrozenCounts, CreatedAt: now, UpdatedAt: now}, Payload: payload, SemanticSHA256: render.SemanticSHA256, CapabilityID: cap.ID, Fingerprint: cap.Fingerprint, Provider: cap.Provider, Account: cap.Account, ActorID: scope.PrincipalID, WorkerID: scope.WorkerID, Unposted: true}
 		if err = persistCheckpoint(ctx, tx, r, 0); err != nil {
 			return nil, err
@@ -383,7 +398,7 @@ func (e *Engine) RecoverCheckpointPublication(ctx context.Context, scope core.Sc
 		}
 		r.View.Revision++
 		r.View.Reason = ""
-		r.View.UpdatedAt = sourceStamp()
+		r.View.UpdatedAt = e.checkpointStamp(r.View.UpdatedAt)
 		if err = persistCheckpoint(ctx, tx, r, n); err != nil {
 			return nil, err
 		}
