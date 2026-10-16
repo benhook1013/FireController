@@ -24,7 +24,8 @@ import (
 func TestPackagedBrowserSmoke(t *testing.T) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
+	// Run owned-daemon cleanups before cancellation, including assertion failures.
+	t.Cleanup(cancel)
 	private := t.TempDir()
 	if os.Chmod(private, 0700) != nil {
 		t.Fatal("private browser fixture unavailable")

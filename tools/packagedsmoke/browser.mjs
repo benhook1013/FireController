@@ -81,8 +81,22 @@ try {
   need(await page.locator('literal').count() === 0);
   const fits = await heading.evaluate(element => {
     const range = document.createRange(); range.selectNodeContents(element);
+    const rectangles = [...range.getClientRects()];
     const parent = element.closest('.hero-project').getBoundingClientRect();
-    return [...range.getClientRects()].every(rect => rect.left >= parent.left - 1 && rect.right <= parent.right + 1) && document.documentElement.scrollWidth <= innerWidth;
+    if (rectangles.length === 0 || rectangles.some(rect => rect.left < parent.left - 1 || rect.right > parent.right + 1) || document.documentElement.scrollWidth > innerWidth) return false;
+    // Glyphs can extend beyond an ordinary, visible-overflow line box. Check
+    // vertical bounds against actual clipping ancestors instead of font metrics.
+    const clips = value => ['hidden', 'clip', 'auto', 'scroll'].includes(value);
+    for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor);
+      if (!clips(style.overflowX) && !clips(style.overflowY)) continue;
+      const box = ancestor.getBoundingClientRect();
+      const left = box.left + ancestor.clientLeft, top = box.top + ancestor.clientTop;
+      const right = left + ancestor.clientWidth, bottom = top + ancestor.clientHeight;
+      if (rectangles.some(rect => clips(style.overflowX) && (rect.left < left - 1 || rect.right > right + 1)
+        || clips(style.overflowY) && (rect.top < top - 1 || rect.bottom > bottom + 1))) return false;
+    }
+    return true;
   });
   need(fits);
 
