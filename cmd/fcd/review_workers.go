@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"sync"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -17,8 +18,8 @@ type sourceReaderProvider interface {
 }
 
 // Startup recovery commits before any observer starts or HTTP accepts work.
-// The returned owner waits for the supervisor, source worker and observers.
-func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drivers map[string]reviewexec.Driver) (<-chan error, error) {
+// The returned owner joins the supervisor, source worker and observers during shutdown.
+func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drivers map[string]reviewexec.Driver, diagnostics io.Writer) (<-chan error, error) {
 	if len(drivers) == 0 {
 		return nil, execution.RecoverInterrupted(ctx)
 	}
@@ -28,9 +29,14 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 		cancel()
 		return nil, err
 	}
-	channels := []<-chan error{supervisor}
+	type worker struct {
+		done             <-chan error
+		recoveryObserver bool
+		capabilityID     string
+	}
+	channels := []worker{{done: supervisor}}
 	var startupErr error
-	for _, driver := range drivers {
+	for capabilityID, driver := range drivers {
 		if starter, ok := driver.(reviewRecoveryStarter); ok {
 			done, err := starter.StartRecovery(workerCtx)
 			if err != nil || done == nil {
@@ -41,7 +47,7 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 				cancel()
 				break
 			}
-			channels = append(channels, done)
+			channels = append(channels, worker{done: done, recoveryObserver: true, capabilityID: capabilityID})
 		}
 	}
 	if startupErr == nil {
@@ -56,16 +62,27 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 			startupErr = err
 			cancel()
 		} else if done != nil {
-			channels = append(channels, done)
+			channels = append(channels, worker{done: done})
 		}
 	}
 	result := make(chan error, 1)
 	var workers sync.WaitGroup
 	var mu sync.Mutex
 	var failure error
-	for _, done := range channels {
+	for _, owned := range channels {
 		workers.Go(func() {
-			err := <-done
+			err := <-owned.done
+			if owned.recoveryObserver {
+				// An observer has no authority to settle uncertain work or stop
+				// unrelated coordination. Report only its unexpected termination,
+				// never the retained error's provider text or private details.
+				if workerCtx.Err() == nil {
+					mu.Lock()
+					diagnostic(diagnostics, "review_recovery_stopped", "The native hosted recovery observer for capability "+owned.capabilityID+" stopped; inspect retained uncertain work before recovery.")
+					mu.Unlock()
+				}
+				return
+			}
 			if err != nil {
 				mu.Lock()
 				if failure == nil {
@@ -73,8 +90,8 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 				}
 				mu.Unlock()
 			}
-			// An observer/supervisor ending owns cancellation of all siblings;
-			// normal daemon cancellation also takes this same bounded path.
+			// The supervisor remains fatal; normal daemon cancellation joins
+			// every observer through the same owner without restarting it.
 			cancel()
 		})
 	}

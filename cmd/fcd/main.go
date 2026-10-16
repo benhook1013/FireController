@@ -108,7 +108,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}
 	defer listener.Close()
 	reviewCtx, cancelReviews := context.WithCancel(ctx)
-	reviewDone, err := startReviewWorkers(reviewCtx, execution, drivers)
+	reviewDone, err := startReviewWorkers(reviewCtx, execution, drivers, stderr)
 	defer func() {
 		cancelReviews()
 		if reviewDone == nil {
