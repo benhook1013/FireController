@@ -242,3 +242,118 @@ func TestNativeRoutesKnownReceiverProofCannotBeSilentlyLost(t *testing.T) {
 		t.Fatal("valid receiving proof correction refused", changed, err)
 	}
 }
+
+func TestImportedFindingRoutesMatchNativeReceiverProofContract(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*FindingRoute)
+		valid  bool
+	}{
+		{"superseded_with_fix", func(r *FindingRoute) { r.State = "superseded" }, false},
+		{"actor_with_spaces", func(r *FindingRoute) { r.Actor = "receiving actor" }, false},
+		{"actor_non_native_prefix", func(r *FindingRoute) { r.Actor = "_receiving" }, false},
+		{"active_fixed", func(*FindingRoute) {}, true},
+		{"superseded_without_fix", func(r *FindingRoute) { r.State = "superseded"; r.FixSHA, r.ProofNote, r.FixedAt = "", "", "" }, true},
+		{"maximum_native_actor", func(r *FindingRoute) { r.Actor = "a" + strings.Repeat("_-A1", 31) + "_-A" }, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newAPIFixture(t)
+			run := importedRoutedRun()
+			// A real administrator observation and public read establish the
+			// valid blank-actor unadjudicated baseline before each attempted import.
+			undecided := nativeRouteFixture(0)
+			run.Findings[0].Route = undecided
+			pull := nativePull(1)
+			pull.Runs = []RunInput{run}
+			first := f.observe(t, reviewRequest(0, []PullInput{pull}), "import-route-original")
+			id := runOpaqueID(f.project, "test-import", run.SourceRunID)
+			var original RunDetailResponse
+			before := nativeRead(t, f, "/runs/"+id, &original)
+			if original.Findings[0].Route.Actor != "" || original.Findings[0].Route.Disposition != "unadjudicated" {
+				t.Fatal("unadjudicated route changed on import")
+			}
+			counts := nativeProjectionCounts(t, f)
+			snapshot := nativeSnapshotBytes(t, f, first["id"].(string))
+			route := importedFixedRoute()
+			test.change(route)
+			pull.Runs[0].Findings[0].Route = route
+			response := f.call(http.MethodPost, "/api/v1/projects/"+f.project+"/reviews/observations", f.admin, "import-route-replacement", reviewRequest(1, []PullInput{pull}))
+			if !test.valid {
+				if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"validation_failed"`) {
+					t.Fatalf("malformed route import must fail before writes: status=%d", response.Code)
+				}
+				if !reflect.DeepEqual(counts, nativeProjectionCounts(t, f)) || nativeSnapshotBytes(t, f, first["id"].(string)) != snapshot {
+					t.Fatal("rejected import changed snapshot/domain/event/receipt rows")
+				}
+				var retained RunDetailResponse
+				if string(nativeRead(t, f, "/runs/"+id, &retained)) != string(before) {
+					t.Fatal("rejected import changed public retained detail")
+				}
+				return
+			}
+			if response.Code != http.StatusCreated {
+				t.Fatalf("valid route import refused: status=%d", response.Code)
+			}
+			var current RunDetailResponse
+			nativeRead(t, f, "/runs/"+id, &current)
+			if !reflect.DeepEqual(current.Findings[0].Route, route) || current.Run.Routed != 1 || current.Run.Fixed != 0 {
+				t.Fatal("valid receiver proof lost or credited as source proof")
+			}
+			if nativeSnapshotBytes(t, f, first["id"].(string)) != snapshot {
+				t.Fatal("replacement rewrote original imported snapshot")
+			}
+		})
+	}
+}
+
+func importedRoutedRun() RunInput {
+	run := nativeRun("imported-receiver-proof")
+	run.Accepted, run.Routed = 0, 1
+	finding := &run.Findings[0]
+	finding.Disposition = "routed"
+	finding.FixSHA, finding.ProofNote, finding.ResolvedAt = "", "", ""
+	return run
+}
+
+func importedFixedRoute() *FindingRoute {
+	route := nativeRouteFixture(0)
+	route.Revision = 3
+	route.Disposition, route.Reason, route.Actor = "accepted", "Receiver accepted", "receiving-actor_1"
+	route.DecidedAt = "2026-01-01T00:05:00Z"
+	route.FixSHA, route.ProofNote, route.FixedAt = strings.Repeat("d", 40), "Receiver fix proof", "2026-01-01T00:06:00Z"
+	return route
+}
+
+func TestImportedFindingRoutesRejectMalformedRetainedReceiverProof(t *testing.T) {
+	f := newAPIFixture(t)
+	run := importedRoutedRun()
+	run.Findings[0].Route = importedFixedRoute()
+	pull := nativePull(1)
+	pull.Runs = []RunInput{run}
+	first := f.observe(t, reviewRequest(0, []PullInput{pull}), "import-fixed-receiver")
+	id := runOpaqueID(f.project, "test-import", run.SourceRunID)
+	var original RunDetailResponse
+	nativeRead(t, f, "/runs/"+id, &original)
+	for _, mode := range []string{"superseded_fixed", "actor_spaces"} {
+		t.Run(mode, func(t *testing.T) {
+			route := importedFixedRoute()
+			if mode == "superseded_fixed" {
+				route.State = "superseded"
+			} else {
+				route.Actor = "receiving actor"
+			}
+			// This SQL represents corrupt retained data, not a supported import.
+			if _, err := f.store.DB().Exec(`UPDATE review_findings SET route_json=? WHERE project_id=? AND snapshot_id=? AND run_id=?`, mustJSON(route), f.project, first["id"], id); err != nil {
+				t.Fatal(err)
+			}
+			counts := nativeProjectionCounts(t, f)
+			response := f.call(http.MethodGet, "/api/v1/projects/"+f.project+"/reviews/runs/"+id, f.readToken, "", nil)
+			if response.Code != 500 || !strings.Contains(response.Body.String(), `"code":"storage_unavailable"`) {
+				t.Fatalf("malformed retained receiver proof must fail closed: status=%d", response.Code)
+			}
+			if !reflect.DeepEqual(counts, nativeProjectionCounts(t, f)) {
+				t.Fatal("failed read wrote durable rows")
+			}
+		})
+	}
+}
