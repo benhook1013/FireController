@@ -472,62 +472,14 @@ func listNotes(store *core.Store) http.HandlerFunc {
 				return
 			}
 		}
-		result := notePage{Items: make([]noteSummary, 0, limit)}
+		var result notePage
 		err = store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
-			query := `SELECT ` + noteColumns + ` FROM notes WHERE project_id=?`
-			args := []any{scope.ProjectID}
-			if filter.WorkerID != "" {
-				if filter.IncludeAssignedJobs {
-					query += ` AND (worker_id=? OR EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=notes.project_id AND j.id=notes.job_id AND j.worker_id=?))`
-					args = append(args, filter.WorkerID, filter.WorkerID)
-				} else {
-					query += ` AND worker_id=?`
-					args = append(args, filter.WorkerID)
-				}
-			}
-			for _, field := range []struct{ column, value string }{{"job_id", filter.JobID}, {"phase", filter.Phase}, {"kind", filter.Kind}, {"status", filter.Status}} {
-				if field.value != "" && !(field.column == "status" && field.value == "all") {
-					query += ` AND ` + field.column + `=?`
-					args = append(args, field.value)
-				}
-			}
+			var selected *notePosition
 			if after != "" {
-				query += ` AND (created_at<? OR (created_at=? AND id<?))`
-				args = append(args, position.CreatedAt, position.CreatedAt, position.ID)
+				selected = &position
 			}
-			query += ` ORDER BY created_at DESC,id DESC LIMIT ?`
-			args = append(args, limit+1)
-			rows, err := tx.QueryContext(ctx, query, args...)
-			if err != nil {
-				return err
-			}
-			values := make([]note, 0, limit)
-			for rows.Next() {
-				n, err := scanNote(rows)
-				if err != nil {
-					rows.Close()
-					return err
-				}
-				if len(values) == limit {
-					result.HasMore = true
-					break
-				}
-				values = append(values, n)
-			}
-			err = rows.Err()
-			rows.Close()
-			if err != nil {
-				return err
-			}
-			for _, n := range values {
-				result.Items = append(result.Items, compactNote(n))
-			}
-			if result.HasMore {
-				last := values[len(values)-1]
-				data, _ := json.Marshal(notePosition{CreatedAt: last.CreatedAt, ID: last.ID})
-				result.Cursor = store.Cursor(scope, filterKey, string(data))
-			}
-			return nil
+			result, err = readNotePage(ctx, tx, store, scope, filter, limit, selected)
+			return err
 		})
 		if err != nil {
 			core.WriteError(w, err)
@@ -536,6 +488,69 @@ func listNotes(store *core.Store) http.HandlerFunc {
 		writeProgressJSON(w, result, maxNotePageResponse)
 	}
 }
+
+// readNotePage uses the caller's authorized snapshot and ordinary list cursor
+// identity. Resume context and explicit notes reads share this bounded selection.
+func readNotePage(ctx context.Context, tx *sql.Tx, store *core.Store, scope core.Scope, filter noteListFilter, limit int, position *notePosition) (notePage, error) {
+	filterBytes, _ := json.Marshal(filter)
+	filterKey := string(filterBytes)
+	result := notePage{Items: make([]noteSummary, 0, limit)}
+	query := `SELECT ` + noteColumns + ` FROM notes WHERE project_id=?`
+	args := []any{scope.ProjectID}
+	if filter.WorkerID != "" {
+		if filter.IncludeAssignedJobs {
+			query += ` AND (worker_id=? OR EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=notes.project_id AND j.id=notes.job_id AND j.worker_id=?))`
+			args = append(args, filter.WorkerID, filter.WorkerID)
+		} else {
+			query += ` AND worker_id=?`
+			args = append(args, filter.WorkerID)
+		}
+	}
+	for _, field := range []struct{ column, value string }{{"job_id", filter.JobID}, {"phase", filter.Phase}, {"kind", filter.Kind}, {"status", filter.Status}} {
+		if field.value != "" && !(field.column == "status" && field.value == "all") {
+			query += ` AND ` + field.column + `=?`
+			args = append(args, field.value)
+		}
+	}
+	if position != nil {
+		query += ` AND (created_at<? OR (created_at=? AND id<?))`
+		args = append(args, position.CreatedAt, position.CreatedAt, position.ID)
+	}
+	query += ` ORDER BY created_at DESC,id DESC LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return result, err
+	}
+	values := make([]note, 0, limit)
+	for rows.Next() {
+		n, err := scanNote(rows)
+		if err != nil {
+			rows.Close()
+			return result, err
+		}
+		if len(values) == limit {
+			result.HasMore = true
+			break
+		}
+		values = append(values, n)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return result, err
+	}
+	for _, n := range values {
+		result.Items = append(result.Items, compactNote(n))
+	}
+	if result.HasMore {
+		last := values[len(values)-1]
+		data, _ := json.Marshal(notePosition{CreatedAt: last.CreatedAt, ID: last.ID})
+		result.Cursor = store.Cursor(scope, filterKey, string(data))
+	}
+	return result, nil
+}
+
 func noteHistory(store *core.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		scope, err := store.Scope(r, "read")

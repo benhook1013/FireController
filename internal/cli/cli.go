@@ -172,6 +172,8 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value, err = service.WorkerPauseHistory(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "workers":
 		value, err = service.Workers(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+	case call.command == "jobs" && call.subcommand == "context":
+		value, err = service.JobContext(requestCtx, call.position[0], call.limit)
 	case call.command == "jobs" && call.subcommand == "primary":
 		value, err = service.PrimaryJob(requestCtx)
 	case call.command == "jobs" && call.subcommand == "primary-history":
@@ -264,6 +266,9 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if call.command == "jobs" && call.subcommand == "context" {
+		return parseJobContext(call, operationArgs)
+	}
 	if call.command == "notes" {
 		var ok bool
 		call.notes, ok = parseNotes(call.subcommand, operationArgs)

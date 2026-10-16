@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The API, typed client, CLI, MCP and backup integration implement the contract below. Focused backend, client, adapter and backup tests pass, including race checks. Full combined validation and six actual packaged groups pass at the checkpoint recorded below. Browser presentation and combined resume context remain unfinished. Existing jobs, updates, checklists, checkpoints, primary focus and worker pause remain independent.
+The API, typed client, CLI, MCP and backup integration implement the contract below. Focused backend, client, adapter and backup tests pass, including race checks. Full combined validation and six actual packaged groups pass at the checkpoint recorded below. Browser presentation remains unfinished. [Job resume context](job-context.md) explicitly includes selected pending previews under its separate completeness and proof boundary. Existing jobs, updates, checklists, checkpoints, primary focus and worker pause remain independent.
 
 ## Scope and state
 

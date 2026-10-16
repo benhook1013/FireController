@@ -25,6 +25,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Job progress](job-progress.md): separate narrative updates and guarded checklist state, history and proof requirements.
 - [Worker pause state](worker-pause.md): explicit coordination pause independent of job status, focus and execution.
 - [Worker primary job](worker-focus.md): selected optional resume-focus contract, independent of concurrent jobs and status.
+- [Job resume context](job-context.md): one deliberate current brief/checkpoint and pending-coordination read with explicit completeness and continuation.
 - [Deferred notes](notes.md): scoped reminder/source records, compact reads and guarded history; the owning contract records validation status.
 - [Suggested agent workflow](agent-workflow.md): optional working practices for project instructions and a usage skill, separate from tool contracts.
 - [Product scope](product.md) defines the requirements.

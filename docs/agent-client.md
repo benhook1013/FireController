@@ -49,7 +49,7 @@ If automatic result delivery is unavailable, the adapter reports that limitation
 
 ## State and reconnect semantics
 
-Brief revisions, updates and checkpoints are separate explicit operations. Appending a checkpoint does not replace the current brief or change job status. A job context read returns the selected current brief, latest checkpoint and relevant pending coordination under the completeness rules in [AI usability](ai-usability.md). Compact list summaries do not claim to contain that full context.
+Brief revisions, updates and checkpoints are separate explicit operations. Appending a checkpoint does not replace the current brief or change job status. The explicit [job context read](job-context.md) returns the complete selected current brief and latest checkpoint plus bounded relevant pending coordination under the completeness rules in [AI usability](ai-usability.md). Compact list summaries do not claim to contain that full context.
 
 Ending a turn, closing a client or cancelling a wait does not complete or pause a job, create a checkpoint, acknowledge messages, or delete durable resources. Subscription lifetime across turns depends on the host; cancellation releases the applicable wait without acknowledging delivery or reversing committed work.
 

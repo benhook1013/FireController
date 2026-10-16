@@ -55,6 +55,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, primaryJobDefinitions()...)
 	definitions = append(definitions, workerPauseDefinitions()...)
 	definitions = append(definitions, noteDefinitions()...)
+	definitions = append(definitions, jobContextDefinition())
 	known := make(map[string]bool)
 	for _, tool := range definitions {
 		known[tool.name] = true
@@ -64,7 +65,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
 			var err error
-			if noteTool(tool.name) {
+			if tool.name == "job_context" {
+				args, err = jobContextArguments(request.Params.Arguments)
+			} else if noteTool(tool.name) {
 				args, err = noteArguments(tool.name, request.Params.Arguments)
 			} else if workerPauseTool(tool.name) {
 				args, err = workerPauseArguments(tool.name, request.Params.Arguments)
@@ -91,6 +94,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			options := client.PageOptions{Limit: args.limit, Cursor: args.cursor}
 			var value any
 			switch tool.name {
+			case "job_context":
+				value, err = service.JobContext(ctx, args.id, args.limit)
 			case "note_create", "note_update", "note_read", "note_list", "note_history", "note_revision_read":
 				value, err = executeNoteTool(ctx, service, args.notes)
 			case "doctor":

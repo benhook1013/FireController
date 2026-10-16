@@ -2,9 +2,11 @@
 
 ## Implemented boundary
 
-`fcmcp` exposes forty read tools and twenty-two explicit mutations over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Checkpoint tools](job-checkpoints.md) append immutable progress and provide explicit latest/archive reads. Subscriptions, remote MCP and automatic chat wakeups remain unimplemented.
+`fcmcp` exposes forty-one read tools and twenty-two explicit mutations over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Checkpoint tools](job-checkpoints.md) append immutable progress and provide explicit latest/archive reads. Subscriptions, remote MCP and automatic chat wakeups remain unimplemented.
 
 [Worker pause](worker-pause.md) is explicit coordination state and does not stop agents or change jobs, focus, messages or review execution.
+
+[Job resume context](job-context.md) combines authoritative current state and selected pending coordination in one deliberate read; it never substitutes previews for full bodies or hides omitted pages.
 
 [Deferred notes](notes.md) own reminder/source scope, explicit consumption, compact previews and immutable revisions. Note operations perform no provider work and never expand a job read.
 
@@ -33,6 +35,7 @@ Startup validates configuration without opening the credential or contacting the
 | `worker_pause_history` | Optional limit/cursor; one explicit newest-first pause-history page. |
 | `jobs_list` | Optional worker_id/status/limit/cursor; one compact job page. |
 | `jobs_assigned` | Optional status/limit/cursor; one compact page assigned to the bound worker. |
+| `job_context` | Required job_id, optional limit; full current brief/checkpoint/checklist plus bound-worker focus/pause and compact pending notes/messages, with explicit omissions and replay watermark. |
 | `job_read` | Required job_id; explicit full job detail and brief. |
 | `job_history` | Required job_id and optional limit/cursor; explicit full-state history page. |
 | `job_checkpoint_latest` | Required job_id; explicit latest checkpoint and current job revision, including null when none exists. |

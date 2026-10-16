@@ -12,7 +12,7 @@ Successful writes return the affected resource ID, revision or durable action ID
 
 Lists return compact selected fields with a cursor and `has_more`. A default 20 items and maximum 100 are calibration candidates; choose final defaults from representative agent-use measurements rather than inherited page sizes. Include bounded body previews for message selection, not every conversation's full archive. Archive, diagnostics, and provider captures require explicit requests.
 
-A current-job context read provides the authoritative brief, latest checkpoint, and selected relevant pending coordination in one deliberate operation. If the complete required context exceeds the configured response budget, state what is missing and provide resumable sections; do not silently truncate a standing instruction or pretend the partial packet is complete. Routine coordination reads need not fetch this resume packet.
+The deliberate [current-job context read](job-context.md) provides the authoritative brief, latest checkpoint, and selected relevant pending coordination in one deliberate operation. If the complete required context exceeds the configured response budget, state what is missing and provide resumable sections; do not silently truncate a standing instruction or pretend the partial packet is complete. Routine coordination reads need not fetch this resume packet.
 
 Responses do not echo credentials, profile files, submitted large text, redundant timestamps, or long invocation examples. Errors state the stable cause, whether retry is safe, the conflicting revision or held operation where relevant, and the smallest useful next action. Verbose traces are opt-in. A transient provider issue does not bury an unrelated successful job update under diagnostics.
 

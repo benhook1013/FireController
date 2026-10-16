@@ -44,7 +44,7 @@ func TestNotesToolsSDKAndCLICrossAdapterOriginalKeyRecovery(t *testing.T) {
 	path := profiles(t, map[string]profile.Context{"chosen": identity}, f.credential)
 	session := reviewControlsStdio(t, path, "chosen")
 	tools, err := session.ListTools(t.Context(), nil)
-	if err != nil || len(tools.Tools) != 62 || tools.NextCursor != "" {
+	if err != nil || len(tools.Tools) != 63 || tools.NextCursor != "" {
 		t.Fatal("discovery", err)
 	}
 	want := map[string]int{"note_create": 6, "note_update": 10, "note_read": 1, "note_list": 9, "note_history": 3, "note_revision_read": 2}
@@ -70,7 +70,7 @@ func TestNotesToolsSDKAndCLICrossAdapterOriginalKeyRecovery(t *testing.T) {
 			t.Fatal("schema/annotation", tool.Name)
 		}
 	}
-	if len(want) != 0 || reads != 40 || writes != 22 {
+	if len(want) != 0 || reads != 41 || writes != 22 {
 		t.Fatal("tool census", want, reads, writes)
 	}
 	body := strings.Repeat("<", 16<<10)

@@ -118,3 +118,7 @@ The [source refresh contract](review-source.md) owns its explicit POST, operatio
 ## Deferred notes
 
 [Deferred notes](notes.md) own `POST /notes`, `GET /notes`, `GET` and `PATCH /notes/{note_id}`, `GET /notes/{note_id}/history` and `GET /notes/{note_id}/history/{revision}`. Routes use the existing project prefix and authorization. Current/list reads do not load archives; compact history and selected full revisions require explicit reads. Status-only patches do not require resubmitting the body. Notes never consume themselves or change jobs, focus, pause or messages.
+
+## Job resume context
+
+[Job resume context](job-context.md) owns `GET /jobs/{job_id}/context`, with an explicit worker binding and optional bounded limit. One authorized snapshot combines the complete current brief/latest checkpoint/checklist, worker focus/pause, selected pending-note/inbox previews and incoming-event watermark. Required content is never truncated; the response states which bodies or additional pages need explicit reads. This deliberate operation does not expand routine job reads or perform provider work.
