@@ -272,7 +272,7 @@ function Workspace({ session, metadataStatus, selectWorker, disconnect, fail }: 
   }, [session, key, queryClient, onFailure, attempt]);
   async function refresh() {
     setRefreshing(true);
-    try { await queryClient.invalidateQueries({ queryKey: key, refetchType: 'active' }, { throwOnError: true }); }
+    try { await refreshEventQueries(queryClient, key, session.controller.signal); }
     catch (error) { onFailure(error); }
     finally { if (!session.controller.signal.aborted) setRefreshing(false); }
   }
