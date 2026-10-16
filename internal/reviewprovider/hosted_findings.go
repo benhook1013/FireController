@@ -724,11 +724,7 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 // inventory remains explicitly incomplete with bounded extracted pieces and the
 // original publication retained; it never fabricates aggregate placeholder rows.
 func ExtractHostedFindings(snapshot HostedPublicationSnapshot, intent HostedTriggerIntent, postingActor, providerActor Author, earliestPosting time.Time) (HostedFindingInventory, error) {
-	return ExtractHostedFindingsWithBaseline(snapshot, intent, postingActor, providerActor, earliestPosting, nil)
-}
-
-func ExtractHostedFindingsWithBaseline(snapshot HostedPublicationSnapshot, intent HostedTriggerIntent, postingActor, providerActor Author, earliestPosting time.Time, baseline *HostedPublicationBaseline) (HostedFindingInventory, error) {
-	publication, err := ResolveHostedPublicationWithBaseline(snapshot, intent, postingActor, providerActor, earliestPosting, baseline)
+	publication, err := ResolveHostedPublication(snapshot, intent, postingActor, providerActor, earliestPosting)
 	result := HostedFindingInventory{Publication: publication, Findings: []HostedFinding{}}
 	if err != nil {
 		result.Reason = "publication_unavailable"
@@ -739,10 +735,6 @@ func ExtractHostedFindingsWithBaseline(snapshot HostedPublicationSnapshot, inten
 		return result, nil
 	}
 	result.Complete = true
-	if publication.StandingZero != nil {
-		result.Reason = "finding_inventory_complete"
-		return result, nil
-	}
 	decoder := findingDecoder{inventory: &result, seen: map[string]bool{}}
 	for _, root := range publication.Roots {
 		decoder.inline(root)

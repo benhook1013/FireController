@@ -116,9 +116,6 @@ func validateReviewEvidence(in ReviewEvidenceInput) error {
 		}
 	}
 	if in.Hosted != nil {
-		if in.Hosted.StandingZero != nil && in.Hosted.StandingZero.BaselineCaptureID == in.CaptureID {
-			return invalid()
-		}
 		return validateHostedEvidenceMetadata(in.Hosted, in.ExpectedAnchor, r)
 	}
 	return nil

@@ -24,12 +24,11 @@ type evidenceResponse struct {
 }
 
 type hostedPublicationResponse struct {
-	StandingZero      *HostedStandingZeroMetadata `json:"standing_zero,omitempty"`
-	PublicationID     string                      `json:"publication_id,omitempty"`
-	ProviderAttemptID string                      `json:"provider_attempt_id,omitempty"`
-	TriggerCommentID  int64                       `json:"trigger_comment_id"`
-	ReviewIDs         []int64                     `json:"review_ids,omitempty"`
-	ObservedBaseSHA   string                      `json:"observed_base_sha"`
+	PublicationID     string  `json:"publication_id"`
+	ProviderAttemptID string  `json:"provider_attempt_id"`
+	TriggerCommentID  int64   `json:"trigger_comment_id"`
+	ReviewIDs         []int64 `json:"review_ids"`
+	ObservedBaseSHA   string  `json:"observed_base_sha"`
 }
 
 type captureResponse struct {
@@ -80,10 +79,6 @@ func publicEvidence(value ReviewEvidence) evidenceResponse {
 	var hosted *hostedPublicationResponse
 	if h := capture.Hosted; h != nil {
 		hosted = &hostedPublicationResponse{PublicationID: h.PublicationID, ProviderAttemptID: h.ProviderAttemptID, TriggerCommentID: h.TriggerCommentID, ReviewIDs: append([]int64{}, h.ReviewIDs...), ObservedBaseSHA: h.ObservedBaseSHA}
-		if h.StandingZero != nil {
-			zero := *h.StandingZero
-			hosted.StandingZero = &zero
-		}
 	}
 	files := append([]string{}, capture.Review.ReviewedFiles...)
 	findings := make([]sourceFindingResponse, len(capture.Review.Findings))
