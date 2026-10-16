@@ -285,12 +285,14 @@ func (e *Engine) ReadSourceCIAssessment(ctx context.Context, scope core.Scope, n
 		if err = tx.QueryRowContext(ctx, `SELECT id FROM review_source_refreshes WHERE project_id=? AND pull_number=? AND state='completed' ORDER BY created_at DESC,id DESC LIMIT 1`, scope.ProjectID, number).Scan(&latestID); err != nil {
 			return err
 		}
-		latest, err := readSourceRefresh(ctx, tx, scope.ProjectID, latestID)
-		if err != nil {
-			return err
-		}
-		if sourceCITarget(*latest.Observation) != sourceCITarget(*r.Observation) {
-			result.State, result.Reason = "held", "source_comparison_changed"
+		if latestID != r.ID {
+			latest, err := readSourceRefreshMetadata(ctx, tx, scope.ProjectID, latestID)
+			if err != nil {
+				return err
+			}
+			if sourceCITarget(*latest.Observation) != sourceCITarget(*r.Observation) {
+				result.State, result.Reason = "held", "source_comparison_changed"
+			}
 		}
 		return nil
 	})
