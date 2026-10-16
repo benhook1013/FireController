@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -215,8 +216,10 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"jobs": 5, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"notes":                      {"jobs", 6, "project_id id worker_id job_id phase kind body status status_reason revision created_at updated_at"},
+	"note_revisions":             {"jobs", 6, "project_id note_id revision worker_id job_id phase kind body status status_reason created_at updated_at actor_id actor_worker_id recorded_at"},
 	"worker_pause_state":         {"jobs", 5, "project_id worker_id revision paused reason"},
 	"worker_pause_history":       {"jobs", 5, "project_id worker_id revision paused reason actor_id actor_worker_id created_at"},
 	"worker_primary_jobs":        {"jobs", 4, "project_id worker_id revision job_id"},
@@ -280,6 +283,30 @@ func workerStateColumn(table, column, kind string, notnull, pk int, defaultValue
 		return false
 	}
 	return kind == expectedKind && notnull == expectedNotNull && pk == expectedPK
+}
+
+func noteColumn(table, column, kind string, notnull, pk int, defaultValue any) bool {
+	if defaultValue != nil {
+		return false
+	}
+	expectedKind, expectedNull, expectedPK := "TEXT", 1, 0
+	switch column {
+	case "project_id":
+		expectedPK = 1
+	case "id", "note_id":
+		expectedPK = 2
+	case "revision":
+		expectedKind = "INTEGER"
+		if table == "note_revisions" {
+			expectedPK = 3
+		}
+	case "worker_id", "job_id":
+		expectedNull = 0
+	case "phase", "kind", "body", "status", "status_reason", "created_at", "updated_at", "actor_id", "actor_worker_id", "recorded_at":
+	default:
+		return false
+	}
+	return kind == expectedKind && notnull == expectedNull && pk == expectedPK
 }
 
 func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[string]int, error) {
@@ -413,6 +440,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if (name == "notes" || name == "note_revisions") && !noteColumn(name, col, kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			present[col] = true
 		}
 		e = columnRows.Err()
@@ -537,6 +568,11 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	foreign.Close()
 	if bad || err != nil {
 		return invalid()
+	}
+	if versions["jobs"] >= 6 {
+		if err = jobs.ValidateNotesSnapshot(ctx, tx); err != nil {
+			return invalid()
+		}
 	}
 	refs := map[string]Artifact{}
 	for _, a := range m.Artifacts {
@@ -691,6 +727,8 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"notes":                           {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
+	"note_revisions":                  {canonicalFK("notes", "project_id,note_id", "project_id,id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
 	"worker_pause_state":              {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
 	"worker_pause_history":            {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
 	"worker_primary_jobs":             {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},

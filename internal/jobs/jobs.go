@@ -26,6 +26,12 @@ var validStatuses = map[string]bool{
 
 // Register mounts the basic jobs API on the shared project API mux.
 func Register(mux *http.ServeMux, store *core.Store) {
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/notes", createNote(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes", listNotes(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}", getNote(store))
+	mux.HandleFunc("PATCH /api/v1/projects/{project_id}/notes/{note_id}", patchNote(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}/history", noteHistory(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}/history/{revision}", getNoteRevision(store))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/jobs", createJob(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs", listJobs(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}", getJob(store))

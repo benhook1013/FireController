@@ -2,9 +2,11 @@
 
 ## Implemented boundary
 
-`fcmcp` exposes thirty-six read tools and twenty explicit mutations over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Checkpoint tools](job-checkpoints.md) append immutable progress and provide explicit latest/archive reads. Subscriptions, remote MCP and automatic chat wakeups remain unimplemented.
+`fcmcp` exposes forty read tools and twenty-two explicit mutations over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Checkpoint tools](job-checkpoints.md) append immutable progress and provide explicit latest/archive reads. Subscriptions, remote MCP and automatic chat wakeups remain unimplemented.
 
 [Worker pause](worker-pause.md) is explicit coordination state and does not stop agents or change jobs, focus, messages or review execution.
+
+[Deferred notes](notes.md) own reminder/source scope, explicit consumption, compact previews and immutable revisions. Note operations perform no provider work and never expand a job read.
 
 Execution tool arguments and recovery are owned by [review execution](review-execution.md#bound-execution-tools).
 
@@ -40,6 +42,10 @@ Startup validates configuration without opening the credential or contacting the
 | `job_update_history` | Required job_id and optional limit/cursor; one newest-first narrative-update page. |
 | `job_checklist_read` | Required job_id; current ordered checklist and current job revision. |
 | `job_checklist_history` | Required job_id and optional limit/cursor; one newest-first full checklist revision page. |
+| `note_read` | Required note_id; one full current note. |
+| `note_list` | Optional worker_id/all_workers/direct_only/job_id/phase/kind/status/limit/cursor; compact notes for the bound worker and its currently assigned jobs by default. |
+| `note_history` | Required note_id and optional limit/cursor; one compact revision page. |
+| `note_revision_read` | Required note_id/revision; one full immutable note revision. |
 | `inbox_list` | Optional unread/unacknowledged/limit/cursor; bound worker's compact preview page. |
 | `inbox_thread` | Required conversation_id and optional limit/cursor; explicit full-body conversation page. |
 | `inbox_snapshot` | Optional unread/unacknowledged/limit/cursor; one inbox page plus its atomic incoming-event watermark. |
@@ -77,6 +83,8 @@ Startup validates configuration without opening the credential or contacting the
 | `job_primary_replace` | Required idempotency_key/expected_revision/job_id; bound worker’s guarded focus replacement, empty job ID clears. |
 | `job_update_append` | Required idempotency_key/job_id/expected_job_revision/body; optional evidence; immutable narrative update and compact receipt. |
 | `job_checklist_replace` | Required idempotency_key/job_id/expected_job_revision/expected_revision/items; guarded ordered replacement and compact changed/unchanged receipt. |
+| `note_create` | Required idempotency_key/body; optional worker_id/job_id/phase/kind; compact creation receipt. |
+| `note_update` | Required idempotency_key/note_id/expected_revision plus selected scope/kind/body/status/status_reason fields; compact changed/unchanged receipt. |
 | `inbox_send` | Required idempotency_key/recipient_worker_id/body; optional reply_to_message_id; compact message receipt. |
 | `inbox_seen` | Required idempotency_key/message_id; explicit recipient seen transition. |
 | `inbox_ack` | Required idempotency_key/message_id; explicit recipient acknowledgment, also establishing seen. |

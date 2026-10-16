@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The embedded [read-only browser](browser-guide.md) consumes the same API and persistent message stream. [Job checkpoints](job-checkpoints.md) implement guarded progress records, latest reads and explicit archives. The optional native CLI/hosted review pipelines, private operator catalog and bound agent tools are described in [review execution](review-execution.md), including their executed proof and live-provider limits. Local operator [backup bundles and inactive restore](backups.md) and managed scheduling, retention and read-only operator status are implemented with full checks and packaged proof. [Narrative updates and checklist state](job-progress.md) are available through the same API and agent clients. [Optional primary-job focus](worker-focus.md) is available through bound API/client/CLI/MCP operations. CLI/MCP persistent subscriptions, worker pause state, deferred notes and combined resume context remain unimplemented.
+`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The embedded [read-only browser](browser-guide.md) consumes the same API and persistent message stream. [Job checkpoints](job-checkpoints.md) implement guarded progress records, latest reads and explicit archives. The optional native CLI/hosted review pipelines, private operator catalog and bound agent tools are described in [review execution](review-execution.md), including their executed proof and live-provider limits. Local operator [backup bundles and inactive restore](backups.md) and managed scheduling, retention and read-only operator status are implemented with full checks and packaged proof. [Narrative updates and checklist state](job-progress.md) are available through the same API and agent clients. [Optional primary-job focus](worker-focus.md) is available through bound API/client/CLI/MCP operations. [Worker pause](worker-pause.md) and [deferred notes](notes.md) have API/client/CLI/MCP implementations; each owner records executed proof and remaining boundaries. CLI/MCP persistent subscriptions and combined resume context remain unimplemented.
 
 ## Build and checks
 
@@ -67,6 +67,10 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | --- | --- |
 | `fc doctor` | Verified instance/project/worker binding, without credentials or a PR scan. |
 | `fc workers list` | One compact worker page in the bound project. |
+| `fc notes read NOTE_ID` | One full current note. |
+| `fc notes list` | One compact pending page for the bound worker and its currently assigned jobs; explicit scope/filter flags narrow or broaden selection. |
+| `fc notes history NOTE_ID` | One compact immutable-revision page. |
+| `fc notes revision NOTE_ID REVISION` | One full selected revision. |
 | `fc workers pause-state` | Bound worker’s explicit pause, reason and independent revision. |
 | `fc workers pause-history` | One explicit bounded pause-history page. |
 | `fc jobs list` | One compact job page; optional worker/status filters. |
@@ -109,6 +113,8 @@ Quick local mutations use the same private profile and one five-second command b
 
 | Command | Required and optional request fields |
 | --- | --- |
+| `fc notes add --body TEXT --key KEY` | Reminder for the bound worker by default; explicit job/phase/worker and body-file selection follow the [note contract](notes.md). |
+| `fc notes update NOTE_ID --expect-revision N --key KEY` | Patch only supplied scope, kind, body or status fields; consuming a note requires no unchanged body echo. |
 | `fc workers pause --reason TEXT --key KEY --expect-revision N` | Guarded bound-worker coordination pause; reason is explicit, including an empty string. |
 | `fc workers resume --key KEY --expect-revision N` | Explicitly clear the pause and reason without changing jobs or focus. |
 | `fc jobs create --key KEY --title TITLE` | Optional `--brief TEXT`, `--worker ID`, `--status STATUS`; defaults to active. |

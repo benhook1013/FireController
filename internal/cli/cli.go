@@ -61,6 +61,7 @@ type invocation struct {
 	pullNumber int64
 	mutation   *mutationInvocation
 	setup      *profileSetupInvocation
+	notes      *noteInvocation
 }
 
 // Run preserves the original embedding API while RunContext adds caller
@@ -129,6 +130,19 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.notes != nil {
+		value, err := executeNotes(requestCtx, service, call.notes)
+		if err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+		if call.notes.write() {
+			if err = json.NewEncoder(stdout).Encode(value); err != nil {
+				return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The note receipt could not be written.", Action: "Retry the exact same key, request and bound instance; do not use a replacement key.", OutcomeUnknown: true})
+			}
+			return ExitSuccess
+		}
+		return emit(stdout, stderr, value)
+	}
 	if call.mutation != nil {
 		value, err := executeMutation(requestCtx, service, call.mutation)
 		if err != nil {
@@ -245,11 +259,16 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.setup, ok = parseProfileSetup(call.subcommand, remaining[2:])
 		return call, ok && (!call.hasProfile || validSetupText(call.profile)) && (!call.hasProfilesFile || validSetupText(call.profilesFile))
 	}
-	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" || len(remaining) < 2 {
+	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" || len(remaining) < 2 {
 		return call, false
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if call.command == "notes" {
+		var ok bool
+		call.notes, ok = parseNotes(call.subcommand, operationArgs)
+		return call, ok
+	}
 	if isMutation(call.command, call.subcommand) {
 		mutation, valid := parseMutation(call.command, call.subcommand, operationArgs)
 		call.mutation = mutation
