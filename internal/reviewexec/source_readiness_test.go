@@ -582,3 +582,71 @@ func TestSourceReadinessImportedBrowserHistoryCannotSupplyNativeCredit(t *testin
 		t.Fatal("read invented evidence/provider work")
 	}
 }
+
+func TestSourceReadinessRetainedClocksRemainReadable(t *testing.T) {
+	f, a, _, reader, op := readinessFixture(t)
+	var ciBody, reviewBody string
+	if err := f.store.DB().QueryRow(`SELECT ci_observation_json,review_state_json FROM review_source_refreshes WHERE id=?`, op.ID).Scan(&ciBody, &reviewBody); err != nil {
+		t.Fatal(err)
+	}
+	var ci reviewprovider.CIObservation
+	var review reviewprovider.PullReviewObservation
+	if err := json.Unmarshal([]byte(ciBody), &ci); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(reviewBody), &review); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Date(2099, 1, 2, 0, 0, 0, 0, time.UTC)
+	source := *op.Observation
+	source.ObservedAt = future.Format(time.RFC3339Nano)
+	ci.StartedAt = future
+	ci.ObservedAt = future
+	for _, delta := range []time.Duration{time.Second, -time.Second} {
+		review.ObservedAt = future.Add(delta)
+		admissionSQL(t, f, `UPDATE review_source_refreshes SET observation_json=?,ci_observation_json=?,review_state_json=? WHERE id=?`, encoded(source), encoded(ci), encoded(review), op.ID)
+		before := readinessDurable(t, f, a)
+		calls, ciCalls, reviewCalls := reader.calls.Load(), reader.ciCalls.Load(), reader.reviewCalls.Load()
+		got, err := f.e.ReadSourceRefresh(t.Context(), sourceCIScope(t, f), op.ID)
+		if err != nil || got.ReviewState == nil || got.ReviewState.ObservedAt != review.ObservedAt.Format(time.RFC3339Nano) {
+			t.Fatal("retained review rejected after wall-clock rollback", got, err)
+		}
+		policy, err := f.e.ReadSourcePolicyAssessment(t.Context(), sourceCIScope(t, f), 2)
+		if err != nil || policy.SourceObservedAt != source.ObservedAt {
+			t.Fatal("retained review blocked local policy", policy, err)
+		}
+		assessment := readReadiness(t, f, reader, a, 2)
+		if assessment.State != "ready_as_observed" || assessment.SourceObservedAt != source.ObservedAt || assessment.ReviewState.ObservedAt != review.ObservedAt.Format(time.RFC3339Nano) {
+			t.Fatal("retained clock changed readiness applicability", assessment)
+		}
+		for _, path := range []string{"/reviews/source-refreshes/" + op.ID, "/reviews/source/2/policy", "/reviews/source/2/readiness"} {
+			if w := f.request(http.MethodGet, "/api/v1/projects/"+attemptProject+path, f.reader, "", ""); w.Code != http.StatusOK {
+				t.Fatal("retained HTTP read failed", w.Code, w.Body.String())
+			}
+		}
+		if before != readinessDurable(t, f, a) || reader.calls.Load() != calls || reader.ciCalls.Load() != ciCalls || reader.reviewCalls.Load() != reviewCalls {
+			t.Fatal("retained reads wrote or fetched")
+		}
+	}
+}
+
+func TestSourceReadinessFreshFutureAndBackwardsReviewRemainUnproven(t *testing.T) {
+	for _, name := range []string{"future", "backwards"} {
+		t.Run(name, func(t *testing.T) {
+			f := newAttemptFixture(t)
+			f.configure(t, attemptProject, "test-capability", 0, false)
+			reader := newReadinessTestReader()
+			reader.review = func(_ context.Context, target reviewprovider.CITarget) (reviewprovider.PullReviewObservation, error) {
+				at := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+				if name == "backwards" {
+					at = time.Now().UTC().Add(-time.Hour)
+				}
+				return reviewprovider.PullReviewObservation{Target: target, State: "complete", ObservedAt: at, PullState: "OPEN", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN", Threads: []reviewprovider.PullReviewThread{}}, nil
+			}
+			got := collectReadiness(t, f, reader, "fresh-review-clock", 2, 1)
+			if got.Observation == nil || got.ReviewState == nil || got.ReviewState.State != "unproven" || got.ReviewState.Reason != "review_state_unproven" {
+				t.Fatal("invalid fresh review received credit", got)
+			}
+		})
+	}
+}
