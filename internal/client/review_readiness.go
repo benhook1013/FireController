@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"strconv"
-	"time"
 )
 
 // ReviewSourceReviewStateSummary deliberately omits provider thread inventories.
@@ -67,13 +66,8 @@ func (c *Client) ReviewSourceReadiness(ctx context.Context, number int64) (Revie
 	if value.ProjectID != c.identity.ProjectID || ValidateReviewSourceRefreshID(value.RefreshID) != nil || value.Source != "observed_comparison" || value.ConfigurationRevision < 0 || value.PolicyRevision < 0 || value.SourceObservedAt != value.Target.ObservedAt || !validSourceObservation(value.Target) || value.Target.PullNumber != number || !controlTime(value.EvaluatedAt) || !oneReviewOf(value.State, "ready_as_observed", "held", "unconfigured") || value.Reasons == nil || len(value.Reasons) > 16 || value.Channels == nil || len(value.Channels) > 2 || !validCISummary(value.CI, true) || value.CI.Selection == "head" && value.CI.SelectedCommitSHA != value.Target.HeadSHA || !validSourceReviewState(value.ReviewState) || value.IncomingRoutesPending < 0 || value.IncomingRoutesPending > 100 || value.IncomingRoutesCapacity && value.IncomingRoutesPending != 0 {
 		return ReviewSourceReadinessAssessment{}, invalidResponse()
 	}
-	observed, _ := time.Parse(time.RFC3339Nano, value.SourceObservedAt)
-	evaluated, _ := time.Parse(time.RFC3339Nano, value.EvaluatedAt)
-	ciAt, _ := time.Parse(time.RFC3339Nano, value.CI.ObservedAt)
-	reviewAt, _ := time.Parse(time.RFC3339Nano, value.ReviewState.ObservedAt)
-	if evaluated.Before(observed) || ciAt.Before(observed) || reviewAt.Before(observed) || evaluated.Before(ciAt) || evaluated.Before(reviewAt) {
-		return ReviewSourceReadinessAssessment{}, invalidResponse()
-	}
+	// Retained observations are as-of facts; independent wall timestamps do
+	// not order the source, provider components or later local evaluation.
 	reasons := map[string]bool{}
 	for _, reason := range value.Reasons {
 		if !validExecutionIdentifier(reason) || reasons[reason] {
@@ -111,8 +105,5 @@ func validSourceOperationReadiness(value ReviewSourceOperation) bool {
 	if value.ReviewState == nil || !validSourceReviewState(*value.ReviewState) || value.Observation == nil {
 		return false
 	}
-	sourceAt, _ := time.Parse(time.RFC3339Nano, value.Observation.ObservedAt)
-	reviewAt, _ := time.Parse(time.RFC3339Nano, value.ReviewState.ObservedAt)
-	completedAt, _ := time.Parse(time.RFC3339Nano, value.UpdatedAt)
-	return !reviewAt.Before(sourceAt) && !completedAt.Before(reviewAt)
+	return true
 }

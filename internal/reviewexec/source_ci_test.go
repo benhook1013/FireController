@@ -210,6 +210,13 @@ func TestSourceCIFailuresPreserveSourceWithoutCredit(t *testing.T) {
 				return o, nil
 			}
 		},
+		"started_before_source": func(r *sourceCITestReader) {
+			r.ci = func(ctx context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
+				o := sourceCITestObservation(target, "satisfied")
+				o.StartedAt = o.StartedAt.Add(-time.Hour)
+				return o, nil
+			}
+		},
 		"capacity": func(r *sourceCITestReader) {
 			r.ci = func(ctx context.Context, t reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
 				o := sourceCITestObservation(t, "satisfied")
@@ -451,7 +458,23 @@ func TestSourceCIReadBindingAndStoredCorruptionFailClosed(t *testing.T) {
 		"inventedcounts": func(s string) string { return strings.Replace(s, `"status_id":991`, `"status_id":992`, 1) },
 		"missingtime":    func(s string) string { return strings.Replace(s, `"started_at":`, `"missing_started_at":`, 1) },
 		"falsestate":     func(s string) string { return strings.Replace(s, `"state":"satisfied"`, `"state":"not_required"`, 1) },
-		"null":           func(s string) string { return "null" },
+		"zero_started": func(s string) string {
+			var o reviewprovider.CIObservation
+			if err := json.Unmarshal([]byte(s), &o); err != nil {
+				t.Fatal(err)
+			}
+			o.StartedAt = time.Time{}
+			return encoded(o)
+		},
+		"zero_observed": func(s string) string {
+			var o reviewprovider.CIObservation
+			if err := json.Unmarshal([]byte(s), &o); err != nil {
+				t.Fatal(err)
+			}
+			o.ObservedAt = time.Time{}
+			return encoded(o)
+		},
+		"null": func(s string) string { return "null" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			body := corrupt(original)
@@ -500,5 +523,69 @@ func TestSourceCILatestHeadAndRepositoryMovementHoldOldObservation(t *testing.T)
 	got = readSourceCI(t, f)
 	if got.State != "held" || got.Reason != "source_configuration_changed" {
 		t.Fatal(got)
+	}
+}
+
+func TestSourceCIRetainedFutureAndReversedObservationClocksRemainReadable(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	reader := &sourceCITestReader{}
+	receipt := refreshEnqueue(t, f, "retained-ci-clock", sourceCIRequest())
+	cancel, done := refreshStart(t, f, reader)
+	operation := refreshWait(t, f, receipt.ID, "completed")
+	refreshStop(t, cancel, done)
+	var raw string
+	if err := f.store.DB().QueryRow(`SELECT ci_observation_json FROM review_source_refreshes WHERE id=?`, receipt.ID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var ci reviewprovider.CIObservation
+	if err := json.Unmarshal([]byte(raw), &ci); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+	source := *operation.Observation
+	source.ObservedAt = future.Format(time.RFC3339Nano)
+	ci.StartedAt = future.Add(time.Second)
+	ci.ObservedAt = future.Add(2 * time.Second)
+	for _, reversed := range []bool{false, true} {
+		if reversed {
+			ci.StartedAt = future.Add(-time.Second)
+			ci.ObservedAt = future.Add(-2 * time.Second)
+		}
+		admissionSQL(t, f, `UPDATE review_source_refreshes SET observation_json=?,ci_observation_json=? WHERE id=?`, encoded(source), encoded(ci), receipt.ID)
+		before := sourceCITestState(t, f)
+		read, err := f.e.ReadSourceRefresh(t.Context(), sourceCIScope(t, f), receipt.ID)
+		if err != nil || read.CI == nil || read.CI.State != "satisfied" || read.Observation.ObservedAt != source.ObservedAt {
+			t.Fatal("retained CI rejected after wall-clock rollback", read, err)
+		}
+		assessment, err := f.e.ReadSourceCIAssessment(t.Context(), sourceCIScope(t, f), 2)
+		if err != nil || assessment.State != "satisfied" || assessment.ObservedAt != ci.ObservedAt.Format(time.RFC3339Nano) || assessment.SourceObservedAt != source.ObservedAt {
+			t.Fatal("CI assessment changed retained applicability", assessment, err)
+		}
+		policy, err := f.e.ReadSourcePolicyAssessment(t.Context(), sourceCIScope(t, f), 2)
+		if err != nil || policy.SourceObservedAt != source.ObservedAt {
+			t.Fatal("CI decoding blocked local policy", policy, err)
+		}
+		if sourceCITestState(t, f) != before || reader.ciCalls.Load() != 1 {
+			t.Fatal("retained reads wrote or fetched")
+		}
+	}
+}
+
+func TestSourceCIFreshFutureObservationRemainsUnproven(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	reader := &sourceCITestReader{ci: func(_ context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
+		o := sourceCITestObservation(target, "satisfied")
+		o.StartedAt = time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+		o.ObservedAt = o.StartedAt
+		return o, nil
+	}}
+	receipt := refreshEnqueue(t, f, "fresh-future", sourceCIRequest())
+	cancel, done := refreshStart(t, f, reader)
+	operation := refreshWait(t, f, receipt.ID, "completed")
+	refreshStop(t, cancel, done)
+	if operation.CI == nil || operation.CI.State != "unproven" || operation.CI.Reason != "ci_observation_unproven" || operation.Observation == nil {
+		t.Fatal("future ingestion gained credit", operation)
 	}
 }
