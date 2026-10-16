@@ -318,7 +318,11 @@ func (e *Engine) observeCheckpoint(action, owner context.Context, r checkpointRe
 	}
 	comment, found, err := reviewprovider.FindCheckpoint(r.Payload, r.Intent.Actor, comments)
 	if err != nil {
-		return e.finishCheckpoint(owner, r, "held", "checkpoint_conflict", false, nil)
+		var failure *reviewprovider.Error
+		if errors.As(err, &failure) && (failure.Code == "checkpoint_conflict" || failure.Code == "checkpoint_ambiguous") {
+			return e.finishCheckpoint(owner, r, "held", failure.Code, false, nil)
+		}
+		return e.finishCheckpoint(owner, r, "uncertain", "recovery_unavailable", false, nil)
 	}
 	if !found {
 		return e.finishCheckpoint(owner, r, "uncertain", "checkpoint_not_found", false, nil)

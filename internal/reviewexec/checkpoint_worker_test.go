@@ -282,6 +282,92 @@ func TestCheckpointWorkerZeroMatchesAndConflictingCommentsNoPost(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckpointWorkerRecoveryInventoryClassifiesFailureWithoutReposting(t *testing.T) {
+	for _, kind := range []string{"malformed", "duplicate_id", "capacity", "aggregate_budget", "conflict", "ambiguous"} {
+		t.Run(kind, func(t *testing.T) {
+			f, _, evidence := checkpointFixture(t, 0)
+			receipt, _ := checkpointRequest(t, f, evidence, "inventory-lost-post")
+			p := &checkpointFake{postError: errors.New("synthetic lost response")}
+			cancel, done := checkpointStart(t, f.e, p)
+			v := checkpointTerminal(t, f, receipt.ID)
+			checkpointStop(t, cancel, done)
+			if v.State != "uncertain" {
+				t.Fatal("fixture did not retain uncertain post", v)
+			}
+			var originalIntent string
+			if err := f.store.DB().QueryRowContext(t.Context(), `SELECT body_json FROM review_checkpoint_intents WHERE publication_id=?`, receipt.ID).Scan(&originalIntent); err != nil {
+				t.Fatal(err)
+			}
+			p.mu.Lock()
+			original := p.comments[0]
+			switch kind {
+			case "malformed":
+				p.comments[0].ID = 0
+			case "duplicate_id":
+				p.comments = append(p.comments, original)
+			case "capacity", "aggregate_budget":
+				n, body := 10001, "Unrelated comment."
+				if kind == "aggregate_budget" {
+					n, body = 257, strings.Repeat("x", 64<<10)
+				}
+				p.comments = make([]reviewprovider.IssueComment, n)
+				for i := range p.comments {
+					p.comments[i] = original
+					p.comments[i].ID = int64(i + 1)
+					p.comments[i].Body = body
+				}
+			case "conflict":
+				p.comments[0].Body = strings.Replace(original.Body, "Found 0", "Found 1", 1)
+			case "ambiguous":
+				other := original
+				other.ID++
+				p.comments = append(p.comments, other)
+			}
+			p.mu.Unlock()
+			checkpointRecover(t, f, v, "inventory-observe", false)
+			cancel, done = checkpointStart(t, f.e, p)
+			v = checkpointTerminal(t, f, receipt.ID)
+			checkpointStop(t, cancel, done)
+			state, reason := "uncertain", "recovery_unavailable"
+			if kind == "conflict" || kind == "ambiguous" {
+				state, reason = "held", "checkpoint_"+kind
+			}
+			if v.State != state || v.Reason != reason || v.CommentID != 0 {
+				t.Fatal("inventory failure misclassified", v)
+			}
+			var count int
+			var retainedIntent string
+			if err := f.store.DB().QueryRowContext(t.Context(), `SELECT count(*),max(body_json) FROM review_checkpoint_intents WHERE publication_id=?`, receipt.ID).Scan(&count, &retainedIntent); err != nil || count != 1 || retainedIntent != originalIntent {
+				t.Fatal("recovery changed original posting intent", count, err)
+			}
+			var unposted bool
+			if err := f.store.DB().QueryRowContext(t.Context(), `SELECT json_extract(body_json,'$.unposted') FROM review_checkpoint_publications WHERE id=?`, receipt.ID).Scan(&unposted); err != nil || unposted {
+				t.Fatal("inventory error claimed no provider post", unposted, err)
+			}
+			if posts, reads := p.counts(); posts != 1 || reads != 1 {
+				t.Fatal("failed recovery repeated a post", posts, reads)
+			}
+			p.mu.Lock()
+			p.comments = []reviewprovider.IssueComment{original}
+			p.mu.Unlock()
+			checkpointRecover(t, f, v, "inventory-restored", false)
+			cancel, done = checkpointStart(t, f.e, p)
+			defer checkpointStop(t, cancel, done)
+			v = checkpointTerminal(t, f, receipt.ID)
+			if v.State != "published" || v.CommentID != original.ID {
+				t.Fatal("explicit recovery did not confirm original comment", v)
+			}
+			if posts, reads := p.counts(); posts != 1 || reads != 2 {
+				t.Fatal("valid recovery repeated a post", posts, reads)
+			}
+			if err := f.store.DB().QueryRowContext(t.Context(), `SELECT count(*),max(body_json) FROM review_checkpoint_intents WHERE publication_id=?`, receipt.ID).Scan(&count, &retainedIntent); err != nil || count != 1 || retainedIntent != originalIntent {
+				t.Fatal("valid recovery replaced original intent", count, err)
+			}
+		})
+	}
+}
+
 func TestCheckpointWorkerLastGuardRevocationConfigRepository(t *testing.T) {
 	for _, change := range []string{"revoked", "capability", "repository", "pause"} {
 		t.Run(change, func(t *testing.T) {
