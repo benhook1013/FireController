@@ -142,7 +142,7 @@ func validateObservation(req *ObservationRequest) error {
 		}
 		for _, attempt := range pull.Attempts {
 			if !validText(attempt.SourceAttemptID, 256, true) || !oneOf(attempt.Channel, "cli", "hosted", "manual", "subagent") ||
-				!validSHA(attempt.HeadSHA) || !oneOf(attempt.State, "prepared", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "unknown") ||
+				!validSHA(attempt.HeadSHA) || !oneOf(attempt.State, "prepared", "preparing", "held", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "unknown") ||
 				(attempt.DurationSeconds != nil && *attempt.DurationSeconds < 0) || !validText(attempt.SourceRunID, 256, false) ||
 				!validText(attempt.TriggerID, 128, false) || !validText(attempt.ProviderReviewID, 128, false) {
 				return validationError("A review attempt contains invalid identity, state or time fields.")

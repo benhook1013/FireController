@@ -293,7 +293,11 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 		}
 		return invalidResponse()
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, int64(maxBytes)+1))
+	responseLimit := maxBytes
+	if response.StatusCode != expectedStatus && responseLimit > 64<<10 {
+		responseLimit = 64 << 10
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, int64(responseLimit)+1))
 	if err != nil {
 		if ctx.Err() != nil {
 			if mutation {
@@ -306,7 +310,7 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 		}
 		return invalidResponse()
 	}
-	if len(data) > maxBytes {
+	if len(data) > responseLimit {
 		if mutation {
 			return unknownRequest("invalid_response", operation, "response was oversized", response.StatusCode)
 		}

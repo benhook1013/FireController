@@ -216,13 +216,13 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
-	if call.command == "reviews" {
-		return parseReview(call, operationArgs)
-	}
 	if isMutation(call.command, call.subcommand) {
 		mutation, valid := parseMutation(call.command, call.subcommand, operationArgs)
 		call.mutation = mutation
 		return call, valid
+	}
+	if call.command == "reviews" {
+		return parseReview(call, operationArgs)
 	}
 	allowed := map[string]bool{}
 	switch call.command + " " + call.subcommand {

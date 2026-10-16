@@ -21,7 +21,9 @@ type httpFixture struct {
 	admin, writer, reader, other string
 }
 
-func newHTTPFixture(t *testing.T) *httpFixture {
+func newHTTPFixture(t *testing.T) *httpFixture { return newHTTPFixtureWithPolicy(t, true) }
+
+func newHTTPFixtureWithPolicy(t *testing.T, configured bool) *httpFixture {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "private")
 	store, err := core.Open(context.Background(), dir)
@@ -40,6 +42,13 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 	for i, project := range []string{"exec-project-one", "exec-project-two"} {
 		if _, err := store.DB().Exec(`INSERT INTO projects(id,name,github_repository_id,repository) VALUES(?,?,?,?)`, project, project, 801+i, "owner/repo"); err != nil {
 			t.Fatal(err)
+		}
+	}
+	if configured {
+		for _, project := range []string{attemptProject, otherAttemptProject} {
+			if _, err := store.DB().Exec(`INSERT INTO review_policy_config(project_id,revision,body_json,actor_id,created_at) VALUES(?,1,?,'synthetic-admin',?)`, project, encoded(Policy{RequiredChannels: []string{"cli", "hosted"}, PausedChannels: []string{}}), stamp()); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	insertCredential := func(id, principal, token string, project string, write bool) {

@@ -340,51 +340,15 @@ func runDetail(store *core.Store) http.HandlerFunc {
 			if !found {
 				return notFound("The review snapshot is unavailable.")
 			}
-			setMetaDetail(&response, meta)
-			var pullNum, attributable, complete, finalized int
-			var limits string
-			err = tx.QueryRowContext(ctx, `SELECT pull_number,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json FROM review_runs WHERE project_id=? AND snapshot_id=? AND id=?`, scope.ProjectID, meta.SnapshotID, runID).Scan(
-				&pullNum, &response.Run.ID, &response.Run.Source, &response.Run.SourceRunID, &response.Run.Channel, &response.Run.HeadSHA, &response.Run.Reviewer, &response.Run.Scope, &response.Run.Outcome, &attributable, &complete, &response.Run.StartedAt, &response.Run.FinishedAt, &response.Run.Found, &response.Run.Accepted, &response.Run.Routed, &finalized, &response.Run.Fixed, &limits)
-			if errors.Is(err, sql.ErrNoRows) {
-				return notFound("The review run is unavailable in this snapshot.")
-			}
-			if err != nil {
-				return err
-			}
-			response.PullNumber = int64(pullNum)
-			response.Run.PullNumber = int64(pullNum)
-			response.Run.Attributable = attributable != 0
-			response.Run.Complete = complete != 0
-			response.Run.Finalized = finalized != 0
-			if err := strictStoredJSON(limits, &response.Run.CoverageLimits); err != nil {
-				return err
-			}
-			rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=? ORDER BY position LIMIT 101`, scope.ProjectID, meta.SnapshotID, pullNum, runID)
-			if err != nil {
-				return err
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var finding Finding
-				if err := rows.Scan(&finding.SourceFindingID, &finding.Title, &finding.Detail, &finding.Severity, &finding.Disposition, &finding.DecisionReason, &finding.Actor, &finding.DecidedAt, &finding.FixSHA, &finding.ProofNote, &finding.ResolvedAt); err != nil {
-					return err
-				}
-				response.Findings = append(response.Findings, finding)
-			}
-			if err := rows.Err(); err != nil {
-				return err
-			}
-			if len(response.Findings) > 100 {
-				return core.Fail("storage_unavailable", "The stored review run exceeds its bounded detail size.", 500)
-			}
-			return nil
+			response, err = readRunDetail(ctx, tx, meta, runID)
+			return err
 		})
 		if err != nil {
 			core.WriteError(w, err)
 			return
 		}
 		body, err := json.Marshal(response)
-		if err != nil || len(body)+1 > 4<<20 {
+		if err != nil || len(body)+1 > maxRunDetailBytes {
 			core.WriteError(w, core.Fail("response_too_large", "The review run detail exceeds its bounded response size.", 500))
 			return
 		}

@@ -10,18 +10,21 @@ import (
 )
 
 type mutationInvocation struct {
-	operation  string
-	key        string
-	id         string
-	create     client.CreateJobRequest
-	edit       client.EditJobRequest
-	send       client.SendMessageRequest
-	checkpoint client.AppendCheckpointRequest
+	operation      string
+	key            string
+	id             string
+	create         client.CreateJobRequest
+	edit           client.EditJobRequest
+	send           client.SendMessageRequest
+	checkpoint     client.AppendCheckpointRequest
+	reviewDecision client.ReviewDecisionRequest
+	reviewFix      client.ReviewFixRequest
+	reviewFinalize client.ReviewFinalizeRequest
 }
 
 func isMutation(command, operation string) bool {
 	switch command + " " + operation {
-	case "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack":
+	case "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews finalize":
 		return true
 	}
 	return false
@@ -31,6 +34,9 @@ func isMutation(command, operation string) bool {
 // keys make retries recoverable across separate CLI processes without a global
 // retry identity or silently regenerated key.
 func parseMutation(command, operation string, args []string) (*mutationInvocation, bool) {
+	if command == "reviews" {
+		return parseReviewControl(operation, args)
+	}
 	if command == "jobs" && operation == "checkpoint" {
 		return parseCheckpoint(args)
 	}
@@ -152,6 +158,12 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 		return service.SendMessage(ctx, call.key, call.send)
 	case "inbox seen":
 		return service.MarkSeen(ctx, call.key, call.id)
+	case "reviews decide":
+		return service.DecideReviewFinding(ctx, call.key, call.id, call.reviewDecision)
+	case "reviews fix":
+		return service.RecordReviewFix(ctx, call.key, call.id, call.reviewFix)
+	case "reviews finalize":
+		return service.FinalizeReviewSource(ctx, call.key, call.id, call.reviewFinalize)
 	default:
 		return service.Acknowledge(ctx, call.key, call.id)
 	}

@@ -118,6 +118,11 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 	if err = checkNativeCapacity(ctx, tx, scope.ProjectID, id); err != nil {
 		return Receipt{}, err
 	}
+	if p.Run != nil {
+		if err = checkNativeRunDetail(ctx, tx, scope.ProjectID, id, runOpaqueID(scope.ProjectID, nativeSource, p.Run.SourceRunID)); err != nil {
+			return Receipt{}, err
+		}
+	}
 	// Rebuild every compact projection from original rows. A copied pre-native
 	// JSON summary may lack per-run source; its new mixed snapshot must not
 	// use the publisher's label as a substitute for the original producer.
@@ -215,7 +220,7 @@ func publishNativeAttempt(ctx context.Context, tx *sql.Tx, project, snapshot str
 				return core.Fail("observation_conflict", "Known native capture and provider identities cannot be cleared or replaced.", 409)
 			}
 		}
-		if oneOf(oldState, "completed", "failed", "cancelled", "rate_limited") && a.State != oldState {
+		if oneOf(oldState, "completed", "failed", "cancelled", "rate_limited", "held") && a.State != oldState {
 			return core.Fail("observation_conflict", "A settled native attempt cannot be reopened.", 409)
 		}
 	}
@@ -321,4 +326,21 @@ func rebuildNativeSummaries(ctx context.Context, tx *sql.Tx, project, snapshot s
 		}
 	}
 	return nil
+}
+
+// NativeAttemptCapacity reports whether appending one attempt to the current
+// snapshot fits retained attempt bounds and, for a missing target, the pull-row
+// bound. It does not reserve a slot or mutate history; callers must check and
+// append in the same serialized write.
+func NativeAttemptCapacity(ctx context.Context, tx *sql.Tx, project string, pullNumber int64) (bool, error) {
+	var total, local int
+	err := tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN a.pull_number=? THEN 1 ELSE 0 END),0)
+ FROM review_workspace w JOIN review_attempts a ON a.project_id=w.project_id AND a.snapshot_id=w.snapshot_id WHERE w.project_id=?`, pullNumber, project).Scan(&total, &local)
+	if err != nil {
+		return false, err
+	}
+	var pulls, selected int
+	err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN p.number=? THEN 1 ELSE 0 END),0)
+ FROM review_workspace w JOIN review_pulls p ON p.project_id=w.project_id AND p.snapshot_id=w.snapshot_id WHERE w.project_id=?`, pullNumber, project).Scan(&pulls, &selected)
+	return err == nil && total < maxSnapshotAttempts && local < maxPullAttempts && (selected != 0 || pulls < maxQueuePulls), err
 }

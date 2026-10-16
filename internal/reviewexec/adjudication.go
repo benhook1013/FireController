@@ -91,6 +91,9 @@ func loadCLIAdjudication(ctx context.Context, tx *sql.Tx, project, id string) (C
 	if !stateBody.Valid || len(stateBody.String) > 3<<20 || json.Unmarshal([]byte(stateBody.String), &state) != nil || state.EvidenceID != id || state.Revision != revision.Int64 || state.Revision < 1 || len(state.Findings) != len(evidence.Capture.Review.Findings) || state.Finalized != (state.FrozenCounts != nil) {
 		return evidence, state, adjudicationStorageError()
 	}
+	if state.Findings == nil {
+		state.Findings = []CLIFindingDecision{}
+	}
 	for i, finding := range state.Findings {
 		if finding.Finding != int64(i) || finding.Disposition != "unadjudicated" && finding.Disposition != "accepted" && finding.Disposition != "rejected" || !safeText(finding.Reason, 2048) || !safeText(finding.ProofNote, 2048) {
 			return evidence, state, adjudicationStorageError()
@@ -121,9 +124,10 @@ func adjudicationMatches(state CLIAdjudication, expected int64) bool {
 	return state.Revision == expected && state.Revision < math.MaxInt64
 }
 
-// persistCLIAdjudication atomically changes only the current disposition view,
-// appends its audit input and event, and leaves receipt creation to Mutate.
-func persistCLIAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, state CLIAdjudication, kind string, finding int64, request any, at string) (any, error) {
+// persistCLIAdjudication atomically changes the disposition view, audit and
+// event, plus an installed native browser projection. Mutate creates the receipt;
+// projection failure rolls back all changes without altering captured evidence.
+func (e *Engine) persistCLIAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, state CLIAdjudication, kind string, finding int64, request any, at string) (any, error) {
 	prior := state.Revision
 	state.Revision++
 	body, err := json.Marshal(state)
@@ -148,6 +152,11 @@ func persistCLIAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, s
 		Finding int64 `json:"finding"`
 	}{finding}); err != nil {
 		return nil, err
+	}
+	if e.publishAdjudication != nil {
+		if err = e.publishAdjudication(ctx, tx, scope, state); err != nil {
+			return nil, err
+		}
 	}
 	return Receipt{ID: state.EvidenceID, State: kind, Revision: state.Revision}, nil
 }
@@ -176,7 +185,7 @@ func (e *Engine) DecideCLIFinding(ctx context.Context, scope core.Scope, key, ev
 		}
 		at := stamp()
 		f.Disposition, f.Reason, f.ActorID, f.DecidedAt = request.Disposition, request.Reason, scope.PrincipalID, at
-		return persistCLIAdjudication(ctx, tx, scope, state, "adjudicated", request.Finding, request, at)
+		return e.persistCLIAdjudication(ctx, tx, scope, state, "adjudicated", request.Finding, request, at)
 	})
 }
 
@@ -212,7 +221,7 @@ func (e *Engine) FinalizeCLI(ctx context.Context, scope core.Scope, key, evidenc
 			}
 		}
 		state.Finalized, state.FrozenCounts = true, &counts
-		return persistCLIAdjudication(ctx, tx, scope, state, "finalized", -1, request, stamp())
+		return e.persistCLIAdjudication(ctx, tx, scope, state, "finalized", -1, request, stamp())
 	})
 }
 
@@ -239,6 +248,6 @@ func (e *Engine) RecordCLIFix(ctx context.Context, scope core.Scope, key, eviden
 		}
 		at := stamp()
 		f.FixSHA, f.ProofNote, f.FixedAt = request.FixSHA, request.ProofNote, at
-		return persistCLIAdjudication(ctx, tx, scope, state, "fix_recorded", request.Finding, request, at)
+		return e.persistCLIAdjudication(ctx, tx, scope, state, "fix_recorded", request.Finding, request, at)
 	})
 }

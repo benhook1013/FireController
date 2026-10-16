@@ -29,6 +29,7 @@ type Repository struct {
 }
 
 type Pull struct {
+	Title        string
 	Number       int64
 	RepositoryID int64
 	State        string

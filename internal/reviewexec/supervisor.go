@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -33,38 +34,48 @@ type Driver interface {
 	Dispatch(context.Context, Operation, Attempt, func(context.Context, string) error) (Result, error)
 }
 
-// Run supervises two finite work slots, with account and target reservations
-// enforced durably by StartAttempt. No request handler waits for these workers.
-// The owner starts Run once before accepting requests and waits for shutdown.
-func (e *Engine) Run(ctx context.Context, drivers map[string]Driver) error {
-	if !e.running.CompareAndSwap(false, true) {
-		return conflict()
+// Start validates and owns one supervisor, committing crash recovery before
+// returning success. The owner calls it before accepting requests, then waits
+// for the single terminal result and closed channel during shutdown.
+func (e *Engine) Start(ctx context.Context, drivers map[string]Driver) (<-chan error, error) {
+	if ctx == nil {
+		return nil, invalid()
 	}
-	defer e.running.Store(false)
 	owned := make(map[string]Driver, len(drivers))
 	for id, d := range drivers {
-		if d == nil {
-			return invalid()
+		if d == nil || reflect.ValueOf(d).Kind() == reflect.Pointer && reflect.ValueOf(d).IsNil() {
+			return nil, invalid()
 		}
 		if _, ok := e.capabilities[id]; !ok {
-			return invalid()
+			return nil, invalid()
 		}
 		owned[id] = d
 	}
 	for id := range e.capabilities {
 		if owned[id] == nil {
-			return invalid()
+			return nil, invalid()
 		}
+	}
+	if !e.running.CompareAndSwap(false, true) {
+		return nil, conflict()
 	}
 	if err := e.RecoverInterrupted(ctx); err != nil {
-		// Run owns both startup and worker lifetime. A cooperative stop while
-		// startup waits for the writer is cancellation, not a storage failure.
-		var failure *core.Error
-		if ctx.Err() != nil && errors.As(err, &failure) && failure.Code == "overloaded" {
-			return nil
-		}
-		return err
+		e.running.Store(false)
+		return nil, err
 	}
+	done := make(chan error, 1)
+	go func() {
+		err := e.supervise(ctx, owned)
+		e.running.Store(false)
+		done <- err
+		close(done)
+	}()
+	return done, nil
+}
+
+// supervise owns the same two finite work slots; provider waits never hold a
+// database transaction. Start has already completed startup recovery.
+func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 	workCtx, cancelWork := context.WithCancel(ctx)
 	defer cancelWork()
 	failures := make(chan error, 1)
@@ -161,6 +172,24 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	return out, nil
 }
 
+// preparationReason exposes only selected stable classifications, never adapter
+// diagnostics, paths, provider response text or arbitrary error details.
+func preparationReason(err error) string {
+	var failure *core.Error
+	if errors.As(err, &failure) {
+		if failure.Code == "review_evidence_pending" || failure.Code == "review_capacity" {
+			return failure.Code
+		}
+		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
+			switch reason := details["reason"]; reason {
+			case "repository_changed", "allowance_exhausted", "allowance_unavailable", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "execution_binding_changed", "preparation_duplicate", "source_unavailable", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit":
+				return reason
+			}
+		}
+	}
+	return "preparation_failed"
+}
+
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
 	operations, err := e.pending(ctx)
 	if err != nil {
@@ -208,7 +237,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		cancel()
 		if err != nil {
 			state := "held"
-			reason := "preparation_failed"
+			reason := preparationReason(err)
 			if ctx.Err() != nil {
 				state = "cancelled"
 				reason = "supervisor_stopping"

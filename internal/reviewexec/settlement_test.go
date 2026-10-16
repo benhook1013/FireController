@@ -267,11 +267,11 @@ func TestSettlementPermanentSQLiteFailureStopsSupervisorAndCancelsOtherWork(t *t
 		return Result{State: "completed", Reason: "capture_retained"}, nil
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- f.e.Run(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
-		close(done)
-	}()
+	done, err := f.e.Start(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	if err != nil {
+		cancel()
+		t.Fatal("settlement supervisor startup:", err)
+	}
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -280,7 +280,6 @@ func TestSettlementPermanentSQLiteFailureStopsSupervisorAndCancelsOtherWork(t *t
 			t.Error("failed supervisor leaked owned workers")
 		}
 	})
-	waitSupervisor(t, "settlement supervisor startup", func() bool { return f.e.running.Load() })
 	f.enqueue(t, attemptProject, "cooperative-other-work", "hosted", 2, 1)
 	select {
 	case <-otherEntered:

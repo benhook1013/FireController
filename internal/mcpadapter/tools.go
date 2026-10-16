@@ -26,6 +26,9 @@ type arguments struct {
 	edit                       client.EditJobRequest
 	send                       client.SendMessageRequest
 	checkpoint                 client.AppendCheckpointRequest
+	reviewDecision             client.ReviewDecisionRequest
+	reviewFix                  client.ReviewFixRequest
+	reviewFinalize             client.ReviewFinalizeRequest
 }
 type definition struct {
 	name, description string
@@ -40,7 +43,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 		known[tool.name] = true
 		write := mutationTool(tool.name)
 		openWorld := false
-		destructive := tool.name == "job_edit"
+		destructive := tool.name == "job_edit" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, err := parseArguments(tool.name, request.Params.Arguments)
 			if err != nil {
@@ -74,6 +77,16 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.ReviewRuns(ctx, args.pullNumber, client.ReviewRunOptions{PageOptions: options, Snapshot: args.snapshot})
 			case "review_run":
 				value, err = service.ReviewRun(ctx, args.id, args.snapshot)
+			case "review_evidence_read":
+				value, err = service.ReviewEvidence(ctx, args.id)
+			case "review_adjudication_read":
+				value, err = service.ReviewAdjudication(ctx, args.id)
+			case "review_finding_decide":
+				value, err = service.DecideReviewFinding(ctx, args.key, args.id, args.reviewDecision)
+			case "review_finding_fix":
+				value, err = service.RecordReviewFix(ctx, args.key, args.id, args.reviewFix)
+			case "review_source_finalize":
+				value, err = service.FinalizeReviewSource(ctx, args.key, args.id, args.reviewFinalize)
 			case "workers_list":
 				value, err = service.Workers(ctx, options)
 			case "jobs_list":

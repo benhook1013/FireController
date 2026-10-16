@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +20,10 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprocess"
 )
+
+func captureTestRecord(capture reviewprocess.Capture) CaptureRecord {
+	return CaptureRecord{Capture: capture, StartedAt: time.Date(2026, 1, 2, 3, 4, 5, 123456789, time.UTC), FinishedAt: time.Date(2026, 1, 2, 3, 4, 6, 987654321, time.UTC)}
+}
 
 func newTestCaptureStore(t *testing.T) (*CaptureStore, string) {
 	t.Helper()
@@ -54,7 +59,7 @@ func TestCaptureRoundTripAndImmutableReference(t *testing.T) {
 		{Stdout: []byte("failure retained honestly"), Stderr: []byte("error"), ExitCode: 255, Started: true},
 	} {
 		id := fmt.Sprintf("attempt-%d", i)
-		ref, err := store.Save(context.Background(), id, input)
+		ref, err := store.Save(context.Background(), id, captureTestRecord(input))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -71,18 +76,18 @@ func TestCaptureRoundTripAndImmutableReference(t *testing.T) {
 			t.Fatal("reference exposed private material")
 		}
 		loaded, readRef, err := store.Read(context.Background(), id)
-		if err != nil || !reflect.DeepEqual(loaded, input) || readRef != ref {
+		if err != nil || !reflect.DeepEqual(loaded, captureTestRecord(input)) || readRef != ref {
 			t.Fatalf("round trip changed capture or reference: %+v %v", loaded, err)
 		}
 		before, _ := os.Stat(path)
-		again, err := store.Save(context.Background(), id, input)
+		again, err := store.Save(context.Background(), id, captureTestRecord(input))
 		after, _ := os.Stat(path)
 		if err != nil || again != ref || !os.SameFile(before, after) || !before.ModTime().Equal(after.ModTime()) {
 			t.Fatal("exact retry replaced the artifact")
 		}
 		changed := input
 		changed.ExitCode = 1
-		_, err = store.Save(context.Background(), id, changed)
+		_, err = store.Save(context.Background(), id, captureTestRecord(changed))
 		requireCaptureError(t, err, "capture_conflict")
 		unchanged, _ := os.ReadFile(path)
 		if !bytes.Equal(data, unchanged) {
@@ -115,7 +120,7 @@ func TestCaptureConcurrentNoReplace(t *testing.T) {
 					if different {
 						output = fmt.Sprint(i)
 					}
-					ref, err := store.Save(context.Background(), "concurrent", reviewprocess.Capture{Stdout: []byte(output), Started: true})
+					ref, err := store.Save(context.Background(), "concurrent", captureTestRecord(reviewprocess.Capture{Stdout: []byte(output), Started: true}))
 					results <- result{ref, err}
 				}(i)
 			}
@@ -150,12 +155,12 @@ func TestCaptureCancellationAndInputBounds(t *testing.T) {
 	store, root := newTestCaptureStore(t)
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := store.Save(cancelled, "cancelled", reviewprocess.Capture{})
+	_, err := store.Save(cancelled, "cancelled", captureTestRecord(reviewprocess.Capture{}))
 	requireCaptureError(t, err, "capture_unavailable")
 	_, _, err = store.Read(cancelled, "cancelled")
 	requireCaptureError(t, err, "capture_unavailable")
 	for _, id := range []string{"", "../escape", "nested/file", "a.b", "a b", "é", strings.Repeat("a", 129), "a\x00b"} {
-		_, err := store.Save(context.Background(), id, reviewprocess.Capture{})
+		_, err := store.Save(context.Background(), id, captureTestRecord(reviewprocess.Capture{}))
 		requireCaptureError(t, err, "validation_failed")
 		_, _, err = store.Read(context.Background(), id)
 		requireCaptureError(t, err, "validation_failed")
@@ -163,7 +168,7 @@ func TestCaptureCancellationAndInputBounds(t *testing.T) {
 	for _, input := range []reviewprocess.Capture{
 		{Stdout: make([]byte, maxCaptureStdout+1)}, {Stderr: make([]byte, maxCaptureStderr+1)}, {ExitCode: -2},
 	} {
-		_, err := store.Save(context.Background(), "bad", input)
+		_, err := store.Save(context.Background(), "bad", captureTestRecord(input))
 		requireCaptureError(t, err, "validation_failed")
 	}
 	entries, _ := os.ReadDir(root)
@@ -172,26 +177,27 @@ func TestCaptureCancellationAndInputBounds(t *testing.T) {
 	}
 	// Exercise the actual byte limits, including base64 expansion on disk.
 	input := reviewprocess.Capture{Stdout: bytes.Repeat([]byte{255}, maxCaptureStdout), Stderr: bytes.Repeat([]byte{0}, maxCaptureStderr), ExitCode: -1, Started: true}
-	ref, err := store.Save(context.Background(), strings.Repeat("a", 128), input)
+	ref, err := store.Save(context.Background(), strings.Repeat("a", 128), captureTestRecord(input))
 	if err != nil || ref.Bytes > maxCaptureFile {
 		t.Fatalf("maximum capture rejected: %v", err)
 	}
 	loaded, _, err := store.Read(context.Background(), strings.Repeat("a", 128))
-	if err != nil || !reflect.DeepEqual(loaded, input) {
+	if err != nil || !reflect.DeepEqual(loaded, captureTestRecord(input)) {
 		t.Fatal("maximum capture did not round trip")
 	}
 }
 
 func TestCaptureRejectsMalformedRetainedArtifactsWithoutReplacement(t *testing.T) {
 	store, root := newTestCaptureStore(t)
-	const valid = `{"version":1,"attempt_id":"bad","capture":{"stdout":"","stderr":"","exit_code":0,"started":false}}`
+	const valid = `{"version":2,"attempt_id":"bad","started_at":"2026-01-02T03:04:05.123456789Z","finished_at":"2026-01-02T03:04:06.987654321Z","capture":{"stdout":"","stderr":"","exit_code":0,"started":false}}`
 	cases := []string{
-		`{`, valid + `{}`, string(append([]byte(valid), 255)), strings.Replace(valid, `"version":1`, `"version":2`, 1),
-		strings.Replace(valid, `"version":1`, `"version":1,"version":1`, 1),
+		`{"version":1,"attempt_id":"bad","capture":{"stdout":"","stderr":"","exit_code":0,"started":false}}`,
+		`{`, valid + `{}`, string(append([]byte(valid), 255)), strings.Replace(valid, `"version":2`, `"version":3`, 1),
+		strings.Replace(valid, `"version":2`, `"version":2,"version":2`, 1),
 		strings.Replace(valid, `"version"`, `"Version"`, 1),
 		strings.Replace(valid, `"stdout":""`, `"Stdout":""`, 1),
 		strings.Replace(valid, `"stdout":""`, `"stdout":"","Stdout":""`, 1),
-		strings.Replace(valid, `"version":1`, `"version":null`, 1),
+		strings.Replace(valid, `"version":2`, `"version":null`, 1),
 		strings.Replace(valid, `"attempt_id":"bad"`, `"attempt_id":null`, 1),
 		strings.Replace(valid, `"attempt_id":"bad"`, `"attempt_id":"other"`, 1),
 		strings.Replace(valid, `"stdout":""`, `"stdout":"\ud800"`, 1),
@@ -199,6 +205,18 @@ func TestCaptureRejectsMalformedRetainedArtifactsWithoutReplacement(t *testing.T
 		strings.Replace(valid, `"exit_code":0`, `"exit_code":4294967296`, 1),
 		strings.Replace(valid, `"capture":{`, `"unknown":true,"capture":{`, 1),
 	}
+	for _, field := range []string{"started_at", "finished_at"} {
+		value := "2026-01-02T03:04:05.123456789Z"
+		if field == "finished_at" {
+			value = "2026-01-02T03:04:06.987654321Z"
+		}
+		pair := fmt.Sprintf(`"%s":"%s"`, field, value)
+		cases = append(cases, strings.Replace(valid, pair+",", "", 1), strings.Replace(valid, pair, `"`+field+`":null`, 1), strings.Replace(valid, pair, pair+","+pair, 1), strings.Replace(valid, pair, `"`+strings.ToUpper(field)+`":"`+value+`"`, 1))
+		for _, badTime := range []string{"", "not a timestamp", "0001-01-01T00:00:00Z", "0000-01-01T00:00:00Z", "10000-01-01T00:00:00Z", "2026-13-02T03:04:05Z", "2026-01-02T03:04:05+00:00", "2026-01-02T03:04:05.000Z", "2026-01-02T03:04:05.1234567891Z"} {
+			cases = append(cases, strings.Replace(valid, pair, `"`+field+`":"`+badTime+`"`, 1))
+		}
+	}
+	cases = append(cases, strings.Replace(valid, "2026-01-02T03:04:06.987654321Z", "2026-01-02T03:04:04Z", 1))
 	for _, field := range []string{`"stdout":""`, `"stderr":""`, `"exit_code":0`, `"started":false`} {
 		name := strings.SplitN(field, ":", 2)[0]
 		cases = append(cases, strings.Replace(valid, field, name+":null", 1))
@@ -218,7 +236,7 @@ func TestCaptureRejectsMalformedRetainedArtifactsWithoutReplacement(t *testing.T
 			before, _ := os.Stat(path)
 			_, _, err := store.Read(context.Background(), "bad")
 			requireCaptureError(t, err, "capture_unavailable")
-			_, err = store.Save(context.Background(), "bad", reviewprocess.Capture{})
+			_, err = store.Save(context.Background(), "bad", captureTestRecord(reviewprocess.Capture{}))
 			requireCaptureError(t, err, "capture_unavailable")
 			after, _ := os.Stat(path)
 			got, _ := os.ReadFile(path)
@@ -242,12 +260,78 @@ func TestCaptureRejectsMalformedRetainedArtifactsWithoutReplacement(t *testing.T
 	requireCaptureError(t, err, "capture_unavailable")
 }
 
+func TestCaptureTimingCanonicalReopenAndImmutableReplay(t *testing.T) {
+	store, root := newTestCaptureStore(t)
+	input := captureTestRecord(reviewprocess.Capture{Stdout: []byte{0, 255, '\n'}, Stderr: []byte("synthetic stderr"), ExitCode: -1, Started: false})
+	// Equivalent instants, including a non-UTC input zone, have one canonical
+	// persisted identity. The process-start flag is independent of timing.
+	input.StartedAt = input.StartedAt.In(time.FixedZone("fixture", 13*60*60))
+	input.FinishedAt = input.FinishedAt.In(time.FixedZone("fixture", -7*60*60))
+	ref, err := store.Save(context.Background(), "timed", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "timed.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope captureEnvelope
+	if json.Unmarshal(before, &envelope) != nil || envelope.Version != 2 || envelope.StartedAt != input.StartedAt.UTC().Format(time.RFC3339Nano) || envelope.FinishedAt != input.FinishedAt.UTC().Format(time.RFC3339Nano) {
+		t.Fatal("persisted timing was not canonical version 2")
+	}
+	// CaptureStore has no open handles: a fresh instance reads only the durable
+	// artifact, without access to invocation-local timing or output buffers.
+	reopened, err := NewCaptureStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, readRef, err := reopened.Read(context.Background(), "timed")
+	if err != nil || readRef != ref || !reflect.DeepEqual(got.Capture, input.Capture) || !got.StartedAt.Equal(input.StartedAt) || !got.FinishedAt.Equal(input.FinishedAt) || got.StartedAt.Location() != time.UTC || got.FinishedAt.Location() != time.UTC {
+		t.Fatal("reopen lost exact raw bytes, timestamps, or reference", err)
+	}
+	again, err := reopened.Save(context.Background(), "timed", got)
+	if err != nil || again != ref {
+		t.Fatal("canonical timing replay changed reference", err)
+	}
+	for _, change := range []func(*CaptureRecord){
+		func(r *CaptureRecord) { r.StartedAt = r.StartedAt.Add(time.Nanosecond) },
+		func(r *CaptureRecord) { r.FinishedAt = r.FinishedAt.Add(time.Nanosecond) },
+	} {
+		changed := got
+		change(&changed)
+		_, err := reopened.Save(context.Background(), "timed", changed)
+		requireCaptureError(t, err, "capture_conflict")
+	}
+	for i, bad := range []CaptureRecord{
+		{Capture: input.Capture, FinishedAt: got.FinishedAt},
+		{Capture: input.Capture, StartedAt: got.StartedAt},
+		{Capture: input.Capture, StartedAt: got.FinishedAt, FinishedAt: got.StartedAt},
+		{Capture: input.Capture, StartedAt: time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC), FinishedAt: got.FinishedAt},
+		{Capture: input.Capture, StartedAt: got.StartedAt, FinishedAt: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)},
+	} {
+		_, err := reopened.Save(context.Background(), fmt.Sprintf("invalid-time-%d", i), bad)
+		requireCaptureError(t, err, "validation_failed")
+		_, err = reopened.Save(context.Background(), "timed", bad)
+		requireCaptureError(t, err, "validation_failed")
+	}
+	after, _ := os.ReadFile(path)
+	entries, _ := os.ReadDir(root)
+	if !bytes.Equal(before, after) || len(entries) != 1 {
+		t.Fatal("invalid/conflicting timing replaced bytes or created an artifact")
+	}
+	got.FinishedAt = got.StartedAt
+	if _, err := reopened.Save(context.Background(), "zero-duration", got); err != nil {
+		t.Fatal("equal nonzero timestamps must be valid", err)
+	}
+}
+
 func TestCaptureRejectsUnsafeFilesystem(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix symlink and mode fixture proof")
 	}
 	store, root := newTestCaptureStore(t)
-	ref, err := store.Save(context.Background(), "good", reviewprocess.Capture{})
+	ref, err := store.Save(context.Background(), "good", captureTestRecord(reviewprocess.Capture{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +341,7 @@ func TestCaptureRejectsUnsafeFilesystem(t *testing.T) {
 	}
 	_, _, err = store.Read(context.Background(), "good")
 	requireCaptureError(t, err, "capture_unavailable")
-	_, err = store.Save(context.Background(), "good", reviewprocess.Capture{})
+	_, err = store.Save(context.Background(), "good", captureTestRecord(reviewprocess.Capture{}))
 	requireCaptureError(t, err, "capture_unavailable")
 	if err := os.Chmod(path, 0600); err != nil {
 		t.Fatal(err)
@@ -271,7 +355,7 @@ func TestCaptureRejectsUnsafeFilesystem(t *testing.T) {
 	for _, id := range []string{"link", "directory"} {
 		_, _, err := store.Read(context.Background(), id)
 		requireCaptureError(t, err, "capture_unavailable")
-		_, err = store.Save(context.Background(), id, reviewprocess.Capture{})
+		_, err = store.Save(context.Background(), id, captureTestRecord(reviewprocess.Capture{}))
 		requireCaptureError(t, err, "capture_unavailable")
 	}
 	parent := t.TempDir()
@@ -310,7 +394,7 @@ func TestCaptureNonregularFIFO(t *testing.T) {
 		}
 		_, _, err = store.Read(context.Background(), "fifo")
 		requireCaptureError(t, err, "capture_unavailable")
-		_, err = store.Save(context.Background(), "fifo", reviewprocess.Capture{})
+		_, err = store.Save(context.Background(), "fifo", captureTestRecord(reviewprocess.Capture{}))
 		requireCaptureError(t, err, "capture_unavailable")
 		return
 	}

@@ -42,7 +42,7 @@ func TestGitHubReadsValidateEndpointShapesAndPreserveText(t *testing.T) {
 		case "/repositories/1418705294":
 			_, _ = w.Write([]byte(`{"id":1418705294,"full_name":"benhook1013/FireController","default_branch":"main","future":null}`))
 		case "/repos/benhook1013/FireController/pulls/2":
-			_, _ = w.Write([]byte(`{"number":2,"state":"closed","merged":true,"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":null},"base":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"main","repo":{"id":1418705294,"full_name":"benhook1013/FireController","default_branch":"main"}},"changed_files":4}`))
+			_, _ = w.Write([]byte(`{"title":"Review \u0026 preserve <source>","number":2,"state":"closed","merged":true,"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":null},"base":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"main","repo":{"id":1418705294,"full_name":"benhook1013/FireController","default_branch":"main"}},"changed_files":4}`))
 		case "/repos/benhook1013/FireController/issues/2/comments":
 			if r.Method == http.MethodPost {
 				var body struct {
@@ -77,7 +77,7 @@ func TestGitHubReadsValidateEndpointShapesAndPreserveText(t *testing.T) {
 		t.Fatalf("Repository() = %#v, %v", repository, err)
 	}
 	pull, err := g.Pull(context.Background(), "benhook1013/FireController", 2)
-	if err != nil || !pull.Merged || pull.RepositoryID != 1418705294 || pull.HeadSHA[0] != 'a' {
+	if err != nil || !pull.Merged || pull.Title != "Review & preserve <source>" || pull.RepositoryID != 1418705294 || pull.HeadSHA[0] != 'a' {
 		t.Fatalf("Pull() = %#v, %v", pull, err)
 	}
 	comments, err := g.IssueComments(context.Background(), "benhook1013/FireController", 2)
@@ -232,7 +232,7 @@ func TestGitHubPendingTimeAndPullIdentityAreStrict(t *testing.T) {
 		body string
 	}{
 		{"nonpending null time", "/repos/owner/repo/pulls/2/reviews", `[{"id":1,"body":"","state":"approved","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","user":{"id":2,"login":"x","type":"User"},"submitted_at":null}]`},
-		{"wrong pull identity", "/repos/owner/repo/pulls/2", `{"number":3,"state":"open","merged":false,"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":null},"base":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"main","repo":{"id":7,"full_name":"owner/repo","default_branch":"main"}},"changed_files":1}`},
+		{"wrong pull identity", "/repos/owner/repo/pulls/2", `{"title":"Review \u0026 preserve <source>","number":3,"state":"open","merged":false,"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":null},"base":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"main","repo":{"id":7,"full_name":"owner/repo","default_branch":"main"}},"changed_files":1}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -249,6 +249,34 @@ func TestGitHubPendingTimeAndPullIdentityAreStrict(t *testing.T) {
 				t.Fatalf("error=%v", err)
 			}
 		})
+	}
+}
+
+func TestGitHubPullTitleRequiredAndBounded(t *testing.T) {
+	base := `{"title":"Keep exact title","number":2,"state":"open","merged":false,"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":null},"base":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"main","repo":{"id":7,"full_name":"owner/repo","default_branch":"main"}},"changed_files":1}`
+	for _, replacement := range []string{"", `"title":null,`, `"title":"   ",`, `"title":"bad\u0000title",`, `"title":"` + strings.Repeat("x", 4097) + `",`} {
+		t.Run(replacement, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = ioWriteString(w, strings.Replace(base, `"title":"Keep exact title",`, replacement, 1))
+			}))
+			defer server.Close()
+			if _, err := testGitHub(server, "").Pull(context.Background(), "owner/repo", 2); !hasCode(err, "provider_invalid_response") {
+				t.Fatalf("invalid title accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestGitHubPullPreservesBoundedMultibyteTitle(t *testing.T) {
+	for _, title := range []string{strings.Repeat("界", 170), strings.Repeat("🔥", 256)} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"title": title, "number": 2, "state": "open", "merged": false, "head": map[string]any{"sha": strings.Repeat("a", 40), "repo": nil}, "base": map[string]any{"sha": strings.Repeat("b", 40), "ref": "main", "repo": map[string]any{"id": 7, "full_name": "owner/repo", "default_branch": "main"}}, "changed_files": 1})
+		}))
+		got, err := testGitHub(server, "").Pull(t.Context(), "owner/repo", 2)
+		server.Close()
+		if err != nil || got.Title != title {
+			t.Fatalf("bounded title changed or rejected: bytes=%d got=%q err=%v", len(title), got.Title, err)
+		}
 	}
 }
 
@@ -554,7 +582,7 @@ func TestGitHubAllEmptyCollectionsAreCompleteEmptyArrays(t *testing.T) {
 
 func TestGitHubRejectsKnownCaseAliasesAtEveryObjectDepth(t *testing.T) {
 	actor := `{"id":7,"login":"reviewer","type":"User"}`
-	pull := `{"number":2,"state":"open","merged":false,"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":null},"base":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"main","repo":{"id":7,"full_name":"owner/repo","default_branch":"main"}},"changed_files":1}`
+	pull := `{"title":"Review \u0026 preserve <source>","number":2,"state":"open","merged":false,"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":null},"base":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"main","repo":{"id":7,"full_name":"owner/repo","default_branch":"main"}},"changed_files":1}`
 	comment := `[{"id":12,"pull_request_review_id":11,"body":"inline","user":{"id":7,"login":"reviewer","type":"User"},"path":"a.go","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","original_commit_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
 	for _, test := range []struct{ name, endpoint, body string }{
 		{"scalar overwrite", "actor", strings.Replace(actor, `"id":7`, `"id":7,"ID":8`, 1)},

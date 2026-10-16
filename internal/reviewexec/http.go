@@ -6,12 +6,19 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-// Register exposes only the project-scoped execution control and receipt
-// routes. Provider work always runs outside these request handlers.
+// Register exposes project-scoped execution controls and retained evidence.
+// Provider work always runs outside these request handlers.
 func (e *Engine) Register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/policy", e.readPolicyHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/policy", e.configurePolicyHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/configuration", e.configureHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/requests", e.enqueueHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/operations/{operation_id}", e.readOperationHTTP)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}", e.readEvidenceHTTP)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/adjudication", e.readAdjudicationHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/decisions", e.decideEvidenceHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/fixes", e.fixEvidenceHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/finalization", e.finalizeEvidenceHTTP)
 }
 
 func (e *Engine) configureHTTP(w http.ResponseWriter, r *http.Request) {

@@ -13,7 +13,7 @@ import (
 func parseReview(call invocation, args []string) (invocation, bool) {
 	list := call.subcommand == "queue" || call.subcommand == "runs"
 	switch call.subcommand {
-	case "queue", "pull", "runs", "run":
+	case "queue", "pull", "runs", "run", "evidence", "adjudication":
 	default:
 		return call, false
 	}
@@ -28,7 +28,7 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 			continue
 		}
 		flag, value, assigned := strings.Cut(argument, "=")
-		if seen[flag] || !(list && (flag == "--limit" || flag == "--cursor") || call.subcommand != "queue" && flag == "--snapshot") {
+		if seen[flag] || !(list && (flag == "--limit" || flag == "--cursor") || (call.subcommand == "pull" || call.subcommand == "runs" || call.subcommand == "run") && flag == "--snapshot") {
 			return call, false
 		}
 		seen[flag] = true
@@ -67,6 +67,9 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 	if call.subcommand == "run" {
 		return call, reviewID(call.position[0], "review_run_")
 	}
+	if call.subcommand == "evidence" || call.subcommand == "adjudication" {
+		return call, client.ValidateReviewEvidenceID(call.position[0]) == nil
+	}
 	number, err := strconv.ParseInt(call.position[0], 10, 64)
 	if err != nil || number < 1 || number > 2147483647 || strconv.FormatInt(number, 10) != call.position[0] {
 		return call, false
@@ -95,7 +98,92 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 		return service.ReviewPull(ctx, call.pullNumber, call.snapshot)
 	case "runs":
 		return service.ReviewRuns(ctx, call.pullNumber, client.ReviewRunOptions{PageOptions: client.PageOptions{Limit: call.limit, Cursor: call.cursor}, Snapshot: call.snapshot})
+	case "evidence":
+		return service.ReviewEvidence(ctx, call.position[0])
+	case "adjudication":
+		return service.ReviewAdjudication(ctx, call.position[0])
 	default: // parseReview admits only the explicit run-detail command here.
 		return service.ReviewRun(ctx, call.position[0], call.snapshot)
 	}
+}
+
+func parseReviewControl(operation string, args []string) (*mutationInvocation, bool) {
+	call := &mutationInvocation{operation: "reviews " + operation}
+	allowed := map[string]bool{"--key": true, "--expect-revision": true}
+	switch operation {
+	case "decide":
+		for _, flag := range []string{"--finding", "--disposition", "--reason"} {
+			allowed[flag] = true
+		}
+	case "fix":
+		for _, flag := range []string{"--finding", "--expect-sha", "--fix-sha", "--proof"} {
+			allowed[flag] = true
+		}
+	case "finalize":
+	default:
+		return nil, false
+	}
+	values := make(map[string]string)
+	var positions []string
+	for i := 0; i < len(args); i++ {
+		if !strings.HasPrefix(args[i], "-") {
+			positions = append(positions, args[i])
+			continue
+		}
+		flag, value, assigned := strings.Cut(args[i], "=")
+		if !allowed[flag] {
+			return nil, false
+		}
+		if _, exists := values[flag]; exists {
+			return nil, false
+		}
+		if !assigned {
+			i++
+			if i >= len(args) || strings.HasPrefix(args[i], "--") {
+				return nil, false
+			}
+			value = args[i]
+		}
+		values[flag] = value
+	}
+	if len(positions) != 1 || client.ValidateReviewEvidenceID(positions[0]) != nil || !validMutationKey(values["--key"]) {
+		return nil, false
+	}
+	// Presence is independent of value: index zero and an empty prior SHA are
+	// legitimate explicit assertions, never implicit defaults.
+	for flag := range allowed {
+		if _, present := values[flag]; !present {
+			return nil, false
+		}
+	}
+	revision, err := strconv.ParseInt(values["--expect-revision"], 10, 64)
+	if err != nil || revision < 0 || revision == (1<<63)-1 || strconv.FormatInt(revision, 10) != values["--expect-revision"] {
+		return nil, false
+	}
+	var finding int64
+	if operation != "finalize" {
+		finding, err = strconv.ParseInt(values["--finding"], 10, 64)
+		if err != nil || finding < 0 || finding >= 100 || strconv.FormatInt(finding, 10) != values["--finding"] {
+			return nil, false
+		}
+	}
+	call.id, call.key = positions[0], values["--key"]
+	switch operation {
+	case "decide":
+		call.reviewDecision = client.ReviewDecisionRequest{ExpectedRevision: revision, Finding: finding, Disposition: values["--disposition"], Reason: values["--reason"]}
+		if client.ValidateReviewDecisionRequest(call.reviewDecision) != nil {
+			return nil, false
+		}
+	case "fix":
+		call.reviewFix = client.ReviewFixRequest{ExpectedRevision: revision, Finding: finding, ExpectedSHA: values["--expect-sha"], FixSHA: values["--fix-sha"], ProofNote: values["--proof"]}
+		if client.ValidateReviewFixRequest(call.reviewFix) != nil {
+			return nil, false
+		}
+	case "finalize":
+		call.reviewFinalize = client.ReviewFinalizeRequest{ExpectedRevision: revision}
+		if client.ValidateReviewFinalizeRequest(call.reviewFinalize) != nil {
+			return nil, false
+		}
+	}
+	return call, true
 }

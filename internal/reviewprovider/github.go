@@ -664,6 +664,7 @@ type githubRepository struct {
 }
 
 type githubPull struct {
+	Title  string `json:"title,required"`
 	Number int64  `json:"number,required"`
 	State  string `json:"state,required"`
 	Merged bool   `json:"merged,required"`
@@ -824,7 +825,7 @@ func normalizeRepository(raw githubRepository, expectedID int64) (Repository, er
 }
 
 func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
-	if raw.Number != expectedNumber || raw.ChangedFiles < 0 || raw.ChangedFiles > 1000000 || raw.State != "open" && raw.State != "closed" || raw.Merged && raw.State != "closed" || raw.Base.Repo.ID <= 0 || !validSHA(raw.Head.SHA) || !validSHA(raw.Base.SHA) || !validPlainText(raw.Base.Ref, 255) || strings.TrimSpace(raw.Base.Ref) == "" {
+	if !validPlainText(raw.Title, 4096) || strings.TrimSpace(raw.Title) == "" || raw.Number != expectedNumber || raw.ChangedFiles < 0 || raw.ChangedFiles > 1000000 || raw.State != "open" && raw.State != "closed" || raw.Merged && raw.State != "closed" || raw.Base.Repo.ID <= 0 || !validSHA(raw.Head.SHA) || !validSHA(raw.Base.SHA) || !validPlainText(raw.Base.Ref, 255) || strings.TrimSpace(raw.Base.Ref) == "" {
 		return Pull{}, errors.New("invalid pull")
 	}
 	if _, err := normalizeRepository(raw.Base.Repo, 0); err != nil {
@@ -835,7 +836,7 @@ func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
 			return Pull{}, errors.New("invalid head repository")
 		}
 	}
-	return Pull{Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles}, nil
+	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles}, nil
 }
 
 func normalizeIssueComment(raw githubIssueComment) (IssueComment, error) {

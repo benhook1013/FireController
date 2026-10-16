@@ -77,6 +77,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 			return args, invalidArguments()
 		}
 	}
+	if reviewControlTool(name) {
+		return reviewControlArguments(name, data)
+	}
 	if mutationTool(name) {
 		return mutationArguments(name, data)
 	}
@@ -169,7 +172,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 
 func mutationTool(name string) bool {
 	switch name {
-	case "jobs_create", "job_edit", "job_checkpoint_append", "inbox_send", "inbox_seen", "inbox_ack":
+	case "jobs_create", "job_edit", "job_checkpoint_append", "inbox_send", "inbox_seen", "inbox_ack", "review_finding_decide", "review_finding_fix", "review_source_finalize":
 		return true
 	}
 	return false
