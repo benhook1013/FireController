@@ -233,7 +233,7 @@ func (e *Engine) ReadSourceReadiness(ctx context.Context, scope core.Scope, numb
 			return err
 		}
 		if latestID != r.ID {
-			latest, err := readSourceRefresh(ctx, tx, scope.ProjectID, latestID)
+			latest, err := readSourceRefreshMetadata(ctx, tx, scope.ProjectID, latestID)
 			if err != nil {
 				return err
 			}
