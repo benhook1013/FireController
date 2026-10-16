@@ -88,7 +88,7 @@ jobs:
         timeout-minutes: 2
         env:
           FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
-        run: go test -v -tags=packaged_smoke -run '^TestPackagedSmoke$' -count=1 -timeout=60s ./tools/packagedsmoke
+        run: go test -v -tags=packaged_smoke -run '^TestPackaged(Smoke|UpgradeSmoke)$' -count=1 -timeout=60s ./tools/packagedsmoke
 
   validate:
     name: validate
