@@ -339,6 +339,32 @@ func (e *Engine) StartSourceRefresh(ctx context.Context, readers map[string]Targ
 	go func() { err := e.sourceRefreshLoop(ctx, owned); e.sourceRunning.Store(false); done <- err; close(done) }()
 	return done, nil
 }
+
+// retrySourceRefreshLocal waits only for transient local admission contention.
+// Callers retain any completed provider read outside this closure; retries must
+// not repeat external work. Cancellation leaves startup recovery authoritative.
+func retrySourceRefreshLocal(ctx context.Context, local func() error) error {
+	delay := 100 * time.Millisecond
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := local()
+		var failure *core.Error
+		if !errors.As(err, &failure) || failure.Code != "overloaded" {
+			return err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(delay*2, time.Second)
+	}
+}
+
 func (e *Engine) sourceRefreshLoop(ctx context.Context, readers map[string]TargetReader) error {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
@@ -352,7 +378,12 @@ func (e *Engine) sourceRefreshLoop(ctx context.Context, readers map[string]Targe
 		if ctx.Err() != nil {
 			return nil
 		}
-		worked, err := e.refreshNext(ctx, readers)
+		var worked bool
+		err := retrySourceRefreshLocal(ctx, func() error {
+			var err error
+			worked, err = e.refreshNext(ctx, readers)
+			return err
+		})
 		if err != nil {
 			var failure *core.Error
 			cancelled := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.As(err, &failure) && failure.Code == "overloaded"
@@ -438,29 +469,51 @@ func (e *Engine) refreshNext(ctx context.Context, readers map[string]TargetReade
 		return true, nil
 	}
 	ciBody := encoded(ci) // Serialize bounded private inventories before taking the writer.
-	err = e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		current, err := readSourceRefresh(ctx, tx, r.ProjectID, r.ID)
-		if err != nil {
+	var recorded *sourceRefresh
+	err = retrySourceRefreshLocal(ctx, func() error {
+		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			current, err := readSourceRefresh(ctx, tx, r.ProjectID, r.ID)
+			if err != nil {
+				return err
+			}
+			// A commit may have succeeded despite an overloaded result. Accept only
+			// the exact canonical record produced by this retained completion.
+			if recorded != nil && reflect.DeepEqual(current, *recorded) {
+				return nil
+			}
+			if current.State != r.State || current.Revision != r.Revision {
+				return conflict()
+			}
+			_, reason, err := e.refreshBinding(ctx, tx, r)
+			if err != nil {
+				return err
+			}
+			if reason == "" && readErr != nil {
+				reason = sourceRefreshReason(readErr)
+			}
+			state := "held"
+			var retained *SourceObservation
+			observation := SourceObservation{RepositoryID: plan.Repository.ID, RepositoryName: plan.Repository.FullName, PullNumber: plan.Pull.Number, HeadSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, BaseRef: plan.Pull.BaseRef, ParentPullNumber: plan.ParentPullNumber, ParentSHA: plan.ParentSHA, ObservedAt: plan.ObservedAt}
+			if reason == "" {
+				if !validSourceObservation(observation) || observation.RepositoryID != r.repositoryID || observation.PullNumber != r.PullNumber || observation.HeadSHA != r.HeadSHA {
+					reason = "source_unavailable"
+				} else {
+					state, retained = "completed", &observation
+				}
+			}
+			retainedCI := "null"
+			if state == "completed" {
+				retainedCI = ciBody
+			}
+			if err := e.updateSourceRefresh(ctx, tx, r, state, reason, retained, retainedCI); err != nil {
+				return err
+			}
+			exact, err := readSourceRefresh(ctx, tx, r.ProjectID, r.ID)
+			if err == nil {
+				recorded = &exact
+			}
 			return err
-		}
-		if current.State != r.State || current.Revision != r.Revision {
-			return conflict()
-		}
-		_, reason, err := e.refreshBinding(ctx, tx, r)
-		if err != nil {
-			return err
-		}
-		if reason == "" && readErr != nil {
-			reason = sourceRefreshReason(readErr)
-		}
-		if reason != "" {
-			return e.updateSourceRefresh(ctx, tx, r, "held", reason, nil, "null")
-		}
-		observation := SourceObservation{RepositoryID: plan.Repository.ID, RepositoryName: plan.Repository.FullName, PullNumber: plan.Pull.Number, HeadSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, BaseRef: plan.Pull.BaseRef, ParentPullNumber: plan.ParentPullNumber, ParentSHA: plan.ParentSHA, ObservedAt: plan.ObservedAt}
-		if !validSourceObservation(observation) || observation.RepositoryID != r.repositoryID || observation.PullNumber != r.PullNumber || observation.HeadSHA != r.HeadSHA {
-			return e.updateSourceRefresh(ctx, tx, r, "held", "source_unavailable", nil, "null")
-		}
-		return e.updateSourceRefresh(ctx, tx, r, "completed", "", &observation, ciBody)
+		})
 	})
 	if err == nil {
 		e.notifySourceRefresh(r.ID)

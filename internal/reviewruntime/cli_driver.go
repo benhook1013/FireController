@@ -11,7 +11,6 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprocess"
-	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
 
@@ -120,26 +119,9 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	if err != nil {
 		return preparation, err
 	}
-	if err := d.fetch(ctx, current.RepositoryID, plan.Repository.FullName, plan.Pull.HeadSHA, plan.Pull.BaseSHA, d.capability.GitHubCredential()); err != nil {
-		return preparation, reviewHold("source_unavailable")
-	}
-	workspace, err := d.manager.Prepare(ctx, current.RepositoryID, attempt.ID, plan.Pull.HeadSHA, plan.Pull.BaseSHA)
+	workspace, changedFiles, err := prepareReviewWorkspace(ctx, d.fetch, d.verify, d.manager, d.capability.GitHubCredential(), current, plan, attempt.ID)
 	if err != nil {
-		return preparation, reviewHold("workspace_unavailable")
-	}
-	workspace, err = d.manager.BindRepository(ctx, workspace, plan.Repository.FullName)
-	if err != nil {
-		return preparation, reviewHold("workspace_unavailable")
-	}
-	if err := d.verify(ctx, workspace); err != nil {
-		return preparation, reviewHold("workspace_changed")
-	}
-	paths, err := d.manager.ChangedFiles(ctx, workspace)
-	if err != nil || len(paths) == 0 {
-		return preparation, reviewHold("comparison_unavailable")
-	}
-	if ceiling := current.Policy.Policy.MaxReviewFiles; ceiling > 0 && int64(len(paths)) > ceiling {
-		return preparation, reviewHold("project_file_limit")
+		return preparation, err
 	}
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
 	usage, err := d.usage(ctx, workspace, plan.Repository.FullName, d.capability.Organization)
@@ -150,21 +132,11 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 		}
 		return preparation, reviewHold("allowance_unavailable")
 	}
-	if err := d.engine.RecordCLIAllowance(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: int64(len(paths))}); err != nil {
+	if err := d.engine.RecordCLIAllowance(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}); err != nil {
 		return preparation, err
 	}
-	// Only absence permits fresh metadata fallback; an actual projection
-	// conflict or storage failure must not be disguised as a missing row.
-	_, err = d.engine.PublishAttempt(ctx, operation.ProjectID, attempt.ID, nil)
-	if err != nil {
-		var missing *core.Error
-		if !errors.As(err, &missing) || missing.Code != "review_projection_missing" {
-			return preparation, err
-		}
-		metadata := reviews.PullInput{Number: plan.Pull.Number, Title: pullDisplayTitle(plan.Pull.Title), State: plan.Pull.State, HeadSHA: plan.Pull.HeadSHA, BaseRef: plan.Pull.BaseRef, BaseSHA: plan.Pull.BaseSHA, CIState: "unknown", Mergeability: "unknown", Complete: false}
-		if _, err = d.engine.PublishAttempt(ctx, operation.ProjectID, attempt.ID, &metadata); err != nil {
-			return preparation, err
-		}
+	if err := publishPreparedAttempt(ctx, d.engine, operation.ProjectID, attempt.ID, plan); err != nil {
+		return preparation, err
 	}
 	d.mu.Lock()
 	d.prepared[attempt.ID] = &cliPrepared{operation: current.Operation, configuration: current.Configuration, plan: plan, workspace: workspace, anchor: anchor, expires: time.Now().Add(60 * time.Second)}
