@@ -6,7 +6,7 @@ The single case has a 45-second context and a 60-second test timeout, with five-
 
 A stopped fixture is provisioned using four authenticated handler calls and one synthetic repository resolver. This trusted setup is separate from the actual executable proof; it does not claim real GitHub repository verification. No SQL manufactures domain state or receipts. Fixture profiles, credentials and databases are private disposable test data. Child environments contain no installed credentials or provider catalog. Unexpected HTTP uses a local denial proxy; there is no provider, Git or review workload. The check does not claim a hostile-network sandbox.
 
-Child stdout must be JSON/protocol data; diagnostics never echo captured private output. Owned processes and local HTTP servers are joined during cleanup, including failures. Logs report input binary hashes and elapsed time. This is a bounded Linux/WSL and Linux-CI smoke, not browser, container, remote-host, cross-platform runtime, release provenance or throughput proof.
+Child stdout must be JSON/protocol data; diagnostics never echo captured private output. Owned processes and local HTTP servers are joined during cleanup, including failures. Logs report input binary hashes and elapsed time. The same bounded workload runs in the Linux job and is configured for native Windows/macOS CI. Native CI proof remains pending until those runner results are inspected. This is not browser, container, remote-host, release provenance or throughput proof.
 
 An explicit absolute input directory can validate another already-built set without overwriting the repository outputs:
 
@@ -15,6 +15,14 @@ FC_SMOKE_BIN_DIR=/absolute/private/bin make smoke
 ```
 
 Such a run proves only those supplied inputs. Build/source provenance remains the caller's responsibility.
+
+## Native platform gate
+
+The Linux job retains its full checks, cross-compilation and separate Chromium smoke. Native Windows and macOS jobs build all three CGO-free binaries with `-trimpath`, report `go env GOOS GOARCH GOEXE`, then run the same tagged packaged workload against those outputs. They require no Node or browser installation. The single required `validate` job succeeds only when Linux and the entire native matrix succeed; native proof is not inferred from cross-compilation or runner labels.
+
+The daemon uses interrupt-driven clean shutdown on Linux/macOS. Go cannot deliver that interrupt to another Windows process, so Windows deliberately terminates only its owned daemon, requires the expected termination result and joins it within the same bounds. Its subsequent retained identity/state/receipt checks establish crash/restart recovery, not graceful Windows shutdown. MCP still closes stdin through the official SDK and must exit successfully with empty stderr on every platform. Timeout cleanup kills and joins owned processes without converting a failed shutdown into success.
+
+Fixture HOME, USERPROFILE, TMPDIR, TEMP and TMP point to disposable private paths. POSIX permission assertions remain active on Linux/macOS; Windows mode-bit exemptions do not establish ACL isolation. The workload does not prove native provider/review subprocess execution, every CPU architecture, signing/notarization or installation. Actual native runner results remain pending; the Linux regression check against separately supplied binaries proves only those input bytes.
 
 ## Embedded browser lifecycle
 
@@ -29,6 +37,6 @@ make browser-smoke
 
 CI installs Chromium and its system dependencies explicitly, then runs this target after the packaged binary smoke. Missing inputs fail rather than silently skipping coverage. The 45-second workload and five-second steps sit inside a 60-second Go-test bound. One narrow browser view checks connection, a separately attributed fixture settings write followed by a live render, full heading bounds, reload session continuity and explicit disconnect cleanup of the session and root appearance. Browser writes are limited to session creation and disconnection. The test uses private disposable credentials, bounded output and owned-process cleanup; it never prints raw browser or daemon output.
 
-`FC_SMOKE_BIN_DIR` selects an absolute already-built input directory as above. An optional absolute `FC_BROWSER_EXECUTABLE` selects an explicitly supplied Chromium executable and is reported as an override; it does not prove the pinned default revision. The ordinary target uses Playwright's installed default. This small regression gate complements the broader executed browser matrices and human GUI review; it does not establish two-project isolation, pixel fidelity, full accessibility, physical-phone behavior, installed hosting or fleet performance. Native Windows/macOS smoke and retained-data container-upgrade validation remain separate release checks.
+`FC_SMOKE_BIN_DIR` selects an absolute already-built input directory as above. An optional absolute `FC_BROWSER_EXECUTABLE` selects an explicitly supplied Chromium executable and is reported as an override; it does not prove the pinned default revision. The ordinary target uses Playwright's installed default. This small regression gate complements the broader executed browser matrices and human GUI review; it does not establish two-project isolation, pixel fidelity, full accessibility, physical-phone behavior, installed hosting or fleet performance. The native binary gate above and retained-data container-upgrade validation remain separate from this Linux browser case.
 
 An actual clipping experiment verified the bounds assertion: the original horizontal-only check passed an injected `max-height`/hidden-overflow heading, while the corrected check rejected the same clipped content and passed the unmodified page. Bounds respect actual clipping ancestors, without treating ordinary visible glyph extents as clipping. An intentional failure also verifies that fixture context cancellation follows daemon cleanup, preserving the useful assertion diagnostic instead of adding a forced-shutdown error. These controlled checks do not establish general visual correctness.

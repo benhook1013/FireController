@@ -82,7 +82,7 @@ func TestPackagedSmoke(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 	}))
 	t.Cleanup(deny.Close)
-	env := []string{"HOME=" + private, "USERPROFILE=" + private, "TMPDIR=" + private, "PATH=", "FC_PROFILE=unselected-default",
+	env := []string{"HOME=" + private, "USERPROFILE=" + private, "TMPDIR=" + private, "TEMP=" + private, "TMP=" + private, "PATH=", "FC_PROFILE=unselected-default",
 		"HTTP_PROXY=" + deny.URL, "HTTPS_PROXY=" + deny.URL, "NO_PROXY=127.0.0.1,localhost"}
 	for _, key := range []string{"SYSTEMROOT", "WINDIR"} {
 		if value := os.Getenv(key); value != "" {
@@ -227,6 +227,11 @@ func TestPackagedSmoke(t *testing.T) {
 			}
 		case <-time.After(stepTimeout):
 			_ = mcpCommand.Process.Kill()
+			select {
+			case <-closeDone:
+			case <-time.After(time.Second):
+				t.Error("owned fcmcp did not join after kill")
+			}
 			t.Error("actual fcmcp shutdown exceeded five seconds")
 		}
 	}
@@ -541,10 +546,23 @@ func startDaemon(t *testing.T, ctx context.Context, binary, data string, env []s
 func (d *daemonProcess) stop(t *testing.T) {
 	t.Helper()
 	d.once.Do(func() {
+		forcedStop := false
 		select {
 		case <-d.done:
 		default:
-			_ = d.command.Process.Signal(os.Interrupt)
+			if runtime.GOOS == "windows" {
+				// Go cannot send os.Interrupt to another Windows process.
+				// Kill terminates this owned daemon with exit1: subsequent
+				// reads prove crash/restart recovery, not graceful shutdown.
+				if err := d.command.Process.Kill(); err != nil {
+					t.Error("owned Windows daemon could not be terminated")
+				} else {
+					forcedStop = true
+					t.Log("Windows daemon stop: forced termination; restart checks prove crash recovery, not graceful shutdown")
+				}
+			} else {
+				_ = d.command.Process.Signal(os.Interrupt)
+			}
 		}
 		select {
 		case <-d.done:
@@ -561,7 +579,12 @@ func (d *daemonProcess) stop(t *testing.T) {
 		d.output.mu.Lock()
 		invalid := d.output.invalid || len(d.output.pending) != 0
 		d.output.mu.Unlock()
-		if d.err != nil || invalid || d.stderr.len() != 0 {
+		validExit := d.err == nil
+		if forcedStop {
+			var exit *exec.ExitError
+			validExit = errors.As(d.err, &exit) && exit.ExitCode() == 1
+		}
+		if !validExit || invalid || d.stderr.len() != 0 {
 			t.Error("packaged daemon shutdown failed or emitted non-listening output")
 		}
 	})
