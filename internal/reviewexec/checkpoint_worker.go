@@ -44,49 +44,52 @@ func (e *Engine) StartCheckpointPublications(ctx context.Context, providers map[
 		return fail(invalid())
 	}
 	var ids []string
-	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM review_checkpoint_publications WHERE state IN ('preparing','posting','recovering') ORDER BY created_at,id LIMIT 65`)
-		if err != nil {
-			return err
-		}
-		type key struct{ project, id string }
-		var keys []key
-		for rows.Next() {
-			var k key
-			if err = rows.Scan(&k.project, &k.id); err != nil {
-				rows.Close()
-				return err
-			}
-			keys = append(keys, k)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		if len(keys) > 64 {
-			return checkpointStorage()
-		}
-		for _, k := range keys {
-			r, err := readCheckpoint(ctx, tx, k.project, k.id)
+	err := retrySourceRefreshLocal(ctx, func() error {
+		ids = nil
+		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM review_checkpoint_publications WHERE state IN ('preparing','posting','recovering') ORDER BY created_at,id LIMIT 65`)
 			if err != nil {
 				return err
 			}
-			previous := r.View.Revision
-			if r.View.State == "preparing" {
-				r.View.State = "queued"
-			} else {
-				r.View.State = "recover_queued"
+			type key struct{ project, id string }
+			var keys []key
+			for rows.Next() {
+				var k key
+				if err = rows.Scan(&k.project, &k.id); err != nil {
+					rows.Close()
+					return err
+				}
+				keys = append(keys, k)
 			}
-			r.View.Revision++
-			r.View.UpdatedAt = sourceStamp()
-			r.View.Reason = "interrupted"
-			if err = persistCheckpoint(ctx, tx, r, previous); err != nil {
+			err = rows.Err()
+			rows.Close()
+			if err != nil {
 				return err
 			}
-			ids = append(ids, k.id)
-		}
-		return nil
+			if len(keys) > 64 {
+				return checkpointStorage()
+			}
+			for _, k := range keys {
+				r, err := readCheckpoint(ctx, tx, k.project, k.id)
+				if err != nil {
+					return err
+				}
+				previous := r.View.Revision
+				if r.View.State == "preparing" {
+					r.View.State = "queued"
+				} else {
+					r.View.State = "recover_queued"
+				}
+				r.View.Revision++
+				r.View.UpdatedAt = sourceStamp()
+				r.View.Reason = "interrupted"
+				if err = persistCheckpoint(ctx, tx, r, previous); err != nil {
+					return err
+				}
+				ids = append(ids, k.id)
+			}
+			return nil
+		})
 	})
 	if err != nil {
 		return fail(checkpointPersistence())
@@ -111,8 +114,8 @@ func (e *Engine) checkpointLoop(ctx context.Context, providers map[string]Checkp
 		}
 		worked, err := e.checkpointNext(ctx, providers)
 		if err != nil {
-			var f *core.Error
-			if ctx.Err() != nil && errors.As(err, &f) && f.Code == "overloaded" {
+			var failure *core.Error
+			if ctx.Err() != nil && (errors.Is(err, ctx.Err()) || errors.As(err, &failure) && failure.Code == "overloaded") {
 				return nil
 			}
 			return checkpointPersistence()
@@ -130,41 +133,47 @@ func (e *Engine) checkpointLoop(ctx context.Context, providers map[string]Checkp
 }
 func (e *Engine) checkpointNext(ctx context.Context, providers map[string]CheckpointProvider) (bool, error) {
 	var project, id string
-	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, `SELECT project_id,id FROM review_checkpoint_publications WHERE state IN ('queued','recover_queued') ORDER BY created_at,id LIMIT 1`).Scan(&project, &id)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		return err
+	err := retrySourceRefreshLocal(ctx, func() error {
+		project, id = "", ""
+		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			err := tx.QueryRowContext(ctx, `SELECT project_id,id FROM review_checkpoint_publications WHERE state IN ('queued','recover_queued') ORDER BY created_at,id LIMIT 1`).Scan(&project, &id)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
+		})
 	})
 	if err != nil || id == "" {
 		return false, err
 	}
 	var r checkpointRecord
 	claimed := false
-	err = e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		var err error
-		r, err = readCheckpoint(ctx, tx, project, id)
-		if err != nil {
-			return err
-		}
-		if r.View.State != "queued" && r.View.State != "recover_queued" {
+	err = retrySourceRefreshLocal(ctx, func() error {
+		r, claimed = checkpointRecord{}, false
+		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			var err error
+			r, err = readCheckpoint(ctx, tx, project, id)
+			if err != nil {
+				return err
+			}
+			if r.View.State != "queued" && r.View.State != "recover_queued" {
+				return nil
+			}
+			prior := r.View.Revision
+			if r.View.State == "queued" {
+				r.View.State = "preparing"
+			} else {
+				r.View.State = "recovering"
+			}
+			r.View.Revision++
+			r.View.UpdatedAt = sourceStamp()
+			r.View.Reason = ""
+			if err = persistCheckpoint(ctx, tx, r, prior); err != nil {
+				return err
+			}
+			claimed = true
 			return nil
-		}
-		prior := r.View.Revision
-		if r.View.State == "queued" {
-			r.View.State = "preparing"
-		} else {
-			r.View.State = "recovering"
-		}
-		r.View.Revision++
-		r.View.UpdatedAt = sourceStamp()
-		r.View.Reason = ""
-		if err = persistCheckpoint(ctx, tx, r, prior); err != nil {
-			return err
-		}
-		claimed = true
-		return nil
+		})
 	})
 	if err != nil || !claimed {
 		return claimed, err
@@ -196,46 +205,57 @@ func (e *Engine) checkpointNext(ctx context.Context, providers map[string]Checkp
 	}
 	// Commit exact intent and current authorization immediately before the sole
 	// POST. A failed or ambiguous local commit grants no posting opportunity.
-	err = e.store.BackgroundWrite(action, func(ctx context.Context, tx *sql.Tx) error {
-		current, err := readCheckpoint(ctx, tx, project, id)
-		if err != nil {
-			return err
-		}
-		if current.View.Revision != r.View.Revision || current.View.State != "preparing" {
-			return conflict()
-		}
-		allowed, err := actorAllowed(ctx, tx, project, r.ActorID, r.WorkerID)
-		if err != nil {
-			return err
-		}
-		if !allowed {
-			return checkpointHold("requester_revoked")
-		}
-		binding, err := e.checkpointBinding(ctx, tx, project, r.Payload.RepositoryID)
-		if err != nil {
-			return err
-		}
-		if binding.ID != r.CapabilityID || binding.Fingerprint != r.Fingerprint || binding.Provider != r.Provider || binding.Account != r.Account {
-			return checkpointHold("capability_changed")
-		}
-		_, _, payload, err := checkpointSource(ctx, tx, project, r.View.EvidenceID, id)
-		if err != nil {
-			return err
-		}
-		if encoded(payload) != encoded(r.Payload) {
-			return checkpointHold("source_changed")
-		}
-		prior := r.View.Revision
-		r.View.Revision++
-		r.View.State = "posting"
-		r.View.UpdatedAt = sourceStamp()
-		r.Unposted = false
-		render, _ := reviewprovider.RenderCheckpoint(payload)
-		r.Intent = &checkpointIntent{Revision: r.View.Revision, CapabilityID: r.CapabilityID, Fingerprint: r.Fingerprint, Provider: r.Provider, Account: r.Account, Repository: repo.FullName, Actor: actor, EarliestPosting: r.View.UpdatedAt, Body: render.Body}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_checkpoint_intents(publication_id,revision,body_json) VALUES(?,?,?)`, id, r.Intent.Revision, encoded(r.Intent)); err != nil {
-			return err
-		}
-		return persistCheckpoint(ctx, tx, r, prior)
+	var posting checkpointRecord
+	err = retrySourceRefreshLocal(action, func() error {
+		posting = checkpointRecord{}
+		return e.store.BackgroundWrite(action, func(ctx context.Context, tx *sql.Tx) error {
+			current, err := readCheckpoint(ctx, tx, project, id)
+			if err != nil {
+				return err
+			}
+			if current.View.Revision != r.View.Revision || current.View.State != "preparing" {
+				return conflict()
+			}
+			allowed, err := actorAllowed(ctx, tx, project, r.ActorID, r.WorkerID)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				return checkpointHold("requester_revoked")
+			}
+			binding, err := e.checkpointBinding(ctx, tx, project, r.Payload.RepositoryID)
+			if err != nil {
+				return err
+			}
+			if binding.ID != r.CapabilityID || binding.Fingerprint != r.Fingerprint || binding.Provider != r.Provider || binding.Account != r.Account {
+				return checkpointHold("capability_changed")
+			}
+			_, _, payload, err := checkpointSource(ctx, tx, project, r.View.EvidenceID, id)
+			if err != nil {
+				return err
+			}
+			if encoded(payload) != encoded(r.Payload) {
+				return checkpointHold("source_changed")
+			}
+			// Mutate only this transaction's copy. A rolled-back attempt must not
+			// advance the retained claim or accumulate an intent revision.
+			next := current
+			prior := next.View.Revision
+			next.View.Revision++
+			next.View.State = "posting"
+			next.View.UpdatedAt = sourceStamp()
+			next.Unposted = false
+			render, _ := reviewprovider.RenderCheckpoint(payload)
+			next.Intent = &checkpointIntent{Revision: next.View.Revision, CapabilityID: next.CapabilityID, Fingerprint: next.Fingerprint, Provider: next.Provider, Account: next.Account, Repository: repo.FullName, Actor: actor, EarliestPosting: next.View.UpdatedAt, Body: render.Body}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO review_checkpoint_intents(publication_id,revision,body_json) VALUES(?,?,?)`, id, next.Intent.Revision, encoded(next.Intent)); err != nil {
+				return err
+			}
+			if err := persistCheckpoint(ctx, tx, next, prior); err != nil {
+				return err
+			}
+			posting = next
+			return nil
+		})
 	})
 	if err != nil {
 		var f *core.Error
@@ -248,6 +268,7 @@ func (e *Engine) checkpointNext(ctx context.Context, providers map[string]Checkp
 		}
 		return true, err
 	}
+	r = posting
 	e.notifyCheckpoint(id)
 	comment, err := provider.PostIssueComment(action, repo.FullName, r.Payload.PullNumber, r.Intent.Body)
 	if ctx.Err() != nil {
@@ -310,25 +331,30 @@ func (e *Engine) observeCheckpoint(action, owner context.Context, r checkpointRe
 }
 func (e *Engine) finishCheckpoint(ctx context.Context, r checkpointRecord, state, reason string, unposted bool, comment *reviewprovider.IssueComment) error {
 	prior := r.View.Revision
-	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		current, err := readCheckpoint(ctx, tx, r.View.ProjectID, r.View.ID)
-		if err != nil {
-			return err
-		}
-		if current.View.Revision != prior || current.View.State != r.View.State {
-			return conflict()
-		}
-		r.View.State, r.View.Reason, r.Unposted = state, reason, unposted
-		r.View.Revision++
-		r.View.UpdatedAt = sourceStamp()
-		if comment != nil {
-			r.View.CommentID = comment.ID
-			r.View.CommentURL = checkpointURL(r.ConfirmationRepository, r.Payload.PullNumber, comment.ID)
-			r.View.PublishedAt = comment.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
-			r.View.ProviderAuthorID = comment.Author.ID
-			r.View.ProviderAuthorKind = comment.Author.Kind
-		}
-		return persistCheckpoint(ctx, tx, r, prior)
+	// Keep the provider result and original claimed revision outside retries.
+	err := retrySourceRefreshLocal(ctx, func() error {
+		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			current, err := readCheckpoint(ctx, tx, r.View.ProjectID, r.View.ID)
+			if err != nil {
+				return err
+			}
+			if current.View.Revision != prior || current.View.State != r.View.State {
+				return conflict()
+			}
+			next := current
+			next.View.State, next.View.Reason, next.Unposted = state, reason, unposted
+			next.View.Revision++
+			next.View.UpdatedAt = sourceStamp()
+			if comment != nil {
+				next.ConfirmationRepository = r.ConfirmationRepository
+				next.View.CommentID = comment.ID
+				next.View.CommentURL = checkpointURL(r.ConfirmationRepository, r.Payload.PullNumber, comment.ID)
+				next.View.PublishedAt = comment.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
+				next.View.ProviderAuthorID = comment.Author.ID
+				next.View.ProviderAuthorKind = comment.Author.Kind
+			}
+			return persistCheckpoint(ctx, tx, next, prior)
+		})
 	})
 	if err == nil {
 		e.notifyCheckpoint(r.View.ID)
