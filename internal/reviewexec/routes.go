@@ -113,9 +113,9 @@ func routeTimestamp(s string) (time.Time, bool) {
 	return at, err == nil && !at.IsZero() && s == at.UTC().Format("2006-01-02T15:04:05.000000000Z")
 }
 func validReviewRoute(r ReviewRoute) bool {
-	_, createdOK := routeTimestamp(r.CreatedAt)
-	_, updatedOK := routeTimestamp(r.UpdatedAt)
-	if !validFindingRouteID(r.ID) || !identifier.MatchString(r.ProjectID) || r.RepositoryID <= 0 || !hostedObservationID(r.SourceEvidenceID, "review_evidence_") || r.Finding < 0 || r.Finding >= 100 || !validRoutePull(r.SourcePullNumber) || !validRoutePull(r.TargetPullNumber) || r.SourcePullNumber == r.TargetPullNumber || !sha.MatchString(r.SourceHeadSHA) || r.Revision < 1 || !safeText(r.RoutingReason, 2048) || strings.TrimSpace(r.RoutingReason) == "" || !identifier.MatchString(r.RoutingActorID) || !createdOK || !updatedOK || !safeText(r.Reason, 2048) || !safeText(r.ProofNote, 2048) {
+	created, createdOK := routeTimestamp(r.CreatedAt)
+	updated, updatedOK := routeTimestamp(r.UpdatedAt)
+	if !validFindingRouteID(r.ID) || !identifier.MatchString(r.ProjectID) || r.RepositoryID <= 0 || !hostedObservationID(r.SourceEvidenceID, "review_evidence_") || r.Finding < 0 || r.Finding >= 100 || !validRoutePull(r.SourcePullNumber) || !validRoutePull(r.TargetPullNumber) || r.SourcePullNumber == r.TargetPullNumber || !sha.MatchString(r.SourceHeadSHA) || r.Revision < 1 || !safeText(r.RoutingReason, 2048) || strings.TrimSpace(r.RoutingReason) == "" || !identifier.MatchString(r.RoutingActorID) || !createdOK || !updatedOK || updated.Before(created) || !safeText(r.Reason, 2048) || !safeText(r.ProofNote, 2048) {
 		return false
 	}
 	if r.State != "active" && r.State != "superseded" {
@@ -127,16 +127,16 @@ func validReviewRoute(r ReviewRoute) bool {
 			return false
 		}
 	case "accepted", "rejected":
-		_, ok := routeTimestamp(r.DecidedAt)
-		if !ok || !identifier.MatchString(r.ActorID) || strings.TrimSpace(r.Reason) == "" {
+		decided, ok := routeTimestamp(r.DecidedAt)
+		if !ok || decided.Before(created) || decided.After(updated) || !identifier.MatchString(r.ActorID) || strings.TrimSpace(r.Reason) == "" {
 			return false
 		}
 	default:
 		return false
 	}
 	if r.FixSHA != "" {
-		_, ok := routeTimestamp(r.FixedAt)
-		if r.Disposition != "accepted" || r.State != "active" || !sha.MatchString(r.FixSHA) || strings.TrimSpace(r.ProofNote) == "" || !ok {
+		fixed, ok := routeTimestamp(r.FixedAt)
+		if r.Disposition != "accepted" || r.State != "active" || !sha.MatchString(r.FixSHA) || strings.TrimSpace(r.ProofNote) == "" || !ok || fixed.Before(created) || fixed.After(updated) {
 			return false
 		}
 	} else if r.ProofNote != "" || r.FixedAt != "" {

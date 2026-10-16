@@ -702,8 +702,8 @@ func TestFindingRouteClockRollbackDecisionAndFixKeepExactRevisions(t *testing.T)
 	source := adjudicationRead(t, f, evidence)
 	routeDecision(t, f, created.ID, "decision-clock", 1, "accepted")
 	decided := routeRead(t, f, created.ID).Route
-	if decided.DecidedAt != decided.UpdatedAt || decided.UpdatedAt >= decided.CreatedAt || decided.Revision != 2 {
-		t.Fatal("decision synthesized future time or sampled twice", decided)
+	if decided.DecidedAt != decided.UpdatedAt || decided.UpdatedAt != decided.CreatedAt || decided.Revision != 2 {
+		t.Fatal("decision lost effective journal time or sampled twice", decided)
 	}
 	before := routeState(t, f, a)
 	_, err := f.e.DecideFindingRoute(t.Context(), f.scope(t, attemptProject, f.writer, false), "stale-new-key", created.ID, FindingRouteDecisionRequest{ExpectedRevision: adjudicationRevision(1), Disposition: "rejected", Reason: "Stale guard"})
@@ -719,12 +719,12 @@ func TestFindingRouteClockRollbackDecisionAndFixKeepExactRevisions(t *testing.T)
 	_, err = f.e.RecordFindingRouteFix(t.Context(), f.scope(t, attemptProject, f.writer, false), "rollback-clock-fix", created.ID, FindingRouteFixRequest{ExpectedRevision: adjudicationRevision(2), ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Recorded focused proof"})
 	f.e.publishAdjudication = previousProjection
 	if err != refused || before != routeState(t, f, a) {
-		t.Fatal("backward-clock route mutation failed atomic rollback", err)
+		t.Fatal("effective-time route mutation failed atomic rollback", err)
 	}
 	routeFix(t, f, created.ID, "fix-clock", 2, "", strings.Repeat("f", 40))
 	fixed := routeRead(t, f, created.ID).Route
-	if fixed.FixedAt != fixed.UpdatedAt || fixed.FixedAt >= fixed.DecidedAt || fixed.Revision != 3 {
-		t.Fatal("fix synthesized future time or sampled twice", fixed)
+	if fixed.FixedAt != fixed.UpdatedAt || fixed.FixedAt != fixed.DecidedAt || fixed.Revision != 3 {
+		t.Fatal("fix lost effective journal time or sampled twice", fixed)
 	}
 	if !reflect.DeepEqual(source, adjudicationRead(t, f, evidence)) {
 		t.Fatal("receiver rewrote source")
@@ -758,7 +758,7 @@ func TestFindingRouteClockRollbackRerouteAndSourceUnroute(t *testing.T) {
 				adjudicationReceipt(t, raw, err, evidence, "adjudicated", 2)
 				old := routeRead(t, f, created.ID).Route
 				source := adjudicationRead(t, f, evidence).Findings[0]
-				if old.State != "superseded" || old.UpdatedAt >= old.CreatedAt || source.DecidedAt != old.UpdatedAt || source.RouteID != "" {
+				if old.State != "superseded" || old.UpdatedAt != old.CreatedAt || source.DecidedAt != old.UpdatedAt || source.RouteID != "" {
 					t.Fatal("unroute stamp/link changed", old, source)
 				}
 			} else {
@@ -768,7 +768,7 @@ func TestFindingRouteClockRollbackRerouteAndSourceUnroute(t *testing.T) {
 				old := routeRead(t, f, created.ID).Route
 				newRoute := routeRead(t, f, next.ID).Route
 				source := adjudicationRead(t, f, evidence).Findings[0]
-				if old.State != "superseded" || old.UpdatedAt >= old.CreatedAt || old.UpdatedAt != newRoute.CreatedAt || source.DecidedAt != newRoute.CreatedAt {
+				if old.State != "superseded" || old.UpdatedAt != old.CreatedAt || old.UpdatedAt != newRoute.CreatedAt || source.DecidedAt != newRoute.CreatedAt {
 					t.Fatal("reroute stamp/origin changed", old, newRoute, source)
 				}
 				before := routeState(t, f, a)
