@@ -24,6 +24,15 @@ import (
 const maxResponseBytes = 4 << 20
 const requestTimeout = 5 * time.Second
 
+// SourceRefreshBudget returns the total budget for an already validated source
+// wait preference. Argument validation remains with the command or request.
+func SourceRefreshBudget(waitSeconds int) time.Duration {
+	if waitSeconds > 2 {
+		return time.Duration(waitSeconds+5) * time.Second
+	}
+	return requestTimeout
+}
+
 type Client struct {
 	identity              profile.Context
 	base                  *url.URL
@@ -251,8 +260,8 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	u.RawPath = escaped
 	u.RawQuery = query.Encode()
 	timeout := requestTimeout
-	if wait != nil && wait.seconds > 2 {
-		timeout = time.Duration(wait.seconds+5) * time.Second
+	if wait != nil {
+		timeout = SourceRefreshBudget(wait.seconds)
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
