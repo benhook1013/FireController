@@ -104,7 +104,7 @@ func TestRetainHostedAllowanceActualCaptureThroughFinalActionGuard(t *testing.T)
 		t.Fatal(err)
 	}
 	after = hostedBridgeState(t, f)
-	if err := f.f.engine.VerifyHostedAction(t.Context(), f.f.project, f.a.ID, admitted.Revision); err != nil || hostedBridgeState(t, f) != after {
+	if err := f.f.engine.VerifyHostedAction(t.Context(), f.f.project, f.a.ID, admitted.Revision, reviewexec.SourcePlan{Repository: reviewprovider.Repository{ID: f.anchor.RepositoryID, FullName: f.anchor.Repository, DefaultBranch: f.anchor.BaseRef}, Pull: reviewprovider.Pull{Number: f.anchor.PullNumber, RepositoryID: f.anchor.RepositoryID, State: "open", HeadSHA: f.anchor.CandidateSHA, BaseSHA: f.anchor.BaseSHA, BaseRef: f.anchor.BaseRef, ChangedFiles: 2}, ParentSHA: f.anchor.ParentSHA, ParentPullNumber: f.anchor.ParentPullNumber, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil || hostedBridgeState(t, f) != after {
 		t.Fatal("retained source did not satisfy read-only final action guard", err)
 	}
 	if err := RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, got.Capture); err != nil || hostedBridgeState(t, f) != after {
