@@ -219,9 +219,10 @@ func (e *Engine) ReadHostedAllowance(ctx context.Context, project, attemptID str
 
 // VerifyHostedAction combines the common final action guard and the retained
 // query/availability proof in one SQL snapshot. Fresh provider source/activity
-// checks remain the driver's responsibility; this method performs no I/O there.
-func (e *Engine) VerifyHostedAction(ctx context.Context, project, attemptID string, expectedRevision int64, predecessors ...SourcePlan) error {
-	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(project) || !hostedObservationID(attemptID, "review_attempt_") || expectedRevision < 1 {
+// checks remain the driver's responsibility. Its mandatory current source
+// witness is validated here without refreshing retained facts or provider I/O.
+func (e *Engine) VerifyHostedAction(ctx context.Context, project, attemptID string, expectedRevision int64, currentSource SourcePlan, predecessors ...SourcePlan) error {
+	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(project) || !hostedObservationID(attemptID, "review_attempt_") || expectedRevision < 1 || !validCoverageSource(currentSource) {
 		return invalid()
 	}
 	return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
@@ -243,8 +244,18 @@ func (e *Engine) VerifyHostedAction(ctx context.Context, project, attemptID stri
 		if err != nil {
 			return err
 		}
+		anchor := *attempt.Anchor
+		if currentSource.Repository.ID != anchor.RepositoryID || currentSource.Repository.FullName != anchor.Repository || currentSource.Pull.Number != anchor.PullNumber || currentSource.Pull.HeadSHA != anchor.CandidateSHA || currentSource.Pull.BaseSHA != anchor.BaseSHA || currentSource.Pull.BaseRef != anchor.BaseRef || currentSource.ParentSHA != anchor.ParentSHA || currentSource.ParentPullNumber != anchor.ParentPullNumber {
+			return sourceHold("source_changed")
+		}
 		now := time.Now().UTC()
-		if !freshAllowanceObservation(record.Input.ObservedAt, now) || !freshAllowanceObservation(record.Input.Anchor.ObservedAt, now) || !freshAllowanceObservation(attempt.Anchor.ObservedAt, now) || record.Input.Observation.ResponseCreatedAt.Before(now.Add(-time.Minute)) || record.Input.Observation.ResponseCreatedAt.After(now.Add(5*time.Second)) {
+		if !freshAllowanceObservation(currentSource.ObservedAt, now) {
+			return sourceHold("source_stale")
+		}
+		// The admitted/allowance source timestamps remain immutable history. A
+		// fresh exact dispatch read supersedes their age, never the original
+		// availability response or the fetch that retained it.
+		if !freshAllowanceObservation(record.Input.ObservedAt, now) || record.Input.Observation.ResponseCreatedAt.Before(now.Add(-time.Minute)) || record.Input.Observation.ResponseCreatedAt.After(now.Add(5*time.Second)) {
 			return sourceHold("allowance_stale")
 		}
 		if ceiling := current.Policy.Policy.MaxReviewFiles; ceiling > 0 && record.Input.ChangedFiles > ceiling {
