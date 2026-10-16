@@ -33,6 +33,13 @@ jobs:
       - run: make check build
       - name: Smoke packaged binaries
         run: make smoke
+      - name: Install pinned Chromium
+        working-directory: webapp
+        timeout-minutes: 5
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Smoke embedded browser lifecycle
+        timeout-minutes: 2
+        run: make browser-smoke
       - name: Verify embedded browser assets match source
         run: |
           git diff --exit-code -- internal/webui/assets

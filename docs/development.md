@@ -19,6 +19,8 @@ make smoke
 
 `make check` type-checks the browser, runs its focused API/SSE tests, verifies Go formatting, runs Go tests with the race detector and `go vet`, and checks documentation. `make build` regenerates the embedded browser assets and produces CGO-free `fc`, `fcd` and `fcmcp` binaries. `make smoke` runs the built daemon, CLI and MCP binaries together in a private synthetic fixture, checking bootstrap, exact mutation replay, bounded stream cancellation, same-session reuse and restart. It never rebuilds the binaries; the [packaged smoke guide](../tools/packagedsmoke/README.md) owns its budgets and proof limits. The [MCP guide](mcp.md) describes its local stdio tool interface. CI also cross-compiles Windows amd64 and macOS arm64; compilation is not proof that those platforms' configuration or runtime behavior works. Go's `GO` and `GOFMT` Make variables can select a locally installed toolchain. The browser guide documents committed asset verification and direct Go builds without Node.
 
+On Linux, install the Chromium revision for the pinned Playwright dependency and run `make browser-smoke` for the separate actual embedded-browser lifecycle check. The [packaged smoke guide](../tools/packagedsmoke/README.md#embedded-browser-lifecycle) owns setup, budgets and limitations. CI runs both executable smoke targets after the build.
+
 ## Private profile file
 
 Use the local [profile setup commands](onboarding.md#private-agent-setup-commands) to create a private configuration and optional POSIX bound launcher. Setup returns the configured identity with `verified: false`; `doctor` performs the separate authenticated check. Creation requires explicit profile selectors, preserves existing files, and never provisions or reads credentials.

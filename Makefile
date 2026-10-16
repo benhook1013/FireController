@@ -1,7 +1,7 @@
 GO ?= go
 GOFMT ?= gofmt
 
-.PHONY: check fmt-check test build docs-check browser-check browser-build smoke
+.PHONY: check fmt-check test build docs-check browser-check browser-build smoke browser-smoke
 
 check: browser-check fmt-check test docs-check
 
@@ -29,3 +29,8 @@ browser-build:
 # Requires the actual outputs from make build; no implicit rebuild.
 smoke:
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+
+# Requires built fcd and the browser installed for webapp's pinned Playwright.
+browser-smoke:
+	@test "$$($(GO) env GOOS)" = linux || { printf '%s\n' 'browser-smoke requires Linux' >&2; exit 1; }
+	$(GO) test -tags=packaged_smoke -run '^TestPackagedBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
