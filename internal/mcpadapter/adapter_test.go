@@ -181,6 +181,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_snapshot": true, "inbox_events": true, "inbox_thread": true, "jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
 			expected["job_context"] = true
 			expected["wait_for_messages"] = true
+			expected["presentation_read"] = true
 			for _, name := range []string{"map_entry_create", "map_entry_replace", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history"} {
 				expected[name] = true
 			}
@@ -209,7 +210,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			writes["review_checkpoint_publish"], writes["review_checkpoint_recover"] = true, true
 			for _, tool := range tools.Tools {
 				if !expected[tool.Name] {
-					t.Fatal("unexpected tool")
+					t.Fatalf("unexpected tool %q", tool.Name)
 				}
 				delete(expected, tool.Name)
 				a := tool.Annotations
