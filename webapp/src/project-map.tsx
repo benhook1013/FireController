@@ -31,7 +31,7 @@ function MapList({ kind, archived }: { kind: ProjectMapKind | ''; archived: bool
 }
 
 export function MapEntryContent({ entry }: { entry: ProjectMapEntry }) {
-  return <section className="panel brief"><span className="badge neutral">{entry.kind === 'workstream' ? 'Workstream' : 'Return point'}{entry.archived ? ' · Archived' : ''}</span><h2>{entry.title}</h2><p className="item-meta">Revision {entry.revision}</p>
+  return <section className="panel brief"><span className="badge neutral">{entry.kind === 'workstream' ? 'Workstream' : 'Return point'}{entry.archived ? ' · Archived' : ''}</span><h2 className="map-entry-title">{entry.title}</h2><p className="item-meta">Revision {entry.revision}</p>
     <dl><dt>State</dt><dd className="full-text">{entry.state || 'No state supplied.'}</dd><dt>Description</dt><dd className="full-text">{entry.description || 'No description supplied.'}</dd>
       {entry.kind === 'workstream' ? <><dt>Where it stands</dt><dd className="full-text">{entry.where || 'Not supplied.'}</dd><dt>Next milestone</dt><dd className="full-text">{entry.next || 'Not supplied.'}</dd></> : <><dt>Reconsider when</dt><dd className="full-text">{entry.trigger || 'No trigger supplied.'}</dd></>}
     </dl>
