@@ -703,3 +703,10 @@ func TestSourceReadinessComparisonReadsOnlyLatestSourceMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestSourceReadinessSelectionUsesIndexedTargetOrder(t *testing.T) {
+	f := newAttemptFixture(t)
+	assertSourceAssessmentPlan(t, f, sourceReadinessLatestQuery, "")
+	partial := strings.Replace(sourceReadinessLatestQuery, "FROM review_source_refreshes", "FROM review_source_refreshes INDEXED BY review_source_refresh_readiness", 1)
+	assertSourceAssessmentPlan(t, f, partial, "review_source_refresh_readiness")
+}
