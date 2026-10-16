@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,7 +42,7 @@ func TestCheckpointWorkersShareSelectedReaderAndReleaseAllOwnership(t *testing.T
 	providers := map[string]reviewexec.CheckpointProvider{"source-capability": provider}
 	for round := int32(1); round <= 2; round++ {
 		ctx, cancel := context.WithCancel(t.Context())
-		done, err := startReviewWorkers(ctx, engine, drivers)
+		done, err := startReviewWorkers(ctx, engine, drivers, io.Discard)
 		if err != nil || done == nil {
 			cancel()
 			t.Fatal("checkpoint aggregate startup", err)
@@ -83,7 +84,7 @@ func TestCheckpointWorkersStartupFailureCancelsAndJoinsStartedSiblings(t *testin
 	driver := &sourceStartupObserver{sourceBoundDriver: sourceBoundDriver{reader: provider}, canceled: make(chan struct{}), release: make(chan struct{})}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done, err := startReviewWorkers(ctx, engine, map[string]reviewexec.Driver{"source-capability": driver})
+	done, err := startReviewWorkers(ctx, engine, map[string]reviewexec.Driver{"source-capability": driver}, io.Discard)
 	if err == nil || done == nil {
 		close(driver.release)
 		t.Fatal("checkpoint duplicate startup lost owned failure", err)
@@ -128,7 +129,7 @@ func TestCheckpointWorkersRuntimeFailureCancelsAndJoinsStartedSiblings(t *testin
 	driver := &sourceStartupObserver{sourceBoundDriver: sourceBoundDriver{reader: provider}, canceled: make(chan struct{}), release: make(chan struct{})}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done, err := startReviewWorkers(ctx, engine, map[string]reviewexec.Driver{"source-capability": driver})
+	done, err := startReviewWorkers(ctx, engine, map[string]reviewexec.Driver{"source-capability": driver}, io.Discard)
 	if err != nil || done == nil {
 		close(driver.release)
 		t.Fatal("worker startup", err)
@@ -179,7 +180,7 @@ func TestCheckpointWorkersDriverlessAndSourceOnlyDoNotAcquirePublicationLoop(t *
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			done, err := startReviewWorkers(ctx, engine, drivers)
+			done, err := startReviewWorkers(ctx, engine, drivers, io.Discard)
 			if err != nil || mode == "disabled" && done != nil || mode == "source-only" && done == nil {
 				t.Fatal("disabled/source-only lifecycle changed", err)
 			}
