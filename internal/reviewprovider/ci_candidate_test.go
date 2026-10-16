@@ -16,6 +16,7 @@ const candidateHead = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const candidateBase = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 const candidateMerge = "cccccccccccccccccccccccccccccccccccccccc"
 const candidatePullPath = "/repos/owner/repo/pulls/7"
+const candidateBranchPath = "/repos/owner/repo/branches/main"
 const candidateCommitPath = "/repos/owner/repo/git/commits/" + candidateMerge
 
 func candidatePullFixture() map[string]any {
@@ -35,6 +36,10 @@ func candidateCommitFixture(parents ...string) map[string]any {
 	return map[string]any{"sha": candidateMerge, "parents": rows, "message": "PRIVATE_COMMIT_MESSAGE"}
 }
 
+func candidateBranchFixture() map[string]any {
+	return map[string]any{"name": "main", "commit": map[string]any{"sha": candidateBase}}
+}
+
 func TestPullCICandidateVerifiedParentSetAndForkIdentity(t *testing.T) {
 	for _, reverse := range []bool{false, true} {
 		var paths []string
@@ -49,6 +54,8 @@ func TestPullCICandidateVerifiedParentSetAndForkIdentity(t *testing.T) {
 			switch r.URL.Path {
 			case candidatePullPath:
 				_ = json.NewEncoder(w).Encode(candidatePullFixture())
+			case candidateBranchPath:
+				_ = json.NewEncoder(w).Encode(candidateBranchFixture())
 			case candidateCommitPath:
 				parents := []string{candidateBase, candidateHead}
 				if reverse {
@@ -63,11 +70,11 @@ func TestPullCICandidateVerifiedParentSetAndForkIdentity(t *testing.T) {
 		before := time.Now().UTC()
 		got, err := testGitHub(server, "synthetic-secret").PullCICandidate(t.Context(), "owner/repo", 20, 7, candidateHead)
 		server.Close()
-		if err != nil || got.State != "complete" || got.Reason != "" || got.RepositoryID != 20 || got.Repository != "owner/repo" || got.PullNumber != 7 || got.HeadSHA != candidateHead || got.BaseSHA != candidateBase || got.BaseRef != "main" || got.MergeSHA != candidateMerge || got.MergeState != "verified" || got.ObservedAt.Before(before) || got.ObservedAt.After(time.Now().UTC()) || got.ObservedAt.Location() != time.UTC {
+		if err != nil || got.State != "complete" || got.Reason != "" || got.RepositoryID != 20 || got.Repository != "owner/repo" || got.PullNumber != 7 || got.HeadSHA != candidateHead || got.BaseSHA != candidateBase || got.MergeBaseParentSHA != candidateBase || got.BaseRef != "main" || got.MergeSHA != candidateMerge || got.MergeState != "verified" || got.ObservedAt.Before(before) || got.ObservedAt.After(time.Now().UTC()) || got.ObservedAt.Location() != time.UTC {
 			t.Fatal("candidate identity or parent set lost", got, err)
 		}
 		mu.Lock()
-		if len(paths) != 3 || paths[0] != candidatePullPath || paths[1] != candidateCommitPath || paths[2] != candidatePullPath {
+		if len(paths) != 5 || paths[0] != candidatePullPath || paths[1] != candidateBranchPath || paths[2] != candidateCommitPath || paths[3] != candidateBranchPath || paths[4] != candidatePullPath {
 			t.Fatal("candidate observation order changed", paths)
 		}
 		mu.Unlock()
@@ -128,6 +135,10 @@ func TestPullCICandidateValidTargetMovement(t *testing.T) {
 				var calls, pulls atomic.Int64
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					calls.Add(1)
+					if r.URL.Path == candidateBranchPath {
+						_ = json.NewEncoder(w).Encode(candidateBranchFixture())
+						return
+					}
 					var body any = candidateCommitFixture(candidateBase, candidateHead)
 					if r.URL.Path == candidatePullPath {
 						p := candidatePullFixture()
@@ -145,7 +156,7 @@ func TestPullCICandidateValidTargetMovement(t *testing.T) {
 				got, err := testGitHub(server, "").PullCICandidate(t.Context(), "owner/repo", 20, 7, candidateHead)
 				want, count := "ci_target_changed", int64(1)
 				if stage == "final" {
-					want, count = "ci_candidate_changed", 3
+					want, count = "ci_candidate_changed", 5
 				}
 				if err != nil || got.State != "unproven" || got.Reason != want || got.MergeSHA != "" || calls.Load() != count {
 					t.Fatal("changed target granted candidate proof", got, err, calls.Load())
@@ -157,6 +168,10 @@ func TestPullCICandidateValidTargetMovement(t *testing.T) {
 		t.Run("final/"+mode, func(t *testing.T) {
 			var pulls atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == candidateBranchPath {
+					_ = json.NewEncoder(w).Encode(candidateBranchFixture())
+					return
+				}
 				var body any = candidateCommitFixture(candidateBase, candidateHead)
 				if r.URL.Path == candidatePullPath {
 					p := candidatePullFixture()
@@ -194,6 +209,10 @@ func TestPullCICandidateWrongMergeParentsNeverVerify(t *testing.T) {
 		var calls atomic.Int64
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			calls.Add(1)
+			if r.URL.Path == candidateBranchPath {
+				_ = json.NewEncoder(w).Encode(candidateBranchFixture())
+				return
+			}
 			var body any = candidatePullFixture()
 			if r.URL.Path == candidateCommitPath {
 				body = candidateCommitFixture(parents...)
@@ -202,7 +221,7 @@ func TestPullCICandidateWrongMergeParentsNeverVerify(t *testing.T) {
 		}))
 		got, err := testGitHub(server, "").PullCICandidate(t.Context(), "owner/repo", 20, 7, candidateHead)
 		server.Close()
-		if err != nil || got.State != "unproven" || got.Reason != "ci_merge_identity_unproven" || got.MergeSHA != "" || calls.Load() != 3 {
+		if err != nil || got.State != "unproven" || got.Reason != "ci_merge_identity_unproven" || got.MergeSHA != "" || calls.Load() != 5 {
 			t.Fatal("unbound parent inventory verified", got, err, calls.Load())
 		}
 	}
@@ -218,6 +237,10 @@ func TestPullCICandidateEqualHeadBaseCannotVerifyDuplicateParents(t *testing.T) 
 			pull := candidatePullFixture()
 			pull["base"].(map[string]any)["sha"] = candidateHead
 			body = pull
+		case candidateBranchPath:
+			branch := candidateBranchFixture()
+			branch["commit"].(map[string]any)["sha"] = candidateHead
+			body = branch
 		case candidateCommitPath:
 			body = candidateCommitFixture(candidateHead, candidateHead)
 		default:
@@ -229,7 +252,7 @@ func TestPullCICandidateEqualHeadBaseCannotVerifyDuplicateParents(t *testing.T) 
 	}))
 	defer server.Close()
 	got, err := testGitHub(server, "").PullCICandidate(t.Context(), "owner/repo", 20, 7, candidateHead)
-	if err != nil || got.State != "unproven" || got.Reason != "ci_merge_identity_unproven" || got.MergeState != "unproven" || got.MergeSHA != "" || calls.Load() != 3 {
+	if err != nil || got.State != "unproven" || got.Reason != "ci_merge_identity_unproven" || got.MergeState != "unproven" || got.MergeSHA != "" || calls.Load() != 5 {
 		t.Fatal("duplicate parents granted merge proof or skipped final PR read", got, err, calls.Load())
 	}
 }
@@ -269,6 +292,10 @@ func TestPullCICandidateMalformedFieldsFailClosed(t *testing.T) {
 				calls.Add(1)
 				stage := "commit"
 				body := candidateCommitFixture(candidateBase, candidateHead)
+				if r.URL.Path == candidateBranchPath {
+					stage = "branch"
+					body = candidateBranchFixture()
+				}
 				if r.URL.Path == candidatePullPath {
 					body = candidatePullFixture()
 					stage = "first"
@@ -285,10 +312,10 @@ func TestPullCICandidateMalformedFieldsFailClosed(t *testing.T) {
 			got, err := testGitHub(server, "synthetic-secret").PullCICandidate(t.Context(), "owner/repo", 20, 7, candidateHead)
 			count := int64(1)
 			if test.stage == "commit" {
-				count = 2
+				count = 3
 			}
 			if test.stage == "final" {
-				count = 3
+				count = 5
 			}
 			if !hasCode(err, "provider_invalid_response") || got.State != "unproven" || got.MergeSHA != "" || calls.Load() != count {
 				t.Fatal("malformed candidate accepted or continued reads", got, err, calls.Load())
@@ -306,6 +333,10 @@ func TestPullCICandidatePendingConflictMovementAndWrongCommitIdentity(t *testing
 			var calls, pulls atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
+				if r.URL.Path == candidateBranchPath {
+					_ = json.NewEncoder(w).Encode(candidateBranchFixture())
+					return
+				}
 				body := candidateCommitFixture(candidateBase, candidateHead)
 				if r.URL.Path == candidatePullPath {
 					body = candidatePullFixture()
@@ -331,7 +362,7 @@ func TestPullCICandidatePendingConflictMovementAndWrongCommitIdentity(t *testing
 			got, err := testGitHub(server, "").PullCICandidate(t.Context(), "owner/repo", 20, 7, candidateHead)
 			want, count := "ci_candidate_changed", int64(2)
 			if mode == "wrong_commit_sha" {
-				want, count = "ci_merge_identity_unproven", 3
+				want, count = "ci_merge_identity_unproven", 5
 			}
 			if err != nil || got.State != "unproven" || got.Reason != want || got.MergeSHA != "" || calls.Load() != count {
 				t.Fatal("changed or unbound merge candidate accepted", got, err, calls.Load())
@@ -347,6 +378,8 @@ func TestPullCICandidateRejectsInvalidSelectorsBeforeHTTPAndAcceptsRepositoryCas
 		var body any = candidatePullFixture()
 		switch strings.ToLower(r.URL.Path) {
 		case candidatePullPath:
+		case candidateBranchPath:
+			body = candidateBranchFixture()
 		case candidateCommitPath:
 			body = candidateCommitFixture(candidateHead, candidateBase)
 		default:
@@ -382,13 +415,13 @@ func TestPullCICandidateRejectsInvalidSelectorsBeforeHTTPAndAcceptsRepositoryCas
 		t.Fatal("nil adapter accepted")
 	}
 	got, err := g.PullCICandidate(t.Context(), "OWNER/REPO", 20, 7, candidateHead)
-	if err != nil || got.State != "complete" || got.Repository != "owner/repo" || got.RepositoryID != 20 || calls.Load() != 3 {
+	if err != nil || got.State != "complete" || got.Repository != "owner/repo" || got.RepositoryID != 20 || calls.Load() != 5 {
 		t.Fatal("canonical repository case binding failed", got, err, calls.Load())
 	}
 }
 
 func TestPullCICandidateTransportFailureAndStrictJSON(t *testing.T) {
-	for _, stage := range []int64{1, 2, 3} {
+	for _, stage := range []int64{1, 2, 3, 4, 5} {
 		for _, mode := range []string{"unauthorized", "forbidden", "not_found", "unavailable", "redirect", "duplicate", "alias"} {
 			t.Run(string(rune('0'+stage))+"/"+mode, func(t *testing.T) {
 				var calls atomic.Int64
@@ -397,7 +430,7 @@ func TestPullCICandidateTransportFailureAndStrictJSON(t *testing.T) {
 					if r.Method != "GET" || r.URL.RawQuery != "" {
 						t.Error("changed candidate method or selectors")
 					}
-					if r.URL.Path != candidatePullPath && r.URL.Path != candidateCommitPath {
+					if r.URL.Path != candidatePullPath && r.URL.Path != candidateCommitPath && r.URL.Path != candidateBranchPath {
 						t.Error("foreign endpoint requested", r.URL.Path)
 					}
 					if n == stage {
@@ -419,16 +452,24 @@ func TestPullCICandidateTransportFailureAndStrictJSON(t *testing.T) {
 							p := candidatePullFixture()
 							p["Merge_commit_sha"] = p["merge_commit_sha"]
 							delete(p, "merge_commit_sha")
-							if stage == 2 {
+							if r.URL.Path == candidateCommitPath {
 								p = candidateCommitFixture(candidateBase, candidateHead)
 								p["SHA"] = p["sha"]
 								delete(p, "sha")
+							}
+							if r.URL.Path == candidateBranchPath {
+								p = candidateBranchFixture()
+								p["Name"] = p["name"]
+								delete(p, "name")
 							}
 							_ = json.NewEncoder(w).Encode(p)
 						}
 						return
 					}
 					body := candidatePullFixture()
+					if r.URL.Path == candidateBranchPath {
+						body = candidateBranchFixture()
+					}
 					if r.URL.Path == candidateCommitPath {
 						body = candidateCommitFixture(candidateBase, candidateHead)
 					}
@@ -446,10 +487,18 @@ func TestPullCICandidateTransportFailureAndStrictJSON(t *testing.T) {
 				if mode == "duplicate" || mode == "alias" {
 					code = "provider_invalid_response"
 				}
-				if !hasCode(err, code) || got.State != "unproven" || got.MergeSHA != "" || calls.Load() != stage {
+				expectedError := hasCode(err, code)
+				if mode == "not_found" && (stage == 2 || stage == 4) {
+					expectedError = err == nil
+				}
+				wantCalls := stage
+				if mode == "not_found" && stage == 4 {
+					wantCalls = 5
+				} // Preserve the final PR reread after an unknown closing branch.
+				if !expectedError || got.State != "unproven" || got.MergeSHA != "" || got.MergeBaseParentSHA != "" || calls.Load() != wantCalls {
 					t.Fatal("failed candidate read granted proof or retried", got, err, calls.Load())
 				}
-				if strings.Contains(err.Error(), "synthetic-secret") || strings.Contains(err.Error(), "private.invalid") {
+				if err != nil && (strings.Contains(err.Error(), "synthetic-secret") || strings.Contains(err.Error(), "private.invalid")) {
 					t.Fatal("private diagnostics leaked", err)
 				}
 			})
@@ -466,6 +515,10 @@ func TestPullCICandidateSharedDeadlineAndCancellation(t *testing.T) {
 		if block.Load() && r.URL.Path == candidateCommitPath {
 			<-r.Context().Done()
 			closed <- struct{}{}
+			return
+		}
+		if r.URL.Path == candidateBranchPath {
+			_ = json.NewEncoder(w).Encode(candidateBranchFixture())
 			return
 		}
 		body := candidatePullFixture()
@@ -489,7 +542,7 @@ func TestPullCICandidateSharedDeadlineAndCancellation(t *testing.T) {
 	})
 	before := time.Now()
 	got, err := g.PullCICandidate(t.Context(), "owner/repo", 20, 7, candidateHead)
-	if err != nil || got.State != "complete" || len(deadlines) != 3 {
+	if err != nil || got.State != "complete" || len(deadlines) != 5 {
 		t.Fatal("candidate observation failed", got, err, deadlines)
 	}
 	for _, d := range deadlines {
@@ -501,7 +554,7 @@ func TestPullCICandidateSharedDeadlineAndCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
 	defer cancel()
 	got, err = g.PullCICandidate(ctx, "owner/repo", 20, 7, candidateHead)
-	if !hasCode(err, "provider_unavailable") || got.State != "unproven" || got.MergeSHA != "" || calls.Load() != 5 {
+	if !hasCode(err, "provider_unavailable") || got.State != "unproven" || got.MergeSHA != "" || calls.Load() != 8 {
 		t.Fatal("cancelled candidate advanced or retried", got, err, calls.Load())
 	}
 	select {
@@ -511,7 +564,7 @@ func TestPullCICandidateSharedDeadlineAndCancellation(t *testing.T) {
 	}
 	stopped, stop := context.WithCancel(t.Context())
 	stop()
-	if _, err = g.PullCICandidate(stopped, "owner/repo", 20, 7, candidateHead); err == nil || calls.Load() != 5 {
+	if _, err = g.PullCICandidate(stopped, "owner/repo", 20, 7, candidateHead); err == nil || calls.Load() != 8 {
 		t.Fatal("cancelled parent made HTTP request", err, calls.Load())
 	}
 }
@@ -523,6 +576,9 @@ func TestPullCICandidateSharedByteBudget(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			calls.Add(1)
 			body := candidatePullFixture()
+			if r.URL.Path == candidateBranchPath {
+				body = candidateBranchFixture()
+			}
 			if r.URL.Path == candidateCommitPath {
 				body = candidateCommitFixture(candidateBase, candidateHead)
 			}
@@ -538,5 +594,214 @@ func TestPullCICandidateSharedByteBudget(t *testing.T) {
 		if !hasCode(err, "provider_invalid_response") || got.State != "unproven" || got.MergeSHA != "" || calls.Load() != wantCalls {
 			t.Fatal("response/aggregate byte limit granted candidate proof", got, err, calls.Load())
 		}
+	}
+}
+
+func TestPullCICandidateStalePullBaseUsesIndependentBranch(t *testing.T) {
+	const tip = "dddddddddddddddddddddddddddddddddddddddd"
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.EscapedPath())
+		if r.Method != http.MethodGet || r.URL.RawQuery != "" {
+			t.Error("unscoped candidate request")
+		}
+		switch r.URL.Path {
+		case candidatePullPath:
+			_ = json.NewEncoder(w).Encode(candidatePullFixture())
+		case "/repos/owner/repo/branches/main":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "main", "commit": map[string]any{"sha": tip}})
+		case candidateCommitPath:
+			_ = json.NewEncoder(w).Encode(candidateCommitFixture(candidateHead, tip))
+		default:
+			t.Error("unselected candidate resource", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	got, err := testGitHub(server, "").PullCICandidate(t.Context(), "owner/repo", 20, 7, candidateHead)
+	encoded, _ := json.Marshal(got)
+	var wire map[string]any
+	_ = json.Unmarshal(encoded, &wire)
+	if err != nil || got.State != "complete" || got.MergeState != "verified" || got.BaseSHA != candidateBase || got.MergeBaseParentSHA != tip || wire["merge_base_parent_sha"] != tip {
+		t.Fatal("stale PR base did not retain its separate verified live base parent", got, err, wire)
+	}
+	want := []string{candidatePullPath, "/repos/owner/repo/branches/main", candidateCommitPath, "/repos/owner/repo/branches/main", candidatePullPath}
+	if len(paths) != len(want) {
+		t.Fatal("candidate read scope/order", paths)
+	}
+	for i := range want {
+		if paths[i] != want[i] {
+			t.Fatal("candidate read scope/order", paths)
+		}
+	}
+}
+
+func TestPullCICandidateBranchIdentityAndShape(t *testing.T) {
+	for _, closing := range []bool{false, true} {
+		for _, mode := range []string{"wrong_name", "moving_tip", "old_base_parent", "missing_name", "null_name", "missing_commit", "null_commit", "missing_sha", "null_sha", "uppercase_sha", "bad_sha"} {
+			t.Run(map[bool]string{false: "opening", true: "closing"}[closing]+"/"+mode, func(t *testing.T) {
+				var calls, branches atomic.Int64
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls.Add(1)
+					if r.Method != http.MethodGet || r.URL.RawQuery != "" {
+						t.Error("unscoped candidate request")
+					}
+					body := candidatePullFixture()
+					switch r.URL.Path {
+					case candidatePullPath:
+					case candidateCommitPath:
+						body = candidateCommitFixture(candidateBase, candidateHead)
+					case candidateBranchPath:
+						body = candidateBranchFixture()
+						n := branches.Add(1)
+						if mode == "old_base_parent" {
+							body["commit"].(map[string]any)["sha"] = strings.Repeat("d", 40)
+						}
+						if closing && n == 2 || !closing && n == 1 {
+							switch mode {
+							case "wrong_name":
+								body["name"] = "foreign"
+							case "moving_tip":
+								body["commit"].(map[string]any)["sha"] = strings.Repeat("d", 40)
+							case "missing_name":
+								delete(body, "name")
+							case "null_name":
+								body["name"] = nil
+							case "missing_commit":
+								delete(body, "commit")
+							case "null_commit":
+								body["commit"] = nil
+							case "missing_sha":
+								delete(body["commit"].(map[string]any), "sha")
+							case "null_sha":
+								body["commit"].(map[string]any)["sha"] = nil
+							case "uppercase_sha":
+								body["commit"].(map[string]any)["sha"] = strings.Repeat("B", 40)
+							case "bad_sha":
+								body["commit"].(map[string]any)["sha"] = "PRIVATE_BAD_SHA"
+							}
+						}
+					default:
+						t.Error("unselected candidate resource", r.URL.Path)
+						http.NotFound(w, r)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(body)
+				}))
+				defer server.Close()
+				got, err := testGitHub(server, "").PullCICandidate(t.Context(), "owner/repo", 20, 7, candidateHead)
+				malformed := mode != "wrong_name" && mode != "moving_tip" && mode != "old_base_parent"
+				wantCalls := int64(5)
+				if !closing && (malformed || mode == "wrong_name") {
+					wantCalls = 2
+				} else if closing && malformed {
+					wantCalls = 4
+				}
+				if got.State != "unproven" || got.MergeSHA != "" || got.MergeBaseParentSHA != "" || got.Reason != "ci_merge_identity_unproven" || calls.Load() != wantCalls || malformed && !hasCode(err, "provider_invalid_response") || !malformed && err != nil {
+					t.Fatal("unbound branch granted proof or malformed branch changed failure", got, err, calls.Load())
+				}
+				if err != nil && strings.Contains(err.Error(), "PRIVATE") {
+					t.Fatal("private branch data leaked", err)
+				}
+			})
+		}
+	}
+}
+
+func TestPullCICandidateEscapesOnlySelectedBaseBranch(t *testing.T) {
+	const ref = "release/v2+fix%25"
+	const escaped = "/repos/owner/repo/branches/release%2Fv2+fix%2525"
+	var branches atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.RawQuery != "" {
+			t.Error("candidate escaped into another selector")
+		}
+		body := candidatePullFixture()
+		switch r.URL.EscapedPath() {
+		case candidatePullPath:
+			body["base"].(map[string]any)["ref"] = ref
+		case candidateCommitPath:
+			body = candidateCommitFixture(candidateBase, candidateHead)
+		case escaped:
+			branches.Add(1)
+			body = candidateBranchFixture()
+			body["name"] = ref
+		default:
+			t.Error("escaped branch changed resource", r.URL.EscapedPath())
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(body)
+	}))
+	defer server.Close()
+	got, err := testGitHub(server, "").PullCICandidate(t.Context(), "owner/repo", 20, 7, candidateHead)
+	if err != nil || got.State != "complete" || got.BaseRef != ref || got.MergeBaseParentSHA != candidateBase || branches.Load() != 2 {
+		t.Fatal("selected branch was not independently bound", got, err, branches.Load())
+	}
+}
+
+func TestPullCICandidateBranchCancellationStopsSharedRead(t *testing.T) {
+	for _, closing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "opening", true: "closing"}[closing], func(t *testing.T) {
+			var calls, branches atomic.Int64
+			entered := make(chan struct{})
+			stopped := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				body := candidatePullFixture()
+				switch r.URL.Path {
+				case candidatePullPath:
+				case candidateCommitPath:
+					body = candidateCommitFixture(candidateBase, candidateHead)
+				case candidateBranchPath:
+					n := branches.Add(1)
+					if !closing || n == 2 {
+						close(entered)
+						<-r.Context().Done()
+						close(stopped)
+						return
+					}
+					body = candidateBranchFixture()
+				default:
+					t.Error("unselected resource", r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(body)
+			}))
+			defer server.Close()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := make(chan struct{})
+			var got CICandidate
+			var err error
+			go func() {
+				got, err = testGitHub(server, "").PullCICandidate(ctx, "owner/repo", 20, 7, candidateHead)
+				close(done)
+			}()
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("branch read did not start")
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("cancelled branch did not return")
+			}
+			select {
+			case <-stopped:
+			case <-time.After(time.Second):
+				t.Fatal("cancelled branch HTTP survived")
+			}
+			wantCalls := int64(2)
+			if closing {
+				wantCalls = 4
+			}
+			if !hasCode(err, "provider_unavailable") || got.State != "unproven" || got.MergeSHA != "" || got.MergeBaseParentSHA != "" || calls.Load() != wantCalls {
+				t.Fatal("cancelled branch advanced or retried", got, err, calls.Load())
+			}
+		})
 	}
 }
