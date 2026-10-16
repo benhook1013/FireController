@@ -309,7 +309,7 @@ func (e *Engine) observeCheckpoint(action, owner context.Context, r checkpointRe
 		}
 		return e.finishCheckpoint(owner, r, "uncertain", "recovery_unavailable", false, nil)
 	}
-	comments, err := p.IssueComments(action, repo.FullName, r.Payload.PullNumber)
+	comments, err := p.CheckpointComments(action, repo.FullName, r.Payload.PullNumber, r.Intent.Actor)
 	if owner.Err() != nil {
 		return nil
 	}

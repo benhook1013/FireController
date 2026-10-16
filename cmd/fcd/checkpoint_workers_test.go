@@ -29,7 +29,7 @@ func (p *checkpointWorkerProvider) PostIssueComment(context.Context, string, int
 	p.checkpointCalls.Add(1)
 	return reviewprovider.IssueComment{}, errors.New("unexpected idle checkpoint post")
 }
-func (p *checkpointWorkerProvider) IssueComments(context.Context, string, int64) ([]reviewprovider.IssueComment, error) {
+func (p *checkpointWorkerProvider) CheckpointComments(context.Context, string, int64, reviewprovider.Author) ([]reviewprovider.IssueComment, error) {
 	p.checkpointCalls.Add(1)
 	return nil, errors.New("unexpected idle checkpoint history read")
 }

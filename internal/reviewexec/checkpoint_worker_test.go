@@ -83,7 +83,7 @@ func (p *checkpointFake) PostIssueComment(ctx context.Context, repo string, pr i
 	}
 	return c, p.postError
 }
-func (p *checkpointFake) IssueComments(ctx context.Context, repo string, pr int64) ([]reviewprovider.IssueComment, error) {
+func (p *checkpointFake) CheckpointComments(ctx context.Context, repo string, pr int64, _ reviewprovider.Author) ([]reviewprovider.IssueComment, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.reads++
