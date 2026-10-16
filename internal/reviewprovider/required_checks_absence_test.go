@@ -98,20 +98,55 @@ func TestRequiredCheckAuthorityAbsenceStillRequiresCompleteApplicableRules(t *te
 	}
 }
 
+func TestRequiredCheckAuthorityProtectedBranchLeavesClassicAbsenceUnproven(t *testing.T) {
+	for _, branch := range []string{"main", "codex/topic-one"} {
+		for _, summary := range []string{"", `,"protection":{"enabled":false,"required_status_checks":{"contexts":[],"checks":[]}}`} {
+			t.Run(branch+summary, func(t *testing.T) {
+				selected := "/repos/owner/repo/branches/" + url.PathEscape(branch)
+				var paths []string
+				s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					paths = append(paths, r.URL.EscapedPath())
+					if r.Method != http.MethodGet || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer synthetic-authority-token" {
+						t.Error("ambiguous classic absence changed request scope")
+					}
+					w.Header().Set("Content-Type", "application/json")
+					switch r.URL.EscapedPath() {
+					case selected + "/protection":
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = fmt.Fprint(w, `{"message":"PRIVATE synthetic-authority-token"}`)
+					case selected:
+						_, _ = fmt.Fprintf(w, `{"name":%q,"protected":true,"private_metadata":"PRIVATE synthetic-authority-token"%s}`, branch, summary)
+					default:
+						t.Error("ambiguous classic absence read rules or unrelated scope", r.URL.EscapedPath())
+						w.WriteHeader(http.StatusInternalServerError)
+					}
+				}))
+				defer s.Close()
+				result, err := testGitHub(s, "synthetic-authority-token").RequiredCheckAuthority(t.Context(), "owner/repo", branch)
+				if err != nil || result.State != "unproven" || result.Reason != "classic_absence_unproven_ruleset_branch" || result.ObservedAt.IsZero() || result.Strict || result.Checks != nil || result.Repository != "owner/repo" || result.Branch != branch || !reflect.DeepEqual(paths, []string{selected + "/protection", selected}) {
+					t.Fatalf("protected summary did not retain explicit ambiguous classic absence: result=%+v err=%v paths=%v", result, err, paths)
+				}
+				if exposed := fmt.Sprint(result, err); strings.Contains(exposed, "PRIVATE") || strings.Contains(exposed, "synthetic-authority-token") {
+					t.Fatal("ambiguous classic absence exposed private provider text")
+				}
+			})
+		}
+	}
+}
+
 func TestRequiredCheckAuthorityAbsenceRefusesUnknownBranchProtection(t *testing.T) {
 	for name, body := range map[string]string{
-		"protected":                    `{"name":"main","protected":true}`,
-		"protected_with_empty_summary": `{"name":"main","protected":true,"protection":{"enabled":false,"required_status_checks":{"contexts":[],"checks":[]}}}`,
-		"absent_protected":             `{"name":"main"}`,
-		"null_protected":               `{"name":"main","protected":null}`,
-		"wrong_type":                   `{"name":"main","protected":"false"}`,
-		"wrong_name":                   `{"name":"other","protected":false}`,
-		"case_changed_name":            `{"name":"Main","protected":false}`,
-		"absent_name":                  `{"protected":false}`,
-		"null_name":                    `{"name":null,"protected":false}`,
-		"duplicate_protected":          `{"name":"main","protected":true,"protected":false}`,
-		"alias_protected":              `{"name":"main","Protected":false}`,
-		"invalid_json":                 `{"name":"main",`,
+		"wrong_protected_name": `{"name":"other","protected":true}`,
+		"absent_protected":     `{"name":"main"}`,
+		"null_protected":       `{"name":"main","protected":null}`,
+		"wrong_type":           `{"name":"main","protected":"false"}`,
+		"wrong_name":           `{"name":"other","protected":false}`,
+		"case_changed_name":    `{"name":"Main","protected":false}`,
+		"absent_name":          `{"protected":false}`,
+		"null_name":            `{"name":null,"protected":false}`,
+		"duplicate_protected":  `{"name":"main","protected":true,"protected":false}`,
+		"alias_protected":      `{"name":"main","Protected":false}`,
+		"invalid_json":         `{"name":"main",`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			var calls atomic.Int64

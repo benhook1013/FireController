@@ -173,7 +173,8 @@ func (g *GitHub) RequiredCheckAuthority(ctx context.Context, repository, branch 
 		}
 		// A protection 404 alone cannot distinguish absence from missing access.
 		// The exact existing branch must positively report that it is unprotected.
-		// Protected summaries cannot replace full classic strictness/app identity.
+		// A protected summary can also describe rulesets, so it cannot establish
+		// classic absence or replace full classic strictness/app identity.
 		var branchState struct {
 			Name      string `json:"name,required"`
 			Protected *bool  `json:"protected,required"`
@@ -181,8 +182,13 @@ func (g *GitHub) RequiredCheckAuthority(ctx context.Context, repository, branch 
 		if branchErr := g.getJSON(ctx, path+"/branches/"+selected, nil, &branchState); branchErr != nil {
 			return result, branchErr
 		}
-		if branchState.Name != branch || branchState.Protected == nil || *branchState.Protected {
+		if branchState.Name != branch || branchState.Protected == nil {
 			return result, err
+		}
+		if *branchState.Protected {
+			result.Reason = "classic_absence_unproven_ruleset_branch"
+			result.ObservedAt = time.Now().UTC()
+			return result, nil
 		}
 	}
 	var rules []githubBranchRule
