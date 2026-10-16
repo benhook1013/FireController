@@ -272,8 +272,10 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	if wait != nil {
 		r.Header.Set("Prefer", "wait="+strconv.Itoa(wait.seconds))
 	}
-	if mutation {
+	if len(body) != 0 {
 		r.Header.Set("Content-Type", "application/json")
+	}
+	if mutation {
 		r.Header.Set("Idempotency-Key", key)
 	}
 	if scoped {

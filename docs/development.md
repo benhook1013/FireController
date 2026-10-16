@@ -94,6 +94,8 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc inbox list` | Bound worker's compact message previews; optional unread/unacknowledged filters. |
 | `fc inbox thread ID` | Explicit bounded conversation page with full bodies. |
 
+Administrator setup also supports [prepared review import](review-import.md) through `fc reviews import-preview --file ABSOLUTE_PATH` and `fc reviews import-apply --file ABSOLUTE_PATH --preview SHA256 --key KEY`. Preview is provider-free and read-only; apply uses the existing guarded observation receipt. These commands require deliberately selected administrator access rather than an ordinary worker credential.
+
 Review queue/run lists accept `--limit` and `--cursor`; omitted limits select five entries. Review selectors validate before credentials or HTTP, and reads perform no provider refresh or review execution. Source timestamps and completeness remain observations, not readiness.
 
 List/history/thread reads accept `--limit` and `--cursor`; jobs accept `--status`, and `jobs list` also accepts `--worker`. Assigned jobs are a compact assignment list, without primary-job, checkpoint or full resume-context claims. Reads never change seen/ack state, job status or configuration. Unknown flags, repeated options and unsupported commands fail before credential loading or network work.

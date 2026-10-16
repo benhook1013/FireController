@@ -283,7 +283,8 @@ func appendObservation(store *core.Store, w http.ResponseWriter, r *http.Request
 		core.WriteError(w, err)
 		return
 	}
-	if err := validateObservation(&req); err != nil {
+	requestBytes, err := normalizeObservation(&req)
+	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -292,56 +293,34 @@ func appendObservation(store *core.Store, w http.ResponseWriter, r *http.Request
 		core.WriteError(w, err)
 		return
 	}
-	requestBytes, err := json.Marshal(req)
-	if err != nil || len(requestBytes) > maxObservationBytes {
-		core.WriteError(w, validationError("The normalized observation exceeds 256 KiB."))
+	result, err := recordObservation(r.Context(), store, scope, key, req, requestBytes)
+	if err != nil {
+		core.WriteError(w, err)
 		return
 	}
+	core.WriteJSON(w, http.StatusCreated, json.RawMessage(result))
+}
+
+// normalizeObservation is the canonical normalization used by direct and guided
+// imports. In particular, retain source text, timestamp spelling and array order.
+func normalizeObservation(req *ObservationRequest) ([]byte, error) {
+	if err := validateObservation(req); err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(req)
+	if err != nil || len(body) > maxObservationBytes {
+		return nil, validationError("The normalized observation exceeds 256 KiB.")
+	}
+	return body, nil
+}
+
+func recordObservation(ctx context.Context, store *core.Store, scope core.Scope, key string, req ObservationRequest, requestBytes []byte) (json.RawMessage, error) {
 	payloadHash := sha256.Sum256(requestBytes)
-	result, err := store.Mutate(r.Context(), scope, core.Mutation{
+	return store.Mutate(ctx, scope, core.Mutation{
 		Operation: "reviews.observe", Target: "workspace", Key: key, Request: req,
 	}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		var repositoryID int64
-		if err := tx.QueryRowContext(ctx, "SELECT github_repository_id FROM projects WHERE id=?", scope.ProjectID).Scan(&repositoryID); err != nil {
-			return nil, err
-		}
-		if repositoryID != req.RepositoryID {
-			return nil, validationError("repository_id does not match the configured project repository.")
-		}
-		currentRevision, currentSnapshot, currentObserved := int64(0), "", ""
-		err := tx.QueryRowContext(ctx, `SELECT w.revision,w.snapshot_id,s.observed_at
-			FROM review_workspace w JOIN review_snapshots s ON s.project_id=w.project_id AND s.snapshot_id=w.snapshot_id
-			WHERE w.project_id=?`, scope.ProjectID).Scan(&currentRevision, &currentSnapshot, &currentObserved)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			currentRevision, currentSnapshot, currentObserved = 0, "", ""
-		}
-		if *req.ExpectedRevision != currentRevision {
-			return nil, &core.Error{Code: "revision_conflict", Message: "The review observation revision changed.", Status: http.StatusConflict, Details: map[string]int64{"current_revision": currentRevision}}
-		}
-		if currentRevision == int64(^uint64(0)>>1) {
-			return nil, core.Fail("revision_exhausted", "The review workspace revision cannot advance further.", http.StatusConflict)
-		}
-		observed, _ := parseTimestamp(req.ObservedAt, true)
-		if currentObserved != "" {
-			previous, parseErr := parseTimestamp(currentObserved, true)
-			if parseErr != nil {
-				return nil, core.Fail("storage_unavailable", "The stored review observation timestamp is invalid.", http.StatusInternalServerError)
-			}
-			if observed.Before(previous) {
-				return nil, core.Fail("stale_observation", "The observation is older than the current project snapshot.", http.StatusConflict)
-			}
-		}
-		previousPulls, err := pullNumbersForSnapshot(ctx, tx, scope.ProjectID, currentSnapshot)
+		currentRevision, err := admitObservation(ctx, tx, scope.ProjectID, req)
 		if err != nil {
-			return nil, err
-		}
-		if err := validateRetirements(previousPulls, req.Queue, req.Retired); err != nil {
-			return nil, err
-		}
-		if err := validateFinalizedCounts(ctx, tx, scope.ProjectID, req.Source, req.Queue); err != nil {
 			return nil, err
 		}
 		nextRevision := currentRevision + 1
@@ -375,11 +354,55 @@ func appendObservation(store *core.Store, w http.ResponseWriter, r *http.Request
 		}
 		return Receipt{ID: snapshotID, Revision: nextRevision, Outcome: "observed"}, nil
 	})
-	if err != nil {
-		core.WriteError(w, err)
-		return
+}
+
+// admitObservation performs only SELECTs so preview and apply use the same
+// destination guards, each within its own authorized snapshot.
+func admitObservation(ctx context.Context, tx *sql.Tx, projectID string, req ObservationRequest) (int64, error) {
+	var repositoryID int64
+	if err := tx.QueryRowContext(ctx, "SELECT github_repository_id FROM projects WHERE id=?", projectID).Scan(&repositoryID); err != nil {
+		return 0, err
 	}
-	core.WriteJSON(w, http.StatusCreated, json.RawMessage(result))
+	if repositoryID != req.RepositoryID {
+		return 0, validationError("repository_id does not match the configured project repository.")
+	}
+	currentRevision, currentSnapshot, currentObserved := int64(0), "", ""
+	err := tx.QueryRowContext(ctx, `SELECT w.revision,w.snapshot_id,s.observed_at
+		FROM review_workspace w JOIN review_snapshots s ON s.project_id=w.project_id AND s.snapshot_id=w.snapshot_id
+		WHERE w.project_id=?`, projectID).Scan(&currentRevision, &currentSnapshot, &currentObserved)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		currentRevision, currentSnapshot, currentObserved = 0, "", ""
+	}
+	if *req.ExpectedRevision != currentRevision {
+		return 0, &core.Error{Code: "revision_conflict", Message: "The review observation revision changed.", Status: http.StatusConflict, Details: map[string]int64{"current_revision": currentRevision}}
+	}
+	if currentRevision == int64(^uint64(0)>>1) {
+		return 0, core.Fail("revision_exhausted", "The review workspace revision cannot advance further.", http.StatusConflict)
+	}
+	observed, _ := parseTimestamp(req.ObservedAt, true)
+	if currentObserved != "" {
+		previous, parseErr := parseTimestamp(currentObserved, true)
+		if parseErr != nil {
+			return 0, core.Fail("storage_unavailable", "The stored review observation timestamp is invalid.", http.StatusInternalServerError)
+		}
+		if observed.Before(previous) {
+			return 0, core.Fail("stale_observation", "The observation is older than the current project snapshot.", http.StatusConflict)
+		}
+	}
+	previousPulls, err := pullNumbersForSnapshot(ctx, tx, projectID, currentSnapshot)
+	if err != nil {
+		return 0, err
+	}
+	if err := validateRetirements(previousPulls, req.Queue, req.Retired); err != nil {
+		return 0, err
+	}
+	if err := validateFinalizedCounts(ctx, tx, projectID, req.Source, req.Queue); err != nil {
+		return 0, err
+	}
+	return currentRevision, nil
 }
 
 func pullNumbersForSnapshot(ctx context.Context, tx *sql.Tx, projectID, snapshotID string) ([]int64, error) {

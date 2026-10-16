@@ -13,6 +13,8 @@ All paths below are relative to `/api/v1/projects/{project_id}`. Existing instan
 | Method and path | Result |
 | --- | --- |
 | `POST /reviews/observations` | Administrator-only, revision-guarded observation append with a required idempotency key. |
+| `POST /reviews/import/preview` | Administrator-only, provider-free prepared observation preview; no receipt or write. |
+| `POST /reviews/import/apply` | Administrator-only prepared observation apply bound to its preview, with the existing observation receipt semantics. |
 | `GET /reviews/queue` | Compact ordered PR summaries, including merged and closed history. |
 | `GET /reviews/pulls/{number}` | One PR summary and its retained attempts. |
 | `GET /reviews/pulls/{number}/runs` | Newest-first run summaries with cursor pagination. |
@@ -23,6 +25,8 @@ Queue and run lists default to 20 items and accept `limit` up to 100 and an opti
 Cursors bind the principal, project, route, order and retained snapshot. New imports cannot change a continuation page from an older snapshot. Detail links retain that snapshot for consistent drill-down. Access is checked again on every request, including historical reads and exact mutation retries. Unknown, duplicate and malformed query fields are rejected. PR numbers use canonical positive decimal values through 2147483647.
 
 ## Administrator observations
+
+The [prepared import contract](review-import.md) owns guided preview/apply and profile-bound administrator CLI commands. These routes share the observation transaction below; preview does not reserve a workspace revision.
 
 The strict JSON body requires `expected_revision` (zero for the first observation), the configured stable GitHub `repository_id`, a bounded `source`, an RFC3339 `observed_at`, ordered `queue` entries and explicit `retired` entries. Omitted arrays normalize to empty arrays. The body and its normalized form are bounded to 256 KiB. A changed request under an existing idempotency key conflicts; an exact retained replay returns the original receipt before re-evaluating the revision. Replay still requires current authorization.
 

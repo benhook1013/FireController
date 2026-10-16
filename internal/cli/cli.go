@@ -63,6 +63,8 @@ type invocation struct {
 	setup      *profileSetupInvocation
 	notes      *noteInvocation
 
+	reviewImport *reviewImportInvocation
+
 	waitSeconds int
 }
 
@@ -86,6 +88,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return emit(stdout, stderr, struct {
 			Version string `json:"version"`
 		}{Version})
+	}
+	if call.reviewImport != nil {
+		if err := prepareReviewImport(ctx, call.reviewImport); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
 	}
 	if call.command == "profile" && call.subcommand == "create" {
 		return createProfile(ctx, call, stdout, stderr)
@@ -135,6 +142,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.reviewImport != nil {
+		return executeReviewImport(requestCtx, ctx, service, call.reviewImport, stdout, stderr)
+	}
 	if call.notes != nil {
 		value, err := executeNotes(requestCtx, service, call.notes)
 		if err != nil {
@@ -273,6 +283,9 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if call.command == "reviews" && (call.subcommand == "import-preview" || call.subcommand == "import-apply") {
+		return parseReviewImport(call, operationArgs)
+	}
 	if call.command == "inbox" && call.subcommand == "wait" {
 		return parseMessageWait(call, operationArgs)
 	}
