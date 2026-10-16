@@ -155,6 +155,42 @@ func (g *GitHub) IssueComments(ctx context.Context, repository string, number in
 	return result, nil
 }
 
+// CheckpointComments collects the complete selected history before projecting
+// comments attributable to the original stable actor. Foreign prose and cosmetic
+// metadata do not establish checkpoint identity; pagination, wire shape, global
+// comment IDs and stable author identities remain authoritative for every row.
+// Other evidence readers keep the stricter IssueComments contract.
+func (g *GitHub) CheckpointComments(ctx context.Context, repository string, number int64, expectedActor Author) ([]IssueComment, error) {
+	if !validRepositorySelector(repository) || !validPullNumber(number) {
+		return nil, invalidSelector()
+	}
+	if _, err := normalizeActor(githubActor{ID: expectedActor.ID, Login: expectedActor.Login, Type: expectedActor.Kind}); err != nil {
+		return nil, invalidSelector()
+	}
+	path := "/repos/" + repository + "/issues/" + strconv.FormatInt(number, 10) + "/comments"
+	var raw []githubIssueComment
+	if err := g.getPages(ctx, path, &raw); err != nil {
+		return nil, err
+	}
+	result := make([]IssueComment, 0, len(raw))
+	seen := make(map[int64]bool, len(raw))
+	for _, item := range raw {
+		if item.ID <= 0 || seen[item.ID] || !validCheckpointActorIdentity(Author{ID: item.User.ID, Kind: item.User.Type}) {
+			return nil, invalidResponse(false, http.StatusOK)
+		}
+		seen[item.ID] = true
+		if item.User.ID != expectedActor.ID || item.User.Type != expectedActor.Kind {
+			continue
+		}
+		comment, err := normalizeIssueComment(item)
+		if err != nil {
+			return nil, invalidResponse(false, http.StatusOK)
+		}
+		result = append(result, comment)
+	}
+	return result, nil
+}
+
 func (g *GitHub) Reviews(ctx context.Context, repository string, number int64) ([]HostedReview, error) {
 	if !validRepositorySelector(repository) || !validPullNumber(number) {
 		return nil, invalidSelector()
