@@ -25,7 +25,7 @@ var standingCoverage = regexp.MustCompile(`^<!-- final_review_risk_coverage:\{"s
 var standingAckInvocation = regexp.MustCompile(`^<!-- CodeRabbit review command invocation: v2:[a-f0-9]{64} -->$`)
 var standingAvailability = regexp.MustCompile(`^\*\*Included review availability:\*\* This review used your included allowance\. Your plan provides up to [1-9][0-9]{0,4} included reviews? per hour; (0|[1-9][0-9]{0,4}) remain after this review\.$`)
 var standingFindingClaim = regexp.MustCompile(`(?i)\b(?:comments?|findings?)\s*[:(]\s*[0-9]`)
-var standingRiskLabel = regexp.MustCompile(`^<summary><strong>Merge Risk:</strong> <strong>🔵 Low</strong> · up to <code>([a-f0-9]{5})</code></summary>$`)
+var standingRiskLabel = regexp.MustCompile(`^<summary><strong>Merge Risk:</strong> <strong>(?:🔵 Low|⚪ Minimal)</strong> · up to <code>([a-f0-9]{5})</code></summary>$`)
 
 const standingRecentStart = "<!-- recent_review_start -->"
 const standingRecentEnd = "<!-- recent_review_end -->"
@@ -339,8 +339,13 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 		return zero, false
 	}
 	seen := map[string]bool{}
-	if zero.IgnoredFiles, valid = p.files(standingIgnored, true, seen); !valid {
-		return zero, false
+	// CodeRabbit omits the ignored-files block when there are no excluded
+	// paths. Only the exact next selected header permits that omission; any
+	// present or malformed ignored block still goes through strict validation.
+	if p.at+1 >= len(p.lines) || p.lines[p.at] != "<details>" || !standingSelected.MatchString(p.lines[p.at+1]) {
+		if zero.IgnoredFiles, valid = p.files(standingIgnored, true, seen); !valid {
+			return zero, false
+		}
 	}
 	if zero.SelectedFiles, valid = p.files(standingSelected, false, seen); !valid {
 		return zero, false
