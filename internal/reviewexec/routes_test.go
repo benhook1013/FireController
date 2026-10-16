@@ -407,7 +407,7 @@ func TestFindingRoutePaginationBoundCursorAndQueryPlan(t *testing.T) {
 }
 
 func TestFindingRouteCorruptionAndResolvedPendingValidation(t *testing.T) {
-	for _, mode := range []string{"unknown", "alias", "badindex", "badcurrenthistory", "badorigin", "missinghistory", "resolvedfix"} {
+	for _, mode := range []string{"unknown", "alias", "badindex", "badcurrenthistory", "badorigin", "missinghistory", "badtime", "resolvedfix"} {
 		t.Run(mode, func(t *testing.T) {
 			f, _, id := routeFixture(t, 1)
 			r := routeCreate(t, f, id, "route", routeRequest(0, 0, 4))
@@ -434,6 +434,14 @@ func TestFindingRouteCorruptionAndResolvedPendingValidation(t *testing.T) {
 				admissionSQL(t, f, `UPDATE review_finding_route_revisions SET actor_id='wrong-actor' WHERE route_id=? AND revision=1`, r.ID)
 			case "missinghistory":
 				admissionSQL(t, f, `DELETE FROM review_finding_route_revisions WHERE route_id=?`, r.ID)
+			case "badtime":
+				var route ReviewRoute
+				if json.Unmarshal([]byte(body), &route) != nil {
+					t.Fatal("fixture")
+				}
+				route.UpdatedAt = "not-a-time"
+				admissionSQL(t, f, `UPDATE review_finding_routes SET body_json=? WHERE id=?`, encoded(route), r.ID)
+				admissionSQL(t, f, `UPDATE review_finding_route_revisions SET body_json=?,created_at=? WHERE route_id=? AND revision=?`, encoded(route), route.UpdatedAt, r.ID, route.Revision)
 			case "resolvedfix":
 				var route ReviewRoute
 				if json.Unmarshal([]byte(body), &route) != nil {
@@ -612,5 +620,163 @@ func TestFindingRouteInvalidInputReplayAndReceivingDecisionRace(t *testing.T) {
 	}
 	if success != 1 || conflicts != 1 || routeRead(t, f, route.ID).Route.Revision != 2 {
 		t.Fatal("receiving race lost guarded revision", success, conflicts)
+	}
+}
+
+// Model a valid retained route created while the local wall clock was ahead.
+// Keep every indexed origin, current revision and source-link timestamp exact.
+func routeRetainedFuture(t *testing.T, f *attemptFixture, id string) {
+	t.Helper()
+	route := routeRead(t, f, id).Route
+	future := "2099-01-01T00:00:00.000000000Z"
+	tx, err := f.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(t.Context(), `SELECT body_json FROM review_finding_route_revisions WHERE route_id=? ORDER BY revision`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var history []ReviewRoute
+	for rows.Next() {
+		var body string
+		if err = rows.Scan(&body); err != nil {
+			t.Fatal(err)
+		}
+		var r ReviewRoute
+		if err = json.Unmarshal([]byte(body), &r); err != nil {
+			t.Fatal(err)
+		}
+		r.CreatedAt = future
+		r.UpdatedAt = future
+		if r.DecidedAt != "" {
+			r.DecidedAt = future
+		}
+		if r.FixedAt != "" {
+			r.FixedAt = future
+		}
+		history = append(history, r)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err = rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range history {
+		if _, err = tx.ExecContext(t.Context(), `UPDATE review_finding_route_revisions SET body_json=?,created_at=? WHERE route_id=? AND revision=?`, encoded(r), r.UpdatedAt, id, r.Revision); err != nil {
+			t.Fatal(err)
+		}
+		if r.Revision == route.Revision {
+			if _, err = tx.ExecContext(t.Context(), `UPDATE review_finding_routes SET body_json=?,created_at=? WHERE id=?`, encoded(r), r.CreatedAt, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var body string
+	if err = tx.QueryRowContext(t.Context(), `SELECT body_json FROM review_adjudication_state WHERE evidence_id=?`, route.SourceEvidenceID).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	var source ReviewAdjudication
+	if err = json.Unmarshal([]byte(body), &source); err != nil {
+		t.Fatal(err)
+	}
+	source.Findings[route.Finding].DecidedAt = future
+	if _, err = tx.ExecContext(t.Context(), `UPDATE review_adjudication_state SET body_json=? WHERE evidence_id=?`, encoded(source), route.SourceEvidenceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.ExecContext(t.Context(), `UPDATE review_adjudication_changes SET created_at=? WHERE evidence_id=?`, future, route.SourceEvidenceID); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	routeRead(t, f, id)
+}
+
+func TestFindingRouteClockRollbackDecisionAndFixKeepExactRevisions(t *testing.T) {
+	f, a, evidence := routeFixture(t, 1)
+	created := routeCreate(t, f, evidence, "route-clock", routeRequest(0, 0, 4))
+	routeRetainedFuture(t, f, created.ID)
+	source := adjudicationRead(t, f, evidence)
+	routeDecision(t, f, created.ID, "decision-clock", 1, "accepted")
+	decided := routeRead(t, f, created.ID).Route
+	if decided.DecidedAt != decided.UpdatedAt || decided.UpdatedAt != decided.CreatedAt || decided.Revision != 2 {
+		t.Fatal("decision lost effective journal time or sampled twice", decided)
+	}
+	before := routeState(t, f, a)
+	_, err := f.e.DecideFindingRoute(t.Context(), f.scope(t, attemptProject, f.writer, false), "stale-new-key", created.ID, FindingRouteDecisionRequest{ExpectedRevision: adjudicationRevision(1), Disposition: "rejected", Reason: "Stale guard"})
+	attemptCode(t, err, "review_conflict")
+	if before != routeState(t, f, a) {
+		t.Fatal("stale guard wrote")
+	}
+	routeRetainedFuture(t, f, created.ID)
+	before = routeState(t, f, a)
+	refused := fmt.Errorf("synthetic projection refusal")
+	previousProjection := f.e.publishAdjudication
+	f.e.publishAdjudication = func(context.Context, *sql.Tx, core.Scope, ReviewAdjudication) error { return refused }
+	_, err = f.e.RecordFindingRouteFix(t.Context(), f.scope(t, attemptProject, f.writer, false), "rollback-clock-fix", created.ID, FindingRouteFixRequest{ExpectedRevision: adjudicationRevision(2), ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Recorded focused proof"})
+	f.e.publishAdjudication = previousProjection
+	if err != refused || before != routeState(t, f, a) {
+		t.Fatal("effective-time route mutation failed atomic rollback", err)
+	}
+	routeFix(t, f, created.ID, "fix-clock", 2, "", strings.Repeat("f", 40))
+	fixed := routeRead(t, f, created.ID).Route
+	if fixed.FixedAt != fixed.UpdatedAt || fixed.FixedAt != fixed.DecidedAt || fixed.Revision != 3 {
+		t.Fatal("fix lost effective journal time or sampled twice", fixed)
+	}
+	if !reflect.DeepEqual(source, adjudicationRead(t, f, evidence)) {
+		t.Fatal("receiver rewrote source")
+	}
+	before = routeState(t, f, a)
+	raw, err := f.e.DecideFindingRoute(t.Context(), f.scope(t, attemptProject, f.writer, false), "decision-clock", created.ID, FindingRouteDecisionRequest{ExpectedRevision: adjudicationRevision(1), Disposition: "accepted", Reason: "Explicit receiving reason"})
+	adjudicationReceipt(t, raw, err, created.ID, "adjudicated", 2)
+	if before != routeState(t, f, a) {
+		t.Fatal("exact replay rewrote later proof/history")
+	}
+	for revision := int64(1); revision <= 3; revision++ {
+		var body string
+		if err = f.store.DB().QueryRow(`SELECT body_json FROM review_finding_route_revisions WHERE route_id=? AND revision=?`, created.ID, revision).Scan(&body); err != nil {
+			t.Fatal(err)
+		}
+		r, err := decodeReviewRoute(body)
+		if err != nil || r.Revision != revision {
+			t.Fatal("revision history lost after rollback", err)
+		}
+	}
+}
+
+func TestFindingRouteClockRollbackRerouteAndSourceUnroute(t *testing.T) {
+	for _, unroute := range []bool{false, true} {
+		t.Run(fmt.Sprint(unroute), func(t *testing.T) {
+			f, a, evidence := routeFixture(t, 1)
+			created := routeCreate(t, f, evidence, "origin", routeRequest(0, 0, 4))
+			routeRetainedFuture(t, f, created.ID)
+			if unroute {
+				raw, err := f.e.DecideReviewFinding(t.Context(), f.scope(t, attemptProject, f.writer, false), "source-unroute", evidence, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(1), ExpectedRouteRevision: 1, Finding: 0, Disposition: "rejected", Reason: "Explicit source correction"})
+				adjudicationReceipt(t, raw, err, evidence, "adjudicated", 2)
+				old := routeRead(t, f, created.ID).Route
+				source := adjudicationRead(t, f, evidence).Findings[0]
+				if old.State != "superseded" || old.UpdatedAt != old.CreatedAt || source.DecidedAt != old.UpdatedAt || source.RouteID != "" {
+					t.Fatal("unroute stamp/link changed", old, source)
+				}
+			} else {
+				request := routeRequest(1, 0, 6)
+				request.ExpectedRouteRevision = 1
+				next := routeCreate(t, f, evidence, "reroute", request)
+				old := routeRead(t, f, created.ID).Route
+				newRoute := routeRead(t, f, next.ID).Route
+				source := adjudicationRead(t, f, evidence).Findings[0]
+				if old.State != "superseded" || old.UpdatedAt != old.CreatedAt || old.UpdatedAt != newRoute.CreatedAt || source.DecidedAt != newRoute.CreatedAt {
+					t.Fatal("reroute stamp/origin changed", old, newRoute, source)
+				}
+				before := routeState(t, f, a)
+				replay := routeCreate(t, f, evidence, "reroute", request)
+				if replay != next || before != routeState(t, f, a) {
+					t.Fatal("reroute replay changed history")
+				}
+			}
+		})
 	}
 }

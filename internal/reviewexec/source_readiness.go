@@ -74,14 +74,17 @@ func observeSourceReviewState(ctx context.Context, reader TargetReader, plan Sou
 		return unavailableSourceReview(target, "review_state_capacity")
 	}
 	var owned reviewprovider.PullReviewObservation
-	if json.Unmarshal(body, &owned) != nil || !validSourceReviewState(owned, sourcePlanObservation(plan)) {
+	source := sourcePlanObservation(plan)
+	sourceAt, sourceTimeErr := time.Parse(time.RFC3339Nano, source.ObservedAt)
+	// Fresh collection must fall in its source observation interval. Retained
+	// facts remain readable when the host wall clock later moves backwards.
+	if json.Unmarshal(body, &owned) != nil || !validSourceReviewState(owned, source) || sourceTimeErr != nil || owned.ObservedAt.Before(sourceAt) || owned.ObservedAt.After(time.Now().Add(5*time.Second)) {
 		return unavailableSourceReview(target, "review_state_unproven")
 	}
 	return &owned
 }
 func validSourceReviewState(o reviewprovider.PullReviewObservation, source SourceObservation) bool {
-	sourceAt, err := time.Parse(time.RFC3339Nano, source.ObservedAt)
-	if err != nil || o.Target != sourceCITarget(source) || o.ObservedAt.IsZero() || o.ObservedAt.Before(sourceAt) || o.ObservedAt.After(time.Now().Add(5*time.Second)) || len(o.Threads) > 10000 {
+	if !refreshTime(source.ObservedAt) || o.Target != sourceCITarget(source) || o.ObservedAt.IsZero() || len(o.Threads) > 10000 {
 		return false
 	}
 	if o.State != "complete" && o.State != "unproven" || o.State == "complete" && o.Reason != "" || o.State == "unproven" && !identifier.MatchString(o.Reason) {
