@@ -20,3 +20,17 @@
 /* Bounded presentation text. */
 .brand,.mast-label,.connection-card,.navigation a{min-width:0;overflow-wrap:anywhere}.brand .flame{flex-shrink:0}.navigation a{max-width:100%}
 .panel,.worker-panel,.feed-card,.connect-card{color:var(--fc-surface_text,inherit)}
+
+/* Review cards keep text paired with their status surface. */
+.review-round.review-outcome-failed,.review-round.review-outcome-uncertain{color:var(--fc-blocked_text,#5f4f57)}
+.review-round.review-outcome-failed>strong,.review-round.review-outcome-uncertain>strong{color:var(--fc-blocked_text,#a52a2c)}
+.review-round.review-outcome-failed>strong small,.review-round.review-outcome-uncertain>strong small{color:var(--fc-blocked_text,#9b7771)}
+.review-round.review-outcome-failed .review-channel,.review-round.review-outcome-uncertain .review-channel{color:var(--fc-blocked_text,#a25a4b)}
+.review-round.review-outcome-failed .review-warning,.review-round.review-outcome-uncertain .review-warning{color:var(--fc-blocked_text,#9d592d)}
+.review-round.review-outcome-failed:hover,.review-round.review-outcome-uncertain:hover{background:var(--fc-blocked_background,#f4dfd5)}
+.review-round.review-outcome-active,.review-round.review-outcome-posting,.review-round.review-outcome-prepared{color:var(--fc-parked_text,#5f4f57)}
+.review-round.review-outcome-active>strong,.review-round.review-outcome-posting>strong,.review-round.review-outcome-prepared>strong{color:var(--fc-parked_text,#a52a2c)}
+.review-round.review-outcome-active>strong small,.review-round.review-outcome-posting>strong small,.review-round.review-outcome-prepared>strong small{color:var(--fc-parked_text,#9b7771)}
+.review-round.review-outcome-active .review-channel,.review-round.review-outcome-posting .review-channel,.review-round.review-outcome-prepared .review-channel{color:var(--fc-parked_text,#a25a4b)}
+.review-round.review-outcome-active .review-warning,.review-round.review-outcome-posting .review-warning,.review-round.review-outcome-prepared .review-warning{color:var(--fc-parked_text,#9d592d)}
+.review-round.review-outcome-active:hover,.review-round.review-outcome-posting:hover,.review-round.review-outcome-prepared:hover{background:var(--fc-parked_background,#f4dfd5)}

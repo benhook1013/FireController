@@ -66,11 +66,12 @@ export function validMetadataPage(v: unknown, limit: number): v is ProjectMetada
 }
 export function heading(presentation: Presentation | undefined, key: HeadingKey): string { return presentation?.headings[key] ?? defaults.headings[key]; }
 
-// Only validated active-session overrides reach the root. Clearing removes
-// properties rather than replacing the stylesheet's exact selector fallbacks.
+// Empty themes preserve exact selector fallbacks. A configured theme resolves
+// every role against the same reference palette used by contrast validation.
 export function applyPresentationRoot(root: Pick<HTMLElement, 'style'>, document: Pick<Document, 'title'>, presentation?: Presentation): void {
+  const configured = presentation !== undefined && Object.keys(presentation.theme).length > 0;
   for (const key of Object.keys(defaults.theme) as ThemeToken[]) {
-    const value = presentation?.theme[key];
+    const value = configured ? presentation.theme[key] ?? defaults.theme[key] : undefined;
     if (value === undefined) root.style.removeProperty(`--fc-${key}`);
     else root.style.setProperty(`--fc-${key}`, value);
   }

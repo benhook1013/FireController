@@ -48,10 +48,11 @@ func readCurrent(ctx context.Context, tx *sql.Tx, project string) (State, error)
 	var raw string
 	err := tx.QueryRowContext(ctx, `SELECT revision,CASE WHEN length(CAST(state_json AS BLOB))<=? THEN state_json ELSE NULL END FROM project_presentations WHERE project_id=?`, maxStateBytes, project).Scan(&rev, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		c, err := presentationmodel.Normalize(Config{Name: name})
-		if err != nil {
-			return State{}, unavailable()
-		}
+		// Preserve a retained name verbatim, even if it predates the current
+		// name contract. Reads do not repair it; an administrator can replace
+		// revision zero with a validated configuration atomically.
+		defaults := presentationmodel.Defaults()
+		c := Config{Name: name, BrandName: defaults.BrandName, Tagline: defaults.Tagline, Headings: map[string]string{}, Theme: map[string]string{}}
 		return state(c, project, 0, ""), nil
 	}
 	if err != nil {

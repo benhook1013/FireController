@@ -462,3 +462,62 @@ func TestPresentationFullReplacementAndQuietBoundedReads(t *testing.T) {
 		t.Fatal("cancelled write took effect")
 	}
 }
+
+func TestPresentationExplicitRepairOfRetainedInvalidProjectName(t *testing.T) {
+	f := setup(t)
+	legacyName := "Retained\nproject\tname"
+	if _, err := f.store.DB().Exec(`UPDATE projects SET name=? WHERE id=?`, legacyName, f.project); err != nil {
+		t.Fatal(err)
+	}
+	before := f.counts()
+	initial := f.read()
+	if initial.Presentation.Revision != 0 || initial.Presentation.Name != legacyName || initial.Presentation.UpdatedAt != "" || initial.Presentation.BrandName != "FireController" || initial.Presentation.Tagline != "Project workspace" || initial.Presentation.Headings == nil || initial.Presentation.Theme == nil || len(initial.Presentation.Headings) != 0 || len(initial.Presentation.Theme) != 0 {
+		t.Fatal("implicit retained state was fabricated or changed", initial)
+	}
+	var storedName string
+	if err := f.store.DB().QueryRow(`SELECT name FROM projects WHERE id=?`, f.project).Scan(&storedName); err != nil || storedName != legacyName || !reflect.DeepEqual(before, f.counts()) {
+		t.Fatal("read changed retained name or allocated rows", err)
+	}
+	// Invalid replacements and nonadministrators cannot repair or create state.
+	expect(t, f.replace("invalid-repair", 0, "Still\ninvalid"), 400)
+	validBody := map[string]any{"expected_revision": 0, "presentation": map[string]any{"name": "Repaired project"}}
+	expect(t, f.call("PUT", f.base(), f.token, "writer-repair", validBody), 403)
+	expect(t, f.call("PUT", f.base(), f.reader, "reader-repair", validBody), 403)
+	if !reflect.DeepEqual(before, f.counts()) {
+		t.Fatal("refused repair mutated state")
+	}
+	// The repair commits only a real revision1, with all normal atomic effects.
+	first := f.replace("repair-retained-name", 0, "Repaired project")
+	expect(t, first, 200)
+	var receipt presentation.Receipt
+	decode(t, first, &receipt)
+	repaired := f.read()
+	if receipt.ProjectID != f.project || receipt.Revision != 1 || receipt.Outcome != "updated" || repaired.Presentation.Revision != 1 || repaired.Presentation.Name != "Repaired project" || repaired.EventCursor == initial.EventCursor {
+		t.Fatal("repair receipt/state/watermark disagree", receipt, repaired)
+	}
+	if err := f.store.DB().QueryRow(`SELECT name FROM projects WHERE id=?`, f.project).Scan(&storedName); err != nil || storedName != "Repaired project" {
+		t.Fatal("canonical name not repaired", err)
+	}
+	after := f.counts()
+	if after[0] != before[0]+1 || after[1] != before[1]+1 || after[2] != before[2]+1 || after[3] != before[3]+1 {
+		t.Fatal("repair lost atomic history/event/receipt", before, after)
+	}
+	history := f.call("GET", f.base()+"/history/1", f.reader, "", nil)
+	expect(t, history, 200)
+	var revision presentation.Revision
+	decode(t, history, &revision)
+	if revision.Revision != 1 || !reflect.DeepEqual(revision.State, repaired.Presentation) {
+		t.Fatal("repair did not freeze valid first revision", revision)
+	}
+	if err := f.validate(); err != nil {
+		t.Fatal("repaired snapshot invalid", err)
+	}
+	// Exact old-key replay survives later edits without rewriting their state.
+	expect(t, f.replace("later-name", 1, "Later project"), 200)
+	before = f.counts()
+	replay := f.replace("repair-retained-name", 0, "Repaired project")
+	expect(t, replay, 200)
+	if !bytes.Equal(first.Body.Bytes(), replay.Body.Bytes()) || !reflect.DeepEqual(before, f.counts()) || f.read().Presentation.Name != "Later project" {
+		t.Fatal("repair replay changed receipt or later state")
+	}
+}

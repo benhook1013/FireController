@@ -52,14 +52,55 @@ describe('project appearance and metadata boundary', () => {
     for (const value of [{ ...page, cursor: 'message_cursor' }, { ...page, event_cursor: null }, { ...page, items: null }, { ...page, has_more: true, items: [] }, { ...page, event_cursor: 'wrong_last' }, { ...page, items: [...page.items, ...page.items] }, { ...page, items: [{ ...page.items[0], event_type: 'message.sent' }] }, { ...page, items: [{ ...page.items[0], revision: Number.MAX_SAFE_INTEGER + 1 }] }, { ...page, items: [{ ...page.items[0], body: 'not metadata' }] }]) expect(validMetadataPage(value, 25)).toBe(false);
   });
 
+  it('pairs every review-card label and count with its status background while preserving default colors', async () => {
+    const fs = await vi.importActual<{ readFileSync(path: URL, encoding: 'utf8'): string }>('node:fs');
+    const styles = fs.readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+    const theme: Record<string, string> = { focus: '#808080', accent_background: '#ffffff', accent_text: '#000000', accent_soft_background: '#000000' };
+    for (const family of ['canvas', 'surface', 'header', 'hero', 'active', 'blocked', 'parked', 'completed']) {
+      theme[`${family}_background`] = '#000000'; theme[`${family}_text`] = '#ffffff';
+      if (['canvas', 'surface', 'header', 'hero'].includes(family)) theme[`${family}_muted`] = '#ffffff';
+    }
+    // Both status surfaces may legally differ from the surrounding dark panel.
+    theme.blocked_background = theme.parked_background = '#ffffff';
+    theme.blocked_text = theme.parked_text = '#000000';
+    expect(validPresentationSnapshot({ presentation: { ...presentation, revision: 1, updated_at: '2026-10-16T01:00:00Z', theme }, event_cursor: 'cursor' }, project.id)).toBe(true);
+    const property = (selector: string, name: string) => {
+      const rules = [...styles.replace(/\/\*[\s\S]*?\*\//gu, '').matchAll(/([^{}]+)\{([^{}]+)\}/gu)].filter(rule => rule[1].split(',').map(value => value.trim()).includes(selector));
+      return rules.flatMap(rule => rule[2].split(';')).filter(value => value.startsWith(`${name}:`)).at(-1)?.slice(name.length + 1);
+    };
+    const labels = [['', '#5f4f57'], ['>strong', '#a52a2c'], ['>strong small', '#9b7771'], [' .review-channel', '#a25a4b'], [' .review-warning', '#9d592d']];
+    for (const outcome of ['failed', 'uncertain', 'active', 'posting', 'prepared']) {
+      const role = ['failed', 'uncertain'].includes(outcome) ? 'blocked' : 'parked';
+      const card = `.review-round.review-outcome-${outcome}`;
+      for (const [descendant, fallback] of labels) {
+        const value = property(card + descendant, 'color');
+        expect(value, card + descendant).toBe(`var(--fc-${role}_text,${fallback})`);
+        const token = value?.match(/^var\(--fc-([a-z_]+),/u)?.[1];
+        expect(theme[token ?? ''], card + descendant).toBe('#000000');
+      }
+      // Hover must keep the corresponding status pair, with the original
+      // override-free hover color retained as its selector-specific fallback.
+      expect(property(`${card}:hover`, 'background')).toBe(`var(--fc-${role}_background,#f4dfd5)`);
+    }
+  });
+
   it('resets root overrides/title without changing fallback CSS or retaining another project', () => {
     const properties = new Map<string, string>();
     const root = { style: { setProperty: (key: string, value: string) => properties.set(key, value), removeProperty: (key: string) => { properties.delete(key); return ''; } } };
     const doc = { title: 'FireController' };
     applyPresentationRoot(root as unknown as HTMLElement, doc, { ...presentation, name: 'One', theme: { surface_text: '#000000' } });
     expect(properties.get('--fc-surface_text')).toBe('#000000'); expect(doc.title).toBe('One · FireController');
-    applyPresentationRoot(root as unknown as HTMLElement, doc, { ...presentation, name: 'Two', theme: { canvas_text: '#111111' } });
-    expect(properties.has('--fc-surface_text')).toBe(false); expect(properties.get('--fc-canvas_text')).toBe('#111111');
+    const partial = { ...presentation, name: 'Two', revision: 1, updated_at: '2026-10-16T01:00:00Z', theme: { header_background: '#000000' } };
+    expect(validPresentationSnapshot({ presentation: partial, event_cursor: 'cursor' }, project.id)).toBe(true);
+    applyPresentationRoot(root as unknown as HTMLElement, doc, partial);
+    expect(properties.size).toBe(Object.keys(presentationDefaults.theme).length);
+    expect(properties.get('--fc-surface_text')).toBe(presentationDefaults.theme.surface_text);
+    expect(properties.get('--fc-header_background')).toBe('#000000');
+    expect(properties.get('--fc-header_muted')).toBe(presentationDefaults.theme.header_muted);
+    // An explicitly empty theme also clears every variable, without waiting
+    // for a disconnect or retaining the previous project's resolved colors.
+    applyPresentationRoot(root as unknown as HTMLElement, doc, { ...presentation, name: 'Three' });
+    expect(properties.size).toBe(0); expect(doc.title).toBe('Three · FireController');
     applyPresentationRoot(root as unknown as HTMLElement, doc);
     expect(properties.size).toBe(0); expect(doc.title).toBe('FireController');
     const one = new AbortController(), two = new AbortController();
