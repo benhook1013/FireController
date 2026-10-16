@@ -45,7 +45,7 @@ func RetainCLI(ctx context.Context, captures *CaptureStore, engine *reviewexec.E
 	review, parseErr := reviewprovider.ParseCLIReview(capture.Stdout, capture.ExitCode, reviewprovider.CLIContext{BaseBranch: workspace.ComparisonRef, WorkingDirectory: workspace.Directory})
 	reason := "capture_retained"
 	if parseErr != nil {
-		review = reviewprovider.CLIReview{Outcome: "uncertain", Findings: []reviewprovider.CLIFinding{}, ReviewedFiles: []string{}}
+		review = reviewprovider.ParsedReview{Outcome: "uncertain", Findings: []reviewprovider.ParsedFinding{}, ReviewedFiles: []string{}}
 		reason = "capture_invalid"
 	}
 	if !capture.Started {
@@ -67,17 +67,17 @@ func RetainCLI(ctx context.Context, captures *CaptureStore, engine *reviewexec.E
 			}
 		}
 	}
-	input := reviewexec.CLIEvidenceInput{CaptureID: reference.ID, CaptureSHA256: reference.SHA256, CaptureBytes: reference.Bytes, StartedAt: retained.StartedAt.Format(time.RFC3339Nano), FinishedAt: retained.FinishedAt.Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: review}
-	receipt, err := engine.RecordCLIEvidence(ctx, attempt.ProjectID, attempt.ID, input)
+	input := reviewexec.ReviewEvidenceInput{CaptureID: reference.ID, CaptureSHA256: reference.SHA256, CaptureBytes: reference.Bytes, StartedAt: retained.StartedAt.Format(time.RFC3339Nano), FinishedAt: retained.FinishedAt.Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: review}
+	receipt, err := engine.RecordReviewEvidence(ctx, attempt.ProjectID, attempt.ID, input)
 	var failure *core.Error
 	if errors.As(err, &failure) && failure.Code == "validation_failed" {
 		// The raw artifact remains authoritative when parsed projection fields
 		// exceed the ledger's stricter text or aggregate bounds. Retry only this
 		// local recording step, retaining the original capture, anchor and times.
-		review = reviewprovider.CLIReview{Outcome: "uncertain", Findings: []reviewprovider.CLIFinding{}, ReviewedFiles: []string{}}
+		review = reviewprovider.ParsedReview{Outcome: "uncertain", Findings: []reviewprovider.ParsedFinding{}, ReviewedFiles: []string{}}
 		input.Review = review
 		reason = "capture_invalid"
-		receipt, err = engine.RecordCLIEvidence(ctx, attempt.ProjectID, attempt.ID, input)
+		receipt, err = engine.RecordReviewEvidence(ctx, attempt.ProjectID, attempt.ID, input)
 	}
 	if err != nil {
 		return CapturedCLI{}, err

@@ -66,10 +66,10 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 		return reviews.Receipt{}, err
 	}
 	if operation.AttemptID != attempt.ID || operation.State != attempt.State || !validChannel(operation.Channel) || !sha.MatchString(operation.HeadSHA) {
-		return reviews.Receipt{}, cliPublicationConflict()
+		return reviews.Receipt{}, publicationConflict()
 	}
 	if metadata != nil && metadata.Number != operation.PullNumber {
-		return reviews.Receipt{}, cliPublicationConflict()
+		return reviews.Receipt{}, publicationConflict()
 	}
 	pull, err := currentReviewPull(ctx, tx, attempt.ProjectID, operation.PullNumber)
 	if missingCurrentPull(err) && metadata != nil {
@@ -81,7 +81,7 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 		return reviews.Receipt{}, err
 	}
 	if pull.Number != operation.PullNumber {
-		return reviews.Receipt{}, cliPublicationConflict()
+		return reviews.Receipt{}, publicationConflict()
 	}
 	projected, err := journalBrowserAttempt(ctx, tx, operation, attempt)
 	if err != nil {
@@ -134,7 +134,7 @@ func journalBrowserAttempt(ctx context.Context, tx *sql.Tx, operation Operation,
 		projected.DurationSeconds = &seconds
 	case "preparing", "posting", "active", "uncertain":
 	default:
-		return projected, cliPublicationConflict()
+		return projected, publicationConflict()
 	}
 	if operation.Channel == "hosted" {
 		projected.TriggerID = attempt.ExternalID
@@ -165,7 +165,7 @@ func attemptProjectionReplay(ctx context.Context, tx *sql.Tx, project string, nu
 		return reviews.Receipt{}, false, err
 	}
 	if actualNumber != number {
-		return reviews.Receipt{}, false, cliPublicationConflict()
+		return reviews.Receipt{}, false, publicationConflict()
 	}
 	if encoded(actual) != encoded(expected) {
 		return reviews.Receipt{}, false, nil

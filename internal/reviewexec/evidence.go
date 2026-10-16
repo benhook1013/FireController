@@ -18,26 +18,38 @@ import (
 
 const evidenceInputLimit = 2 << 20
 
-// CLIEvidenceInput is trusted parsed capture metadata, never a raw upload.
-type CLIEvidenceInput struct {
-	CaptureID      string                   `json:"capture_id"`
-	CaptureSHA256  string                   `json:"capture_sha256"`
-	CaptureBytes   int64                    `json:"capture_bytes"`
-	StartedAt      string                   `json:"started_at"`
-	FinishedAt     string                   `json:"finished_at"`
-	Review         reviewprovider.CLIReview `json:"review"`
-	ExpectedAnchor Anchor                   `json:"expected_anchor"`
+// MaxEvidenceInputBytes bounds canonical JSON accepted by the evidence ledger.
+// Trusted capture integrations use this same budget before attempting ingestion.
+const MaxEvidenceInputBytes = evidenceInputLimit
+
+// ReviewEvidenceInput is trusted parsed capture metadata, never a raw upload.
+type ReviewEvidenceInput struct {
+	CaptureID      string                      `json:"capture_id"`
+	CaptureSHA256  string                      `json:"capture_sha256"`
+	CaptureBytes   int64                       `json:"capture_bytes"`
+	StartedAt      string                      `json:"started_at"`
+	FinishedAt     string                      `json:"finished_at"`
+	Review         reviewprovider.ParsedReview `json:"review"`
+	ExpectedAnchor Anchor                      `json:"expected_anchor"`
+	Hosted         *HostedEvidenceMetadata     `json:"hosted,omitempty"`
 }
 
-type CLIEvidence struct {
-	ID                    string           `json:"id"`
-	ProjectID             string           `json:"project_id"`
-	AttemptID             string           `json:"attempt_id"`
-	OperationID           string           `json:"operation_id"`
-	CapabilityFingerprint string           `json:"capability_fingerprint"`
-	Anchor                Anchor           `json:"anchor"`
-	Capture               CLIEvidenceInput `json:"capture"`
-	RecordedAt            string           `json:"recorded_at"`
+type ReviewEvidence struct {
+	ID                    string              `json:"id"`
+	ProjectID             string              `json:"project_id"`
+	AttemptID             string              `json:"attempt_id"`
+	OperationID           string              `json:"operation_id"`
+	CapabilityFingerprint string              `json:"capability_fingerprint"`
+	Anchor                Anchor              `json:"anchor"`
+	Capture               ReviewEvidenceInput `json:"capture"`
+	RecordedAt            string              `json:"recorded_at"`
+}
+
+func evidenceChannel(in ReviewEvidenceInput) string {
+	if in.Hosted != nil {
+		return "hosted"
+	}
+	return "cli"
 }
 
 func validEvidencePath(s string) bool {
@@ -62,13 +74,19 @@ func validEvidenceAnchor(a Anchor) bool {
 	return err == nil && !t.IsZero() && a.RepositoryID > 0 && repository.MatchString(a.Repository) && a.PullNumber > 0 && a.PullNumber <= 2147483647 && a.ParentPullNumber >= 0 && a.ParentPullNumber <= 2147483647 && a.BaseRef != "" && safeText(a.BaseRef, 256) && sha.MatchString(a.CandidateSHA) && sha.MatchString(a.BaseSHA) && sha.MatchString(a.ParentSHA) && sha.MatchString(a.MergeBaseSHA) && hash.MatchString(a.PatchSHA256)
 }
 
-func validateCLIEvidence(in CLIEvidenceInput) error {
-	if !hash.MatchString(in.CaptureSHA256) || in.CaptureID != "review_capture_"+in.CaptureSHA256[:32] || in.CaptureBytes < 1 || in.CaptureBytes > 24<<20 || !validEvidenceAnchor(in.ExpectedAnchor) {
+// validateReviewEvidence checks immutable structure, never current wall-clock
+// freshness. Retained captures remain valid after a host clock correction.
+func validateReviewEvidence(in ReviewEvidenceInput) error {
+	limit := int64(24 << 20)
+	if in.Hosted != nil {
+		limit = 48 << 20
+	}
+	if !hash.MatchString(in.CaptureSHA256) || in.CaptureID != "review_capture_"+in.CaptureSHA256[:32] || in.CaptureBytes < 1 || in.CaptureBytes > limit || !validEvidenceAnchor(in.ExpectedAnchor) {
 		return invalid()
 	}
 	start, err := time.Parse(time.RFC3339Nano, in.StartedAt)
 	end, endErr := time.Parse(time.RFC3339Nano, in.FinishedAt)
-	if err != nil || endErr != nil || start.IsZero() || end.IsZero() || end.Before(start) || end.After(time.Now().Add(5*time.Second)) {
+	if err != nil || endErr != nil || start.IsZero() || end.IsZero() || end.Before(start) {
 		return invalid()
 	}
 	r := in.Review
@@ -77,7 +95,7 @@ func validateCLIEvidence(in CLIEvidenceInput) error {
 	default:
 		return invalid()
 	}
-	if r.Complete != (r.Outcome == "completed") || len(r.Findings) > 100 || len(r.ReviewedFiles) > 10000 || r.ReportedFindings < 0 || r.Complete && (r.ReportedFindings != int64(len(r.Findings)) || len(r.ReviewedFiles) == 0) {
+	if r.Complete != (r.Outcome == "completed") || len(r.Findings) > 100 || len(r.ReviewedFiles) > 10000 || r.ReportedFindings < 0 || r.Complete && (r.ReportedFindings != int64(len(r.Findings)) || in.Hosted == nil && len(r.ReviewedFiles) == 0) {
 		return invalid()
 	}
 	seen := make(map[string]bool, len(r.ReviewedFiles))
@@ -97,24 +115,31 @@ func validateCLIEvidence(in CLIEvidenceInput) error {
 			return invalid()
 		}
 	}
+	if in.Hosted != nil {
+		return validateHostedEvidenceMetadata(in.Hosted, in.ExpectedAnchor, r)
+	}
 	return nil
 }
 
-// RecordCLIEvidence retains one immutable capture without settling or crediting
+// RecordReviewEvidence retains one immutable capture without settling or crediting
 // its attempt. Only trusted in-process capture integration may call this method.
-func (e *Engine) RecordCLIEvidence(ctx context.Context, project, attemptID string, input CLIEvidenceInput) (Receipt, error) {
+func (e *Engine) RecordReviewEvidence(ctx context.Context, project, attemptID string, input ReviewEvidenceInput) (Receipt, error) {
+	return e.recordReviewEvidenceAt(ctx, project, attemptID, input, time.Now())
+}
+
+func (e *Engine) recordReviewEvidenceAt(ctx context.Context, project, attemptID string, input ReviewEvidenceInput, now time.Time) (Receipt, error) {
 	if !identifier.MatchString(project) || !identifier.MatchString(attemptID) {
 		return Receipt{}, invalid()
 	}
 	// Validate before JSON encoding, which otherwise replaces invalid UTF-8.
-	if err := validateCLIEvidence(input); err != nil {
+	if err := validateReviewEvidence(input); err != nil {
 		return Receipt{}, err
 	}
 	canonical, err := json.Marshal(input)
 	if err != nil || len(canonical) > evidenceInputLimit {
 		return Receipt{}, invalid()
 	}
-	var owned CLIEvidenceInput
+	var owned ReviewEvidenceInput
 	if json.Unmarshal(canonical, &owned) != nil {
 		return Receipt{}, invalid()
 	}
@@ -142,7 +167,16 @@ func (e *Engine) RecordCLIEvidence(ctx context.Context, project, attemptID strin
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if o.Channel != "cli" || a.State != "active" && a.State != "uncertain" || a.Anchor == nil || !validEvidenceAnchor(*a.Anchor) || *a.Anchor != owned.ExpectedAnchor || a.Anchor.PullNumber != o.PullNumber || a.Anchor.CandidateSHA != o.HeadSHA || !hash.MatchString(o.CapabilityFingerprint) {
+		// Only a genuinely new capture is subject to the admission clock. Exact
+		// immutable replay above retains its original receipt after rollback.
+		finished, _ := time.Parse(time.RFC3339Nano, owned.FinishedAt)
+		if finished.After(now.Add(5 * time.Second)) {
+			return invalid()
+		}
+		if !validChannel(o.Channel) || a.State != "active" && a.State != "uncertain" || a.Anchor == nil || !validEvidenceAnchor(*a.Anchor) || *a.Anchor != owned.ExpectedAnchor || a.Anchor.PullNumber != o.PullNumber || a.Anchor.CandidateSHA != o.HeadSHA || !hash.MatchString(o.CapabilityFingerprint) {
+			return conflict()
+		}
+		if o.Channel == "cli" && owned.Hosted != nil || o.Channel == "hosted" && validateHostedEvidenceBinding(a, o, owned) != nil {
 			return conflict()
 		}
 		var repositoryID int64
@@ -152,7 +186,7 @@ func (e *Engine) RecordCLIEvidence(ctx context.Context, project, attemptID strin
 		if repositoryID != a.Anchor.RepositoryID {
 			return conflict()
 		}
-		record := CLIEvidence{ID: core.NewID("review_evidence"), ProjectID: project, AttemptID: a.ID, OperationID: o.ID, CapabilityFingerprint: o.CapabilityFingerprint, Anchor: *a.Anchor, Capture: owned, RecordedAt: stamp()}
+		record := ReviewEvidence{ID: core.NewID("review_evidence"), ProjectID: project, AttemptID: a.ID, OperationID: o.ID, CapabilityFingerprint: o.CapabilityFingerprint, Anchor: *a.Anchor, Capture: owned, RecordedAt: stamp()}
 		body, err := json.Marshal(record)
 		if err != nil {
 			return invalid()
@@ -175,12 +209,12 @@ func (e *Engine) RecordCLIEvidence(ctx context.Context, project, attemptID strin
 	return receipt, nil
 }
 
-// ReadCLIEvidence explicitly reads full retained evidence with current access.
-func (e *Engine) ReadCLIEvidence(ctx context.Context, scope core.Scope, id string) (CLIEvidence, error) {
+// ReadReviewEvidence explicitly reads full retained evidence with current access.
+func (e *Engine) ReadReviewEvidence(ctx context.Context, scope core.Scope, id string) (ReviewEvidence, error) {
 	if !identifier.MatchString(id) {
-		return CLIEvidence{}, invalid()
+		return ReviewEvidence{}, invalid()
 	}
-	var result CLIEvidence
+	var result ReviewEvidence
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		var body string
 		err := tx.QueryRowContext(ctx, `SELECT body_json FROM review_execution_evidence WHERE project_id=? AND id=?`, scope.ProjectID, id).Scan(&body)
@@ -190,13 +224,13 @@ func (e *Engine) ReadCLIEvidence(ctx context.Context, scope core.Scope, id strin
 		if err != nil {
 			return err
 		}
-		if len(body) > evidenceInputLimit+8192 || json.Unmarshal([]byte(body), &result) != nil {
+		if len(body) > evidenceInputLimit+8192 || json.Unmarshal([]byte(body), &result) != nil || validateReviewEvidence(result.Capture) != nil {
 			return core.Fail("storage_unavailable", "Stored review capture is unavailable.", 500)
 		}
 		return nil
 	})
 	if err != nil {
-		return CLIEvidence{}, err
+		return ReviewEvidence{}, err
 	}
 	return result, nil
 }

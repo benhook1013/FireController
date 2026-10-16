@@ -58,14 +58,21 @@ type HostedReview struct {
 }
 
 type ReviewComment struct {
-	ID              int64
-	ReviewID        int64
-	Body            string
-	Author          Author
-	Path            string
-	Line            *int64
-	HeadSHA         string
-	OriginalHeadSHA string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// InReplyToID is zero for an attached root; positive values identify replies.
+	InReplyToID       int64
+	ID                int64
+	ReviewID          int64
+	Body              string
+	Author            Author
+	Path              string
+	Line              *int64
+	StartLine         *int64
+	OriginalLine      *int64
+	OriginalStartLine *int64
+	Side              string
+	StartSide         string
+	HeadSHA           string
+	OriginalHeadSHA   string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }

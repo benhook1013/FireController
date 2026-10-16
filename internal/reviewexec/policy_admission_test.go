@@ -307,7 +307,7 @@ func TestPolicyAdmissionVersionTwoMigrationRetainsUnboundJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	admissionSQL(t, f, `DROP INDEX review_operations_cli_admission`)
+	admissionSQL(t, f, `DROP INDEX review_operations_completed_comparison`)
 	admissionSQL(t, f, `DROP TABLE review_cli_preflight`)
 	admissionSQL(t, f, `DROP INDEX IF EXISTS review_operations_coverage`)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN policy_revision`)
@@ -368,7 +368,7 @@ func TestVerifyActionRejectsAllHeadPendingAndLateCorrection(t *testing.T) {
 		t.Fatal("refused action mutated journal")
 	}
 	adjudicationDecide(t, f, id, "reject-old", 0, 0, "rejected")
-	body, err := f.e.FinalizeCLI(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-old", id, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(1)})
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-old", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
 	adjudicationReceipt(t, body, err, id, "finalized", 2)
 	if err := f.e.VerifyAction(t.Context(), attemptProject, next.ID, next.Revision); err != nil {
 		t.Fatal("closed old comparison blocked new head", err)
@@ -385,7 +385,7 @@ func TestVerifyActionRejectsAllHeadPendingAndLateCorrection(t *testing.T) {
 	if err := f.e.VerifyAction(t.Context(), attemptProject, next.ID, next.Revision); err != nil {
 		t.Fatal(err)
 	}
-	coverageComparison(t, f, prior, current, CLIComparisonState{Covered: true})
+	coverageComparison(t, f, prior, current, ComparisonState{Covered: true})
 }
 
 func TestVerifyActionAlreadyCoveredAndHostedIndependent(t *testing.T) {

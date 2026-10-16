@@ -11,10 +11,13 @@ func TestCoverageIndexRemovalRetainsJournalAndReplayAcrossRestart(t *testing.T) 
 	if got := attemptCount(t, f.store, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name='review_operations_coverage'`); got != 0 {
 		t.Fatal("fresh database maintains an unused coverage index")
 	}
-	// Reconstruct the actual version-four index in this owned fixture. Its
+	// Reconstruct the earlier unused index in this owned fixture. Its
 	// removal must preserve execution history and the original keyed receipt.
 	admissionSQL(t, f, `CREATE INDEX review_operations_coverage ON review_operations(project_id,pull_number,channel,head_sha,state,id)`)
-	admissionSQL(t, f, `UPDATE metadata SET value='4' WHERE key='schema:review_execution'`)
+	var beforeVersion string
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&beforeVersion); err != nil {
+		t.Fatal(err)
+	}
 	admissionSQL(t, f, `DELETE FROM metadata WHERE key='schema:review_execution_indexes'`)
 	journal := attemptState(t, f, a)
 	var original []byte
@@ -23,10 +26,10 @@ func TestCoverageIndexRemovalRetainsJournalAndReplayAcrossRestart(t *testing.T) 
 	}
 	cliAllowanceReopen(t, f)
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "4" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != beforeVersion {
 		t.Fatal("index migration renumbered execution-table migrations", version, err)
 	}
-	if attemptCount(t, f.store, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name='review_operations_coverage'`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name='review_operations_cli_admission'`) != 1 || attemptState(t, f, a) != journal {
+	if attemptCount(t, f.store, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name='review_operations_coverage'`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name='review_operations_completed_comparison'`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name='review_operations_cli_admission'`) != 0 || attemptState(t, f, a) != journal {
 		t.Fatal("index migration changed retained journal or active scan index")
 	}
 	var retained []byte

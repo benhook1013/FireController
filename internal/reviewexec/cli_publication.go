@@ -11,19 +11,19 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-var cliPublicationEvidenceID = regexp.MustCompile(`^review_evidence_[0-9a-f]{32}$`)
+var publicationEvidenceID = regexp.MustCompile(`^review_evidence_[0-9a-f]{32}$`)
 
-func cliPublicationConflict() error {
-	return core.Fail("observation_conflict", "Native CLI publication must retain its admitted evidence identity and current adjudication.", 409)
+func publicationConflict() error {
+	return core.Fail("observation_conflict", "Native review publication must retain its admitted evidence identity and current adjudication.", 409)
 }
 
-// PublishCLI publishes trusted retained evidence, never caller-supplied finding
+// PublishEvidence publishes trusted retained evidence, never caller-supplied finding
 // text. Publication and retry reconciliation share the authoritative ledger's
 // serialized transaction. This does not settle execution or finalize findings.
 // A nil metadata argument preserves the current stored PR facts, refusing to
 // infer missing facts from the older capture or obtain a provider observation.
-func (e *Engine) PublishCLI(ctx context.Context, project, evidenceID string, metadata *reviews.PullInput) (reviews.Receipt, error) {
-	if !identifier.MatchString(project) || !cliPublicationEvidenceID.MatchString(evidenceID) {
+func (e *Engine) PublishEvidence(ctx context.Context, project, evidenceID string, metadata *reviews.PullInput) (reviews.Receipt, error) {
+	if !identifier.MatchString(project) || !publicationEvidenceID.MatchString(evidenceID) {
 		return reviews.Receipt{}, invalid()
 	}
 	var supplied reviews.PullInput
@@ -36,11 +36,11 @@ func (e *Engine) PublishCLI(ctx context.Context, project, evidenceID string, met
 	}
 	var receipt reviews.Receipt
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		evidence, state, err := loadCLIAdjudication(ctx, tx, project, evidenceID)
+		evidence, state, err := loadReviewAdjudication(ctx, tx, project, evidenceID)
 		if err != nil {
 			return err
 		}
-		if err := validateCLIEvidence(evidence.Capture); err != nil {
+		if err := validateReviewEvidence(evidence.Capture); err != nil {
 			return adjudicationStorageError()
 		}
 		attempt, err := readAttempt(ctx, tx, project, evidence.AttemptID)
@@ -55,8 +55,11 @@ func (e *Engine) PublishCLI(ctx context.Context, project, evidenceID string, met
 		if err := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
 		}
-		if evidence.ProjectID != project || attempt.ProjectID != project || operation.ProjectID != project || attempt.OperationID != operation.ID || operation.AttemptID != attempt.ID || operation.Channel != "cli" || evidence.CapabilityFingerprint != operation.CapabilityFingerprint || !hash.MatchString(evidence.CapabilityFingerprint) || !identifier.MatchString(attempt.Provider) || attempt.Anchor == nil || *attempt.Anchor != evidence.Anchor || evidence.Capture.ExpectedAnchor != evidence.Anchor || repositoryID != evidence.Anchor.RepositoryID || operation.PullNumber != evidence.Anchor.PullNumber || operation.HeadSHA != evidence.Anchor.CandidateSHA {
-			return cliPublicationConflict()
+		if evidence.ProjectID != project || attempt.ProjectID != project || operation.ProjectID != project || attempt.OperationID != operation.ID || operation.AttemptID != attempt.ID || operation.Channel != evidenceChannel(evidence.Capture) || evidence.CapabilityFingerprint != operation.CapabilityFingerprint || !hash.MatchString(evidence.CapabilityFingerprint) || !identifier.MatchString(attempt.Provider) || attempt.Anchor == nil || *attempt.Anchor != evidence.Anchor || evidence.Capture.ExpectedAnchor != evidence.Anchor || repositoryID != evidence.Anchor.RepositoryID || operation.PullNumber != evidence.Anchor.PullNumber || operation.HeadSHA != evidence.Anchor.CandidateSHA {
+			return publicationConflict()
+		}
+		if operation.Channel == "hosted" && (attempt.State != "active" && attempt.State != "uncertain" && attempt.State != "completed" || validateHostedEvidenceIdentity(attempt, operation, evidence.Capture) != nil) {
+			return publicationConflict()
 		}
 		pull := supplied
 		if useCurrent {
@@ -66,13 +69,13 @@ func (e *Engine) PublishCLI(ctx context.Context, project, evidenceID string, met
 			}
 		}
 		if pull.Number != operation.PullNumber {
-			return cliPublicationConflict()
+			return publicationConflict()
 		}
-		run, err := cliPublicationRun(evidence, state, attempt)
+		run, err := publicationRun(evidence, state, attempt)
 		if err != nil {
 			return err
 		}
-		current, exists, err := cliPublicationReplay(ctx, tx, project, pull.Number, run)
+		current, exists, err := publicationReplay(ctx, tx, project, pull.Number, run)
 		if err != nil {
 			return err
 		}
@@ -102,9 +105,9 @@ func currentReviewPull(ctx context.Context, tx *sql.Tx, project string, number i
 	return pull, err
 }
 
-func cliPublicationRun(evidence CLIEvidence, state CLIAdjudication, attempt Attempt) (reviews.RunInput, error) {
+func publicationRun(evidence ReviewEvidence, state ReviewAdjudication, attempt Attempt) (reviews.RunInput, error) {
 	capture := evidence.Capture
-	run := reviews.RunInput{SourceRunID: evidence.ID, Channel: "cli", HeadSHA: evidence.Anchor.CandidateSHA, Reviewer: attempt.Provider, Scope: "admitted comparison", Outcome: capture.Review.Outcome, Attributable: capture.Review.Complete, Complete: capture.Review.Complete, StartedAt: capture.StartedAt, FinishedAt: capture.FinishedAt, Found: capture.Review.ReportedFindings, Finalized: state.Finalized, CoverageLimits: []string{}, Findings: make([]reviews.Finding, 0, len(state.Findings))}
+	run := reviews.RunInput{SourceRunID: evidence.ID, Channel: evidenceChannel(capture), HeadSHA: evidence.Anchor.CandidateSHA, Reviewer: attempt.Provider, Scope: "admitted comparison", Outcome: capture.Review.Outcome, Attributable: capture.Review.Complete, Complete: capture.Review.Complete, StartedAt: capture.StartedAt, FinishedAt: capture.FinishedAt, Found: capture.Review.ReportedFindings, Finalized: state.Finalized, CoverageLimits: []string{}, Findings: make([]reviews.Finding, 0, len(state.Findings))}
 	if !run.Complete {
 		run.CoverageLimits = []string{"Incomplete CLI capture; retained findings do not establish completed review coverage."}
 		if run.Found < int64(len(capture.Review.Findings)) {
@@ -116,12 +119,12 @@ func cliPublicationRun(evidence CLIEvidence, state CLIAdjudication, attempt Atte
 		if decision.Disposition == "accepted" {
 			run.Accepted++
 		}
-		run.Findings = append(run.Findings, reviews.Finding{SourceFindingID: cliProjectionFindingID(evidence.ID, int64(i)), Title: source.Title, Detail: source.Detail, Severity: source.Severity, Disposition: decision.Disposition, DecisionReason: decision.Reason, Actor: decision.ActorID, DecidedAt: decision.DecidedAt, FixSHA: decision.FixSHA, ProofNote: decision.ProofNote, ResolvedAt: decision.FixedAt})
+		run.Findings = append(run.Findings, reviews.Finding{SourceFindingID: projectionFindingID(evidence.ID, int64(i)), Title: source.Title, Detail: source.Detail, Severity: source.Severity, Disposition: decision.Disposition, DecisionReason: decision.Reason, Actor: decision.ActorID, DecidedAt: decision.DecidedAt, FixSHA: decision.FixSHA, ProofNote: decision.ProofNote, ResolvedAt: decision.FixedAt})
 	}
 	if state.Finalized {
 		counts := state.FrozenCounts
 		if !run.Complete || run.Outcome != "completed" || attempt.State != "completed" || counts == nil || counts.Found != int64(len(run.Findings)) || counts.Accepted < 0 || counts.Accepted > counts.Found || counts.Routed != 0 {
-			return run, cliPublicationConflict()
+			return run, publicationConflict()
 		}
 		run.Found, run.Accepted, run.Routed = counts.Found, counts.Accepted, counts.Routed
 	}
@@ -131,7 +134,7 @@ func cliPublicationRun(evidence CLIEvidence, state CLIAdjudication, attempt Atte
 // Compare the complete current native source and effective decisions. An
 // imported producer with the same external ID is a separate source. A native
 // source omitted from current history cannot be silently appended again.
-func cliPublicationReplay(ctx context.Context, tx *sql.Tx, project string, number int64, expected reviews.RunInput) (reviews.Receipt, bool, error) {
+func publicationReplay(ctx context.Context, tx *sql.Tx, project string, number int64, expected reviews.RunInput) (reviews.Receipt, bool, error) {
 	var receipt reviews.Receipt
 	var actual reviews.RunInput
 	var runID, limits string
@@ -145,7 +148,7 @@ func cliPublicationReplay(ctx context.Context, tx *sql.Tx, project string, numbe
 			return reviews.Receipt{}, false, err
 		}
 		if historical {
-			return reviews.Receipt{}, false, cliPublicationConflict()
+			return reviews.Receipt{}, false, publicationConflict()
 		}
 		return reviews.Receipt{}, false, nil
 	}
@@ -153,7 +156,7 @@ func cliPublicationReplay(ctx context.Context, tx *sql.Tx, project string, numbe
 		return reviews.Receipt{}, false, err
 	}
 	if actualNumber != number || len(limits) > 100<<10 || json.Unmarshal([]byte(limits), &actual.CoverageLimits) != nil {
-		return reviews.Receipt{}, false, cliPublicationConflict()
+		return reviews.Receipt{}, false, publicationConflict()
 	}
 	actual.Findings = []reviews.Finding{}
 	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=? ORDER BY position LIMIT 101`, project, receipt.ID, number, runID)
@@ -181,7 +184,7 @@ func cliPublicationReplay(ctx context.Context, tx *sql.Tx, project string, numbe
 		}
 	}
 	if len(actual.Findings) > 100 || fixed != expectedFixed || encoded(actual) != encoded(expected) {
-		return reviews.Receipt{}, false, cliPublicationConflict()
+		return reviews.Receipt{}, false, publicationConflict()
 	}
 	receipt.Outcome = "observed"
 	return receipt, true, nil

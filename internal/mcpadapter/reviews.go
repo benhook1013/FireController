@@ -103,5 +103,5 @@ func reviewDefinitions() []definition {
 		{"review_pull", "Read one stored PR summary and attempts, optionally from a retained snapshot. Historical observations do not establish current-head coverage or merge authorization.", schema(map[string]any{"pull_number": number, "snapshot": snapshot}, "pull_number")},
 		{"review_runs", "Read one newest-first stored run-summary page for an explicit PR and optional snapshot; full findings are not loaded.", schema(map[string]any{"pull_number": number, "snapshot": snapshot, "limit": limit, "cursor": cursor}, "pull_number")},
 		{"review_run", "Read explicit stored run findings, decisions, fix proof and source coverage limitations, without provider work or a readiness verdict.", schema(map[string]any{"run_id": map[string]any{"type": "string", "pattern": "^review_run_[a-f0-9]{32}$"}, "snapshot": snapshot}, "run_id")},
-	}, reviewControlDefinitions()...)
+	}, append(reviewControlDefinitions(), reviewExecutionDefinitions()...)...)
 }

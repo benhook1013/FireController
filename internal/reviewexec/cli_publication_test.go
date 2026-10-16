@@ -26,7 +26,7 @@ func (trap *cliPublicationHTTPTrap) RoundTrip(*http.Request) (*http.Response, er
 	return nil, fmt.Errorf("unexpected HTTP request during local publication")
 }
 
-func cliPublicationFixture(t *testing.T, count int, outcome string) (*attemptFixture, Attempt, CLIEvidence) {
+func cliPublicationFixture(t *testing.T, count int, outcome string) (*attemptFixture, Attempt, ReviewEvidence) {
 	t.Helper()
 	f, a, input := evidenceFixture(t, "cli", true)
 	if err := EnsureAdjudicationSchema(context.Background(), f.store); err != nil {
@@ -47,7 +47,7 @@ func cliPublicationFixture(t *testing.T, count int, outcome string) (*attemptFix
 	if input.Review.Complete {
 		input.Review.ReportedFindings = int64(count)
 	}
-	r, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, input)
+	r, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func cliPublicationFixture(t *testing.T, count int, outcome string) (*attemptFix
 	f.e.Register(mux)
 	reviews.Register(mux, f.store)
 	f.handler = mux
-	evidence, err := f.e.ReadCLIEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), r.ID)
+	evidence, err := f.e.ReadReviewEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), r.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func cliPublicationDetail(t *testing.T, f *attemptFixture, number int64, evidenc
 	return reviews.RunDetailResponse{}
 }
 
-func TestPublishCLIAuthoritativeSourceThenAdjudicationAndReplay(t *testing.T) {
+func TestPublishEvidenceAuthoritativeSourceThenAdjudicationAndReplay(t *testing.T) {
 	f, a, evidence := cliPublicationFixture(t, 2, "completed")
 	ctx := context.Background()
 	pull := projectionPull(2)
@@ -106,7 +106,7 @@ func TestPublishCLIAuthoritativeSourceThenAdjudicationAndReplay(t *testing.T) {
 	pull.HeadSHA, pull.Title = strings.Repeat("9", 40), "Fresh metadata after captured head moved"
 	journal := attemptState(t, f, a)
 	receipts := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
-	first, err := f.e.PublishCLI(ctx, attemptProject, evidence.ID, &pull)
+	first, err := f.e.PublishEvidence(ctx, attemptProject, evidence.ID, &pull)
 	if err != nil || first.Outcome != "observed" {
 		t.Fatal("initial publication failed", first, err)
 	}
@@ -116,7 +116,7 @@ func TestPublishCLIAuthoritativeSourceThenAdjudicationAndReplay(t *testing.T) {
 	}
 	for i, finding := range detail.Findings {
 		source := evidence.Capture.Review.Findings[i]
-		if finding.SourceFindingID != cliProjectionFindingID(evidence.ID, int64(i)) || finding.Title != source.Title || finding.Detail != source.Detail || finding.Disposition != "unadjudicated" {
+		if finding.SourceFindingID != projectionFindingID(evidence.ID, int64(i)) || finding.Title != source.Title || finding.Detail != source.Detail || finding.Disposition != "unadjudicated" {
 			t.Fatal("publication replaced immutable finding content", finding)
 		}
 	}
@@ -144,28 +144,28 @@ func TestPublishCLIAuthoritativeSourceThenAdjudicationAndReplay(t *testing.T) {
 	}
 	state, projection := adjudicationState(t, f, a), projectionDigest(t, f, "")
 	pull.Title, pull.HeadSHA = "Must not overwrite current facts on retry", strings.Repeat("8", 40)
-	replay, err := f.e.PublishCLI(ctx, attemptProject, evidence.ID, &pull)
+	replay, err := f.e.PublishEvidence(ctx, attemptProject, evidence.ID, &pull)
 	if err != nil || replay.ID != detail.SnapshotID || replay.Revision != detail.Revision || replay.Outcome != "observed" || adjudicationState(t, f, a) != state || projectionDigest(t, f, "") != projection {
 		t.Fatal("publication retry changed metadata, ledger, receipt, event or snapshot", err)
 	}
 }
 
-func TestPublishCLIPrepublicationFinalizationAndProofCorrection(t *testing.T) {
+func TestPublishEvidencePrepublicationFinalizationAndProofCorrection(t *testing.T) {
 	f, a, evidence := cliPublicationFixture(t, 2, "completed")
 	ctx := context.Background()
 	adjudicationDecide(t, f, evidence.ID, "before-accept", 0, 0, "accepted")
 	adjudicationDecide(t, f, evidence.ID, "before-reject", 1, 1, "rejected")
 	adjudicationComplete(t, f, a)
 	scope := f.scope(t, attemptProject, f.writer, false)
-	body, err := f.e.FinalizeCLI(ctx, scope, "before-finalize", evidence.ID, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(2)})
+	body, err := f.e.FinalizeReviewEvidence(ctx, scope, "before-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
 	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 3)
-	body, err = f.e.RecordCLIFix(ctx, scope, "before-fix", evidence.ID, CLIFixRequest{ExpectedRevision: adjudicationRevision(3), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Original retained proof"})
+	body, err = f.e.RecordFindingFix(ctx, scope, "before-fix", evidence.ID, FindingFixRequest{ExpectedRevision: adjudicationRevision(3), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Original retained proof"})
 	adjudicationReceipt(t, body, err, evidence.ID, "fix_recorded", 4)
-	body, err = f.e.RecordCLIFix(ctx, scope, "before-fix-correction", evidence.ID, CLIFixRequest{ExpectedRevision: adjudicationRevision(4), Finding: 0, ExpectedSHA: adjudicationSHA(strings.Repeat("f", 40)), FixSHA: strings.Repeat("e", 40), ProofNote: "Corrected retained proof"})
+	body, err = f.e.RecordFindingFix(ctx, scope, "before-fix-correction", evidence.ID, FindingFixRequest{ExpectedRevision: adjudicationRevision(4), Finding: 0, ExpectedSHA: adjudicationSHA(strings.Repeat("f", 40)), FixSHA: strings.Repeat("e", 40), ProofNote: "Corrected retained proof"})
 	adjudicationReceipt(t, body, err, evidence.ID, "fix_recorded", 5)
 	adjudicationDecide(t, f, evidence.ID, "before-decision-correction", 5, 1, "accepted")
 	ledger := adjudicationRead(t, f, evidence.ID)
-	if _, err := f.e.PublishCLI(ctx, attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
+	if _, err := f.e.PublishEvidence(ctx, attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
 		t.Fatal(err)
 	}
 	detail := cliPublicationDetail(t, f, 2, evidence.ID)
@@ -174,7 +174,7 @@ func TestPublishCLIPrepublicationFinalizationAndProofCorrection(t *testing.T) {
 	}
 }
 
-func TestPublishCLIConcurrentRetryCreatesOneNativeObservation(t *testing.T) {
+func TestPublishEvidenceConcurrentRetryCreatesOneNativeObservation(t *testing.T) {
 	f, _, evidence := cliPublicationFixture(t, 2, "completed")
 	start := make(chan struct{})
 	type result struct {
@@ -185,7 +185,7 @@ func TestPublishCLIConcurrentRetryCreatesOneNativeObservation(t *testing.T) {
 	for range 2 {
 		go func() {
 			<-start
-			receipt, err := f.e.PublishCLI(context.Background(), attemptProject, evidence.ID, cliPublicationPull(2))
+			receipt, err := f.e.PublishEvidence(context.Background(), attemptProject, evidence.ID, cliPublicationPull(2))
 			results <- result{receipt: receipt, err: err}
 		}()
 	}
@@ -196,7 +196,7 @@ func TestPublishCLIConcurrentRetryCreatesOneNativeObservation(t *testing.T) {
 	}
 }
 
-func TestPublishCLINilMetadataPreservesCurrentFactsWithoutHTTP(t *testing.T) {
+func TestPublishEvidenceNilMetadataPreservesCurrentFactsWithoutHTTP(t *testing.T) {
 	f, a, evidence := cliPublicationFixture(t, 2, "completed")
 	current := projectionPull(2)
 	current.Title, current.HeadSHA = "Newer current title", strings.Repeat("9", 40)
@@ -223,7 +223,7 @@ func TestPublishCLINilMetadataPreservesCurrentFactsWithoutHTTP(t *testing.T) {
 	http.DefaultTransport, http.DefaultClient = trap, &http.Client{Transport: trap}
 	t.Cleanup(func() { http.DefaultTransport, http.DefaultClient = oldTransport, oldClient })
 	journal := attemptState(t, f, a)
-	receipt, err := f.e.PublishCLI(context.Background(), attemptProject, evidence.ID, nil)
+	receipt, err := f.e.PublishEvidence(context.Background(), attemptProject, evidence.ID, nil)
 	if err != nil || receipt.Outcome != "observed" {
 		t.Fatal("local current-facts publication failed", receipt, err)
 	}
@@ -240,13 +240,13 @@ func TestPublishCLINilMetadataPreservesCurrentFactsWithoutHTTP(t *testing.T) {
 		t.Fatal("current moved head and captured head were conflated")
 	}
 	state, digest := adjudicationState(t, f, a), projectionDigest(t, f, "")
-	replay, err := f.e.PublishCLI(context.Background(), attemptProject, evidence.ID, nil)
+	replay, err := f.e.PublishEvidence(context.Background(), attemptProject, evidence.ID, nil)
 	if err != nil || replay != receipt || adjudicationState(t, f, a) != state || projectionDigest(t, f, "") != digest || trap.calls.Load() != 0 {
 		t.Fatal("nil retry emitted effects or fetched HTTP metadata", err, trap.calls.Load())
 	}
 }
 
-func TestPublishCLINilMetadataMissingCurrentPullRefusesAtomically(t *testing.T) {
+func TestPublishEvidenceNilMetadataMissingCurrentPullRefusesAtomically(t *testing.T) {
 	for _, mode := range []string{"unconfigured", "current-other-pull", "historical-target-only"} {
 		t.Run(mode, func(t *testing.T) {
 			f, a, evidence := cliPublicationFixture(t, 2, "completed")
@@ -254,7 +254,7 @@ func TestPublishCLINilMetadataMissingCurrentPullRefusesAtomically(t *testing.T) 
 				revision := int64(0)
 				var retired []reviews.RetiredPull
 				if mode == "historical-target-only" {
-					if _, err := f.e.PublishCLI(context.Background(), attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
+					if _, err := f.e.PublishEvidence(context.Background(), attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
 						t.Fatal(err)
 					}
 					revision = 1
@@ -268,7 +268,7 @@ func TestPublishCLINilMetadataMissingCurrentPullRefusesAtomically(t *testing.T) 
 				}
 			}
 			state, digest := adjudicationState(t, f, a), projectionDigest(t, f, "")
-			receipt, err := f.e.PublishCLI(context.Background(), attemptProject, evidence.ID, nil)
+			receipt, err := f.e.PublishEvidence(context.Background(), attemptProject, evidence.ID, nil)
 			attemptCode(t, err, "review_projection_missing")
 			if receipt != (reviews.Receipt{}) || adjudicationState(t, f, a) != state || projectionDigest(t, f, "") != digest {
 				t.Fatal("missing current target invented metadata or emitted effects")
@@ -277,7 +277,7 @@ func TestPublishCLINilMetadataMissingCurrentPullRefusesAtomically(t *testing.T) 
 	}
 }
 
-func TestPublishCLIIncompleteCapturesRemainExplicitlyIncomplete(t *testing.T) {
+func TestPublishEvidenceIncompleteCapturesRemainExplicitlyIncomplete(t *testing.T) {
 	for _, outcome := range []string{"uncertain", "failed", "cancelled", "rate_limited"} {
 		t.Run(outcome, func(t *testing.T) {
 			f, _, evidence := cliPublicationFixture(t, 2, outcome)
@@ -285,7 +285,7 @@ func TestPublishCLIIncompleteCapturesRemainExplicitlyIncomplete(t *testing.T) {
 				t.Fatal("fixture must retain partial findings without a terminal count")
 			}
 			adjudicationDecide(t, f, evidence.ID, "partial-decision", 0, 0, "accepted")
-			if _, err := f.e.PublishCLI(context.Background(), attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
+			if _, err := f.e.PublishEvidence(context.Background(), attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
 				t.Fatal(err)
 			}
 			detail := cliPublicationDetail(t, f, 2, evidence.ID)
@@ -296,7 +296,7 @@ func TestPublishCLIIncompleteCapturesRemainExplicitlyIncomplete(t *testing.T) {
 	}
 }
 
-func TestPublishCLIRefusesMismatchedBindingsAndBodiesAtomically(t *testing.T) {
+func TestPublishEvidenceRefusesMismatchedBindingsAndBodiesAtomically(t *testing.T) {
 	for _, mode := range []string{"project", "pull", "repository", "anchor", "operation", "fingerprint", "id", "runs", "attempts", "invalid-title", "invalid-state"} {
 		t.Run(mode, func(t *testing.T) {
 			f, a, evidence := cliPublicationFixture(t, 2, "completed")
@@ -337,7 +337,7 @@ func TestPublishCLIRefusesMismatchedBindingsAndBodiesAtomically(t *testing.T) {
 				pull.State, code = "invented", "validation_failed"
 			}
 			state, projection := adjudicationState(t, f, a), projectionDigest(t, f, "")
-			receipt, err := f.e.PublishCLI(context.Background(), project, id, &pull)
+			receipt, err := f.e.PublishEvidence(context.Background(), project, id, &pull)
 			attemptCode(t, err, code)
 			if receipt != (reviews.Receipt{}) || adjudicationState(t, f, a) != state || projectionDigest(t, f, "") != projection {
 				t.Fatal("refused publication committed partial effects")
@@ -346,11 +346,11 @@ func TestPublishCLIRefusesMismatchedBindingsAndBodiesAtomically(t *testing.T) {
 	}
 }
 
-func TestPublishCLIReplayRejectsChangedAndHistoricalOnlyNativeSources(t *testing.T) {
+func TestPublishEvidenceReplayRejectsChangedAndHistoricalOnlyNativeSources(t *testing.T) {
 	for _, mode := range []string{"text", "finding-id", "head", "counts", "decision", "historical-only"} {
 		t.Run(mode, func(t *testing.T) {
 			f, a, evidence := cliPublicationFixture(t, 2, "completed")
-			if _, err := f.e.PublishCLI(context.Background(), attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
+			if _, err := f.e.PublishEvidence(context.Background(), attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
 				t.Fatal(err)
 			}
 			var err error
@@ -375,7 +375,7 @@ func TestPublishCLIReplayRejectsChangedAndHistoricalOnlyNativeSources(t *testing
 				t.Fatal(err)
 			}
 			state, projection := adjudicationState(t, f, a), projectionDigest(t, f, "")
-			_, err = f.e.PublishCLI(context.Background(), attemptProject, evidence.ID, cliPublicationPull(2))
+			_, err = f.e.PublishEvidence(context.Background(), attemptProject, evidence.ID, cliPublicationPull(2))
 			attemptCode(t, err, "observation_conflict")
 			if adjudicationState(t, f, a) != state || projectionDigest(t, f, "") != projection {
 				t.Fatal("refused reconciliation changed stored source")
@@ -384,7 +384,7 @@ func TestPublishCLIReplayRejectsChangedAndHistoricalOnlyNativeSources(t *testing
 	}
 }
 
-func TestPublishCLIOversizedDetailRollsBackInitialProjection(t *testing.T) {
+func TestPublishEvidenceOversizedDetailRollsBackInitialProjection(t *testing.T) {
 	f, a, input := evidenceFixture(t, "cli", true)
 	if err := EnsureAdjudicationSchema(context.Background(), f.store); err != nil {
 		t.Fatal(err)
@@ -400,33 +400,33 @@ func TestPublishCLIOversizedDetailRollsBackInitialProjection(t *testing.T) {
 		input.Review.Findings = append(input.Review.Findings, finding)
 	}
 	input.Review.ReportedFindings = 100
-	r, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, input)
+	r, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	scope := f.scope(t, attemptProject, f.writer, false)
 	for i := int64(0); i < 100; i++ {
-		body, err := f.e.DecideCLIFinding(context.Background(), scope, fmt.Sprintf("large-decision-%d", i), r.ID, CLIDecisionRequest{ExpectedRevision: adjudicationRevision(i * 2), Finding: i, Disposition: "accepted", Reason: strings.Repeat("<", 2048)})
+		body, err := f.e.DecideReviewFinding(context.Background(), scope, fmt.Sprintf("large-decision-%d", i), r.ID, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(i * 2), Finding: i, Disposition: "accepted", Reason: strings.Repeat("<", 2048)})
 		adjudicationReceipt(t, body, err, r.ID, "adjudicated", i*2+1)
-		body, err = f.e.RecordCLIFix(context.Background(), scope, fmt.Sprintf("large-fix-%d", i), r.ID, CLIFixRequest{ExpectedRevision: adjudicationRevision(i*2 + 1), Finding: i, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: strings.Repeat("<", 2048)})
+		body, err = f.e.RecordFindingFix(context.Background(), scope, fmt.Sprintf("large-fix-%d", i), r.ID, FindingFixRequest{ExpectedRevision: adjudicationRevision(i*2 + 1), Finding: i, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: strings.Repeat("<", 2048)})
 		adjudicationReceipt(t, body, err, r.ID, "fix_recorded", i*2+2)
 	}
 	// Demonstrate this fixture exceeds the existing native detail byte cap,
 	// rather than relying only on individually valid maximum field lengths.
-	evidence, state, err := func() (CLIEvidence, CLIAdjudication, error) {
-		evidence, err := f.e.ReadCLIEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), r.ID)
+	evidence, state, err := func() (ReviewEvidence, ReviewAdjudication, error) {
+		evidence, err := f.e.ReadReviewEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), r.ID)
 		return evidence, adjudicationRead(t, f, r.ID), err
 	}()
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := cliPublicationRun(evidence, state, a)
+	run, err := publicationRun(evidence, state, a)
 	body, encodeErr := json.Marshal(run)
 	if err != nil || encodeErr != nil || len(body) <= 4<<20 {
 		t.Fatal("fixture does not exceed existing detail budget", len(body), err, encodeErr)
 	}
 	before, projection := adjudicationState(t, f, a), projectionDigest(t, f, "")
-	receipt, err := f.e.PublishCLI(context.Background(), attemptProject, r.ID, cliPublicationPull(2))
+	receipt, err := f.e.PublishEvidence(context.Background(), attemptProject, r.ID, cliPublicationPull(2))
 	attemptCode(t, err, "workspace_capacity")
 	if receipt != (reviews.Receipt{}) || adjudicationState(t, f, a) != before || projectionDigest(t, f, "") != projection {
 		t.Fatal("oversized initial publication committed partial projection/event effects")

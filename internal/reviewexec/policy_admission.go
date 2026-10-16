@@ -171,7 +171,7 @@ func (e *Engine) VerifyAction(ctx context.Context, project, attemptID string, ex
 			if err := verifyCLIPredecessors(ctx, tx, project, current, predecessors); err != nil {
 				return err
 			}
-			comparison, err := cliComparison(ctx, tx, project, current.RepositoryID, operation.PullNumber, *attempt.Anchor)
+			comparison, err := comparison(ctx, tx, project, current.RepositoryID, operation.PullNumber, *attempt.Anchor, "cli")
 			if err != nil {
 				return err
 			}
@@ -215,7 +215,7 @@ func verifyCLIPredecessors(ctx context.Context, tx *sql.Tx, project string, curr
 			return invalid()
 		}
 		anchor := Anchor{RepositoryID: current.RepositoryID, PullNumber: number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef}
-		comparison, err := cliComparison(ctx, tx, project, current.RepositoryID, number, anchor)
+		comparison, err := comparison(ctx, tx, project, current.RepositoryID, number, anchor, "cli")
 		if err != nil {
 			return err
 		}

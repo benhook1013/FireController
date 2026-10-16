@@ -35,16 +35,16 @@ func adjudicationFixture(t *testing.T, findings int, partial bool) (*attemptFixt
 	if partial {
 		in.Review.Outcome, in.Review.Complete = "failed", false
 	}
-	r, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, in)
+	r, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return f, a, r.ID
 }
 
-func adjudicationRead(t *testing.T, f *attemptFixture, id string) CLIAdjudication {
+func adjudicationRead(t *testing.T, f *attemptFixture, id string) ReviewAdjudication {
 	t.Helper()
-	got, err := f.e.ReadCLIAdjudication(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), id)
+	got, err := f.e.ReadReviewAdjudication(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func adjudicationReceipt(t *testing.T, body json.RawMessage, err error, id, stat
 
 func adjudicationDecide(t *testing.T, f *attemptFixture, id, key string, revision, finding int64, disposition string) json.RawMessage {
 	t.Helper()
-	body, err := f.e.DecideCLIFinding(context.Background(), f.scope(t, attemptProject, f.writer, false), key, id, CLIDecisionRequest{ExpectedRevision: adjudicationRevision(revision), Finding: finding, Disposition: disposition, Reason: "Explicit reason <script>literal</script>"})
+	body, err := f.e.DecideReviewFinding(context.Background(), f.scope(t, attemptProject, f.writer, false), key, id, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(revision), Finding: finding, Disposition: disposition, Reason: "Explicit reason <script>literal</script>"})
 	return adjudicationReceipt(t, body, err, id, "adjudicated", revision+1)
 }
 
@@ -91,7 +91,7 @@ func TestCLIAdjudicationDefaultsDecisionsAndReceiptReplay(t *testing.T) {
 	ctx := context.Background()
 	before := adjudicationState(t, f, a)
 	initial := adjudicationRead(t, f, id)
-	if initial.EvidenceID != id || initial.Revision != 0 || initial.Finalized || initial.FrozenCounts != nil || len(initial.Findings) != 2 || initial.Findings[0] != (CLIFindingDecision{Finding: 0, Disposition: "unadjudicated"}) || initial.Findings[1].Finding != 1 || adjudicationState(t, f, a) != before {
+	if initial.EvidenceID != id || initial.Revision != 0 || initial.Finalized || initial.FrozenCounts != nil || len(initial.Findings) != 2 || initial.Findings[0] != (FindingDecision{Finding: 0, Disposition: "unadjudicated"}) || initial.Findings[1].Finding != 1 || adjudicationState(t, f, a) != before {
 		t.Fatal("default view allocated state or fabricated decisions", initial)
 	}
 	if strings.Contains(encoded(initial), "Immutable finding") || strings.Contains(encoded(initial), "source text") {
@@ -99,8 +99,8 @@ func TestCLIAdjudicationDefaultsDecisionsAndReceiptReplay(t *testing.T) {
 	}
 	journal := attemptState(t, f, a)
 	scope := f.scope(t, attemptProject, f.writer, false)
-	r := CLIDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Accepted with explicit rationale"}
-	body, err := f.e.DecideCLIFinding(ctx, scope, "first-decision", id, r)
+	r := FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Accepted with explicit rationale"}
+	body, err := f.e.DecideReviewFinding(ctx, scope, "first-decision", id, r)
 	first := adjudicationReceipt(t, body, err, id, "adjudicated", 1)
 	state := adjudicationRead(t, f, id)
 	if state.Findings[0].ActorID != scope.PrincipalID || state.Findings[0].DecidedAt == "" || state.Findings[0].Reason != r.Reason || state.Finalized {
@@ -112,14 +112,14 @@ func TestCLIAdjudicationDefaultsDecisionsAndReceiptReplay(t *testing.T) {
 	}
 	adjudicationDecide(t, f, id, "second-decision", 1, 1, "rejected")
 	settled := adjudicationState(t, f, a)
-	replay, err := f.e.DecideCLIFinding(ctx, scope, "first-decision", id, r)
+	replay, err := f.e.DecideReviewFinding(ctx, scope, "first-decision", id, r)
 	if err != nil || !bytes.Equal(first, replay) || adjudicationState(t, f, a) != settled {
 		t.Fatal("exact decision retry changed state", err)
 	}
 	r.Reason = "Changed original-key request"
-	_, err = f.e.DecideCLIFinding(ctx, scope, "first-decision", id, r)
+	_, err = f.e.DecideReviewFinding(ctx, scope, "first-decision", id, r)
 	attemptCode(t, err, "idempotency_conflict")
-	_, err = f.e.DecideCLIFinding(ctx, scope, "stale-new-key", id, r)
+	_, err = f.e.DecideReviewFinding(ctx, scope, "stale-new-key", id, r)
 	attemptCode(t, err, "review_conflict")
 	if adjudicationState(t, f, a) != settled {
 		t.Fatal("failed decision changed audit or source")
@@ -127,7 +127,7 @@ func TestCLIAdjudicationDefaultsDecisionsAndReceiptReplay(t *testing.T) {
 	// A correction is attributed to its actual current actor; old attribution stays in audit.
 	admin := f.scope(t, attemptProject, f.admin, true)
 	r.ExpectedRevision, r.Reason = adjudicationRevision(2), "Correction by administrator"
-	body, err = f.e.DecideCLIFinding(ctx, admin, "correction", id, r)
+	body, err = f.e.DecideReviewFinding(ctx, admin, "correction", id, r)
 	adjudicationReceipt(t, body, err, id, "adjudicated", 3)
 	if adjudicationRead(t, f, id).Findings[0].ActorID != admin.PrincipalID {
 		t.Fatal("correction forged original actor")
@@ -160,24 +160,24 @@ func TestCLIAdjudicationFinalizeFreezesSourceCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := f.scope(t, attemptProject, f.writer, false)
-	request := CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(2)}
-	body, err := f.e.FinalizeCLI(context.Background(), scope, "finalize", id, request)
+	request := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)}
+	body, err := f.e.FinalizeReviewEvidence(context.Background(), scope, "finalize", id, request)
 	first := adjudicationReceipt(t, body, err, id, "finalized", 3)
 	got := adjudicationRead(t, f, id)
-	if !got.Finalized || got.FrozenCounts == nil || *got.FrozenCounts != (CLICounts{Found: 2, Accepted: 1, Routed: 0}) {
+	if !got.Finalized || got.FrozenCounts == nil || *got.FrozenCounts != (FindingCounts{Found: 2, Accepted: 1, Routed: 0}) {
 		t.Fatal("finalization lost immutable counts", got)
 	}
 	adjudicationDecide(t, f, id, "post-finalize-correction", 3, 0, "rejected")
 	got = adjudicationRead(t, f, id)
-	if got.Findings[0].Disposition != "rejected" || *got.FrozenCounts != (CLICounts{Found: 2, Accepted: 1}) {
+	if got.Findings[0].Disposition != "rejected" || *got.FrozenCounts != (FindingCounts{Found: 2, Accepted: 1}) {
 		t.Fatal("later correction rewrote frozen source counts", got)
 	}
 	before := adjudicationState(t, f, a)
-	replay, err := f.e.FinalizeCLI(context.Background(), scope, "finalize", id, request)
+	replay, err := f.e.FinalizeReviewEvidence(context.Background(), scope, "finalize", id, request)
 	if err != nil || !bytes.Equal(first, replay) || adjudicationState(t, f, a) != before {
 		t.Fatal("finalization retry did not retain original receipt", err)
 	}
-	_, err = f.e.FinalizeCLI(context.Background(), scope, "second-finalize", id, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(4)})
+	_, err = f.e.FinalizeReviewEvidence(context.Background(), scope, "second-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(4)})
 	attemptCode(t, err, "review_conflict")
 	var retained string
 	if err := f.store.DB().QueryRow(`SELECT body_json FROM review_execution_evidence WHERE id=?`, id).Scan(&retained); err != nil || retained != source || attemptState(t, f, a) != journal || adjudicationState(t, f, a) != before {
@@ -211,11 +211,11 @@ func TestCLIAdjudicationFinalizationRequiresCompleteSettledDecisions(t *testing.
 				adjudicationComplete(t, f, a)
 			}
 			before := adjudicationState(t, f, a)
-			body, err := f.e.FinalizeCLI(context.Background(), f.scope(t, attemptProject, f.writer, false), "finalize", id, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(revision)})
+			body, err := f.e.FinalizeReviewEvidence(context.Background(), f.scope(t, attemptProject, f.writer, false), "finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(revision)})
 			if name == "zero" {
 				adjudicationReceipt(t, body, err, id, "finalized", 1)
 				got := adjudicationRead(t, f, id)
-				if !got.Finalized || *got.FrozenCounts != (CLICounts{}) || len(got.Findings) != 0 {
+				if !got.Finalized || *got.FrozenCounts != (FindingCounts{}) || len(got.Findings) != 0 {
 					t.Fatal("empty completed capture did not finalize", got)
 				}
 			} else {
@@ -233,8 +233,8 @@ func TestCLIAdjudicationFixProofCorrectionsAndWithdrawalGuard(t *testing.T) {
 	adjudicationDecide(t, f, id, "accept", 0, 0, "accepted")
 	scope := f.scope(t, attemptProject, f.writer, false)
 	shaA, shaB := strings.Repeat("a", 40), strings.Repeat("b", 40)
-	r := CLIFixRequest{ExpectedRevision: adjudicationRevision(1), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: shaA, ProofNote: "First explicit proof"}
-	body, err := f.e.RecordCLIFix(context.Background(), scope, "first-proof", id, r)
+	r := FindingFixRequest{ExpectedRevision: adjudicationRevision(1), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: shaA, ProofNote: "First explicit proof"}
+	body, err := f.e.RecordFindingFix(context.Background(), scope, "first-proof", id, r)
 	first := adjudicationReceipt(t, body, err, id, "fix_recorded", 2)
 	initial := adjudicationRead(t, f, id).Findings[0]
 	if initial.FixSHA != shaA || initial.ProofNote != r.ProofNote || initial.FixedAt == "" || initial.ActorID != scope.PrincipalID {
@@ -247,9 +247,9 @@ func TestCLIAdjudicationFixProofCorrectionsAndWithdrawalGuard(t *testing.T) {
 	before := adjudicationState(t, f, a)
 	wrong := r
 	wrong.ExpectedRevision = adjudicationRevision(2)
-	_, err = f.e.RecordCLIFix(context.Background(), scope, "wrong-expected", id, wrong)
+	_, err = f.e.RecordFindingFix(context.Background(), scope, "wrong-expected", id, wrong)
 	attemptCode(t, err, "review_conflict")
-	_, err = f.e.DecideCLIFinding(context.Background(), scope, "reject-with-proof", id, CLIDecisionRequest{ExpectedRevision: adjudicationRevision(2), Finding: 0, Disposition: "rejected", Reason: "Cannot erase proof"})
+	_, err = f.e.DecideReviewFinding(context.Background(), scope, "reject-with-proof", id, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(2), Finding: 0, Disposition: "rejected", Reason: "Cannot erase proof"})
 	attemptCode(t, err, "review_conflict")
 	if adjudicationState(t, f, a) != before {
 		t.Fatal("proof conflict erased prior proof or audit")
@@ -259,12 +259,12 @@ func TestCLIAdjudicationFixProofCorrectionsAndWithdrawalGuard(t *testing.T) {
 	correction.ExpectedSHA = adjudicationSHA(shaA)
 	correction.FixSHA = shaB
 	correction.ProofNote = strings.Repeat("<", 2048)
-	body, err = f.e.RecordCLIFix(context.Background(), scope, "correct-proof", id, correction)
+	body, err = f.e.RecordFindingFix(context.Background(), scope, "correct-proof", id, correction)
 	adjudicationReceipt(t, body, err, id, "fix_recorded", 3)
 	correction.ExpectedRevision = adjudicationRevision(3)
 	correction.ExpectedSHA = adjudicationSHA(shaB)
 	correction.ProofNote = "Same SHA, corrected note"
-	body, err = f.e.RecordCLIFix(context.Background(), scope, "note-correction", id, correction)
+	body, err = f.e.RecordFindingFix(context.Background(), scope, "note-correction", id, correction)
 	adjudicationReceipt(t, body, err, id, "fix_recorded", 4)
 	adjudicationDecide(t, f, id, "accepted-reason-correction", 4, 0, "accepted")
 	got := adjudicationRead(t, f, id)
@@ -276,15 +276,15 @@ func TestCLIAdjudicationFixProofCorrectionsAndWithdrawalGuard(t *testing.T) {
 	bad := r
 	bad.Finding = 1
 	bad.ExpectedRevision = adjudicationRevision(6)
-	_, err = f.e.RecordCLIFix(context.Background(), scope, "proof-for-rejected", id, bad)
+	_, err = f.e.RecordFindingFix(context.Background(), scope, "proof-for-rejected", id, bad)
 	attemptCode(t, err, "review_conflict")
-	replay, err := f.e.RecordCLIFix(context.Background(), scope, "first-proof", id, r)
+	replay, err := f.e.RecordFindingFix(context.Background(), scope, "first-proof", id, r)
 	if err != nil || !bytes.Equal(replay, first) || adjudicationState(t, f, a) != before {
 		t.Fatal("proof replay duplicated correction", err)
 	}
 	changed := r
 	changed.ProofNote = "Different original key note"
-	_, err = f.e.RecordCLIFix(context.Background(), scope, "first-proof", id, changed)
+	_, err = f.e.RecordFindingFix(context.Background(), scope, "first-proof", id, changed)
 	attemptCode(t, err, "idempotency_conflict")
 	var retained string
 	if err := f.store.DB().QueryRow(`SELECT input_json FROM review_adjudication_changes WHERE evidence_id=? AND revision=2`, id).Scan(&retained); err != nil || retained != firstAudit || !strings.Contains(retained, shaA) {
@@ -303,7 +303,7 @@ func TestCLIAdjudicationConcurrentCASAndAtomicFailures(t *testing.T) {
 		for i, disposition := range []string{"accepted", "rejected"} {
 			go func(i int, d string) {
 				<-start
-				_, err := f.e.DecideCLIFinding(context.Background(), scope, fmt.Sprintf("writer-%d", i), id, CLIDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: d, Reason: "Concurrent explicit choice"})
+				_, err := f.e.DecideReviewFinding(context.Background(), scope, fmt.Sprintf("writer-%d", i), id, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: d, Reason: "Concurrent explicit choice"})
 				results <- err
 			}(i, disposition)
 		}
@@ -337,11 +337,11 @@ func TestCLIAdjudicationConcurrentCASAndAtomicFailures(t *testing.T) {
 			var err error
 			switch kind {
 			case "decision":
-				_, err = f.e.DecideCLIFinding(context.Background(), scope, "rolled-back", id, CLIDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Explicit reason"})
+				_, err = f.e.DecideReviewFinding(context.Background(), scope, "rolled-back", id, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Explicit reason"})
 			case "finalize":
-				_, err = f.e.FinalizeCLI(context.Background(), scope, "rolled-back", id, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(1)})
+				_, err = f.e.FinalizeReviewEvidence(context.Background(), scope, "rolled-back", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
 			case "fix":
-				_, err = f.e.RecordCLIFix(context.Background(), scope, "rolled-back", id, CLIFixRequest{ExpectedRevision: adjudicationRevision(1), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("a", 40), ProofNote: "Proof"})
+				_, err = f.e.RecordFindingFix(context.Background(), scope, "rolled-back", id, FindingFixRequest{ExpectedRevision: adjudicationRevision(1), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("a", 40), ProofNote: "Proof"})
 			}
 			if err == nil || strings.Contains(err.Error(), "synthetic") || adjudicationState(t, f, a) != before {
 				t.Fatal("event failure left projection/audit/receipt/source effects or leaked diagnostics", err)
@@ -355,38 +355,38 @@ func TestCLIAdjudicationAuthorizationAndRestart(t *testing.T) {
 	writer := f.scope(t, attemptProject, f.writer, false)
 	reader := evidenceReadScope(t, f, attemptProject, f.reader)
 	other := f.scope(t, otherAttemptProject, f.other, false)
-	r := CLIDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Authorized explicit decision"}
+	r := FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Authorized explicit decision"}
 	before := adjudicationState(t, f, a)
 	for _, scope := range []core.Scope{reader, other} {
 		code := "forbidden"
 		if scope.ProjectID == otherAttemptProject {
 			code = "not_found"
 		}
-		_, err := f.e.DecideCLIFinding(context.Background(), scope, "denied", id, r)
+		_, err := f.e.DecideReviewFinding(context.Background(), scope, "denied", id, r)
 		attemptCode(t, err, code)
-		_, err = f.e.FinalizeCLI(context.Background(), scope, "denied", id, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(0)})
+		_, err = f.e.FinalizeReviewEvidence(context.Background(), scope, "denied", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
 		attemptCode(t, err, code)
-		_, err = f.e.RecordCLIFix(context.Background(), scope, "denied", id, CLIFixRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("a", 40), ProofNote: "Proof"})
+		_, err = f.e.RecordFindingFix(context.Background(), scope, "denied", id, FindingFixRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("a", 40), ProofNote: "Proof"})
 		attemptCode(t, err, code)
 	}
-	_, err := f.e.ReadCLIAdjudication(context.Background(), other, id)
+	_, err := f.e.ReadReviewAdjudication(context.Background(), other, id)
 	attemptCode(t, err, "not_found")
 	forged := reader
 	forged.ProjectID = otherAttemptProject
-	_, err = f.e.ReadCLIAdjudication(context.Background(), forged, id)
+	_, err = f.e.ReadReviewAdjudication(context.Background(), forged, id)
 	attemptCode(t, err, "forbidden")
 	if adjudicationState(t, f, a) != before {
 		t.Fatal("unauthorized operation changed state")
 	}
-	body, err := f.e.DecideCLIFinding(context.Background(), writer, "durable", id, r)
+	body, err := f.e.DecideReviewFinding(context.Background(), writer, "durable", id, r)
 	first := adjudicationReceipt(t, body, err, id, "adjudicated", 1)
 	if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id IN ('exec-reader-cred','exec-writer-cred')`); err != nil {
 		t.Fatal(err)
 	}
 	before = adjudicationState(t, f, a)
-	_, err = f.e.DecideCLIFinding(context.Background(), writer, "durable", id, r)
+	_, err = f.e.DecideReviewFinding(context.Background(), writer, "durable", id, r)
 	attemptCode(t, err, "unauthorized")
-	_, err = f.e.ReadCLIAdjudication(context.Background(), reader, id)
+	_, err = f.e.ReadReviewAdjudication(context.Background(), reader, id)
 	attemptCode(t, err, "unauthorized")
 	if adjudicationState(t, f, a) != before {
 		t.Fatal("revoked replay changed state")
@@ -395,7 +395,7 @@ func TestCLIAdjudicationAuthorizationAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	adjudicationComplete(t, f, a)
-	body, err = f.e.FinalizeCLI(context.Background(), writer, "finalize", id, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(1)})
+	body, err = f.e.FinalizeReviewEvidence(context.Background(), writer, "finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
 	adjudicationReceipt(t, body, err, id, "finalized", 2)
 	state := adjudicationRead(t, f, id)
 	before = adjudicationState(t, f, a)
@@ -431,7 +431,7 @@ func TestCLIAdjudicationAuthorizationAndRestart(t *testing.T) {
 	if !reflect.DeepEqual(state, adjudicationRead(t, f, id)) || before != adjudicationState(t, f, a) {
 		t.Fatal("restart/schema init rewrote state or audit")
 	}
-	replay, err := f.e.DecideCLIFinding(context.Background(), f.scope(t, attemptProject, f.writer, false), "durable", id, r)
+	replay, err := f.e.DecideReviewFinding(context.Background(), f.scope(t, attemptProject, f.writer, false), "durable", id, r)
 	if err != nil || !bytes.Equal(first, replay) || adjudicationState(t, f, a) != before {
 		t.Fatal("restart lost exact historical receipt", err)
 	}
@@ -440,50 +440,50 @@ func TestCLIAdjudicationAuthorizationAndRestart(t *testing.T) {
 func TestCLIAdjudicationValidationAndRevisionOverflow(t *testing.T) {
 	f, a, id := adjudicationFixture(t, 1, false)
 	scope := f.scope(t, attemptProject, f.writer, false)
-	valid := CLIDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Reason"}
-	cases := map[string]func(*CLIDecisionRequest){
-		"missing_revision":  func(r *CLIDecisionRequest) { r.ExpectedRevision = nil },
-		"negative_revision": func(r *CLIDecisionRequest) { r.ExpectedRevision = adjudicationRevision(-1) },
-		"negative_finding":  func(r *CLIDecisionRequest) { r.Finding = -1 },
-		"large_finding":     func(r *CLIDecisionRequest) { r.Finding = 100 },
-		"missing_finding":   func(r *CLIDecisionRequest) { r.Finding = 1 },
-		"routed":            func(r *CLIDecisionRequest) { r.Disposition = "routed" },
-		"case":              func(r *CLIDecisionRequest) { r.Disposition = "Accepted" },
-		"empty_reason":      func(r *CLIDecisionRequest) { r.Reason = " \n" },
-		"large_reason":      func(r *CLIDecisionRequest) { r.Reason = strings.Repeat("é", 1025) },
-		"control":           func(r *CLIDecisionRequest) { r.Reason = "unsafe\x00" },
-		"utf8":              func(r *CLIDecisionRequest) { r.Reason = "unsafe\xff" },
+	valid := FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Reason"}
+	cases := map[string]func(*FindingDecisionRequest){
+		"missing_revision":  func(r *FindingDecisionRequest) { r.ExpectedRevision = nil },
+		"negative_revision": func(r *FindingDecisionRequest) { r.ExpectedRevision = adjudicationRevision(-1) },
+		"negative_finding":  func(r *FindingDecisionRequest) { r.Finding = -1 },
+		"large_finding":     func(r *FindingDecisionRequest) { r.Finding = 100 },
+		"missing_finding":   func(r *FindingDecisionRequest) { r.Finding = 1 },
+		"routed":            func(r *FindingDecisionRequest) { r.Disposition = "routed" },
+		"case":              func(r *FindingDecisionRequest) { r.Disposition = "Accepted" },
+		"empty_reason":      func(r *FindingDecisionRequest) { r.Reason = " \n" },
+		"large_reason":      func(r *FindingDecisionRequest) { r.Reason = strings.Repeat("é", 1025) },
+		"control":           func(r *FindingDecisionRequest) { r.Reason = "unsafe\x00" },
+		"utf8":              func(r *FindingDecisionRequest) { r.Reason = "unsafe\xff" },
 	}
 	before := adjudicationState(t, f, a)
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {
 			r := valid
 			change(&r)
-			_, err := f.e.DecideCLIFinding(context.Background(), scope, "invalid", id, r)
+			_, err := f.e.DecideReviewFinding(context.Background(), scope, "invalid", id, r)
 			attemptCode(t, err, "validation_failed")
 			if adjudicationState(t, f, a) != before || strings.Contains(err.Error(), "unsafe") {
 				t.Fatal("invalid decision changed state or leaked input")
 			}
 		})
 	}
-	fix := CLIFixRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("a", 40), ProofNote: "Proof"}
-	fixCases := map[string]func(*CLIFixRequest){
-		"revision":          func(r *CLIFixRequest) { r.ExpectedRevision = nil },
-		"negative_revision": func(r *CLIFixRequest) { r.ExpectedRevision = adjudicationRevision(-1) },
-		"expected_missing":  func(r *CLIFixRequest) { r.ExpectedSHA = nil },
-		"expected_invalid":  func(r *CLIFixRequest) { r.ExpectedSHA = adjudicationSHA("main") },
-		"sha":               func(r *CLIFixRequest) { r.FixSHA = strings.Repeat("A", 40) },
-		"empty_note":        func(r *CLIFixRequest) { r.ProofNote = " \n" },
-		"large_note":        func(r *CLIFixRequest) { r.ProofNote = strings.Repeat("x", 2049) },
-		"control_note":      func(r *CLIFixRequest) { r.ProofNote = "unsafe\x00" },
-		"utf8_note":         func(r *CLIFixRequest) { r.ProofNote = "unsafe\xff" },
-		"finding":           func(r *CLIFixRequest) { r.Finding = -1 },
+	fix := FindingFixRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("a", 40), ProofNote: "Proof"}
+	fixCases := map[string]func(*FindingFixRequest){
+		"revision":          func(r *FindingFixRequest) { r.ExpectedRevision = nil },
+		"negative_revision": func(r *FindingFixRequest) { r.ExpectedRevision = adjudicationRevision(-1) },
+		"expected_missing":  func(r *FindingFixRequest) { r.ExpectedSHA = nil },
+		"expected_invalid":  func(r *FindingFixRequest) { r.ExpectedSHA = adjudicationSHA("main") },
+		"sha":               func(r *FindingFixRequest) { r.FixSHA = strings.Repeat("A", 40) },
+		"empty_note":        func(r *FindingFixRequest) { r.ProofNote = " \n" },
+		"large_note":        func(r *FindingFixRequest) { r.ProofNote = strings.Repeat("x", 2049) },
+		"control_note":      func(r *FindingFixRequest) { r.ProofNote = "unsafe\x00" },
+		"utf8_note":         func(r *FindingFixRequest) { r.ProofNote = "unsafe\xff" },
+		"finding":           func(r *FindingFixRequest) { r.Finding = -1 },
 	}
 	for name, change := range fixCases {
 		t.Run("fix_"+name, func(t *testing.T) {
 			r := fix
 			change(&r)
-			_, err := f.e.RecordCLIFix(context.Background(), scope, "invalid", id, r)
+			_, err := f.e.RecordFindingFix(context.Background(), scope, "invalid", id, r)
 			attemptCode(t, err, "validation_failed")
 			if adjudicationState(t, f, a) != before {
 				t.Fatal("invalid fix changed state")
@@ -491,17 +491,17 @@ func TestCLIAdjudicationValidationAndRevisionOverflow(t *testing.T) {
 		})
 	}
 	for _, revision := range []*int64{nil, adjudicationRevision(-1)} {
-		_, err := f.e.FinalizeCLI(context.Background(), scope, "invalid", id, CLIFinalizeRequest{ExpectedRevision: revision})
+		_, err := f.e.FinalizeReviewEvidence(context.Background(), scope, "invalid", id, FinalizeReviewRequest{ExpectedRevision: revision})
 		attemptCode(t, err, "validation_failed")
 	}
-	_, err := f.e.ReadCLIAdjudication(context.Background(), scope, "bad/id")
+	_, err := f.e.ReadReviewAdjudication(context.Background(), scope, "bad/id")
 	attemptCode(t, err, "validation_failed")
-	_, err = f.e.DecideCLIFinding(context.Background(), scope, "bad-id", "bad/id", valid)
+	_, err = f.e.DecideReviewFinding(context.Background(), scope, "bad-id", "bad/id", valid)
 	attemptCode(t, err, "validation_failed")
-	_, err = f.e.DecideCLIFinding(context.Background(), scope, "missing", "review_evidence_missing", valid)
+	_, err = f.e.DecideReviewFinding(context.Background(), scope, "missing", "review_evidence_missing", valid)
 	attemptCode(t, err, "not_found")
 	valid.Reason = strings.Repeat("<", 2048)
-	body, err := f.e.DecideCLIFinding(context.Background(), scope, "boundary-reason", id, valid)
+	body, err := f.e.DecideReviewFinding(context.Background(), scope, "boundary-reason", id, valid)
 	adjudicationReceipt(t, body, err, id, "adjudicated", 1)
 	state := adjudicationRead(t, f, id)
 	state.Revision = math.MaxInt64
@@ -510,12 +510,12 @@ func TestCLIAdjudicationValidationAndRevisionOverflow(t *testing.T) {
 	}
 	before = adjudicationState(t, f, a)
 	valid.ExpectedRevision = adjudicationRevision(math.MaxInt64)
-	_, err = f.e.DecideCLIFinding(context.Background(), scope, "overflow", id, valid)
+	_, err = f.e.DecideReviewFinding(context.Background(), scope, "overflow", id, valid)
 	attemptCode(t, err, "review_conflict")
-	_, err = f.e.FinalizeCLI(context.Background(), scope, "overflow", id, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(math.MaxInt64)})
+	_, err = f.e.FinalizeReviewEvidence(context.Background(), scope, "overflow", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(math.MaxInt64)})
 	attemptCode(t, err, "review_conflict")
 	fix.ExpectedRevision = adjudicationRevision(math.MaxInt64)
-	_, err = f.e.RecordCLIFix(context.Background(), scope, "overflow", id, fix)
+	_, err = f.e.RecordFindingFix(context.Background(), scope, "overflow", id, fix)
 	attemptCode(t, err, "review_conflict")
 	if adjudicationState(t, f, a) != before {
 		t.Fatal("revision overflow changed state or allocated receipt")

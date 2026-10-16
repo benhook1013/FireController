@@ -29,6 +29,7 @@ type arguments struct {
 	reviewDecision             client.ReviewDecisionRequest
 	reviewFix                  client.ReviewFixRequest
 	reviewFinalize             client.ReviewFinalizeRequest
+	reviewRequest              client.ReviewRequest
 }
 type definition struct {
 	name, description string
@@ -41,8 +42,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	known := make(map[string]bool)
 	for _, tool := range definitions {
 		known[tool.name] = true
-		write := mutationTool(tool.name)
-		openWorld := false
+		write := mutationTool(tool.name) || tool.name == "review_request"
+		openWorld := tool.name == "review_request"
 		destructive := tool.name == "job_edit" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, err := parseArguments(tool.name, request.Params.Arguments)
@@ -69,6 +70,12 @@ func boundServer(binding profile.Binding) *mcp.Server {
 						Verified bool `json:"verified"`
 					}{service.Identity(), true}
 				}
+			case "review_execution_read":
+				value, err = service.ReviewExecution(ctx)
+			case "review_operation_read":
+				value, err = service.ReviewOperation(ctx, args.id)
+			case "review_request":
+				value, err = service.RequestReview(ctx, args.key, args.reviewRequest)
 			case "review_queue":
 				value, err = service.ReviewQueue(ctx, options)
 			case "review_pull":

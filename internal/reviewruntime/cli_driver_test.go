@@ -204,11 +204,11 @@ func TestCLIDriverRealRunnerCompletesOneIncludedReviewAndRetainsEvidence(t *test
 	if err := f.store.DB().QueryRow(`SELECT id FROM review_execution_evidence WHERE attempt_id=?`, a.ID).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	evidence, err := f.engine.ReadCLIEvidence(context.Background(), f.scopeWithAccess(t, f.readerToken(), false, "read"), id)
+	evidence, err := f.engine.ReadReviewEvidence(context.Background(), f.scopeWithAccess(t, f.readerToken(), false, "read"), id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := f.engine.ReadCLIAdjudication(context.Background(), f.scopeWithAccess(t, f.readerToken(), false, "read"), id)
+	state, err := f.engine.ReadReviewAdjudication(context.Background(), f.scopeWithAccess(t, f.readerToken(), false, "read"), id)
 	if err != nil || !evidence.Capture.Review.Complete || evidence.Anchor != *a.Anchor || state.Finalized || state.Findings[0].Disposition != "unadjudicated" {
 		t.Fatal("driver invented adjudication or lost source", err)
 	}
@@ -464,7 +464,7 @@ func seedCLIDriverNativeCoverage(t *testing.T, f *cliDriverFixture, number int64
 		t.Fatal(err)
 	}
 	revision := int64(0)
-	if _, err := f.engine.FinalizeCLI(context.Background(), f.scope(t, f.writer, false), "fixture-source-finalized", result.Receipt.ID, reviewexec.CLIFinalizeRequest{ExpectedRevision: &revision}); err != nil {
+	if _, err := f.engine.FinalizeReviewEvidence(context.Background(), f.scope(t, f.writer, false), "fixture-source-finalized", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -628,7 +628,7 @@ func cliDriverCompletedFinding(t *testing.T, f *cliDriverFixture) (reviewexec.At
 
 func cliDriverDecision(t *testing.T, f *cliDriverFixture, id, key string, revision int64, disposition string) {
 	t.Helper()
-	if _, err := f.engine.DecideCLIFinding(t.Context(), f.scope(t, f.writer, false), key, id, reviewexec.CLIDecisionRequest{ExpectedRevision: &revision, Finding: 0, Disposition: disposition, Reason: "Explicit synthetic decision"}); err != nil {
+	if _, err := f.engine.DecideReviewFinding(t.Context(), f.scope(t, f.writer, false), key, id, reviewexec.FindingDecisionRequest{ExpectedRevision: &revision, Finding: 0, Disposition: disposition, Reason: "Explicit synthetic decision"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -643,7 +643,7 @@ func TestCLIDriverPendingEvidenceBlocksRepeatSpendAcrossHeads(t *testing.T) {
 			}
 			if phase == "accepted-unfixed" {
 				revision := int64(1)
-				if _, err := f.engine.FinalizeCLI(t.Context(), f.scope(t, f.writer, false), "finalize-pending", id, reviewexec.CLIFinalizeRequest{ExpectedRevision: &revision}); err != nil {
+				if _, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "finalize-pending", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -691,7 +691,7 @@ func TestCLIDriverLatePreparationCorrectionNeverRunsReview(t *testing.T) {
 	_, id := cliDriverCompletedFinding(t, f)
 	cliDriverDecision(t, f, id, "reject-source", 0, "rejected")
 	revision := int64(1)
-	if _, err := f.engine.FinalizeCLI(t.Context(), f.scope(t, f.writer, false), "finalize-source", id, reviewexec.CLIFinalizeRequest{ExpectedRevision: &revision}); err != nil {
+	if _, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "finalize-source", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
 		t.Fatal(err)
 	}
 	// The same Git objects under a different explicit base comparison have no
@@ -725,7 +725,7 @@ func TestCLIDriverPredecessorCorrectionAfterGitVerificationStopsReview(t *testin
 			_, id := cliDriverCompletedFinding(t, f)
 			cliDriverDecision(t, f, id, "reject-parent", 0, "rejected")
 			revision := int64(1)
-			if _, err := f.engine.FinalizeCLI(t.Context(), f.scope(t, f.writer, false), "finalize-parent", id, reviewexec.CLIFinalizeRequest{ExpectedRevision: &revision}); err != nil {
+			if _, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "finalize-parent", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
 				t.Fatal(err)
 			}
 			source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
@@ -781,7 +781,7 @@ func TestCLIDriverPredecessorCorrectionAfterGitVerificationStopsReview(t *testin
 			// The corrected predecessor is still the original finalized source count;
 			// only its current accepted-without-fix obligation changed.
 			if correct {
-				state, err := f.engine.ReadCLIAdjudication(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), id)
+				state, err := f.engine.ReadReviewAdjudication(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), id)
 				if err != nil || !state.Finalized || state.FrozenCounts.Accepted != 0 || state.Findings[0].Disposition != "accepted" || state.Findings[0].FixSHA != "" {
 					t.Fatal("regression did not commit the actual correction", err)
 				}
@@ -903,11 +903,11 @@ func TestCLIDriverRetainedEvidenceSurvivesMissingCurrentProjection(t *testing.T)
 			if err = f.store.DB().QueryRow(`SELECT id FROM review_execution_evidence WHERE attempt_id=?`, operation.AttemptID).Scan(&evidenceID); err != nil {
 				t.Fatal(err)
 			}
-			evidence, err := f.engine.ReadCLIEvidence(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), evidenceID)
+			evidence, err := f.engine.ReadReviewEvidence(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), evidenceID)
 			if err != nil || !evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed" {
 				t.Fatal("authoritative capture lost", err)
 			}
-			adjudication, err := f.engine.ReadCLIAdjudication(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), evidenceID)
+			adjudication, err := f.engine.ReadReviewAdjudication(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), evidenceID)
 			if err != nil || adjudication.Finalized || len(adjudication.Findings) != 1 || adjudication.Findings[0].Disposition != "unadjudicated" {
 				t.Fatal("publication failure fabricated finding disposition/coverage", err)
 			}
@@ -918,7 +918,7 @@ func TestCLIDriverRetainedEvidenceSurvivesMissingCurrentProjection(t *testing.T)
 				if cliCount(t, f.store, `SELECT count(*) FROM review_workspace w JOIN review_pulls p ON p.project_id=w.project_id AND p.snapshot_id=w.snapshot_id WHERE w.project_id=? AND p.number=2`, f.project) != 0 {
 					t.Fatal("driver recreated retired current metadata")
 				}
-				comparison, err := f.engine.CLIComparison(t.Context(), f.project, reviewexec.SourcePlan{Repository: f.reader.repository, Pull: f.reader.pulls[2], ParentSHA: f.baseSHA, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+				comparison, err := f.engine.Comparison(t.Context(), f.project, reviewexec.SourcePlan{Repository: f.reader.repository, Pull: f.reader.pulls[2], ParentSHA: f.baseSHA, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}, "cli")
 				if err != nil || !comparison.Pending || comparison.Covered {
 					t.Fatal("completed ledger-only evidence escaped pending coverage", comparison, err)
 				}

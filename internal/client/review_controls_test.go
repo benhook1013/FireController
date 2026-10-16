@@ -1,11 +1,14 @@
 package client_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,7 +25,7 @@ const controlEvidenceID = "review_evidence_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 func sampleControlEvidence() client.ReviewEvidence {
 	timestamp := "2026-10-15T00:00:00Z"
 	hash := strings.Repeat("a", 64)
-	return client.ReviewEvidence{ID: controlEvidenceID, ProjectID: "project-one", AttemptID: "review_attempt_" + strings.Repeat("a", 32), OperationID: "review_operation_" + strings.Repeat("a", 32), CapabilityFingerprint: hash,
+	return client.ReviewEvidence{Channel: "cli", ID: controlEvidenceID, ProjectID: "project-one", AttemptID: "review_attempt_" + strings.Repeat("a", 32), OperationID: "review_operation_" + strings.Repeat("a", 32), CapabilityFingerprint: hash,
 		Anchor:  client.ReviewAnchor{RepositoryID: 1, Repository: "owner/repo", PullNumber: 2, CandidateSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), ParentSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("c", 40), PatchSHA256: hash, BaseRef: "main", ObservedAt: timestamp},
 		Capture: client.ReviewEvidenceCapture{CaptureID: "review_capture_" + hash[:32], CaptureSHA256: hash, CaptureBytes: 1024, StartedAt: timestamp, FinishedAt: timestamp, Outcome: "completed", Complete: true, ReportedFindings: 1, ReviewedFiles: []string{"source.go"}, Findings: []client.ReviewEvidenceFinding{{Finding: 0, Title: "Exact <finding>", Detail: "  immutable detail\n", Severity: "high", Path: "outside/diff.go", StartLine: 8, EndLine: 12}}}, RecordedAt: timestamp}
 }
@@ -79,7 +82,7 @@ func TestReviewControlsNativeHTTPReceiptsReplayAndReadIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := strings.Repeat("e", 64)
-	capture, err := e.RecordCLIEvidence(ctx, f.project, attempt.ID, reviewexec.CLIEvidenceInput{CaptureID: "review_capture_" + hash[:32], CaptureSHA256: hash, CaptureBytes: 1024, ExpectedAnchor: anchor, StartedAt: now, FinishedAt: now, Review: reviewprovider.CLIReview{Outcome: "completed", Complete: true, ReportedFindings: 1, ReviewedFiles: []string{"source.go"}, Findings: []reviewprovider.CLIFinding{{Title: "Native source", Detail: "SOURCE_TEXT_NO_ECHO", Severity: "high"}}}})
+	capture, err := e.RecordReviewEvidence(ctx, f.project, attempt.ID, reviewexec.ReviewEvidenceInput{CaptureID: "review_capture_" + hash[:32], CaptureSHA256: hash, CaptureBytes: 1024, ExpectedAnchor: anchor, StartedAt: now, FinishedAt: now, Review: reviewprovider.ParsedReview{Outcome: "completed", Complete: true, ReportedFindings: 1, ReviewedFiles: []string{"source.go"}, Findings: []reviewprovider.ParsedFinding{{Title: "Native source", Detail: "SOURCE_TEXT_NO_ECHO", Severity: "high"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,5 +324,264 @@ func TestReviewControlsStreamingErrorBoundAndLargerSuccess(t *testing.T) {
 	value, err := read.ReviewEvidence(context.Background(), controlEvidenceID)
 	if err != nil || len(value.Capture.Findings) != 5 {
 		t.Fatal("success budget was incorrectly reduced to error budget", err)
+	}
+}
+
+func sampleHostedControlEvidence() client.ReviewEvidence {
+	value := sampleControlEvidence()
+	value.Channel = "hosted"
+	value.Capture.Hosted = &client.ReviewHostedPublication{PublicationID: "12345678-1234-1234-1234-123456789abc", ProviderAttemptID: "abcdefab-abcd-abcd-abcd-abcdefabcdef", TriggerCommentID: 9, ReviewIDs: []int64{11, 12}, ObservedBaseSHA: value.Anchor.ParentSHA}
+	value.Capture.ReviewedFiles = []string{}
+	value.Capture.Findings = []client.ReviewEvidenceFinding{}
+	for index, kind := range []string{"inline", "outside_diff", "duplicate"} {
+		fingerprint := fmt.Sprintf("%024x", index+1)
+		source := &client.ReviewHostedFindingSource{Kind: kind, Fingerprint: fingerprint, ReviewID: 11}
+		finding := client.ReviewEvidenceFinding{Finding: int64(index), Title: "Exact <" + kind + ">", Detail: "  literal <script>source</script> & `code`\n", Severity: "high", Path: "source/" + kind + ".go", Source: source}
+		if kind == "inline" {
+			source.CommentID = 21
+			source.SourceKey = "hosted-comment:21:" + fingerprint
+		} else {
+			finding.StartLine, finding.EndLine = 2, 4
+			source.Side = "RIGHT"
+			source.SourceKey = "hosted-review:11:" + kind + ":" + fingerprint
+		}
+		value.Capture.Findings = append(value.Capture.Findings, finding)
+	}
+	value.Capture.ReportedFindings = int64(len(value.Capture.Findings))
+	return value
+}
+
+func readControlEvidenceWire(t *testing.T, data []byte) (client.ReviewEvidence, error) {
+	t.Helper()
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		calls.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/reviews/evidence/"+controlEvidenceID || r.URL.RawQuery != "" || r.Header.Get("X-FC-Instance") != "instance-one" || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("Authorization") != "Bearer "+testToken {
+			t.Error("evidence read changed bound scope, method or query")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+	c := newClient(t, srv)
+	defer c.Close()
+	value, err := c.ReviewEvidence(t.Context(), controlEvidenceID)
+	if calls.Load() != 1 {
+		t.Fatal("evidence read retried or fetched another resource")
+	}
+	return value, err
+}
+
+func TestReviewHostedEvidenceChannelFactsAndLiteralSourcePreservation(t *testing.T) {
+	for _, name := range []string{"cli", "cli incomplete", "hosted", "merge base", "zero", "maximum", "maximum review ids"} {
+		t.Run(name, func(t *testing.T) {
+			value := sampleHostedControlEvidence()
+			switch name {
+			case "cli":
+				value = sampleControlEvidence()
+				value.Capture.CaptureBytes = 24 << 20
+			case "cli incomplete":
+				value = sampleControlEvidence()
+				value.Capture.Complete, value.Capture.Outcome = false, "uncertain"
+				value.Capture.ReviewedFiles = []string{}
+			case "hosted":
+				value.Capture.CaptureBytes = 48 << 20
+			case "merge base":
+				value.Capture.Hosted.ObservedBaseSHA = value.Anchor.MergeBaseSHA
+			case "zero":
+				value.Capture.Findings, value.Capture.ReportedFindings = []client.ReviewEvidenceFinding{}, 0
+			case "maximum":
+				finding := value.Capture.Findings[0]
+				value.Capture.Findings = nil
+				for i := int64(0); i < 100; i++ {
+					copy := finding
+					source := *finding.Source
+					source.Fingerprint = fmt.Sprintf("%024x", i+1)
+					source.SourceKey = "hosted-comment:21:" + source.Fingerprint
+					copy.Finding, copy.Source = i, &source
+					value.Capture.Findings = append(value.Capture.Findings, copy)
+				}
+				value.Capture.ReportedFindings = 100
+			case "maximum review ids":
+				value.Capture.Hosted.ReviewIDs = nil
+				for i := int64(1); i <= 200; i++ {
+					value.Capture.Hosted.ReviewIDs = append(value.Capture.Hosted.ReviewIDs, i)
+				}
+			}
+			data, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value.Channel == "cli" && (bytes.Contains(data, []byte(`"hosted"`)) || bytes.Contains(data, []byte(`"source"`))) {
+				t.Fatal("CLI evidence serialized hosted source metadata")
+			}
+			got, err := readControlEvidenceWire(t, data)
+			if err != nil || !reflect.DeepEqual(got, value) {
+				t.Fatalf("valid explicit channel/source facts changed: %s %v", name, err)
+			}
+		})
+	}
+}
+
+func TestReviewHostedEvidenceRejectsChannelPublicationAndSourceMismatches(t *testing.T) {
+	tests := map[string]func(*client.ReviewEvidence){
+		"unknown channel":          func(v *client.ReviewEvidence) { v.Channel = "other" },
+		"case channel":             func(v *client.ReviewEvidence) { v.Channel = "Hosted" },
+		"hosted metadata missing":  func(v *client.ReviewEvidence) { v.Capture.Hosted = nil },
+		"CLI with hosted metadata": func(v *client.ReviewEvidence) { v.Channel = "cli"; v.Capture.ReviewedFiles = []string{"source.go"} },
+		"CLI with source only": func(v *client.ReviewEvidence) {
+			v.Channel = "cli"
+			v.Capture.Hosted = nil
+			v.Capture.ReviewedFiles = []string{"source.go"}
+		},
+		"hosted incomplete":           func(v *client.ReviewEvidence) { v.Capture.Complete = false; v.Capture.Outcome = "uncertain" },
+		"hosted failed":               func(v *client.ReviewEvidence) { v.Capture.Complete = false; v.Capture.Outcome = "failed" },
+		"hosted reviewed file claims": func(v *client.ReviewEvidence) { v.Capture.ReviewedFiles = []string{"source.go"} },
+		"hosted reported count":       func(v *client.ReviewEvidence) { v.Capture.ReportedFindings = 0 },
+		"hosted byte overflow":        func(v *client.ReviewEvidence) { v.Capture.CaptureBytes = 48<<20 + 1 },
+		"publication uppercase": func(v *client.ReviewEvidence) {
+			v.Capture.Hosted.PublicationID = strings.ToUpper(v.Capture.Hosted.PublicationID)
+		},
+		"publication malformed":      func(v *client.ReviewEvidence) { v.Capture.Hosted.PublicationID = strings.Repeat("a", 36) },
+		"provider attempt malformed": func(v *client.ReviewEvidence) { v.Capture.Hosted.ProviderAttemptID = "not-a-uuid" },
+		"trigger id zero":            func(v *client.ReviewEvidence) { v.Capture.Hosted.TriggerCommentID = 0 },
+		"trigger id negative":        func(v *client.ReviewEvidence) { v.Capture.Hosted.TriggerCommentID = -1 },
+		"review ids empty":           func(v *client.ReviewEvidence) { v.Capture.Hosted.ReviewIDs = []int64{} },
+		"review id zero":             func(v *client.ReviewEvidence) { v.Capture.Hosted.ReviewIDs = []int64{0} },
+		"review id negative":         func(v *client.ReviewEvidence) { v.Capture.Hosted.ReviewIDs = []int64{-1} },
+		"review id duplicate":        func(v *client.ReviewEvidence) { v.Capture.Hosted.ReviewIDs = []int64{11, 11} },
+		"review ids overflow": func(v *client.ReviewEvidence) {
+			v.Capture.Hosted.ReviewIDs = make([]int64, 201)
+			for i := range v.Capture.Hosted.ReviewIDs {
+				v.Capture.Hosted.ReviewIDs[i] = int64(i + 1)
+			}
+		},
+		"base not comparison":               func(v *client.ReviewEvidence) { v.Capture.Hosted.ObservedBaseSHA = strings.Repeat("d", 40) },
+		"base uppercase":                    func(v *client.ReviewEvidence) { v.Capture.Hosted.ObservedBaseSHA = strings.ToUpper(v.Anchor.ParentSHA) },
+		"source missing":                    func(v *client.ReviewEvidence) { v.Capture.Findings[0].Source = nil },
+		"source unknown kind":               func(v *client.ReviewEvidence) { v.Capture.Findings[0].Source.Kind = "unknown" },
+		"source review outside publication": func(v *client.ReviewEvidence) { v.Capture.Findings[0].Source.ReviewID = 13 },
+		"fingerprint uppercase":             func(v *client.ReviewEvidence) { v.Capture.Findings[0].Source.Fingerprint = strings.Repeat("A", 24) },
+		"fingerprint length":                func(v *client.ReviewEvidence) { v.Capture.Findings[0].Source.Fingerprint = strings.Repeat("a", 23) },
+		"fingerprint duplicate globally": func(v *client.ReviewEvidence) {
+			source := v.Capture.Findings[1].Source
+			source.Fingerprint = v.Capture.Findings[0].Source.Fingerprint
+			source.SourceKey = "hosted-review:11:outside_diff:" + source.Fingerprint
+		},
+		"inline comment missing": func(v *client.ReviewEvidence) { v.Capture.Findings[0].Source.CommentID = 0 },
+		"inline path missing":    func(v *client.ReviewEvidence) { v.Capture.Findings[0].Path = "" },
+		"inline key mismatch": func(v *client.ReviewEvidence) {
+			v.Capture.Findings[0].Source.SourceKey = "hosted-comment:22:" + v.Capture.Findings[0].Source.Fingerprint
+		},
+		"inline summary key": func(v *client.ReviewEvidence) {
+			source := v.Capture.Findings[0].Source
+			source.SourceKey = "hosted-review:11:inline:" + source.Fingerprint
+		},
+		"summary comment id": func(v *client.ReviewEvidence) { v.Capture.Findings[1].Source.CommentID = 21 },
+		"summary root key": func(v *client.ReviewEvidence) {
+			source := v.Capture.Findings[1].Source
+			source.SourceKey = "hosted-comment:21:" + source.Fingerprint
+		},
+		"summary key review mismatch": func(v *client.ReviewEvidence) {
+			source := v.Capture.Findings[1].Source
+			source.SourceKey = "hosted-review:12:outside_diff:" + source.Fingerprint
+		},
+		"summary kind mismatch":  func(v *client.ReviewEvidence) { v.Capture.Findings[1].Source.Kind = "duplicate" },
+		"summary path missing":   func(v *client.ReviewEvidence) { v.Capture.Findings[1].Path = "" },
+		"summary start unknown":  func(v *client.ReviewEvidence) { v.Capture.Findings[1].StartLine = 0 },
+		"summary end unknown":    func(v *client.ReviewEvidence) { v.Capture.Findings[1].EndLine = 0 },
+		"summary reversed range": func(v *client.ReviewEvidence) { v.Capture.Findings[1].EndLine = 1 },
+		"side invalid":           func(v *client.ReviewEvidence) { v.Capture.Findings[0].Source.Side = "right" },
+		"finding overflow": func(v *client.ReviewEvidence) {
+			first := v.Capture.Findings[0]
+			v.Capture.Findings = make([]client.ReviewEvidenceFinding, 101)
+			for i := range v.Capture.Findings {
+				v.Capture.Findings[i] = first
+			}
+			v.Capture.ReportedFindings = 101
+		},
+		"CLI byte overflow": func(v *client.ReviewEvidence) { *v = sampleControlEvidence(); v.Capture.CaptureBytes = 24<<20 + 1 },
+	}
+	for name, change := range tests {
+		t.Run(name, func(t *testing.T) {
+			value := sampleHostedControlEvidence()
+			change(&value)
+			data, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = readControlEvidenceWire(t, data)
+			checkError(t, err, "invalid_response")
+		})
+	}
+}
+
+func TestReviewHostedEvidenceStrictWirePresenceAndShape(t *testing.T) {
+	valid, _ := json.Marshal(sampleHostedControlEvidence())
+	for _, target := range []string{"publication", "finding source"} {
+		fields := []string{"publication_id", "provider_attempt_id", "trigger_comment_id", "review_ids", "observed_base_sha"}
+		if target == "finding source" {
+			fields = []string{"source_key", "fingerprint", "kind", "side", "review_id", "comment_id"}
+		}
+		for _, field := range fields {
+			for _, mode := range []string{"missing", "null", "alias", "extra", "duplicate", "wrongtype"} {
+				t.Run(target+"/"+field+"/"+mode, func(t *testing.T) {
+					var object map[string]any
+					_ = json.Unmarshal(valid, &object)
+					capture := object["capture"].(map[string]any)
+					inner := capture["hosted"].(map[string]any)
+					if target == "finding source" {
+						inner = capture["findings"].([]any)[0].(map[string]any)["source"].(map[string]any)
+					}
+					old := inner[field]
+					switch mode {
+					case "missing":
+						delete(inner, field)
+					case "null":
+						inner[field] = nil
+					case "alias":
+						inner[strings.ToUpper(field)] = old
+						delete(inner, field)
+					case "extra":
+						inner["unexpected"] = true
+					case "wrongtype":
+						inner[field] = map[string]any{"invalid": true}
+					}
+					data, _ := json.Marshal(object)
+					if mode == "duplicate" {
+						key, _ := json.Marshal(field)
+						value, _ := json.Marshal(old)
+						needle := string(key) + ":" + string(value)
+						data = []byte(strings.Replace(string(data), needle, needle+","+needle, 1))
+					}
+					_, err := readControlEvidenceWire(t, data)
+					checkError(t, err, "invalid_response")
+				})
+			}
+		}
+	}
+	for _, edit := range []func(map[string]any){
+		func(v map[string]any) { delete(v, "channel") },
+		func(v map[string]any) { v["channel"] = nil },
+		func(v map[string]any) { v["Channel"] = v["channel"]; delete(v, "channel") },
+		func(v map[string]any) { v["capture"].(map[string]any)["hosted"] = nil },
+		func(v map[string]any) { v["capture"].(map[string]any)["sources"] = []any{} },
+		func(v map[string]any) {
+			v["capture"].(map[string]any)["findings"].([]any)[0].(map[string]any)["source"] = nil
+		},
+		func(v map[string]any) {
+			v["capture"].(map[string]any)["Hosted"] = v["capture"].(map[string]any)["hosted"]
+		},
+	} {
+		var object map[string]any
+		_ = json.Unmarshal(valid, &object)
+		edit(object)
+		data, _ := json.Marshal(object)
+		_, err := readControlEvidenceWire(t, data)
+		checkError(t, err, "invalid_response")
 	}
 }

@@ -17,7 +17,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-func projectionFixture(t *testing.T) (*attemptFixture, Attempt, CLIEvidence) {
+func projectionFixture(t *testing.T) (*attemptFixture, Attempt, ReviewEvidence) {
 	t.Helper()
 	f, a, id := adjudicationFixture(t, 2, false)
 	if err := reviews.EnsureSchema(context.Background(), f.store); err != nil {
@@ -32,7 +32,7 @@ func projectionFixture(t *testing.T) (*attemptFixture, Attempt, CLIEvidence) {
 	f.e.Register(mux)
 	reviews.Register(mux, f.store)
 	f.handler = mux
-	evidence, err := f.e.ReadCLIEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), id)
+	evidence, err := f.e.ReadReviewEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,10 +43,10 @@ func projectionPull(number int64) reviews.PullInput {
 	return reviews.PullInput{Number: number, Title: fmt.Sprintf("Synthetic PR %d", number), State: "open", HeadSHA: strings.Repeat("a", 40), BaseRef: "main", BaseSHA: strings.Repeat("b", 40), CIState: "success", Mergeability: "mergeable", Complete: true}
 }
 
-func projectionRun(e CLIEvidence) reviews.RunInput {
+func projectionRun(e ReviewEvidence) reviews.RunInput {
 	r := reviews.RunInput{SourceRunID: e.ID, Channel: "cli", HeadSHA: e.Anchor.CandidateSHA, Reviewer: "Synthetic retained reviewer", Scope: "exact patch", Outcome: e.Capture.Review.Outcome, Attributable: true, Complete: e.Capture.Review.Complete, StartedAt: e.Capture.StartedAt, FinishedAt: e.Capture.FinishedAt, Found: e.Capture.Review.ReportedFindings, CoverageLimits: []string{"Synthetic source limitation"}}
 	for i, f := range e.Capture.Review.Findings {
-		r.Findings = append(r.Findings, reviews.Finding{SourceFindingID: cliProjectionFindingID(e.ID, int64(i)), Title: f.Title, Detail: f.Detail, Severity: f.Severity, Disposition: "unadjudicated"})
+		r.Findings = append(r.Findings, reviews.Finding{SourceFindingID: projectionFindingID(e.ID, int64(i)), Title: f.Title, Detail: f.Detail, Severity: f.Severity, Disposition: "unadjudicated"})
 	}
 	return r
 }
@@ -182,7 +182,7 @@ func TestCLIProjectionAdjudicationPreservesFrozenSourceAndHistory(t *testing.T) 
 	}
 	journal := attemptState(t, f, a)
 	scope := f.scope(t, attemptProject, f.writer, false)
-	body, err := f.e.FinalizeCLI(ctx, scope, "projection-finalize", evidence.ID, CLIFinalizeRequest{ExpectedRevision: adjudicationRevision(2)})
+	body, err := f.e.FinalizeReviewEvidence(ctx, scope, "projection-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
 	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 3)
 	var finalized reviews.RunDetailResponse
 	projectionRead(t, f, "/runs/"+runID, &finalized)
@@ -190,16 +190,16 @@ func TestCLIProjectionAdjudicationPreservesFrozenSourceAndHistory(t *testing.T) 
 		t.Fatal("finalization did not project original counts before subsequent proof", finalized)
 	}
 	finalDigest := projectionDigest(t, f, finalized.SnapshotID)
-	fix := CLIFixRequest{ExpectedRevision: adjudicationRevision(3), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Focused synthetic proof <b>literal</b>"}
-	body, err = f.e.RecordCLIFix(ctx, scope, "projection-fix", evidence.ID, fix)
+	fix := FindingFixRequest{ExpectedRevision: adjudicationRevision(3), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Focused synthetic proof <b>literal</b>"}
+	body, err = f.e.RecordFindingFix(ctx, scope, "projection-fix", evidence.ID, fix)
 	adjudicationReceipt(t, body, err, evidence.ID, "fix_recorded", 4)
-	correction := CLIDecisionRequest{ExpectedRevision: adjudicationRevision(4), Finding: 1, Disposition: "accepted", Reason: "Correct only the still-unfixed finding"}
-	body, err = f.e.DecideCLIFinding(ctx, scope, "projection-correct", evidence.ID, correction)
+	correction := FindingDecisionRequest{ExpectedRevision: adjudicationRevision(4), Finding: 1, Disposition: "accepted", Reason: "Correct only the still-unfixed finding"}
+	body, err = f.e.DecideReviewFinding(ctx, scope, "projection-correct", evidence.ID, correction)
 	first := adjudicationReceipt(t, body, err, evidence.ID, "adjudicated", 5)
 	ledger := adjudicationRead(t, f, evidence.ID)
 	var detail reviews.RunDetailResponse
 	projectionRead(t, f, "/runs/"+runID, &detail)
-	if !detail.Run.Finalized || detail.Run.Found != 2 || detail.Run.Accepted != 1 || detail.Run.Routed != 0 || detail.Run.Fixed != 1 || ledger.FrozenCounts == nil || *ledger.FrozenCounts != (CLICounts{Found: 2, Accepted: 1}) {
+	if !detail.Run.Finalized || detail.Run.Found != 2 || detail.Run.Accepted != 1 || detail.Run.Routed != 0 || detail.Run.Fixed != 1 || ledger.FrozenCounts == nil || *ledger.FrozenCounts != (FindingCounts{Found: 2, Accepted: 1}) {
 		t.Fatal("correction rewrote frozen counts or lost proof", ledger, detail)
 	}
 	if detail.Revision != initial.Revision+5 || ledger.Revision != 5 || attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, evidence.ID) != 5 {
@@ -246,7 +246,7 @@ func TestCLIProjectionAdjudicationPreservesFrozenSourceAndHistory(t *testing.T) 
 		t.Fatal("adjudication changed original ledger capture or settled execution", err)
 	}
 	state, projection := adjudicationState(t, f, a), projectionDigest(t, f, "")
-	replay, err := f.e.DecideCLIFinding(ctx, scope, "projection-correct", evidence.ID, correction)
+	replay, err := f.e.DecideReviewFinding(ctx, scope, "projection-correct", evidence.ID, correction)
 	if err != nil || !bytes.Equal(first, replay) || adjudicationState(t, f, a) != state || projectionDigest(t, f, "") != projection {
 		t.Fatal("exact replay emitted effects or cloned a snapshot", err)
 	}
@@ -258,7 +258,7 @@ func TestCLIProjectionIdentityConflictRollsBackLedgerAndProjection(t *testing.T)
 	run.Findings[1].SourceFindingID = "different-native-source-finding"
 	projectionPublish(t, f, reviews.NativePublication{Pull: projectionPull(2), Run: &run})
 	before, projection := adjudicationState(t, f, a), projectionDigest(t, f, "")
-	body, err := f.e.DecideCLIFinding(context.Background(), f.scope(t, attemptProject, f.writer, false), "conflicting-projection", evidence.ID, CLIDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Must not survive failed projection"})
+	body, err := f.e.DecideReviewFinding(context.Background(), f.scope(t, attemptProject, f.writer, false), "conflicting-projection", evidence.ID, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Must not survive failed projection"})
 	attemptCode(t, err, "observation_conflict")
 	if len(body) != 0 || adjudicationRead(t, f, evidence.ID).Revision != 0 || adjudicationState(t, f, a) != before || projectionDigest(t, f, "") != projection {
 		t.Fatal("projection conflict committed ledger/audit/event/receipt/snapshot effects")

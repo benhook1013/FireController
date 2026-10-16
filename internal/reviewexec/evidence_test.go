@@ -15,7 +15,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
-func evidenceFixture(t *testing.T, channel string, admit bool) (*attemptFixture, Attempt, CLIEvidenceInput) {
+func evidenceFixture(t *testing.T, channel string, admit bool) (*attemptFixture, Attempt, ReviewEvidenceInput) {
 	t.Helper()
 	f := newAttemptFixture(t)
 	if err := EnsureEvidenceSchema(context.Background(), f.store); err != nil {
@@ -36,9 +36,9 @@ func evidenceFixture(t *testing.T, channel string, admit bool) (*attemptFixture,
 		}
 	}
 	digest := strings.Repeat("1", 64)
-	in := CLIEvidenceInput{CaptureID: "review_capture_" + digest[:32], CaptureSHA256: digest, CaptureBytes: 1024,
+	in := ReviewEvidenceInput{CaptureID: "review_capture_" + digest[:32], CaptureSHA256: digest, CaptureBytes: 1024,
 		StartedAt: time.Now().Add(-2 * time.Second).UTC().Format(time.RFC3339Nano), FinishedAt: time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano), ExpectedAnchor: anchor,
-		Review: reviewprovider.CLIReview{Outcome: "completed", Complete: true, ReportedFindings: 1, ReviewedFiles: []string{"internal/changed.go"}, Findings: []reviewprovider.CLIFinding{{Title: "Plain finding", Detail: "Literal <script>source text</script>\nwith details", Severity: "high", Path: "outside/diff.go", StartLine: 8, EndLine: 12}}}}
+		Review: reviewprovider.ParsedReview{Outcome: "completed", Complete: true, ReportedFindings: 1, ReviewedFiles: []string{"internal/changed.go"}, Findings: []reviewprovider.ParsedFinding{{Title: "Plain finding", Detail: "Literal <script>source text</script>\nwith details", Severity: "high", Path: "outside/diff.go", StartLine: 8, EndLine: 12}}}}
 	return f, a, in
 }
 
@@ -54,8 +54,8 @@ func evidenceReadScope(t *testing.T, f *attemptFixture, project, token string) c
 	return scope
 }
 
-func evidenceClone(in CLIEvidenceInput) CLIEvidenceInput {
-	var out CLIEvidenceInput
+func evidenceClone(in ReviewEvidenceInput) ReviewEvidenceInput {
+	var out ReviewEvidenceInput
 	if err := json.Unmarshal([]byte(encoded(in)), &out); err != nil {
 		panic(err)
 	}
@@ -90,7 +90,7 @@ func TestCLIEvidenceRoundtripReplayAndOriginalIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	original := evidenceClone(in)
-	r, err := f.e.RecordCLIEvidence(ctx, attemptProject, a.ID, in)
+	r, err := f.e.RecordReviewEvidence(ctx, attemptProject, a.ID, in)
 	var compact map[string]any
 	if err != nil || r.ID == "" || r.State != "captured" || r.Revision != 1 || json.Unmarshal([]byte(encoded(r)), &compact) != nil || len(compact) != 3 {
 		t.Fatal("capture receipt was not compact", r, err)
@@ -98,7 +98,7 @@ func TestCLIEvidenceRoundtripReplayAndOriginalIdentity(t *testing.T) {
 	in.Review.Findings[0].Detail = "caller changed its slice"
 	in.Review.ReviewedFiles[0] = "changed.go"
 	scope := evidenceReadScope(t, f, attemptProject, f.reader)
-	got, err := f.e.ReadCLIEvidence(ctx, scope, r.ID)
+	got, err := f.e.ReadReviewEvidence(ctx, scope, r.ID)
 	if err != nil || !reflect.DeepEqual(got.Capture, original) || got.Anchor != *a.Anchor || got.CapabilityFingerprint != originalFingerprint || got.ProjectID != attemptProject || got.AttemptID != a.ID || got.OperationID != a.OperationID || got.RecordedAt == "" {
 		t.Fatal("capture did not retain original owned input and admission", got, err)
 	}
@@ -116,24 +116,24 @@ func TestCLIEvidenceRoundtripReplayAndOriginalIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	settled := evidenceState(t, f, a)
-	replay, err := f.e.RecordCLIEvidence(ctx, attemptProject, a.ID, original)
+	replay, err := f.e.RecordReviewEvidence(ctx, attemptProject, a.ID, original)
 	if err != nil || replay != r || evidenceState(t, f, a) != settled {
 		t.Fatal("exact retry after settlement/revocation did not retain receipt", err)
 	}
-	for name, change := range map[string]func(*CLIEvidenceInput){
-		"digest": func(x *CLIEvidenceInput) {
+	for name, change := range map[string]func(*ReviewEvidenceInput){
+		"digest": func(x *ReviewEvidenceInput) {
 			x.CaptureSHA256 = strings.Repeat("2", 64)
 			x.CaptureID = "review_capture_" + x.CaptureSHA256[:32]
 		},
-		"findings":        func(x *CLIEvidenceInput) { x.Review.Findings[0].Title = "Different title" },
-		"text":            func(x *CLIEvidenceInput) { x.Review.Findings[0].Detail = "Different detail" },
-		"time":            func(x *CLIEvidenceInput) { x.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano) },
-		"expected_anchor": func(x *CLIEvidenceInput) { x.ExpectedAnchor.PatchSHA256 = strings.Repeat("f", 64) },
+		"findings":        func(x *ReviewEvidenceInput) { x.Review.Findings[0].Title = "Different title" },
+		"text":            func(x *ReviewEvidenceInput) { x.Review.Findings[0].Detail = "Different detail" },
+		"time":            func(x *ReviewEvidenceInput) { x.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano) },
+		"expected_anchor": func(x *ReviewEvidenceInput) { x.ExpectedAnchor.PatchSHA256 = strings.Repeat("f", 64) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			x := evidenceClone(original)
 			change(&x)
-			_, err := f.e.RecordCLIEvidence(ctx, attemptProject, a.ID, x)
+			_, err := f.e.RecordReviewEvidence(ctx, attemptProject, a.ID, x)
 			attemptCode(t, err, "review_conflict")
 			if evidenceState(t, f, a) != settled {
 				t.Fatal("changed retry mutated canonical capture or journal")
@@ -148,7 +148,7 @@ func TestCLIEvidenceConcurrentCaptureAndAtomicEventFailure(t *testing.T) {
 	if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_capture_event BEFORE INSERT ON events WHEN NEW.event_type='review.captured' BEGIN SELECT RAISE(ABORT,'synthetic event failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	r, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, in)
+	r, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, in)
 	if err == nil || r != (Receipt{}) || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || before != attemptState(t, f, a) || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.captured'`) != 0 {
 		t.Fatal("event failure did not atomically roll back capture", err)
 	}
@@ -167,7 +167,7 @@ func TestCLIEvidenceConcurrentCaptureAndAtomicEventFailure(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		go func() {
 			<-start
-			r, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, in)
+			r, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, in)
 			results <- result{r, err}
 		}()
 	}
@@ -214,7 +214,7 @@ func TestCLIEvidenceRejectsWrongAnchorScopeAndJournalState(t *testing.T) {
 				in.ExpectedAnchor.MergeBaseSHA = strings.Repeat("f", 40)
 			}
 			before := evidenceState(t, f, a)
-			_, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, in)
+			_, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, in)
 			attemptCode(t, err, "review_conflict")
 			if evidenceState(t, f, a) != before {
 				t.Fatal("wrong expected anchor mutated state")
@@ -250,7 +250,7 @@ func TestCLIEvidenceRejectsWrongAnchorScopeAndJournalState(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := evidenceState(t, f, a)
-			_, err = f.e.RecordCLIEvidence(context.Background(), project, id, in)
+			_, err = f.e.RecordReviewEvidence(context.Background(), project, id, in)
 			attemptCode(t, err, code)
 			if evidenceState(t, f, a) != before || strings.Contains(err.Error(), a.ID) {
 				t.Fatal("refusal changed state or exposed identity")
@@ -272,11 +272,11 @@ func TestCLIEvidenceIncompleteRetentionAndUncertainAttempt(t *testing.T) {
 			in.Review.ReviewedFiles = nil
 			in.Review.Findings[0].Path = "" // A summary-only partial finding has no file location.
 			before := attemptState(t, f, a)
-			r, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, in)
+			r, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, in)
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := f.e.ReadCLIEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), r.ID)
+			got, err := f.e.ReadReviewEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), r.ID)
 			if err != nil || got.Capture.Review.Complete || got.Capture.Review.Outcome != outcome || len(got.Capture.Review.Findings) != 1 || before != attemptState(t, f, a) {
 				t.Fatal("partial capture fabricated completion or changed reservation", err)
 			}
@@ -286,25 +286,25 @@ func TestCLIEvidenceIncompleteRetentionAndUncertainAttempt(t *testing.T) {
 
 func TestCLIEvidenceReaderAuthorizationAndRestartRetention(t *testing.T) {
 	f, a, in := evidenceFixture(t, "cli", true)
-	r, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, in)
+	r, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	readScope := evidenceReadScope(t, f, attemptProject, f.reader)
-	first, err := f.e.ReadCLIEvidence(context.Background(), readScope, r.ID)
+	first, err := f.e.ReadReviewEvidence(context.Background(), readScope, r.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.e.ReadCLIEvidence(context.Background(), evidenceReadScope(t, f, otherAttemptProject, f.other), r.ID)
+	_, err = f.e.ReadReviewEvidence(context.Background(), evidenceReadScope(t, f, otherAttemptProject, f.other), r.ID)
 	attemptCode(t, err, "not_found")
 	wrongProject := readScope
 	wrongProject.ProjectID = otherAttemptProject
-	_, err = f.e.ReadCLIEvidence(context.Background(), wrongProject, r.ID)
+	_, err = f.e.ReadReviewEvidence(context.Background(), wrongProject, r.ID)
 	attemptCode(t, err, "forbidden")
 	if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id='exec-reader-cred'`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.e.ReadCLIEvidence(context.Background(), readScope, r.ID)
+	_, err = f.e.ReadReviewEvidence(context.Background(), readScope, r.ID)
 	attemptCode(t, err, "unauthorized")
 	if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=0 WHERE id='exec-reader-cred'`); err != nil {
 		t.Fatal(err)
@@ -339,11 +339,11 @@ func TestCLIEvidenceReaderAuthorizationAndRestartRetention(t *testing.T) {
 	if err := f.e.RecoverInterrupted(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	second, err := f.e.ReadCLIEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), r.ID)
+	second, err := f.e.ReadReviewEvidence(context.Background(), evidenceReadScope(t, f, attemptProject, f.reader), r.ID)
 	if err != nil || !reflect.DeepEqual(first, second) || reopened.InstanceID() != instance {
 		t.Fatal("restart altered retained capture", err)
 	}
-	replay, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, in)
+	replay, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, in)
 	if err != nil || replay != r || attemptCount(t, reopened, `SELECT count(*) FROM review_execution_evidence`) != 1 || attemptCount(t, reopened, `SELECT count(*) FROM events WHERE event_type='review.captured'`) != 1 {
 		t.Fatal("restart replay duplicated capture", err)
 	}
@@ -351,40 +351,42 @@ func TestCLIEvidenceReaderAuthorizationAndRestartRetention(t *testing.T) {
 
 func TestCLIEvidenceValidationIsBoundedAndAtomic(t *testing.T) {
 	f, a, in := evidenceFixture(t, "cli", true)
-	cases := map[string]func(*CLIEvidenceInput){
-		"capture_id":           func(x *CLIEvidenceInput) { x.CaptureID += "x" },
-		"capture_hash":         func(x *CLIEvidenceInput) { x.CaptureSHA256 = strings.Repeat("A", 64) },
-		"zero_bytes":           func(x *CLIEvidenceInput) { x.CaptureBytes = 0 },
-		"large_bytes":          func(x *CLIEvidenceInput) { x.CaptureBytes = 24<<20 + 1 },
-		"start":                func(x *CLIEvidenceInput) { x.StartedAt = "not-a-time" },
-		"zero_time":            func(x *CLIEvidenceInput) { x.StartedAt = time.Time{}.Format(time.RFC3339Nano) },
-		"end":                  func(x *CLIEvidenceInput) { x.FinishedAt = "not-a-time" },
-		"reversed_time":        func(x *CLIEvidenceInput) { x.StartedAt = time.Now().UTC().Format(time.RFC3339Nano) },
-		"future":               func(x *CLIEvidenceInput) { x.FinishedAt = time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano) },
-		"outcome":              func(x *CLIEvidenceInput) { x.Review.Outcome = "success" },
-		"incomplete_completed": func(x *CLIEvidenceInput) { x.Review.Complete = false },
-		"complete_failed":      func(x *CLIEvidenceInput) { x.Review.Outcome = "failed" },
-		"negative_count":       func(x *CLIEvidenceInput) { x.Review.ReportedFindings = -1 },
-		"mismatched_count":     func(x *CLIEvidenceInput) { x.Review.ReportedFindings = 2 },
-		"empty_files":          func(x *CLIEvidenceInput) { x.Review.ReviewedFiles = nil },
-		"duplicate_files":      func(x *CLIEvidenceInput) { x.Review.ReviewedFiles = []string{"a.go", "a.go"} },
-		"too_many_files":       func(x *CLIEvidenceInput) { x.Review.ReviewedFiles = make([]string, 10001) },
-		"too_many_findings":    func(x *CLIEvidenceInput) { x.Review.Findings = make([]reviewprovider.CLIFinding, 101) },
-		"title_empty":          func(x *CLIEvidenceInput) { x.Review.Findings[0].Title = " \n" },
-		"title_large":          func(x *CLIEvidenceInput) { x.Review.Findings[0].Title = strings.Repeat("é", 251) },
-		"title_utf8":           func(x *CLIEvidenceInput) { x.Review.Findings[0].Title = "raw\xff" },
-		"detail_large":         func(x *CLIEvidenceInput) { x.Review.Findings[0].Detail = strings.Repeat("x", 16<<10+1) },
-		"detail_utf8":          func(x *CLIEvidenceInput) { x.Review.Findings[0].Detail = "raw\xff" },
-		"detail_control":       func(x *CLIEvidenceInput) { x.Review.Findings[0].Detail = "raw\x00" },
-		"severity":             func(x *CLIEvidenceInput) { x.Review.Findings[0].Severity = "urgent" },
-		"negative_start":       func(x *CLIEvidenceInput) { x.Review.Findings[0].StartLine = -1 },
-		"negative_end":         func(x *CLIEvidenceInput) { x.Review.Findings[0].EndLine = -1 },
-		"reversed_lines":       func(x *CLIEvidenceInput) { x.Review.Findings[0].EndLine = 1 },
-		"anchor_utf8":          func(x *CLIEvidenceInput) { x.ExpectedAnchor.BaseRef = "raw\xff" },
-		"total_bytes": func(x *CLIEvidenceInput) {
-			x.Review.Findings = make([]reviewprovider.CLIFinding, 100)
+	cases := map[string]func(*ReviewEvidenceInput){
+		"capture_id":    func(x *ReviewEvidenceInput) { x.CaptureID += "x" },
+		"capture_hash":  func(x *ReviewEvidenceInput) { x.CaptureSHA256 = strings.Repeat("A", 64) },
+		"zero_bytes":    func(x *ReviewEvidenceInput) { x.CaptureBytes = 0 },
+		"large_bytes":   func(x *ReviewEvidenceInput) { x.CaptureBytes = 24<<20 + 1 },
+		"start":         func(x *ReviewEvidenceInput) { x.StartedAt = "not-a-time" },
+		"zero_time":     func(x *ReviewEvidenceInput) { x.StartedAt = time.Time{}.Format(time.RFC3339Nano) },
+		"end":           func(x *ReviewEvidenceInput) { x.FinishedAt = "not-a-time" },
+		"reversed_time": func(x *ReviewEvidenceInput) { x.StartedAt = time.Now().UTC().Format(time.RFC3339Nano) },
+		"future": func(x *ReviewEvidenceInput) {
+			x.FinishedAt = time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano)
+		},
+		"outcome":              func(x *ReviewEvidenceInput) { x.Review.Outcome = "success" },
+		"incomplete_completed": func(x *ReviewEvidenceInput) { x.Review.Complete = false },
+		"complete_failed":      func(x *ReviewEvidenceInput) { x.Review.Outcome = "failed" },
+		"negative_count":       func(x *ReviewEvidenceInput) { x.Review.ReportedFindings = -1 },
+		"mismatched_count":     func(x *ReviewEvidenceInput) { x.Review.ReportedFindings = 2 },
+		"empty_files":          func(x *ReviewEvidenceInput) { x.Review.ReviewedFiles = nil },
+		"duplicate_files":      func(x *ReviewEvidenceInput) { x.Review.ReviewedFiles = []string{"a.go", "a.go"} },
+		"too_many_files":       func(x *ReviewEvidenceInput) { x.Review.ReviewedFiles = make([]string, 10001) },
+		"too_many_findings":    func(x *ReviewEvidenceInput) { x.Review.Findings = make([]reviewprovider.ParsedFinding, 101) },
+		"title_empty":          func(x *ReviewEvidenceInput) { x.Review.Findings[0].Title = " \n" },
+		"title_large":          func(x *ReviewEvidenceInput) { x.Review.Findings[0].Title = strings.Repeat("é", 251) },
+		"title_utf8":           func(x *ReviewEvidenceInput) { x.Review.Findings[0].Title = "raw\xff" },
+		"detail_large":         func(x *ReviewEvidenceInput) { x.Review.Findings[0].Detail = strings.Repeat("x", 16<<10+1) },
+		"detail_utf8":          func(x *ReviewEvidenceInput) { x.Review.Findings[0].Detail = "raw\xff" },
+		"detail_control":       func(x *ReviewEvidenceInput) { x.Review.Findings[0].Detail = "raw\x00" },
+		"severity":             func(x *ReviewEvidenceInput) { x.Review.Findings[0].Severity = "urgent" },
+		"negative_start":       func(x *ReviewEvidenceInput) { x.Review.Findings[0].StartLine = -1 },
+		"negative_end":         func(x *ReviewEvidenceInput) { x.Review.Findings[0].EndLine = -1 },
+		"reversed_lines":       func(x *ReviewEvidenceInput) { x.Review.Findings[0].EndLine = 1 },
+		"anchor_utf8":          func(x *ReviewEvidenceInput) { x.ExpectedAnchor.BaseRef = "raw\xff" },
+		"total_bytes": func(x *ReviewEvidenceInput) {
+			x.Review.Findings = make([]reviewprovider.ParsedFinding, 100)
 			for i := range x.Review.Findings {
-				x.Review.Findings[i] = reviewprovider.CLIFinding{Title: "Finding", Severity: "unknown", Detail: strings.Repeat("x", 16<<10)}
+				x.Review.Findings[i] = reviewprovider.ParsedFinding{Title: "Finding", Severity: "unknown", Detail: strings.Repeat("x", 16<<10)}
 			}
 			x.Review.ReportedFindings = 100
 			x.Review.ReviewedFiles = make([]string, 10000)
@@ -395,9 +397,9 @@ func TestCLIEvidenceValidationIsBoundedAndAtomic(t *testing.T) {
 	}
 	for _, path := range []string{"", "/tmp/local.go", "../escape.go", "source/../escape.go", "source/./file.go", "source//file.go", "C:/local.go", `C:\local.go`, "source\nfile.go", "source\x00file.go", "source\x7ffile.go", "source\xfffile.go"} {
 		p := path
-		cases["reviewed_path_"+fmt.Sprintf("%x", []byte(path))] = func(x *CLIEvidenceInput) { x.Review.ReviewedFiles = []string{p} }
+		cases["reviewed_path_"+fmt.Sprintf("%x", []byte(path))] = func(x *ReviewEvidenceInput) { x.Review.ReviewedFiles = []string{p} }
 		if path != "" {
-			cases["finding_path_"+fmt.Sprintf("%x", []byte(path))] = func(x *CLIEvidenceInput) { x.Review.Findings[0].Path = p }
+			cases["finding_path_"+fmt.Sprintf("%x", []byte(path))] = func(x *ReviewEvidenceInput) { x.Review.Findings[0].Path = p }
 		}
 	}
 	before := evidenceState(t, f, a)
@@ -406,11 +408,11 @@ func TestCLIEvidenceValidationIsBoundedAndAtomic(t *testing.T) {
 			x := evidenceClone(in)
 			change(&x)
 			if name == "total_bytes" {
-				if err := validateCLIEvidence(x); err != nil || len(encoded(x)) <= evidenceInputLimit {
+				if err := validateReviewEvidence(x); err != nil || len(encoded(x)) <= evidenceInputLimit {
 					t.Fatal("oversize fixture did not isolate the aggregate bound", err)
 				}
 			}
-			r, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, x)
+			r, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, x)
 			attemptCode(t, err, "validation_failed")
 			if r != (Receipt{}) || evidenceState(t, f, a) != before || strings.Contains(err.Error(), "raw") {
 				t.Fatal("invalid capture mutated state or exposed input")
@@ -418,12 +420,12 @@ func TestCLIEvidenceValidationIsBoundedAndAtomic(t *testing.T) {
 		})
 	}
 	for _, ids := range [][2]string{{"bad/project", a.ID}, {attemptProject, "bad/attempt"}} {
-		_, err := f.e.RecordCLIEvidence(context.Background(), ids[0], ids[1], in)
+		_, err := f.e.RecordReviewEvidence(context.Background(), ids[0], ids[1], in)
 		attemptCode(t, err, "validation_failed")
 	}
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if r, err := f.e.RecordCLIEvidence(cancelled, attemptProject, a.ID, in); err == nil || r != (Receipt{}) || evidenceState(t, f, a) != before {
+	if r, err := f.e.RecordReviewEvidence(cancelled, attemptProject, a.ID, in); err == nil || r != (Receipt{}) || evidenceState(t, f, a) != before {
 		t.Fatal("cancelled capture left a partial write", err)
 	}
 	// Full boundary-sized fields, offset times and all supported severities remain valid.
@@ -439,11 +441,11 @@ func TestCLIEvidenceValidationIsBoundedAndAtomic(t *testing.T) {
 	in.Review.Findings[0].Detail = strings.Repeat("x", 16<<10)
 	for _, severity := range []string{"info", "low", "medium", "high", "critical", "unknown"} {
 		in.Review.Findings[0].Severity = severity
-		if err := validateCLIEvidence(in); err != nil {
+		if err := validateReviewEvidence(in); err != nil {
 			t.Fatal("valid boundary refused", severity, err)
 		}
 	}
-	if _, err := f.e.RecordCLIEvidence(context.Background(), attemptProject, a.ID, in); err != nil {
+	if _, err := f.e.RecordReviewEvidence(context.Background(), attemptProject, a.ID, in); err != nil {
 		t.Fatal("valid boundary capture refused", err)
 	}
 }

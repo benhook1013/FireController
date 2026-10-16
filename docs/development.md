@@ -71,6 +71,8 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc jobs history ID` | Explicit bounded revision-history page. |
 | `fc jobs checkpoint-latest ID` | Explicit latest checkpoint with current job revision, or an explicit null checkpoint. |
 | `fc jobs checkpoints ID` | Explicit newest-first checkpoint archive page. |
+| `fc reviews execution` | Stored project execution configuration and revision; no provider check. |
+| `fc reviews operation ID` | Explicit retained native operation state and reason. |
 | `fc reviews queue` | Stored review queue; defaults to five compact PR entries. |
 | `fc reviews pull NUMBER` | Explicit PR summary and attempt history; optional `--snapshot`. |
 | `fc reviews runs NUMBER` | Stored run summaries, default five; optional `--snapshot`. |
@@ -88,7 +90,7 @@ The integrated Linux/WSL binaries passed 17 hands-on checks using a real loopbac
 
 Profile/credential errors and local command results remain separate from service authentication errors. Linux ordinary private-file controls do not establish hostile same-user filesystem isolation. Native Windows CLI/profile and MCP stdio smoke passed. Fifteen additional native Windows service-backed groups passed for doctor, scoped job/message reads and mutations, original-key replay, recipient seen/ack, MCP reads and job-create/replay, and service restart retaining instance identity and receipts. Platform access-control strength, native macOS execution and real host asynchronous delivery remain unproven.
 
-Native CLI evidence reads and guarded decision/fix/finalization commands are described in [review evidence controls](review-controls.md#bound-cli-and-mcp). They operate on native evidence IDs, independently of imported browser run IDs.
+Native execution reads and explicit-key requests are described in [review execution](review-execution.md#bound-execution-tools). Native CLI/hosted evidence reads and guarded decision/fix/finalization commands are described in [review evidence controls](review-controls.md#bound-cli-and-mcp). They operate on native evidence IDs, independently of imported browser run IDs.
 
 ## Explicit agent mutations
 

@@ -142,7 +142,7 @@ func (d *CLIDriver) sourceGate(ctx context.Context, reads *cliSourceReads, repos
 	if err != nil {
 		return plan, nil, err
 	}
-	comparison, err := d.engine.CLIComparison(ctx, operation.ProjectID, plan)
+	comparison, err := d.engine.Comparison(ctx, operation.ProjectID, plan, "cli")
 	if err != nil {
 		return plan, nil, err
 	}
@@ -178,7 +178,7 @@ func (d *CLIDriver) sourceGate(ctx context.Context, reads *cliSourceReads, repos
 		if err != nil {
 			return plan, nil, err
 		}
-		covered, err := d.engine.CLICoverage(ctx, operation.ProjectID, preceding)
+		covered, err := d.engine.Coverage(ctx, operation.ProjectID, preceding, "cli")
 		if err != nil {
 			return plan, nil, err
 		}
@@ -319,7 +319,7 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 	defer cancel()
 	retained, err := RetainCLI(retentionCtx, d.captures, d.engine, d.manager, attempt, prepared.workspace, capture, started, finished)
 	if err == nil {
-		_, err = d.engine.PublishCLI(retentionCtx, operation.ProjectID, retained.Receipt.ID, nil)
+		_, err = d.engine.PublishEvidence(retentionCtx, operation.ProjectID, retained.Receipt.ID, nil)
 		// Authoritative retained evidence remains usable when current browser
 		// metadata disappeared. Other publication failures remain conservative.
 		var missing *core.Error

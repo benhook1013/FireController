@@ -20,11 +20,12 @@ type mutationInvocation struct {
 	reviewDecision client.ReviewDecisionRequest
 	reviewFix      client.ReviewFixRequest
 	reviewFinalize client.ReviewFinalizeRequest
+	reviewRequest  client.ReviewRequest
 }
 
 func isMutation(command, operation string) bool {
 	switch command + " " + operation {
-	case "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews finalize":
+	case "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews finalize", "reviews request":
 		return true
 	}
 	return false
@@ -158,6 +159,8 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 		return service.SendMessage(ctx, call.key, call.send)
 	case "inbox seen":
 		return service.MarkSeen(ctx, call.key, call.id)
+	case "reviews request":
+		return service.RequestReview(ctx, call.key, call.reviewRequest)
 	case "reviews decide":
 		return service.DecideReviewFinding(ctx, call.key, call.id, call.reviewDecision)
 	case "reviews fix":

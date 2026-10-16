@@ -15,16 +15,16 @@ import (
 // need not install a browser projection.
 func WithNativeProjection() EngineOption {
 	return func(e *Engine) {
-		e.publishAdjudication = publishCLIAdjudication
+		e.publishAdjudication = publishReviewAdjudication
 		e.publishAttempt = publishAttemptTransition
 	}
 }
 
-func cliProjectionFindingID(evidenceID string, finding int64) string {
+func projectionFindingID(evidenceID string, finding int64) string {
 	return evidenceID + ":finding:" + strconv.FormatInt(finding, 10)
 }
 
-func publishCLIAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, state CLIAdjudication) error {
+func publishReviewAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, state ReviewAdjudication) error {
 	input := reviews.NativeAdjudication{
 		SourceRunID: state.EvidenceID,
 		Finalized:   state.Finalized,
@@ -39,7 +39,7 @@ func publishCLIAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, s
 	}
 	for _, finding := range state.Findings {
 		input.Findings = append(input.Findings, reviews.NativeFindingUpdate{
-			SourceFindingID: cliProjectionFindingID(state.EvidenceID, finding.Finding),
+			SourceFindingID: projectionFindingID(state.EvidenceID, finding.Finding),
 			Disposition:     finding.Disposition,
 			DecisionReason:  finding.Reason,
 			Actor:           finding.ActorID,
