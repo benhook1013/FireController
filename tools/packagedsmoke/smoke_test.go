@@ -39,7 +39,7 @@ func TestPackagedSmoke(t *testing.T) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
-	private := t.TempDir()
+	private := privateFixtureDirectory(t)
 	if err := os.Chmod(private, 0700); err != nil {
 		t.Fatal("private fixture directory unavailable")
 	}
@@ -369,6 +369,18 @@ func TestPackagedSmoke(t *testing.T) {
 		}
 	}
 	t.Logf("packaged smoke passed: total=%s max_cli=%s application_http=%d streams=%d external_http=0 owned_processes=0", time.Since(started).Round(time.Millisecond), maxCommand.Round(time.Millisecond), requests.Load(), streams.Load())
+}
+
+// Resolve only our newly allocated fixture root: OS temporary directories may
+// use aliases (for example /var on macOS), while daemon data paths deliberately
+// reject symlink ancestors. Product path validation remains unchanged.
+func privateFixtureDirectory(t *testing.T) string {
+	t.Helper()
+	private, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal("private fixture directory unavailable")
+	}
+	return private
 }
 
 // boundedOutput drains child output without allowing a broken executable to
