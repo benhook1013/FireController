@@ -185,7 +185,7 @@ func reviewExecutionDefinitions() []definition {
 		return result
 	}
 	return []definition{
-		{"review_source_refresh", "Enqueue source-only provider GETs for one configured PR and expected head. Returns a compact queued receipt; no review post, allowance query or execution. Retain the exact idempotency key and arguments after an unknown outcome; no automatic retry or polling.", schema(map[string]any{
+		{"review_source_refresh", "Enqueue source-only provider GETs for one configured PR and expected head. Wait up to wait_seconds for a completed or held result; pending work or a zero wait returns a compact receipt. No review post, allowance query or execution. Retain the exact idempotency key and arguments after an unknown outcome; no automatic retry or polling.", schema(map[string]any{
 			"idempotency_key":                 map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
 			"expected_configuration_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64)},
 			"pull_number":                     map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647},
