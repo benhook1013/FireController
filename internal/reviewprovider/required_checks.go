@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -165,7 +167,23 @@ func (g *GitHub) RequiredCheckAuthority(ctx context.Context, repository, branch 
 	selected := url.PathEscape(branch)
 	var classic githubClassicProtection
 	if err := g.getJSON(ctx, path+"/branches/"+selected+"/protection", nil, &classic); err != nil {
-		return result, err
+		var missing *Error
+		if !errors.As(err, &missing) || missing.Code != "provider_not_found" || missing.Status != http.StatusNotFound {
+			return result, err
+		}
+		// A protection 404 alone cannot distinguish absence from missing access.
+		// The exact existing branch must positively report that it is unprotected.
+		// Protected summaries cannot replace full classic strictness/app identity.
+		var branchState struct {
+			Name      string `json:"name,required"`
+			Protected *bool  `json:"protected,required"`
+		}
+		if branchErr := g.getJSON(ctx, path+"/branches/"+selected, nil, &branchState); branchErr != nil {
+			return result, branchErr
+		}
+		if branchState.Name != branch || branchState.Protected == nil || *branchState.Protected {
+			return result, err
+		}
 	}
 	var rules []githubBranchRule
 	if err := g.getPages(ctx, path+"/rules/branches/"+selected, &rules); err != nil {
