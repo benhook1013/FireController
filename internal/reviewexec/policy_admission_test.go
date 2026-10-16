@@ -307,6 +307,8 @@ func TestPolicyAdmissionVersionTwoMigrationRetainsUnboundJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	admissionSQL(t, f, `DROP TABLE review_hosted_preflight`)
+	admissionSQL(t, f, `DROP TABLE review_hosted_allowance_queries`)
 	admissionSQL(t, f, `DROP INDEX review_operations_completed_comparison`)
 	admissionSQL(t, f, `DROP TABLE review_cli_preflight`)
 	admissionSQL(t, f, `DROP INDEX IF EXISTS review_operations_coverage`)

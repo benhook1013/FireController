@@ -108,18 +108,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}
 	defer listener.Close()
 	reviewCtx, cancelReviews := context.WithCancel(ctx)
-	var reviewDone <-chan error
-	if len(drivers) != 0 {
-		// Start commits recovery before HTTP accepts any new review requests.
-		reviewDone, err = execution.Start(reviewCtx, drivers)
-	} else {
-		err = execution.RecoverInterrupted(ctx)
-	}
-	if err != nil {
-		cancelReviews()
-		diagnosticError(stderr, err)
-		return 3
-	}
+	reviewDone, err := startReviewWorkers(reviewCtx, execution, drivers, stderr)
 	defer func() {
 		cancelReviews()
 		if reviewDone == nil {
@@ -136,6 +125,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			exitCode = 3
 		}
 	}()
+	if err != nil {
+		cancelReviews()
+		diagnosticError(stderr, err)
+		return 3
+	}
 	srv := newHTTPServer(ctx, mux)
 	_ = json.NewEncoder(stdout).Encode(map[string]string{"event": "listening", "address": listener.Addr().String(), "instance_id": store.InstanceID()})
 	done := make(chan error, 1)

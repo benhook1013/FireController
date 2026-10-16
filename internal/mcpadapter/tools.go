@@ -84,6 +84,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.ReviewRuns(ctx, args.pullNumber, client.ReviewRunOptions{PageOptions: options, Snapshot: args.snapshot})
 			case "review_run":
 				value, err = service.ReviewRun(ctx, args.id, args.snapshot)
+			case "review_policy_assess":
+				value, err = service.ReviewPolicyAssessment(ctx, args.id)
 			case "review_evidence_read":
 				value, err = service.ReviewEvidence(ctx, args.id)
 			case "review_adjudication_read":

@@ -1076,3 +1076,176 @@ describe('explicit checkpoint reads', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('captured comparison policy assessment', () => {
+  const evidenceID = `review_evidence_${'a'.repeat(32)}`;
+  const assessment = {
+    project_id: project.id, evidence_id: evidenceID, source: 'captured_comparison', policy_revision: 2,
+    evaluated_at: '2026-10-15T12:01:00Z', state: 'held',
+    anchor: { repository_id: 123, repository: 'owner/repository', pull_number: 7, parent_pull_number: 0,
+      candidate_sha: 'b'.repeat(40), base_sha: 'c'.repeat(40), parent_sha: 'd'.repeat(40), merge_base_sha: 'e'.repeat(40),
+      patch_sha256: 'f'.repeat(64), base_ref: 'main', observed_at: '2026-10-15T12:00:00Z' },
+    channels: [{ channel: 'hosted', covered: true, pending: true }, { channel: 'cli', covered: false, pending: false }],
+  };
+  it('makes one scoped finite GET, preserves pending dominance, and returns no findings', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const fetchMock = vi.fn().mockResolvedValueOnce(json(assessment));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(client.reviewPolicyAssessment(evidenceID)).resolves.toEqual(assessment);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`https://service.example/api/v1/projects/project_one/reviews/evidence/${evidenceID}/policy`);
+    expect(init.method).toBe('GET');
+    expect(init.cache).toBe('no-store');
+    expect(init.redirect).toBe('error');
+    expect(new Headers(init.headers).get('x-fc-instance')).toBe('instance_one');
+    expect(new Headers(init.headers).has('x-fc-worker')).toBe(false);
+    client.close();
+  });
+  it('accepts sufficient, unconfigured and legitimate pending results without vacuous sufficiency', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    for (const value of [
+      { ...assessment, state: 'sufficient', channels: [{ channel: 'cli', covered: true, pending: false }] },
+      { ...assessment, state: 'unconfigured', policy_revision: 0, channels: [] },
+      { ...assessment, channels: [{ channel: 'hosted', covered: false, pending: true }] },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
+      await expect(client.reviewPolicyAssessment(evidenceID)).resolves.toEqual(value);
+    }
+    client.close();
+  });
+  it('refuses malformed identifiers before connection state or HTTP', async () => {
+    setupLocation();
+    const client = api();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    for (const value of ['', '../policy', evidenceID.toUpperCase(), ` ${evidenceID}`, `${evidenceID}\n`, `review_run_${'a'.repeat(32)}`]) {
+      await expect(client.reviewPolicyAssessment(value)).rejects.toMatchObject({ code: 'invalid_request' });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    client.close();
+  });
+  it('rejects missing/null fields, cross-scope data, incoherent requirements and invalid complete anchors', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const invalid: unknown[] = [
+      { ...assessment, project_id: 'other_project' }, { ...assessment, evidence_id: `review_evidence_${'b'.repeat(32)}` },
+      { ...assessment, source: 'current_github' }, { ...assessment, PolicyRevision: 2 }, { ...assessment, extra: true },
+      { ...assessment, policy_revision: 0 }, { ...assessment, policy_revision: 1.5 }, { ...assessment, policy_revision: Number.MAX_SAFE_INTEGER + 1 },
+      { ...assessment, state: 'sufficient' }, { ...assessment, state: 'merge_ready' }, { ...assessment, channels: [] },
+      { ...assessment, state: 'unconfigured', channels: [], policy_revision: 1 },
+      { ...assessment, state: 'held', channels: [{ channel: 'cli', covered: true, pending: false }] },
+      { ...assessment, channels: [assessment.channels[0], assessment.channels[0]] },
+      { ...assessment, channels: [{ channel: 'manual', covered: false, pending: false }] },
+      { ...assessment, channels: [{ channel: 'cli', covered: 1, pending: false }] },
+      { ...assessment, channels: [{ channel: 'cli', covered: false, pending: false, extra: false }] },
+      { ...assessment, evaluated_at: '2026-02-31T12:00:00Z' }, { ...assessment, evaluated_at: '0001-01-01T00:00:00Z' },
+    ];
+    for (const field of Object.keys(assessment)) {
+      const missing = { ...assessment } as Record<string, unknown>; delete missing[field];
+      invalid.push(missing, { ...assessment, [field]: null });
+    }
+    for (const field of Object.keys(assessment.anchor)) {
+      const missing = { ...assessment.anchor } as Record<string, unknown>; delete missing[field];
+      invalid.push({ ...assessment, anchor: missing }, { ...assessment, anchor: { ...assessment.anchor, [field]: null } });
+    }
+    for (const field of ['channel', 'covered', 'pending']) {
+      const missing = { ...assessment.channels[0] } as Record<string, unknown>; delete missing[field];
+      invalid.push({ ...assessment, channels: [missing] }, { ...assessment, channels: [{ ...assessment.channels[0], [field]: null }] });
+    }
+    for (const changes of [
+      { repository_id: 0 }, { repository: '../repo' }, { repository: 'owner/repo/extra' }, { pull_number: 2147483648 },
+      { parent_pull_number: -1 }, { candidate_sha: '' }, { base_sha: 'A'.repeat(40) }, { parent_sha: 'x'.repeat(40) },
+      { merge_base_sha: 'e'.repeat(39) }, { patch_sha256: 'f'.repeat(63) }, { base_ref: ' ' },
+      { base_ref: 'main\u0085' }, { base_ref: '\ud800' }, { observed_at: 'invalid' }, { extra: true },
+    ]) invalid.push({ ...assessment, anchor: { ...assessment.anchor, ...changes } });
+    for (const value of invalid) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
+      await expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    client.close();
+  });
+  it('rejects duplicate and escaped-alias keys in original bytes, invalid UTF-8 and trailing JSON', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const raw = JSON.stringify(assessment);
+    for (const body of [
+      raw.replace('"state":"held"', '"state":"sufficient","state":"held"'),
+      raw.replace('"policy_revision":2', '"policy_revision":1,"policy\\u005frevision":2'),
+      raw.replace('"parent_pull_number":0', '"parent_pull_number":1,"parent_pull_number":0'),
+      raw.replace('"pending":true', '"pending":false,"pending":true'),
+      raw.replace('"policy_revision":2', '"policy_revision":2.0'),
+      raw.replace('"pull_number":7', '"pull_number":7e0'),
+      `${raw}{}`, new Uint8Array([0xff]),
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(body, { headers: { 'content-type': 'application/json' } })));
+      await expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    client.close();
+  });
+  it('enforces the actual 16KiB byte budget and cancels oversized streams', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const raw = JSON.stringify(assessment);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(raw.padEnd(16 << 10), { headers: { 'content-type': 'application/json' } })));
+    await expect(client.reviewPolicyAssessment(evidenceID)).resolves.toEqual(assessment);
+    const cancelled = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode(raw.padEnd((16 << 10) + 1))); }, cancel: cancelled,
+    }), { headers: { 'content-type': 'application/json' } })));
+    await expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'response_too_large' });
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(raw, { headers: { 'content-type': 'application/json', 'content-length': String((16 << 10) + 1) } })));
+    await expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'response_too_large' });
+    client.close();
+  });
+  it.each(['review_held', 'review_capacity'])('preserves %s assessment refusals without provider diagnostics', async code => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({ error: { code, message: 'PRIVATE_PROVIDER_DIAGNOSTIC <script>', details: { reason: 'repository_changed', private: 'PRIVATE_CAPTURE' } } }, 409));
+    vi.stubGlobal('fetch', fetchMock);
+    const failure = await client.reviewPolicyAssessment(evidenceID).catch(error => error as ApiError);
+    expect(failure).toMatchObject({ code, status: 409 });
+    expect(String(failure)).not.toMatch(/PRIVATE_|script|repository_changed/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    client.close();
+  });
+  it.each([[401, 'unauthorized'], [403, 'forbidden'], [500, 'storage_unavailable']] as const)('keeps assessment error %s/%s scoped and safe', async (status, code) => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({ error: { code, message: 'PRIVATE_DIAGNOSTIC' } }, status));
+    vi.stubGlobal('fetch', fetchMock);
+    const failure = await client.reviewPolicyAssessment(evidenceID).catch(error => error as ApiError);
+    expect(failure).toMatchObject({ code, status });
+    expect(String(failure)).not.toContain('PRIVATE_DIAGNOSTIC');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    client.close();
+  });
+  it('obeys caller/session cancellation and one finite five-second deadline without retry', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init!.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const caller = expect(client.reviewPolicyAssessment(evidenceID, controller.signal)).rejects.toMatchObject({ code: 'cancelled' });
+    controller.abort(); await caller;
+    const deadline = expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'deadline_exceeded' });
+    await vi.advanceTimersByTimeAsync(5000); await deadline;
+    const session = expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'cancelled' });
+    client.close(); await session;
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});

@@ -13,7 +13,7 @@ import (
 func parseReview(call invocation, args []string) (invocation, bool) {
 	list := call.subcommand == "queue" || call.subcommand == "runs"
 	switch call.subcommand {
-	case "queue", "pull", "runs", "run", "evidence", "adjudication", "operation":
+	case "queue", "pull", "runs", "run", "evidence", "adjudication", "operation", "assess":
 	case "execution":
 		return call, len(args) == 0
 	default:
@@ -72,7 +72,7 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 	if call.subcommand == "run" {
 		return call, reviewID(call.position[0], "review_run_")
 	}
-	if call.subcommand == "evidence" || call.subcommand == "adjudication" {
+	if call.subcommand == "evidence" || call.subcommand == "adjudication" || call.subcommand == "assess" {
 		return call, client.ValidateReviewEvidenceID(call.position[0]) == nil
 	}
 	number, err := strconv.ParseInt(call.position[0], 10, 64)
@@ -111,6 +111,8 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 		return service.ReviewEvidence(ctx, call.position[0])
 	case "adjudication":
 		return service.ReviewAdjudication(ctx, call.position[0])
+	case "assess":
+		return service.ReviewPolicyAssessment(ctx, call.position[0])
 	default: // parseReview admits only the explicit run-detail command here.
 		return service.ReviewRun(ctx, call.position[0], call.snapshot)
 	}

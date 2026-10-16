@@ -11,8 +11,6 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprocess"
-	"github.com/benhook1013/FireController/internal/reviewprovider"
-	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
 
@@ -88,108 +86,6 @@ func (d *CLIDriver) purgePrepared() {
 	}
 }
 
-func cliDriverHold(reason string) error {
-	return &core.Error{Code: "review_held", Message: "The selected native CLI review is held before execution.", Status: 409, Details: map[string]string{"reason": reason}}
-}
-
-func sameCLIOperation(left, right reviewexec.Operation) bool {
-	return left.ID == right.ID && left.ProjectID == right.ProjectID && left.ActorID == right.ActorID && left.WorkerID == right.WorkerID && left.ConfigurationRevision == right.ConfigurationRevision && left.PolicyRevision == right.PolicyRevision && left.CapabilityFingerprint == right.CapabilityFingerprint && left.PullNumber == right.PullNumber && left.HeadSHA == right.HeadSHA && left.Channel == right.Channel
-}
-
-func cliRequest(operation reviewexec.Operation) reviewexec.Request {
-	return reviewexec.Request{ExpectedConfigurationRevision: operation.ConfigurationRevision, PullNumber: operation.PullNumber, HeadSHA: operation.HeadSHA, Channel: operation.Channel}
-}
-
-// Each phase has its own memoizer. Repeated stack-resolution reads within one
-// phase share facts, while Dispatch cannot reuse Prepare's provider observation.
-type cliSourceReads struct {
-	reader       reviewexec.TargetReader
-	repositories map[int64]reviewprovider.Repository
-	pulls        map[cliPullKey]reviewprovider.Pull
-}
-type cliPullKey struct {
-	repository string
-	number     int64
-}
-
-func newCLISourceReads(reader reviewexec.TargetReader) *cliSourceReads {
-	return &cliSourceReads{reader: reader, repositories: map[int64]reviewprovider.Repository{}, pulls: map[cliPullKey]reviewprovider.Pull{}}
-}
-func (r *cliSourceReads) Repository(ctx context.Context, id int64) (reviewprovider.Repository, error) {
-	if value, ok := r.repositories[id]; ok {
-		return value, nil
-	}
-	value, err := r.reader.Repository(ctx, id)
-	if err == nil {
-		r.repositories[id] = value
-	}
-	return value, err
-}
-func (r *cliSourceReads) Pull(ctx context.Context, repository string, number int64) (reviewprovider.Pull, error) {
-	key := cliPullKey{repository, number}
-	if value, ok := r.pulls[key]; ok {
-		return value, nil
-	}
-	value, err := r.reader.Pull(ctx, repository, number)
-	if err == nil {
-		r.pulls[key] = value
-	}
-	return value, err
-}
-
-func (d *CLIDriver) sourceGate(ctx context.Context, reads *cliSourceReads, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation) (reviewexec.SourcePlan, []reviewexec.SourcePlan, error) {
-	plan, err := reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, cliRequest(operation))
-	if err != nil {
-		return plan, nil, err
-	}
-	comparison, err := d.engine.Comparison(ctx, operation.ProjectID, plan, "cli")
-	if err != nil {
-		return plan, nil, err
-	}
-	if comparison.Pending {
-		return plan, nil, core.Fail("review_evidence_pending", "Resolve retained native CLI evidence before starting another review.", 409)
-	}
-	if comparison.Covered {
-		return plan, nil, cliDriverHold("target_already_covered")
-	}
-	if configuration.Mode != "stacked" {
-		return plan, nil, nil
-	}
-	position := slices.Index(configuration.Queue, operation.PullNumber)
-	predecessors := make([]reviewexec.SourcePlan, 0, position)
-	for _, number := range configuration.Queue[:position] {
-		pull, err := reads.Pull(ctx, plan.Repository.FullName, number)
-		if err != nil {
-			return plan, nil, err
-		}
-		if pull.RepositoryID != repositoryID || pull.Number != number {
-			return plan, nil, cliDriverHold("predecessor_identity_changed")
-		}
-		if pull.Merged {
-			predecessors = append(predecessors, reviewexec.SourcePlan{Repository: plan.Repository, Pull: pull, ObservedAt: plan.ObservedAt})
-			continue
-		}
-		if pull.State != "open" {
-			return plan, nil, cliDriverHold("predecessor_unavailable")
-		}
-		request := cliRequest(operation)
-		request.PullNumber, request.HeadSHA = number, pull.HeadSHA
-		preceding, err := reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, request)
-		if err != nil {
-			return plan, nil, err
-		}
-		covered, err := d.engine.Coverage(ctx, operation.ProjectID, preceding, "cli")
-		if err != nil {
-			return plan, nil, err
-		}
-		if !covered {
-			return plan, nil, cliDriverHold("predecessor_unfinished")
-		}
-		predecessors = append(predecessors, preceding)
-	}
-	return plan, predecessors, nil
-}
-
 func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation, configuration reviewexec.Configuration, attempt reviewexec.Attempt) (preparation reviewexec.Preparation, failure error) {
 	d.mu.Lock()
 	d.purgePrepared()
@@ -198,8 +94,8 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	if err != nil {
 		return preparation, err
 	}
-	if !sameCLIOperation(operation, current.Operation) || !reflect.DeepEqual(configuration, current.Configuration) || configuration.CapabilityID != d.capability.ID || operation.Channel != "cli" || attempt.Provider != "coderabbit" || attempt.Account != d.capability.Account || attempt.ProjectID != operation.ProjectID || attempt.OperationID != operation.ID || attempt.ID != current.Operation.AttemptID || attempt.State != "preparing" || attempt.Revision != 1 {
-		return preparation, cliDriverHold("execution_binding_changed")
+	if !sameOperation(operation, current.Operation) || !reflect.DeepEqual(configuration, current.Configuration) || configuration.CapabilityID != d.capability.ID || operation.Channel != "cli" || attempt.Provider != "coderabbit" || attempt.Account != d.capability.Account || attempt.ProjectID != operation.ProjectID || attempt.OperationID != operation.ID || attempt.ID != current.Operation.AttemptID || attempt.State != "preparing" || attempt.Revision != 1 {
+		return preparation, reviewHold("execution_binding_changed")
 	}
 	d.mu.Lock()
 	d.purgePrepared()
@@ -209,7 +105,7 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	}
 	d.mu.Unlock()
 	if exists {
-		return preparation, cliDriverHold("preparation_duplicate")
+		return preparation, reviewHold("preparation_duplicate")
 	}
 	defer func() {
 		if failure != nil {
@@ -218,56 +114,29 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 			d.mu.Unlock()
 		}
 	}()
-	reads := newCLISourceReads(d.reader)
-	plan, _, err := d.sourceGate(ctx, reads, current.RepositoryID, current.Configuration, current.Operation)
+	reads := newSourceReads(d.reader)
+	plan, _, err := resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
 	if err != nil {
 		return preparation, err
 	}
-	if err := d.fetch(ctx, current.RepositoryID, plan.Repository.FullName, plan.Pull.HeadSHA, plan.Pull.BaseSHA, d.capability.GitHubCredential()); err != nil {
-		return preparation, cliDriverHold("source_unavailable")
-	}
-	workspace, err := d.manager.Prepare(ctx, current.RepositoryID, attempt.ID, plan.Pull.HeadSHA, plan.Pull.BaseSHA)
+	workspace, changedFiles, err := prepareReviewWorkspace(ctx, d.fetch, d.verify, d.manager, d.capability.GitHubCredential(), current, plan, attempt.ID)
 	if err != nil {
-		return preparation, cliDriverHold("workspace_unavailable")
-	}
-	workspace, err = d.manager.BindRepository(ctx, workspace, plan.Repository.FullName)
-	if err != nil {
-		return preparation, cliDriverHold("workspace_unavailable")
-	}
-	if err := d.verify(ctx, workspace); err != nil {
-		return preparation, cliDriverHold("workspace_changed")
-	}
-	paths, err := d.manager.ChangedFiles(ctx, workspace)
-	if err != nil || len(paths) == 0 {
-		return preparation, cliDriverHold("comparison_unavailable")
-	}
-	if ceiling := current.Policy.Policy.MaxReviewFiles; ceiling > 0 && int64(len(paths)) > ceiling {
-		return preparation, cliDriverHold("project_file_limit")
+		return preparation, err
 	}
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
 	usage, err := d.usage(ctx, workspace, plan.Repository.FullName, d.capability.Organization)
 	if err != nil {
 		var failure *reviewprocess.Error
 		if errors.As(err, &failure) && failure.Code == "rate_limited" {
-			return preparation, cliDriverHold("allowance_exhausted")
+			return preparation, reviewHold("allowance_exhausted")
 		}
-		return preparation, cliDriverHold("allowance_unavailable")
+		return preparation, reviewHold("allowance_unavailable")
 	}
-	if err := d.engine.RecordCLIAllowance(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: int64(len(paths))}); err != nil {
+	if err := d.engine.RecordCLIAllowance(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}); err != nil {
 		return preparation, err
 	}
-	// Only absence permits fresh metadata fallback; an actual projection
-	// conflict or storage failure must not be disguised as a missing row.
-	_, err = d.engine.PublishAttempt(ctx, operation.ProjectID, attempt.ID, nil)
-	if err != nil {
-		var missing *core.Error
-		if !errors.As(err, &missing) || missing.Code != "review_projection_missing" {
-			return preparation, err
-		}
-		metadata := reviews.PullInput{Number: plan.Pull.Number, Title: pullDisplayTitle(plan.Pull.Title), State: plan.Pull.State, HeadSHA: plan.Pull.HeadSHA, BaseRef: plan.Pull.BaseRef, BaseSHA: plan.Pull.BaseSHA, CIState: "unknown", Mergeability: "unknown", Complete: false}
-		if _, err = d.engine.PublishAttempt(ctx, operation.ProjectID, attempt.ID, &metadata); err != nil {
-			return preparation, err
-		}
+	if err := publishPreparedAttempt(ctx, d.engine, operation.ProjectID, attempt.ID, plan); err != nil {
+		return preparation, err
 	}
 	d.mu.Lock()
 	d.prepared[attempt.ID] = &cliPrepared{operation: current.Operation, configuration: current.Configuration, plan: plan, workspace: workspace, anchor: anchor, expires: time.Now().Add(60 * time.Second)}
@@ -289,14 +158,14 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 	if prepared == nil {
 		return failed("preparation_missing")
 	}
-	if !sameCLIOperation(operation, prepared.operation) || attempt.ProjectID != operation.ProjectID || attempt.OperationID != operation.ID || attempt.Provider != "coderabbit" || attempt.Account != d.capability.Account || attempt.State != "active" || attempt.Anchor == nil || *attempt.Anchor != prepared.anchor {
+	if !sameOperation(operation, prepared.operation) || attempt.ProjectID != operation.ProjectID || attempt.OperationID != operation.ID || attempt.Provider != "coderabbit" || attempt.Account != d.capability.Account || attempt.State != "active" || attempt.Anchor == nil || *attempt.Anchor != prepared.anchor {
 		return failed("execution_binding_changed")
 	}
-	reads := newCLISourceReads(d.reader)
-	if err := reviewexec.RecheckSource(ctx, reads, prepared.anchor.RepositoryID, prepared.configuration, cliRequest(operation), prepared.plan); err != nil {
+	reads := newSourceReads(d.reader)
+	if err := reviewexec.RecheckSource(ctx, reads, prepared.anchor.RepositoryID, prepared.configuration, operationRequest(operation), prepared.plan); err != nil {
 		return failed("source_changed")
 	}
-	_, predecessors, err := d.sourceGate(ctx, reads, prepared.anchor.RepositoryID, prepared.configuration, operation)
+	_, predecessors, err := resolveReviewSource(ctx, d.engine, reads, prepared.anchor.RepositoryID, prepared.configuration, operation)
 	if err != nil {
 		return failed("source_admission_changed")
 	}

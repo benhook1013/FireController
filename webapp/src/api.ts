@@ -3,7 +3,7 @@ import type {
   JobSummary, Message, MessageEvent, MessageEventPage, Page, PageOptions,
   Project, WatchCallbacks, Worker,
   ReviewAttemptSummary, ReviewFinding, ReviewPull, ReviewPullSummary, ReviewQueue, ReviewRunDetail,
-  ReviewRunOptions, ReviewRuns, ReviewRunSummary,
+  ReviewRunOptions, ReviewRuns, ReviewRunSummary, ReviewPolicyAssessment,
 } from './types';
 import { runMessageWatch, type MessageWatchSource } from './events';
 import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
@@ -16,7 +16,7 @@ const serverErrorCodes = new Set([
   'bootstrap_failed', 'configuration_invalid', 'credential_already_configured', 'empty_edit', 'forbidden',
   'idempotency_conflict', 'idempotency_key_required', 'instance_mismatch', 'internal_error', 'invalid_brief',
   'invalid_cursor', 'invalid_filter', 'invalid_query', 'invalid_revision', 'invalid_status', 'invalid_title',
-  'method_not_allowed', 'not_found', 'overloaded', 'provider_unavailable', 'resync_required', 'schema_invalid',
+  'method_not_allowed', 'not_found', 'overloaded', 'provider_unavailable', 'review_held', 'review_capacity', 'resync_required', 'schema_invalid',
   'schema_unsupported', 'storage_unavailable', 'stream_failed', 'stream_frame_too_large', 'stream_unavailable',
   'unauthorized', 'validation_failed', 'worker_already_configured',
 ]);
@@ -96,7 +96,7 @@ function validPage(value: unknown, limit: number): value is Record<string, unkno
 }
 function defaultLimit(options: PageOptions): number { return options.limit ?? 20; }
 
-async function readJson(response: Response, signal: AbortSignal, responseMaxBytes = maxBytes): Promise<unknown> {
+async function readJson(response: Response, signal: AbortSignal, responseMaxBytes = maxBytes, decode: (text: string) => unknown = JSON.parse): Promise<unknown> {
   const declared = response.headers.get('content-length');
   if (declared && Number.isFinite(Number(declared)) && Number(declared) > responseMaxBytes) {
     void response.body?.cancel().catch(() => {});
@@ -122,7 +122,7 @@ async function readJson(response: Response, signal: AbortSignal, responseMaxByte
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown; }
+  try { return decode(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
   catch { throw new ApiError('invalid_response', 'The service returned invalid JSON.', response.status); }
 }
 function serverError(value: unknown, status: number): ApiError {
@@ -167,6 +167,63 @@ function validCheckpoint(value: unknown, projectId: string, jobId: string): valu
   if (!checkpointText(value.done, 8 << 10, true) || !checkpointText(value.next, 8 << 10, true) || !checkpointText(value.blocker, 4 << 10, false) || !Array.isArray(value.evidence) || value.evidence.length > 10 || !value.evidence.every(item => checkpointText(item, 1024, true))) return false;
   const encoder = new TextEncoder();
   return [value.done, value.next, value.blocker, ...value.evidence].reduce((size, item) => size + encoder.encode(item).byteLength, 0) <= 16 << 10;
+}
+function reviewEvidenceID(value: unknown): value is string { return typeof value === 'string' && /^review_evidence_[a-f0-9]{32}$/u.test(value); }
+// JSON.parse alone loses duplicate keys. This bounded response additionally
+// checks the original tokens, including escaped aliases, before accepting it.
+function assessmentJSON(raw: string): unknown {
+  const value: unknown = JSON.parse(raw);
+  const tokens = raw.match(/"(?:\\.|[^"\\])*"|[{}\[\]:,]|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/gu) ?? [];
+  let position = 0;
+  function visit(depth: number): void {
+    if (depth > 32) throw new Error('Invalid assessment JSON');
+    const token = tokens[position++];
+    if (token === '{') {
+      const names = new Set<string>();
+      if (tokens[position] === '}') { position++; return; }
+      while (true) {
+        const name = JSON.parse(tokens[position++]) as string;
+        if (names.has(name) || tokens[position++] !== ':') throw new Error('Invalid assessment JSON');
+        names.add(name);
+        visit(depth + 1);
+        const next = tokens[position++];
+        if (next === '}') return;
+        if (next !== ',') throw new Error('Invalid assessment JSON');
+      }
+    }
+    if (token === '[') {
+      if (tokens[position] === ']') { position++; return; }
+      while (true) {
+        visit(depth + 1);
+        const next = tokens[position++];
+        if (next === ']') return;
+        if (next !== ',') throw new Error('Invalid assessment JSON');
+      }
+    }
+    if (token === undefined || /^-?\d/u.test(token) && /[.eE]/u.test(token)) throw new Error('Invalid assessment JSON');
+  }
+  visit(0);
+  if (position !== tokens.length) throw new Error('Invalid assessment JSON');
+  return value;
+}
+function assessmentTime(value: unknown): value is string {
+  if (!timestamp(value)) return false;
+  const date = value.slice(0, 10).split('-').map(Number);
+  const calendar = new Date(0);
+  calendar.setUTCFullYear(date[0], date[1] - 1, date[2]);
+  return calendar.getUTCFullYear() === date[0] && calendar.getUTCMonth() === date[1] - 1 && calendar.getUTCDate() === date[2] && Number(value.slice(11, 13)) <= 23 && Number(value.slice(14, 16)) <= 59 && Number(value.slice(17, 19)) <= 59 && (Date.parse(value) !== -62135596800000 || /\.\d*[1-9]\d*(?:Z|[+-])/u.test(value));
+}
+function validAssessmentAnchor(value: unknown): boolean {
+  if (!record(value) || !keys(value, ['repository_id', 'repository', 'pull_number', 'parent_pull_number', 'candidate_sha', 'base_sha', 'parent_sha', 'merge_base_sha', 'patch_sha256', 'base_ref', 'observed_at'])) return false;
+  const repository = typeof value.repository === 'string' ? value.repository.split('/') : [];
+  return positive(value.repository_id) && repository.length === 2 && repository.every(part => /^[A-Za-z0-9._-]{1,100}$/u.test(part) && part !== '.' && part !== '..') && pullNumber(value.pull_number) && nonnegative(value.parent_pull_number) && value.parent_pull_number <= 2147483647 && [value.candidate_sha, value.base_sha, value.parent_sha, value.merge_base_sha].every(item => typeof item === 'string' && /^[a-f0-9]{40}$/u.test(item)) && typeof value.patch_sha256 === 'string' && /^[a-f0-9]{64}$/u.test(value.patch_sha256) && checkpointText(value.base_ref, 256, true) && !/[\u0080-\u009f]/u.test(value.base_ref) && assessmentTime(value.observed_at);
+}
+function validPolicyAssessment(value: unknown, project: string, evidence: string): value is ReviewPolicyAssessment {
+  if (!record(value) || !keys(value, ['project_id', 'evidence_id', 'anchor', 'source', 'policy_revision', 'evaluated_at', 'state', 'channels']) || value.project_id !== project || value.evidence_id !== evidence || !validAssessmentAnchor(value.anchor) || value.source !== 'captured_comparison' || !nonnegative(value.policy_revision) || !assessmentTime(value.evaluated_at) || !Array.isArray(value.channels) || value.channels.length > 2) return false;
+  const channels = value.channels;
+  if (!channels.every(item => record(item) && keys(item, ['channel', 'covered', 'pending']) && (item.channel === 'cli' || item.channel === 'hosted') && typeof item.covered === 'boolean' && typeof item.pending === 'boolean') || new Set(channels.map(item => (item as Record<string, unknown>).channel)).size !== channels.length) return false;
+  if (value.state === 'unconfigured') return value.policy_revision === 0 && channels.length === 0;
+  return value.policy_revision > 0 && channels.length > 0 && (value.state === 'sufficient' || value.state === 'held') && channels.every(item => (item as Record<string, unknown>).covered && !(item as Record<string, unknown>).pending) === (value.state === 'sufficient');
 }
 const reviewMetadata = ['project_id', 'revision', 'snapshot_id', 'source', 'observed_at', 'recorded_at'];
 const reviewOutcomes = new Set(['completed', 'active', 'prepared', 'posting', 'failed', 'cancelled', 'rate_limited', 'uncertain', 'unknown']);
@@ -379,6 +436,12 @@ export class Api {
     if (!record(value) || !keys(value, [...reviewMetadata, 'pull_number', 'run', 'findings']) || !validReviewSnapshot(value, this.projectId, snapshot) || !pullNumber(value.pull_number) || !validReviewRun(value.run, value.pull_number) || value.run.id !== runId || !Array.isArray(value.findings) || value.findings.length > 100 || value.findings.length > value.run.found || value.run.complete && value.findings.length !== value.run.found || !value.findings.every(validReviewFinding) || new Set(value.findings.map(item => item.source_finding_id)).size !== value.findings.length || value.findings.filter(item => item.fix_sha !== '').length !== value.run.fixed) throw new ApiError('invalid_response', 'The service returned an invalid review run detail.');
     return value as unknown as ReviewRunDetail;
   }
+  async reviewPolicyAssessment(evidenceId: string, signal?: AbortSignal): Promise<ReviewPolicyAssessment> {
+    if (!reviewEvidenceID(evidenceId)) throw new ApiError('invalid_request', 'The native evidence identifier is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`reviews/evidence/${evidenceId}/policy`), signal, undefined, 16 << 10, assessmentJSON);
+    if (!validPolicyAssessment(value, this.projectId, evidenceId)) throw new ApiError('invalid_response', 'The service returned an invalid captured comparison assessment.');
+    return value;
+  }
   async inbox(worker: string, options: InboxOptions = {}, signal?: AbortSignal): Promise<Page<InboxItem>> {
     if (!id(worker)) throw new ApiError('invalid_request', 'The inbox worker is invalid.');
     const query = pageOptions(options);
@@ -443,19 +506,19 @@ export class Api {
   }
 
   private projectRoute(suffix: string): string { return `/api/v1/projects/${encodeURIComponent(this.projectId)}${suffix ? `/${suffix}` : ''}`; }
-  private async finiteGet(path: string, signal?: AbortSignal, worker?: string, responseMaxBytes = maxBytes): Promise<unknown> {
+  private async finiteGet(path: string, signal?: AbortSignal, worker?: string, responseMaxBytes = maxBytes, decode: (text: string) => unknown = JSON.parse): Promise<unknown> {
     this.ensureOpen();
     const request = requestBudget([signal, this.session.signal], 5000);
     try {
       if (!this.verifiedInstanceId) throw new ApiError('not_connected', 'Connect to the selected project before reading data.');
-      return await this.getJson(path, this.verifiedInstanceId, request.signal, worker, responseMaxBytes);
+      return await this.getJson(path, this.verifiedInstanceId, request.signal, worker, responseMaxBytes, decode);
     } catch (error) { throw this.transportError(error, request.expired(), request.signal); }
     finally { request.close(); }
   }
-  private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string, responseMaxBytes = maxBytes): Promise<unknown> {
+  private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string, responseMaxBytes = maxBytes, decode: (text: string) => unknown = JSON.parse): Promise<unknown> {
     const response = await fetch(urlFor(path), { method: 'GET', headers: this.headers(instanceId, worker), redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal });
     if (!response.ok) throw await readFailure(response, signal);
-    return readJson(response, signal, responseMaxBytes);
+    return readJson(response, signal, responseMaxBytes, decode);
   }
   private headers(instanceId?: string, worker?: string): Headers {
     const value = new Headers({ Accept: 'application/json' });

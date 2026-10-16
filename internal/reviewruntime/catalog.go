@@ -37,6 +37,25 @@ func (c Catalog) String() string {
 
 func (c Catalog) GoString() string { return c.String() }
 
+// HostedSettings binds the private provider actor and its progress source.
+// ProviderLogin is display data; the stable actor ID supplies identity.
+type HostedSettings struct {
+	ProviderActorID int64  `json:"provider_actor_id"`
+	ProviderLogin   string `json:"provider_login"`
+	ProgressMode    string `json:"progress_mode"`
+	ProgressAppID   int64  `json:"progress_app_id"`
+}
+
+func (HostedSettings) String() string     { return "HostedSettings{private}" }
+func (h HostedSettings) GoString() string { return h.String() }
+
+func validHostedSettings(settings *HostedSettings) bool {
+	if settings == nil || settings.ProviderActorID <= 0 || len(settings.ProviderLogin) > 100 || !asciiName(strings.TrimSuffix(settings.ProviderLogin, "[bot]"), 100, "_-", false) {
+		return false
+	}
+	return settings.ProgressMode == "commit_status" && settings.ProgressAppID == 0 || settings.ProgressMode == "check_run" && settings.ProgressAppID > 0
+}
+
 // OperatorCapability describes one operator-owned local adapter capability.
 // The credential is accessible only through GitHubCredential; private paths are
 // omitted when this value is logged or marshaled.
@@ -49,6 +68,7 @@ type OperatorCapability struct {
 	CLIExecutable             string            `json:"-"`
 	AuthenticationEnvironment map[string]string `json:"-"`
 	Fingerprint               string            `json:"fingerprint"`
+	Hosted                    *HostedSettings   `json:"-"`
 	githubCredential          string
 }
 
@@ -69,6 +89,7 @@ type capabilityFile struct {
 	GitExecutable             string            `json:"git_executable"`
 	CLIExecutable             string            `json:"cli_executable"`
 	AuthenticationEnvironment map[string]string `json:"authentication_environment"`
+	Hosted                    *HostedSettings   `json:"hosted,omitempty"`
 }
 
 var allowedAuthenticationEnvironment = map[string]bool{
@@ -131,8 +152,20 @@ func validateCapabilityShapes(data []byte, capabilities []capabilityFile) error 
 				return errors.New("shape")
 			}
 		}
-		for _, name := range []string{"github_credential_file", "cli_executable", "authentication_environment"} {
+		for _, name := range []string{"github_credential_file", "cli_executable", "authentication_environment", "hosted"} {
 			if value, ok := fields[name]; ok && isNull(value) {
+				return errors.New("shape")
+			}
+		}
+		if rawHosted, ok := fields["hosted"]; ok {
+			if !requiredNonNullObject(rawHosted, "provider_actor_id", "provider_login", "progress_mode") {
+				return errors.New("shape")
+			}
+			var hosted map[string]json.RawMessage
+			if json.Unmarshal(rawHosted, &hosted) != nil {
+				return errors.New("shape")
+			}
+			if value, ok := hosted["progress_app_id"]; ok && isNull(value) {
 				return errors.New("shape")
 			}
 		}
@@ -165,6 +198,9 @@ func loadCapability(input capabilityFile, catalogDirectory string) (OperatorCapa
 		seen[channel] = true
 	}
 	sort.Strings(channels)
+	if seen["hosted"] && !validHostedSettings(input.Hosted) || !seen["hosted"] && input.Hosted != nil {
+		return empty, configurationError()
+	}
 	if seen["cli"] && !validExecutable(input.CLIExecutable) || !seen["cli"] && input.CLIExecutable != "" && !validExecutable(input.CLIExecutable) {
 		return empty, configurationError()
 	}
@@ -194,6 +230,10 @@ func loadCapability(input capabilityFile, catalogDirectory string) (OperatorCapa
 		return empty, configurationError()
 	}
 	capability := OperatorCapability{ID: input.ID, Account: input.Account, Organization: input.Organization, Channels: channels, GitExecutable: input.GitExecutable, CLIExecutable: input.CLIExecutable, AuthenticationEnvironment: environment, githubCredential: token}
+	if input.Hosted != nil {
+		owned := *input.Hosted
+		capability.Hosted = &owned
+	}
 	fingerprint, err := capabilityFingerprint(capability)
 	if err != nil {
 		return empty, configurationError()
@@ -213,7 +253,8 @@ func capabilityFingerprint(capability OperatorCapability) (string, error) {
 		CLIExecutable             string            `json:"cli_executable"`
 		AuthenticationEnvironment map[string]string `json:"authentication_environment"`
 		CredentialSHA256          string            `json:"credential_sha256"`
-	}{capability.ID, capability.Account, capability.Organization, capability.Channels, capability.GitExecutable, capability.CLIExecutable, capability.AuthenticationEnvironment, hex.EncodeToString(tokenHash[:])}
+		Hosted                    *HostedSettings   `json:"hosted,omitempty"`
+	}{capability.ID, capability.Account, capability.Organization, capability.Channels, capability.GitExecutable, capability.CLIExecutable, capability.AuthenticationEnvironment, hex.EncodeToString(tokenHash[:]), capability.Hosted}
 	data, err := json.Marshal(canonical)
 	if err != nil {
 		return "", err

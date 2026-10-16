@@ -204,6 +204,12 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 	before := bindingOperation(t, f, scope, oldReceipt.ID)
 	instance := f.store.InstanceID()
 	// Reconstruct the actual version1 table shape only in this owned fixture.
+	if _, err := f.store.DB().Exec(`DROP TABLE review_hosted_preflight`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().Exec(`DROP TABLE review_hosted_allowance_queries`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.store.DB().Exec(`DROP INDEX review_operations_completed_comparison`); err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +253,7 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 	}
 	bindEngine(t, f, bindingCapability())
 	var version, title, brief, worker string
-	if err := reopened.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "5" {
+	if err := reopened.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "6" {
 		t.Fatal("migration did not advance only the domain version", err)
 	}
 	if err := reopened.DB().QueryRow(`SELECT title,brief,worker_id FROM jobs WHERE id='retained-job'`).Scan(&title, &brief, &worker); err != nil || title != "Retained title" || brief != "Retained exact brief" || worker != "retained-worker" {

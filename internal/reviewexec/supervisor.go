@@ -14,7 +14,9 @@ import (
 )
 
 // Preparation is the adapter's verified exact target and action body. Preparing
-// may read providers and local Git, but must not post or spend a review.
+// may read providers and local Git, but must not post or spend a review. Hosted
+// preparation may issue its separately journaled, fixed non-review allowance
+// query; neither that query nor its reply grants final dispatch permission.
 type Preparation struct {
 	Anchor Anchor
 	Intent string
@@ -182,7 +184,7 @@ func preparationReason(err error) string {
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
 			switch reason := details["reason"]; reason {
-			case "repository_changed", "allowance_exhausted", "allowance_unavailable", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "execution_binding_changed", "preparation_duplicate", "source_unavailable", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit":
+			case "repository_changed", "allowance_exhausted", "allowance_unavailable", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "execution_binding_changed", "preparation_duplicate", "source_unavailable", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit", "provider_activity_unproven", "provider_review_active", "provider_actor_unproven", "hosted_allowance_unproven", "hosted_allowance_cooldown":
 				return reason
 			}
 		}
