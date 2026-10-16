@@ -537,7 +537,9 @@ func startDaemon(t *testing.T, ctx context.Context, binary, data string, env []s
 		}
 		d.instance, d.address = record.InstanceID, record.Address
 	case <-d.done:
-		t.Fatal("packaged daemon exited before readiness")
+		// Report bounded fingerprints, never captured diagnostics or private values.
+		diagnostic := d.stderr.bytes()
+		t.Fatalf("packaged daemon exited before readiness (exit=%d stderr_bytes=%d stderr_sha256=%x)", d.command.ProcessState.ExitCode(), len(diagnostic), sha256.Sum256(diagnostic))
 	case <-time.After(stepTimeout):
 		t.Fatal("packaged daemon readiness exceeded five seconds")
 	}
