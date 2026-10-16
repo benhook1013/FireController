@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -105,7 +106,7 @@ func TestReviewExecutionCompositionIsExplicit(t *testing.T) {
 				}
 			}
 			workerCtx, cancel := context.WithCancel(t.Context())
-			done, err := startReviewWorkers(workerCtx, engine, drivers)
+			done, err := startReviewWorkers(workerCtx, engine, drivers, io.Discard)
 			if err != nil || (done == nil) != (mode == "disabled") {
 				cancel()
 				t.Fatal("worker startup failed", err)
