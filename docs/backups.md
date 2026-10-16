@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Local operator bundle creation, read-only inspection, inactive restore, managed scheduling and retention are implemented. Local coordination activation establishes fresh access with a persistent provider hold. Proof and limits are recorded below. Recovery-generation backups retain prior activation provenance and support explicitly configured local scheduling under the provider hold. [Provider reconciliation and resumption](provider-resumption.md) is being implemented; its owner records the current proof limits. [Installed QA proof](hosting.md#recovery-generation-qa-upgrade) includes a manual pre-upgrade backup; an installed recurring backup policy and complete disaster recovery workflow remain unproved.
+Local operator bundle creation, read-only inspection, inactive restore, managed scheduling and retention are implemented. Local coordination activation establishes fresh access with a persistent provider hold. Proof and limits are recorded below. Recovery-generation backups retain prior activation provenance and support explicitly configured local scheduling under the provider hold. The [provider reconciliation and resumption contract](provider-resumption.md) owns its implementation status and proof limits. [Installed QA proof](hosting.md#recovery-generation-qa-upgrade) includes a manual pre-upgrade backup; an installed recurring backup policy and complete disaster recovery workflow remain unproved.
 
 ## Canonical data and local format
 

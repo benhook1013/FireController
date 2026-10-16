@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The administrator observation API already imports immutable review history. The guided preview/apply API and CLI below are implemented with focused normal/race checks. Five actual packaged groups pass; full integrated validation remains pending. They do not collect provider history, import historical jobs or messages, generate a project map, or complete the broader [onboarding](onboarding.md) flow.
+The administrator observation API already imports immutable review history. The guided preview/apply API and CLI below are implemented with focused normal/race checks. Focused checks, five actual packaged groups and the full integrated check/build pass at the checkpoints below. They do not collect provider history, import historical jobs or messages, generate a project map, or complete the broader [onboarding](onboarding.md) flow.
 
 ## Selected sources and destination
 
@@ -46,7 +46,7 @@ Exercise preview conservation of all tables/events/receipts, same-snapshot admin
 
 The full review-observation package passed normal checks in 3.030 seconds and race checks in 17.905 seconds. Focused administrative read reauthorization passed race checks in 1.088 seconds. Tests use actual SQLite and authenticated public handlers to prove preview conservation, scoped normalized fingerprints, shared receipts across both endpoints and restart, movement/retirement/finalized-history refusal, exact wrapper-size bounds, transaction rollback and retained snapshot continuation.
 
-Import client and CLI groups passed normal checks in 0.163 and 5.124 seconds and race checks in 1.681 and 6.623 seconds, with scoped vet/formatting checks. Actual HTTP cases cover read-only preview cancellation/output failure, committed apply with a malformed or lost result followed by exact recovery, preview-again conflict guidance, strict file checks before credentials, and the ordinary five-second preview deadline. Integration inspection caught a valid Unicode-escaped file whose normalized service preview fit while its same-file client apply wrapper exceeded the wire bound. The regression failed before the fix; both CLI and typed preview now check that future wrapper before any request, while a nearby valid file previews and applies unchanged. The separate full integrated build remains pending.
+Import client and CLI groups passed normal checks in 0.163 and 5.124 seconds and race checks in 1.681 and 6.623 seconds, with scoped vet/formatting checks. Actual HTTP cases cover read-only preview cancellation/output failure, committed apply with a malformed or lost result followed by exact recovery, preview-again conflict guidance, strict file checks before credentials, and the ordinary five-second preview deadline. Integration inspection caught a valid Unicode-escaped file whose normalized service preview fit while its same-file client apply wrapper exceeded the wire bound. The regression failed before the fix; both CLI and typed preview now check that future wrapper before any request, while a nearby valid file previews and applies unchanged. The integrated proof below complements these focused checks.
 
 ## Packaged proof
 
@@ -54,4 +54,10 @@ Clean combined checkpoint `b0dfcf40b7e54340e4fd201022eb83a73b596f38` passed five
 
 The largest measured CLI call was 8.580 ms; outputs remained at most 1841 bytes. These are small local fixture measurements. All 525 tracked source/assets files and both clean-VCS application binaries stayed unchanged. Owned processes/listeners stopped; private failed and successful fixture state remains offline for inspection. No external provider or executable call occurred. Setup used sixteen authenticated in-process handler calls and two controlled repository lookups, separately accounted from runtime traffic. The first attempt stopped on a fixture assumption about the established CLI error envelope; its script/results were preserved, and only that decoder was corrected before the passing run. No source, assertion or deadline was relaxed.
 
-This fixture contained imported history rather than raw provider captures; it establishes no capture-file migration, general provider collector, historical jobs/messages importer, project map, browser/remote behavior or operational cutover. The repository-wide check/build at the same combined checkpoint is a separate active validation boundary.
+This fixture contained imported history rather than raw provider captures; it establishes no capture-file migration, general provider collector, historical jobs/messages importer, project map, browser/remote behavior or operational cutover. The repository-wide check/build at the same combined checkpoint passed separately, as recorded below.
+
+## Full integration proof
+
+Clean combined checkpoint `b0dfcf40b7e54340e4fd201022eb83a73b596f38` passed `make check build`: 189 browser tests, all Go race tests and vet, documentation/link checks, embedded asset regeneration and all three application binaries. Backup/execution/runtime race packages passed in 279.760/350.861/145.874 seconds. These complete-suite durations are separate from the measured agent command latency above. Regenerated browser assets left Git unchanged.
+
+The full-build `fc` and `fcd` hashes exactly matched the independently built packaged-import products. The full-build `fcmcp` also matched a separate clean build of the same source; the import scenario itself exercised `fc` and `fcd`, not MCP. All source and tracked assets stayed clean through comparison. Later documentation and MCP inventory-check changes have their focused checks; they do not change this runtime checkpoint or expand its proof into provider collection, maps or cutover.
