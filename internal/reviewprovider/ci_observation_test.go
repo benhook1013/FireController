@@ -292,13 +292,8 @@ func TestObserveRequiredCISelectsMergeOrProvenEmptyHeadFallback(t *testing.T) {
 			if mode == "conflicting" && got.MergeState != "conflicting" {
 				t.Fatal("lost source merge conflict")
 			}
-			paths, _ := f.snapshot()
-			branchReads := 0
-			for _, path := range paths {
-				if path == candidateBranchPath {
-					branchReads++
-				}
-			}
+			paths, counts := f.snapshot()
+			branchReads := counts[candidateBranchPath]
 			wantBranchReads := 4
 			if mode == "conflicting" {
 				wantBranchReads = 0
