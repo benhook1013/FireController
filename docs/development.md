@@ -135,7 +135,7 @@ This slice does not persist a client retry journal. Callers retain the key, requ
 
 ## Incoming message replay
 
-`fc inbox snapshot` and `fc inbox events` expose the scoped [message-event API](message-events.md). Snapshot includes a compact inbox page and its same-transaction event cursor. Events replays one page or waits up to four seconds for a relevant change, within the normal five-second command budget. Full message bodies and explicit seen/ack actions remain separate calls.
+`fc inbox snapshot` and `fc inbox events` expose the scoped [message-event API](message-events.md). Snapshot includes a compact inbox page and its same-transaction event cursor. Events replays one page or waits up to four seconds for a relevant change, within the normal five-second command budget. Full message bodies and explicit seen/ack actions remain separate calls. The explicit [quiet wait](message-wait.md), `fc inbox wait --cursor CURSOR`, consumes the persistent stream and returns the first new incoming-message event page or a bounded timeout; its default wait is 25 seconds, with no intermediate heartbeat output.
 
 ## Combined client, transport and browser proof
 

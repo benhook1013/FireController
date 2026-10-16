@@ -62,6 +62,8 @@ type invocation struct {
 	mutation   *mutationInvocation
 	setup      *profileSetupInvocation
 	notes      *noteInvocation
+
+	waitSeconds int
 }
 
 // Run preserves the original embedding API while RunContext adds caller
@@ -120,6 +122,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return report(stderr, ExitCancelled, "cancelled", "The command was cancelled before connecting.", "No service operation was sent; retry when cancellation is no longer requested.")
 	}
 	timeout := serviceTimeout
+	if call.command == "inbox" && call.subcommand == "wait" {
+		timeout = time.Duration(call.waitSeconds+5) * time.Second
+	}
 	if call.mutation != nil && (call.mutation.operation == "reviews source-refresh" || call.mutation.operation == "reviews publish" || call.mutation.operation == "reviews publication-recover") && call.mutation.reviewSourceWait > 2 {
 		timeout = time.Duration(call.mutation.reviewSourceWait+5) * time.Second
 	}
@@ -200,6 +205,8 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value, err = service.Inbox(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack})
 	case call.command == "inbox" && call.subcommand == "snapshot":
 		value, err = service.InboxSnapshot(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack})
+	case call.command == "inbox" && call.subcommand == "wait":
+		value, err = service.WaitForMessages(requestCtx, call.cursor, call.limit, call.waitSeconds)
 	case call.command == "inbox" && call.subcommand == "events":
 		value, err = service.MessageEvents(requestCtx, call.cursor, call.limit, call.waitMS)
 	case call.command == "inbox" && call.subcommand == "thread":
@@ -266,6 +273,9 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if call.command == "inbox" && call.subcommand == "wait" {
+		return parseMessageWait(call, operationArgs)
+	}
 	if call.command == "jobs" && call.subcommand == "context" {
 		return parseJobContext(call, operationArgs)
 	}

@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fcmcp` exposes forty-one read tools and twenty-two explicit mutations over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Checkpoint tools](job-checkpoints.md) append immutable progress and provide explicit latest/archive reads. Subscriptions, remote MCP and automatic chat wakeups remain unimplemented.
+`fcmcp` exposes forty-two read tools and twenty-two explicit mutations over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Checkpoint tools](job-checkpoints.md) append immutable progress and provide explicit latest/archive reads. The [quiet message wait](message-wait.md) owns a persistent incoming stream for one bounded call. Remote MCP and automatic chat wakeups remain unimplemented.
 
 [Worker pause](worker-pause.md) is explicit coordination state and does not stop agents or change jobs, focus, messages or review execution.
 
@@ -22,7 +22,7 @@ Build with `make build`. Configure the host to launch this command with this age
 
 A repeatable process `FC_PROFILE` can replace the profile argument. The default profile file and credential-reference rules match the [CLI](development.md#private-profile-file). This connection keeps its startup instance/project/worker binding. There is no per-tool profile selector or workspace-wide current worker. Different grants or agent identities use separately bound processes/connections. Restart explicitly to select another binding.
 
-Startup validates configuration without opening the credential or contacting the service. Initialization, discovery and local `context` also need no credential or network. Service calls load the selected protected credential and normally share a five-second budget across authenticated instance verification and the scoped operation. An explicitly longer source-refresh wait has its selected wait plus five seconds; it does not change other tool deadlines. Argument validation precedes credential and network access.
+Startup validates configuration without opening the credential or contacting the service. Initialization, discovery and local `context` also need no credential or network. Service calls load the selected protected credential and normally share a five-second budget across authenticated instance verification and the scoped operation. An explicitly longer source-refresh wait and the quiet message wait have their selected wait plus five seconds; they do not change other tool deadlines. Argument validation precedes credential and network access.
 
 ## Tools and output
 
@@ -53,6 +53,7 @@ Startup validates configuration without opening the credential or contacting the
 | `inbox_thread` | Required conversation_id and optional limit/cursor; explicit full-body conversation page. |
 | `inbox_snapshot` | Optional unread/unacknowledged/limit/cursor; one inbox page plus its atomic incoming-event watermark. |
 | `inbox_events` | Required event cursor; optional limit and wait_ms 0–4000; one bounded incoming-event page. |
+| `wait_for_messages` | Required event cursor; optional limit 1–100 and wait_seconds 1–60, default 20/25. One new-message event page or quiet timeout over a call-owned persistent stream. |
 | `review_execution_read` | No fields; stored execution configuration and revision, without provider work. |
 | `review_operation_read` | Required operation_id; retained native operation state and reason. |
 | `review_request` | Required idempotency_key/expected_configuration_revision/pull_number/channel/head_sha; compact queued receipt authorizing background provider work. |
@@ -92,7 +93,7 @@ Startup validates configuration without opening the credential or contacting the
 | `inbox_seen` | Required idempotency_key/message_id; explicit recipient seen transition. |
 | `inbox_ack` | Required idempotency_key/message_id; explicit recipient acknowledgment, also establishing seen. |
 
-Review queue/run lists default to five entries; other limits use the API default when omitted and accept explicit values from 1 to 100. Reads never advance seen/ack state, change a job or write a checkpoint. Assigned jobs do not claim to contain primary-job or full resume context. Snapshot and event cursors have different scopes. Event reads retain no cursor and never automatically poll or resubscribe; an explicitly requested bounded wait can return an empty `timed_out` page. These recovery/read operations are not a quiet background subscription or an idle-agent wakeup interface. Invalid, unknown, duplicate, exactly mis-cased, null or oversized tool fields fail before service work. Profile selectors cannot be supplied as tool arguments.
+Review queue/run lists default to five entries; other limits use the API default when omitted and accept explicit values from 1 to 100. Reads never advance seen/ack state, change a job or write a checkpoint. Assigned jobs do not claim to contain primary-job or full resume context. Snapshot and event cursors have different scopes. Event reads retain no cursor and never automatically poll or resubscribe; an explicitly requested bounded wait can return an empty `timed_out` page. The finite snapshot/event operations are separate from the explicit quiet wait; none establishes idle-agent wakeup. Invalid, unknown, duplicate, exactly mis-cased, null or oversized tool fields fail before service work. Profile selectors cannot be supplied as tool arguments.
 
 [Job progress](job-progress.md) owns update/checklist content limits, independent revisions, explicit archives and integration proof. Checklist replacement can remove or replace effective items and is annotated destructive; its immutable history remains available. Job updates and checklist operations perform no provider work.
 
