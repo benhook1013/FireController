@@ -67,7 +67,7 @@ Startup validates configuration without opening the credential or contacting the
 | `review_execution_read` | No fields; stored execution configuration and revision, without provider work. |
 | `review_operation_read` | Required operation_id; retained native operation state and reason. |
 | `review_request` | Required idempotency_key/expected_configuration_revision/pull_number/channel/head_sha; compact queued receipt authorizing background provider work. |
-| `review_source_refresh` | Required idempotency_key/expected_configuration_revision/pull_number/head_sha; optional wait_seconds (default 2, range 0–60), include_ci (default false) and include_readiness (default false). Returns a completed outcome within the wait, otherwise an operation receipt; schedules selected source/CI reads, never a review. |
+| `review_source_refresh` | Required idempotency_key/expected_configuration_revision/pull_number/head_sha; optional wait_seconds (default 2, range 0–60), include_ci (default false) and include_readiness (default false). Returns a completed or held outcome within the wait, otherwise an operation receipt; schedules selected source/CI reads, never a review. |
 | `review_source_refresh_read` | Required refresh_id; stored operation and observed comparison, no provider calls. |
 | `review_source_ci_assess` | Required pull_number; compact retained required-CI facts and local applicability, with observation age; no provider work or merge-readiness claim. |
 | `review_source_policy_assess` | Required pull_number; current local policy against the last completed source observation, with its age; no CI or merge-readiness claim. |
