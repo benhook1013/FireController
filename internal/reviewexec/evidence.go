@@ -89,6 +89,12 @@ func validateReviewEvidence(in ReviewEvidenceInput) error {
 	if err != nil || endErr != nil || start.IsZero() || end.IsZero() || end.Before(start) {
 		return invalid()
 	}
+	if in.Hosted != nil && in.Hosted.StandingSummary != nil {
+		updated, err := time.Parse(time.RFC3339Nano, in.Hosted.StandingSummary.UpdatedAt)
+		if err != nil || !updated.After(start) || updated.After(end) {
+			return invalid()
+		}
+	}
 	r := in.Review
 	switch r.Outcome {
 	case "completed", "failed", "cancelled", "rate_limited", "uncertain":

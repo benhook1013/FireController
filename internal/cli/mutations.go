@@ -10,22 +10,24 @@ import (
 )
 
 type mutationInvocation struct {
-	operation      string
-	key            string
-	id             string
-	create         client.CreateJobRequest
-	edit           client.EditJobRequest
-	send           client.SendMessageRequest
-	checkpoint     client.AppendCheckpointRequest
-	reviewDecision client.ReviewDecisionRequest
-	reviewFix      client.ReviewFixRequest
-	reviewFinalize client.ReviewFinalizeRequest
-	reviewRequest  client.ReviewRequest
+	operation        string
+	key              string
+	id               string
+	create           client.CreateJobRequest
+	edit             client.EditJobRequest
+	send             client.SendMessageRequest
+	checkpoint       client.AppendCheckpointRequest
+	reviewDecision   client.ReviewDecisionRequest
+	reviewFix        client.ReviewFixRequest
+	reviewFinalize   client.ReviewFinalizeRequest
+	reviewRequest    client.ReviewRequest
+	reviewSource     client.ReviewSourceRequest
+	reviewSourceWait int
 }
 
 func isMutation(command, operation string) bool {
 	switch command + " " + operation {
-	case "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews finalize", "reviews request":
+	case "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews finalize", "reviews request", "reviews source-refresh":
 		return true
 	}
 	return false
@@ -161,6 +163,8 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 		return service.MarkSeen(ctx, call.key, call.id)
 	case "reviews request":
 		return service.RequestReview(ctx, call.key, call.reviewRequest)
+	case "reviews source-refresh":
+		return service.RefreshReviewSource(ctx, call.key, call.reviewSource, call.reviewSourceWait)
 	case "reviews decide":
 		return service.DecideReviewFinding(ctx, call.key, call.id, call.reviewDecision)
 	case "reviews fix":

@@ -50,6 +50,10 @@ func TestReadHostedRecoveryRetainsPostingBoundaryAndCopiesAcrossStates(t *testin
 			if err != nil || got.Operation.ID != a.OperationID || got.Operation.ProjectID != attemptProject || got.Attempt.ID != a.ID || got.Operation.State != a.State || got.Attempt.State != a.State || got.Attempt.Intent != a.Intent || got.Attempt.Anchor == nil || *got.Attempt.Anchor != *a.Anchor || got.EarliestPosting != admitted.Truncate(time.Second) || got.EvidenceID != "" {
 				t.Fatalf("retained recovery context: %+v %v", got, err)
 			}
+			exact, err := f.e.ReadHostedPostingBoundary(t.Context(), attemptProject, a.ID)
+			if err != nil || !exact.Equal(admitted) || exact.Equal(got.EarliestPosting) || hostedObservationState(t, f, a) != before {
+				t.Fatal("exact local boundary lost precision or changed journal", exact, err)
+			}
 			if got.EarliestPosting.Format(time.RFC3339Nano) == a.Anchor.ObservedAt {
 				t.Fatal("source observation replaced posting admission")
 			}
@@ -221,6 +225,13 @@ func TestReadHostedRecoveryRejectsCorruptAdmissionFacts(t *testing.T) {
 			attemptCode(t, err, "storage_unavailable")
 			if !reflect.DeepEqual(got, HostedRecoveryContext{}) || strings.Contains(err.Error(), "private") || hostedObservationState(t, f, a) != before {
 				t.Fatal("corrupt admission escaped/repaired/leaked", got, err)
+			}
+			if name != "retained config" && name != "null expected configuration revision" {
+				exact, err := f.e.ReadHostedPostingBoundary(t.Context(), attemptProject, a.ID)
+				attemptCode(t, err, "storage_unavailable")
+				if !exact.IsZero() || hostedObservationState(t, f, a) != before {
+					t.Fatal("corrupt exact boundary escaped or mutated journal", exact, err)
+				}
 			}
 		})
 	}

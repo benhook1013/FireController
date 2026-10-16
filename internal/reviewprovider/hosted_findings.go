@@ -734,6 +734,11 @@ func ExtractHostedFindings(snapshot HostedPublicationSnapshot, intent HostedTrig
 		result.Reason = publication.Reason
 		return result, nil
 	}
+	if publication.StandingZero != nil {
+		result.Complete = validStandingZero(publication.StandingZero) && len(publication.Batches) == 0 && len(publication.Roots) == 0 && len(publication.EligibleReviews) == 0
+		result.Reason = "standing_zero_inventory_attributed"
+		return result, nil
+	}
 	result.Complete = true
 	decoder := findingDecoder{inventory: &result, seen: map[string]bool{}}
 	for _, root := range publication.Roots {

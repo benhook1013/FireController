@@ -188,6 +188,9 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	if err := RetainHostedAllowance(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture); err != nil {
 		return preparation, reviewHold("hosted_allowance_unproven")
 	}
+	if _, err := retainHostedBaseline(ctx, d.provider, d.captures, d.engine, attempt, anchor, actor, d.providerActor()); err != nil {
+		return preparation, reviewHold("standing_baseline_unproven")
+	}
 	if err := publishPreparedAttempt(ctx, d.engine, operation.ProjectID, attempt.ID, plan); err != nil {
 		return preparation, err
 	}

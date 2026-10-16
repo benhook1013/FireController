@@ -27,3 +27,31 @@ func TestNextPageFixedCollectionSelectorsCannotChangeScope(t *testing.T) {
 		}
 	}
 }
+
+func TestNextPagePreservesExplicitEscapedBranchSelector(t *testing.T) {
+	path := "/repos/owner/repo/rules/branches/topic%2Fchild"
+	link := "<https://api.github.com" + path + "?page=2&per_page=100>; rel=next"
+	page, exists, err := nextPage([]string{link}, "https://api.github.com", path, 1)
+	if err != nil || !exists || page != 2 {
+		t.Fatal("exact escaped branch pagination rejected", page, exists, err)
+	}
+	for _, target := range []string{
+		"/repos/owner/repo/rules/branches/topic/child",
+		"/repos/owner/repo/rules/branches/topic%252Fchild",
+		"/repos/owner/repo/rules/branches/topic%2Fother",
+		"/repos/owner/other/rules/branches/topic%2Fchild",
+		"/repos/owner/repo/rules/branches/topic%2Fchild%2F..",
+		"/repos/owner/repo/rules/branches/topic%2fchild",
+	} {
+		link := "<https://api.github.com" + target + "?page=2&per_page=100>; rel=next"
+		if _, _, err := nextPage([]string{link}, "https://api.github.com", path, 1); err == nil {
+			t.Fatalf("accepted changed branch selector: %s", target)
+		}
+	}
+	// Existing plain selectors still cannot be replaced by an encoded alias.
+	plain := "/repos/owner/repo/issues/1/comments"
+	link = "<https://api.github.com/repos/owner/repo/issues/%31/comments?page=2&per_page=100>; rel=next"
+	if _, _, err := nextPage([]string{link}, "https://api.github.com", plain, 1); err == nil {
+		t.Fatal("plain collection accepted a newly encoded selector")
+	}
+}

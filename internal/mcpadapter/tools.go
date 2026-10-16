@@ -30,6 +30,8 @@ type arguments struct {
 	reviewFix                  client.ReviewFixRequest
 	reviewFinalize             client.ReviewFinalizeRequest
 	reviewRequest              client.ReviewRequest
+	reviewSource               client.ReviewSourceRequest
+	reviewSourceWait           int
 }
 type definition struct {
 	name, description string
@@ -37,13 +39,13 @@ type definition struct {
 }
 
 func boundServer(binding profile.Binding) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 32})
+	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 64})
 	definitions := toolDefinitions()
 	known := make(map[string]bool)
 	for _, tool := range definitions {
 		known[tool.name] = true
-		write := mutationTool(tool.name) || tool.name == "review_request"
-		openWorld := tool.name == "review_request"
+		write := mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
+		openWorld := tool.name == "review_request" || tool.name == "review_source_refresh"
 		destructive := tool.name == "job_edit" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, err := parseArguments(tool.name, request.Params.Arguments)
@@ -53,7 +55,11 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			if tool.name == "context" {
 				return result(binding.Context, false), nil
 			}
-			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			timeout := 5 * time.Second
+			if tool.name == "review_source_refresh" {
+				timeout = client.SourceRefreshBudget(args.reviewSourceWait)
+			}
+			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			service, err := client.New(ctx, binding)
 			if err != nil {
@@ -76,6 +82,12 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.ReviewOperation(ctx, args.id)
 			case "review_request":
 				value, err = service.RequestReview(ctx, args.key, args.reviewRequest)
+			case "review_source_refresh":
+				value, err = service.RefreshReviewSource(ctx, args.key, args.reviewSource, args.reviewSourceWait)
+			case "review_source_refresh_read":
+				value, err = service.ReviewSourceOperation(ctx, args.id)
+			case "review_source_policy_assess":
+				value, err = service.ReviewSourcePolicyAssessment(ctx, args.pullNumber)
 			case "review_queue":
 				value, err = service.ReviewQueue(ctx, options)
 			case "review_pull":

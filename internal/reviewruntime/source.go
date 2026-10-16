@@ -12,6 +12,22 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
 
+// SourceReader exposes only the operator-bound read adapter for explicit source
+// refresh work. Selecting it does not prepare or execute a review.
+func (d *CLIDriver) SourceReader() reviewexec.TargetReader {
+	if d == nil {
+		return nil
+	}
+	return d.reader
+}
+
+func (d *HostedDriver) SourceReader() reviewexec.TargetReader {
+	if d == nil {
+		return nil
+	}
+	return d.provider
+}
+
 func reviewHold(reason string) error {
 	return &core.Error{Code: "review_held", Message: "The selected native review is held before execution.", Status: 409, Details: map[string]string{"reason": reason}}
 }

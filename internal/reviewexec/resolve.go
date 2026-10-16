@@ -28,7 +28,18 @@ type SourcePlan struct {
 // needed to find its effective parent. This supplies source facts, not review
 // policy, activity, allowance or permission to dispatch an external action.
 func ResolveSource(ctx context.Context, reader TargetReader, repositoryID int64, c Configuration, request Request) (SourcePlan, error) {
-	if reader == nil || repositoryID <= 0 || !sha.MatchString(request.HeadSHA) || !validChannel(request.Channel) || !slices.Contains(c.Channels, request.Channel) || c.Paused || c.Mode != "independent" && c.Mode != "stacked" || len(c.Queue) == 0 || len(c.Queue) > 100 {
+	return resolveSource(ctx, reader, repositoryID, c, request, true)
+}
+
+// ResolveSourceObservation selects the same exact comparison without requiring
+// execution to be enabled. Observing source spends no review and cannot confer
+// permission to dispatch one; channel pauses do not prevent explicit reads.
+func ResolveSourceObservation(ctx context.Context, reader TargetReader, repositoryID int64, c Configuration, number int64, head string) (SourcePlan, error) {
+	return resolveSource(ctx, reader, repositoryID, c, Request{PullNumber: number, HeadSHA: head}, false)
+}
+
+func resolveSource(ctx context.Context, reader TargetReader, repositoryID int64, c Configuration, request Request, execution bool) (SourcePlan, error) {
+	if ctx == nil || reader == nil || repositoryID <= 0 || !sha.MatchString(request.HeadSHA) || execution && (!validChannel(request.Channel) || !slices.Contains(c.Channels, request.Channel) || c.Paused) || c.Mode != "independent" && c.Mode != "stacked" || len(c.Queue) == 0 || len(c.Queue) > 100 || len(c.Channels) == 0 || len(c.Channels) > 2 {
 		return SourcePlan{}, invalid()
 	}
 	seen := map[int64]bool{}

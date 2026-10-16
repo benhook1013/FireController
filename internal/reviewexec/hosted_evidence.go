@@ -1,21 +1,54 @@
 package reviewexec
 
 import (
+	"bytes"
+	"encoding/json"
 	"regexp"
 	"strconv"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 // HostedEvidenceMetadata binds a proven final capture to its provider inventory.
 // It does not establish current coverage, policy sufficiency or readiness.
 type HostedEvidenceMetadata struct {
-	PublicationID     string                `json:"publication_id"`
-	ProviderAttemptID string                `json:"provider_attempt_id"`
-	TriggerCommentID  int64                 `json:"trigger_comment_id"`
-	ReviewIDs         []int64               `json:"review_ids"`
-	ObservedBaseSHA   string                `json:"observed_base_sha"`
-	Sources           []HostedFindingSource `json:"sources"`
+	PublicationID     string                         `json:"publication_id"`
+	ProviderAttemptID string                         `json:"provider_attempt_id"`
+	TriggerCommentID  int64                          `json:"trigger_comment_id"`
+	ReviewIDs         []int64                        `json:"review_ids"`
+	ObservedBaseSHA   string                         `json:"observed_base_sha"`
+	Sources           []HostedFindingSource          `json:"sources"`
+	StandingSummary   *HostedStandingSummaryMetadata `json:"standing_summary,omitempty"`
+}
+
+type HostedStandingSummaryMetadata struct {
+	CommentID     int64  `json:"comment_id"`
+	ProviderRunID string `json:"provider_run_id"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+// Retained metadata is a closed, versioned-by-shape sum type. Applying the
+// local decoder here also protects existing journal readers that use Unmarshal.
+func (h *HostedEvidenceMetadata) UnmarshalJSON(data []byte) error {
+	type wire HostedEvidenceMetadata
+	var value wire
+	if err := strictjson.Decode(data, &value); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for _, key := range []string{"publication_id", "provider_attempt_id", "trigger_comment_id", "review_ids", "observed_base_sha", "sources"} {
+		raw, found := fields[key]
+		if !found || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return strictjson.ErrSyntax
+		}
+	}
+	*h = HostedEvidenceMetadata(value)
+	return nil
 }
 
 type HostedFindingSource struct {
@@ -31,9 +64,19 @@ var hostedEvidenceUUID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4
 var hostedEvidenceFingerprint = regexp.MustCompile(`^[a-f0-9]{24}$`)
 
 func validateHostedEvidenceMetadata(h *HostedEvidenceMetadata, anchor Anchor, review reviewprovider.ParsedReview) error {
-	if h == nil || !hostedEvidenceUUID.MatchString(h.PublicationID) || !hostedEvidenceUUID.MatchString(h.ProviderAttemptID) || h.TriggerCommentID <= 0 || len(h.ReviewIDs) < 1 || len(h.ReviewIDs) > 200 ||
+	if h == nil || h.TriggerCommentID <= 0 ||
 		h.Sources == nil || len(h.Sources) != len(review.Findings) || len(h.Sources) > 100 || review.Outcome != "completed" || !review.Complete || len(review.ReviewedFiles) != 0 || review.ReportedFindings != int64(len(review.Findings)) ||
 		!sha.MatchString(h.ObservedBaseSHA) || h.ObservedBaseSHA != anchor.ParentSHA && h.ObservedBaseSHA != anchor.MergeBaseSHA {
+		return invalid()
+	}
+	if standing := h.StandingSummary; standing != nil {
+		updated, err := time.Parse(time.RFC3339Nano, standing.UpdatedAt)
+		if h.PublicationID != "" || h.ProviderAttemptID != "" || h.ReviewIDs == nil || len(h.ReviewIDs) != 0 || len(h.Sources) != 0 || review.Findings == nil || len(review.Findings) != 0 || review.ReviewedFiles == nil || standing.CommentID <= 0 || standing.CommentID == h.TriggerCommentID || !hostedEvidenceUUID.MatchString(standing.ProviderRunID) || err != nil || updated.IsZero() {
+			return invalid()
+		}
+		return nil
+	}
+	if !hostedEvidenceUUID.MatchString(h.PublicationID) || !hostedEvidenceUUID.MatchString(h.ProviderAttemptID) || len(h.ReviewIDs) < 1 || len(h.ReviewIDs) > 200 {
 		return invalid()
 	}
 	reviews := make(map[int64]bool, len(h.ReviewIDs))

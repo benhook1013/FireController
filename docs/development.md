@@ -94,7 +94,7 @@ Native execution reads and explicit-key requests are described in [review execut
 
 ## Explicit agent mutations
 
-Mutations use the same private profile and one five-second command budget. They send one request and return a compact receipt; they do not reread full history. Each invocation requires an explicit `--key` of at most 128 printable ASCII bytes without surrounding whitespace. Use a distinct key for each intended action and preserve it with the exact normalized request and binding for recovery. No command silently generates a replacement key or retries after a transport failure.
+Quick local mutations use the same private profile and one five-second command budget. They send one request and return a compact completed resource/revision result; they do not reread full history. Such a result is not a pending-operation receipt. Variable-duration [source refresh](review-source.md) waits briefly for its useful result, with an operation receipt as fallback and an explicit wait override. Each invocation requires an explicit `--key` of at most 128 printable ASCII bytes without surrounding whitespace. Use a distinct key for each intended action and preserve it with the exact normalized request and binding for recovery. No command silently generates a replacement key or retries after a transport failure.
 
 | Command | Required and optional request fields |
 | --- | --- |

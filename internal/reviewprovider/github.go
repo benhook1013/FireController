@@ -468,11 +468,14 @@ func nextPageWithQuery(linkHeaders []string, baseURL, path string, current int64
 // Accept only that collection alias, and use it solely to validate a page
 // number: getPages always reconstructs the original named request path.
 func validPaginationPath(target *url.URL, basePath, path string) bool {
+	// An explicitly selected escaped branch can contain a slash inside its
+	// selector. Accept its exact wire path without accepting another encoding
+	// or a decoded path that changes those selector boundaries.
+	if target.EscapedPath() == basePath+path {
+		return true
+	}
 	if target.EscapedPath() != target.Path {
 		return false
-	}
-	if target.Path == basePath+path {
-		return true
 	}
 	if !strings.HasPrefix(path, "/repos/") {
 		return false

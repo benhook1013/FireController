@@ -38,5 +38,8 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	if err := EnsureEvidenceSchema(ctx, store); err != nil {
 		return err
 	}
-	return EnsureAdjudicationSchema(ctx, store)
+	if err := EnsureAdjudicationSchema(ctx, store); err != nil {
+		return err
+	}
+	return EnsureSourceRefreshSchema(ctx, store)
 }
