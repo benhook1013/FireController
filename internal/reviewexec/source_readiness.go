@@ -15,6 +15,8 @@ import (
 
 const sourceReviewMaxBytes = 8 << 20
 
+const sourceReadinessLatestQuery = `SELECT id FROM review_source_refreshes WHERE project_id=? AND pull_number=? AND state='completed' AND include_readiness=1 ORDER BY created_at DESC,id DESC LIMIT 1`
+
 // SourceReviewStateSummary exposes only bounded provider gate facts, never
 // thread identities, comment text or permission to merge.
 type SourceReviewStateSummary struct {
@@ -195,7 +197,7 @@ func (e *Engine) ReadSourceReadiness(ctx context.Context, scope core.Scope, numb
 	var out SourceReadinessAssessment
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		var id string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM review_source_refreshes WHERE project_id=? AND pull_number=? AND state='completed' AND include_readiness=1 ORDER BY created_at DESC,id DESC LIMIT 1`, scope.ProjectID, number).Scan(&id)
+		err := tx.QueryRowContext(ctx, sourceReadinessLatestQuery, scope.ProjectID, number).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return core.Fail("reviews_readiness_unavailable", "Explicitly refresh selected source with readiness before assessing it.", 409)
 		}

@@ -206,9 +206,12 @@ func (e *Engine) checkpointNext(ctx context.Context, providers map[string]Checkp
 	// Commit exact intent and current authorization immediately before the sole
 	// POST. A failed or ambiguous local commit grants no posting opportunity.
 	var posting checkpointRecord
+	var entered, refusedAdmission bool
 	err = retrySourceRefreshLocal(action, func() error {
 		posting = checkpointRecord{}
-		return e.store.BackgroundWrite(action, func(ctx context.Context, tx *sql.Tx) error {
+		completed := false
+		writeErr := e.store.BackgroundWrite(action, func(ctx context.Context, tx *sql.Tx) error {
+			entered = true
 			current, err := readCheckpoint(ctx, tx, project, id)
 			if err != nil {
 				return err
@@ -254,8 +257,23 @@ func (e *Engine) checkpointNext(ctx context.Context, providers map[string]Checkp
 				return err
 			}
 			posting = next
+			completed = true
 			return nil
 		})
+		var failure *core.Error
+		overloaded := errors.As(writeErr, &failure) && failure.Code == "overloaded"
+		if ctx.Err() != nil && (errors.Is(writeErr, ctx.Err()) || overloaded) {
+			return ctx.Err() // Shutdown retains any intent for startup recovery.
+		}
+		// A completed callback may have reached Commit. Even an overloaded
+		// result must not retry or become proof that no intent was committed.
+		if writeErr != nil && completed {
+			return checkpointPersistence()
+		}
+		if !entered && overloaded {
+			refusedAdmission = true
+		}
+		return writeErr
 	})
 	if err != nil {
 		var f *core.Error
@@ -265,6 +283,11 @@ func (e *Engine) checkpointNext(ctx context.Context, providers map[string]Checkp
 				reason = details["reason"]
 			}
 			return true, e.preparationFailed(ctx, r, reason)
+		}
+		// Only refused admission, with no callback ever entered, proves the
+		// expired action could not have written or committed a posting intent.
+		if !entered && refusedAdmission && ctx.Err() == nil && action.Err() != nil && errors.Is(err, action.Err()) {
+			return true, e.preparationFailed(ctx, r, "local_storage_overloaded")
 		}
 		return true, err
 	}
