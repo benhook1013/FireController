@@ -363,8 +363,8 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 func standingFinishedAck(body string) bool {
 	var lines []string
 	for _, line := range strings.Split(body, "\n") {
-		if line != "" {
-			lines = append(lines, strings.TrimSuffix(line, "\r"))
+		if line = strings.TrimSuffix(line, "\r"); line != "" {
+			lines = append(lines, line)
 		}
 	}
 	return len(lines) == 6 && lines[0] == "<!-- This is an auto-generated reply by CodeRabbit -->" && standingAckInvocation.MatchString(lines[1]) && lines[2] == "<details>" && lines[3] == "<summary>✅ Action performed</summary>" && lines[4] == "Full review finished." && lines[5] == "</details>"
