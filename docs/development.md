@@ -21,6 +21,8 @@ make smoke
 
 On Linux, install the Chromium revision for the pinned Playwright dependency and run `make browser-smoke` for the separate actual embedded-browser lifecycle check. The [packaged smoke guide](../tools/packagedsmoke/README.md#embedded-browser-lifecycle) owns setup, budgets and limitations. CI runs both executable smoke targets after the build.
 
+Explicit [browser coordination views](browser-coordination.md) read worker pause/focus and note current/history data without mutation or automatic archive expansion.
+
 ## Private profile file
 
 Use the local [profile setup commands](onboarding.md#private-agent-setup-commands) to create a private configuration and optional POSIX bound launcher. Setup returns the configured identity with `verified: false`; `doctor` performs the separate authenticated check. Creation requires explicit profile selectors, preserves existing files, and never provisions or reads credentials.

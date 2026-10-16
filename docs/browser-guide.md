@@ -76,6 +76,10 @@ The native review addition passed the integrated build with thirty-two browser t
 
 The subsequent channel-history correction replaces the mixed last-three summary with compact Hosted/CLI rows and all retained rounds in chronological order; manual/subagent evidence stays separate. It reads native summaries only for nonempty histories. Packaged API/browser checks passed again; the [workspace proof](review-workspace.md#agent-reads-and-restored-review-history) records the source/binary digests and limits.
 
+## Browser coordination views
+
+[Worker and note views](browser-coordination.md) provide explicit pause/focus reads and histories, project-scoped pending notes with filters, selected full bodies and immutable revisions. Worker and job pages link to scoped notes. These remain read-only and update through the visible-data refresh; opening a note does not change its status. The owning contract records their separate validation and remaining limits.
+
 ## Browser session validation
 
 The session addition passes TypeScript and seventy-five focused browser tests, including cookie-only finite/SSE requests, strict connection/logout response validation, bounded failures, fresh resume after cancellation, corrupt/expired/mismatched storage rejection, transient reconnect retention and removal of stale worker metadata after a failed save. Real SQLite/handler race tests cover read-only sessions derived from read/write/admin credentials, project and tab isolation, expiry, tampering, ambiguous authentication, same-origin checks, public-proxy cookie flags, restart continuity and original credential revocation. Short-heartbeat message-stream tests verify that expiry and revoked grants end delivery and release subscriber capacity. Connect and logout do not change domain records or invoke providers.

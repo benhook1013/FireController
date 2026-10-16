@@ -1,3 +1,4 @@
+import type { WorkerPrimary, WorkerPrimaryHistoryEntry, WorkerPause, WorkerPauseHistoryEntry, NoteOptions, NoteSummary, Note, NoteHistorySummary, NoteRevision } from './types';
 import type {
   Checkpoint, ConversationPage, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
   JobSummary, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
@@ -18,7 +19,7 @@ const serverErrorCodes = new Set([
   'bootstrap_failed', 'configuration_invalid', 'credential_already_configured', 'empty_edit', 'forbidden',
   'idempotency_conflict', 'idempotency_key_required', 'instance_mismatch', 'internal_error', 'invalid_brief',
   'invalid_cursor', 'invalid_filter', 'invalid_query', 'invalid_revision', 'invalid_status', 'invalid_title',
-  'method_not_allowed', 'not_found', 'overloaded', 'provider_unavailable', 'review_held', 'review_capacity', 'resync_required', 'schema_invalid',
+  'method_not_allowed', 'not_found', 'note_not_found', 'worker_not_found', 'overloaded', 'provider_unavailable', 'review_held', 'review_capacity', 'resync_required', 'schema_invalid',
   'schema_unsupported', 'storage_unavailable', 'stream_failed', 'stream_frame_too_large', 'stream_unavailable',
   'unauthorized', 'validation_failed', 'worker_already_configured',
 ]);
@@ -169,6 +170,49 @@ function validCheckpoint(value: unknown, projectId: string, jobId: string): valu
   if (!checkpointText(value.done, 8 << 10, true) || !checkpointText(value.next, 8 << 10, true) || !checkpointText(value.blocker, 4 << 10, false) || !Array.isArray(value.evidence) || value.evidence.length > 10 || !value.evidence.every(item => checkpointText(item, 1024, true))) return false;
   const encoder = new TextEncoder();
   return [value.done, value.next, value.blocker, ...value.evidence].reduce((size, item) => size + encoder.encode(item).byteLength, 0) <= 16 << 10;
+}
+
+// Notes and worker coordination are independent stored facts. Individual wall
+// timestamps validate structurally; revisions order their mutation histories.
+function coordinationText(value: unknown, max: number, required = false, multiline = false): value is string {
+  return contentText(value, max, !required) && !(multiline ? /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u : /\p{Cc}/u).test(value) && (!required || !/^\p{White_Space}*$/u.test(value));
+}
+function coordinationTime(value: unknown): value is string {
+  return assessmentTime(value) && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(value);
+}
+function coordinationTimeKey(value: string): string { const [seconds, fraction = ''] = value.slice(0, -1).split('.'); return `${seconds}.${fraction.padEnd(9, '0')}`; }
+function coordinationPage(value: unknown, limit: number): value is Record<string, unknown> & {items: unknown[]; has_more: boolean; cursor?: string} {
+  return validPage(value, limit) && (!value.cursor || cursor(value.cursor) && coordinationText(value.cursor, 4096) && !/\s/u.test(value.cursor)) && (value.has_more || !value.cursor);
+}
+function coordinationQuery(options: PageOptions): URLSearchParams {
+  const query = pageOptions(options);
+  if (options.cursor !== undefined && (!coordinationText(options.cursor, 4096) || /\s/u.test(options.cursor))) throw new ApiError('invalid_request', 'The page cursor is invalid.');
+  return query;
+}
+function validWorkerPrimary(value: unknown, worker: string): value is WorkerPrimary {
+  return record(value) && keys(value, ['worker_id', 'revision', 'job_id']) && value.worker_id === worker && nonnegative(value.revision) && (value.job_id === '' || id(value.job_id)) && (value.revision !== 0 || value.job_id === '');
+}
+function validPauseFields(value: Record<string, unknown>): boolean {
+  return typeof value.paused === 'boolean' && coordinationText(value.reason, 1024, false, true) && (value.paused || value.reason === '');
+}
+function validWorkerPause(value: unknown, worker: string): value is WorkerPause {
+  return record(value) && keys(value, ['worker_id', 'revision', 'paused', 'reason']) && value.worker_id === worker && nonnegative(value.revision) && validPauseFields(value) && (value.revision !== 0 || value.paused === false);
+}
+const noteFields = ['id', 'project_id', 'revision', 'worker_id', 'job_id', 'phase', 'kind', 'status', 'created_at', 'updated_at'];
+const noteActors = ['actor_id', 'actor_worker_id', 'recorded_at'];
+function validNoteFields(value: Record<string, unknown>, project: string): boolean {
+  return id(value.id) && value.project_id === project && positive(value.revision) && (value.worker_id === '' || id(value.worker_id)) && (value.job_id === '' || id(value.job_id)) && coordinationText(value.phase, 200, value.phase !== '') && (value.worker_id !== '' || value.job_id !== '' || value.phase !== '') && (value.kind === 'reminder' || value.kind === 'source') && typeof value.status === 'string' && ['pending', 'consumed', 'dismissed'].includes(value.status) && (value.revision !== 1 || value.status === 'pending') && coordinationTime(value.created_at) && coordinationTime(value.updated_at);
+}
+function validNoteActor(value: Record<string, unknown>): boolean {
+  return id(value.actor_id) && (value.actor_worker_id === '' || id(value.actor_worker_id)) && coordinationTime(value.recorded_at) && value.recorded_at === value.updated_at;
+}
+function validNoteSummary(value: unknown, project: string, history = false): value is NoteSummary | NoteHistorySummary {
+  if (!record(value) || !keys(value, [...noteFields, 'body_preview', 'body_truncated', ...(history ? noteActors : [])]) || !validNoteFields(value, project) || !coordinationText(value.body_preview, 240, false, true) || value.body_preview === '' || typeof value.body_truncated !== 'boolean' || history && !validNoteActor(value)) return false;
+  const bytes = new TextEncoder().encode(value.body_preview).length;
+  return value.body_truncated ? bytes >= 237 : !/^\p{White_Space}*$/u.test(value.body_preview);
+}
+function validNote(value: unknown, project: string, expected: string, history = false): value is Note | NoteRevision {
+  return record(value) && keys(value, [...noteFields, 'body', 'status_reason', ...(history ? noteActors : [])]) && value.id === expected && validNoteFields(value, project) && coordinationText(value.body, 16 << 10, true, true) && coordinationText(value.status_reason, 1024, value.status === 'dismissed', true) && (value.status === 'dismissed' || value.status_reason === '') && (!history || validNoteActor(value));
 }
 
 function validJobUpdate(value: unknown, projectId: string, jobId: string): value is JobUpdate {
@@ -449,6 +493,83 @@ export class Api {
     const value = await this.finiteGet(withQuery(this.projectRoute('workers'), pageOptions(options)), signal);
     if (!validPage(value, defaultLimit(options)) || !value.items.every((item) => validWorker(item, this.projectId))) throw new ApiError('invalid_response', 'The service returned an invalid worker page.');
     return value as Page<Worker>;
+  }
+  async worker(workerId: string, signal?: AbortSignal): Promise<Worker> {
+    if (!id(workerId)) throw new ApiError('invalid_request', 'The worker identifier is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`workers/${encodeURIComponent(workerId)}`), signal, undefined, 4096, assessmentJSON);
+    if (!validWorker(value, this.projectId) || value.id !== workerId) throw new ApiError('invalid_response', 'The service returned an invalid worker.');
+    return value;
+  }
+  async workerPrimary(workerId: string, signal?: AbortSignal): Promise<WorkerPrimary> {
+    if (!id(workerId)) throw new ApiError('invalid_request', 'The worker identifier is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`workers/${encodeURIComponent(workerId)}/primary-job`), signal, undefined, 4096, assessmentJSON);
+    if (!validWorkerPrimary(value, workerId)) throw new ApiError('invalid_response', 'The service returned invalid worker focus.');
+    return value;
+  }
+  async workerPrimaryHistory(workerId: string, options: PageOptions = {}, signal?: AbortSignal): Promise<Page<WorkerPrimaryHistoryEntry>> {
+    if (!id(workerId)) throw new ApiError('invalid_request', 'The worker identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`workers/${encodeURIComponent(workerId)}/primary-job/history`), coordinationQuery(options)), signal, undefined, maxBytes, assessmentJSON);
+    if (!coordinationPage(value, defaultLimit(options))) throw new ApiError('invalid_response', 'The service returned invalid focus history.');
+    let previous = Infinity;
+    for (const item of value.items) {
+      if (!record(item) || !keys(item, ['worker_id', 'revision', 'job_id', 'actor_id', 'actor_worker_id', 'reason', 'created_at']) || item.worker_id !== workerId || !positive(item.revision) || item.revision >= previous || !id(item.actor_id) || item.actor_worker_id !== '' && !id(item.actor_worker_id) || !coordinationTime(item.created_at) || (item.reason === 'selected' ? !id(item.job_id) : typeof item.reason !== 'string' || !['cleared', 'job_reassigned'].includes(item.reason) || item.job_id !== '')) throw new ApiError('invalid_response', 'The service returned invalid focus history.');
+      previous = item.revision;
+    }
+    return value as Page<WorkerPrimaryHistoryEntry>;
+  }
+  async workerPause(workerId: string, signal?: AbortSignal): Promise<WorkerPause> {
+    if (!id(workerId)) throw new ApiError('invalid_request', 'The worker identifier is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`workers/${encodeURIComponent(workerId)}/pause`), signal, undefined, 8 << 10, assessmentJSON);
+    if (!validWorkerPause(value, workerId)) throw new ApiError('invalid_response', 'The service returned invalid worker pause state.');
+    return value;
+  }
+  async workerPauseHistory(workerId: string, options: PageOptions = {}, signal?: AbortSignal): Promise<Page<WorkerPauseHistoryEntry>> {
+    if (!id(workerId)) throw new ApiError('invalid_request', 'The worker identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`workers/${encodeURIComponent(workerId)}/pause/history`), coordinationQuery(options)), signal, undefined, maxBytes, assessmentJSON);
+    if (!coordinationPage(value, defaultLimit(options))) throw new ApiError('invalid_response', 'The service returned invalid pause history.');
+    let previous = Infinity;
+    for (const item of value.items) {
+      if (!record(item) || !keys(item, ['worker_id', 'revision', 'paused', 'reason', 'actor_id', 'actor_worker_id', 'created_at']) || item.worker_id !== workerId || !positive(item.revision) || item.revision >= previous || !validPauseFields(item) || !id(item.actor_id) || item.actor_worker_id !== '' && !id(item.actor_worker_id) || !coordinationTime(item.created_at)) throw new ApiError('invalid_response', 'The service returned invalid pause history.');
+      previous = item.revision;
+    }
+    return value as Page<WorkerPauseHistoryEntry>;
+  }
+  async notes(options: NoteOptions = {}, signal?: AbortSignal): Promise<Page<NoteSummary>> {
+    const query = coordinationQuery(options);
+    for (const field of ['worker_id', 'job_id'] as const) if (options[field] !== undefined) { if (!id(options[field])) throw new ApiError('invalid_request', 'The note scope filter is invalid.'); query.set(field, options[field]); }
+    if (options.phase !== undefined) { if (!coordinationText(options.phase, 200, true)) throw new ApiError('invalid_request', 'The note phase filter is invalid.'); query.set('phase', options.phase); }
+    if (options.kind !== undefined) { if (options.kind !== 'reminder' && options.kind !== 'source') throw new ApiError('invalid_request', 'The note kind filter is invalid.'); query.set('kind', options.kind); }
+    if (options.status !== undefined) { if (!['pending', 'consumed', 'dismissed', 'all'].includes(options.status)) throw new ApiError('invalid_request', 'The note status filter is invalid.'); query.set('status', options.status); }
+    if (options.include_assigned_jobs !== undefined) { if (typeof options.include_assigned_jobs !== 'boolean' || options.include_assigned_jobs && options.worker_id === undefined) throw new ApiError('invalid_request', 'Assigned-job notes require a worker filter.'); query.set('include_assigned_jobs', String(options.include_assigned_jobs)); }
+    const value = await this.finiteGet(withQuery(this.projectRoute('notes'), query), signal, undefined, 512 << 10, assessmentJSON);
+    if (!coordinationPage(value, defaultLimit(options))) throw new ApiError('invalid_response', 'The service returned an invalid note page.');
+    const seen = new Set<string>(); let previous: NoteSummary | undefined;
+    for (const item of value.items) {
+      if (!validNoteSummary(item, this.projectId) || seen.has(item.id) || options.job_id !== undefined && item.job_id !== options.job_id || options.phase !== undefined && item.phase !== options.phase || options.kind !== undefined && item.kind !== options.kind || options.status !== 'all' && item.status !== (options.status ?? 'pending') || options.worker_id !== undefined && !options.include_assigned_jobs && item.worker_id !== options.worker_id) throw new ApiError('invalid_response', 'The service returned an invalid note page.');
+      if (previous && (coordinationTimeKey(item.created_at) > coordinationTimeKey(previous.created_at) || coordinationTimeKey(item.created_at) === coordinationTimeKey(previous.created_at) && item.id >= previous.id)) throw new ApiError('invalid_response', 'The service returned an unordered note page.');
+      seen.add(item.id); previous = item;
+    }
+    return value as Page<NoteSummary>;
+  }
+  async note(noteId: string, signal?: AbortSignal): Promise<Note> {
+    if (!id(noteId)) throw new ApiError('invalid_request', 'The note identifier is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`notes/${encodeURIComponent(noteId)}`), signal, undefined, 128 << 10, assessmentJSON);
+    if (!validNote(value, this.projectId, noteId)) throw new ApiError('invalid_response', 'The service returned an invalid note.');
+    return value;
+  }
+  async noteHistory(noteId: string, options: PageOptions = {}, signal?: AbortSignal): Promise<Page<NoteHistorySummary>> {
+    if (!id(noteId)) throw new ApiError('invalid_request', 'The note identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`notes/${encodeURIComponent(noteId)}/history`), coordinationQuery(options)), signal, undefined, 512 << 10, assessmentJSON);
+    if (!coordinationPage(value, defaultLimit(options))) throw new ApiError('invalid_response', 'The service returned invalid note history.');
+    let previous = Infinity;
+    for (const item of value.items) { if (!validNoteSummary(item, this.projectId, true) || item.id !== noteId || item.revision >= previous) throw new ApiError('invalid_response', 'The service returned invalid note history.'); previous = item.revision; }
+    return value as Page<NoteHistorySummary>;
+  }
+  async noteRevision(noteId: string, revision: number, signal?: AbortSignal): Promise<NoteRevision> {
+    if (!id(noteId) || !positive(revision)) throw new ApiError('invalid_request', 'The selected note revision is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`notes/${encodeURIComponent(noteId)}/history/${revision}`), signal, undefined, 128 << 10, assessmentJSON);
+    if (!validNote(value, this.projectId, noteId, true) || value.revision !== revision) throw new ApiError('invalid_response', 'The service returned an invalid note revision.');
+    return value as NoteRevision;
   }
   async jobs(options: JobOptions = {}, signal?: AbortSignal): Promise<Page<JobSummary>> {
     const query = pageOptions(options);
