@@ -67,16 +67,15 @@ Startup validates configuration without opening the credential or contacting the
 | `review_finding_decide` | Required idempotency_key/evidence_id/expected_revision/finding/disposition/reason; completed adjudication result. |
 | `review_finding_fix` | Required idempotency_key/evidence_id/expected_revision/finding/expected_sha/fix_sha/proof_note; completed fix-reference result. |
 | `review_source_finalize` | Required idempotency_key/evidence_id/expected_revision; completed source-count finalization result. |
-| `review_queue` | Optional limit/cursor; stored queue, default five PRs. |
-| `review_pull` | Required pull_number, optional snapshot; explicit PR summary and attempts. |
-| `review_runs` | Required pull_number, optional snapshot/limit/cursor; default five stored run summaries. |
-| `review_run` | Required run_id, optional snapshot; explicit full findings/decisions/fix proof. |
-| `review_policy_assess` | Required evidence_id; current local policy against one retained captured comparison. |
 | `review_finding_route` | Required idempotency_key/evidence_id/expected_revision/finding/target_pull_number/reason; optional expected_route_revision; compact route/source revision result. |
 | `review_route_read` | Required route_id; explicit route detail with its one original source finding. |
 | `review_routes_list` | Required pull_number; optional limit/cursor; compact incoming routes in the bound project. |
 | `review_route_decide` | Required idempotency_key/route_id/expected_revision/disposition/reason; independent receiving decision. |
 | `review_route_fix` | Required idempotency_key/route_id/expected_revision/expected_sha/fix_sha/proof_note; guarded receiving fix reference. |
+| `review_queue` | Optional limit/cursor; stored queue, default five PRs. |
+| `review_pull` | Required pull_number, optional snapshot; explicit PR summary and attempts. |
+| `review_runs` | Required pull_number, optional snapshot/limit/cursor; default five stored run summaries. |
+| `review_run` | Required run_id, optional snapshot; explicit full findings/decisions/fix proof. |
 | `review_checkpoint_publish` | Required idempotency_key/evidence_id/expected_revision; optional wait_seconds (default 2, range 0–60). Explicitly publishes finalized historical source counts, returning terminal facts or a pending receipt. |
 | `review_checkpoint_read` | Required publication_id; compact stored publication state, without provider work. |
 | `review_checkpoint_recover` | Required idempotency_key/publication_id/expected_revision; optional retry_unposted (default false) and wait_seconds. Observation-only recovery by default; uncertain posts are never blindly repeated. |
