@@ -145,6 +145,8 @@ func (f *ciObservationFixture) serve(w http.ResponseWriter, r *http.Request) {
 			pull["head"].(map[string]any)["sha"] = strings.Repeat("d", 40)
 		}
 		body = pull
+	case r.URL.Path == candidateBranchPath:
+		body = candidateBranchFixture()
 	case r.URL.Path == candidateCommitPath:
 		body = candidateCommitFixture(candidateBase, candidateHead)
 	case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/commits/"):
@@ -290,8 +292,17 @@ func TestObserveRequiredCISelectsMergeOrProvenEmptyHeadFallback(t *testing.T) {
 			if mode == "conflicting" && got.MergeState != "conflicting" {
 				t.Fatal("lost source merge conflict")
 			}
-			paths, _ := f.snapshot()
-			if len(paths) > 32 {
+			paths, counts := f.snapshot()
+			branchReads := counts[candidateBranchPath]
+			wantBranchReads := 4
+			if mode == "conflicting" {
+				wantBranchReads = 0
+			}
+			if branchReads != wantBranchReads {
+				t.Fatal("candidate branch identity reads changed", branchReads)
+			}
+			// Two verified candidate scans add four independently scoped branch reads.
+			if len(paths) > 36 {
 				t.Fatal("unexpected provider fanout", len(paths))
 			}
 			for _, path := range paths {
