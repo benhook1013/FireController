@@ -63,7 +63,6 @@ jobs:
         os: [windows-latest, macos-latest]
     env:
       CGO_ENABLED: "0"
-      FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
     defaults:
       run:
         shell: bash
@@ -76,6 +75,8 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Build native packaged binaries
+        env:
+          FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
         run: |
           go env GOOS GOARCH GOEXE
           mkdir -p "$FC_SMOKE_BIN_DIR"
@@ -85,6 +86,8 @@ jobs:
           go build -trimpath -o "$FC_SMOKE_BIN_DIR/fcmcp$exe" ./cmd/fcmcp
       - name: Smoke native packaged binaries
         timeout-minutes: 2
+        env:
+          FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
         run: go test -tags=packaged_smoke -run '^TestPackagedSmoke$' -count=1 -timeout=60s ./tools/packagedsmoke
 
   validate:

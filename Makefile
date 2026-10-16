@@ -1,9 +1,13 @@
 GO ?= go
 GOFMT ?= gofmt
+ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-.PHONY: check fmt-check test build docs-check browser-check browser-build smoke browser-smoke
+.PHONY: check workflow-check fmt-check test build docs-check browser-check browser-build smoke browser-smoke
 
-check: browser-check fmt-check test docs-check
+check: workflow-check browser-check fmt-check test docs-check
+
+workflow-check:
+	$(ACTIONLINT) -shellcheck="" -pyflakes="" .github/workflows/ci.yml
 
 fmt-check:
 	@files="$$($(GOFMT) -l cmd internal tools)" || exit $$?; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi
