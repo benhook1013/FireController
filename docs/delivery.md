@@ -18,6 +18,8 @@ Use a private pinned copy of the legacy controller with a context for this repos
 
 Development jobs, inbox, checkpoints, review execution, reservations and original provider captures currently use the private bootstrap controller. The native browser displays an explicitly imported observation of those reviews; earlier native coordination records remain retained. Operational cutover requires completed implementation and a human browser review. Preserve the original records and prove recovery before retiring that executor. Internal legacy storage labels do not establish project identity; the explicit context and separate Git common directory select this project's state.
 
+Finish the product implementation PRs before the dedicated human website review and polish pass. After that GUI acceptance and the migration proof, this project can use a specific tested native build while provider review and merging continue. Pin the deployed source commit and track its review status separately; a merge is not a prerequisite for that explicit development cutover.
+
 The temporary runtime is not shipped as the product and does not implement the new multi-project service. Review thresholds and marker conventions remain its inherited behavior until the replacement is proven. Initial hosted review is requested only after publishing a coherent PR and configuring its isolated stack.
 
 ## Sequence

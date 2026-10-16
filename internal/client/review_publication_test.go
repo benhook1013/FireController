@@ -71,7 +71,7 @@ func TestReviewCheckpointClientFlatWaitStrictAndUnknown(t *testing.T) {
 			t.Fatal("skewed provider confirmation rejected", at, err)
 		}
 	}
-	for _, state := range []string{"held", "uncertain", "queued", "preparing", "posting", "recover_queued", "recovering"} {
+	for _, state := range []string{"held", "uncertain", "queued", "preparing", "posting", "recover_queued", "recovering", "cancelled"} {
 		v := sampleCheckpoint()
 		v.State = state
 		v.CommentID = 0
@@ -83,6 +83,12 @@ func TestReviewCheckpointClientFlatWaitStrictAndUnknown(t *testing.T) {
 		response.Store(string(body))
 		if _, err = c.ReviewCheckpointPublication(t.Context(), checkpointID); err != nil {
 			t.Fatal(state, err)
+		}
+		if state == "cancelled" {
+			result, err := c.RequestReviewCheckpoint(t.Context(), "checkpoint-key", request, 0)
+			if err != nil || result.Operation == nil || result.Operation.State != "cancelled" {
+				t.Fatal("cancelled terminal replay", result, err)
+			}
 		}
 	}
 	for _, edit := range []func(map[string]any){

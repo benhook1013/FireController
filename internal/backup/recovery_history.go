@@ -12,7 +12,7 @@ const maxRecoveryHistoryBytes = 4096
 const recoveryHistoryDDL = `CREATE TABLE restore_history(instance_id TEXT PRIMARY KEY,body_json TEXT NOT NULL)`
 
 func readRestoreFields(ctx context.Context, db sqlReader) (map[string]string, error) {
-	rows, err := db.QueryContext(ctx, `SELECT key,value FROM metadata WHERE key GLOB 'restore:*' LIMIT 10`)
+	rows, err := db.QueryContext(ctx, `SELECT CASE WHEN length(CAST(key AS BLOB))<=128 THEN key END,CASE WHEN length(CAST(value AS BLOB))<=4096 THEN value END FROM metadata WHERE key GLOB 'restore:*' LIMIT 11`)
 	if err != nil {
 		return nil, unavailable()
 	}
@@ -21,7 +21,7 @@ func readRestoreFields(ctx context.Context, db sqlReader) (map[string]string, er
 		var key, value string
 		if rows.Scan(&key, &value) != nil {
 			rows.Close()
-			return nil, unavailable()
+			return nil, invalid()
 		}
 		fields[key] = value
 	}
@@ -186,7 +186,7 @@ func archiveRecoveryGeneration(ctx context.Context, tx *sql.Tx, current Recovery
 		return err
 	}
 	body, err := json.Marshal(fields)
-	if err != nil || len(body) > maxRecoveryHistoryBytes || len(fields) != 9 {
+	if err != nil || len(body) > maxRecoveryHistoryBytes || len(fields) != 9 && len(fields) != 10 {
 		return invalid()
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO restore_history(instance_id,body_json) VALUES(?,?)`, current.InstanceID, string(body)); err != nil {

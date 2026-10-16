@@ -230,7 +230,7 @@ func restoreIdentity(ctx context.Context, dir string, m Manifest, id, key string
 		if err = archiveRecoveryGeneration(ctx, tx, current); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM metadata WHERE key IN ('restore:provider_state','restore:activation_credential_id','restore:activated_at')`); err != nil {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM metadata WHERE key IN ('restore:provider_state','restore:activation_credential_id','restore:activated_at','restore:provider_release')`); err != nil {
 			return unavailable()
 		}
 	}

@@ -335,7 +335,7 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	if !actual["metadata"] {
 		return nil, invalid()
 	}
-	rows, err = db.QueryContext(ctx, `SELECT key,value FROM metadata WHERE key LIKE 'schema:%' OR key LIKE 'restore:%' LIMIT 129`)
+	rows, err = db.QueryContext(ctx, `SELECT CASE WHEN length(CAST(key AS BLOB))<=128 THEN key END,CASE WHEN length(CAST(value AS BLOB))<=4096 THEN value END FROM metadata WHERE key LIKE 'schema:%' OR key LIKE 'restore:%' LIMIT 129`)
 	if err != nil {
 		return nil, invalid()
 	}

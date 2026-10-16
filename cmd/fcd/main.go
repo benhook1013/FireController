@@ -34,6 +34,9 @@ func main() {
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode int) {
 	stderr = &daemonDiagnosticWriter{writer: stderr}
+	if len(args) > 0 && args[0] == "restore-resume-providers" {
+		return runProviderResumptionCommand(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && (args[0] == "backup" || args[0] == "backup-inspect" || args[0] == "backup-status" || args[0] == "restore" || args[0] == "restore-activate") {
 		return runBackupCommand(ctx, args[0], args[1:], stdout, stderr)
 	}
