@@ -428,18 +428,24 @@ func TestSourceRefreshCapacityIsolationAndStartupFailures(t *testing.T) {
 	if _, err = f.e.StartSourceRefresh(t.Context(), map[string]TargetReader{"test-capability": reader}); err == nil {
 		t.Fatal("duplicate worker accepted")
 	}
-	// All earlier denied operations drain before the later other-project read.
+	// Project fairness permits the independent read before denied work drains.
+	// Wait for both outcomes before cancellation; neither implies the other.
 	scopeOther := evidenceReadScope(t, f, otherAttemptProject, f.other)
 	deadline := time.Now().Add(3 * time.Second)
+	drained := false
 	for time.Now().Before(deadline) {
 		got, err := f.e.ReadSourceRefresh(t.Context(), scopeOther, receipt.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.State == "held" {
+		if got.State == "held" && attemptCount(t, f.store, `SELECT count(*) FROM review_source_refreshes WHERE project_id=? AND state='held' AND reason='authorization_changed'`, attemptProject) == 16 {
+			drained = true
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if !drained {
+		t.Fatal("independent read and all denied operations did not reach terminal states")
 	}
 	refreshStop(t, cancel, done)
 	if reader.calls.Load() != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_source_refreshes WHERE project_id=? AND state='held' AND reason='authorization_changed'`, attemptProject) != 16 {

@@ -259,7 +259,27 @@ func (e *Engine) updateSourceRefresh(ctx context.Context, tx *sql.Tx, r sourceRe
 	return core.AppendEvent(ctx, tx, core.Scope{ProjectID: r.ProjectID, PrincipalID: r.actor, WorkerID: r.worker}, "review.source_refresh_updated", r.ID, r.Revision+1, map[string]any{"state": state, "reason": reason})
 }
 
-// StartSourceRefresh owns one source-only worker. Interrupted running reads are
+const sourceRefreshWorkers = 4
+
+const sourceRefreshSelection = `SELECT q.project_id,q.id,q.revision FROM review_source_refreshes q
+ WHERE q.state='queued' AND NOT EXISTS (
+ SELECT 1 FROM review_source_refreshes busy WHERE busy.project_id=q.project_id AND busy.state IN ('queued','running') AND busy.state='running')
+ ORDER BY (q.project_id<=?),q.project_id,q.created_at,q.id LIMIT 1`
+
+const sourceRefreshProjectBusy = `SELECT EXISTS(SELECT 1 FROM review_source_refreshes WHERE project_id=? AND state IN ('queued','running') AND state='running')`
+
+// One Start owns this cursor and cancellable guard. Only selection/claim SQL is
+// serialized; provider reads and guarded completion retain independent slots.
+type sourceRefreshSchedule struct {
+	claim       chan struct{}
+	lastProject string
+}
+
+func newSourceRefreshSchedule() *sourceRefreshSchedule {
+	return &sourceRefreshSchedule{claim: make(chan struct{}, 1)}
+}
+
+// StartSourceRefresh owns a bounded source-only pool. Interrupted running reads are
 // requeued synchronously; no external action can be repeated by that recovery.
 func (e *Engine) StartSourceRefresh(ctx context.Context, readers map[string]TargetReader) (<-chan error, error) {
 	if ctx == nil || e == nil || e.store == nil {
@@ -323,7 +343,25 @@ func (e *Engine) StartSourceRefresh(ctx context.Context, readers map[string]Targ
 		e.notifySourceRefresh(id)
 	}
 	done := make(chan error, 1)
-	go func() { err := e.sourceRefreshLoop(ctx, owned); e.sourceRunning.Store(false); done <- err; close(done) }()
+	go func() {
+		workerCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		schedule := newSourceRefreshSchedule()
+		results := make(chan error, sourceRefreshWorkers)
+		for range sourceRefreshWorkers {
+			go func() { results <- e.sourceRefreshLoopScheduled(workerCtx, owned, schedule) }()
+		}
+		var first error
+		for range sourceRefreshWorkers {
+			if err := <-results; err != nil && first == nil {
+				first = err
+				cancel()
+			}
+		}
+		e.sourceRunning.Store(false)
+		done <- first
+		close(done)
+	}()
 	return done, nil
 }
 
@@ -353,6 +391,10 @@ func retrySourceRefreshLocal(ctx context.Context, local func() error) error {
 }
 
 func (e *Engine) sourceRefreshLoop(ctx context.Context, readers map[string]TargetReader) error {
+	return e.sourceRefreshLoopScheduled(ctx, readers, newSourceRefreshSchedule())
+}
+
+func (e *Engine) sourceRefreshLoopScheduled(ctx context.Context, readers map[string]TargetReader, schedule *sourceRefreshSchedule) error {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
@@ -368,7 +410,7 @@ func (e *Engine) sourceRefreshLoop(ctx context.Context, readers map[string]Targe
 		var worked bool
 		err := retrySourceRefreshLocal(ctx, func() error {
 			var err error
-			worked, err = e.refreshNext(ctx, readers)
+			worked, err = e.refreshNextScheduled(ctx, readers, schedule)
 			return err
 		})
 		if err != nil {
@@ -387,51 +429,73 @@ func (e *Engine) sourceRefreshLoop(ctx context.Context, readers map[string]Targe
 	}
 }
 func (e *Engine) refreshNext(ctx context.Context, readers map[string]TargetReader) (bool, error) {
+	return e.refreshNextScheduled(ctx, readers, newSourceRefreshSchedule())
+}
+
+func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]TargetReader, schedule *sourceRefreshSchedule) (bool, error) {
 	var selected *sourceRefresh
 	var configuration Configuration
 	var changed string
 
 	var project, id string
 	var expected int64
-	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, `SELECT project_id,id,revision FROM review_source_refreshes WHERE state='queued' ORDER BY created_at,id LIMIT 1`).Scan(&project, &id, &expected)
-		if errors.Is(err, sql.ErrNoRows) {
+	err := func() error {
+		select {
+		case schedule.claim <- struct{}{}:
+			defer func() { <-schedule.claim }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		// Cycle eligible projects, then take their oldest queued row.
+		err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			err := tx.QueryRowContext(ctx, sourceRefreshSelection, schedule.lastProject).Scan(&project, &id, &expected)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
+		})
+		if err != nil || id == "" {
+			return err
+		}
+		err = e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			r, err := readSourceRefresh(ctx, tx, project, id)
+			if err != nil {
+				return err
+			}
+			if r.State != "queued" || r.Revision != expected {
+				return nil
+			}
+			var busy bool
+			// r is queued in this transaction, so any running row is another read.
+			if err = tx.QueryRowContext(ctx, sourceRefreshProjectBusy, project).Scan(&busy); err != nil || busy {
+				return err
+			}
+			var reason string
+			configuration, reason, err = e.refreshBinding(ctx, tx, r)
+			if err != nil {
+				return err
+			}
+			if readers[r.capability] == nil && reason == "" {
+				reason = "source_reader_unavailable"
+			}
+			if reason != "" {
+				changed = r.ID
+				return e.updateSourceRefresh(ctx, tx, r, "held", reason, nil)
+			}
+			if err = e.updateSourceRefresh(ctx, tx, r, "running", "", nil); err != nil {
+				return err
+			}
+			changed = r.ID
+			r.State = "running"
+			r.Revision++
+			selected = &r
 			return nil
+		})
+		if err == nil && changed != "" {
+			schedule.lastProject = project
 		}
 		return err
-	})
-	if err != nil || id == "" {
-		return false, err
-	}
-	err = e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		r, err := readSourceRefresh(ctx, tx, project, id)
-		if err != nil {
-			return err
-		}
-		if r.State != "queued" || r.Revision != expected {
-			return nil
-		}
-		var reason string
-		configuration, reason, err = e.refreshBinding(ctx, tx, r)
-		if err != nil {
-			return err
-		}
-		if readers[r.capability] == nil && reason == "" {
-			reason = "source_reader_unavailable"
-		}
-		if reason != "" {
-			changed = r.ID
-			return e.updateSourceRefresh(ctx, tx, r, "held", reason, nil)
-		}
-		if err = e.updateSourceRefresh(ctx, tx, r, "running", "", nil); err != nil {
-			return err
-		}
-		changed = r.ID
-		r.State = "running"
-		r.Revision++
-		selected = &r
-		return nil
-	})
+	}()
 	if err == nil && changed != "" {
 		e.notifySourceRefresh(changed)
 	}
