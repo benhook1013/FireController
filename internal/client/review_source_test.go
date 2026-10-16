@@ -478,3 +478,78 @@ func TestReviewSourceExplicitLongWaitExceedsDefaultTransportWithoutChangingReads
 		t.Fatal("per-call transport changed ordinary read", err)
 	}
 }
+
+func TestReviewSourceRetainedFactsSurviveBackwardWallClock(t *testing.T) {
+	for _, kind := range []string{"operation", "terminal_post", "assessment"} {
+		t.Run(kind, func(t *testing.T) {
+			var response atomic.Value
+			var calls atomic.Int64
+			operation := sampleSourceOperation()
+			operation.UpdatedAt = "2026-10-15T23:59:00Z"
+			assessment := sampleSourceAssessment()
+			assessment.EvaluatedAt = "2026-10-15T23:59:00Z"
+			var body any = operation
+			if kind == "assessment" {
+				body = assessment
+			}
+			raw, _ := json.Marshal(body)
+			response.Store(string(raw))
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, response.Load().(string))
+			}))
+			defer service.Close()
+			c := newClient(t, service)
+			invoke := func() error {
+				switch kind {
+				case "operation":
+					got, err := c.ReviewSourceOperation(t.Context(), sourceRefreshID)
+					if err == nil && (got.UpdatedAt != operation.UpdatedAt || got.CreatedAt != operation.CreatedAt || got.Revision != 3 || got.State != "completed") {
+						t.Fatal("retained operation timestamps/state were rewritten")
+					}
+					return err
+				case "terminal_post":
+					got, err := c.RefreshReviewSource(t.Context(), "same-explicit-key", client.ReviewSourceRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, HeadSHA: strings.Repeat("a", 40)}, 2)
+					if err == nil && (got.Operation == nil || got.Receipt != nil || got.Operation.UpdatedAt != operation.UpdatedAt) {
+						t.Fatal("completed refresh lost direct retained result")
+					}
+					return err
+				default:
+					got, err := c.ReviewSourcePolicyAssessment(t.Context(), 2)
+					if err == nil && (got.EvaluatedAt != assessment.EvaluatedAt || got.SourceObservedAt != assessment.SourceObservedAt || got.State != "held") {
+						t.Fatal("retained policy timestamps/state were rewritten")
+					}
+					return err
+				}
+			}
+			if err := invoke(); err != nil {
+				t.Fatal("individually valid retained timestamps failed after backward clock step", err)
+			}
+			var malformed map[string]any
+			_ = json.Unmarshal(raw, &malformed)
+			field := "updated_at"
+			if kind == "assessment" {
+				field = "evaluated_at"
+			}
+			malformed[field] = "not-a-timestamp"
+			raw, _ = json.Marshal(malformed)
+			response.Store(string(raw))
+			err := invoke()
+			checkError(t, err, "invalid_response")
+			if kind == "terminal_post" {
+				var failure *client.Error
+				if !errors.As(err, &failure) || !failure.OutcomeUnknown {
+					t.Fatal("malformed mutation result lost uncertainty")
+				}
+			}
+			if calls.Load() != 2 {
+				t.Fatal("retained reads or terminal result silently retried", calls.Load())
+			}
+		})
+	}
+}
