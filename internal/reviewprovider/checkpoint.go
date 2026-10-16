@@ -143,6 +143,8 @@ func matchCheckpoint(body, publicationID, expected string) CheckpointMatchState 
 // FindCheckpoint consumes a caller-proven complete inventory for exactly one
 // repository/PR. No match is not proof that an uncertain post never happened.
 // Stable author ID/kind owns attribution; cosmetic login changes are harmless.
+// Foreign content is ignored only after its stable identity and global comment
+// ID are validated; all inventory item/aggregate limits still apply.
 func FindCheckpoint(payload CheckpointPayload, expectedActor Author, comments []IssueComment) (IssueComment, bool, error) {
 	render, err := RenderCheckpoint(payload)
 	if err != nil {
@@ -160,13 +162,16 @@ func FindCheckpoint(payload CheckpointPayload, expectedActor Author, comments []
 	found := false
 	for _, comment := range comments {
 		total += len(comment.Body)
-		_, actorErr := normalizeActor(githubActor{ID: comment.Author.ID, Login: comment.Author.Login, Type: comment.Author.Kind})
-		if total > githubMaxAggregate || comment.ID <= 0 || seen[comment.ID] || !validBody(comment.Body) || actorErr != nil || !hostedTriggerTime(comment.CreatedAt) || !hostedTriggerTime(comment.UpdatedAt) || comment.UpdatedAt.Before(comment.CreatedAt) {
+		if total > githubMaxAggregate || comment.ID <= 0 || seen[comment.ID] || !validCheckpointActorIdentity(comment.Author) {
 			return IssueComment{}, false, invalidResponse(false, 0)
 		}
 		seen[comment.ID] = true
 		if comment.Author.ID != expectedActor.ID || comment.Author.Kind != expectedActor.Kind {
 			continue
+		}
+		_, actorErr := normalizeActor(githubActor{ID: comment.Author.ID, Login: comment.Author.Login, Type: comment.Author.Kind})
+		if !validBody(comment.Body) || actorErr != nil || !hostedTriggerTime(comment.CreatedAt) || !hostedTriggerTime(comment.UpdatedAt) || comment.UpdatedAt.Before(comment.CreatedAt) {
+			return IssueComment{}, false, invalidResponse(false, 0)
 		}
 		switch matchCheckpoint(comment.Body, payload.PublicationID, render.Body) {
 		case CheckpointConflict:
@@ -179,4 +184,8 @@ func FindCheckpoint(payload CheckpointPayload, expectedActor Author, comments []
 		}
 	}
 	return result, found, nil
+}
+
+func validCheckpointActorIdentity(actor Author) bool {
+	return actor.ID > 0 && validIdentifierText(actor.Kind, 32)
 }

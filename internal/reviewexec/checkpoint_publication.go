@@ -45,7 +45,7 @@ type CheckpointProvider interface {
 	Repository(context.Context, int64) (reviewprovider.Repository, error)
 	CurrentActor(context.Context) (reviewprovider.Author, error)
 	PostIssueComment(context.Context, string, int64, string) (reviewprovider.IssueComment, error)
-	IssueComments(context.Context, string, int64) ([]reviewprovider.IssueComment, error)
+	CheckpointComments(context.Context, string, int64, reviewprovider.Author) ([]reviewprovider.IssueComment, error)
 }
 type checkpointIntent struct {
 	Revision        int64                 `json:"revision"`
