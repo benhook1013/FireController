@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,10 @@ import (
 func TestHostedDispatchPendingHandsOffAfterOneObservation(t *testing.T) {
 	f := newHostedDriverFixture(t)
 	op, attempt := f.prepareHosted(t)
+	prefix, err := f.engine.ReadHostedObservations(t.Context(), f.project, attempt.ID)
+	if err != nil || len(prefix) != 2 {
+		t.Fatal("query and pre-admission baseline missing", len(prefix), err)
+	}
 	f.provider.partial = true
 	waits := 0
 	f.hosted.wait = func(context.Context, time.Duration) error {
@@ -35,8 +40,8 @@ func TestHostedDispatchPendingHandsOffAfterOneObservation(t *testing.T) {
 		t.Fatal("driver changed supervisor-owned settlement or released uncertain work")
 	}
 	references, err := f.engine.ReadHostedObservations(t.Context(), f.project, attempt.ID)
-	if err != nil || len(references) != 2 {
-		t.Fatal("query and pending source were not retained", len(references), err)
+	if err != nil || len(references) != len(prefix)+1 || !reflect.DeepEqual(references[:len(prefix)], prefix) {
+		t.Fatal("handoff did not append one observation to the unchanged preparation prefix", len(references), err)
 	}
 	for _, ref := range references {
 		if _, err := f.hostedCaptures.Read(t.Context(), attempt.ID, CaptureReference{ID: ref.Input.CaptureID, SHA256: ref.Input.CaptureSHA256, Bytes: ref.Input.CaptureBytes}); err != nil {
@@ -219,7 +224,9 @@ func (p *handoffScopedProvider) ObserveHosted(ctx context.Context, repository st
 	if number != p.pull || repository != p.repository.FullName {
 		return reviewprovider.HostedPublicationSnapshot{}, fmt.Errorf("wrong synthetic observation target")
 	}
-	if p.first.CompareAndSwap(false, true) {
+	// Preparation reads a complete baseline before the full review is posted.
+	// Gate only the post-trigger dispatch observation whose slot is under test.
+	if p.reviews > 0 && p.first.CompareAndSwap(false, true) {
 		close(p.entered)
 		select {
 		case <-p.release:
@@ -370,6 +377,21 @@ func TestHostedDispatchHandoffFreesBothSupervisorSlotsForCLI(t *testing.T) {
 			t.Fatal("two real hosted dispatches did not occupy the supervisor slots")
 		}
 	}
+	prefixes := map[string][]reviewexec.HostedObservation{}
+	for _, target := range []struct {
+		fixture   *cliEvidenceFixture
+		operation string
+	}{{f.cliEvidenceFixture, firstID}, {f2, secondID}} {
+		op, err := f.engine.ReadOperation(t.Context(), target.fixture.scopeWithAccess(t, target.fixture.reader, false, "read"), target.operation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs, err := f.engine.ReadHostedObservations(t.Context(), target.fixture.project, op.AttemptID)
+		if err != nil || len(refs) != 2 {
+			t.Fatal("query and baseline missing before pending observation", len(refs), err)
+		}
+		prefixes[target.operation] = refs
+	}
 	thirdID := handoffEnqueue(t, f3, 4, "cli")
 	close(release)
 	deadline := time.NewTimer(3 * time.Second)
@@ -417,8 +439,9 @@ func TestHostedDispatchHandoffFreesBothSupervisorSlotsForCLI(t *testing.T) {
 			t.Fatal("handoff changed original trigger or invented complete evidence", err)
 		}
 		refs, err := f.engine.ReadHostedObservations(t.Context(), target.fixture.project, operation.AttemptID)
-		if err != nil || len(refs) != 2 {
-			t.Fatal("one-pass raw observation was not retained", len(refs), err)
+		prefix := prefixes[target.operation]
+		if err != nil || len(refs) != len(prefix)+1 || !reflect.DeepEqual(refs[:len(prefix)], prefix) {
+			t.Fatal("one-pass raw observation did not preserve its preparation prefix", len(refs), err)
 		}
 	}
 	if p1.queries != 1 || p2.queries != 1 || p1.reviews != 1 || p2.reviews != 1 || p1.observations != 1 || p2.observations != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 2 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 1 {
