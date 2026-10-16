@@ -129,8 +129,10 @@ func NewManager(store *core.Store, dataDir string, cfg ScheduleConfig) (*Manager
 	if err = StartupGuard(ctx, store); err != nil {
 		return nil, err
 	}
-	if err = ValidateSource(ctx, dataDir); err != nil {
-		return nil, err
+	if cfg.Destination != "" {
+		if err = ValidateSource(ctx, dataDir); err != nil {
+			return nil, err
+		}
 	}
 	var path string
 	if err = store.DB().QueryRowContext(ctx, `SELECT file FROM pragma_database_list WHERE name='main'`).Scan(&path); err != nil {
