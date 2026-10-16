@@ -65,7 +65,7 @@ func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID str
 		query   string
 	}{
 		{execution, `SELECT o.capability_fingerprint,o.policy_revision,a.anchor_json,r.action_class,t.external_id,c.body_json,q.body_json FROM review_operations o,review_execution_attempts a,review_execution_reservations r,review_execution_transitions t,review_execution_config c,review_hosted_allowance_queries q LIMIT 0`},
-		{source, `SELECT ` + refreshColumns + ` FROM review_source_refreshes LIMIT 0`},
+		{source, `SELECT ` + refreshMetadataColumns + `,ci_observation_json,review_state_json FROM review_source_refreshes LIMIT 0`},
 		{checkpoint, `SELECT p.body_json,r.body_json,i.body_json FROM review_checkpoint_publications p,review_checkpoint_revisions r,review_checkpoint_intents i LIMIT 0`},
 	}
 	for _, check := range checks {
