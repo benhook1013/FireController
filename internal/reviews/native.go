@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -220,57 +219,25 @@ func checkNativeCapacity(ctx context.Context, tx *sql.Tx, project, snapshot stri
 }
 
 func rebuildNativeSummary(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, snapshot string, number int64, position int, body []any) error {
-	project := write.project
-	runs := []RunSummary{}
-	rows, err := tx.QueryContext(ctx, `SELECT id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=? ORDER BY run_order DESC LIMIT 3`, project, snapshot, number)
+	if err := validateCurrentSummaryFront(ctx, tx, write.project, number); err != nil {
+		return err
+	}
+	runs, err := write.recentCurrentRuns(ctx, tx, number)
 	if err != nil {
 		return err
 	}
-	for rows.Next() {
-		var r RunSummary
-		var limits string
-		r.PullNumber = number
-		if err = rows.Scan(&r.ID, &r.Source, &r.SourceRunID, &r.Channel, &r.HeadSHA, &r.Reviewer, &r.Scope, &r.Outcome, &r.Attributable, &r.Complete, &r.StartedAt, &r.FinishedAt, &r.Found, &r.Accepted, &r.Routed, &r.Finalized, &r.Fixed, &limits); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		if err = json.Unmarshal([]byte(limits), &r.CoverageLimits); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		runs = append(runs, r)
-	}
-	err = rows.Err()
-	_ = rows.Close()
+	attempts, err := write.latestCurrentAttempts(ctx, tx, number)
 	if err != nil {
 		return err
 	}
-	attempts := []Attempt{}
-	rows, err = tx.QueryContext(ctx, `SELECT source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id FROM review_attempts WHERE project_id=? AND snapshot_id=? AND pull_number=? ORDER BY position`, project, snapshot, number)
+	totals, err := write.prospectiveTotals(ctx, tx, number)
 	if err != nil {
 		return err
 	}
-	for rows.Next() {
-		var a Attempt
-		if err = rows.Scan(&a.SourceAttemptID, &a.Channel, &a.HeadSHA, &a.State, &a.StartedAt, &a.FinishedAt, &a.DurationSeconds, &a.SourceRunID, &a.TriggerID, &a.ProviderReviewID); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		attempts = append(attempts, a)
-	}
-	err = rows.Err()
-	_ = rows.Close()
-	if err != nil {
-		return err
-	}
-	var runCount, incomplete int
-	if err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN complete=0 THEN 1 ELSE 0 END),0) FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=?`, project, snapshot, number).Scan(&runCount, &incomplete); err != nil {
-		return err
-	}
-	if incomplete != 0 {
+	if totals.incomplete != 0 {
 		body[7] = int64(0)
 	}
-	body[8], body[9], body[10], body[11] = int64(runCount), int64(len(attempts)), mustJSON(runs), mustJSON(latestAttempts(attempts))
+	body[8], body[9], body[10], body[11] = totals.runs, totals.attempts, mustJSON(runs), mustJSON(attempts)
 	return write.pull(ctx, tx, number, position, body)
 }
 

@@ -12,7 +12,7 @@ import (
 func historyObservationFixture(t *testing.T) *apiFixture {
 	t.Helper()
 	f := newAPIFixture(t)
-	if err := f.store.EnsureSchema(t.Context(), "reviews", append(reviewSchemaMigrations(), historyMigrationSQL())...); err != nil {
+	if err := EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}
 	return f

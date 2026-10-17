@@ -230,6 +230,10 @@ func (w *historySnapshotWrite) applyCurrent(ctx context.Context, tx *sql.Tx, sna
 	if recordedRevision != w.revision {
 		return historyInconsistent()
 	}
+	totals, err := w.prepareCurrentTotals(ctx, tx)
+	if err != nil {
+		return err
+	}
 	keys := make([]string, 0, len(w.pending))
 	for key := range w.pending {
 		keys = append(keys, key)
@@ -259,7 +263,6 @@ func (w *historySnapshotWrite) applyCurrent(ctx context.Context, tx *sql.Tx, sna
 		}
 	}
 	var result sql.Result
-	var err error
 	if previousRevision == 0 {
 		result, err = tx.ExecContext(ctx, "INSERT INTO review_workspace(project_id,revision,snapshot_id) VALUES(?,?,?)", w.project, w.revision, snapshot)
 	} else {
@@ -271,5 +274,5 @@ func (w *historySnapshotWrite) applyCurrent(ctx context.Context, tx *sql.Tx, sna
 	if count, err := result.RowsAffected(); err != nil || count != 1 {
 		return historyInconsistent()
 	}
-	return nil
+	return w.installCurrentSummaries(ctx, tx, totals)
 }

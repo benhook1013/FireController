@@ -21,7 +21,7 @@ import (
 	"github.com/benhook1013/FireController/internal/server"
 )
 
-// Every v4 fixture uses the actual owning startup migration. Canonical-layout
+// Every current fixture uses the actual owning startup migration. Canonical-layout
 // and roundtrip proof must not silently fall back to hand-installed future DDL.
 func historyInventoryFixture(t *testing.T) (*core.Store, string) {
 	t.Helper()
@@ -35,18 +35,18 @@ func historyInventoryFixture(t *testing.T) (*core.Store, string) {
 		t.Fatal(err)
 	}
 	var version string
-	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "4" {
-		t.Fatal("owning startup must install reviews v4", version, err)
+	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "5" {
+		t.Fatal("owning startup must install reviews v5", version, err)
 	}
 	return store, dir
 }
 
-func TestHistoryInventoryV4CanonicalEmptySchemaIsReadOnly(t *testing.T) {
+func TestHistoryInventoryV5CanonicalEmptySchemaIsReadOnly(t *testing.T) {
 	store, dir := historyInventoryFixture(t)
 	before := backupRows(t, store.DB())
 	versions, err := validateSchema(t.Context(), store.DB(), false)
-	if err != nil || versions["reviews"] != 4 {
-		t.Fatal("canonical v4 refused", versions, err)
+	if err != nil || versions["reviews"] != 5 {
+		t.Fatal("canonical v5 refused", versions, err)
 	}
 	// The five/six-column groups are checked independently of exact DDL too.
 	for _, table := range []string{"review_current_runs", "review_current_attempts", "review_attempt_memberships"} {
@@ -78,7 +78,7 @@ func historyTableDefinition(t *testing.T, name string) string {
 	return ""
 }
 
-func TestHistoryInventoryV4RehashedSchemaViewsAndIndexesRefused(t *testing.T) {
+func TestHistoryInventoryV5RehashedSchemaViewsAndIndexesRefused(t *testing.T) {
 	tests := []struct{ name, sql string }{
 		{"unknown-view", `CREATE VIEW private_dump AS SELECT * FROM credentials`},
 		{"missing-view", `DROP VIEW review_findings`},
@@ -122,7 +122,7 @@ func TestHistoryInventoryV4RehashedSchemaViewsAndIndexesRefused(t *testing.T) {
 			_, err = Restore(t.Context(), bundle.Path, destination)
 			backupCode(t, err, "backup_invalid")
 			if _, err = os.Lstat(destination); !os.IsNotExist(err) {
-				t.Fatal("invalid v4 schema reached restore writes")
+				t.Fatal("invalid v5 schema reached restore writes")
 			}
 			if !reflect.DeepEqual(immutable, restoreTree(t, bundle.Path)) {
 				t.Fatal("rejection modified retained bundle")
@@ -170,14 +170,15 @@ func historyInventorySeedPull(t *testing.T, store *core.Store) {
  INSERT INTO review_workspace VALUES('history-private',1,'review_snapshot_11111111111111111111111111111111');
  INSERT INTO review_pull_versions VALUES('history-private',7,1,'Retained merged PR','merged','','main','','success','mergeable',1,0,0,'[]','[]');
  INSERT INTO review_pull_memberships VALUES('history-private',7,1,NULL,1,0);
- INSERT INTO review_current_pulls VALUES('history-private',7,1,0)`); err != nil {
+ INSERT INTO review_current_pulls VALUES('history-private',7,1,0);
+ INSERT INTO review_current_totals VALUES('history-private',7,0,0,0)`); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestHistoryInventoryV4RehashedReferenceGraphRefused(t *testing.T) {
+func TestHistoryInventoryV5RehashedReferenceGraphRefused(t *testing.T) {
 	for _, test := range []struct{ name, sql string }{
-		{"missing-current", `DELETE FROM review_current_pulls`},
+		{"missing-current", `DELETE FROM review_current_totals; DELETE FROM review_current_pulls`},
 		{"missing-workspace", `DELETE FROM review_workspace`},
 		{"wrong-workspace-revision", `UPDATE review_workspace SET revision=2`},
 		{"uncommitted-future-snapshot", `INSERT INTO review_snapshots VALUES('history-private','review_snapshot_22222222222222222222222222222222',2,701,'synthetic-import','','','')`},
@@ -200,7 +201,7 @@ func TestHistoryInventoryV4RehashedReferenceGraphRefused(t *testing.T) {
 	}
 }
 
-func TestHistoryInventoryV4InstalledSchemaCreateInspectRestore(t *testing.T) {
+func TestHistoryInventoryV5InstalledSchemaCreateInspectRestore(t *testing.T) {
 	store, dir := historyInventoryFixture(t)
 	// Source initialization uses the actual owner migration, then real bundle IO.
 	historyInventorySeedPull(t, store)
@@ -265,7 +266,7 @@ func historyInventoryAPIFixture(t *testing.T) *restoreFixture {
 	return f
 }
 
-func TestHistoryInventoryV4MixedHistoryReadsAndAdjudicationSurviveRestore(t *testing.T) {
+func TestHistoryInventoryV5MixedHistoryReadsAndAdjudicationSurviveRestore(t *testing.T) {
 	f := historyInventoryAPIFixture(t)
 	prefix := "/api/v1/projects/" + f.project + "/reviews"
 	read := func(handler http.Handler, store *core.Store, token, route string, status int) []byte {
@@ -441,7 +442,7 @@ func TestHistoryInventoryV4MixedHistoryReadsAndAdjudicationSurviveRestore(t *tes
 	}
 }
 
-func TestHistoryInventoryV4RehashedOwningPullVisibilityDamageRefused(t *testing.T) {
+func TestHistoryInventoryV5RehashedOwningPullVisibilityDamageRefused(t *testing.T) {
 	for _, kind := range []string{"run", "attempt"} {
 		for _, damage := range []string{"missing-parent", "historical-parent-gap"} {
 			t.Run(kind+"/"+damage, func(t *testing.T) {
@@ -464,7 +465,7 @@ func TestHistoryInventoryV4RehashedOwningPullVisibilityDamageRefused(t *testing.
 					t.Fatal("contiguous changed parent rejected", err)
 				}
 				if damage == "missing-parent" {
-					mutateBundleSQL(t, bundle.Path, `DELETE FROM review_current_pulls; DELETE FROM review_pull_memberships`)
+					mutateBundleSQL(t, bundle.Path, `DELETE FROM review_current_totals; DELETE FROM review_current_pulls; DELETE FROM review_pull_memberships`)
 				} else {
 					mutateBundleSQL(t, bundle.Path, `DELETE FROM review_pull_memberships WHERE start_revision=2`)
 				}

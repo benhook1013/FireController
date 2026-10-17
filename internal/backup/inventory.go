@@ -220,7 +220,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 4, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 5, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"project_publications":             {"public_site", 1, "project_id revision slug enabled manifest_json round_salt generation public_revision public_updated_at refresh_error"},
 	"public_project_snapshots":         {"public_site", 1, "project_id generation revision content_json created_at"},
@@ -251,21 +251,23 @@ var tables = map[string]tableVersion{
 	"jobs": {"jobs", 1, "project_id id title brief worker_id status revision created_at updated_at"}, "job_history": {"jobs", 1, "project_id job_id revision actor_id state_json created_at"}, "job_checkpoints": {"jobs", 2, "sequence id project_id job_id job_revision actor_id worker_id done next blocker evidence_json created_at"},
 	"inbox_conversations": {"inbox", 1, "project_id id root_message_id"}, "inbox_messages": {"inbox", 1, "sequence project_id id conversation_id sender_worker_id recipient_worker_id reply_to_message_id body created_at"}, "inbox_recipient_state": {"inbox", 1, "project_id message_id worker_id seen acknowledged revision"},
 	"review_snapshots": {"reviews", 1, "project_id snapshot_id revision repository_id source observed_at recorded_at payload_sha256"}, "review_workspace": {"reviews", 1, "project_id revision snapshot_id"}, "review_pulls": {"reviews", 1, "project_id snapshot_id position number title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"}, "review_runs": {"reviews", 1, "project_id snapshot_id pull_number run_order id source source_run_id channel head_sha reviewer scope outcome attributable complete started_at finished_at found accepted routed finalized fixed coverage_limits_json"}, "review_findings": {"reviews", 1, "project_id snapshot_id pull_number run_id position source_finding_id title detail severity disposition decision_reason actor decided_at fix_sha proof_note resolved_at"}, "review_attempts": {"reviews", 1, "project_id snapshot_id pull_number position source source_attempt_id channel head_sha state started_at finished_at duration_seconds source_run_id trigger_id provider_review_id"}, "review_retired_pulls": {"reviews", 1, "project_id snapshot_id position number reason"},
-	"review_pull_versions":       {"reviews", 4, "project_id number version_revision title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"},
-	"review_run_versions":        {"reviews", 4, "project_id id version_revision pull_number source source_run_id channel head_sha reviewer scope outcome attributable complete started_at finished_at found accepted routed finalized fixed coverage_limits_json"},
-	"review_finding_versions":    {"reviews", 4, "project_id run_id run_version_revision pull_number position source_finding_id title detail severity disposition decision_reason actor decided_at fix_sha proof_note resolved_at route_json"},
-	"review_attempt_versions":    {"reviews", 4, "project_id source source_attempt_id version_revision pull_number channel head_sha state started_at finished_at duration_seconds source_run_id trigger_id provider_review_id"},
-	"review_retired_versions":    {"reviews", 4, "project_id number version_revision reason"},
-	"review_pull_memberships":    {"reviews", 4, "project_id number start_revision end_revision version_revision position"},
-	"review_run_memberships":     {"reviews", 4, "project_id id start_revision end_revision version_revision pull_number run_order"},
-	"review_attempt_memberships": {"reviews", 4, "project_id source source_attempt_id start_revision end_revision version_revision pull_number position"},
-	"review_retired_memberships": {"reviews", 4, "project_id number start_revision end_revision version_revision position"},
-	"review_current_pulls":       {"reviews", 4, "project_id number start_revision position"},
-	"review_current_runs":        {"reviews", 4, "project_id id start_revision pull_number run_order"},
-	"review_current_attempts":    {"reviews", 4, "project_id source source_attempt_id start_revision pull_number position"},
-	"review_current_retired":     {"reviews", 4, "project_id number start_revision position"},
-	"review_policy_config":       {"review_policy", 1, "project_id revision body_json actor_id created_at"},
-	"review_execution_config":    {"review_execution", 1, "project_id revision body_json"}, "review_operations": {"review_execution", 1, "id project_id actor_id worker_id configuration_revision pull_number channel head_sha state revision reason attempt_id created_at updated_at"}, "review_execution_attempts": {"review_execution", 1, "id operation_id project_id provider account state revision anchor_json intent external_id"}, "review_execution_reservations": {"review_execution", 1, "provider repository_id pull_number action_class account attempt_id"}, "review_execution_transitions": {"review_execution", 1, "attempt_id revision state reason external_id created_at"}, "review_cli_preflight": {"review_execution", 4, "attempt_id project_id body_json"}, "review_hosted_preflight": {"review_execution", 6, "attempt_id project_id body_json"}, "review_hosted_allowance_queries": {"review_execution", 6, "id project_id attempt_id operation_id capability_fingerprint revision body_json"},
+	"review_pull_versions":         {"reviews", 4, "project_id number version_revision title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"},
+	"review_run_versions":          {"reviews", 4, "project_id id version_revision pull_number source source_run_id channel head_sha reviewer scope outcome attributable complete started_at finished_at found accepted routed finalized fixed coverage_limits_json"},
+	"review_finding_versions":      {"reviews", 4, "project_id run_id run_version_revision pull_number position source_finding_id title detail severity disposition decision_reason actor decided_at fix_sha proof_note resolved_at route_json"},
+	"review_attempt_versions":      {"reviews", 4, "project_id source source_attempt_id version_revision pull_number channel head_sha state started_at finished_at duration_seconds source_run_id trigger_id provider_review_id"},
+	"review_retired_versions":      {"reviews", 4, "project_id number version_revision reason"},
+	"review_pull_memberships":      {"reviews", 4, "project_id number start_revision end_revision version_revision position"},
+	"review_run_memberships":       {"reviews", 4, "project_id id start_revision end_revision version_revision pull_number run_order"},
+	"review_attempt_memberships":   {"reviews", 4, "project_id source source_attempt_id start_revision end_revision version_revision pull_number position"},
+	"review_retired_memberships":   {"reviews", 4, "project_id number start_revision end_revision version_revision position"},
+	"review_current_pulls":         {"reviews", 4, "project_id number start_revision position"},
+	"review_current_runs":          {"reviews", 4, "project_id id start_revision pull_number run_order"},
+	"review_current_attempts":      {"reviews", 4, "project_id source source_attempt_id start_revision pull_number position"},
+	"review_current_retired":       {"reviews", 4, "project_id number start_revision position"},
+	"review_current_totals":        {"reviews", 5, "project_id pull_number run_count attempt_count incomplete_run_count"},
+	"review_current_attempt_order": {"reviews", 5, "project_id source source_attempt_id pull_number channel sort_key position"},
+	"review_policy_config":         {"review_policy", 1, "project_id revision body_json actor_id created_at"},
+	"review_execution_config":      {"review_execution", 1, "project_id revision body_json"}, "review_operations": {"review_execution", 1, "id project_id actor_id worker_id configuration_revision pull_number channel head_sha state revision reason attempt_id created_at updated_at"}, "review_execution_attempts": {"review_execution", 1, "id operation_id project_id provider account state revision anchor_json intent external_id"}, "review_execution_reservations": {"review_execution", 1, "provider repository_id pull_number action_class account attempt_id"}, "review_execution_transitions": {"review_execution", 1, "attempt_id revision state reason external_id created_at"}, "review_cli_preflight": {"review_execution", 4, "attempt_id project_id body_json"}, "review_hosted_preflight": {"review_execution", 6, "attempt_id project_id body_json"}, "review_hosted_allowance_queries": {"review_execution", 6, "id project_id attempt_id operation_id capability_fingerprint revision body_json"},
 	"review_execution_evidence": {"review_evidence", 1, "id project_id attempt_id operation_id body_json fingerprint"}, "review_hosted_observations": {"review_evidence", 3, "id project_id attempt_id operation_id position capture_sha256 capture_bytes body_json"},
 	"review_adjudication_state": {"review_adjudication", 1, "evidence_id project_id revision body_json"}, "review_adjudication_changes": {"review_adjudication", 1, "evidence_id revision project_id actor_id kind finding_index input_json created_at"}, "review_finding_routes": {"review_adjudication", 2, "id project_id repository_id source_evidence_id finding_index source_pull_number source_head_sha target_pull_number state revision disposition has_fix created_at body_json"}, "review_finding_route_revisions": {"review_adjudication", 2, "route_id project_id revision actor_id kind created_at body_json"},
 	"review_source_refreshes":        {"review_source_refresh", 1, "id project_id repository_id actor_id worker_id configuration_revision capability_id capability_fingerprint pull_number head_sha state revision reason created_at updated_at observation_json"},
@@ -566,7 +568,7 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		return nil, err
 	}
 	if versions["reviews"] >= 4 {
-		if err = validateHistoryPhysicalSchema(ctx, db); err != nil {
+		if err = validateHistoryPhysicalSchema(ctx, db, versions["reviews"]); err != nil {
 			return nil, err
 		}
 	}
@@ -808,6 +810,11 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	if versions["reviews"] >= 5 {
+		if err = reviews.ValidateCurrentSummaries(ctx, tx); err != nil {
+			return invalid()
+		}
+	}
 	if versions["jobs"] >= 6 {
 		if err = jobs.ValidateNotesSnapshot(ctx, tx); err != nil {
 			return invalid()
@@ -973,11 +980,17 @@ func validateHistoryViews(ctx context.Context, db sqlReader, reviewVersion int) 
 
 // Exact canonical DDL binds CHECK, PK, UNIQUE, default and partial-index
 // semantics in addition to the independent column/FK inventory below.
-func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader) error {
+func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version int) error {
 	type object struct{ kind, definition string }
 	expected := map[string]object{}
 	var names []string
-	for _, definition := range reviews.HistorySchemaSQL() {
+	definitions := reviews.HistorySchemaSQL()
+	expectedTables, expectedObjects := 13, 22
+	if version >= 5 {
+		definitions = append(definitions, reviews.CurrentSummarySchemaSQL()...)
+		expectedTables, expectedObjects = 15, 25
+	}
+	for _, definition := range definitions {
 		fields := strings.Fields(definition)
 		if len(fields) < 4 || fields[0] != "CREATE" {
 			return invalid()
@@ -1001,7 +1014,7 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader) error {
 		}
 		expected[name] = object{kind, historyDefinitionSQL(definition)}
 	}
-	if len(names) != 13 || len(expected) != 22 {
+	if len(names) != expectedTables || len(expected) != expectedObjects {
 		return invalid()
 	}
 	placeholders := make([]string, len(names))
@@ -1010,7 +1023,7 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader) error {
 		placeholders[i] = "?"
 		args[i] = name
 	}
-	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE (type='table' OR (type='index' AND sql IS NOT NULL)) AND tbl_name IN (`+strings.Join(placeholders, ",")+`) LIMIT 23`, args...)
+	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE (type='table' OR (type='index' AND sql IS NOT NULL)) AND tbl_name IN (`+strings.Join(placeholders, ",")+`) LIMIT `+strconv.Itoa(expectedObjects+1), args...)
 	if err != nil {
 		return invalid()
 	}
@@ -1130,6 +1143,8 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"review_current_runs":             {canonicalFK("review_run_memberships", "project_id,id,start_revision,pull_number,run_order", "project_id,id,start_revision,pull_number,run_order", "NO ACTION")},
 	"review_current_attempts":         {canonicalFK("review_attempt_memberships", "project_id,source,source_attempt_id,start_revision,pull_number,position", "project_id,source,source_attempt_id,start_revision,pull_number,position", "NO ACTION")},
 	"review_current_retired":          {canonicalFK("review_retired_memberships", "project_id,number,start_revision,position", "project_id,number,start_revision,position", "NO ACTION")},
+	"review_current_totals":           {canonicalFK("review_current_pulls", "project_id,pull_number", "project_id,number", "CASCADE")},
+	"review_current_attempt_order":    {canonicalFK("review_current_attempts", "project_id,source,source_attempt_id", "project_id,source,source_attempt_id", "CASCADE")},
 	"review_policy_config":            {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_execution_config":         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_operations":               {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
