@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -292,7 +291,7 @@ func scanCheckpoint(scanner checkpointScanner) (fullCheckpoint, error) {
 		return fullCheckpoint{}, err
 	}
 	if err := json.Unmarshal([]byte(evidence), &item.Evidence); err != nil || item.Evidence == nil {
-		return fullCheckpoint{}, fmt.Errorf("invalid stored checkpoint evidence")
+		return fullCheckpoint{}, core.Fail("storage_unavailable", "Stored checkpoint evidence is unavailable.", http.StatusInternalServerError)
 	}
 	return item, nil
 }
