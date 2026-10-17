@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -159,20 +160,26 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 	}
 	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
 	var result struct {
-		State          string `json:"state"`
-		FixtureWrites  int    `json:"fixture_writes"`
-		SessionPosts   int    `json:"session_posts"`
-		SessionDeletes int    `json:"session_deletes"`
-		ActionWrites   int    `json:"action_writes"`
+		State                    string `json:"state"`
+		FixtureWrites            int    `json:"fixture_writes"`
+		SessionPosts             int    `json:"session_posts"`
+		SessionDeletes           int    `json:"session_deletes"`
+		ActionWrites             int    `json:"action_writes"`
+		MetadataReconnect        bool   `json:"metadata_reconnect"`
+		InjectedMetadataFailures int    `json:"injected_metadata_failures"`
+		InjectedConsoleErrors    int    `json:"injected_console_errors"`
+		PresentationReads        int    `json:"presentation_reads"`
+		MetadataStreams          int    `json:"metadata_streams"`
+		InboxStreams             int    `json:"inbox_streams"`
 	}
-	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 14 || result.SessionPosts != 2 || result.SessionDeletes != 2 || result.ActionWrites != 7 {
+	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 15 || result.SessionPosts != 2 || result.SessionDeletes != 2 || result.ActionWrites != 7 || !result.MetadataReconnect || result.InjectedMetadataFailures != 1 || result.InjectedConsoleErrors < 0 || result.InjectedConsoleErrors > 1 || result.PresentationReads != 4 || result.MetadataStreams != 3 || result.InboxStreams != 2 {
 		t.Fatal("invalid packaged browser result")
 	}
 	daemon.stop(t)
 	if external.Load() != 0 {
 		t.Fatal("browser smoke attempted external HTTP")
 	}
-	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=14 session_posts=2 session_deletes=2 browser_action_writes=7 daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), engine.Load())
+	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=15 session_posts=2 session_deletes=2 browser_action_writes=7 metadata_reconnect=true injected_metadata_failures=1 injected_console_errors=%d presentation_reads=4 metadata_streams=3 inbox_streams=2 daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.InjectedConsoleErrors, engine.Load())
 }
 
 // The only early driver output is its owned Chromium group ID. Keep all output
@@ -204,14 +211,34 @@ func (o *browserOutput) browserPID() int { o.pidMu.Lock(); defer o.pidMu.Unlock(
 func (o *browserOutput) safePhase() string {
 	for _, line := range bytes.Split(o.bytes(), []byte("\n")) {
 		var record struct {
-			State string `json:"state"`
-			Phase string `json:"phase"`
+			State                    string `json:"state"`
+			Phase                    string `json:"phase"`
+			Checkpoint               string `json:"checkpoint"`
+			PresentationReads        int    `json:"presentation_reads"`
+			MetadataStreams          int    `json:"metadata_streams"`
+			InboxStreams             int    `json:"inbox_streams"`
+			InjectedMetadataFailures int    `json:"injected_metadata_failures"`
+			InjectedConsoleErrors    int    `json:"injected_console_errors"`
+			Errors                   int    `json:"errors"`
+			External                 int    `json:"external"`
 		}
 		if json.Unmarshal(line, &record) != nil || record.State != "FAIL" {
 			continue
 		}
 		switch record.Phase {
-		case "configuration", "launch", "connect", "fixture-update", "live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
+		case "configuration", "launch", "connect", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
+			if record.Phase == "metadata-failure" {
+				switch record.Checkpoint {
+				case "metadata-notice", "metadata-initial-counts", "metadata-inbox-ready":
+					valid := true
+					for _, n := range []int{record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.InjectedMetadataFailures, record.InjectedConsoleErrors, record.Errors, record.External} {
+						valid = valid && n >= 0 && n <= 1000
+					}
+					if valid {
+						return fmt.Sprintf("metadata-failure/%s presentation_reads=%d metadata_streams=%d inbox_streams=%d injected_metadata_failures=%d injected_console_errors=%d errors=%d external=%d", record.Checkpoint, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.InjectedMetadataFailures, record.InjectedConsoleErrors, record.Errors, record.External)
+					}
+				}
+			}
 			return record.Phase
 		}
 	}
