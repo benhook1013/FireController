@@ -339,6 +339,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		"review_pull_versions": 1, "review_pull_memberships": 1, "review_current_pulls": 0,
 		"review_run_versions": 1, "review_run_memberships": 1, "review_current_runs": -122,
 		"review_attempt_versions": 1, "review_attempt_memberships": 1, "review_current_attempts": -122,
+		"review_current_totals": 0, "review_current_attempt_order": -122,
 		"events": 1, "receipts": 1, "sqlite_sequence": 0,
 	}
 	if len(before.tables) != len(after.tables) || !reflect.DeepEqual(before.metadata, after.metadata) || oldSnapshot != packagedArchiveSnapshotHash(t, ctx, data, project, snapshot) {
@@ -403,7 +404,12 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 		runSourceID := fmt.Sprintf("archive-run-%03d", i)
 		digest := sha256.Sum256([]byte(project + "\x00" + source + "\x00" + runSourceID))
 		id := "review_run_" + hex.EncodeToString(digest[:])[:32]
-		start, finish := at.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), at.Add(time.Duration(i+1)*time.Second).Format(time.RFC3339Nano)
+		finishedAt := at.Add(time.Duration(i+1) * time.Second)
+		start, finish := at.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), finishedAt.Format(time.RFC3339Nano)
+		// Every synthetic finish is one second after its start. Encode that
+		// exact maximum instant with the schema-five index's signed-Unix bias
+		// and nine nanosecond digits; preserve both colliding producer keys.
+		sortKey := fmt.Sprintf("%016x.%09d", uint64(finishedAt.Unix())^(uint64(1)<<63), finishedAt.Nanosecond())
 		// These stopped synthetic display rows bypass only observation admission.
 		// They never create native execution, captured evidence or provider credit.
 		for _, statement := range []struct {
@@ -416,6 +422,7 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 			{`INSERT INTO review_attempt_versions(project_id,source,source_attempt_id,version_revision,pull_number,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id) VALUES(?,?,?,1,123,'cli',?,'completed',?,?,1,?,'','')`, []any{project, source, attemptID, pull.HeadSHA, start, finish, runSourceID}},
 			{`INSERT INTO review_attempt_memberships(project_id,source,source_attempt_id,start_revision,end_revision,version_revision,pull_number,position) VALUES(?,?,?,1,NULL,1,123,?)`, []any{project, source, attemptID, i}},
 			{`INSERT INTO review_current_attempts(project_id,source,source_attempt_id,start_revision,pull_number,position) VALUES(?,?,?,1,123,?)`, []any{project, source, attemptID, i}},
+			{`INSERT INTO review_current_attempt_order(project_id,source,source_attempt_id,pull_number,channel,sort_key,position) VALUES(?,?,?,123,'cli',?,?)`, []any{project, source, attemptID, sortKey, i}},
 		} {
 			if _, err = tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
 				t.Fatalf("synthetic retained version/reference seed failed: %v", err)
@@ -445,10 +452,14 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 		{`INSERT INTO review_pull_versions(project_id,number,version_revision,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json) VALUES(?,123,1,?,'open',?,'main',?,'unknown','unknown',1,123,123,?,?)`, []any{project, pull.Title, pull.HeadSHA, pull.BaseSHA, string(recentJSON), string(latestJSON)}},
 		{`INSERT INTO review_pull_memberships(project_id,number,start_revision,end_revision,version_revision,position) VALUES(?,123,1,NULL,1,0)`, []any{project}},
 		{`INSERT INTO review_current_pulls(project_id,number,start_revision,position) VALUES(?,123,1,0)`, []any{project}},
+		{`INSERT INTO review_current_totals(project_id,pull_number,run_count,attempt_count,incomplete_run_count) VALUES(?,123,123,123,0)`, []any{project}},
 	} {
 		if _, err = tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
 			t.Fatalf("synthetic compact archive version/reference failed: %v", err)
 		}
+	}
+	if err = reviews.ValidateCurrentSummaries(ctx, tx); err != nil {
+		t.Fatal("synthetic archive current summaries disagree with retained references")
 	}
 	if err = tx.Commit(); err != nil {
 		t.Fatalf("synthetic archive transaction failed: %v", err)
@@ -470,6 +481,11 @@ func packagedArchiveSnapshotHash(t *testing.T, ctx context.Context, data, projec
 		t.Fatal("read-only archive snapshot unavailable")
 	}
 	defer db.Close()
+	// Newer explicit observations may replace current caches, never the pinned
+	// archive. Check their exact canonical derivation on this read-only handle.
+	if err = reviews.ValidateCurrentSummaries(ctx, db); err != nil {
+		t.Fatal("archive workload left inconsistent derived current summaries")
+	}
 	hash := sha256.New()
 	// Hash exact resolved snapshot contents with stable logical ordering. Interval
 	// end_revision/current-reference updates are intentional when newer state

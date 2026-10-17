@@ -7,6 +7,7 @@ let server, browser;
 let phase = 'configuration';
 let checkpoint = '';
 let counters = () => ({});
+let failureClass = '';
 const need = (value) => { if (!value) throw new Error('assertion'); };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
@@ -39,7 +40,7 @@ try {
  let controlledMessageFailure = false;
  let controlledAccessFailure = false;
  const expectedMissingSessionRoute = url => { if (!controlledAccessFailure || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname); } catch { return false; } };
-  counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites});
+  counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
   page.on('pageerror', () => errors++);
   page.on('console', value => { if (value.type() === 'error' && !(expectedMissingSessionRoute(value.location().url)) && !(controlledMessageFailure && value.location().url === config.origin + prefix + '/messages')) errors++; });
   page.on('response', value => { if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else errors++; } });
@@ -304,7 +305,7 @@ try {
   need(!(await page.evaluate(()=>JSON.stringify(sessionStorage))).includes(admin));
   need(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
 
-  phase = 'explicit-actions-uncertain';
+  phase = 'explicit-actions-uncertain'; checkpoint = 'compose';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
   await page.getByRole('button',{name:'New message',exact:true}).click();
   await page.getByLabel('Recipient worker ID',{exact:true}).fill(config.other_worker);
@@ -324,17 +325,18 @@ try {
     await releaseResponse;
     await route.abort('failed').catch(()=>{});
   });
-  controlledMessageFailure=true;
+  controlledMessageFailure=true; checkpoint = 'dispatch';
   await page.getByRole('button',{name:'Send message',exact:true}).click();
-  await committedSend;
+  await committedSend; checkpoint = 'switch-view';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Workers',exact:true}).click();
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
-  releaseSend();
+  releaseSend(); checkpoint = 'retry-ready';
   const retry = page.getByRole('button',{name:'Retry exact send',exact:true});
   if (!(await retry.count())) await page.getByRole('button',{name:'New message',exact:true}).click();
   await expect(retry).toBeEnabled();
   // Pop to the original root route: canceling the explicit discard prompt must
   // preserve this project and the original pending key/body, without a reload.
+  checkpoint = 'navigation-guard';
   const rootDelta=await page.evaluate(root=>history.state.idx-root,actionRootHistoryIndex);
   need(rootDelta>0);
   const exitDialog=page.waitForEvent('dialog');
@@ -342,17 +344,21 @@ try {
   await (await exitDialog).dismiss();
   await expect(retry).toBeEnabled();
   need(new URL(page.url()).pathname===home+'/inbox');
+  checkpoint = 'retry-response';
   const retryResponse=page.waitForResponse(r=>r.request().method()==='POST' && new URL(r.url()).pathname===prefix+'/messages');
   await retry.click();
   const recovered=await retryResponse;
   need(recovered.status()===201 && (await recovered.json()).id===heldReceipt.id);
+  checkpoint = 'retry-identity';
   need(JSON.stringify(originalWire)===JSON.stringify(retryWire));
+  checkpoint = 'conversation';
   await page.getByRole('link',{name:'Open sent conversation',exact:true}).click();
   await page.getByText('Uncertain browser message',{exact:true}).waitFor();
   need(await page.getByText('Uncertain browser message',{exact:true}).count()===1);
-  controlledMessageFailure=false;
+  controlledMessageFailure=false; checkpoint = 'disconnect';
   await page.getByRole('button',{name:'Disconnect',exact:true}).click();
   await page.getByRole('button',{name:'Connect to project',exact:true}).waitFor();
+  checkpoint = 'action-counters';
   need(sessionPosts===2 && sessionDeletes===2 && sessionRenewals===3 && actionWrites===7 && forbiddenWrites===0 && errors===0 && external===0);
 
   phase = 'renewal-missing-cookie'; checkpoint = 'root-form';
@@ -387,8 +393,9 @@ try {
   await browser.close(); browser = undefined;
   await server.close(); server = undefined;
   console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites}));
-} catch {
-  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, ...counters()}));
+} catch (error) {
+  failureClass = error?.name === 'TimeoutError' ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, ...counters()}));
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});
