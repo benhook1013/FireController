@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -71,15 +72,16 @@ func normalizeScheduleConfig(dataDir string, cfg ScheduleConfig, inspect bool) (
 }
 
 type Manager struct {
-	store   *core.Store
-	dataDir string
-	config  ScheduleConfig
-	next    time.Time
-	running atomic.Bool
-	now     func() time.Time
-	wait    func(context.Context, time.Duration) error
-	create  func(context.Context, *core.Store, string, string) (Summary, error)
-	remove  func(context.Context, string, Manifest) error
+	store           *core.Store
+	dataDir         string
+	config          ScheduleConfig
+	next            time.Time
+	running         atomic.Bool
+	now             func() time.Time
+	wait            func(context.Context, time.Duration) error
+	create          func(context.Context, *core.Store, string, string) (createdBundle, error)
+	remove          func(context.Context, string, Manifest) error
+	publicationHeld bool
 }
 
 func scheduleWait(ctx context.Context, d time.Duration) error {
@@ -146,7 +148,7 @@ func NewManager(store *core.Store, dataDir string, cfg ScheduleConfig) (*Manager
 	if err = EnsureManagedSchema(ctx, store); err != nil {
 		return nil, err
 	}
-	m := &Manager{store: store, dataDir: dataDir, config: cfg, now: time.Now, wait: scheduleWait, create: Create, remove: removeManagedBundle}
+	m := &Manager{store: store, dataDir: dataDir, config: cfg, now: time.Now, wait: scheduleWait, create: createManaged, remove: removeManagedBundle}
 	now := time.Now().UTC()
 	err = store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		old, err := loadManaged(ctx, tx)
@@ -194,6 +196,24 @@ func NewManager(store *core.Store, dataDir string, cfg ScheduleConfig) (*Manager
 				}
 			}
 			s.NextAttemptAt = managedStamp(m.next)
+			var held string
+			var id, hash string
+			heldErr := tx.QueryRowContext(ctx, `SELECT bundle_id,manifest_sha256,CASE WHEN length(CAST(summary_json AS BLOB))<4096 THEN summary_json ELSE NULL END FROM managed_backup_publication_holds WHERE destination=? AND source_instance_id=? ORDER BY bundle_id LIMIT 1`, cfg.Destination, store.InstanceID()).Scan(&id, &hash, &held)
+			if heldErr == nil {
+				var pending Summary
+				if json.Unmarshal([]byte(held), &pending) != nil || pending.ID != id || pending.SourceInstanceID != store.InstanceID() || filepath.Dir(pending.Path) != cfg.Destination || !digest.MatchString(hash) {
+					return invalid()
+				}
+				canonical, marshalErr := json.Marshal(pending)
+				if marshalErr != nil || string(canonical) != held {
+					return invalid()
+				}
+				s.UnregisteredBundle = &pending
+				m.publicationHeld = true
+				s.State, s.NextAttemptAt = "held", ""
+			} else if !errors.Is(heldErr, sql.ErrNoRows) {
+				return unavailable()
+			}
 		}
 		return storeManaged(ctx, tx, r)
 	})
@@ -228,7 +248,7 @@ func (m *Manager) Run(ctx context.Context, report func(error)) error {
 		return core.Fail("backup_running", "The managed backup worker is already running.", 409)
 	}
 	defer m.running.Store(false)
-	if m.config.Destination == "" {
+	if m.config.Destination == "" || m.publicationHeld {
 		return nil
 	}
 	for {
@@ -247,6 +267,9 @@ func (m *Manager) Run(ctx context.Context, report func(error)) error {
 		saved := m.update(settle, func(r *managedRecord, _ *sql.Tx) error {
 			r.Status.State = "scheduled"
 			r.Status.NextAttemptAt = managedStamp(m.next)
+			if m.publicationHeld {
+				r.Status.State, r.Status.NextAttemptAt = "held", ""
+			}
 			return nil
 		})
 		cancel()
@@ -256,7 +279,7 @@ func (m *Manager) Run(ctx context.Context, report func(error)) error {
 		if err != nil && report != nil {
 			report(safeManaged(err))
 		}
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || m.publicationHeld {
 			return nil
 		}
 	}
@@ -276,30 +299,21 @@ func (m *Manager) attempt(parent context.Context) error {
 	}
 	result, err := m.create(ctx, m.store, m.dataDir, m.config.Destination)
 	if err == nil {
-		var manifest Manifest
-		manifest, err = inspectManifest(ctx, result.Path)
-		if err == nil && (manifest.ID != result.ID || manifest.SourceInstanceID != m.store.InstanceID() || filepath.Dir(result.Path) != m.config.Destination) {
-			err = invalid()
-		}
-		if err == nil {
-			var hash string
-			hash, err = manifestHash(manifest)
-			if err == nil {
-				err = m.update(ctx, func(r *managedRecord, tx *sql.Tx) error {
-					if _, e := tx.ExecContext(ctx, `INSERT INTO managed_backup_bundles(id,destination,source_instance_id,manifest_sha256,created_at,state) VALUES(?,?,?,?,?,'retained')`, manifest.ID, m.config.Destination, m.store.InstanceID(), hash, managedStamp(m.now())); e != nil {
-						return e
-					}
-					r.Status.LastSuccess = &result
-					r.Status.LastAttempt = &AttemptStatus{StartedAt: start, FinishedAt: managedFinish(start, m.now()), State: "complete", SourceInstanceID: m.store.InstanceID()}
-					return nil
-				})
-			}
+		// Creation already verified these exact bytes. Settlement must not use
+		// an expired snapshot context or rescan a potentially large bundle.
+		settle, done := context.WithTimeout(context.Background(), managedSettlementTimeout)
+		err = m.registerCreated(settle, result, start)
+		done()
+		if err != nil {
+			m.publicationHeld = true
 		}
 	}
 	if err != nil {
 		reason := "backup_unavailable"
 		state := "failed"
-		if ctx.Err() != nil {
+		if m.publicationHeld {
+			reason = "backup_registration_failed"
+		} else if ctx.Err() != nil {
 			reason = "backup_interrupted"
 			state = "interrupted"
 		} else {
@@ -310,8 +324,18 @@ func (m *Manager) attempt(parent context.Context) error {
 		}
 		settle, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
-		saveErr := m.update(settle, func(r *managedRecord, _ *sql.Tx) error {
+		saveErr := m.update(settle, func(r *managedRecord, tx *sql.Tx) error {
 			r.Status.LastAttempt = &AttemptStatus{StartedAt: start, FinishedAt: managedFinish(start, m.now()), State: state, Reason: reason, SourceInstanceID: m.store.InstanceID()}
+			if m.publicationHeld {
+				r.Status.UnregisteredBundle = &result.Summary
+				body, marshalErr := json.Marshal(result.Summary)
+				if marshalErr != nil {
+					return invalid()
+				}
+				if _, holdErr := tx.ExecContext(settle, `INSERT INTO managed_backup_publication_holds(bundle_id,destination,source_instance_id,manifest_sha256,summary_json) VALUES(?,?,?,?,?)`, result.ID, m.config.Destination, m.store.InstanceID(), result.hash, string(body)); holdErr != nil {
+					return holdErr
+				}
+			}
 			return nil
 		})
 		if saveErr != nil {
@@ -336,6 +360,45 @@ func (m *Manager) attempt(parent context.Context) error {
 	}
 	if err != nil {
 		return core.Fail("backup_retention_failed", "Managed retention failed; the newest verified backup remains retained.", 503)
+	}
+	return nil
+}
+
+// A returned transaction error does not prove rollback. Recover only an exact
+// committed row plus its atomic success record; otherwise preserve the bundle.
+func (m *Manager) registerCreated(ctx context.Context, b createdBundle, started string) error {
+	current, err := os.Lstat(b.Path)
+	if err != nil || b.owned == nil || !os.SameFile(b.owned, current) || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 || filepath.Dir(b.Path) != m.config.Destination || b.SourceInstanceID != m.store.InstanceID() || b.manifest.ID != b.ID || b.manifest.SourceInstanceID != b.SourceInstanceID || !digest.MatchString(b.hash) {
+		return invalid()
+	}
+	err = m.update(ctx, func(r *managedRecord, tx *sql.Tx) error {
+		if _, e := tx.ExecContext(ctx, `INSERT INTO managed_backup_bundles(id,destination,source_instance_id,manifest_sha256,created_at,state) VALUES(?,?,?,?,?,'retained')`, b.ID, m.config.Destination, b.SourceInstanceID, b.hash, managedStamp(m.now())); e != nil {
+			return e
+		}
+		r.Status.LastSuccess = &b.Summary
+		r.Status.LastAttempt = &AttemptStatus{StartedAt: started, FinishedAt: managedFinish(started, m.now()), State: "complete", SourceInstanceID: m.store.InstanceID()}
+		return nil
+	})
+	if err == nil {
+		return nil
+	}
+	// Use a fresh bounded read after BackgroundWrite has returned. Neither a
+	// missing row nor an unavailable read authorizes deletion or a new copy.
+	read, cancel := context.WithTimeout(context.Background(), managedSettlementTimeout)
+	defer cancel()
+	tx, readErr := m.store.DB().BeginTx(read, &sql.TxOptions{ReadOnly: true})
+	if readErr != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var destination, instance, hash, state string
+	readErr = tx.QueryRowContext(read, `SELECT destination,source_instance_id,manifest_sha256,state FROM managed_backup_bundles WHERE id=?`, b.ID).Scan(&destination, &instance, &hash, &state)
+	if readErr != nil || destination != m.config.Destination || instance != b.SourceInstanceID || hash != b.hash || state != "retained" {
+		return err
+	}
+	r, readErr := loadManaged(read, tx)
+	if readErr != nil || r == nil || r.Status.LastSuccess == nil || *r.Status.LastSuccess != b.Summary {
+		return err
 	}
 	return nil
 }

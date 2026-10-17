@@ -152,9 +152,9 @@ func TestManagedRecoveryDisabledThenEnabledDoesNotResumePredecessorAttempt(t *te
 				t.Fatal("disabled timer resumed predecessor configuration")
 				return nil
 			}
-			disabled.create = func(context.Context, *core.Store, string, string) (Summary, error) {
+			disabled.create = func(context.Context, *core.Store, string, string) (createdBundle, error) {
 				t.Fatal("disabled backup")
-				return Summary{}, nil
+				return createdBundle{}, nil
 			}
 			if err = disabled.Run(t.Context(), nil); err != nil {
 				t.Fatal(err)
@@ -287,9 +287,9 @@ func TestManagedClockRollbackFailureSettlesAndLeavesCoordinationUsable(t *testin
 		}
 		return nil
 	}
-	m.create = func(context.Context, *core.Store, string, string) (Summary, error) {
+	m.create = func(context.Context, *core.Store, string, string) (createdBundle, error) {
 		clock = clock.Add(-time.Hour)
-		return Summary{}, unavailable()
+		return createdBundle{}, unavailable()
 	}
 	reports := 0
 	if err := m.Run(ctx, func(error) { reports++ }); err != nil {
