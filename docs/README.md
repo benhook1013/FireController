@@ -42,6 +42,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Agent and client contract](agent-client.md) owns profiles, tool calls, subscriptions, cancellation and reconnect semantics.
 - [AI usability](ai-usability.md) owns output budgets, agent interaction patterns, and attention-cost proof.
 - [Prepared map import](map-import.md): additive map preview/application, stable source mappings and private provenance/history.
+- [Selected history collection](history-collection.md): bounded GitHub acquisition, durable source captures and explicit resume; implementation and proof status are recorded at the owner.
 - [Prepared review import](review-import.md): scoped administrator preview/apply of complete exports or bounded additive mixed-producer batches, with explicit implementation and proof status.
 - [Onboarding](onboarding.md) owns AI-guided project setup and historical import; the bundled [onboarding skill](../skills/firecontroller-onboard/SKILL.md) guides the supported setup.
 - [Review orchestration](reviews.md) owns reusable review invariants and configurable policy.

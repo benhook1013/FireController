@@ -104,6 +104,8 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 
 Administrator setup also supports [prepared review import](review-import.md) through `fc reviews import-preview --file ABSOLUTE_PATH` and `fc reviews import-apply --file ABSOLUTE_PATH --preview SHA256 --key KEY`. Preview is provider-free and read-only; apply uses the existing guarded observation receipt. These commands require deliberately selected administrator access rather than an ordinary worker credential.
 
+Opt-in [selected history collection](history-collection.md#operator-and-agent-interfaces) adds administrator `fc history` commands for explicit PR acquisition, bounded waits, retained operation/page reads, guarded resume/cancel and private capture export. It performs no automatic import and adds no MCP inventory. Its owning contract records current proof and deployment limits.
+
 Review queue/run lists accept `--limit` and `--cursor`; omitted limits select five entries. Review selectors validate before credentials or HTTP, and reads perform no provider refresh or review execution. Source timestamps and completeness remain observations, not readiness.
 
 List/history/thread reads accept `--limit` and `--cursor`; jobs accept `--status`, and `jobs list` also accepts `--worker`. Assigned jobs are a compact assignment list, without primary-job, checkpoint or full resume-context claims. Reads never change seen/ack state, job status or configuration. Unknown flags, repeated options and unsupported commands fail before credential loading or network work.

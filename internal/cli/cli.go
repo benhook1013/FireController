@@ -69,6 +69,7 @@ type invocation struct {
 	reviewImport   *reviewImportInvocation
 	reviewTransfer *reviewTransferInvocation
 	mapImport      *mapImportInvocation
+	history        *historyInvocation
 
 	waitSeconds int
 }
@@ -85,6 +86,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	call, ok := parseInvocation(args)
 	if !ok {
 		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", "Use fc version, fc context, fc doctor, or a documented service command.")
+	}
+	if call.history != nil && call.history.operation == "export-page" {
+		if err := prepareHistoryExport(call.history.output); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
 	}
 	if call.command == "version" {
 		if call.hasProfile || call.hasProfilesFile {
@@ -159,6 +165,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return report(stderr, ExitCancelled, "cancelled", "The command was cancelled before connecting.", "No service operation was sent; retry when cancellation is no longer requested.")
 	}
 	timeout := serviceTimeout
+	if call.history != nil && (call.subcommand == "collect" || call.subcommand == "collection") {
+		timeout = time.Duration(call.history.waitSeconds+5) * time.Second
+	}
 	if call.command == "inbox" && call.subcommand == "wait" {
 		timeout = time.Duration(call.waitSeconds+5) * time.Second
 	}
@@ -178,6 +187,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.history != nil {
+		return executeHistory(requestCtx, ctx, service, call.history, stdout, stderr)
+	}
 	if call.mapImport != nil {
 		return executeMapImport(requestCtx, ctx, service, call.mapImport, stdout, stderr)
 	}
@@ -349,11 +361,16 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.setup, ok = parseProfileSetup(call.subcommand, remaining[2:])
 		return call, ok && (!call.hasProfile || validSetupText(call.profile)) && (!call.hasProfilesFile || validSetupText(call.profilesFile))
 	}
-	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" && call.command != "presentation" && call.command != "publication" || len(remaining) < 2 {
+	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" && call.command != "presentation" && call.command != "publication" && call.command != "history" || len(remaining) < 2 {
 		return call, false
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if call.command == "history" {
+		var ok bool
+		call.history, ok = parseHistory(call.subcommand, operationArgs)
+		return call, ok
+	}
 	if call.command == "map" && strings.HasPrefix(call.subcommand, "import-") {
 		var ok bool
 		call.mapImport, ok = parseMapImport(call.subcommand, operationArgs)
