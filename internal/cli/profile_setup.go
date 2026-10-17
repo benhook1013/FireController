@@ -126,8 +126,8 @@ func createProfile(ctx context.Context, call invocation, stdout, stderr io.Write
 }
 
 func createProfileLauncher(ctx context.Context, call invocation, stdout, stderr io.Writer) int {
-	if !validSetupText(call.profile) || !validSetupText(call.profilesFile) {
-		return report(stderr, ExitUsage, "invalid_arguments", "The selected local profile is invalid.", "Use a valid profile selector and profiles file.")
+	if !validSetupText(call.profile) || !validSetupText(call.profilesFile) || !filepath.IsAbs(call.profilesFile) {
+		return report(stderr, ExitUsage, "invalid_arguments", "The selected local profile is invalid.", "Use a valid profile selector and an absolute profiles file.")
 	}
 	if setupCancelled(ctx, stderr) {
 		return ExitCancelled
