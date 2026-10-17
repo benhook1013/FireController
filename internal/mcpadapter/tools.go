@@ -51,7 +51,7 @@ type definition struct {
 }
 
 func boundServer(binding profile.Binding) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 64})
+	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128})
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
 	definitions = append(definitions, jobProgressDefinitions()...)
 	definitions = append(definitions, primaryJobDefinitions()...)
