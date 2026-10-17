@@ -173,7 +173,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 				}
 				delete(expected, tool.Name)
 				a := tool.Annotations
-				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "note_update" || tool.Name == "job_edit" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
+				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "note_update" || tool.Name == "job_edit" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
 					t.Fatal("untruthful operation annotation")
 				}
 				data, _ := json.Marshal(tool.InputSchema)
