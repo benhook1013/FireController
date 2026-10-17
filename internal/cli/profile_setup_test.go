@@ -259,6 +259,87 @@ func TestProfileSetupLauncherBindsSelectedIdentityAndForwardsLiteralArguments(t 
 	}
 }
 
+func TestProfileSetupLauncherRoundTripsOptionLikeAndLiteralNames(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		t.Skip("POSIX launcher boundary")
+	}
+	for _, test := range []struct{ label, name string }{
+		{"option-like", "--ops"},
+		{"literal", "--ops ' $(exit 91) `exit 92` =literal"},
+	} {
+		t.Run(test.label, func(t *testing.T) {
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer server.Close()
+			root := setupPrivateDirectory(t)
+			path := filepath.Join(root, "profiles ' literal.json")
+			env := map[string]string{"FC_PROFILE": "ambient-other", "XDG_CONFIG_HOME": filepath.Join(root, "unused")}
+			create := []string{"--profiles-file", path, "--profile=" + test.name, "profile", "create", "--server", server.URL, "--instance", "instance-local", "--project", "project-local", "--worker", "worker-local", "--credential-file", "credentials/never-created.token"}
+			code, out, stderr := run(create, env)
+			setupResult(t, code, out, stderr, "configured", test.name)
+			executable := filepath.Join(root, "argument ' recorder")
+			if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf '%s\\000' \"$@\"\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			output := filepath.Join(root, "fc-selected")
+			launcher := []string{"--profiles-file", path, "--profile=" + test.name, "profile", "launcher", "--output", output, "--executable", executable}
+			code, out, stderr = run(launcher, env)
+			setupResult(t, code, out, stderr, "launcher_created", test.name)
+			before, err := os.ReadFile(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, out, stderr = run(launcher, env)
+			setupResult(t, code, out, stderr, "launcher_created", test.name)
+			after, err := os.ReadFile(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterInfo, err := os.Stat(output)
+			if err != nil || !bytes.Equal(before, after) || !os.SameFile(info, afterInfo) || !info.ModTime().Equal(afterInfo.ModTime()) {
+				t.Fatal("exact retry changed launcher")
+			}
+			invoke := func(args ...string) []string {
+				t.Helper()
+				cmd := exec.Command(output, args...)
+				cmd.Env = append(os.Environ(), "FC_PROFILE=ambient-other")
+				forwarded, err := cmd.Output()
+				if err != nil {
+					t.Fatalf("literal shell invocation: %v", err)
+				}
+				return strings.Split(strings.TrimSuffix(string(forwarded), "\x00"), "\x00")
+			}
+			// Exercise the real CLI parser with the actual shell's emitted argv,
+			// rather than accepting a correctly quoted but unusable launcher.
+			code, out, stderr = run(invoke("context"), env)
+			identity := response(t, code, out, stderr)
+			if identity["profile"] != test.name || identity["instance_id"] != "instance-local" || identity["project_id"] != "project-local" || identity["worker_id"] != "worker-local" {
+				t.Fatalf("launcher resolved another binding: %#v", identity)
+			}
+			for _, overrides := range [][]string{
+				{"--profile", "other", "context"},
+				{"--profile=other", "context"},
+				{"--profiles-file", path, "context"},
+			} {
+				failure(t, invoke(overrides...), env, cli.ExitUsage, "invalid_arguments")
+			}
+			if requests.Load() != 0 {
+				t.Fatal("local launcher/context contacted service")
+			}
+			if _, err := os.Stat(filepath.Join(root, "credentials")); !os.IsNotExist(err) {
+				t.Fatal("local setup created credential state")
+			}
+		})
+	}
+}
+
 func TestProfileSetupLauncherDefaultSelectionPreflightAndCancellation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX launcher boundary")
