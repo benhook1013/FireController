@@ -5,6 +5,8 @@ import fs from 'node:fs/promises';
 // Playwright diagnostics nor request/credential bytes are printed on failure.
 let server, browser;
 let phase = 'configuration';
+let checkpoint = 'none';
+let diagnostics = () => ({});
 const need = (value) => { if (!value) throw new Error('assertion'); };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
@@ -32,19 +34,43 @@ try {
     return receipt;
   };
   let sessionPosts = 0, sessionDeletes = 0, forbiddenWrites = 0, errors = 0, external = 0;
+  let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0;
+  let injectedRequest;
+  diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external });
   page.on('pageerror', () => errors++);
-  page.on('console', value => { if (value.type() === 'error') errors++; });
-  page.on('response', value => { if (value.status() >= 400) errors++; });
+  page.on('console', value => {
+    if (value.type() !== 'error') return;
+    // Only this exact controlled 400 may produce Chromium's resource-error
+    // console entry. Every other console error still fails the workload.
+    if (injectedRequest && injectedConsoleErrors === 0 && value.location().url === injectedRequest.url()
+      && /^Failed to load resource: the server responded with a status of 400 \(Bad Request\)$/u.test(value.text())) injectedConsoleErrors++;
+    else errors++;
+  });
+  page.on('response', value => {
+    if (value.status() < 400) return;
+    if (value.request() === injectedRequest && value.status() === 400) injectedResponses++;
+    else errors++;
+  });
   page.on('request', request => {
     const url = new URL(request.url());
     if (url.origin !== config.origin) { external++; return; }
-    if (request.method() === 'GET') return;
+    if (request.method() === 'GET') {
+      if (url.pathname === prefix + '/presentation') presentationReads++;
+      if (url.pathname === prefix + '/project-events/stream') metadataStreams++;
+      if (url.pathname === prefix + '/message-events/stream') inboxStreams++;
+      return;
+    }
     if (url.pathname === prefix + '/browser-session' && request.method() === 'POST') sessionPosts++;
     else if (url.pathname === prefix + '/browser-session' && request.method() === 'DELETE') sessionDeletes++;
     else forbiddenWrites++;
   });
   await context.route('**/*', async route => {
     if (new URL(route.request().url()).origin !== config.origin) { await route.abort(); return; }
+    if (!injectedRequest && route.request().method() === 'GET' && new URL(route.request().url()).pathname === prefix + '/project-events/stream') {
+      injectedRequest = route.request();
+      await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: { code: 'invalid_response' } }) });
+      return;
+    }
     await route.continue();
   });
   const appearance = () => page.evaluate(() => ({
@@ -74,9 +100,20 @@ try {
   need((await appearance()).title === 'Packaged smoke · FireController');
   const defaultIndicators = await indicatorColors();
   need(defaultIndicators.connection === 'rgb(103, 118, 89)' && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
+  phase = 'metadata-failure';
+  checkpoint = 'metadata-notice';
+  const reconnect = page.getByRole('button', {name:'Reconnect project updates', exact:true});
+  await reconnect.waitFor();
+  checkpoint = 'metadata-initial-counts';
+  need(metadataStreams === 1 && presentationReads === 1 && injectedResponses === 1);
+  await page.getByRole('button', {name:'Open Builder inbox', exact:true}).click();
+  checkpoint = 'metadata-inbox-ready';
+  await page.getByText('Live inbox connected', {exact:true}).waitFor();
+  need(metadataStreams === 1 && inboxStreams === 1);
+  checkpoint = 'none';
   const bindingKey = 'firecontroller.browser-session.v1';
   const binding = await page.evaluate(key => sessionStorage.getItem(key), bindingKey);
-  need(binding && !binding.includes(token));
+  need(binding && !binding.includes(token) && JSON.parse(binding).selectedworkerID === config.worker);
   const sessionID = JSON.parse(binding).sessionID;
   const cookieName = 'fc-local-browser-' + sessionID;
   const cookie = (await context.cookies()).find(value => value.name === cookieName);
@@ -96,9 +133,11 @@ try {
     if (['canvas', 'surface', 'header', 'hero'].includes(family)) theme[family + '_muted'] = '#000000';
   }
   const receipt = await write('PUT', '/presentation', {expected_revision:0, presentation:{name:title, brand_name:'Smoke <literal>', theme}});
-
   need(receipt.revision === 1 && receipt.outcome === 'updated');
-  phase = 'live-update';
+  await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
+  need(metadataStreams === 1 && presentationReads === 1);
+  phase = 'metadata-reconnect';
+  await reconnect.click();
   const heading = page.getByRole('heading', {name:title, exact:true});
   await heading.waitFor();
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
@@ -128,12 +167,22 @@ try {
   });
   need(fits);
 
+  await expect(reconnect).toHaveCount(0);
+  await page.getByText('Live inbox connected', {exact:true}).waitFor();
+  need(metadataStreams === 2 && presentationReads === 2 && inboxStreams === 1 && sessionPosts === 1);
+  need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === binding);
+  await expect(page.getByRole('button', {name:'Open Builder inbox', exact:true})).toHaveAttribute('aria-pressed', 'true');
+  phase = 'metadata-live-update';
+  const liveReceipt = await write('PUT', '/presentation', {expected_revision:1, presentation:{name:title, brand_name:'Smoke live <literal>', theme}});
+  need(liveReceipt.revision === 2 && liveReceipt.outcome === 'updated');
+  await expect.poll(async () => (await appearance()).brand, {timeout:5000}).toBe('Smoke live <literal>');
+  need(metadataStreams === 2 && presentationReads === 3 && inboxStreams === 1 && sessionPosts === 1);
+
   // Mutate through a separate fixture client only after the relevant browser
   // view has rendered its preceding state. No Refresh click or browser reload
   // may be used to observe these changes; the project stream owns delivery.
   phase = 'live-jobs';
   const selected = page.getByRole('button', {name:'Open Builder inbox', exact:true});
-  await selected.click();
   const selectedBinding = await page.evaluate(key => sessionStorage.getItem(key), bindingKey);
   need(JSON.parse(selectedBinding).selectedworkerID === config.worker);
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Jobs', exact:true}).click();
@@ -208,6 +257,8 @@ try {
   const resumed = (await context.cookies()).find(value => value.name === cookieName);
   need(resumed?.value === cookie.value && sessionPosts === 1);
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
+  await page.getByText('Live inbox connected', {exact:true}).waitFor();
+  need((await appearance()).brand === 'Smoke live <literal>' && metadataStreams === 3 && presentationReads === 4 && inboxStreams === 2);
 
   phase = 'disconnect';
   await page.getByRole('button', {name:'Disconnect', exact:true}).click();
@@ -216,13 +267,13 @@ try {
   await defaults();
   need((await appearance()).title === 'FireController');
   need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === null);
-  need(sessionPosts === 1 && sessionDeletes === 1 && forbiddenWrites === 0 && errors === 0 && external === 0);
+  need(sessionPosts === 1 && sessionDeletes === 1 && forbiddenWrites === 0 && errors === 0 && external === 0 && injectedResponses === 1);
   await context.close();
   await browser.close(); browser = undefined;
   await server.close(); server = undefined;
-  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes}));
+  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams}));
 } catch {
-  console.log(JSON.stringify({state:'FAIL', phase}));
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, ...diagnostics()}));
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});
