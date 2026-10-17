@@ -357,6 +357,7 @@ func (e *Engine) persistAdvance(a Attempt, state, reason, externalID string) (At
 				wantID = a.ExternalID
 			}
 			if lookupErr == nil && current.Revision == a.Revision+1 && current.State == state && current.ExternalID == wantID && recordedReason == reason {
+				e.notifyOperation(a.OperationID)
 				return current, nil
 			}
 		}

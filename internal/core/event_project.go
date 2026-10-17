@@ -4,15 +4,32 @@ import (
 	"context"
 	"database/sql"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const projectFeed = "events:project-metadata"
 
+// These committed state changes may invalidate private project views. Keep the
+// exact allowlist shared by replay and live hints; messages and authentication
+// events retain their separate delivery/authorization paths.
+var projectEventTypes = [...]string{
+	"project.presentation_changed", "map.entry_created", "map.entry_updated",
+	"job.workstream_changed", "job.created", "job.updated", "job.checkpointed", "job.update_appended", "job.checklist_replaced",
+	"workers.created", "worker.pause_changed", "worker.primary_job_changed",
+	"note.created", "note.updated",
+	"review.observed", "reviews.policy_configured",
+	"review.evidence.adjudicated", "review.evidence.finalized", "review.evidence.fix_recorded", "review.evidence.routed",
+	"review.route.routed", "review.route.superseded", "review.route.adjudicated", "review.route.fix_recorded",
+}
+
+var projectEventsQuery = `SELECT sequence,event_type,resource_id,revision FROM events WHERE project_id=? AND sequence>? AND event_type IN (` + strings.TrimSuffix(strings.Repeat("?,", len(projectEventTypes)), ",") + `) ORDER BY sequence LIMIT ?`
+
 func projectEventType(kind string) bool {
-	switch kind {
-	case "project.presentation_changed", "map.entry_created", "map.entry_updated", "job.workstream_changed":
-		return true
+	for _, allowed := range projectEventTypes {
+		if kind == allowed {
+			return true
+		}
 	}
 	return false
 }
@@ -57,7 +74,13 @@ func (s *Store) readProjectEvents(ctx context.Context, scope Scope, after int64,
 		if expired {
 			return Fail("resync_required", "The event replay window expired; obtain a new scoped snapshot.", 409)
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT sequence,event_type,resource_id,revision FROM events WHERE project_id=? AND sequence>? AND event_type IN ('project.presentation_changed','map.entry_created','map.entry_updated','job.workstream_changed') ORDER BY sequence LIMIT ?`, scope.ProjectID, after, limit+1)
+		args := make([]any, 0, len(projectEventTypes)+3)
+		args = append(args, scope.ProjectID, after)
+		for _, kind := range projectEventTypes {
+			args = append(args, kind)
+		}
+		args = append(args, limit+1)
+		rows, err := tx.QueryContext(ctx, projectEventsQuery, args...)
 		if err != nil {
 			return err
 		}
@@ -89,7 +112,7 @@ func (s *Store) readProjectEvents(ctx context.Context, scope Scope, after int64,
 	return page, err
 }
 
-// StreamProjectEvents delivers only compact project metadata. It shares stream
+// StreamProjectEvents delivers only compact private project changes. It shares stream
 // ownership and transport-independent lifecycle with incoming messages.
 func (s *Store) StreamProjectEvents(ctx context.Context, scope Scope, cursor string, limit int, deliver func(ProjectEventPage) error, heartbeat func() error) error {
 	return s.streamProjectEvents(ctx, scope, cursor, limit, deliver, heartbeat, 15*time.Second)

@@ -147,6 +147,12 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if call.mutation != nil && (call.mutation.operation == "reviews source-refresh" || call.mutation.operation == "reviews publish" || call.mutation.operation == "reviews publication-recover") {
 		timeout = client.SourceRefreshBudget(call.mutation.reviewSourceWait)
 	}
+	if call.mutation != nil && call.mutation.operation == "reviews request" {
+		timeout = client.ReviewOperationBudget(call.mutation.reviewSourceWait)
+	}
+	if call.command == "reviews" && call.subcommand == "operation" {
+		timeout = client.ReviewOperationBudget(call.waitSeconds)
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	service, err := client.New(requestCtx, binding)

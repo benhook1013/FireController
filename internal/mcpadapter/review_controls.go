@@ -161,12 +161,19 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 		return args, nil
 	case "review_operation_read":
 		var in struct {
-			ID string `json:"operation_id"`
+			ID   string `json:"operation_id"`
+			Wait *int   `json:"wait_seconds,omitempty"`
 		}
 		if strictjson.Decode(data, &in) != nil || client.ValidateReviewOperationID(in.ID) != nil {
 			return args, invalidArguments()
 		}
 		args.id = in.ID
+		if in.Wait != nil {
+			args.reviewSourceWait = *in.Wait
+		}
+		if client.ValidateReviewOperationWait(args.reviewSourceWait) != nil {
+			return args, invalidArguments()
+		}
 		return args, nil
 	case "review_request":
 		var in struct {
@@ -175,8 +182,16 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 			Number   *int64 `json:"pull_number"`
 			Channel  string `json:"channel"`
 			Head     string `json:"head_sha"`
+			Wait     *int   `json:"wait_seconds,omitempty"`
 		}
 		if strictjson.Decode(data, &in) != nil || in.Revision == nil || in.Number == nil || !validKey(in.Key) {
+			return args, invalidArguments()
+		}
+		args.reviewSourceWait = 2
+		if in.Wait != nil {
+			args.reviewSourceWait = *in.Wait
+		}
+		if client.ValidateReviewOperationWait(args.reviewSourceWait) != nil {
 			return args, invalidArguments()
 		}
 		args.key = in.Key
@@ -303,13 +318,14 @@ func reviewExecutionDefinitions() []definition {
 		{"review_source_readiness", "Read one retained as-of readiness assessment using current local policy. Provider-free, compact selected-PR read; no refresh, polling or merge authorization.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
 		{"review_source_ci_assess", "Read retained required-CI assessment for one PR. Local provider-free read; reports observation age and applicability, never merge readiness.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
 		{"review_execution_read", "Read stored project review execution configuration. No provider calls, execution, readiness verdict or automatic polling.", schema(map[string]any{})},
-		{"review_operation_read", "Read one explicit local review operation status. No provider refresh, execution or automatic polling.", schema(map[string]any{"operation_id": map[string]any{"type": "string", "pattern": "^review_operation_[a-f0-9]{32}$"}}, "operation_id")},
-		{"review_request", "Enqueue the selected external provider review, which can consume included allowance asynchronously. The compact queued receipt does not mean started or completed. Retain the exact idempotency key and arguments for uncertain-outcome recovery; no automatic retry, generated key or operation polling.", schema(map[string]any{
+		{"review_operation_read", "Read one retained local review operation; optionally wait quietly for a terminal state. Cancellation detaches without stopping the review. No provider refresh, execution or polling.", schema(map[string]any{"operation_id": map[string]any{"type": "string", "pattern": "^review_operation_[a-f0-9]{32}$"}, "wait_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 900, "default": 0}}, "operation_id")},
+		{"review_request", "Enqueue the selected external provider review, which can consume included allowance asynchronously. Waits briefly for a terminal result; pending work returns a compact queued receipt, which does not mean started or completed. Retain the exact idempotency key and arguments for uncertain-outcome recovery; no automatic retry, generated key or operation polling.", schema(map[string]any{
 			"idempotency_key":                 map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
 			"expected_configuration_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64)},
 			"pull_number":                     map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647},
 			"channel":                         map[string]any{"type": "string", "enum": []string{"cli", "hosted"}},
 			"head_sha":                        map[string]any{"type": "string", "pattern": "^[a-f0-9]{40}$"},
+			"wait_seconds":                    map[string]any{"type": "integer", "minimum": 0, "maximum": 900, "default": 2, "description": "Wait quietly for a terminal result; zero detaches immediately. Changing this preference never starts another review."},
 		}, "idempotency_key", "expected_configuration_revision", "pull_number", "channel", "head_sha")},
 	}
 }

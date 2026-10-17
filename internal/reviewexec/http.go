@@ -1,7 +1,12 @@
 package reviewexec
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -66,6 +71,7 @@ func (e *Engine) configureHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", "Prefer")
 	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
@@ -74,6 +80,17 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 	if _, err := core.QueryKeys(r, "validation_failed"); err != nil {
 		core.WriteError(w, err)
 		return
+	}
+	wait, err := operationPreference(r, 2)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if wait > 0 {
+		if err = e.store.Read(r.Context(), scope, func(context.Context, *sql.Tx) error { return nil }); err != nil {
+			core.WriteError(w, err)
+			return
+		}
 	}
 	var request Request
 	if err := core.ReadJSON(w, r, &request); err != nil {
@@ -85,15 +102,46 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	if err = operationResponseDeadline(w, wait); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	w.Header().Set("Preference-Applied", "wait="+strconv.Itoa(wait))
 	receipt, err := e.Enqueue(r.Context(), scope, key, request)
 	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
+	if wait > 0 {
+		var queued Receipt
+		if json.Unmarshal(receipt, &queued) != nil {
+			writeOperationWaitError(w, core.Fail("storage_unavailable", "The retained review receipt is unavailable.", 500))
+			return
+		}
+		operation, terminal, waitErr := e.WaitOperation(r.Context(), scope, queued.ID, wait)
+		if waitErr != nil {
+			var failure *core.Error
+			if errors.As(waitErr, &failure) && failure.Code == "overloaded" {
+				if details, ok := failure.Details.(map[string]string); ok && details["reason"] == "operation_wait_capacity" {
+					operation, waitErr = e.ReadOperation(r.Context(), scope, queued.ID)
+					terminal = waitErr == nil && !operationPending(operation.State)
+				}
+			}
+			if waitErr != nil {
+				writeOperationWaitError(w, waitErr)
+				return
+			}
+		}
+		if terminal {
+			core.WriteJSON(w, http.StatusOK, operation)
+			return
+		}
+	}
 	core.WriteJSON(w, http.StatusAccepted, receipt)
 }
 
 func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", "Prefer")
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -108,7 +156,17 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, invalid())
 		return
 	}
-	operation, err := e.ReadOperation(r.Context(), scope, operationID)
+	wait, err := operationPreference(r, 0)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if err = operationResponseDeadline(w, wait); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	w.Header().Set("Preference-Applied", "wait="+strconv.Itoa(wait))
+	operation, _, err := e.WaitOperation(r.Context(), scope, operationID, wait)
 	if err != nil {
 		core.WriteError(w, err)
 		return

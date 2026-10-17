@@ -39,7 +39,7 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 			continue
 		}
 		flag, value, assigned := strings.Cut(argument, "=")
-		if seen[flag] || !(list && (flag == "--limit" || flag == "--cursor") || call.subcommand == "routes" && flag == "--pr" || (call.subcommand == "pull" || call.subcommand == "runs" || call.subcommand == "run") && flag == "--snapshot") {
+		if seen[flag] || !(list && (flag == "--limit" || flag == "--cursor") || call.subcommand == "routes" && flag == "--pr" || call.subcommand == "operation" && flag == "--wait-seconds" || (call.subcommand == "pull" || call.subcommand == "runs" || call.subcommand == "run") && flag == "--snapshot") {
 			return call, false
 		}
 		seen[flag] = true
@@ -51,6 +51,12 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 			value = args[i]
 		}
 		switch flag {
+		case "--wait-seconds":
+			seconds, err := strconv.Atoi(value)
+			if err != nil || strconv.Itoa(seconds) != value || client.ValidateReviewOperationWait(seconds) != nil {
+				return call, false
+			}
+			call.waitSeconds = seconds
 		case "--pr":
 			number, err := strconv.ParseInt(value, 10, 64)
 			if err != nil || number < 1 || number > 2147483647 || strconv.FormatInt(number, 10) != value {
@@ -133,7 +139,7 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 	case "execution":
 		return service.ReviewExecution(ctx)
 	case "operation":
-		return service.ReviewOperation(ctx, call.position[0])
+		return service.WaitReviewOperation(ctx, call.position[0], call.waitSeconds)
 	case "source-operation":
 		return service.ReviewSourceOperation(ctx, call.position[0])
 	case "source-assess":
@@ -376,7 +382,7 @@ func reviewSourceFlags(args []string, flags ...string) (map[string]string, bool)
 }
 
 func parseReviewRequest(args []string) (*mutationInvocation, bool) {
-	allowed := map[string]bool{"--key": true, "--expect-config": true, "--channel": true, "--head": true}
+	allowed := map[string]bool{"--key": true, "--expect-config": true, "--channel": true, "--head": true, "--wait-seconds": true}
 	values := map[string]string{}
 	var positions []string
 	for i := 0; i < len(args); i++ {
@@ -400,7 +406,7 @@ func parseReviewRequest(args []string) (*mutationInvocation, bool) {
 		}
 		values[flag] = value
 	}
-	if len(positions) != 1 || len(values) != len(allowed) || !validMutationKey(values["--key"]) {
+	if len(positions) != 1 || len(values) < 4 || len(values) > 5 || !validMutationKey(values["--key"]) {
 		return nil, false
 	}
 	number, err := strconv.ParseInt(positions[0], 10, 64)
@@ -411,11 +417,19 @@ func parseReviewRequest(args []string) (*mutationInvocation, bool) {
 	if err != nil || strconv.FormatInt(revision, 10) != values["--expect-config"] {
 		return nil, false
 	}
+	seconds := 2
+	if raw, present := values["--wait-seconds"]; present {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || strconv.Itoa(parsed) != raw || client.ValidateReviewOperationWait(parsed) != nil {
+			return nil, false
+		}
+		seconds = parsed
+	}
 	request := client.ReviewRequest{ExpectedConfigurationRevision: revision, PullNumber: number, Channel: values["--channel"], HeadSHA: values["--head"]}
 	if client.ValidateReviewRequest(request) != nil {
 		return nil, false
 	}
-	return &mutationInvocation{operation: "reviews request", key: values["--key"], reviewRequest: request}, true
+	return &mutationInvocation{operation: "reviews request", key: values["--key"], reviewRequest: request, reviewSourceWait: seconds}, true
 }
 
 func parseReviewPublication(operation string, args []string) (*mutationInvocation, bool) {

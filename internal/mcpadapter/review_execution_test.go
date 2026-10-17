@@ -16,7 +16,7 @@ import (
 )
 
 func executionArguments() map[string]any {
-	return map[string]any{"idempotency_key": "explicit-native-review", "expected_configuration_revision": 1, "pull_number": 2, "channel": "cli", "head_sha": strings.Repeat("a", 40)}
+	return map[string]any{"idempotency_key": "explicit-native-review", "expected_configuration_revision": 1, "pull_number": 2, "channel": "cli", "head_sha": strings.Repeat("a", 40), "wait_seconds": 0}
 }
 
 func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *testing.T) {
@@ -46,7 +46,11 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 			Additional bool           `json:"additionalProperties"`
 		}
 		data, _ := json.Marshal(tool.InputSchema)
-		if json.Unmarshal(data, &schema) != nil || len(schema.Properties) != count || len(schema.Required) != count || schema.Additional {
+		properties := count
+		if tool.Name == "review_request" || tool.Name == "review_operation_read" {
+			properties++
+		}
+		if json.Unmarshal(data, &schema) != nil || len(schema.Properties) != properties || len(schema.Required) != count || schema.Additional {
 			t.Fatal("execution schema fields changed", tool.Name)
 		}
 		a := tool.Annotations
@@ -83,7 +87,9 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 						copy[key] = value
 					}
 				}
-				check(copy)
+				if field != "wait_seconds" {
+					check(copy)
+				}
 				copy[field] = nil
 				check(copy)
 			}
@@ -96,6 +102,7 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 				{"expected_configuration_revision", []any{0, -1, "1", 1.5, json.Number("9223372036854775808")}},
 				{"pull_number", []any{0, -1, 2147483648, "2", 2.5}},
 				{"channel", []any{"", "CLI", "manual", 3}},
+				{"wait_seconds", []any{-1, 901, "1", 1.5, true}},
 				{"head_sha", []any{"", strings.Repeat("A", 40), strings.Repeat("a", 39), "../other", 4}},
 			} {
 				if _, exists := valid[bad.field]; !exists {
