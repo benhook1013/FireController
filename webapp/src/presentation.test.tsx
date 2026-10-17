@@ -27,10 +27,10 @@ describe('project appearance and metadata boundary', () => {
     const fs = await vi.importActual<{ readFileSync(path: URL, encoding: 'utf8'): string }>('node:fs');
     const styles = fs.readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
     const base = styles.split('\n/* Bounded presentation text. */')[0];
-    // Baseline includes the requested five-pixel flame-to-brand gap.
+    // Baseline includes the selected local Inter 600 header and five-pixel gap.
     const original = base.replace(/var\(--fc-[a-z_]+,([^()]+)\)/gu, '$1');
     const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(original));
-    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('35c287ac8d7d6466efadb327574099cb088e40d635674fb7e853cbd6dd9a69ed');
+    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('fecad6dbe725ff81f531ac0e16b4ced4701add2706bb1780ba9a8d177bfde108');
     const tokens = new Set(Array.from(styles.matchAll(/--fc-([a-z_]+)/gu), match => match[1]));
     expect([...tokens].sort()).toEqual(Object.keys(presentationDefaults.theme).sort());
     // Decorative shadows may stay literal. All informative declarations use
