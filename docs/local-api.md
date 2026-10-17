@@ -109,6 +109,8 @@ The [native review workspace](review-workspace.md) owns its administrator observ
 
 The [source refresh contract](review-source.md) owns its explicit POST, operation read and observed-policy read. Its short default wait returns a completed result directly where possible, with a pending receipt only when the work remains active; ordinary review reads never trigger that refresh.
 
+The [prepared coordination import](legacy-adoption.md) owns administrator preview/apply for selected jobs/checkpoints and historical messages. [Prepared operational adoption](review-round-controls.md#prepared-operational-adoption) owns the separate round-setting preview/apply routes and source provenance. These deliberate setup operations perform no provider work and do not manufacture review credit or historical delivery events.
+
 ## Worker primary job
 
 [Worker primary focus](worker-focus.md) owns the scoped current, guarded replacement and explicit history routes. Focus is optional and independent of job status; reassignment clears the old worker’s selection atomically. These reads do not load the selected brief or a resume packet automatically.
