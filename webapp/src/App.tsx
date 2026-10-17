@@ -17,6 +17,7 @@ import { BrowserSessionRenewal, listenForSessionActivity } from './session-renew
 import { applyPresentationRoot } from './presentation';
 import { PresentationContext, usePresentation, useProjectHeading } from './presentation-context';
 import { isCurrentProjectView, refreshProjectMetadata } from './project-metadata';
+import { startMetadataAttempt } from './metadata-recovery';
 import type { Presentation } from './types';
 import flameEmber from './flame-ember.svg?no-inline';
 import type { Checkpoint, ChecklistItem, JobUpdate, InboxItem, JobSummary, LiveStatus, Project, Worker, ReviewAttemptSummary, ReviewAttemptItem, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
@@ -64,6 +65,7 @@ function PrivateApp() {
   const [appearance, setAppearance] = useState<Presentation>();
   const [metadataStatus, setMetadataStatus] = useState<LiveStatus>('connecting');
   const renewal = useRef<BrowserSessionRenewal<BrowserSessionView> | null>(null);
+  const [metadataRetry, setMetadataRetry] = useState<{ lifetime: AbortController; attempt: number }>();
   const clear = useCallback((message = '') => {
     const expiring = pending.current?.api ?? current.current?.api;
     if (expiring) void expiring.endBrowserSession().catch(() => {});
@@ -136,7 +138,7 @@ function PrivateApp() {
       if (!saveBrowserSession(binding)) throw new ApiError('browser_storage_unavailable', 'The browser session could not be retained safely.');
       saved.current = binding; setResumable(binding);
       const next: Session = { api, project, instanceId: api.instanceId!, nonce: nonce(), controller: new AbortController(), projectController: controller, presentationSnapshot, worker, binding, actions: new BrowserActionMemory(), renewalAttemptAt: restored ? undefined : performance.now() };
-      pending.current = null; current.current = next; setAppearance(presentationSnapshot.presentation); setSession(next); setConnecting(false); setRestoring(false);
+      pending.current = null; current.current = next; setAppearance(presentationSnapshot.presentation); setMetadataStatus('connecting'); setSession(next); setConnecting(false); setRestoring(false);
       if (routeProject !== project.id) navigate(`/projects/${encodeURIComponent(project.id)}`);
     } catch (error) {
       if (!restored) void api.endBrowserSession().catch(() => {});
@@ -170,6 +172,13 @@ function PrivateApp() {
   // This lifetime is project-bound: selecting an inbox worker replaces only
   // its content/message controller and does not restart the metadata feed.
   const projectLifetime = session?.projectController;
+  const metadataAttempt = metadataRetry?.lifetime === projectLifetime ? metadataRetry?.attempt ?? 0 : 0;
+  function reconnectProjectUpdates() {
+    const live = current.current;
+    if (!live || metadataStatus !== 'closed' || !isCurrentProjectView(live.project.id, route.current.pathname, live.projectController, projectLifetime)) return;
+    setMetadataStatus('connecting');
+    setMetadataRetry(previous => ({ lifetime: live.projectController, attempt: previous?.lifetime === live.projectController ? previous.attempt + 1 : 1 }));
+  }
   useEffect(() => {
     if (!session || !projectLifetime) return;
     const api = session.api;
@@ -205,42 +214,24 @@ function PrivateApp() {
     return () => window.removeEventListener('beforeunload', guard);
   }, [projectLifetime]);
   useEffect(() => {
-    if (!session || !projectLifetime) return;
+    if (!session || !projectLifetime || routeProject !== session.project.id) return;
     const api = session.api;
-    let active = true;
-    let firstSnapshot = true;
-    const valid = () => active && isCurrentProjectView(session.project.id, route.current.pathname, projectLifetime, current.current?.projectController);
+    const valid = () => isCurrentProjectView(session.project.id, route.current.pathname, projectLifetime, current.current?.projectController);
     const queryKey = () => { const live = current.current!; return ['fc', live.nonce, live.instanceId, live.project.id, live.worker?.id ?? '']; };
-    void api.watchProjectMetadata(session.presentationSnapshot, {
-      snapshot: async value => {
-        if (!valid()) return;
-        // The initial snapshot preceded all content queries; only a retention
-        // resnapshot needs to cancel and reload views from a new watermark.
-        if (!firstSnapshot) await refreshProjectMetadata(queryClient, queryKey(), undefined, projectLifetime.signal);
-        firstSnapshot = false;
-        if (valid()) setAppearance(value.presentation);
-      },
-      events: async page => {
-        if (!valid() || page.items.length === 0) return;
-        const updated = page.items.some(item => item.event_type === 'project.presentation_changed') ? await api.presentation(projectLifetime.signal) : undefined;
-        if (!valid()) return;
-        await refreshProjectMetadata(queryClient, queryKey(), page, projectLifetime.signal);
-        if (valid() && updated) setAppearance(updated.presentation);
-      },
-      status: value => { if (valid()) setMetadataStatus(value); },
-    }, projectLifetime.signal).catch(error => {
-      if (!valid()) return;
-      setMetadataStatus('closed');
-      if (terminal(error)) clear(errorText(error));
+    const attempt = startMetadataAttempt(api, session.presentationSnapshot, {
+      lifetime: projectLifetime.signal, current: valid, retry: metadataAttempt > 0,
+      refresh: (page, signal) => refreshProjectMetadata(queryClient, queryKey(), page, signal),
+      appearance: setAppearance, status: setMetadataStatus,
+      failure: error => { if (terminal(error)) clear(errorText(error)); },
     });
-    return () => { active = false; };
-  }, [projectLifetime, queryClient, clear]);
+    return () => attempt.cancel();
+  }, [projectLifetime, metadataAttempt, routeProject, queryClient, clear]);
   const connected = session && routeProject === session.project.id;
   const visibleAppearance = connected ? appearance : undefined;
   useLayoutEffect(() => { applyPresentationRoot(document.documentElement, document, visibleAppearance); }, [visibleAppearance]);
   return <PresentationContext.Provider value={visibleAppearance}>
     <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><span className="mast-label">{visibleAppearance?.tagline ?? 'Project workspace'}</span></div></header>
-    {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} selectWorker={selectWorker} disconnect={() => { if (session.actions.unresolved > 0 && !window.confirm(discardActionWarning)) return; clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
+    {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} reconnectProjectUpdates={reconnectProjectUpdates} selectWorker={selectWorker} disconnect={() => { if (session.actions.unresolved > 0 && !window.confirm(discardActionWarning)) return; clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
       : restoring || resumable ? <OpeningProject busy={restoring || connecting} notice={notice} retry={() => setReconnect(value => value + 1)} cancel={() => clear('Connection cancelled.')} />
       : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={(project, token) => void connect(project, token)} cancel={() => clear('Connection cancelled.')} />}
     <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span></footer>
@@ -294,7 +285,12 @@ function Connect({ projectId, busy, notice, onConnect, cancel }: { projectId: st
       </form></section></main>;
 }
 
-function Workspace({ session, metadataStatus, selectWorker, disconnect, fail }: { session: Session; metadataStatus: LiveStatus; selectWorker(worker: Worker): void; disconnect(): void; fail(error: unknown): void }) {
+export function ProjectUpdateNotice({ status, reconnect }: { status: LiveStatus; reconnect(): void }) {
+  if (status === 'live') return null;
+  return <p className="notice" role="status">Project updates {status === 'connecting' ? 'connecting' : 'disconnected'}. Displayed project data may be stale. {status === 'closed' && <button type="button" onClick={reconnect}>Reconnect project updates</button>}</p>;
+}
+
+function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWorker, disconnect, fail }: { session: Session; metadataStatus: LiveStatus; reconnectProjectUpdates(): void; selectWorker(worker: Worker): void; disconnect(): void; fail(error: unknown): void }) {
   const presentation = usePresentation();
   const jobsHeading = useProjectHeading('jobs'), workersHeading = useProjectHeading('workers'), inboxHeading = useProjectHeading('inbox'), reviewsHeading = useProjectHeading('reviews'), mapHeading = useProjectHeading('map');
   const notesHeading = useProjectHeading('notes');
@@ -353,7 +349,7 @@ function Workspace({ session, metadataStatus, selectWorker, disconnect, fail }: 
     <section className="hero"><div className="hero-project"><h1>{presentation?.name ?? session.project.name}</h1><p className="repository">{session.project.repository}</p><p className="identity">Project {session.project.id}</p></div>
       <div className="hero-side"><div className="connection-card"><span className="eyebrow">{heroEyebrow}</span><strong>{heroTitle}</strong><p>{heroDescription}</p><div className="hero-actions"><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh visible data'}</button><button className="quiet-button" type="button" onClick={disconnect}>Disconnect</button></div></div></div></section>
     <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink><NavLink to={`${home}/map`}>{mapHeading}</NavLink><NavLink to={`${home}/notes`}>{notesHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}<span className="connection-note">Connected</span></nav>
-    {metadataStatus !== 'live' && <p className="notice" role="status">Project updates {metadataStatus === 'connecting' ? 'connecting' : 'disconnected'}. Displayed project data may be stale.</p>}
+    <ProjectUpdateNotice status={metadataStatus} reconnect={reconnectProjectUpdates} />
     {unresolved > 0 && <p className="notice" role="status">{unresolved} pending or uncertain action{unresolved === 1 ? '' : 's'} retained in this connection. Return to the original worker and view to retry before reloading or disconnecting.</p>}
     <div className="workspace-grid"><aside className="sidebar"><WorkerList compact /><section className="feed-card" aria-label="Inbox connection"><span className={`status-dot ${live === 'live' && session.worker ? 'online' : ''}`} /><strong role="status">{liveLabel}</strong><p>{session.worker ? session.worker.name : 'Select a worker to follow incoming messages.'}</p>{Boolean(feedError) && <><p className="error-copy">{errorText(feedError)}</p><button type="button" onClick={() => { setReady(false); setAttempt(value => value + 1); }}>Reconnect inbox</button></>}</section></aside>
       <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Jobs />} /><Route path="/projects/:projectId/settings" element={<ProjectSettings />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/workers/:workerId" element={<WorkerCoordinationView />} /><Route path="/projects/:projectId/notes" element={<NotesView />} /><Route path="/projects/:projectId/notes/:noteId" element={<NoteView />} /><Route path="/projects/:projectId/notes/:noteId/history/:revision" element={<NoteRevisionView />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="/projects/:projectId/map" element={<ProjectMap />} /><Route path="/projects/:projectId/map/entries/:entryId" element={<ProjectMapEntryView />} /><Route path="/projects/:projectId/map/entries/:entryId/history/:revision" element={<ProjectMapRevisionView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to project jobs</Link></section>} /></Routes></div></div>
