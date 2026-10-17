@@ -1,5 +1,5 @@
-// This per-tab record contains only public binding metadata. A read-only
-// session is retained in a nonce-specific HttpOnly cookie.
+// This per-tab record contains only public binding metadata. Session authority
+// is retained in a nonce-specific HttpOnly cookie, never in this record.
 export const browserSessionKey = 'firecontroller.browser-session.v1';
 export type BrowserSessionBinding = {
   version: 1;
@@ -15,6 +15,9 @@ export function sessionSelector(value: unknown): value is string { return typeof
 export function sessionExpiry(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 64 && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 19) === value.slice(0, 19);
 }
+export function boundedSessionExpiry(value: unknown, now = Date.now(), allowPast = false): value is string {
+  return sessionExpiry(value) && Date.parse(value) <= now + (24 * 60 + 5) * 60 * 1000 && (allowPast || Date.parse(value) > now);
+}
 export function newSessionID(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join('');
 }
@@ -27,8 +30,15 @@ function validBinding(value: unknown): value is BrowserSessionBinding {
 }
 export function clearBrowserSession(target = storage()): void { try { target?.removeItem(browserSessionKey); } catch { /* storage may be disabled */ } }
 export function saveBrowserSession(binding: BrowserSessionBinding, target = storage(), now = Date.now()): boolean {
-  if (!validBinding(binding) || Date.parse(binding.expiresAt) <= now || !target) { clearBrowserSession(target); return false; }
+  if (!validBinding(binding) || !boundedSessionExpiry(binding.expiresAt, now, true) || !target) { clearBrowserSession(target); return false; }
   try { target.setItem(browserSessionKey, JSON.stringify(binding)); return true; } catch { clearBrowserSession(target); return false; }
+}
+
+// Only expiry can change on renewal. Keep the currently selected worker and
+// refuse another tab/project/instance without touching its stored metadata.
+export function renewedBrowserSessionBinding(binding: BrowserSessionBinding, renewed: { session_id: string; instance_id: string; project_id: string; expires_at: string }, now = Date.now()): BrowserSessionBinding | null {
+  if (!validBinding(binding) || renewed.session_id !== binding.sessionID || renewed.instance_id !== binding.instanceID || renewed.project_id !== binding.projectID || !boundedSessionExpiry(renewed.expires_at, now)) return null;
+  return { ...binding, expiresAt: renewed.expires_at };
 }
 export function loadBrowserSession(projectID: string | undefined, discarded?: (binding: BrowserSessionBinding) => void, target = storage(), now = Date.now()): BrowserSessionBinding | null {
   let value: unknown;
@@ -38,8 +48,10 @@ export function loadBrowserSession(projectID: string | undefined, discarded?: (b
     if (raw.length > 2048) { clearBrowserSession(target); return null; }
     value = JSON.parse(raw) as unknown;
   } catch { clearBrowserSession(target); return null; }
-  if (!validBinding(value)) { clearBrowserSession(target); return null; }
-  if (value.projectID !== projectID || Date.parse(value.expiresAt) <= now) {
+  if (!validBinding(value) || !boundedSessionExpiry(value.expiresAt, now, true)) { clearBrowserSession(target); return null; }
+  // The recorded expiry can lag a successful Set-Cookie whose body was lost.
+  // Only the current-session GET can establish whether the cookie is valid.
+  if (value.projectID !== projectID) {
     clearBrowserSession(target); discarded?.(value); return null;
   }
   return value;

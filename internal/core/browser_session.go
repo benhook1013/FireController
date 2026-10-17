@@ -134,6 +134,44 @@ func (s *Store) CurrentBrowserSession(r *http.Request) (BrowserSession, error) {
 	return out, err
 }
 
+// RenewBrowserSession renews only an existing cookie-bound connection. Reading
+// current authority never replaces the original encrypted capability ceiling.
+func (s *Store) RenewBrowserSession(r *http.Request) (BrowserSession, *http.Cookie, error) {
+	if len(r.Header.Values("Authorization")) != 0 || len(r.Header.Values("X-FC-Browser-Session")) != 1 {
+		return BrowserSession{}, nil, Fail("unauthorized", "Select one browser session authentication method.", 401)
+	}
+	if err := BrowserSessionOrigin(r, true); err != nil {
+		return BrowserSession{}, nil, err
+	}
+	// The transport is POST because it replaces a cookie, but renewal requires
+	// read access even when the original connection cannot perform mutations.
+	readRequest := r.Clone(r.Context())
+	readRequest.Method = http.MethodGet
+	scope, claims, err := s.browserScope(readRequest)
+	if err != nil {
+		return BrowserSession{}, nil, err
+	}
+	var writes, presentation bool
+	err = s.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		writes, presentation, err = s.browserCapabilities(ctx, tx, scope, claims.AllowWrites, claims.CanEditPresentation)
+		return err
+	})
+	if err != nil {
+		return BrowserSession{}, nil, err
+	}
+	expires := time.Now().UTC().Truncate(time.Second).Add(browserSessionLifetime)
+	claims.ExpiresAt = expires.Unix()
+	cookie := browserSessionCookie(r, claims.SessionID)
+	cookie.Value, err = s.browserSessionCodec().Encode(cookie.Name, claims)
+	if err != nil {
+		return BrowserSession{}, nil, Fail("internal_error", "The browser session could not be renewed.", 500)
+	}
+	cookie.MaxAge = int(browserSessionLifetime.Seconds())
+	cookie.Expires = expires
+	return BrowserSession{SessionID: claims.SessionID, InstanceID: claims.InstanceID, ProjectID: claims.ProjectID, ExpiresAt: expires.Format(time.RFC3339), AllowWrites: writes, CanEditPresentation: presentation}, cookie, nil
+}
+
 func (s *Store) browserCapabilities(ctx context.Context, q querier, scope Scope, requested, allowPresentation bool) (bool, bool, error) {
 	if !requested {
 		return false, false, nil
@@ -195,7 +233,7 @@ func (s *Store) browserScope(r *http.Request) (Scope, browserSessionClaims, erro
 		return Scope{}, browserSessionClaims{}, bad
 	}
 	var claims browserSessionClaims
-	if s.browserSessionCodec().Decode(cookie.Name, value, &claims) != nil || claims.SessionID != values[0] || claims.InstanceID != s.instanceID || !browserSessionIdentity.MatchString(claims.InstanceID) || !browserSessionIdentity.MatchString(claims.ProjectID) || !browserCredentialHash.MatchString(claims.CredentialHash) || claims.ExpiresAt <= time.Now().Unix() || claims.ExpiresAt > time.Now().Add(browserSessionLifetime+5*time.Second).Unix() {
+	if s.browserSessionCodec().Decode(cookie.Name, value, &claims) != nil || claims.SessionID != values[0] || claims.InstanceID != s.instanceID || !browserSessionIdentity.MatchString(claims.InstanceID) || !browserSessionIdentity.MatchString(claims.ProjectID) || !browserCredentialHash.MatchString(claims.CredentialHash) || !browserSessionExpiryValid(claims.ExpiresAt, time.Now()) {
 		return Scope{}, browserSessionClaims{}, bad
 	}
 	project := r.PathValue("project_id")
@@ -242,4 +280,8 @@ func (s *Store) browserScope(r *http.Request) (Scope, browserSessionClaims, erro
 		return Scope{}, browserSessionClaims{}, err
 	}
 	return scope, claims, nil
+}
+
+func browserSessionExpiryValid(expiresAt int64, now time.Time) bool {
+	return expiresAt > now.Unix() && expiresAt <= now.Add(browserSessionLifetime+5*time.Second).Unix()
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { browserSessionKey, clearBrowserSession, loadBrowserSession, saveBrowserSession, sessionExpiry, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
+import { boundedSessionExpiry, browserSessionKey, clearBrowserSession, loadBrowserSession, renewedBrowserSessionBinding, saveBrowserSession, sessionExpiry, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
 
 function memoryStorage() {
   const values = new Map<string, string>();
@@ -24,8 +24,8 @@ describe('per-tab browser session binding', () => {
     expect(storage.values.size).toBe(0);
   });
 
-  it('clears corrupt, expired, mismatched, unknown-field and secret-bearing records', () => {
-    const invalid: unknown[] = [null, [], { ...binding, version: 2 }, { ...binding, sessionID: 'A'.repeat(32) }, { ...binding, instanceID: '../other' }, { ...binding, selectedworkerID: null }, { ...binding, expiresAt: '2026-02-30T12:00:00Z' }, { ...binding, expiresAt: '2026-10-16T12:00:00+00:00' }, { ...binding, credential: 'raw-private-token' }];
+  it('clears corrupt, implausibly future, mismatched, unknown-field and secret-bearing records', () => {
+    const invalid: unknown[] = [null, [], { ...binding, version: 2 }, { ...binding, sessionID: 'A'.repeat(32) }, { ...binding, instanceID: '../other' }, { ...binding, selectedworkerID: null }, { ...binding, expiresAt: '2026-02-30T12:00:00Z' }, { ...binding, expiresAt: '2026-10-16T12:00:00+00:00' }, { ...binding, credential: 'raw-private-token' }, { ...binding, expiresAt: '9999-12-31T23:59:59Z' }];
     for (const value of invalid) {
       const storage = memoryStorage();
       storage.setItem(browserSessionKey, JSON.stringify(value));
@@ -46,9 +46,13 @@ describe('per-tab browser session binding', () => {
     }
     const storage = memoryStorage(); saveBrowserSession(binding, storage, now);
     const expired: BrowserSessionBinding[] = [];
-    expect(loadBrowserSession('project_one', value => expired.push(value), storage, Date.parse(binding.expiresAt))).toBeNull();
-    expect(expired).toEqual([binding]);
-    expect(storage.values.size).toBe(0);
+    expect(loadBrowserSession('project_one', value => expired.push(value), storage, Date.parse(binding.expiresAt))).toEqual(binding);
+    expect(expired).toEqual([]);
+    expect(storage.values.size).toBe(1);
+    const ceiling = now + (24 * 60 + 5) * 60 * 1000;
+    expect(boundedSessionExpiry(new Date(ceiling).toISOString(), now)).toBe(true);
+    expect(boundedSessionExpiry(new Date(ceiling + 1).toISOString(), now)).toBe(false);
+    expect(boundedSessionExpiry(binding.expiresAt, Date.parse(binding.expiresAt))).toBe(false);
     expect(sessionExpiry('2026-10-16T12:00:00.123456789Z')).toBe(true);
   });
 
@@ -67,6 +71,32 @@ describe('per-tab browser session binding', () => {
     expect(saveBrowserSession(binding, denied, now)).toBe(false);
     expect(loadBrowserSession('project_one', undefined, denied, now)).toBeNull();
     expect(() => clearBrowserSession(denied)).not.toThrow();
+  });
+
+  it('retains only validated renewal expiry and the current worker, without saving permissions', () => {
+    const storage = memoryStorage(); saveBrowserSession(binding, storage, now);
+    const reply = { session_id: binding.sessionID, instance_id: binding.instanceID, project_id: binding.projectID, expires_at: '2026-10-16T12:04:00Z', allow_writes: true, can_edit_presentation: true };
+    const current = { ...binding, selectedworkerID: 'worker_two' };
+    const renewed = renewedBrowserSessionBinding(current, reply, now)!;
+    expect(renewed).toEqual({ ...current, expiresAt: reply.expires_at });
+    expect(saveBrowserSession(renewed, storage, now)).toBe(true);
+    expect(JSON.parse(storage.getItem(browserSessionKey)!)).toEqual(renewed);
+    expect(loadBrowserSession(binding.projectID, undefined, storage, now)).toEqual(renewed);
+    for (const invalid of [{ ...reply, session_id: 'b'.repeat(32) }, { ...reply, instance_id: 'instance_other' }, { ...reply, project_id: 'project_other' }, { ...reply, expires_at: '2026-02-30T12:00:00Z' }, { ...reply, expires_at: new Date(now).toISOString() }]) {
+      expect(renewedBrowserSessionBinding(current, invalid, now)).toBeNull();
+      expect(loadBrowserSession(binding.projectID, undefined, storage, now)).toEqual(renewed);
+    }
+  });
+
+  it('preserves worker changes when the recorded expiry lags a renewed cookie', () => {
+    const storage = memoryStorage();
+    const later = Date.parse(binding.expiresAt) + 1;
+    const selected = { ...binding, selectedworkerID: 'worker_two' };
+    expect(saveBrowserSession(selected, storage, later)).toBe(true);
+    expect(loadBrowserSession(binding.projectID, undefined, storage, later)).toEqual(selected);
+    expect(Object.keys(JSON.parse(storage.getItem(browserSessionKey)!))).toEqual(Object.keys(binding));
+    expect(saveBrowserSession({ ...selected, expiresAt: '9999-12-31T23:59:59Z' }, storage, later)).toBe(false);
+    expect(storage.values.size).toBe(0);
   });
 
   it('removes the prior selected worker when retaining a new selection fails', () => {

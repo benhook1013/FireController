@@ -7,7 +7,9 @@ const reconnectDelays = [1_000, 2_000, 4_000, 10_000] as const;
 const stableConnectionMilliseconds = 15_000;
 
 type Frame = { event: string; id?: string; data: string; comment: boolean };
-type OpenStream = { response: Response; close: () => void };
+// A replaced transport can settle after its watch has renewed. Its own
+// signal prevents old authorization failures or queued pages reaching the view.
+type OpenStream = { response: Response; close: () => void; signal?: AbortSignal };
 
 export interface MessageWatchSource {
   projectId: string;
@@ -92,11 +94,16 @@ function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
 async function readWithIdle(reader: ReadableStreamDefaultReader<Uint8Array>, signal: AbortSignal, close: () => void): Promise<ReadableStreamReadResult<Uint8Array>> {
   if (signal.aborted) throw abortError();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancel: (() => void) | undefined;
+  const cancelled = new Promise<never>((_, reject) => {
+    cancel = () => reject(abortError());
+    signal.addEventListener('abort', cancel, { once: true });
+  });
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => { close(); reject(new ApiError('stream_idle', 'The event stream was idle.')); }, idleMilliseconds);
   });
-  try { return await Promise.race([reader.read(), timeout]); }
-  finally { if (timer !== undefined) clearTimeout(timer); }
+  try { return await Promise.race([reader.read(), timeout, cancelled]); }
+  finally { if (timer !== undefined) clearTimeout(timer); if (cancel) signal.removeEventListener('abort', cancel); }
 }
 
 export interface EventWatchSource<S, P> {
@@ -144,13 +151,18 @@ export async function runEventWatch<S, P>(source: EventWatchSource<S, P>, callba
     let connection: OpenStream | undefined;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let attachedAt: number | undefined;
+    const retired = () => connection?.signal?.aborted === true;
+    const requireCurrent = () => { if (signal.aborted || retired()) throw abortError(); };
     try {
       connection = await source.openStream(cursor, signal);
+      requireCurrent();
       const response = connection.response;
-      if (response.status === 409) throw await source.readFailure(response, signal);
-      if (response.status === 401 || response.status === 403) throw await source.readFailure(response, signal);
+      const connectionSignal = connection.signal ? AbortSignal.any([signal, connection.signal]) : signal;
+      const failure = async () => { const error = await source.readFailure(response, connectionSignal); requireCurrent(); return error; };
+      if (response.status === 409) throw await failure();
+      if (response.status === 401 || response.status === 403) throw await failure();
       if (response.status >= 500 || response.status === 0) throw new ApiError('stream_unavailable', 'The event stream is temporarily unavailable.', response.status);
-      if (!response.ok) throw await source.readFailure(response, signal);
+      if (!response.ok) throw await failure();
       if (response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== 'text/event-stream' || !response.body) throw new ApiError('invalid_response', 'The service returned an invalid event stream.', response.status);
       if (signal.aborted) break;
       reader = response.body.getReader();
@@ -158,9 +170,11 @@ export async function runEventWatch<S, P>(source: EventWatchSource<S, P>, callba
       callbacks.status('live');
       const parser = new SSEParser();
       while (!signal.aborted) {
-        const read = await readWithIdle(reader, signal, connection.close);
+        const read = await readWithIdle(reader, connectionSignal, connection.close);
+        requireCurrent();
         if (read.done) throw new ApiError('stream_disconnected', 'The event stream disconnected.');
         for (const frame of parser.push(read.value)) {
+          requireCurrent();
           if (frame.comment) continue;
           if (frame.event === 'error') {
             throw source.parseStreamError(frame.data);
@@ -170,20 +184,20 @@ export async function runEventWatch<S, P>(source: EventWatchSource<S, P>, callba
           try { page = source.decodePage(frame.data); }
           catch { throw new ApiError('invalid_response', 'The event stream returned an invalid event page.'); }
           if (frame.id === undefined || frame.id !== source.pageCursor(page)) throw new ApiError('invalid_response', 'The event stream cursor did not match its page.');
-          if (signal.aborted) break;
+          requireCurrent();
           try { await callbacks.events(page); }
           catch (error) {
             if (error instanceof ApiError) throw error;
             throw new ApiError('callback_failed', 'The event page could not be delivered to the view.');
           }
-          if (signal.aborted) break;
+          requireCurrent();
           cursor = source.pageCursor(page);
           if (source.substantive(page)) attempts = 0;
         }
       }
     } catch (caught) {
       if (signal.aborted) break;
-      const error = caught instanceof ApiError ? caught : new ApiError('stream_disconnected', 'The event stream disconnected.');
+      const error = retired() ? new ApiError('stream_retired', 'The event connection was replaced.') : caught instanceof ApiError ? caught : new ApiError('stream_disconnected', 'The event stream disconnected.');
       if (error.code === 'resync_required') {
         try {
           callbacks.status('connecting');

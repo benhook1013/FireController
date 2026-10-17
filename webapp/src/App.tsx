@@ -2,14 +2,15 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { FormEvent, ReactNode } from 'react';
 import { Link, NavLink, Route, Routes, matchPath, useBlocker, useLocation, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Api, ApiError } from './api';
+import { Api, ApiError, type BrowserSessionView } from './api';
 import { PublicSiteRouter } from './public-site';
 import { BrowserActionMemory, MessageComposer, RecipientActions } from './browser-actions';
 import { ProjectSettings } from './project-settings';
 import { ProjectMap, ProjectMapEntryView, ProjectMapRevisionView, JobWorkstreamPanel } from './project-map';
 import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView, notesPath } from './coordination';
 import { refreshEventQueries } from './queries';
-import { clearBrowserSession, loadBrowserSession, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
+import { clearBrowserSession, loadBrowserSession, renewedBrowserSessionBinding, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
+import { BrowserSessionRenewal, listenForSessionActivity } from './session-renewal';
 import { applyPresentationRoot } from './presentation';
 import { PresentationContext, usePresentation, useProjectHeading } from './presentation-context';
 import { isCurrentProjectView, refreshProjectMetadata } from './project-metadata';
@@ -18,7 +19,7 @@ import flameEmber from './flame-ember.svg?no-inline';
 import type { Checkpoint, ChecklistItem, JobUpdate, InboxItem, JobSummary, LiveStatus, Page, Project, Worker, ReviewAttemptSummary, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
 
 const pageSize = 20;
-type Session = { api: Api; project: Project; instanceId: string; nonce: string; controller: AbortController; projectController: AbortController; presentationSnapshot: PresentationSnapshot; worker: Worker | null; binding: BrowserSessionBinding; actions: BrowserActionMemory };
+type Session = { api: Api; project: Project; instanceId: string; nonce: string; controller: AbortController; projectController: AbortController; presentationSnapshot: PresentationSnapshot; worker: Worker | null; binding: BrowserSessionBinding; actions: BrowserActionMemory; renewalAttemptAt?: number };
 type WorkspaceValue = { session: Session; key: readonly string[]; home: string; selectWorker(worker: Worker): void; fail(error: unknown): void; ready: boolean };
 const WorkspaceContext = createContext<WorkspaceValue | null>(null);
 export function useWorkspace(): WorkspaceValue { const value = useContext(WorkspaceContext); if (!value) throw new Error('Workspace unavailable'); return value; }
@@ -67,6 +68,7 @@ function PrivateApp() {
   const [connecting, setConnecting] = useState(false);
   const [appearance, setAppearance] = useState<Presentation>();
   const [metadataStatus, setMetadataStatus] = useState<LiveStatus>('connecting');
+  const renewal = useRef<BrowserSessionRenewal<BrowserSessionView> | null>(null);
   const clear = useCallback((message = '') => {
     const expiring = pending.current?.api ?? current.current?.api;
     if (expiring) void expiring.endBrowserSession().catch(() => {});
@@ -120,6 +122,12 @@ function PrivateApp() {
       if (!active()) return;
       if (!api.instanceId) throw new ApiError('invalid_response', 'The service identity is unavailable.');
       let binding = restored;
+      if (binding) {
+        const verified = api.browserSession;
+        const refreshed = verified && renewedBrowserSessionBinding(binding, verified);
+        if (!refreshed) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
+        binding = refreshed;
+      }
       if (!binding) {
         const started = await api.startBrowserSession(controller.signal, allowWrites);
         if (!active()) return;
@@ -132,7 +140,7 @@ function PrivateApp() {
       binding = { ...binding, selectedworkerID: worker?.id ?? '' };
       if (!saveBrowserSession(binding)) throw new ApiError('browser_storage_unavailable', 'The browser session could not be retained safely.');
       saved.current = binding; setResumable(binding);
-      const next: Session = { api, project, instanceId: api.instanceId!, nonce: nonce(), controller: new AbortController(), projectController: controller, presentationSnapshot, worker, binding, actions: new BrowserActionMemory() };
+      const next: Session = { api, project, instanceId: api.instanceId!, nonce: nonce(), controller: new AbortController(), projectController: controller, presentationSnapshot, worker, binding, actions: new BrowserActionMemory(), renewalAttemptAt: restored ? undefined : performance.now() };
       pending.current = null; current.current = next; setAppearance(presentationSnapshot.presentation); setSession(next); setConnecting(false);
       if (routeProject !== project.id) navigate(`/projects/${encodeURIComponent(project.id)}`);
     } catch (error) {
@@ -167,6 +175,33 @@ function PrivateApp() {
   // This lifetime is project-bound: selecting an inbox worker replaces only
   // its content/message controller and does not restart the metadata feed.
   const projectLifetime = session?.projectController;
+  useEffect(() => {
+    if (!session || !projectLifetime) return;
+    const api = session.api;
+    const active = () => current.current?.api === api && current.current.projectController === projectLifetime && !projectLifetime.signal.aborted;
+    const owner = new BrowserSessionRenewal({
+      renew: signal => api.renewBrowserSession(AbortSignal.any([signal, projectLifetime.signal])),
+      current: active,
+      visible: () => document.visibilityState === 'visible',
+      initialAttemptAt: session.renewalAttemptAt,
+      success: value => {
+        if (!active()) return;
+        const live = current.current!;
+        const binding = renewedBrowserSessionBinding(live.binding, value);
+        if (!binding) return;
+        if (!saveBrowserSession(binding)) { clear('The browser session could not be retained safely. Connect again.'); return; }
+        // Keep the connection object and query identity stable. Persisting the
+        // fresh expiry must not remount views or discard in-flight actions.
+        live.binding = binding; saved.current = binding; setResumable(binding);
+      },
+      failure: error => { if (active() && terminal(error)) clear(errorText(error)); },
+    });
+    renewal.current = owner;
+    const stop = listenForSessionActivity(owner, window, document);
+    void owner.activity();
+    return () => { if (renewal.current === owner) renewal.current = null; stop(); };
+  }, [projectLifetime, clear]);
+  useEffect(() => { void renewal.current?.activity(); }, [location.key, projectLifetime]);
   useEffect(() => {
     if (!session) return;
     const memory = session.actions;
@@ -252,7 +287,7 @@ function Connect({ projectId, busy, notice, onConnect, reconnect, cancel }: { pr
       {reconnect && !busy && <button type="button" onClick={reconnect}>Reconnect to project</button>}
       <form onSubmit={submit} autoComplete="off"><label htmlFor="project-id">Project ID</label><input id="project-id" name="project-id" value={project} onChange={event => setProject(event.target.value)} required maxLength={128} spellCheck={false} autoCapitalize="none" disabled={busy} />
         <label htmlFor="project-credential">Project credential</label><input id="project-credential" name="project-credential" type="password" value={token} onChange={event => setToken(event.target.value)} required maxLength={4096} autoComplete="off" disabled={busy} />
-        <label className="write-consent"><input type="checkbox" checked={allowWrites} onChange={event => setAllowWrites(event.target.checked)} disabled={busy} /><span>Enable message and appearance changes</span></label><p className="field-note">Stay logged in for up to 24 hours. Disconnect to log out.</p>
+        <label className="write-consent"><input type="checkbox" checked={allowWrites} onChange={event => setAllowWrites(event.target.checked)} disabled={busy} /><span>Enable message and appearance changes</span></label><p className="field-note">Stay signed in while you use the site. Sign in again after 24 hours away.</p>
         <button className="primary" type="submit" disabled={busy}>{busy ? 'Connecting…' : 'Connect to project'}</button>{busy && <button type="button" onClick={cancel}>Cancel connection</button>}
       </form></section></main>;
 }
