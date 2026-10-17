@@ -563,7 +563,37 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 					statements = append(statements, `DROP INDEX review_evidence_operation`)
 				}
 			case "review_adjudication":
-				statements = []string{`DROP TABLE review_finding_route_revisions`, `DROP TABLE review_finding_routes`}
+				// Receiving-route indexes cannot exist in a predecessor that has
+				// no routes. Remove only this empty optional extension before
+				// selecting the original adjudication-one table composition.
+				for _, table := range []string{"review_route_policy_facts", "review_route_policy_invalidations"} {
+					var count int
+					if err := store.DB().QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+						t.Fatal("predecessor fixture must not discard route policy data", table, count, err)
+					}
+				}
+				for _, definition := range reviewexec.RoutePolicySchemaSQL() {
+					fields := strings.Fields(definition)
+					if len(fields) > 2 && fields[1] == "TRIGGER" {
+						statements = append(statements, `DROP TRIGGER `+fields[2])
+					}
+				}
+				statements = append(statements, `DROP TABLE review_route_policy_invalidations`, `DROP TABLE review_route_policy_facts`, `DELETE FROM metadata WHERE key='schema:review_route_policy'`)
+
+				// Comparison proofs also depend on route authority and its triggers.
+				// This empty extension is absent from the same pre-route predecessor.
+				var comparisonCount int
+				if err := store.DB().QueryRow(`SELECT count(*) FROM review_comparison_proofs`).Scan(&comparisonCount); err != nil || comparisonCount != 0 {
+					t.Fatal("predecessor fixture must not discard comparison proofs", comparisonCount, err)
+				}
+				for _, definition := range reviewexec.ComparisonSchemaSQL() {
+					fields := strings.Fields(definition)
+					if len(fields) > 2 && fields[1] == "TRIGGER" {
+						statements = append(statements, `DROP TRIGGER `+fields[2])
+					}
+				}
+				statements = append(statements, `DROP TABLE review_comparison_proofs`, `DELETE FROM metadata WHERE key='schema:review_comparison'`)
+				statements = append(statements, `DROP TABLE review_finding_route_revisions`, `DROP TABLE review_finding_routes`)
 			case "review_source_refresh":
 				rows, e := store.DB().Query(`SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name='review_source_refreshes' AND sql IS NOT NULL`)
 				if e != nil {
