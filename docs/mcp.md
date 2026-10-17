@@ -119,4 +119,4 @@ The [native evidence controls](review-controls.md#bound-cli-and-mcp) add explici
 
 The three [public review checkpoint tools](review-publication.md#bound-controls) distinguish explicit GitHub publication from local source finalization. Their bounded wait returns useful terminal facts when available and a compact pending receipt otherwise. A lost response preserves the same source, request and key; observation-only recovery does not authorize a repost.
 
-The [worker primary-job contract](worker-focus.md) owns focus semantics and proof. Current primary reads are compact selectors; they do not imply that the job brief, checkpoint or messages have been loaded. Zero revision is valid for an initial focus or checklist conflict and remains visible in safe error details.
+The [worker primary-job contract](worker-focus.md) owns focus semantics and proof. Current primary reads are compact selectors; they do not imply that the job brief, checkpoint or messages have been loaded. Zero revision is valid for an initial focus, checklist or worker-pause conflict and remains visible in safe error details.
