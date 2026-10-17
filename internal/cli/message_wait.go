@@ -3,12 +3,12 @@ package cli
 import (
 	"strconv"
 	"strings"
-	"unicode"
-	"unicode/utf8"
+
+	"github.com/benhook1013/FireController/internal/client"
 )
 
 func parseMessageWait(call invocation, args []string) (invocation, bool) {
-	call.limit, call.waitSeconds = 20, 25
+	call.limit, call.waitSeconds = client.MessageWaitDefaultLimit, client.MessageWaitDefaultSeconds
 	seen := map[string]bool{}
 	for i := 0; i < len(args); i++ {
 		flag, value, assigned := strings.Cut(args[i], "=")
@@ -25,17 +25,10 @@ func parseMessageWait(call invocation, args []string) (invocation, bool) {
 		}
 		switch flag {
 		case "--cursor":
-			if value == "" || len(value) > 4096 || !utf8.ValidString(value) || value != strings.TrimSpace(value) || strings.IndexFunc(value, unicode.IsControl) >= 0 {
-				return call, false
-			}
 			call.cursor = value
 		default:
 			n, err := strconv.Atoi(value)
-			maximum := 100
-			if flag == "--wait-seconds" {
-				maximum = 60
-			}
-			if err != nil || n < 1 || n > maximum {
+			if err != nil {
 				return call, false
 			}
 			if flag == "--limit" {
@@ -45,5 +38,5 @@ func parseMessageWait(call invocation, args []string) (invocation, bool) {
 			}
 		}
 	}
-	return call, seen["--cursor"]
+	return call, seen["--cursor"] && client.ValidateMessageWait(call.cursor, call.limit, call.waitSeconds) == nil
 }
