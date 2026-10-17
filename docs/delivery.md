@@ -63,3 +63,7 @@ Record proof in the owning slice and PR; do not silently turn planned commands i
 ## Human repository presentation pass
 
 - [ ] Remind the project owner to do a marketing and newcomer-facing pass after the core product work: explain why to use FireController, the problems it solves and the workflows it makes easier. Review the README and repository landing experience for clear examples of agent messaging, jobs, reviews and shareable project progress, with suitable screenshots and an easy route into onboarding. This is a reminder for the human pass, not another implementation or merge gate.
+
+## Browser renewal and onboarding integration
+
+Clean combined `ee344a0d36edb98065f6761647c54c7bb1467f44` passed full checks/build (280 browser tests and all Go race tests/vet/docs/assets/binaries), actual packaged CLI/MCP/upgrade/publication/map-import checks in 0.823 seconds, and private/public Chromium checks in 4.971 seconds. The [renewal owner](browser-session-renewal.md) records activity, expiry, permission and browser-clock proof limits; [prepared map import](map-import.md) owns its import/history contract. Installed upgrade and authenticated HTTPS verification are separate from this checkpoint, and operational cutover still follows human GUI acceptance.
