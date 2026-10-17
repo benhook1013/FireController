@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -206,14 +207,27 @@ func (o *browserOutput) browserPID() int { o.pidMu.Lock(); defer o.pidMu.Unlock(
 func (o *browserOutput) safePhase() string {
 	for _, line := range bytes.Split(o.bytes(), []byte("\n")) {
 		var record struct {
-			State string `json:"state"`
-			Phase string `json:"phase"`
+			State      string `json:"state"`
+			Phase      string `json:"phase"`
+			Checkpoint string `json:"checkpoint"`
+			Posts      int    `json:"session_posts"`
+			Deletes    int    `json:"session_deletes"`
+			Renewals   int    `json:"session_renewals"`
+			Refusals   int    `json:"terminal_responses"`
+			Errors     int    `json:"errors"`
+			Writes     int    `json:"forbidden_writes"`
 		}
 		if json.Unmarshal(line, &record) != nil || record.State != "FAIL" {
 			continue
 		}
 		switch record.Phase {
 		case "configuration", "launch", "connect", "fixture-update", "live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "renewal-activity", "renewal-missing-cookie", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
+			if record.Phase == "renewal-missing-cookie" {
+				switch record.Checkpoint {
+				case "connect", "root-form", "project-input", "credential-input", "submit", "heading", "binding", "remove-cookie", "reload", "cleanup", "storage", "counters":
+					return fmt.Sprintf("%s/%s posts=%d deletes=%d renewals=%d refusals=%d errors=%d forbidden_writes=%d", record.Phase, record.Checkpoint, record.Posts, record.Deletes, record.Renewals, record.Refusals, record.Errors, record.Writes)
+				}
+			}
 			return record.Phase
 		}
 	}
