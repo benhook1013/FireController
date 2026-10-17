@@ -729,6 +729,9 @@ func ValidateSource(ctx context.Context, dataDir string) error {
 	if strings.TrimSpace(dataDir) == "" || privateDirectory(dataDir, false) != nil {
 		return invalid()
 	}
+	if err := CheckDataDirectory(dataDir); err != nil {
+		return err
+	}
 	db, err := openDatabase(ctx, filepath.Join(dataDir, "firecontroller.sqlite"), false)
 	if err != nil {
 		return err
