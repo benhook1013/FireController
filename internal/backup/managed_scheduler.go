@@ -248,7 +248,11 @@ func (m *Manager) Run(ctx context.Context, report func(error)) error {
 		return core.Fail("backup_running", "The managed backup worker is already running.", 409)
 	}
 	defer m.running.Store(false)
-	if m.config.Destination == "" || m.publicationHeld {
+	if m.config.Destination == "" {
+		return nil
+	}
+	if m.publicationHeld {
+		<-ctx.Done()
 		return nil
 	}
 	for {
@@ -279,7 +283,11 @@ func (m *Manager) Run(ctx context.Context, report func(error)) error {
 		if err != nil && report != nil {
 			report(safeManaged(err))
 		}
-		if ctx.Err() != nil || m.publicationHeld {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if m.publicationHeld {
+			<-ctx.Done()
 			return nil
 		}
 	}
