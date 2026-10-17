@@ -38,7 +38,7 @@ Project, worker and connection nonce scope query keys. Old-context results canno
 
 ## Build and packaging
 
-The client uses React, TypeScript, declarative React Router and TanStack Query. Vite builds a client-only application; there is no Node server at runtime. Exact dependency versions and the browser lockfile are committed in `webapp/`.
+The client uses React, TypeScript, React Router’s data router and TanStack Query. Vite builds a client-only application; there is no Node server at runtime. Exact dependency versions and the browser lockfile are committed in `webapp/`.
 
 Install both lockfiles and run the repository checks:
 
@@ -100,4 +100,4 @@ At connection, leave **Enable message and appearance changes** unchecked for a r
 
 Action controls keep the original key, body and selected worker after an uncertain response. Use the offered exact retry rather than submitting another action. Recovery details stay in this tab's memory; message drafts and keys are not stored in browser storage. Route and worker changes inside the project retain unresolved intents. Leaving the project or disconnecting asks before discarding unresolved work, and reload/close uses the browser's unsaved-work warning. Confirming that discard or closing the process loses the local recovery context; it does not cancel or reverse a committed server action. Completed actions do not require this warning. Permission/recipient refusal leaves readable views available.
 
-The browser action source has focused authority/transport/UI proof and initial actual packaged interaction proof. Full integration and the additional deferred-response/navigation recovery workload remain pending for this checkpoint; the owning [browser contract](browser.md#explicit-browser-actions) describes the selected boundary.
+Clean combined checkpoint `8ad178f384769204af73dcdaba0fc3cd55443410` passed full `make check build`: 261 browser tests, all Go race tests, vet, documentation checks, generated assets and three binaries. Actual packaged CLI/MCP/upgrade/publication checks then passed in 0.604 seconds and packaged private/public Chromium checks in 4.557 seconds. These cover explicit messaging and appearance edits, reload, a committed response lost after submission, navigation/remount recovery and an original-key retry returning the same single message. The public workload also uses a real gzip proxy. The clean packaged daemon SHA-256 was `10d6fff7313443c01fe24de4aa1cf5a34e15ab7a2b817e532112ff5bde1cddbf`; sources/assets stayed unchanged. The initial combined run exposed a test request sent to a different host from its session cookie; correcting that fixture preserved the strict forbidden-operation assertion. Installed deployment, physical-phone coverage, fleet qualification and cutover remain separate. The owning [browser contract](browser.md#explicit-browser-actions) describes the selected boundary.
