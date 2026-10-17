@@ -90,6 +90,7 @@ type ReviewCounts struct {
 	Routed   int64 `json:"routed"`
 }
 type ReviewFindingDecision struct {
+	RouteID     string `json:"route_id,omitempty"`
 	Finding     int64  `json:"finding"`
 	Disposition string `json:"disposition"`
 	Reason      string `json:"reason"`
@@ -112,10 +113,11 @@ type ReviewControlReceipt struct {
 	Revision int64  `json:"revision"`
 }
 type ReviewDecisionRequest struct {
-	ExpectedRevision int64  `json:"expected_revision"`
-	Finding          int64  `json:"finding"`
-	Disposition      string `json:"disposition"`
-	Reason           string `json:"reason"`
+	ExpectedRouteRevision int64  `json:"expected_route_revision,omitempty"`
+	ExpectedRevision      int64  `json:"expected_revision"`
+	Finding               int64  `json:"finding"`
+	Disposition           string `json:"disposition"`
+	Reason                string `json:"reason"`
 }
 type ReviewFixRequest struct {
 	ExpectedRevision int64  `json:"expected_revision"`
@@ -146,7 +148,7 @@ func controlHex(value string, length int) bool {
 	return err == nil
 }
 func ValidateReviewDecisionRequest(r ReviewDecisionRequest) error {
-	if !validControlRevision(r.ExpectedRevision) || r.Finding < 0 || r.Finding >= 100 || !oneReviewOf(r.Disposition, "accepted", "rejected") || !controlText(r.Reason, 2048, true) {
+	if !validControlRevision(r.ExpectedRevision) || !validControlRevision(r.ExpectedRouteRevision) || r.Finding < 0 || r.Finding >= 100 || !oneReviewOf(r.Disposition, "accepted", "rejected") || !controlText(r.Reason, 2048, true) {
 		return mutationValidation()
 	}
 	return nil
@@ -302,11 +304,14 @@ func (c *Client) ReviewAdjudication(ctx context.Context, id string) (ReviewAdjud
 	if value.EvidenceID != id || value.Revision < 0 || value.Finalized != (value.FrozenCounts != nil) || value.Findings == nil || len(value.Findings) > 100 {
 		return ReviewAdjudication{}, invalidResponse()
 	}
-	if counts := value.FrozenCounts; counts != nil && (value.Revision == 0 || counts.Found != int64(len(value.Findings)) || counts.Accepted < 0 || counts.Routed != 0 || counts.Accepted > counts.Found) {
+	if counts := value.FrozenCounts; counts != nil && (value.Revision == 0 || counts.Found != int64(len(value.Findings)) || counts.Accepted < 0 || counts.Routed < 0 || counts.Accepted > counts.Found-counts.Routed) {
 		return ReviewAdjudication{}, invalidResponse()
 	}
 	for i, f := range value.Findings {
-		if f.Finding != int64(i) || !oneReviewOf(f.Disposition, "unadjudicated", "accepted", "rejected") || !controlText(f.Reason, 2048, false) || !controlText(f.ProofNote, 2048, false) {
+		if f.Finding != int64(i) || !oneReviewOf(f.Disposition, "unadjudicated", "accepted", "routed", "rejected") || !controlText(f.Reason, 2048, false) || !controlText(f.ProofNote, 2048, false) {
+			return ReviewAdjudication{}, invalidResponse()
+		}
+		if (f.Disposition == "routed") != (f.RouteID != "") || f.RouteID != "" && ValidateReviewRouteID(f.RouteID) != nil {
 			return ReviewAdjudication{}, invalidResponse()
 		}
 		if f.Disposition == "unadjudicated" {

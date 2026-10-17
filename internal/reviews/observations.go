@@ -9,11 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 const (
@@ -129,6 +131,9 @@ func validateObservation(req *ObservationRequest) error {
 					return validationError("source_finding_id values must be unique within a run.")
 				}
 				seenFindings[finding.SourceFindingID] = struct{}{}
+				if finding.Route != nil && (finding.Disposition != "routed" || !validFindingRoute(finding.Route, pull.Number, false)) {
+					return validationError("A finding route must retain bounded receiving identity, disposition and proof.")
+				}
 				if ((finding.FixSHA != "" || finding.ProofNote != "") && finding.Disposition != "accepted") || (finding.ResolvedAt != "" && finding.FixSHA == "") {
 					return validationError("Fix evidence must belong to an accepted finding and include its fix SHA.")
 				}
@@ -524,10 +529,10 @@ func storePull(ctx context.Context, tx *sql.Tx, projectID, snapshotID, source st
 		}
 		for index, finding := range run.Findings {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO review_findings
-				(project_id,snapshot_id,pull_number,run_id,position,source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at)
-				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, snapshotID, pull.Number, id, index,
+				(project_id,snapshot_id,pull_number,run_id,position,source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, snapshotID, pull.Number, id, index,
 				finding.SourceFindingID, finding.Title, finding.Detail, finding.Severity, finding.Disposition,
-				finding.DecisionReason, finding.Actor, finding.DecidedAt, finding.FixSHA, finding.ProofNote, finding.ResolvedAt); err != nil {
+				finding.DecisionReason, finding.Actor, finding.DecidedAt, finding.FixSHA, finding.ProofNote, finding.ResolvedAt, mustJSON(finding.Route)); err != nil {
 				return err
 			}
 		}
@@ -588,3 +593,33 @@ func attemptOrder(item Attempt) time.Time {
 }
 
 func mustJSON(value any) string { data, _ := json.Marshal(value); return string(data) }
+
+var findingRouteID = regexp.MustCompile(`^review_route_[0-9a-f]{32}$`)
+var findingRouteActor = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+
+func validFindingRoute(route *FindingRoute, sourcePull int64, native bool) bool {
+	if route == nil || !findingRouteID.MatchString(route.ID) || route.TargetPullNumber < 1 || route.TargetPullNumber > 2147483647 || sourcePull > 0 && route.TargetPullNumber == sourcePull || route.Revision < 1 || !oneOf(route.State, "active", "superseded") || native && route.State != "active" || !oneOf(route.Disposition, "unadjudicated", "accepted", "rejected") || !nativeAdjudicationText(route.Reason, 2048, false) || !nativeAdjudicationText(route.Actor, 128, false) || !nativeAdjudicationText(route.ProofNote, 2048, false) {
+		return false
+	}
+	if route.Disposition == "unadjudicated" {
+		return route.Reason == "" && route.Actor == "" && route.DecidedAt == "" && route.FixSHA == "" && route.ProofNote == "" && route.FixedAt == ""
+	}
+	if strings.TrimSpace(route.Reason) == "" || !findingRouteActor.MatchString(route.Actor) || !nativeAdjudicationTime(route.DecidedAt) {
+		return false
+	}
+	if route.FixSHA == "" {
+		return route.ProofNote == "" && route.FixedAt == ""
+	}
+	return route.State == "active" && route.Disposition == "accepted" && len(route.FixSHA) == 40 && validSHA(route.FixSHA) && strings.TrimSpace(route.ProofNote) != "" && nativeAdjudicationTime(route.FixedAt)
+}
+
+func decodeFindingRoute(body string, sourcePull int64) (*FindingRoute, error) {
+	if body == "null" {
+		return nil, nil
+	}
+	var route FindingRoute
+	if len(body) > 32<<10 || strictjson.Decode([]byte(body), &route) != nil || !validFindingRoute(&route, sourcePull, false) || mustJSON(route) != body {
+		return nil, core.Fail("storage_unavailable", "Stored finding route is unavailable.", 500)
+	}
+	return &route, nil
+}

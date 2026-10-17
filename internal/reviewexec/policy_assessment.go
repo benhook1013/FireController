@@ -11,14 +11,17 @@ import (
 // PolicyAssessment describes current local policy against an immutable captured
 // comparison. It does not establish externally current source, CI or readiness.
 type PolicyAssessment struct {
-	ProjectID      string                    `json:"project_id"`
-	EvidenceID     string                    `json:"evidence_id"`
-	Anchor         Anchor                    `json:"anchor"`
-	Source         string                    `json:"source"`
-	PolicyRevision int64                     `json:"policy_revision"`
-	EvaluatedAt    string                    `json:"evaluated_at"`
-	State          string                    `json:"state"`
-	Channels       []PolicyAssessmentChannel `json:"channels"`
+	Reason                 string                    `json:"reason,omitempty"`
+	IncomingRoutesPending  int64                     `json:"incoming_routes_pending,omitempty"`
+	IncomingRoutesCapacity bool                      `json:"incoming_routes_capacity,omitempty"`
+	ProjectID              string                    `json:"project_id"`
+	EvidenceID             string                    `json:"evidence_id"`
+	Anchor                 Anchor                    `json:"anchor"`
+	Source                 string                    `json:"source"`
+	PolicyRevision         int64                     `json:"policy_revision"`
+	EvaluatedAt            string                    `json:"evaluated_at"`
+	State                  string                    `json:"state"`
+	Channels               []PolicyAssessmentChannel `json:"channels"`
 }
 
 type PolicyAssessmentChannel struct {
@@ -92,6 +95,15 @@ func (e *Engine) ReadPolicyAssessment(ctx context.Context, scope core.Scope, evi
 			return adjudicationStorageError()
 		}
 		result.PolicyRevision, result.State = policy.Revision, "sufficient"
+		result.IncomingRoutesPending, result.IncomingRoutesCapacity, err = incomingRoutePolicyFacts(ctx, tx, scope.ProjectID, evidence.Anchor.PullNumber)
+		if err != nil {
+			return err
+		}
+		if result.IncomingRoutesCapacity {
+			result.State, result.Reason = "held", "routed_findings_capacity"
+		} else if result.IncomingRoutesPending > 0 {
+			result.State, result.Reason = "held", "routed_findings_pending"
+		}
 		for _, channel := range policy.Policy.RequiredChannels {
 			state, err := comparison(ctx, tx, scope.ProjectID, repositoryID, evidence.Anchor.PullNumber, evidence.Anchor, channel)
 			if err != nil {

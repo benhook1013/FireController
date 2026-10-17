@@ -33,7 +33,7 @@ func TestReviewSourceMCPDiscoveryAndInvalidArgumentsBeforeCredentials(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]int{"review_source_refresh": 5, "review_source_refresh_read": 1, "review_source_policy_assess": 1}
+	want := map[string]int{"review_source_refresh": 6, "review_source_refresh_read": 1, "review_source_policy_assess": 1, "review_source_ci_assess": 1}
 	for _, tool := range listed.Tools {
 		properties, ok := want[tool.Name]
 		if !ok {
@@ -49,7 +49,7 @@ func TestReviewSourceMCPDiscoveryAndInvalidArgumentsBeforeCredentials(t *testing
 		write := tool.Name == "review_source_refresh"
 		required := properties
 		if write {
-			required--
+			required -= 2
 		}
 		if json.Unmarshal(data, &schema) != nil || schema.Additional || len(schema.Properties) != properties || len(schema.Required) != required {
 			t.Fatal("source schema widened or lost requiredfields", tool.Name)

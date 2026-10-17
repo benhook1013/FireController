@@ -13,6 +13,7 @@ type ReviewSourceRequest struct {
 	ExpectedConfigurationRevision int64  `json:"expected_configuration_revision"`
 	PullNumber                    int64  `json:"pull_number"`
 	HeadSHA                       string `json:"head_sha"`
+	IncludeCI                     bool   `json:"include_ci,omitempty"`
 }
 
 // ReviewSourceResult contains exactly one response. JSON stays flat so agents
@@ -78,22 +79,26 @@ type ReviewSourceOperation struct {
 	CreatedAt             string                   `json:"created_at"`
 	UpdatedAt             string                   `json:"updated_at"`
 	Observation           *ReviewSourceObservation `json:"observation,omitempty"`
+	IncludeCI             bool                     `json:"include_ci,omitempty"`
+	CI                    *ReviewSourceCISummary   `json:"ci,omitempty"`
 }
 
 // ReviewSourcePolicyAssessment evaluates policy as of a retained observation.
 // It establishes neither current remote source nor CI or merge readiness.
 type ReviewSourcePolicyAssessment struct {
-	ProjectID             string                          `json:"project_id"`
-	RefreshID             string                          `json:"refresh_id"`
-	Source                string                          `json:"source"`
-	ConfigurationRevision int64                           `json:"configuration_revision"`
-	PolicyRevision        int64                           `json:"policy_revision"`
-	SourceObservedAt      string                          `json:"source_observed_at"`
-	EvaluatedAt           string                          `json:"evaluated_at"`
-	State                 string                          `json:"state"`
-	Target                ReviewSourceObservation         `json:"target"`
-	Channels              []ReviewPolicyAssessmentChannel `json:"channels"`
-	Reason                string                          `json:"reason,omitempty"`
+	IncomingRoutesPending  int64                           `json:"incoming_routes_pending,omitempty"`
+	IncomingRoutesCapacity bool                            `json:"incoming_routes_capacity,omitempty"`
+	ProjectID              string                          `json:"project_id"`
+	RefreshID              string                          `json:"refresh_id"`
+	Source                 string                          `json:"source"`
+	ConfigurationRevision  int64                           `json:"configuration_revision"`
+	PolicyRevision         int64                           `json:"policy_revision"`
+	SourceObservedAt       string                          `json:"source_observed_at"`
+	EvaluatedAt            string                          `json:"evaluated_at"`
+	State                  string                          `json:"state"`
+	Target                 ReviewSourceObservation         `json:"target"`
+	Channels               []ReviewPolicyAssessmentChannel `json:"channels"`
+	Reason                 string                          `json:"reason,omitempty"`
 }
 
 func ValidateReviewSourceRequest(request ReviewSourceRequest) error {
@@ -128,7 +133,7 @@ func validSourceObservation(value ReviewSourceObservation) bool {
 	return value.RepositoryID > 0 && validPullNumber(value.PullNumber) && controlHex(value.HeadSHA, 40) && controlHex(value.BaseSHA, 40) && controlHex(value.ParentSHA, 40) && value.ParentSHA == value.BaseSHA && controlText(value.BaseRef, 256, true) && value.ParentPullNumber >= 0 && value.ParentPullNumber <= 2147483647 && value.ParentPullNumber != value.PullNumber && controlTime(value.ObservedAt)
 }
 
-// RefreshReviewSource enqueues selected source-only provider reads. It does not
+// RefreshReviewSource enqueues selected source and optional CI provider reads. It does not
 // poll, retry, post a review or generate an idempotency key.
 func (c *Client) RefreshReviewSource(ctx context.Context, key string, request ReviewSourceRequest, waitSeconds int) (ReviewSourceResult, error) {
 	if !validMutationKey(key) || ValidateReviewSourceRequest(request) != nil || ValidateReviewSourceWait(waitSeconds) != nil {
@@ -156,7 +161,7 @@ func (c *Client) RefreshReviewSource(ctx context.Context, key string, request Re
 	}
 	if value.Operation != nil {
 		operation := value.Operation
-		if !c.validSourceOperation(*operation) || operation.PullNumber != request.PullNumber || operation.HeadSHA != request.HeadSHA || operation.ConfigurationRevision != request.ExpectedConfigurationRevision || !oneReviewOf(operation.State, "completed", "held") {
+		if !c.validSourceOperation(*operation) || operation.PullNumber != request.PullNumber || operation.HeadSHA != request.HeadSHA || operation.ConfigurationRevision != request.ExpectedConfigurationRevision || operation.IncludeCI != request.IncludeCI || !oneReviewOf(operation.State, "completed", "held") {
 			return ReviewSourceResult{}, unknownMutation("invalid_response", "The service returned invalid source refresh facts; its outcome is unknown.", status)
 		}
 	} else if value.Receipt == nil || ValidateReviewSourceRefreshID(value.Receipt.ID) != nil || value.Receipt.State != "queued" || value.Receipt.Revision != 1 {
@@ -184,7 +189,7 @@ func (c *Client) validSourceOperation(value ReviewSourceOperation) bool {
 		return false
 	}
 	// Retained timestamps may cross a backward host-clock step; revisions order state.
-	return (value.State == "completed") == (value.Observation != nil) && (value.Observation == nil || validSourceObservation(*value.Observation) && value.Observation.PullNumber == value.PullNumber && value.Observation.HeadSHA == value.HeadSHA)
+	return validSourceOperationCI(value) && (value.State == "completed") == (value.Observation != nil) && (value.Observation == nil || validSourceObservation(*value.Observation) && value.Observation.PullNumber == value.PullNumber && value.Observation.HeadSHA == value.HeadSHA)
 }
 
 func (c *Client) ReviewSourcePolicyAssessment(ctx context.Context, number int64) (ReviewSourcePolicyAssessment, error) {
@@ -195,26 +200,29 @@ func (c *Client) ReviewSourcePolicyAssessment(ctx context.Context, number int64)
 	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "source", strconv.FormatInt(number, 10), "policy"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeReviewResponse); err != nil {
 		return ReviewSourcePolicyAssessment{}, err
 	}
-	if value.ProjectID != c.identity.ProjectID || ValidateReviewSourceRefreshID(value.RefreshID) != nil || value.Source != "observed_comparison" || value.ConfigurationRevision < 0 || value.ConfigurationRevision == 0 && value.Reason != "source_configuration_changed" || !validSourceObservation(value.Target) || value.Target.PullNumber != number || value.SourceObservedAt != value.Target.ObservedAt || !controlTime(value.EvaluatedAt) || value.Channels == nil || len(value.Channels) > 2 || value.Reason != "" && value.Reason != "source_configuration_changed" {
+	if value.ProjectID != c.identity.ProjectID || ValidateReviewSourceRefreshID(value.RefreshID) != nil || value.Source != "observed_comparison" || value.ConfigurationRevision < 0 || value.ConfigurationRevision == 0 && value.Reason != "source_configuration_changed" || !validSourceObservation(value.Target) || value.Target.PullNumber != number || value.SourceObservedAt != value.Target.ObservedAt || !controlTime(value.EvaluatedAt) || value.Channels == nil || len(value.Channels) > 2 || value.Reason != "" && !oneReviewOf(value.Reason, "source_configuration_changed", "routed_findings_pending", "routed_findings_capacity") {
 		return ReviewSourcePolicyAssessment{}, invalidResponse()
 	}
 	if value.State == "unconfigured" {
-		if value.PolicyRevision != 0 || len(value.Channels) != 0 || value.Reason != "" {
+		if value.PolicyRevision != 0 || len(value.Channels) != 0 || value.Reason != "" || value.IncomingRoutesPending != 0 || value.IncomingRoutesCapacity {
 			return ReviewSourcePolicyAssessment{}, invalidResponse()
 		}
 		return value, nil
 	}
-	if value.Reason != "" {
-		if value.State != "held" || len(value.Channels) != 0 || value.PolicyRevision < 0 {
+	if value.Reason == "source_configuration_changed" {
+		if value.State != "held" || len(value.Channels) != 0 || value.PolicyRevision < 0 || value.IncomingRoutesPending != 0 || value.IncomingRoutesCapacity {
 			return ReviewSourcePolicyAssessment{}, invalidResponse()
 		}
 		return value, nil
+	}
+	if !validIncomingRoutePolicy(value.IncomingRoutesPending, value.IncomingRoutesCapacity, value.Reason) {
+		return ReviewSourcePolicyAssessment{}, invalidResponse()
 	}
 	if value.PolicyRevision < 1 || !oneReviewOf(value.State, "sufficient", "held") || len(value.Channels) == 0 {
 		return ReviewSourcePolicyAssessment{}, invalidResponse()
 	}
 	seen := map[string]bool{}
-	sufficient := true
+	sufficient := value.IncomingRoutesPending == 0 && !value.IncomingRoutesCapacity
 	for _, channel := range value.Channels {
 		if !oneReviewOf(channel.Channel, "cli", "hosted") || seen[channel.Channel] {
 			return ReviewSourcePolicyAssessment{}, invalidResponse()

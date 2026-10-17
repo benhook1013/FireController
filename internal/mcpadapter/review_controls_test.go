@@ -164,7 +164,11 @@ func TestReviewControlsStdioSchemasAndLocalContext(t *testing.T) {
 			Additional bool                      `json:"additionalProperties"`
 		}
 		data, _ := json.Marshal(tool.InputSchema)
-		if json.Unmarshal(data, &schema) != nil || schema.Additional || len(schema.Properties) != len(required) || strings.Join(schema.Required, ",") != strings.Join(required, ",") {
+		expectedProperties := len(required)
+		if tool.Name == "review_finding_decide" {
+			expectedProperties++
+		}
+		if json.Unmarshal(data, &schema) != nil || schema.Additional || len(schema.Properties) != expectedProperties || strings.Join(schema.Required, ",") != strings.Join(required, ",") {
 			t.Fatal("review control schema changed required keys or permits overrides")
 		}
 		if finding := schema.Properties["finding"]; finding != nil && (finding["minimum"] != float64(0) || finding["maximum"] != float64(99) || !strings.Contains(finding["description"].(string), "zero-based")) {

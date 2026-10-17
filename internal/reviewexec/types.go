@@ -97,6 +97,7 @@ type Attempt struct {
 }
 
 type Engine struct {
+	routeNow               func() time.Time
 	attemptNow             func() time.Time
 	store                  *core.Store
 	capabilities           map[string]Capability

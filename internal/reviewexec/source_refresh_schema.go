@@ -14,5 +14,11 @@ func EnsureSourceRefreshSchema(ctx context.Context, store *core.Store) error {
 		`CREATE INDEX review_source_refresh_project_pending ON review_source_refreshes(project_id,state) WHERE state IN ('queued','running')`,
 		`CREATE INDEX review_source_refresh_target ON review_source_refreshes(project_id,pull_number,state,created_at DESC,id DESC)`,
 		`CREATE INDEX review_source_refresh_coalesce ON review_source_refreshes(project_id,repository_id,pull_number,head_sha,configuration_revision,capability_fingerprint,actor_id,worker_id,state) WHERE state IN ('queued','running')`,
+	}, []string{
+		`ALTER TABLE review_source_refreshes ADD COLUMN include_ci INTEGER NOT NULL DEFAULT 0 CHECK(include_ci IN (0,1))`,
+		`ALTER TABLE review_source_refreshes ADD COLUMN ci_observation_json TEXT NOT NULL DEFAULT 'null'`,
+		`DROP INDEX review_source_refresh_coalesce`,
+		`CREATE INDEX review_source_refresh_coalesce ON review_source_refreshes(project_id,repository_id,pull_number,head_sha,configuration_revision,capability_fingerprint,actor_id,worker_id,include_ci,state) WHERE state IN ('queued','running')`,
+		`CREATE INDEX review_source_refresh_ci_target ON review_source_refreshes(project_id,pull_number,state,include_ci,created_at DESC,id DESC)`,
 	})
 }

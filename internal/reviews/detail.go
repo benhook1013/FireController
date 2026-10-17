@@ -34,14 +34,22 @@ func readRunDetail(ctx context.Context, tx *sql.Tx, meta snapshotMeta, runID str
 	if err := strictStoredJSON(limits, &response.Run.CoverageLimits); err != nil {
 		return response, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=? ORDER BY position LIMIT 101`, meta.ProjectID, meta.SnapshotID, pullNum, runID)
+	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=? ORDER BY position LIMIT 101`, meta.ProjectID, meta.SnapshotID, pullNum, runID)
 	if err != nil {
 		return response, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var finding Finding
-		if err := rows.Scan(&finding.SourceFindingID, &finding.Title, &finding.Detail, &finding.Severity, &finding.Disposition, &finding.DecisionReason, &finding.Actor, &finding.DecidedAt, &finding.FixSHA, &finding.ProofNote, &finding.ResolvedAt); err != nil {
+		var routeJSON string
+		if err := rows.Scan(&finding.SourceFindingID, &finding.Title, &finding.Detail, &finding.Severity, &finding.Disposition, &finding.DecisionReason, &finding.Actor, &finding.DecidedAt, &finding.FixSHA, &finding.ProofNote, &finding.ResolvedAt, &routeJSON); err != nil {
+			return response, err
+		}
+		finding.Route, err = decodeFindingRoute(routeJSON, int64(pullNum))
+		if err != nil || finding.Route != nil && finding.Disposition != "routed" {
+			if err == nil {
+				err = core.Fail("storage_unavailable", "Stored finding route is unavailable.", 500)
+			}
 			return response, err
 		}
 		response.Findings = append(response.Findings, finding)
@@ -58,6 +66,45 @@ func readRunDetail(ctx context.Context, tx *sql.Tx, meta snapshotMeta, runID str
 func encodedRunDetailSize(response RunDetailResponse) (int, error) {
 	body, err := json.Marshal(response)
 	return len(body) + 1, err
+}
+
+// Reject an oversized adjudication before copying a snapshot and updating its
+// findings. HTML escaping and nested receiver proof count in the same public
+// encoder budget as the final stored read. The final check remains authoritative.
+func preflightNativeAdjudicationDetail(ctx context.Context, tx *sql.Tx, project, previous, runID string, next snapshotMeta, updates map[string]NativeFindingUpdate, accepted, routed int64, finalized bool, fixed int64) error {
+	meta, found, err := selectSnapshot(ctx, tx, project, previous)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return notFound("The review snapshot is unavailable.")
+	}
+	response, err := readRunDetail(ctx, tx, meta, runID)
+	if err != nil {
+		return err
+	}
+	for i := range response.Findings {
+		finding := &response.Findings[i]
+		update, ok := updates[finding.SourceFindingID]
+		if !ok {
+			return nativeAdjudicationConflict()
+		}
+		finding.Disposition, finding.DecisionReason = update.Disposition, update.DecisionReason
+		finding.Actor, finding.DecidedAt = update.Actor, update.DecidedAt
+		finding.FixSHA, finding.ProofNote, finding.ResolvedAt = update.FixSHA, update.ProofNote, update.ResolvedAt
+		finding.Route = update.Route
+	}
+	setMetaDetail(&response, next)
+	response.Run.Accepted, response.Run.Routed = accepted, routed
+	response.Run.Finalized, response.Run.Fixed = finalized, fixed
+	size, err := encodedRunDetailSize(response)
+	if err != nil {
+		return err
+	}
+	if size > maxRunDetailBytes {
+		return core.Fail("workspace_capacity", "The retained review run exceeds its bounded detail size; no history was dropped.", 409)
+	}
+	return nil
 }
 
 // Only the touched run is loaded; no unrelated run history is scanned.

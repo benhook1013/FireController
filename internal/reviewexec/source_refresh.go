@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -17,6 +18,7 @@ type SourceRefreshRequest struct {
 	ExpectedConfigurationRevision int64  `json:"expected_configuration_revision"`
 	PullNumber                    int64  `json:"pull_number"`
 	HeadSHA                       string `json:"head_sha"`
+	IncludeCI                     bool   `json:"include_ci,omitempty"`
 }
 
 // SourceObservation is a complete selected comparison as of ObservedAt, not a
@@ -45,12 +47,15 @@ type SourceRefreshOperation struct {
 	CreatedAt             string             `json:"created_at"`
 	UpdatedAt             string             `json:"updated_at"`
 	Observation           *SourceObservation `json:"observation,omitempty"`
+	IncludeCI             bool               `json:"include_ci,omitempty"`
+	CI                    *SourceCISummary   `json:"ci,omitempty"`
 }
 
 type sourceRefresh struct {
 	SourceRefreshOperation
 	repositoryID                           int64
 	actor, worker, capability, fingerprint string
+	ciObservation                          *reviewprovider.CIObservation
 }
 
 func validRefreshRequest(r SourceRefreshRequest) bool {
@@ -94,7 +99,7 @@ func (e *Engine) EnqueueSourceRefresh(ctx context.Context, scope core.Scope, key
 		}
 		cap := e.capabilities[c.CapabilityID]
 		var id string
-		err = tx.QueryRowContext(ctx, `SELECT id FROM review_source_refreshes WHERE project_id=? AND repository_id=? AND pull_number=? AND head_sha=? AND configuration_revision=? AND capability_fingerprint=? AND actor_id=? AND worker_id=? AND state IN ('queued','running') ORDER BY state LIMIT 1`, scope.ProjectID, repositoryID, r.PullNumber, r.HeadSHA, revision, cap.Fingerprint, scope.PrincipalID, scope.WorkerID).Scan(&id)
+		err = tx.QueryRowContext(ctx, `SELECT id FROM review_source_refreshes WHERE project_id=? AND repository_id=? AND pull_number=? AND head_sha=? AND configuration_revision=? AND capability_fingerprint=? AND actor_id=? AND worker_id=? AND include_ci=? AND state IN ('queued','running') ORDER BY state LIMIT 1`, scope.ProjectID, repositoryID, r.PullNumber, r.HeadSHA, revision, cap.Fingerprint, scope.PrincipalID, scope.WorkerID, r.IncludeCI).Scan(&id)
 		if err == nil {
 			return Receipt{ID: id, State: "queued", Revision: 1}, nil
 		}
@@ -113,7 +118,7 @@ func (e *Engine) EnqueueSourceRefresh(ctx context.Context, scope core.Scope, key
 		}
 		id = core.NewID("review_refresh")
 		at := sourceStamp()
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_source_refreshes(id,project_id,repository_id,actor_id,worker_id,configuration_revision,capability_id,capability_fingerprint,pull_number,head_sha,state,revision,reason,created_at,updated_at,observation_json) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',1,'',?,?,'null')`, id, scope.ProjectID, repositoryID, scope.PrincipalID, scope.WorkerID, revision, cap.ID, cap.Fingerprint, r.PullNumber, r.HeadSHA, at, at); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO review_source_refreshes(id,project_id,repository_id,actor_id,worker_id,configuration_revision,capability_id,capability_fingerprint,pull_number,head_sha,state,revision,reason,created_at,updated_at,observation_json,include_ci) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',1,'',?,?,'null',?)`, id, scope.ProjectID, repositoryID, scope.PrincipalID, scope.WorkerID, revision, cap.ID, cap.Fingerprint, r.PullNumber, r.HeadSHA, at, at, r.IncludeCI); err != nil {
 			return nil, err
 		}
 		if err = core.AppendEvent(ctx, tx, scope, "review.source_refresh_requested", id, 1, map[string]any{"pull_number": r.PullNumber}); err != nil {
@@ -130,19 +135,22 @@ func (e *Engine) EnqueueSourceRefresh(ctx context.Context, scope core.Scope, key
 	return result, err
 }
 
-const refreshColumns = `id,project_id,repository_id,actor_id,worker_id,configuration_revision,capability_id,capability_fingerprint,pull_number,head_sha,state,revision,reason,created_at,updated_at,observation_json`
+const refreshMetadataColumns = `id,project_id,repository_id,actor_id,worker_id,configuration_revision,capability_id,capability_fingerprint,pull_number,head_sha,state,revision,reason,created_at,updated_at,observation_json,include_ci`
 
-func readSourceRefresh(ctx context.Context, tx *sql.Tx, project, id string) (sourceRefresh, error) {
+// readSourceRefreshMetadata reads only source and action identity. Policy and
+// comparison-only reads never select or decode the private CI inventory.
+func readSourceRefreshMetadata(ctx context.Context, tx *sql.Tx, project, id string) (sourceRefresh, error) {
 	var r sourceRefresh
 	var body string
-	err := tx.QueryRowContext(ctx, `SELECT `+refreshColumns+` FROM review_source_refreshes WHERE project_id=? AND id=?`, project, id).Scan(&r.ID, &r.ProjectID, &r.repositoryID, &r.actor, &r.worker, &r.ConfigurationRevision, &r.capability, &r.fingerprint, &r.PullNumber, &r.HeadSHA, &r.State, &r.Revision, &r.Reason, &r.CreatedAt, &r.UpdatedAt, &body)
+	var includeCI int64
+	err := tx.QueryRowContext(ctx, `SELECT `+refreshMetadataColumns+` FROM review_source_refreshes WHERE project_id=? AND id=?`, project, id).Scan(&r.ID, &r.ProjectID, &r.repositoryID, &r.actor, &r.worker, &r.ConfigurationRevision, &r.capability, &r.fingerprint, &r.PullNumber, &r.HeadSHA, &r.State, &r.Revision, &r.Reason, &r.CreatedAt, &r.UpdatedAt, &body, &includeCI)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, core.Fail("not_found", "The source refresh is unavailable in this project.", 404)
 	}
 	if err != nil {
 		return r, err
 	}
-	if !validRefreshID(r.ID) || r.ProjectID != project || !identifier.MatchString(project) || r.repositoryID <= 0 || !identifier.MatchString(r.actor) || r.worker != "" && !identifier.MatchString(r.worker) || !identifier.MatchString(r.capability) || !hash.MatchString(r.fingerprint) || !validRefreshRequest(SourceRefreshRequest{r.ConfigurationRevision, r.PullNumber, r.HeadSHA}) || r.Revision < 1 || !refreshTime(r.CreatedAt) || !refreshTime(r.UpdatedAt) || r.Reason != "" && !identifier.MatchString(r.Reason) || len(body) > 4096 {
+	if !validRefreshID(r.ID) || r.ProjectID != project || !identifier.MatchString(project) || r.repositoryID <= 0 || !identifier.MatchString(r.actor) || r.worker != "" && !identifier.MatchString(r.worker) || !identifier.MatchString(r.capability) || !hash.MatchString(r.fingerprint) || !validRefreshRequest(SourceRefreshRequest{ExpectedConfigurationRevision: r.ConfigurationRevision, PullNumber: r.PullNumber, HeadSHA: r.HeadSHA}) || r.Revision < 1 || !refreshTime(r.CreatedAt) || !refreshTime(r.UpdatedAt) || r.Reason != "" && !identifier.MatchString(r.Reason) || len(body) > 4096 {
 		return r, refreshStorageError()
 	}
 	if r.State != "queued" && r.State != "running" && r.State != "completed" && r.State != "held" {
@@ -153,6 +161,27 @@ func readSourceRefresh(ctx context.Context, tx *sql.Tx, project, id string) (sou
 	}
 	if r.Observation != nil && (!validSourceObservation(*r.Observation) || r.Observation.RepositoryID != r.repositoryID || r.Observation.PullNumber != r.PullNumber || r.Observation.HeadSHA != r.HeadSHA) {
 		return r, refreshStorageError()
+	}
+	if includeCI != 0 && includeCI != 1 {
+		return r, refreshStorageError()
+	}
+	r.IncludeCI = includeCI == 1
+	return r, nil
+}
+
+// Full operation and selected-CI consumers keep strict CI validation inside
+// the caller's same authorized snapshot, including background recovery reads.
+func readSourceRefresh(ctx context.Context, tx *sql.Tx, project, id string) (sourceRefresh, error) {
+	r, err := readSourceRefreshMetadata(ctx, tx, project, id)
+	if err != nil {
+		return r, err
+	}
+	var ciBody string
+	if err = tx.QueryRowContext(ctx, `SELECT ci_observation_json FROM review_source_refreshes WHERE project_id=? AND id=?`, project, id).Scan(&ciBody); err != nil {
+		return r, err
+	}
+	if err := decodeSourceCI(ciBody, &r); err != nil {
+		return r, err
 	}
 	return r, nil
 }
@@ -244,8 +273,8 @@ func sourceConfiguration(ctx context.Context, tx *sql.Tx, project string, revisi
 	}
 	return c, nil
 }
-func (e *Engine) updateSourceRefresh(ctx context.Context, tx *sql.Tx, r sourceRefresh, state, reason string, observation *SourceObservation) error {
-	result, err := tx.ExecContext(ctx, `UPDATE review_source_refreshes SET state=?,reason=?,revision=revision+1,updated_at=?,observation_json=? WHERE id=? AND project_id=? AND revision=? AND state=?`, state, reason, sourceStamp(), encoded(observation), r.ID, r.ProjectID, r.Revision, r.State)
+func (e *Engine) updateSourceRefresh(ctx context.Context, tx *sql.Tx, r sourceRefresh, state, reason string, observation *SourceObservation, ciBody string) error {
+	result, err := tx.ExecContext(ctx, `UPDATE review_source_refreshes SET state=?,reason=?,revision=revision+1,updated_at=?,observation_json=?,ci_observation_json=? WHERE id=? AND project_id=? AND revision=? AND state=?`, state, reason, sourceStamp(), encoded(observation), ciBody, r.ID, r.ProjectID, r.Revision, r.State)
 	if err != nil {
 		return err
 	}
@@ -329,7 +358,7 @@ func (e *Engine) StartSourceRefresh(ctx context.Context, readers map[string]Targ
 			if err != nil {
 				return err
 			}
-			if err = e.updateSourceRefresh(ctx, tx, r, "queued", "source_read_interrupted", nil); err != nil {
+			if err = e.updateSourceRefresh(ctx, tx, r, "queued", "source_read_interrupted", nil, "null"); err != nil {
 				return err
 			}
 			recovered = append(recovered, r.ID)
@@ -480,9 +509,9 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			}
 			if reason != "" {
 				changed = r.ID
-				return e.updateSourceRefresh(ctx, tx, r, "held", reason, nil)
+				return e.updateSourceRefresh(ctx, tx, r, "held", reason, nil, "null")
 			}
-			if err = e.updateSourceRefresh(ctx, tx, r, "running", "", nil); err != nil {
+			if err = e.updateSourceRefresh(ctx, tx, r, "running", "", nil, "null"); err != nil {
 				return err
 			}
 			changed = r.ID
@@ -503,12 +532,23 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 		return changed != "", err
 	}
 	r := *selected
-	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	budget := 15 * time.Second
+	if r.IncludeCI {
+		budget = 30 * time.Second
+	}
+	operationCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	readCtx, sourceCancel := context.WithTimeout(operationCtx, 15*time.Second)
 	plan, readErr := ResolveSourceObservation(readCtx, readers[r.capability], r.repositoryID, configuration, r.PullNumber, r.HeadSHA)
-	cancel()
+	sourceCancel()
+	var ci *reviewprovider.CIObservation
+	if readErr == nil && r.IncludeCI && ctx.Err() == nil {
+		ci = observeSourceCI(operationCtx, readers[r.capability], plan)
+	}
 	if ctx.Err() != nil {
 		return true, nil
 	}
+	ciBody := encoded(ci) // Serialize bounded private inventories before taking the writer.
 	err = retrySourceRefreshLocal(ctx, func() error {
 		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			current, err := readSourceRefresh(ctx, tx, r.ProjectID, r.ID)
@@ -535,7 +575,11 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 					state, retained = "completed", &observation
 				}
 			}
-			return e.updateSourceRefresh(ctx, tx, r, state, reason, retained)
+			retainedCI := "null"
+			if state == "completed" {
+				retainedCI = ciBody
+			}
+			return e.updateSourceRefresh(ctx, tx, r, state, reason, retained, retainedCI)
 		})
 	})
 	if err == nil {
@@ -557,17 +601,19 @@ func sourceRefreshReason(err error) string {
 }
 
 type SourcePolicyAssessment struct {
-	ProjectID             string                    `json:"project_id"`
-	RefreshID             string                    `json:"refresh_id"`
-	Source                string                    `json:"source"`
-	ConfigurationRevision int64                     `json:"configuration_revision"`
-	PolicyRevision        int64                     `json:"policy_revision"`
-	SourceObservedAt      string                    `json:"source_observed_at"`
-	EvaluatedAt           string                    `json:"evaluated_at"`
-	State                 string                    `json:"state"`
-	Reason                string                    `json:"reason,omitempty"`
-	Target                SourceObservation         `json:"target"`
-	Channels              []PolicyAssessmentChannel `json:"channels"`
+	IncomingRoutesPending  int64                     `json:"incoming_routes_pending,omitempty"`
+	IncomingRoutesCapacity bool                      `json:"incoming_routes_capacity,omitempty"`
+	ProjectID              string                    `json:"project_id"`
+	RefreshID              string                    `json:"refresh_id"`
+	Source                 string                    `json:"source"`
+	ConfigurationRevision  int64                     `json:"configuration_revision"`
+	PolicyRevision         int64                     `json:"policy_revision"`
+	SourceObservedAt       string                    `json:"source_observed_at"`
+	EvaluatedAt            string                    `json:"evaluated_at"`
+	State                  string                    `json:"state"`
+	Reason                 string                    `json:"reason,omitempty"`
+	Target                 SourceObservation         `json:"target"`
+	Channels               []PolicyAssessmentChannel `json:"channels"`
 }
 
 func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scope, number int64) (SourcePolicyAssessment, error) {
@@ -584,7 +630,7 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 		if err != nil {
 			return err
 		}
-		r, err := readSourceRefresh(ctx, tx, scope.ProjectID, id)
+		r, err := readSourceRefreshMetadata(ctx, tx, scope.ProjectID, id)
 		if err != nil {
 			return err
 		}
@@ -633,6 +679,15 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 		}
 		result.State = "sufficient"
 		anchor := Anchor{RepositoryID: observation.RepositoryID, Repository: observation.RepositoryName, PullNumber: number, CandidateSHA: observation.HeadSHA, BaseSHA: observation.BaseSHA, BaseRef: observation.BaseRef, ParentPullNumber: observation.ParentPullNumber, ParentSHA: observation.ParentSHA, ObservedAt: observation.ObservedAt}
+		result.IncomingRoutesPending, result.IncomingRoutesCapacity, err = incomingRoutePolicyFacts(ctx, tx, scope.ProjectID, number)
+		if err != nil {
+			return err
+		}
+		if result.IncomingRoutesCapacity {
+			result.State, result.Reason = "held", "routed_findings_capacity"
+		} else if result.IncomingRoutesPending > 0 {
+			result.State, result.Reason = "held", "routed_findings_pending"
+		}
 		for _, channel := range policy.Policy.RequiredChannels {
 			state, err := comparison(ctx, tx, scope.ProjectID, r.repositoryID, number, anchor, channel)
 			if err != nil {
