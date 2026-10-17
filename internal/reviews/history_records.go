@@ -80,7 +80,7 @@ func (w *historySnapshotWrite) run(ctx context.Context, tx *sql.Tx, source strin
 		columns := append([]string{"project_id", "run_id", "run_version_revision", "pull_number"}, historyFindingColumns...)
 		for position, finding := range run.Findings {
 			values := append([]any{w.project, summary.ID, version, number}, historyFindingValues(position, finding)...)
-			if err := historyInsert(ctx, tx, "review_finding_versions", columns, values); err != nil {
+			if err := w.insert(ctx, tx, "review_finding_versions", columns, values); err != nil {
 				return err
 			}
 		}

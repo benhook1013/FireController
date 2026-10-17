@@ -400,7 +400,9 @@ func admitObservation(ctx context.Context, tx *sql.Tx, projectID string, req Obs
 	if err := validateRetirements(previousPulls, req.Queue, req.Retired); err != nil {
 		return 0, err
 	}
-	if err := validateFinalizedCounts(ctx, tx, projectID, req.Source, req.Queue); err != nil {
+	reads := newHistoryReads(tx)
+	defer reads.close()
+	if err := validateFinalizedCounts(ctx, reads, projectID, req.Source, req.Queue); err != nil {
 		return 0, err
 	}
 	return currentRevision, nil
@@ -458,12 +460,12 @@ func validateRetirements(previous []int64, queue []PullInput, retired []RetiredP
 const finalizedRunQuery = `SELECT version_revision,pull_number,channel,head_sha,reviewer,scope,found,accepted,routed,id FROM review_run_versions
  WHERE project_id=? AND source=? AND source_run_id=? AND finalized=1 ORDER BY version_revision DESC LIMIT 1`
 
-func validateFinalizedCounts(ctx context.Context, tx HistoryQuery, projectID, source string, queue []PullInput) error {
+func validateFinalizedCounts(ctx context.Context, q HistoryQuery, projectID, source string, queue []PullInput) error {
 	for _, pull := range queue {
 		for _, run := range pull.Runs {
 			var channel, headSHA, reviewer, scope, runID string
 			var version, pullNumber, found, accepted, routed int64
-			err := tx.QueryRowContext(ctx, finalizedRunQuery, projectID, source, run.SourceRunID).Scan(&version, &pullNumber, &channel, &headSHA, &reviewer, &scope, &found, &accepted, &routed, &runID)
+			err := q.QueryRowContext(ctx, finalizedRunQuery, projectID, source, run.SourceRunID).Scan(&version, &pullNumber, &channel, &headSHA, &reviewer, &scope, &found, &accepted, &routed, &runID)
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
@@ -477,7 +479,7 @@ func validateFinalizedCounts(ctx context.Context, tx HistoryQuery, projectID, so
 			// Every admitted finalized copy retains all previously known findings.
 			// The latest finalized copy therefore carries their cumulative identity
 			// and text, even when intervening snapshots omitted the run entirely.
-			if err := validateFinalizedFindings(ctx, tx, projectID, version, pullNumber, runID, run.Findings); err != nil {
+			if err := validateFinalizedFindings(ctx, q, projectID, version, pullNumber, runID, run.Findings); err != nil {
 				return err
 			}
 		}
@@ -485,12 +487,12 @@ func validateFinalizedCounts(ctx context.Context, tx HistoryQuery, projectID, so
 	return nil
 }
 
-func validateFinalizedFindings(ctx context.Context, tx HistoryQuery, projectID string, version, pullNumber int64, runID string, current []Finding) error {
+func validateFinalizedFindings(ctx context.Context, q HistoryQuery, projectID string, version, pullNumber int64, runID string, current []Finding) error {
 	currentByID := make(map[string]Finding, len(current))
 	for _, finding := range current {
 		currentByID[finding.SourceFindingID] = finding
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail FROM review_finding_versions
+	rows, err := q.QueryContext(ctx, `SELECT source_finding_id,title,detail FROM review_finding_versions
 		WHERE project_id=? AND run_version_revision=? AND pull_number=? AND run_id=?`, projectID, version, pullNumber, runID)
 	if err != nil {
 		return err

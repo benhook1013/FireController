@@ -30,7 +30,7 @@ func transferConflict(message string) error { return core.Fail("observation_conf
 // Admission performs only reads. No temporary versions, receipts or events are
 // needed to establish whether the exact batch can be applied to this snapshot.
 func admitTransfer(ctx context.Context, transaction *sql.Tx, project string, req TransferRequest) (transferPlan, error) {
-	tx := newTransferReads(transaction)
+	tx := newHistoryReads(transaction)
 	defer tx.close()
 	plan := transferPlan{pulls: map[int64]*transferPullPlan{}}
 	var repository int64

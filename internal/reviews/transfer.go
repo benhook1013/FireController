@@ -119,7 +119,7 @@ func publishTransfer(ctx context.Context, tx *sql.Tx, scope core.Scope, req Tran
 		return Receipt{}, err
 	}
 	write := newHistorySnapshotWrite(scope.ProjectID, next)
-	reads := newTransferReads(tx)
+	reads := newHistoryReads(tx)
 	defer reads.close()
 	write.reads = reads
 	for _, group := range req.Groups {
