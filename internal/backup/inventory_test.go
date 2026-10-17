@@ -563,7 +563,19 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 					statements = append(statements, `DROP INDEX review_evidence_operation`)
 				}
 			case "review_adjudication":
-				statements = []string{`DROP TABLE review_finding_route_revisions`, `DROP TABLE review_finding_routes`}
+				// Completed-comparison indexes depend on route tables. A genuine
+				// before-routes predecessor cannot contain that empty extension.
+				var count int
+				if err := store.DB().QueryRow(`SELECT count(*) FROM review_comparison_proofs`).Scan(&count); err != nil || count != 0 {
+					t.Fatal("predecessor fixture must not discard comparison data", count, err)
+				}
+				for _, definition := range reviewexec.ComparisonSchemaSQL() {
+					fields := strings.Fields(definition)
+					if len(fields) > 2 && fields[1] == "TRIGGER" {
+						statements = append(statements, `DROP TRIGGER `+fields[2])
+					}
+				}
+				statements = append(statements, `DROP TABLE review_comparison_proofs`, `DELETE FROM metadata WHERE key='schema:review_comparison'`, `DROP TABLE review_finding_route_revisions`, `DROP TABLE review_finding_routes`)
 			case "review_source_refresh":
 				rows, e := store.DB().Query(`SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name='review_source_refreshes' AND sql IS NOT NULL`)
 				if e != nil {
