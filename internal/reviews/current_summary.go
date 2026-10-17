@@ -153,7 +153,7 @@ func (w *historySnapshotWrite) prospectiveTotals(ctx context.Context, tx *sql.Tx
 	if total, ok := totals[number]; ok {
 		return total, nil
 	}
-	return readSummaryTotals(ctx, tx, w.project, number)
+	return readSummaryTotals(ctx, w.historyRead(tx), w.project, number)
 }
 
 func validSummaryTotals(totals summaryTotals) bool {
@@ -287,7 +287,7 @@ func (w *historySnapshotWrite) prepareCurrentTotals(ctx context.Context, tx *sql
 	}
 	out := make(map[int64]summaryTotals, len(deltas))
 	for number, delta := range deltas {
-		totals, err := readSummaryTotals(ctx, tx, w.project, number)
+		totals, err := readSummaryTotals(ctx, w.historyRead(tx), w.project, number)
 		if err != nil {
 			return nil, err
 		}

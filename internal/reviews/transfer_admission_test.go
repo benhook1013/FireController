@@ -64,6 +64,53 @@ func TestReviewTransferMaximumBatchUsesOrdinaryWriteBudget(t *testing.T) {
 	}
 }
 
+func TestReviewTransferMixedSelectedTotalsSurviveReplacement(t *testing.T) {
+	f := newAPIFixture(t)
+	one, two, three := transferAdmissionPull(1), transferAdmissionPull(2), transferAdmissionPull(3)
+	one.Runs = []RunInput{{SourceRunID: "changing", Channel: "cli", Scope: "selected totals", Outcome: "active"}}
+	one.Attempts = []Attempt{currentSummaryAttempt("changing", "cli", "2026-10-01T00:00:00Z", "")}
+	three.Runs = []RunInput{{SourceRunID: "unselected", Channel: "manual", Scope: "selected totals", Outcome: "active"}}
+	initial := reviewRequest(0, []PullInput{one, two, three})
+	f.observe(t, initial, "totals-original")
+	untouched := assertCurrentSummaryReduction(t, f, 3).Pull
+
+	// Mix an existing record correction with existing and new metadata-only
+	// pulls. The omitted PR and its incomplete run must remain unchanged.
+	one.Runs[0].Complete, one.Runs[0].Outcome = true, "completed"
+	one.Runs[0].StartedAt, one.Runs[0].FinishedAt = "2026-10-01T00:00:00Z", "2026-10-01T00:01:00Z"
+	one.Attempts[0].FinishedAt = "2026-10-01T00:01:00Z"
+	transferApplyFor(t, f, transferRequest(1, TransferGroup{Source: initial.Source, Pulls: []PullInput{one, two, transferAdmissionPull(4)}}), "totals-selected")
+	for _, number := range []int64{1, 2, 3, 4} {
+		assertCurrentSummaryReduction(t, f, number)
+	}
+	if got := assertCurrentSummaryReduction(t, f, 3).Pull; !reflect.DeepEqual(got, untouched) {
+		t.Fatal("selected transfer changed an omitted PR", got, untouched)
+	}
+	var incomplete int64
+	if err := f.store.DB().QueryRow(`SELECT incomplete_run_count FROM review_current_totals WHERE project_id=? AND pull_number=1`, f.project).Scan(&incomplete); err != nil || incomplete != 0 {
+		t.Fatal("completed correction retained an incomplete-run delta", incomplete, err)
+	}
+
+	// A later complete observation independently replaces membership and
+	// ordering, including deleting metadata-only pulls and the corrected run.
+	replacement := reviewRequest(2, []PullInput{three, transferAdmissionPull(1)})
+	replacement.Source = initial.Source
+	replacement.Retired = []RetiredPull{{Number: 2, Reason: "defunct"}, {Number: 4, Reason: "defunct"}}
+	f.observe(t, replacement, "totals-replacement")
+	for _, number := range []int64{1, 3} {
+		assertCurrentSummaryReduction(t, f, number)
+	}
+	if got := assertCurrentSummaryReduction(t, f, 1).Pull; got.RunCount != 0 || got.AttemptCount != 0 {
+		t.Fatal("later replacement reused stale transfer totals", got)
+	}
+	for _, number := range []int64{2, 4} {
+		var count int
+		if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_current_totals WHERE project_id=? AND pull_number=?`, f.project, number).Scan(&count); err != nil || count != 0 {
+			t.Fatal("removed pull retained current totals", number, count, err)
+		}
+	}
+}
+
 func TestReviewTransferCurrentRunLinksAndHistoricalOmission(t *testing.T) {
 	f := newAPIFixture(t)
 	pull := transferAdmissionPull(1)

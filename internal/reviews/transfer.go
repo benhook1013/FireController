@@ -162,10 +162,11 @@ func publishTransfer(ctx context.Context, tx *sql.Tx, scope core.Scope, req Tran
 		selected := plan.pulls[number]
 		total, ok := totals[number]
 		if !ok {
-			total, err = readSummaryTotals(ctx, tx, scope.ProjectID, number)
+			total, err = readSummaryTotals(ctx, write.historyRead(tx), scope.ProjectID, number)
 			if err != nil {
 				return Receipt{}, err
 			}
+			totals[number] = total
 		}
 		local := *write
 		local.pending = scoped[number]
@@ -181,6 +182,10 @@ func publishTransfer(ctx context.Context, tx *sql.Tx, scope core.Scope, req Tran
 			}
 		}
 	}
+	// Every run and attempt was staged before deriving these exact totals.
+	// Rebuilding pull summaries adds no record deltas, so installation can reuse
+	// this same-transaction plan without reading all changed records again.
+	write.replacementTotals = totals
 	if err := write.applyCurrent(ctx, tx, id, plan.revision); err != nil {
 		return Receipt{}, err
 	}
