@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -321,6 +322,63 @@ func TestGitHubPostOutcomeUnknownAndNoAutomaticRetry(t *testing.T) {
 			}
 			if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), server.URL) {
 				t.Fatalf("unsafe error: %v", err)
+			}
+		})
+	}
+}
+
+func TestGitHubPostCancellationDistinguishesUnsentFromUncertain(t *testing.T) {
+	for _, alreadyCanceled := range []bool{true, false} {
+		name := "after-provider-received"
+		if alreadyCanceled {
+			name = "before-call"
+		}
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int64
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				close(entered)
+				<-release
+				w.WriteHeader(http.StatusCreated)
+			}))
+			defer server.Close()
+			defer close(release)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if alreadyCanceled {
+				cancel()
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := testGitHub(server, "private-token").PostIssueComment(ctx, "owner/repo", 8, "safe body")
+				done <- err
+			}()
+			if !alreadyCanceled {
+				select {
+				case <-entered:
+					cancel()
+				case <-time.After(time.Second):
+					t.Fatal("provider did not receive the POST")
+				}
+			}
+			select {
+			case err := <-done:
+				var failure *Error
+				if !errors.As(err, &failure) || failure.OutcomeUnknown == alreadyCanceled {
+					t.Fatalf("incorrect POST cancellation classification: %+v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("POST cancellation was unbounded")
+			}
+			wantCalls := int64(1)
+			if alreadyCanceled {
+				wantCalls = 0
+			}
+			if calls.Load() != wantCalls {
+				t.Fatalf("POST count=%d, want %d; no automatic retries allowed", calls.Load(), wantCalls)
 			}
 		})
 	}

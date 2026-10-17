@@ -178,6 +178,15 @@ func TestSourceRefreshWaitCancellationCapacityAndAuthorization(t *testing.T) {
 	receipt := refreshEnqueue(t, f, "waiting", refreshRequest())
 	scope := evidenceReadScope(t, f, attemptProject, f.reader)
 	beforeEvents := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+	for _, wait := range []time.Duration{0, time.Second} {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		value, err := f.e.WaitSourceRefresh(ctx, scope, receipt.ID, wait)
+		attemptCode(t, err, "overloaded")
+		if value.ID != "" {
+			t.Fatal("canceled wait returned retained state")
+		}
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	results := make(chan error, 8)
 	for range 8 {
@@ -199,9 +208,7 @@ func TestSourceRefreshWaitCancellationCapacityAndAuthorization(t *testing.T) {
 	for range 8 {
 		select {
 		case err := <-results:
-			if err == nil {
-				t.Fatal("cancelled waiter succeeded")
-			}
+			attemptCode(t, err, "overloaded")
 		case <-time.After(time.Second):
 			t.Fatal("cancelled waiter leaked")
 		}
