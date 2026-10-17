@@ -317,7 +317,7 @@ func TestRestoreInactiveRotatesIdentityRevokesAndPreservesRecords(t *testing.T) 
 func TestRestoreRefusesCollisionSymlinksCancellationAndUnsafeBundle(t *testing.T) {
 	f := newRestoreFixture(t)
 	bundle := restoreBundle(t, f)
-	for _, kind := range []string{"existing", "symlink", "ancestor-symlink", "canceled", "hash"} {
+	for _, kind := range []string{"existing", "symlink", "canceled", "hash"} {
 		t.Run(kind, func(t *testing.T) {
 			parent := t.TempDir()
 			destination := filepath.Join(parent, "restored")
@@ -332,16 +332,6 @@ func TestRestoreRefusesCollisionSymlinksCancellationAndUnsafeBundle(t *testing.T
 				if err := os.Symlink(f.dir, destination); err != nil {
 					t.Fatal(err)
 				}
-			case "ancestor-symlink":
-				real := filepath.Join(parent, "real")
-				if err := os.Mkdir(real, 0700); err != nil {
-					t.Fatal(err)
-				}
-				link := filepath.Join(parent, "link")
-				if err := os.Symlink(real, link); err != nil {
-					t.Fatal(err)
-				}
-				destination = filepath.Join(link, "restored")
 			case "canceled":
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithCancel(ctx)

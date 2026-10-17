@@ -102,7 +102,10 @@ func (m *Manager) retain(ctx context.Context) error {
 		if err = syncDirectory(b.destination); err != nil {
 			return m.cleanupFailed(ctx, b.id)
 		}
-		if err = m.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		// The filesystem deletion is complete. Cancellation cannot undo it;
+		// settle its ledger fact with an independent, bounded deadline.
+		settle, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), managedSettlementTimeout)
+		err = m.store.BackgroundWrite(settle, func(ctx context.Context, tx *sql.Tx) error {
 			result, e := tx.ExecContext(ctx, `UPDATE managed_backup_bundles SET state='deleted' WHERE id=? AND state='deleting'`, b.id)
 			if e != nil {
 				return e
@@ -112,7 +115,9 @@ func (m *Manager) retain(ctx context.Context) error {
 				return invalid()
 			}
 			return nil
-		}); err != nil {
+		})
+		cancelSettle()
+		if err != nil {
 			return err
 		}
 	}
