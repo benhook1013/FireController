@@ -82,11 +82,15 @@ func readPrimaryJob(ctx context.Context, tx *sql.Tx, project, worker string) (pr
 		return primaryJob{}, err
 	}
 	if value.Revision < 1 || value.JobID != "" && !validPrimaryID(value.JobID) {
-		return primaryJob{}, fmt.Errorf("invalid retained worker primary")
+		return primaryJob{}, core.Fail("storage_unavailable", "Stored worker primary job is unavailable.", http.StatusInternalServerError)
 	}
 	if value.JobID != "" {
 		if err = primaryAssignment(ctx, tx, project, worker, value.JobID); err != nil {
-			return primaryJob{}, fmt.Errorf("invalid retained worker primary assignment: %w", err)
+			var failure *core.Error
+			if errors.As(err, &failure) {
+				return primaryJob{}, core.Fail("storage_unavailable", "Stored worker primary assignment is unavailable.", http.StatusInternalServerError)
+			}
+			return primaryJob{}, fmt.Errorf("read retained worker primary assignment: %w", err)
 		}
 	}
 	return value, nil
