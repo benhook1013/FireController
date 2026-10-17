@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Rolling renewal replaces the fixed daily logout. The API, browser activity owner and reconnect handling are implemented. Focused and packaged proof are recorded below; the installed QA build still uses fixed 24-hour sessions until its separate upgrade proof completes.
+Rolling renewal replaces the fixed daily logout. The API, browser activity owner and reconnect handling are implemented. Focused and packaged proof are recorded below; the installed QA build passed authenticated HTTPS renewal/reload checks. Operational cutover still follows human GUI acceptance.
 
 ## Selected behavior
 
@@ -27,3 +27,5 @@ The clean `f706f78e0788b83565e911287c6a682eec0ead4d` runtime checkpoint, passed 
 Only Chromium's clock advanced across the five-minute client throttle; the daemon retained its ordinary 24-hour clock and defaults. Controlled document visibility proves client admission, not physical-device background lifecycle. Missing-cookie cleanup does not claim elapsed 24-hour expiry or credential revocation. A test navigation race initially filled the project field before the root form remounted; synchronizing that destination and narrowly recognizing its expected authenticated instance 401 corrected the harness without runtime changes. The combined prepared-map integration and installed HTTPS renewal proof are separate checkpoints.
 
 Clean combined `ee344a0d36edb98065f6761647c54c7bb1467f44` then passed full `make check build` with prepared-map imports and upstream review fixes: 280 browser tests, all Go race tests/vet, documentation and unchanged regenerated assets. The resulting clean binaries passed actual packaged CLI/MCP, upgrade, publication and map-import checks in 0.823 seconds and private/public Chromium checks in 4.971 seconds. This is Linux/WSL fixture proof; installed HTTPS checks and physical-phone behavior remain separate.
+
+The installed `ee344a0d36edb98065f6761647c54c7bb1467f44` QA artifact then passed authenticated trusted-HTTPS Chromium checks at 1440px and 390px in 50.963 seconds. Eight actual renewal POSTs across two proof sessions preserved selector, instance, project and selected worker through reloads. Fresh logins made no extra renewal call. Secure HttpOnly SameSiteStrict cookies, absent credential storage, retained project views, the five-pixel flame gap, refresh and logout passed with no JavaScript/CSP errors or overflow. The workload made 265 GETs, two session exchanges, eight renewals and two logout requests; it made no domain/provider writes and removed both proof sessions. Viewport emulation does not establish physical-phone lifecycle behavior.

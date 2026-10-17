@@ -14,7 +14,8 @@ Implemented coordination, review and browser slices have passed their focused an
 
 - Finish bounded historical provider collection and explicit resume. The prepared review/map imports accept selected local documents; they do not collect provider history.
 - Provide a lossless bounded transfer path for review workspaces larger than the existing single observation limit. Own-project QA population exposed a complete 145-run/233-attempt export above the 256 KiB and 200-attempt ceilings. A deliberately partial display snapshot is not full migration proof; retain complete source evidence and make every selected omission explicit. Native projection and policy reads also have lifetime history count ceilings, while full snapshot copying duplicates retained detail. Replace those growth limits with versioned history and bounded reads; include attempt/browser pagination, public projection and source-producer preservation in that work.
-The opt-in [public project website](public-site.md) now has full validation and actual packaged CLI/browser proof at its recorded source checkpoint. Installing a tested build and approving its public presentation remain deployment/GUI boundaries; the existing QA deployment has not changed.
+
+The opt-in [public project website](public-site.md) has full validation, actual packaged CLI/browser proof and an installed QA artifact. Public content still requires an explicit publication choice and presentation review; an upgrade does not enable it.
 
 These are implementation gaps, not merely GUI polish or unexecuted acceptance tests. Existing-installation migration, live native provider execution, actual agent-host asynchronous behavior, fleet measurements and operational recovery are separate proof or cutover boundaries. Optional multiple replicas, distributed execution and cloud backup integrations remain outside the selected first release.
 
