@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Collection is under development. Single-page GitHub adapters, selected acquisition steps, durable requests/captures, explicit resume, administrator HTTP controls and bounded notification waits have focused normal/race proof. Canonical backup and inactive restore preserve engine-created captures and checkpoints; resealed corruption checks refuse invalid graphs. Opt-in daemon startup/shutdown, recovery holds, profile-bound clients and private export now also have focused normal/race checks. Actual packaged acquisition remains unfinished. The prepared review and map import APIs already provide separate preview/application; no installed collector, automatic import or completed onboarding flow is claimed.
+Selected collection, durable captures/checkpoints, explicit resume/cancel, administrator HTTP/client/CLI access and private export are implemented. Focused normal/race checks and actual packaged HTTPS acquisition, restart/resume and browser gates pass at the recorded checkpoint below. Backup and inactive restore preserve engine-created captures and refuse resealed corruption. Collection is separate from prepared review/map transformation and application; no automatic import, installed collector or completed operational cutover is claimed.
 
 ## Scope and authority
 
@@ -61,3 +61,13 @@ The enqueue route also accepts `Prefer: wait=N`. It defaults to two seconds; ope
 ## Functional proof
 
 Exercise selected closed/merged PRs, original identities/times/replies, strict page ownership, source movement and conflicting duplicates, response-size failure, cancellation, rate holds, exact retry, lost output, restart and shifted-page resumption. Verify no provider work inside transactions, unchanged jobs/messages/native credit/publication, compact default output and explicit bounded source expansion. Backup/inspection/restore must preserve the collection request, immutable captures and checkpoint while refusing resealed cross-project or malformed references. Actual packaged CLI/service proof must distinguish acquisition/resumption from the already-proven prepared import boundary.
+
+## Executed packaged proof
+
+Clean source `5ba5ed5b7ba620b4b32bfce2cd07c3b701887eea` passed `make check build` with 23 selected Go packages, including their full race tests and vet, 313 browser tests, workflow/document checks, unchanged generated assets and three CGO-free binaries. The three separately sharded heavy packages were not included in that local full-package selection: focused collection backup race checks passed in 17.718 seconds, affected review-wait checks passed in 2.445 seconds and vet passed for both; unchanged review-runtime and complete CI remain separate.
+
+All nine canonical packaged cases passed on their first runs against those exact inputs: six CLI/service/MCP/operator groups in 2.126 seconds and three Chromium groups in 9.921 seconds. The new collection case uses the production `api.github.com` HTTPS origin through an owned local CONNECT proxy and disposable trust file, without changing production origins, installed trust or global credentials. It proves a selected closed/merged PR, fourteen bounded provider GETs, a blocked resource page with concurrent job/message writes, rate-limit pause, provider-free exact-key replay, restart without automatic resumption, explicit new-pass resume and completion. Original page bytes, source IDs, known times and reply links remain unchanged. Signed archive cursors stay pinned as new captures arrive; private exports are complete, hashed and refuse replacement. Unrelated coordination/native authority is conserved.
+
+All 773 tracked source/asset hashes and the three supplied executable hashes stayed unchanged through the checks. The tested daemon SHA-256 was `5ec2dd8469a0e95894e8ad9fc69ba5fc30a4ddc9e28b81ef27cc50a8d85778c9`. Owned processes, listeners and disposable state were cleaned. Windows/macOS test binaries cross-compile; native execution still requires their CI gates. Independent production review found and corrected queued-page restart and unsupported wall-clock ordering assumptions, with focused regressions.
+
+This is controlled local executable proof. Live GitHub authorization/rate behavior, installed schema/data migration, agent-host wakeup, physical-phone use, fleet capacity and operational cutover are not established by it.
