@@ -16,7 +16,7 @@ func TestLiveProjectReplayVisibleStateOnly(t *testing.T) {
 		"project.presentation_changed", "map.entry_created", "map.entry_updated",
 		"job.workstream_changed", "job.created", "job.updated", "job.checkpointed", "job.update_appended", "job.checklist_replaced",
 		"workers.created", "worker.pause_changed", "worker.primary_job_changed", "note.created", "note.updated",
-		"review.observed", "reviews.policy_configured",
+		"review.observed", "reviews.policy_configured", "reviews.rounds_configured",
 		"review.evidence.adjudicated", "review.evidence.finalized", "review.evidence.fix_recorded", "review.evidence.routed",
 		"review.route.routed", "review.route.superseded", "review.route.adjudicated", "review.route.fix_recorded",
 	}

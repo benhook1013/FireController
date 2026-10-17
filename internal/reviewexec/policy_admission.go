@@ -77,6 +77,9 @@ func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operat
 	if result.RepositoryID < 1 {
 		return ExecutionContext{}, conflict()
 	}
+	if _, err := admitRoundControl(ctx, tx, operation); err != nil {
+		return ExecutionContext{}, err
+	}
 	result.Configuration, result.Policy = configuration, policy
 	return result, nil
 }
@@ -180,7 +183,11 @@ func (e *Engine) verifyAction(ctx context.Context, tx *sql.Tx, project, attemptI
 	if state.Pending {
 		return core.Fail("review_evidence_pending", "Resolve retained native evidence in the selected channel before starting another review.", 409)
 	}
-	if state.Covered {
+	rounds, err := admitRoundControl(ctx, tx, operation)
+	if err != nil {
+		return err
+	}
+	if state.Covered && !rounds {
 		return &core.Error{Code: "review_held", Message: "The selected native comparison already has completed coverage in this channel.", Status: 409, Details: map[string]string{"reason": "target_already_covered"}}
 	}
 	return nil
@@ -219,7 +226,7 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 		if err != nil {
 			return err
 		}
-		if comparison.Pending || !comparison.Covered {
+		if comparison.Pending || comparison.RoundsConfigured && !comparison.RoundsComplete || !comparison.RoundsConfigured && !comparison.Covered {
 			return sourceHold("predecessor_unfinished")
 		}
 	}

@@ -176,6 +176,15 @@ func (e *Engine) persistReviewAdjudication(ctx context.Context, tx *sql.Tx, scop
 	if err = refreshEvidenceComparison(ctx, tx, scope.ProjectID, state.EvidenceID); err != nil {
 		return nil, err
 	}
+	if state.Finalized {
+		var operation string
+		if err = tx.QueryRowContext(ctx, `SELECT operation_id FROM review_execution_evidence WHERE project_id=? AND id=?`, scope.ProjectID, state.EvidenceID).Scan(&operation); err != nil {
+			return nil, err
+		}
+		if err = completeRoundControl(ctx, tx, scope.ProjectID, operation); err != nil {
+			return nil, err
+		}
+	}
 	return Receipt{ID: state.EvidenceID, State: kind, Revision: state.Revision}, nil
 }
 

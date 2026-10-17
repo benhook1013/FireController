@@ -179,7 +179,7 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 func preparationReason(err error) string {
 	var failure *core.Error
 	if errors.As(err, &failure) {
-		if failure.Code == "review_evidence_pending" || failure.Code == "review_capacity" {
+		if failure.Code == "review_evidence_pending" || failure.Code == "review_capacity" || roundControlRefusal(failure.Code) {
 			return failure.Code
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
@@ -252,7 +252,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
 			}
 			var refusal *core.Error
-			if errors.As(err, &refusal) && (refusal.Code == "review_conflict" || refusal.Code == "validation_failed") {
+			if errors.As(err, &refusal) && (refusal.Code == "review_conflict" || refusal.Code == "validation_failed" || roundControlRefusal(refusal.Code)) {
 				return e.finishPreparation(a, "held", "admission_changed")
 			}
 			return persistenceFailure()

@@ -78,11 +78,11 @@ func (c *Client) ReviewSourceReadiness(ctx context.Context, number int64) (Revie
 	covered := len(value.Channels) > 0
 	channels := map[string]bool{}
 	for _, channel := range value.Channels {
-		if !oneReviewOf(channel.Channel, "cli", "hosted") || channels[channel.Channel] {
+		if !oneReviewOf(channel.Channel, "cli", "hosted") || channels[channel.Channel] || !channel.RoundsConfigured && channel.RoundsComplete {
 			return ReviewSourceReadinessAssessment{}, invalidResponse()
 		}
 		channels[channel.Channel] = true
-		covered = covered && channel.Covered && !channel.Pending
+		covered = covered && channel.Covered && !channel.Pending && (!channel.RoundsConfigured || channel.RoundsComplete)
 	}
 	factsReady := value.ConfigurationRevision > 0 && value.PolicyRevision > 0 && covered && value.IncomingRoutesPending == 0 && !value.IncomingRoutesCapacity && oneReviewOf(value.CI.State, "satisfied", "not_required") && value.CI.MergeState == "verified" && reviewStateReady(value.ReviewState)
 	if value.State == "ready_as_observed" {

@@ -89,7 +89,14 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 	if comparison.Pending {
 		return plan, nil, core.Fail("review_evidence_pending", "Resolve retained native evidence in the selected channel before starting another review.", 409)
 	}
-	if comparison.Covered {
+	rounds := false
+	if comparison.RoundsConfigured {
+		rounds, err = engine.RoundAdmission(ctx, operation.ProjectID, operation.ID)
+		if err != nil {
+			return plan, nil, err
+		}
+	}
+	if comparison.Covered && !rounds {
 		return plan, nil, reviewHold("target_already_covered")
 	}
 	if configuration.Mode != "stacked" {
@@ -118,7 +125,7 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 		if err != nil {
 			return plan, nil, err
 		}
-		covered, err := engine.Coverage(ctx, operation.ProjectID, preceding, operation.Channel)
+		covered, err := engine.DiscoveryComplete(ctx, operation.ProjectID, preceding, operation.Channel)
 		if err != nil {
 			return plan, nil, err
 		}

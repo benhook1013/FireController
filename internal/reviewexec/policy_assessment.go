@@ -25,9 +25,11 @@ type PolicyAssessment struct {
 }
 
 type PolicyAssessmentChannel struct {
-	Channel string `json:"channel"`
-	Covered bool   `json:"covered"`
-	Pending bool   `json:"pending"`
+	Channel          string `json:"channel"`
+	Covered          bool   `json:"covered"`
+	Pending          bool   `json:"pending"`
+	RoundsConfigured bool   `json:"rounds_configured,omitempty"`
+	RoundsComplete   bool   `json:"rounds_complete,omitempty"`
 }
 
 // ReadPolicyAssessment authorizes and evaluates retained evidence and the
@@ -109,8 +111,8 @@ func (e *Engine) ReadPolicyAssessment(ctx context.Context, scope core.Scope, evi
 			if err != nil {
 				return err
 			}
-			result.Channels = append(result.Channels, PolicyAssessmentChannel{Channel: channel, Covered: state.Covered, Pending: state.Pending})
-			if !state.Covered || state.Pending {
+			result.Channels = append(result.Channels, PolicyAssessmentChannel{Channel: channel, Covered: state.Covered, Pending: state.Pending, RoundsConfigured: state.RoundsConfigured, RoundsComplete: state.RoundsComplete})
+			if !state.Covered || state.Pending || state.RoundsConfigured && !state.RoundsComplete {
 				result.State = "held"
 			}
 		}

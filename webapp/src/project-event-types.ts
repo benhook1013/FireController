@@ -17,6 +17,7 @@ export const projectEventTypes = [
   'note.updated',
   'review.observed',
   'reviews.policy_configured',
+  'reviews.rounds_configured',
   'review.route.routed',
   'review.route.superseded',
   'review.route.adjudicated',

@@ -708,8 +708,8 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 			if err != nil {
 				return err
 			}
-			result.Channels = append(result.Channels, PolicyAssessmentChannel{Channel: channel, Covered: state.Covered, Pending: state.Pending})
-			if !state.Covered || state.Pending {
+			result.Channels = append(result.Channels, PolicyAssessmentChannel{Channel: channel, Covered: state.Covered, Pending: state.Pending, RoundsConfigured: state.RoundsConfigured, RoundsComplete: state.RoundsComplete})
+			if !state.Covered || state.Pending || state.RoundsConfigured && !state.RoundsComplete {
 				result.State = "held"
 			}
 		}

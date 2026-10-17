@@ -222,8 +222,12 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"coordination_import": 1, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 5, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"coordination_import": 1, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 5, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "review_rounds": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"review_round_controls":             {"review_rounds", 1, "project_id pull_number channel revision epoch grant_revision closed minimum maximum taper used dry tapered actor_id created_at updated_at"},
+	"review_round_changes":              {"review_rounds", 1, "project_id pull_number channel revision epoch action body_json worker_id"},
+	"review_round_operation_bindings":   {"review_rounds", 1, "operation_id project_id pull_number channel epoch grant_revision"},
+	"review_round_completions":          {"review_rounds", 1, "operation_id evidence_id project_id pull_number channel epoch ordinal accepted completed_at"},
 	"coordination_import_state":         {"coordination_import", 1, "project_id revision"},
 	"coordination_import_records":       {"coordination_import", 1, "project_id source source_key job_id import_revision item_sha256 source_sha256 item_json created_at"},
 	"coordination_import_batches":       {"coordination_import", 1, "project_id revision source source_sha256 payload_sha256 actor_id worker_id created_at"},
@@ -910,6 +914,11 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	if versions["review_rounds"] > 0 {
+		if err = reviewexec.ValidateRoundSnapshot(ctx, tx); err != nil {
+			return invalid()
+		}
+	}
 	return checkContext(ctx)
 }
 func reference(refs map[string]Artifact, attempt, captureID, hash string, size int64, hosted bool) bool {
@@ -1260,6 +1269,10 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"review_round_controls":             {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
+	"review_round_changes":              {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_round_operation_bindings":   {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
+	"review_round_completions":          {canonicalFK("review_execution_evidence", "evidence_id", "id", "NO ACTION"), canonicalFK("review_round_operation_bindings", "operation_id,project_id,pull_number,channel,epoch", "operation_id,project_id,pull_number,channel,epoch", "NO ACTION")},
 	"coordination_import_state":         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"coordination_import_records":       {canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION"), canonicalFK("coordination_import_batches", "project_id,import_revision", "project_id,revision", "NO ACTION")},
 	"coordination_import_batches":       {canonicalFK("projects", "project_id", "id", "NO ACTION")},

@@ -22,9 +22,11 @@ type ReviewPolicyAssessment struct {
 }
 
 type ReviewPolicyAssessmentChannel struct {
-	Channel string `json:"channel"`
-	Covered bool   `json:"covered"`
-	Pending bool   `json:"pending"`
+	Channel          string `json:"channel"`
+	Covered          bool   `json:"covered"`
+	Pending          bool   `json:"pending"`
+	RoundsConfigured bool   `json:"rounds_configured,omitempty"`
+	RoundsComplete   bool   `json:"rounds_complete,omitempty"`
 }
 
 func (c *Client) ReviewPolicyAssessment(ctx context.Context, id string) (ReviewPolicyAssessment, error) {
@@ -53,11 +55,11 @@ func (c *Client) ReviewPolicyAssessment(ctx context.Context, id string) (ReviewP
 	seen := map[string]bool{}
 	sufficient := value.IncomingRoutesPending == 0 && !value.IncomingRoutesCapacity
 	for _, channel := range value.Channels {
-		if !oneReviewOf(channel.Channel, "cli", "hosted") || seen[channel.Channel] {
+		if !oneReviewOf(channel.Channel, "cli", "hosted") || seen[channel.Channel] || !channel.RoundsConfigured && channel.RoundsComplete {
 			return ReviewPolicyAssessment{}, invalidResponse()
 		}
 		seen[channel.Channel] = true
-		sufficient = sufficient && channel.Covered && !channel.Pending
+		sufficient = sufficient && channel.Covered && !channel.Pending && (!channel.RoundsConfigured || channel.RoundsComplete)
 	}
 	if sufficient != (value.State == "sufficient") {
 		return ReviewPolicyAssessment{}, invalidResponse()

@@ -71,6 +71,7 @@ type invocation struct {
 	coordinationImport *coordinationImportInvocation
 	mapImport          *mapImportInvocation
 	history            *historyInvocation
+	rounds             *reviewRoundsInvocation
 
 	waitSeconds int
 }
@@ -193,6 +194,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.rounds != nil {
+		return executeReviewRounds(requestCtx, ctx, service, call.rounds, stdout, stderr)
+	}
 	if call.history != nil {
 		return executeHistory(requestCtx, ctx, service, call.history, stdout, stderr)
 	}
@@ -396,6 +400,11 @@ func parseInvocation(args []string) (invocation, bool) {
 	if call.command == "presentation" {
 		var ok bool
 		call.presentation, ok = parsePresentation(call.subcommand, operationArgs)
+		return call, ok
+	}
+	if call.command == "reviews" && call.subcommand == "rounds" {
+		var ok bool
+		call.rounds, ok = parseReviewRounds(operationArgs)
 		return call, ok
 	}
 	if call.command == "reviews" && (call.subcommand == "import-preview" || call.subcommand == "import-apply") {

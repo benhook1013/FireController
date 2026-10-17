@@ -19,8 +19,10 @@ func validCoverageSource(current SourcePlan) bool {
 // evidence on any head in the selected channel. Pending dominates admission
 // even when Covered is true.
 type ComparisonState struct {
-	Covered bool
-	Pending bool
+	Covered          bool
+	Pending          bool
+	RoundsConfigured bool
+	RoundsComplete   bool
 }
 
 // Coverage reports usable current coverage only when no completed native
@@ -76,6 +78,12 @@ func comparison(ctx context.Context, tx *sql.Tx, project string, repositoryID, n
 	if dirty {
 		return ComparisonState{}, adjudicationStorageError()
 	}
+	rounds, err := readRoundControl(ctx, tx, project, number, channel)
+	if err != nil {
+		return ComparisonState{}, err
+	}
+	result.RoundsConfigured = rounds.Configured
+	result.RoundsComplete = rounds.Configured && (rounds.Closed || rounds.Used >= rounds.Maximum || rounds.Tapered)
 	return result, nil
 }
 

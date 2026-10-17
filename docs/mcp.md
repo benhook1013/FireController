@@ -72,6 +72,8 @@ Startup validates configuration without opening the credential or contacting the
 | `review_source_ci_assess` | Required pull_number; compact retained required-CI facts and local applicability, with observation age; no provider work or merge-readiness claim. |
 | `review_source_policy_assess` | Required pull_number; current local policy against the last completed source observation, with its age; no CI or merge-readiness claim. |
 | `review_policy_assess` | Required evidence_id; current local policy against that retained captured comparison; no source refresh, CI or merge-readiness claim. |
+| `review_rounds_read` | Required pull_number and channel; compact stored additional-round progress and closure. No provider calls or readiness verdict. |
+| `review_rounds_configure` | Administrator grant/close with pull_number, channel, expected_revision, action and idempotency_key. Grant requires minimum/maximum; close omits both. Changes local controls without dispatching reviews. |
 | `review_evidence_read` | Required evidence_id; explicit full retained native capture and parsed findings, excluding raw diagnostics. |
 | `review_adjudication_read` | Required evidence_id; current guarded decisions and fix references without repeating finding text. |
 | `review_finding_decide` | Required idempotency_key/evidence_id/expected_revision/finding/disposition/reason; completed adjudication result. |

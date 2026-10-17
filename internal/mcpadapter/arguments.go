@@ -86,6 +86,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if jobProgressTool(name) {
 		return jobProgressArguments(name, data)
 	}
+	if name == "review_rounds_read" || name == "review_rounds_configure" {
+		return roundControlArguments(name, data)
+	}
 	if reviewControlTool(name) {
 		return reviewControlArguments(name, data)
 	}
@@ -180,6 +183,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 }
 
 func mutationTool(name string) bool {
+	if name == "review_rounds_configure" {
+		return true
+	}
 	if name == "job_primary_replace" || name == "job_update_append" || name == "job_checklist_replace" {
 		return true
 	}

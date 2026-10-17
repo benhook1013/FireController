@@ -113,6 +113,13 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if reason != "" {
 			return holdOperation(ctx, tx, o, reason, at)
 		}
+		if _, err := admitRoundControl(ctx, tx, o); err != nil {
+			var refusal *core.Error
+			if errors.As(err, &refusal) && (refusal.Code == "review_held" || roundControlRefusal(refusal.Code)) {
+				return holdOperation(ctx, tx, o, preparationReason(err), at)
+			}
+			return err
+		}
 		var repositoryID int64
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
@@ -217,6 +224,9 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		}
 		if reason != "" {
 			return policyAdmissionConflict()
+		}
+		if _, err := admitRoundControl(ctx, tx, o); err != nil {
+			return err
 		}
 		state := "active"
 		if o.Channel == "hosted" {
@@ -323,6 +333,9 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 		}
 		if state == "completed" {
 			if err = refreshComparisonProof(ctx, tx, project, a.OperationID); err != nil {
+				return err
+			}
+			if err = completeRoundControl(ctx, tx, project, a.OperationID); err != nil {
 				return err
 			}
 		}
