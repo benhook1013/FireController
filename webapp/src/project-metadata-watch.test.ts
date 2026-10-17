@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Api } from './api';
+import { startMetadataAttempt } from './metadata-recovery';
 import type { PresentationSnapshot, ProjectMetadataPage } from './types';
 
 const project = { id: 'project_one', name: 'One', github_repository_id: 1, repository: 'owner/repo' };
@@ -17,6 +18,7 @@ describe('independent project metadata transport', () => {
       const url = new URL(String(input)); const headers = new Headers(init?.headers);
       if (url.pathname.endsWith('/instance')) return json({ instance_id: 'instance_one' });
       if (url.pathname.endsWith('/project_one')) return json(project);
+      if (url.pathname.endsWith('/presentation')) return json({ presentation: { ...initial.presentation, revision: 1, updated_at: '2026-10-18T00:00:00Z' }, event_cursor: 'project_changed' });
       if (url.pathname.endsWith('/snapshot')) return json({ inbox: { items: [], has_more: false }, event_cursor: `inbox_${headers.get('x-fc-worker')}` });
       const signal = init!.signal as AbortSignal;
       const body = new ReadableStream<Uint8Array>({ start(output) {
@@ -30,7 +32,8 @@ describe('independent project metadata transport', () => {
     const api = new Api('private-test-token', project.id); await api.connect();
     const metadata = new AbortController(), message = new AbortController();
     const received: string[] = [];
-    const watching = api.watchProjectMetadata(initial, { snapshot() {}, events: page => { received.push(...page.items.map(item => item.event_cursor)); }, status() {} }, metadata.signal);
+    const failures: unknown[] = [];
+    const watching = startMetadataAttempt(api, initial, { retry: false, lifetime: metadata.signal, current: () => true, appearance() {}, refresh: async page => { if (page) received.push(...page.items.map(item => item.event_cursor)); }, status() {}, failure: error => { failures.push(error); } });
     const firstInbox = api.watchMessages('worker_one', {}, { snapshot() {}, events() {}, status() {} }, message.signal);
     await flush();
     const projectStream = streams.find(stream => stream.path.includes('project-events'))!;
@@ -42,8 +45,9 @@ describe('independent project metadata transport', () => {
     expect(streams.filter(stream => stream.path.includes('project-events'))).toHaveLength(1);
     projectStream.output.enqueue(frame('project-events', 'project_changed', { items: [{ event_type: 'project.presentation_changed', resource_id: project.id, revision: 1, event_cursor: 'project_changed' }], event_cursor: 'project_changed', has_more: false }));
     await flush(); expect(received).toEqual(['project_changed']);
-    metadata.abort(); message.abort(); await Promise.all([watching, firstInbox, secondInbox]); api.close();
+    metadata.abort(); message.abort(); await Promise.all([watching.done, firstInbox, secondInbox]); api.close();
     expect(streams.every(stream => stream.signal.aborted)).toBe(true);
+    expect(failures).toEqual([]);
   });
 
   it('resnapshots expired replay and reconnects only after applying the processed page', async () => {
