@@ -19,6 +19,9 @@ import (
 
 const usage = `Usage: legacyimport inspect --snapshot ABSOLUTE_PATH [options]
 
+The separate prepare-jobs command prepares selected historical job snapshots;
+use legacyimport prepare-jobs --help for its explicit file selection.
+
 Inspect a sealed legacy-controller SQLite snapshot. Output is compact JSON;
 the command does not modify the snapshot or contact a service.
 
@@ -51,6 +54,9 @@ func diagnostic(w io.Writer, code, message string) {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "prepare-jobs" {
+		return runPrepare(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) == 1 && args[0] == "--help" || len(args) == 2 && args[0] == "inspect" && args[1] == "--help" {
 		if _, err := io.WriteString(stdout, usage); err != nil {
 			return 3
@@ -78,28 +84,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.Int64Var(&limits.MaxTotalCellBytes, "max-total-cell-bytes", 0, "total cell limit")
 	// The standard flag package accepts duplicate flags and can echo private
 	// arguments in diagnostics. Admit one explicit value for each known flag.
-	seen := map[string]bool{}
-	for i := 1; i < len(args); i++ {
-		if !strings.HasPrefix(args[i], "--") || args[i] == "--" {
-			return invalid()
-		}
-		name, value, assigned := strings.Cut(strings.TrimPrefix(args[i], "--"), "=")
-		if flags.Lookup(name) == nil || seen[name] {
-			return invalid()
-		}
-		seen[name] = true
-		if !assigned {
-			i++
-			if i >= len(args) {
-				return invalid()
-			}
-			value = args[i]
-		}
-		if value == "" {
-			return invalid()
-		}
+	if !uniqueFlags(flags, args[1:]) {
+		return invalid()
 	}
-	if flags.Parse(args[1:]) != nil || flags.NArg() != 0 || !filepath.IsAbs(snapshot) || strings.TrimSpace(snapshot) != snapshot || strings.IndexFunc(snapshot, unicode.IsControl) >= 0 || budget <= 0 || budget > 5*time.Minute {
+	seen := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+	if !filepath.IsAbs(snapshot) || strings.TrimSpace(snapshot) != snapshot || strings.IndexFunc(snapshot, unicode.IsControl) >= 0 || budget <= 0 || budget > 5*time.Minute {
 		return invalid()
 	}
 	provided := map[string]int64{

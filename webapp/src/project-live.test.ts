@@ -25,6 +25,20 @@ function fixture() {
 }
 
 describe('live private project views', () => {
+  it('refreshes imported job views without replaying messages or fetching unopened bodies', async () => {
+    const f = fixture();
+    const jobs = f.add(['jobs', '', false, '']);
+    const checkpoint = f.add(['checkpoint-latest', 'job_one']);
+    const inactive = f.add(['job', 'not_open'], false);
+    const inbox = f.add(['inbox', '']);
+    const reviews = f.add(['reviews', 'current', 'queue', '']);
+    try {
+      await refreshProjectMetadata(f.client, key, page([{ event_type: 'coordination.imported', resource_id: 'project' }]), new AbortController().signal);
+      expect(jobs.reads()).toBe(1); expect(checkpoint.reads()).toBe(1);
+      expect(inactive.reads()).toBe(0); expect(inactive.state()?.isInvalidated).toBe(true);
+      expect(inbox.reads()).toBe(0); expect(reviews.reads()).toBe(0);
+    } finally { f.close(); }
+  });
   it('coalesces job changes into affected active reads without fetching unrelated context or archives', async () => {
     const f = fixture();
     const jobs = f.add(['jobs', '', false, '']);
@@ -97,7 +111,7 @@ describe('live private project views', () => {
 
   it('accepts only the bounded explicit change vocabulary without messages or payloads', () => {
     const complete = page(projectEventTypes.map(event_type => ({ event_type, resource_id: 'record_one' })));
-    expect(validMetadataPage(complete, 25)).toBe(true);
+    expect(validMetadataPage(complete, 100)).toBe(true);
     for (const kind of ['message.sent', 'credentials.revoked', 'review.cli_preflight', 'review.future_kind']) {
       expect(validMetadataPage({ ...complete, items: [{ ...complete.items[0], event_type: kind }] }, 25)).toBe(false);
     }

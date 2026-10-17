@@ -1,5 +1,6 @@
 // Explicit private project invalidation vocabulary; message delivery has its own feed.
 export const projectEventTypes = [
+  'coordination.imported',
   'project.presentation_changed',
   'map.entry_created',
   'map.entry_updated',

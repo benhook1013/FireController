@@ -14,6 +14,7 @@ const projectFeed = "events:project-metadata"
 // exact allowlist shared by replay and live hints; messages and authentication
 // events retain their separate delivery/authorization paths.
 var projectEventTypes = [...]string{
+	"coordination.imported",
 	"project.presentation_changed", "map.entry_created", "map.entry_updated",
 	"job.workstream_changed", "job.created", "job.updated", "job.checkpointed", "job.update_appended", "job.checklist_replaced",
 	"workers.created", "worker.pause_changed", "worker.primary_job_changed",

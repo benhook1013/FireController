@@ -118,6 +118,9 @@ jobs:
       - name: Smoke packaged binaries
         if: matrix.shard == 'rest'
         run: make smoke
+      - name: Smoke selected legacy job adoption
+        if: matrix.shard == 'rest'
+        run: make legacyimport migration-smoke
       - name: Install pinned Chromium
         if: matrix.shard == 'rest'
         working-directory: webapp

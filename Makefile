@@ -4,7 +4,7 @@ GO_TEST_PACKAGES ?= ./...
 GO_TEST_RUN ?= .
 ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-.PHONY: check workflow-check fmt-check test build docs-check browser-check browser-build smoke browser-smoke legacyimport
+.PHONY: check workflow-check fmt-check test build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke
 
 check: workflow-check browser-check fmt-check test docs-check
 
@@ -26,6 +26,10 @@ build: browser-build
 # Optional source-specific migration utility; not part of the service build.
 legacyimport:
 	CGO_ENABLED=0 $(GO) build -trimpath -o bin/legacyimport ./tools/legacyimport
+
+# Requires make build and make legacyimport; never rebuild during the workload.
+migration-smoke:
+	$(GO) test -tags=packaged_smoke -run '^TestPackagedCoordinationImportSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 
 docs-check:
 	npm run docs:check

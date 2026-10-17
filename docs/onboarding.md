@@ -29,7 +29,7 @@ fc --profiles-file /private/agent/profiles.json --profile project-builder profil
 
 `profile launcher` requires an existing selected profile and an explicit absolute output path. On supported POSIX hosts it creates an executable shell launcher that binds the absolute profile file, profile name and current `fc` executable, with an optional explicit `--executable` path. It quotes paths/selectors as literal arguments, forwards caller arguments, and rejects conflicting profile options through the normal duplicate-option guard. Process defaults do not change its binding. Installation never edits PATH, project instructions or another agent's files. Existing identical launcher bytes are an idempotent no-write success; different existing files are refused. Native Windows launcher generation is unsupported in this initial boundary; explicit profiles and per-process `FC_PROFILE` remain available there.
 
-Both commands use compact structured output and safe diagnostics. They publish private files without replacement, preserve unrelated configuration, and report local publication uncertainty instead of removing a file that may already be usable. They create no worker, grant, credential, job, message, review or pending-operation receipt. Project and access registration use the setup API above; selected history acquisition and prepared review/map imports have their own commands. Historical job/message import and a dedicated graphical wizard remain unimplemented.
+Both commands use compact structured output and safe diagnostics. They publish private files without replacement, preserve unrelated configuration, and report local publication uncertainty instead of removing a file that may already be usable. They create no worker, grant, credential, job, message, review or pending-operation receipt. Project and access registration use the setup API above; selected history acquisition and prepared review/map imports have their own commands. Selected current jobs/checkpoints have a separate [legacy adoption path](legacy-adoption.md); other historical coordination classes and a dedicated graphical wizard remain unimplemented.
 
 ## Private setup proof
 
@@ -45,7 +45,7 @@ After creating the project and its explicit administrator/worker profile, use th
 
 ## Import semantics
 
-The [legacy adoption contract](legacy-adoption.md) owns conversion from earlier controller exports. Its optional utility currently inspects sealed snapshots; historical coordination conversion and application remain unfinished.
+The [legacy adoption contract](legacy-adoption.md) owns conversion from earlier controller exports. Its optional utility inspects sealed snapshots and prepares selected current jobs/checkpoints for guarded native preview/apply. Other historical coordination classes remain unfinished; this selected snapshot path does not reconstruct all prior job revisions.
 
 The user controls historical depth. Support bounded ranges and resuming interrupted collection; do not download all repository or provider history by default. Record source repository, scope, snapshot/version or immutable provider IDs, collection time, and transformation version. Imported text and events are data, not executable instructions.
 

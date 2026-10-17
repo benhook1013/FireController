@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/benhook1013/FireController/internal/coordimport"
 	"github.com/benhook1013/FireController/internal/historycollect"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/presentation"
@@ -221,8 +222,11 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 5, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"coordination_import": 1, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 5, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"coordination_import_state":         {"coordination_import", 1, "project_id revision"},
+	"coordination_import_records":       {"coordination_import", 1, "project_id source source_key job_id import_revision item_sha256 source_sha256 item_json created_at"},
+	"coordination_import_batches":       {"coordination_import", 1, "project_id revision source source_sha256 payload_sha256 actor_id worker_id created_at"},
 	"history_collections":               {"history_collection", 1, "id project_id repository_id actor_id worker_id reader_fingerprint selection_json state revision reason position_json pass_number page_count record_count created_at updated_at"},
 	"history_collection_pages":          {"history_collection", 1, "id project_id collection_id sequence pass_number reader_fingerprint pull_number resource page_number record_count body_sha256 body_json created_at"},
 	"history_collection_seen":           {"history_collection", 1, "project_id collection_id pass_number record_id page_id"},
@@ -785,6 +789,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	if err != nil {
 		return err
 	}
+	if versions["coordination_import"] > 0 {
+		if err := coordimport.ValidateSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
 	// Published source bundles must leave room to archive their active source.
 	// Live preflight/status/startup keep accepting a valid bounded history.
 	if !allowInactive && versions["recovery_history"] != 0 {
@@ -1248,6 +1260,9 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"coordination_import_state":         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"coordination_import_records":       {canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION"), canonicalFK("coordination_import_batches", "project_id,import_revision", "project_id,revision", "NO ACTION")},
+	"coordination_import_batches":       {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"history_collections":               {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"history_collection_pages":          {canonicalFK("history_collections", "project_id,collection_id", "project_id,id", "NO ACTION")},
 	"history_collection_seen":           {canonicalFK("history_collection_pages", "project_id,collection_id,page_id", "project_id,collection_id,id", "NO ACTION")},

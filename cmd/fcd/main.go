@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/backup"
+	"github.com/benhook1013/FireController/internal/coordimport"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/historycollect"
 	"github.com/benhook1013/FireController/internal/inbox"
@@ -159,6 +160,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
+	if err = coordimport.EnsureSchema(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
 	if err = reviews.EnsureSchema(ctx, store); err != nil {
 		diagnosticError(stderr, err)
 		return 3
@@ -201,6 +206,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	projectmap.Register(mux, store)
 	presentation.Register(mux, store)
 	inbox.Register(mux, store)
+	coordimport.Register(mux, store)
 	reviews.Register(mux, store)
 	publicsite.New(store, reviews.PublicSiteReviewFacts).Register(mux, ctx)
 	execution.Register(mux)

@@ -19,7 +19,11 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
     add('reviews', 'current'); add('reviews', 'policy-assessment');
   }
   for (const { event_type: type, resource_id: id } of items) {
-    if (type.startsWith('map.')) {
+    if (type === 'coordination.imported') {
+      // One batch notification replaces replay of historical operational events.
+      // Refresh active imported domains, leaving unopened bodies unfetched.
+      for (const domain of ['jobs', 'job', 'checkpoint-latest', 'checkpoints']) add(domain);
+    } else if (type.startsWith('map.')) {
       add('map'); add('map-entry', id); add('map-history', id);
       // An entry rename/archive affects recorded references in current views.
       add('job-workstream');

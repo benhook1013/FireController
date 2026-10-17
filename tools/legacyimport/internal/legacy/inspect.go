@@ -78,6 +78,12 @@ func fileDigest(ctx context.Context, file *os.File, maximum int64) (string, erro
 // Only known source tables are read. Recognition/counts and selected blockers
 // are not complete legacy content validation or approval to import anything.
 func InspectSnapshot(ctx context.Context, path string, limits Limits) (result Inspection, err error) {
+	return withInspection(ctx, path, limits, nil)
+}
+
+// The optional converter shares the same open file, SQL handle, admitted bounds
+// and final conservation check as inspection. Never reopen a checked path later.
+func withInspection(ctx context.Context, path string, limits Limits, selected func(*sql.DB, Inspection) error) (result Inspection, err error) {
 	if ctx == nil {
 		return Inspection{}, failure("snapshot_invalid")
 	}
@@ -179,6 +185,11 @@ func InspectSnapshot(ctx context.Context, path string, limits Limits) (result In
 	}
 	if err = inspectControllerState(ctx, db, &result); err != nil {
 		return Inspection{}, err
+	}
+	if selected != nil {
+		if err = selected(db, result); err != nil {
+			return Inspection{}, err
+		}
 	}
 	return result, nil
 }

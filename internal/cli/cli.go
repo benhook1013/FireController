@@ -66,10 +66,11 @@ type invocation struct {
 	presentation *presentationInvocation
 	publication  *publicationInvocation
 
-	reviewImport   *reviewImportInvocation
-	reviewTransfer *reviewTransferInvocation
-	mapImport      *mapImportInvocation
-	history        *historyInvocation
+	reviewImport       *reviewImportInvocation
+	reviewTransfer     *reviewTransferInvocation
+	coordinationImport *coordinationImportInvocation
+	mapImport          *mapImportInvocation
+	history            *historyInvocation
 
 	waitSeconds int
 }
@@ -127,6 +128,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.reviewTransfer != nil {
 		if err := prepareReviewTransfer(ctx, call.reviewTransfer); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+	}
+	if call.coordinationImport != nil {
+		if err := prepareCoordinationImport(ctx, call.coordinationImport); err != nil {
 			return reportClientError(stderr, err, ctx)
 		}
 	}
@@ -204,6 +210,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.reviewTransfer != nil {
 		return executeReviewTransfer(requestCtx, ctx, service, call.reviewTransfer, stdout, stderr)
+	}
+	if call.coordinationImport != nil {
+		return executeCoordinationImport(requestCtx, ctx, service, call.coordinationImport, stdout, stderr)
 	}
 	if call.projectMap != nil {
 		value, err := executeProjectMap(requestCtx, service, call.projectMap)
@@ -361,11 +370,14 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.setup, ok = parseProfileSetup(call.subcommand, remaining[2:])
 		return call, ok && (!call.hasProfile || validSetupText(call.profile)) && (!call.hasProfilesFile || validSetupText(call.profilesFile))
 	}
-	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" && call.command != "presentation" && call.command != "publication" && call.command != "history" || len(remaining) < 2 {
+	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" && call.command != "presentation" && call.command != "publication" && call.command != "history" && call.command != "import" || len(remaining) < 2 {
 		return call, false
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if call.command == "import" {
+		return parseCoordinationImport(call, operationArgs)
+	}
 	if call.command == "history" {
 		var ok bool
 		call.history, ok = parseHistory(call.subcommand, operationArgs)
