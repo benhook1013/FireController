@@ -9,7 +9,7 @@ import { ProjectSettings } from './project-settings';
 import { ProjectMap, ProjectMapEntryView, ProjectMapRevisionView, JobWorkstreamPanel } from './project-map';
 import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView, notesPath } from './coordination';
 import { refreshEventQueries } from './queries';
-import { clearBrowserSession, loadBrowserSession, renewedBrowserSessionBinding, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
+import { browserSessionKey, clearBrowserSession, loadBrowserSession, renewedBrowserSessionBinding, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
 import { BrowserSessionRenewal, listenForSessionActivity } from './session-renewal';
 import { applyPresentationRoot } from './presentation';
 import { PresentationContext, usePresentation, useProjectHeading } from './presentation-context';
@@ -49,6 +49,13 @@ export default function App() {
   return location.pathname === '/public' || location.pathname.startsWith('/public/') ? <PublicSiteRouter /> : <PrivateApp />;
 }
 
+// Presence controls only the initial loading shell. Validation, expiry and
+// discarded-session cleanup stay in the effect, never in a render initializer.
+function hasSavedBrowserBinding(): boolean {
+  try { return Boolean(globalThis.sessionStorage?.getItem(browserSessionKey)); }
+  catch { return false; }
+}
+
 function PrivateApp() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -66,6 +73,7 @@ function PrivateApp() {
   const [reconnect, setReconnect] = useState(0);
   const [notice, setNotice] = useState('');
   const [connecting, setConnecting] = useState(false);
+  const [restoring, setRestoring] = useState(hasSavedBrowserBinding);
   const [appearance, setAppearance] = useState<Presentation>();
   const [metadataStatus, setMetadataStatus] = useState<LiveStatus>('connecting');
   const renewal = useRef<BrowserSessionRenewal<BrowserSessionView> | null>(null);
@@ -79,7 +87,7 @@ function PrivateApp() {
     current.current = null;
     old?.controller.abort(); old?.projectController.abort(); old?.api.close();
     if (old) { void queryClient.cancelQueries({ queryKey: ['fc', old.nonce] }); queryClient.removeQueries({ queryKey: ['fc', old.nonce] }); }
-    setSession(null); setAppearance(undefined); applyPresentationRoot(document.documentElement, document); setConnecting(false); setNotice(message);
+    setSession(null); setAppearance(undefined); applyPresentationRoot(document.documentElement, document); setConnecting(false); setRestoring(false); setNotice(message);
   }, [queryClient]);
   // The data router asks before it unmounts this private workspace, including
   // Back navigation and transitions to the separate public application.
@@ -105,14 +113,14 @@ function PrivateApp() {
   }, [queryClient]);
   useEffect(() => {
     if (current.current || pending.current) return;
-    const binding = loadBrowserSession(routeProject, expireBinding);
-    saved.current = binding; setResumable(binding);
+    const binding = saved.current?.projectID === routeProject ? saved.current : loadBrowserSession(routeProject, expireBinding);
+    saved.current = binding; setResumable(binding); setRestoring(Boolean(binding));
     if (binding) void connect(binding.projectID, undefined, binding);
   }, [routeProject, reconnect]);
   async function connect(projectId: string, token?: string, restored?: BrowserSessionBinding) {
     if (!restored) clear();
     let api: Api;
-    try { api = restored ? Api.resume(restored.projectID, restored.sessionID, restored.instanceID) : new Api(token ?? '', projectId); } catch (error) { setNotice(errorText(error)); return; }
+    try { api = restored ? Api.resume(restored.projectID, restored.sessionID, restored.instanceID) : new Api(token ?? '', projectId); } catch (error) { setRestoring(false); setConnecting(false); setNotice(errorText(error)); return; }
     const controller = new AbortController();
     const attempt = { api, controller, projectId, routeKey: location.key };
     pending.current = attempt; setConnecting(true); setNotice('');
@@ -141,14 +149,14 @@ function PrivateApp() {
       if (!saveBrowserSession(binding)) throw new ApiError('browser_storage_unavailable', 'The browser session could not be retained safely.');
       saved.current = binding; setResumable(binding);
       const next: Session = { api, project, instanceId: api.instanceId!, nonce: nonce(), controller: new AbortController(), projectController: controller, presentationSnapshot, worker, binding, actions: new BrowserActionMemory(), renewalAttemptAt: restored ? undefined : performance.now() };
-      pending.current = null; current.current = next; setAppearance(presentationSnapshot.presentation); setSession(next); setConnecting(false);
+      pending.current = null; current.current = next; setAppearance(presentationSnapshot.presentation); setSession(next); setConnecting(false); setRestoring(false);
       if (routeProject !== project.id) navigate(`/projects/${encodeURIComponent(project.id)}`);
     } catch (error) {
       if (!restored) void api.endBrowserSession().catch(() => {});
       api.close();
       if (pending.current === attempt) {
         if (terminal(error)) clear(errorText(error));
-        else { pending.current = null; setConnecting(false); setNotice(errorText(error)); }
+        else { pending.current = null; setConnecting(false); setRestoring(false); setNotice(errorText(error)); }
       }
     }
   }
@@ -246,7 +254,8 @@ function PrivateApp() {
   return <PresentationContext.Provider value={visibleAppearance}>
     <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><span className="mast-label">{visibleAppearance?.tagline ?? 'Project workspace'}</span></div></header>
     {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} selectWorker={selectWorker} disconnect={() => { if (session.actions.unresolved > 0 && !window.confirm(discardActionWarning)) return; clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
-      : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={(project, token) => void connect(project, token)} reconnect={resumable ? () => setReconnect(value => value + 1) : undefined} cancel={() => clear('Connection cancelled.')} />}
+      : restoring || resumable ? <OpeningProject busy={restoring || connecting} notice={notice} retry={() => setReconnect(value => value + 1)} cancel={() => clear('Connection cancelled.')} />
+      : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={(project, token) => void connect(project, token)} cancel={() => clear('Connection cancelled.')} />}
     <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span></footer>
   </PresentationContext.Provider>;
 }
@@ -276,14 +285,21 @@ async function restoredWorker(api: Api, workerID: string, signal: AbortSignal): 
 }
 
 function Flame() { return <img className="flame" src={flameEmber} alt="" aria-hidden="true" />; }
-function Connect({ projectId, busy, notice, onConnect, reconnect, cancel }: { projectId: string; busy: boolean; notice: string; onConnect(project: string, token: string): void; reconnect?: () => void; cancel(): void }) {
+export function OpeningProject({ busy, notice, retry, cancel }: { busy: boolean; notice: string; retry(): void; cancel(): void }) {
+  return <main className="opening-project"><section className="panel opening-project-card" aria-labelledby="opening-project-title">
+    <h1 id="opening-project-title">{busy ? 'Opening project…' : 'Project connection unavailable'}</h1>
+    {busy ? <p role="status">Verifying this tab’s saved connection.</p> : <p className="notice" role="alert">{notice || 'The project could not be reached. Try again when the connection is available.'}</p>}
+    <div className="opening-project-actions">{!busy && <button type="button" className="primary" onClick={retry}>Retry connection</button>}<button type="button" onClick={cancel}>Cancel connection</button></div>
+  </section></main>;
+}
+
+function Connect({ projectId, busy, notice, onConnect, cancel }: { projectId: string; busy: boolean; notice: string; onConnect(project: string, token: string): void; cancel(): void }) {
   const [project, setProject] = useState(projectId);
   const [token, setToken] = useState('');
   function submit(event: FormEvent) { event.preventDefault(); const supplied = token; setToken(''); onConnect(project, supplied); }
   return <main className="connect-layout"><section className="connect-intro"><h1>Keep work<br /> moving.</h1><p>A clear view of your AI agents, their jobs, and your review and merge trains.</p><div className="intro-rule" /><p className="quiet-light">Connect to a project on this service to begin.</p></section>
     <section className="connect-card"><h2>Connect to a project</h2>
       {notice && <div className="notice" role="alert">{notice}</div>}
-      {reconnect && !busy && <button type="button" onClick={reconnect}>Reconnect to project</button>}
       <form onSubmit={submit} autoComplete="off"><label htmlFor="project-id">Project ID</label><input id="project-id" name="project-id" value={project} onChange={event => setProject(event.target.value)} required maxLength={128} spellCheck={false} autoCapitalize="none" disabled={busy} />
         <label htmlFor="project-credential">Project credential</label><input id="project-credential" name="project-credential" type="password" value={token} onChange={event => setToken(event.target.value)} required maxLength={4096} autoComplete="off" disabled={busy} />
         <p className="field-note">Stay signed in while you use the site. Sign in again after 24 hours away.</p>
@@ -347,7 +363,7 @@ function Workspace({ session, metadataStatus, selectWorker, disconnect, fail }: 
   const value = useMemo(() => ({ session, key, home, selectWorker, fail: onFailure, ready }), [session, key, home, selectWorker, onFailure, ready]);
   const liveLabel = !session.worker ? 'Choose a worker' : live === 'live' ? 'Live inbox connected' : live === 'reconnecting' ? 'Reconnecting inbox…' : live === 'closed' ? 'Inbox disconnected' : 'Connecting inbox…';
   return <WorkspaceContext.Provider value={value}><main className="workspace">
-    <section className="hero"><div className="hero-project"><p className="eyebrow">{presentation?.tagline ?? 'Project workspace'} <span className="read-only">{session.api.browserCapabilities.allow_writes ? 'Changes enabled' : 'Read only'}</span></p><h1>{presentation?.name ?? session.project.name}</h1><p className="repository">{session.project.repository}</p><p className="identity">Project {session.project.id}</p></div>
+    <section className="hero"><div className="hero-project"><h1>{presentation?.name ?? session.project.name}</h1><p className="repository">{session.project.repository}</p><p className="identity">Project {session.project.id}</p></div>
       <div className="hero-side"><div className="connection-card"><span className="eyebrow">{heroEyebrow}</span><strong>{heroTitle}</strong><p>{heroDescription}</p><div className="hero-actions"><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh visible data'}</button><button className="quiet-button" type="button" onClick={disconnect}>Disconnect</button></div></div></div></section>
     <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink><NavLink to={`${home}/map`}>{mapHeading}</NavLink><NavLink to={`${home}/notes`}>{notesHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}<span className="connection-note">Connected</span></nav>
     {metadataStatus !== 'live' && <p className="notice" role="status">Project updates {metadataStatus === 'connecting' ? 'connecting' : 'disconnected'}. Displayed project data may be stale.</p>}
@@ -386,7 +402,7 @@ function Jobs() {
   const [status, setStatus] = useState('');
   const { session } = useWorkspace();
   const [assigned, setAssigned] = useState(false);
-  return <><div className="page-heading"><p className="eyebrow">Work in motion</p><h2>{label}</h2><p>Current work and its full context, one job at a time.</p></div><div className="filters"><label>Status<select aria-label="Job status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label>{session.worker && <label className="checkbox-label"><input type="checkbox" checked={assigned} onChange={event => setAssigned(event.target.checked)} />Assigned to {session.worker.name}</label>}</div><JobList key={`${status}/${assigned}`} status={status as JobSummary['status'] | ''} assigned={assigned} /></>;
+  return <><div className="page-heading"><h2>{label}</h2><p>Current work and its full context, one job at a time.</p></div><div className="filters"><label>Status<select aria-label="Job status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label>{session.worker && <label className="checkbox-label"><input type="checkbox" checked={assigned} onChange={event => setAssigned(event.target.checked)} />Assigned to {session.worker.name}</label>}</div><JobList key={`${status}/${assigned}`} status={status as JobSummary['status'] | ''} assigned={assigned} /></>;
 }
 function JobList({ status, assigned }: { status: JobSummary['status'] | ''; assigned: boolean }) {
   const { session, key, home } = useWorkspace();
