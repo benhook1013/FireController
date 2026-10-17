@@ -18,8 +18,8 @@ func historyFindingValues(position int, finding Finding) []any {
 
 // A run and its bounded detail share one immutable version. Comparing detail
 // separately prevents summary-only equality from hiding an adjudication change.
-func historyFindingsEqual(ctx context.Context, tx *sql.Tx, project, id string, version int64, findings []Finding) (bool, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT "+strings.Join(historyFindingColumns, ",")+" FROM review_finding_versions WHERE project_id=? AND run_id=? AND run_version_revision=? ORDER BY position", project, id, version)
+func historyFindingsEqual(ctx context.Context, q HistoryQuery, project, id string, version int64, findings []Finding) (bool, error) {
+	rows, err := q.QueryContext(ctx, "SELECT "+strings.Join(historyFindingColumns, ",")+" FROM review_finding_versions WHERE project_id=? AND run_id=? AND run_version_revision=? ORDER BY position", project, id, version)
 	if err != nil {
 		return false, err
 	}
@@ -47,7 +47,7 @@ func (w *historySnapshotWrite) run(ctx context.Context, tx *sql.Tx, source strin
 	summary := summarizeRun(w.project, source, number, run)
 	var oldVersion, oldNumber int64
 	var oldSource, oldSourceID, oldChannel, oldHead, oldScope string
-	err := tx.QueryRowContext(ctx, `SELECT version_revision,pull_number,source,source_run_id,channel,head_sha,scope FROM review_run_versions WHERE project_id=? AND id=? ORDER BY version_revision DESC LIMIT 1`, w.project, summary.ID).Scan(&oldVersion, &oldNumber, &oldSource, &oldSourceID, &oldChannel, &oldHead, &oldScope)
+	err := w.scan(ctx, tx, `SELECT version_revision,pull_number,source,source_run_id,channel,head_sha,scope FROM review_run_versions WHERE project_id=? AND id=? ORDER BY version_revision DESC LIMIT 1`, []any{w.project, summary.ID}, &oldVersion, &oldNumber, &oldSource, &oldSourceID, &oldChannel, &oldHead, &oldScope)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -56,7 +56,7 @@ func (w *historySnapshotWrite) run(ctx context.Context, tx *sql.Tx, source strin
 		if oldNumber != number || oldSource != source || oldSourceID != run.SourceRunID || oldChannel != run.Channel || oldHead != run.HeadSHA || oldScope != run.Scope {
 			return core.Fail("observation_conflict", "A retained run's source identity and owning PR cannot change.", 409)
 		}
-		equal, err := historyFindingsEqual(ctx, tx, w.project, summary.ID, oldVersion, run.Findings)
+		equal, err := historyFindingsEqual(ctx, w.reads, w.project, summary.ID, oldVersion, run.Findings)
 		if err != nil {
 			return err
 		}
@@ -70,7 +70,7 @@ func (w *historySnapshotWrite) run(ctx context.Context, tx *sql.Tx, source strin
 		columns := append([]string{"project_id", "run_id", "run_version_revision", "pull_number"}, historyFindingColumns...)
 		for position, finding := range run.Findings {
 			values := append([]any{w.project, summary.ID, version, number}, historyFindingValues(position, finding)...)
-			if err := historyInsert(ctx, tx, "review_finding_versions", columns, values); err != nil {
+			if err := w.insert(ctx, tx, "review_finding_versions", columns, values); err != nil {
 				return err
 			}
 		}
@@ -81,7 +81,7 @@ func (w *historySnapshotWrite) run(ctx context.Context, tx *sql.Tx, source strin
 func (w *historySnapshotWrite) attempt(ctx context.Context, tx *sql.Tx, source string, number int64, position int, attempt Attempt) error {
 	var oldNumber int64
 	var channel, head, started, state, run, trigger, provider string
-	err := tx.QueryRowContext(ctx, `SELECT pull_number,channel,head_sha,started_at,state,source_run_id,trigger_id,provider_review_id FROM review_attempt_versions WHERE project_id=? AND source=? AND source_attempt_id=? ORDER BY version_revision DESC LIMIT 1`, w.project, source, attempt.SourceAttemptID).Scan(&oldNumber, &channel, &head, &started, &state, &run, &trigger, &provider)
+	err := w.scan(ctx, tx, `SELECT pull_number,channel,head_sha,started_at,state,source_run_id,trigger_id,provider_review_id FROM review_attempt_versions WHERE project_id=? AND source=? AND source_attempt_id=? ORDER BY version_revision DESC LIMIT 1`, []any{w.project, source, attempt.SourceAttemptID}, &oldNumber, &channel, &head, &started, &state, &run, &trigger, &provider)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}

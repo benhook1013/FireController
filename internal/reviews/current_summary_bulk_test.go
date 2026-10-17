@@ -69,7 +69,9 @@ func TestCurrentSummaryBulkObservationReplacement(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT (SELECT count(*) FROM review_current_totals WHERE project_id=?),(SELECT count(*) FROM review_current_attempt_order WHERE project_id=?)`, f.project, f.project).Scan(&totals, &orders); err != nil || totals != 50 || orders != 100 {
 		t.Fatal("omitted membership retained derived rows", totals, orders, err)
 	}
+	started = time.Now()
 	historyObservationPost(t, f, reviewRequest(3, updated), "bulk-return")
+	t.Logf("100-PR reappearance actual observation: %s", time.Since(started))
 	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
 		t.Fatal(err)
 	}

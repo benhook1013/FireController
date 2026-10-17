@@ -34,8 +34,7 @@ type historySnapshotWrite struct {
 	// A validated full observation already supplies the exact replacement
 	// counts, including unchanged records and excluding omitted membership.
 	replacementTotals map[int64]summaryTotals
-	statementTx       *sql.Tx
-	statements        map[string]*sql.Stmt
+	reads             *historyReads
 }
 
 func newHistorySnapshotWrite(project string, revision int64) *historySnapshotWrite {
@@ -89,21 +88,12 @@ func historyInsert(ctx context.Context, tx *sql.Tx, table string, columns []stri
 // Reuse only repository-owned SQL shapes within this one snapshot transaction.
 // The transaction closes its prepared statements on commit or rollback.
 func (w *historySnapshotWrite) statement(ctx context.Context, tx *sql.Tx, query string) (*sql.Stmt, error) {
-	if w.statementTx == nil {
-		w.statementTx = tx
-		w.statements = map[string]*sql.Stmt{}
-	} else if w.statementTx != tx {
+	if w.reads == nil {
+		w.reads = newHistoryReads(tx)
+	} else if w.reads.tx != tx {
 		return nil, historyInconsistent()
 	}
-	if stmt := w.statements[query]; stmt != nil {
-		return stmt, nil
-	}
-	stmt, err := tx.PrepareContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	w.statements[query] = stmt
-	return stmt, nil
+	return w.reads.statement(ctx, query)
 }
 
 func (w *historySnapshotWrite) scan(ctx context.Context, tx *sql.Tx, query string, args []any, targets ...any) error {
