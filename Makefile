@@ -32,7 +32,7 @@ browser-build:
 
 # Requires the actual outputs from make build; no implicit rebuild.
 smoke:
-	$(GO) test -tags=packaged_smoke -run '^TestPackaged(Smoke|UpgradeSmoke|PublicationSmoke|MapImportSmoke)$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -tags=packaged_smoke -run '^TestPackaged(Smoke|UpgradeSmoke|PublicationSmoke|MapImportSmoke|TransferSmoke)$$' -count=1 -timeout=60s ./tools/packagedsmoke
 
 # Requires built fcd and the browser installed for webapp's pinned Playwright.
 browser-smoke:

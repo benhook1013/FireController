@@ -34,12 +34,20 @@ type historySnapshotWrite struct {
 	// A validated full observation already supplies the exact replacement
 	// counts, including unchanged records and excluding omitted membership.
 	replacementTotals map[int64]summaryTotals
+	reads             HistoryQuery
 	statementTx       *sql.Tx
 	statements        map[string]*sql.Stmt
 }
 
 func newHistorySnapshotWrite(project string, revision int64) *historySnapshotWrite {
 	return &historySnapshotWrite{project: project, revision: revision, pending: map[string]historyCurrentChange{}}
+}
+
+func (w *historySnapshotWrite) historyRead(tx *sql.Tx) HistoryQuery {
+	if w.reads != nil {
+		return w.reads
+	}
+	return tx
 }
 
 func historyInconsistent() error {

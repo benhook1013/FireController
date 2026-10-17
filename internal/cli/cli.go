@@ -66,8 +66,9 @@ type invocation struct {
 	presentation *presentationInvocation
 	publication  *publicationInvocation
 
-	reviewImport *reviewImportInvocation
-	mapImport    *mapImportInvocation
+	reviewImport   *reviewImportInvocation
+	reviewTransfer *reviewTransferInvocation
+	mapImport      *mapImportInvocation
 
 	waitSeconds int
 }
@@ -115,6 +116,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.reviewImport != nil {
 		if err := prepareReviewImport(ctx, call.reviewImport); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+	}
+	if call.reviewTransfer != nil {
+		if err := prepareReviewTransfer(ctx, call.reviewTransfer); err != nil {
 			return reportClientError(stderr, err, ctx)
 		}
 	}
@@ -183,6 +189,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.reviewImport != nil {
 		return executeReviewImport(requestCtx, ctx, service, call.reviewImport, stdout, stderr)
+	}
+	if call.reviewTransfer != nil {
+		return executeReviewTransfer(requestCtx, ctx, service, call.reviewTransfer, stdout, stderr)
 	}
 	if call.projectMap != nil {
 		value, err := executeProjectMap(requestCtx, service, call.projectMap)
@@ -362,6 +371,9 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	if call.command == "reviews" && (call.subcommand == "import-preview" || call.subcommand == "import-apply") {
 		return parseReviewImport(call, operationArgs)
+	}
+	if call.command == "reviews" && (call.subcommand == "transfer-preview" || call.subcommand == "transfer-apply") {
+		return parseReviewTransfer(call, operationArgs)
 	}
 	if call.command == "inbox" && call.subcommand == "wait" {
 		return parseMessageWait(call, operationArgs)

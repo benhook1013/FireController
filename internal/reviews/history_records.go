@@ -18,7 +18,7 @@ func historyFindingValues(position int, finding Finding) []any {
 
 // A run and its bounded detail share one immutable version. Comparing detail
 // separately prevents summary-only equality from hiding an adjudication change.
-func historyFindingsEqual(ctx context.Context, tx *sql.Tx, project, id string, version int64, findings []Finding) (bool, error) {
+func historyFindingsEqual(ctx context.Context, tx HistoryQuery, project, id string, version int64, findings []Finding) (bool, error) {
 	rows, err := tx.QueryContext(ctx, "SELECT "+strings.Join(historyFindingColumns, ",")+" FROM review_finding_versions WHERE project_id=? AND run_id=? AND run_version_revision=? ORDER BY position", project, id, version)
 	if err != nil {
 		return false, err
@@ -43,24 +43,34 @@ func historyFindingsEqual(ctx context.Context, tx *sql.Tx, project, id string, v
 	return equal && position == len(findings), rows.Err()
 }
 
-func (w *historySnapshotWrite) run(ctx context.Context, tx *sql.Tx, source string, number int64, order int, run RunInput) error {
-	summary := summarizeRun(w.project, source, number, run)
+// retainedRunState is SELECT-only so preview and immutable writes share identity checks.
+func retainedRunState(ctx context.Context, tx HistoryQuery, project, source string, number int64, run RunInput) (int64, bool, error) {
+	summary := summarizeRun(project, source, number, run)
 	var oldVersion, oldNumber int64
 	var oldSource, oldSourceID, oldChannel, oldHead, oldScope string
-	err := tx.QueryRowContext(ctx, `SELECT version_revision,pull_number,source,source_run_id,channel,head_sha,scope FROM review_run_versions WHERE project_id=? AND id=? ORDER BY version_revision DESC LIMIT 1`, w.project, summary.ID).Scan(&oldVersion, &oldNumber, &oldSource, &oldSourceID, &oldChannel, &oldHead, &oldScope)
+	err := tx.QueryRowContext(ctx, `SELECT version_revision,pull_number,source,source_run_id,channel,head_sha,scope FROM review_run_versions WHERE project_id=? AND id=? ORDER BY version_revision DESC LIMIT 1`, project, summary.ID).Scan(&oldVersion, &oldNumber, &oldSource, &oldSourceID, &oldChannel, &oldHead, &oldScope)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return 0, false, err
 	}
 	changedDetail := false
 	if err == nil {
 		if oldNumber != number || oldSource != source || oldSourceID != run.SourceRunID || oldChannel != run.Channel || oldHead != run.HeadSHA || oldScope != run.Scope {
-			return core.Fail("observation_conflict", "A retained run's source identity and owning PR cannot change.", 409)
+			return 0, false, core.Fail("observation_conflict", "A retained run's source identity and owning PR cannot change.", 409)
 		}
-		equal, err := historyFindingsEqual(ctx, tx, w.project, summary.ID, oldVersion, run.Findings)
+		equal, err := historyFindingsEqual(ctx, tx, project, summary.ID, oldVersion, run.Findings)
 		if err != nil {
-			return err
+			return 0, false, err
 		}
 		changedDetail = !equal
+	}
+	return oldVersion, changedDetail, nil
+}
+
+func (w *historySnapshotWrite) run(ctx context.Context, tx *sql.Tx, source string, number int64, order int, run RunInput) error {
+	summary := summarizeRun(w.project, source, number, run)
+	oldVersion, changedDetail, err := retainedRunState(ctx, w.historyRead(tx), w.project, source, number, run)
+	if err != nil {
+		return err
 	}
 	version, err := w.version(ctx, tx, historyRunRecord, []any{summary.ID}, []any{number, source, run.SourceRunID, run.Channel, run.HeadSHA, run.Reviewer, run.Scope, run.Outcome, run.Attributable, run.Complete, run.StartedAt, run.FinishedAt, run.Found, run.Accepted, run.Routed, run.Finalized, summary.Fixed, mustJSON(run.CoverageLimits)}, changedDetail)
 	if err != nil {
@@ -78,10 +88,11 @@ func (w *historySnapshotWrite) run(ctx context.Context, tx *sql.Tx, source strin
 	return w.membership(ctx, tx, historyRunRecord, []any{summary.ID}, version, []any{number, order})
 }
 
-func (w *historySnapshotWrite) attempt(ctx context.Context, tx *sql.Tx, source string, number int64, position int, attempt Attempt) error {
+// retainedAttemptState performs the same read-only ownership/settlement guards for preview and writes.
+func retainedAttemptState(ctx context.Context, tx HistoryQuery, project, source string, number int64, attempt Attempt) error {
 	var oldNumber int64
 	var channel, head, started, state, run, trigger, provider string
-	err := tx.QueryRowContext(ctx, `SELECT pull_number,channel,head_sha,started_at,state,source_run_id,trigger_id,provider_review_id FROM review_attempt_versions WHERE project_id=? AND source=? AND source_attempt_id=? ORDER BY version_revision DESC LIMIT 1`, w.project, source, attempt.SourceAttemptID).Scan(&oldNumber, &channel, &head, &started, &state, &run, &trigger, &provider)
+	err := tx.QueryRowContext(ctx, `SELECT pull_number,channel,head_sha,started_at,state,source_run_id,trigger_id,provider_review_id FROM review_attempt_versions WHERE project_id=? AND source=? AND source_attempt_id=? ORDER BY version_revision DESC LIMIT 1`, project, source, attempt.SourceAttemptID).Scan(&oldNumber, &channel, &head, &started, &state, &run, &trigger, &provider)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -97,6 +108,13 @@ func (w *historySnapshotWrite) attempt(ctx context.Context, tx *sql.Tx, source s
 		if oneOf(state, "completed", "failed", "cancelled", "rate_limited", "held") && state != attempt.State {
 			return core.Fail("observation_conflict", "A settled retained attempt cannot be reopened.", 409)
 		}
+	}
+	return nil
+}
+
+func (w *historySnapshotWrite) attempt(ctx context.Context, tx *sql.Tx, source string, number int64, position int, attempt Attempt) error {
+	if err := retainedAttemptState(ctx, w.historyRead(tx), w.project, source, number, attempt); err != nil {
+		return err
 	}
 	version, err := w.version(ctx, tx, historyAttemptRecord, []any{source, attempt.SourceAttemptID}, []any{number, attempt.Channel, attempt.HeadSHA, attempt.State, attempt.StartedAt, attempt.FinishedAt, attempt.DurationSeconds, attempt.SourceRunID, attempt.TriggerID, attempt.ProviderReviewID}, false)
 	if err != nil {

@@ -219,18 +219,22 @@ func checkNativeCapacity(ctx context.Context, tx *sql.Tx, project, snapshot stri
 }
 
 func rebuildNativeSummary(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, snapshot string, number int64, position int, body []any) error {
-	if err := validateCurrentSummaryFront(ctx, tx, write.project, number); err != nil {
-		return err
-	}
-	runs, err := write.recentCurrentRuns(ctx, tx, number)
-	if err != nil {
-		return err
-	}
-	attempts, err := write.latestCurrentAttempts(ctx, tx, number)
-	if err != nil {
-		return err
-	}
 	totals, err := write.prospectiveTotals(ctx, tx, number)
+	if err != nil {
+		return err
+	}
+	return rebuildCurrentSummary(ctx, tx, write, snapshot, number, position, body, totals)
+}
+
+func rebuildCurrentSummary(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, snapshot string, number int64, position int, body []any, totals summaryTotals) error {
+	if err := validateCurrentSummaryFront(ctx, write.historyRead(tx), write.project, number); err != nil {
+		return err
+	}
+	runs, err := write.recentCurrentRuns(ctx, write.historyRead(tx), number)
+	if err != nil {
+		return err
+	}
+	attempts, err := write.latestCurrentAttempts(ctx, write.historyRead(tx), number)
 	if err != nil {
 		return err
 	}

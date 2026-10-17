@@ -333,7 +333,7 @@ func (w *historySnapshotWrite) installCurrentSummaries(ctx context.Context, tx *
 
 const summaryAttemptColumns = `v.source_attempt_id,v.channel,v.head_sha,v.state,v.started_at,v.finished_at,v.duration_seconds,v.source_run_id,v.trigger_id,v.provider_review_id`
 
-func (w *historySnapshotWrite) latestCurrentAttempts(ctx context.Context, tx *sql.Tx, number int64) ([]AttemptSummary, error) {
+func (w *historySnapshotWrite) latestCurrentAttempts(ctx context.Context, tx HistoryQuery, number int64) ([]AttemptSummary, error) {
 	var changed []historyCurrentChange
 	for _, change := range w.pending {
 		if change.spec.current == historyAttemptRecord.current {
