@@ -1,5 +1,6 @@
 GO ?= go
 GOFMT ?= gofmt
+GO_TEST_PACKAGES ?= ./...
 ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
 .PHONY: check workflow-check fmt-check test build docs-check browser-check browser-build smoke browser-smoke
@@ -13,8 +14,8 @@ fmt-check:
 	@files="$$($(GOFMT) -l cmd internal tools)" || exit $$?; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi
 
 test:
-	$(GO) test -race -p=2 -timeout=20m ./...
-	$(GO) vet ./...
+	$(GO) test -race -p=2 -timeout=20m $(GO_TEST_PACKAGES)
+	$(GO) vet $(GO_TEST_PACKAGES)
 
 build: browser-build
 	CGO_ENABLED=0 $(GO) build -trimpath -o bin/fc ./cmd/fc

@@ -830,6 +830,9 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["jobs"] >= 6 {
 		if err = jobs.ValidateNotesSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
 			return invalid()
 		}
 	}

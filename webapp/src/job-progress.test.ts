@@ -144,6 +144,21 @@ describe('job progress read-only API', () => {
     client.close();
   });
 
+  it('preserves bounded service HTTP 413 history errors without exposing diagnostic content', async () => {
+    for (const route of ['updates', 'checklist/history']) {
+      const client = await api();
+      const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'response_too_large', message: 'PRIVATE_JOB_HISTORY <script>', details: { body: 'PRIVATE_RETAINED_TEXT', credential: 'PRIVATE_TOKEN' } } }), { status: 413, headers: { 'content-type': 'application/json' } }));
+      vi.stubGlobal('fetch', fetcher);
+      const request = route === 'updates' ? client.jobUpdates('job_one') : client.jobChecklistHistory('job_one');
+      const failure = await request.then(() => null, error => error);
+      expect(failure).toMatchObject({ name: 'ApiError', code: 'response_too_large', status: 413, message: 'The service request failed (response_too_large).' });
+      expect(String(failure)).not.toMatch(/PRIVATE_|script/);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(String(fetcher.mock.calls[0][0])).toBe(`https://service.example/api/v1/projects/project_one/jobs/job_one/${route}`);
+      client.close();
+    }
+  });
+
   it('validates arguments before HTTP and cancels owned reads without later followup', async () => {
     const client = await api();
     const mock = vi.fn(); vi.stubGlobal('fetch', mock);
