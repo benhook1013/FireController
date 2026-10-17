@@ -174,7 +174,7 @@ func NewManager(store *core.Store, dataDir string, cfg ScheduleConfig) (*Manager
 					origin = old.SourceInstanceID
 				}
 				s.LastAttempt = &AttemptStatus{StartedAt: s.LastAttempt.StartedAt, FinishedAt: managedFinish(s.LastAttempt.StartedAt, now), State: "interrupted", Reason: "backup_interrupted", SourceInstanceID: origin}
-			} else {
+			} else if s.LastAttempt != nil && s.LastAttempt.State == "complete" && !retentionSettledAfter(s.Retention, s.LastAttempt.FinishedAt) {
 				s.Retention = &RetentionStatus{AttemptedAt: managedStamp(now), State: "failed", Reason: "backup_retention_interrupted"}
 			}
 		}
@@ -292,6 +292,29 @@ func (m *Manager) Run(ctx context.Context, report func(error)) error {
 		}
 	}
 }
+
+// Terminal outcome transactions also settle worker state. A crash before Run's
+// outer scheduling update therefore cannot reinterpret a saved result as an
+// unfinished phase, including when the local clock moves backward.
+func (m *Manager) settleAttemptStatus(r *managedRecord) {
+	r.Status.State = "scheduled"
+	r.Status.NextAttemptAt = managedStamp(m.now().Add(m.config.Interval))
+	if m.publicationHeld {
+		r.Status.State, r.Status.NextAttemptAt = "held", ""
+	}
+}
+
+// Older running records can contain a terminal result committed before the
+// separate scheduler update. Preserve that result instead of inventing failure.
+func retentionSettledAfter(r *RetentionStatus, finished string) bool {
+	if r == nil {
+		return false
+	}
+	at, aok := canonicalTime(r.AttemptedAt)
+	end, eok := canonicalTime(finished)
+	return aok && eok && !at.Before(end)
+}
+
 func (m *Manager) attempt(parent context.Context) error {
 	ctx, cancel := context.WithTimeout(parent, m.config.Timeout)
 	defer cancel()
@@ -334,6 +357,7 @@ func (m *Manager) attempt(parent context.Context) error {
 		defer done()
 		saveErr := m.update(settle, func(r *managedRecord, tx *sql.Tx) error {
 			r.Status.LastAttempt = &AttemptStatus{StartedAt: start, FinishedAt: managedFinish(start, m.now()), State: state, Reason: reason, SourceInstanceID: m.store.InstanceID()}
+			m.settleAttemptStatus(r)
 			if m.publicationHeld {
 				r.Status.UnregisteredBundle = &result.Summary
 				body, marshalErr := json.Marshal(result.Summary)
@@ -361,6 +385,7 @@ func (m *Manager) attempt(parent context.Context) error {
 	defer done()
 	saveErr := m.update(settle, func(r *managedRecord, _ *sql.Tx) error {
 		r.Status.Retention = &RetentionStatus{AttemptedAt: stamp, State: "complete"}
+		m.settleAttemptStatus(r)
 		if err != nil {
 			r.Status.Retention.State = "failed"
 			r.Status.Retention.Reason = "backup_retention_failed"
