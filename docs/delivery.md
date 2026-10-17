@@ -14,7 +14,8 @@ Implemented coordination, review and browser slices have passed their focused an
 
 - Finish bounded historical provider collection and explicit resume. The prepared review/map imports accept selected local documents; they do not collect provider history.
 - Provide a lossless bounded transfer path for review workspaces larger than the existing single observation limit. Own-project QA population exposed a complete 145-run/233-attempt export above the 256 KiB and 200-attempt ceilings. A deliberately partial display snapshot is not full migration proof; retain complete source evidence and make every selected omission explicit. Native projection and policy reads also have lifetime history count ceilings, while full snapshot copying duplicates retained detail. Replace those growth limits with versioned history and bounded reads; include attempt/browser pagination, public projection and source-producer preservation in that work.
-The opt-in [public project website](public-site.md) now has full validation and actual packaged CLI/browser proof at its recorded source checkpoint. Installing a tested build and approving its public presentation remain deployment/GUI boundaries; the existing QA deployment has not changed.
+
+The opt-in [public project website](public-site.md) has full validation, actual packaged CLI/browser proof and an installed QA artifact. Public content still requires an explicit publication choice and presentation review; an upgrade does not enable it.
 
 These are implementation gaps, not merely GUI polish or unexecuted acceptance tests. Existing-installation migration, live native provider execution, actual agent-host asynchronous behavior, fleet measurements and operational recovery are separate proof or cutover boundaries. Optional multiple replicas, distributed execution and cloud backup integrations remain outside the selected first release.
 
@@ -63,3 +64,7 @@ Record proof in the owning slice and PR; do not silently turn planned commands i
 ## Human repository presentation pass
 
 - [ ] Remind the project owner to do a marketing and newcomer-facing pass after the core product work: explain why to use FireController, the problems it solves and the workflows it makes easier. Review the README and repository landing experience for clear examples of agent messaging, jobs, reviews and shareable project progress, with suitable screenshots and an easy route into onboarding. This is a reminder for the human pass, not another implementation or merge gate.
+
+## Browser renewal and onboarding integration
+
+Clean combined `ee344a0d36edb98065f6761647c54c7bb1467f44` passed full checks/build (280 browser tests and all Go race tests/vet/docs/assets/binaries), actual packaged CLI/MCP/upgrade/publication/map-import checks in 0.823 seconds, and private/public Chromium checks in 4.971 seconds. The [renewal owner](browser-session-renewal.md) records activity, expiry, permission and browser-clock proof limits; [prepared map import](map-import.md) owns its import/history contract. Installed upgrade and authenticated HTTPS verification are separate from this checkpoint, and operational cutover still follows human GUI acceptance.

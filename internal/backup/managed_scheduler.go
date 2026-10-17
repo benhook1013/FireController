@@ -57,6 +57,14 @@ func normalizeScheduleConfig(dataDir string, cfg ScheduleConfig, inspect bool) (
 		for p := destination; ; p = filepath.Dir(p) {
 			info, err := os.Lstat(p)
 			if err == nil {
+				// The selected destination must remain real/private. Existing
+				// higher components may be directory aliases, as in Create.
+				if p != destination {
+					info, err = os.Stat(p)
+					if err != nil {
+						return ScheduleConfig{}, invalid()
+					}
+				}
 				if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || p == destination && runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
 					return ScheduleConfig{}, invalid()
 				}
