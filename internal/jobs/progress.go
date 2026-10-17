@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -168,7 +167,7 @@ func updateHistory(store *core.Store) http.HandlerFunc {
 					return err
 				}
 				if strictjson.Decode([]byte(evidence), &item.Evidence) != nil || item.Evidence == nil || validateUpdate(updateRequest{ExpectedJobRevision: item.JobRevision, Body: item.Body, Evidence: item.Evidence}) != nil {
-					return fmt.Errorf("invalid stored job update")
+					return core.Fail("storage_unavailable", "Stored job update is unavailable.", http.StatusInternalServerError)
 				}
 				response.Items = append(response.Items, item)
 			}
