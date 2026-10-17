@@ -348,6 +348,25 @@ func (w *historySnapshotWrite) latestCurrentAttempts(ctx context.Context, tx His
 	if len(exclusions) > 0 {
 		exclude = " AND NOT (" + strings.Join(exclusions, " OR ") + ")"
 	}
+	// Each staged immutable version is independent of the channel being reduced.
+	// Load it once for this PR instead of repeating the same read four times.
+	type stagedCandidate struct {
+		attempt  Attempt
+		position int64
+	}
+	candidates := make([]stagedCandidate, 0, len(changed))
+	for _, change := range changed {
+		if change.values == nil || change.values[1] != number {
+			continue
+		}
+		var candidate stagedCandidate
+		attempt := &candidate.attempt
+		err := tx.QueryRowContext(ctx, `SELECT `+summaryAttemptColumns+`,m.position FROM review_attempt_memberships m JOIN review_attempt_versions v ON v.project_id=m.project_id AND v.source=m.source AND v.source_attempt_id=m.source_attempt_id AND v.version_revision=m.version_revision WHERE m.project_id=? AND m.source=? AND m.source_attempt_id=? AND m.start_revision=?`, w.project, change.keys[0], change.keys[1], change.values[0]).Scan(&attempt.SourceAttemptID, &attempt.Channel, &attempt.HeadSHA, &attempt.State, &attempt.StartedAt, &attempt.FinishedAt, &attempt.DurationSeconds, &attempt.SourceRunID, &attempt.TriggerID, &attempt.ProviderReviewID, &candidate.position)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
 	result := []AttemptSummary{}
 	for _, channel := range []string{"hosted", "cli", "manual", "subagent"} {
 		args := []any{w.project, number, channel}
@@ -366,16 +385,8 @@ func (w *historySnapshotWrite) latestCurrentAttempts(ctx context.Context, tx His
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
-		for _, change := range changed {
-			if change.values == nil || change.values[1] != number {
-				continue
-			}
-			var attempt Attempt
-			var position int64
-			err := tx.QueryRowContext(ctx, `SELECT `+summaryAttemptColumns+`,m.position FROM review_attempt_memberships m JOIN review_attempt_versions v ON v.project_id=m.project_id AND v.source=m.source AND v.source_attempt_id=m.source_attempt_id AND v.version_revision=m.version_revision WHERE m.project_id=? AND m.source=? AND m.source_attempt_id=? AND m.start_revision=?`, w.project, change.keys[0], change.keys[1], change.values[0]).Scan(&attempt.SourceAttemptID, &attempt.Channel, &attempt.HeadSHA, &attempt.State, &attempt.StartedAt, &attempt.FinishedAt, &attempt.DurationSeconds, &attempt.SourceRunID, &attempt.TriggerID, &attempt.ProviderReviewID, &position)
-			if err != nil {
-				return nil, err
-			}
+		for _, candidate := range candidates {
+			attempt, position := candidate.attempt, candidate.position
 			if attempt.Channel != channel {
 				continue
 			}
