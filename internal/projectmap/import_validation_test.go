@@ -137,9 +137,16 @@ func TestMapImportHashBindsActualWorkerPrincipalProjectAndInstance(t *testing.T)
 	second := setup(t)
 	expect(t, second.call("POST", second.importPath(), second.admin, "changed-instance", request), 409)
 	// Cookie sessions cannot reach this administrator import boundary, including
-	// explicit write-enabled sessions derived from an original administrator.
-	w = f.call("POST", "/api/v1/projects/"+f.project+"/browser-session", f.admin, "", map[string]any{"session_id": strings.Repeat("a", 32), "allow_writes": true})
+	// automatically write-enabled sessions derived from an original administrator.
+	w = f.call("POST", "/api/v1/projects/"+f.project+"/browser-session", f.admin, "", map[string]any{"session_id": strings.Repeat("a", 32)})
 	expect(t, w, 200)
+	var connected struct {
+		AllowWrites bool `json:"allow_writes"`
+	}
+	decode(t, w, &connected)
+	if !connected.AllowWrites {
+		t.Fatal("administrator cookie must have automatic browser write allowance for this refusal proof")
+	}
 	raw, _ := json.Marshal(doc)
 	r := httptest.NewRequest("POST", f.importPath()+"/preview", strings.NewReader(string(raw)))
 	r.Header.Set("X-FC-Browser-Session", strings.Repeat("a", 32))
