@@ -70,15 +70,15 @@ func copyInventory(ctx context.Context, source, destination string) ([]Artifact,
 					f.Close()
 					return nil, unavailable()
 				}
-				info, err := entry.Info()
-				if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-					f.Close()
-					return nil, invalid()
-				}
 				relative := name + "/" + entry.Name()
 				_, limit, recognized := artifactPath(relative)
 				if !recognized {
 					continue
+				}
+				info, err := entry.Info()
+				if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+					f.Close()
+					return nil, invalid()
 				}
 				if len(items) >= maxArtifacts {
 					f.Close()
