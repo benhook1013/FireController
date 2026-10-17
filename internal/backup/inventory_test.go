@@ -356,7 +356,8 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 		domain  string
 		version int
 	}{
-		{"jobs", 1}, {"jobs", 2}, {"reviews", 1}, {"reviews", 2},
+		{"jobs", 1}, {"jobs", 2}, {"jobs", 3}, {"jobs", 4}, {"jobs", 5},
+		{"reviews", 1}, {"reviews", 2},
 		{"review_execution", 1}, {"review_execution", 2}, {"review_execution", 3}, {"review_execution", 4}, {"review_execution", 5},
 		{"review_evidence", 1}, {"review_evidence", 2}, {"review_adjudication", 1},
 		{"review_source_refresh", 1}, {"review_source_refresh", 2},
@@ -377,8 +378,17 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 			var statements []string
 			switch test.domain {
 			case "jobs":
-				statements = []string{`DROP TABLE note_revisions`, `DROP TABLE notes`, `DROP TABLE worker_pause_history`, `DROP TABLE worker_pause_state`, `DROP TABLE worker_primary_job_history`, `DROP TABLE worker_primary_jobs`, `DROP TABLE job_updates`, `DROP TABLE job_checklists`, `DROP TABLE job_checklist_history`}
-				if test.version == 1 {
+				statements = []string{`DROP TABLE note_revisions`, `DROP TABLE notes`}
+				if test.version < 5 {
+					statements = append(statements, `DROP TABLE worker_pause_history`, `DROP TABLE worker_pause_state`)
+				}
+				if test.version < 4 {
+					statements = append(statements, `DROP TABLE worker_primary_job_history`, `DROP TABLE worker_primary_jobs`)
+				}
+				if test.version < 3 {
+					statements = append(statements, `DROP TABLE job_updates`, `DROP TABLE job_checklists`, `DROP TABLE job_checklist_history`)
+				}
+				if test.version < 2 {
 					statements = append(statements, `DROP TABLE job_checkpoints`)
 				}
 			case "reviews":
