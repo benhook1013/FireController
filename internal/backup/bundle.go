@@ -47,6 +47,9 @@ func privateDirectory(path string, create bool) error {
 			if err != nil {
 				return unavailable()
 			}
+			if err := syncDirectory(filepath.Dir(p)); err != nil {
+				return err
+			}
 			created = true
 			info, err = os.Lstat(p)
 		}
