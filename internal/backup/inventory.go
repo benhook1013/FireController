@@ -218,14 +218,15 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
-	"project_presentations":        {"project_presentation", 1, "project_id revision state_json"},
-	"project_presentation_history": {"project_presentation", 1, "project_id revision actor_id state_json created_at"},
-	"project_map_entries":          {"project_map", 1, "project_id id kind title state archived revision state_json"},
-	"project_map_entry_history":    {"project_map", 1, "project_id entry_id revision actor_id state_json created_at"},
-	"job_workstreams":              {"project_map", 1, "project_id job_id revision workstream_id workstream_title"},
-	"job_workstream_history":       {"project_map", 1, "project_id job_id revision workstream_id workstream_title actor_id job_revision created_at"},
+	"managed_backup_publication_holds": {"managed_backup_publications", 1, "bundle_id destination source_instance_id manifest_sha256 summary_json"},
+	"project_presentations":            {"project_presentation", 1, "project_id revision state_json"},
+	"project_presentation_history":     {"project_presentation", 1, "project_id revision actor_id state_json created_at"},
+	"project_map_entries":              {"project_map", 1, "project_id id kind title state archived revision state_json"},
+	"project_map_entry_history":        {"project_map", 1, "project_id entry_id revision actor_id state_json created_at"},
+	"job_workstreams":                  {"project_map", 1, "project_id job_id revision workstream_id workstream_title"},
+	"job_workstream_history":           {"project_map", 1, "project_id job_id revision workstream_id workstream_title actor_id job_revision created_at"},
 
 	"notes":                      {"jobs", 6, "project_id id worker_id job_id phase kind body status status_reason revision created_at updated_at"},
 	"note_revisions":             {"jobs", 6, "project_id note_id revision worker_id job_id phase kind body status status_reason created_at updated_at actor_id actor_worker_id recorded_at"},

@@ -349,6 +349,22 @@ func Create(ctx context.Context, store *core.Store, dataDir, destinationRoot str
 	return create(ctx, store.DB(), store.InstanceID(), dataDir, destinationRoot)
 }
 
+// createdBundle keeps the creator's verified evidence and original reservation
+// identity private; it does not establish managed ledger ownership.
+type createdBundle struct {
+	Summary
+	manifest Manifest
+	hash     string
+	owned    os.FileInfo
+}
+
+func createManaged(ctx context.Context, store *core.Store, dataDir, destinationRoot string) (createdBundle, error) {
+	if checkContext(ctx) != nil || store == nil {
+		return createdBundle{}, unavailable()
+	}
+	return createBundleWithClock(ctx, store.DB(), store.InstanceID(), dataDir, destinationRoot, time.Now, time.Since)
+}
+
 // CreateFromDirectory opens an existing installation read-only, without Store
 // initialization, migration or writer admission. SQLite reads the committed WAL
 // prefix while a concurrent writer may retain an uncommitted transaction.
@@ -373,6 +389,11 @@ func create(ctx context.Context, sourceDB *sql.DB, identity, dataDir, destinatio
 }
 
 func createWithClock(ctx context.Context, sourceDB *sql.DB, identity, dataDir, destinationRoot string, now func() time.Time, since func(time.Time) time.Duration) (out Summary, err error) {
+	created, err := createBundleWithClock(ctx, sourceDB, identity, dataDir, destinationRoot, now, since)
+	return created.Summary, err
+}
+
+func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, dataDir, destinationRoot string, now func() time.Time, since func(time.Time) time.Duration) (out createdBundle, err error) {
 	if checkContext(ctx) != nil || sourceDB == nil {
 		return out, unavailable()
 	}
@@ -507,10 +528,11 @@ func createWithClock(ctx context.Context, sourceDB *sql.DB, identity, dataDir, d
 	if checkContext(ctx) != nil {
 		return out, unavailable()
 	}
-	out, err = summary(m, final, "complete")
+	completed, err := summary(m, final, "complete")
 	if err != nil {
 		return out, err
 	}
 	committed = true
+	out = createdBundle{Summary: completed, manifest: m, hash: hex.EncodeToString(checksum[:]), owned: owned}
 	return out, nil
 }

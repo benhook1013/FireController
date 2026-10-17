@@ -84,6 +84,23 @@ func TestReviewCheckpointCLIInvalidBeforeCredentials(t *testing.T) {
 	id := "review_publication_" + strings.Repeat("a", 32)
 	evidence := "review_evidence_" + strings.Repeat("a", 32)
 	cases := [][]string{{"reviews", "publication", "../bad"}, {"reviews", "publication", id, "--wait-seconds", "0"}, {"reviews", "publish", evidence, "--expect-revision", "-1", "--key", "k"}, {"reviews", "publish", evidence, "--expect-revision", "0", "--key", "k", "--retry-unposted"}, {"reviews", "publication-recover", id, "--expect-revision", "0", "--key", "k"}, {"reviews", "publication-recover", id, "--expect-revision", "9223372036854775807", "--key", "k"}}
+	for _, operation := range []string{"publish", "publication-recover"} {
+		selected := evidence
+		if operation == "publication-recover" {
+			selected = id
+		}
+		for _, missing := range []string{"--key", "--expect-revision", "--wait-seconds"} {
+			args := []string{"reviews", operation, selected}
+			if missing != "--expect-revision" {
+				args = append(args, "--expect-revision", "1")
+			}
+			if missing != "--key" {
+				args = append(args, "--key", "valid-key")
+			}
+			args = append(args, missing, "--retry-unposted")
+			cases = append(cases, args)
+		}
+	}
 	for _, suffix := range [][]string{{"--wait-seconds", "61"}, {"--wait-seconds", "01"}, {"--wait-seconds", "0", "--wait-seconds", "1"}, {"--retry-unposted=true"}, {"--retry-unposted", "--retry-unposted"}, {"--project", "other"}} {
 		cases = append(cases, append([]string{"reviews", "publication-recover", id, "--expect-revision", "1", "--key", "k"}, suffix...))
 	}
