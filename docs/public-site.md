@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The current browser requires authentication for every project-data view. Anonymous application assets and health endpoints do not provide a project showcase. Public website implementation remains required product work; it is separate from posting review checkpoints to GitHub. This document owns the selected public/private boundary. The [browser contract](browser.md) owns the shared presentation and private application.
+The service implements administrator-controlled publication, a separate anonymous current/history API and public event stream, and an embedded public browser. Projects remain private until explicitly published. Focused SQLite, HTTP, SSE, backup and browser tests, full repository validation and actual packaged CLI/browser checks pass at the checkpoint below. The installed development site has not been changed by these source checks. This document owns the selected public/private boundary. The [browser contract](browser.md) owns the shared presentation and private application.
 
 ## Sharing a project
 
@@ -40,4 +40,63 @@ Unpublishing immediately rejects subsequent anonymous data, history and event re
 
 Use distinct private sentinel values in messages, briefs, checkpoints, note bodies, draft maps, private history, actor/session IDs, provider captures and another project. Inspect anonymous HTML, JSON, events, errors and links to prove that only the approved projection appears. Test both unpublished projects and published projects containing unpublished records.
 
-Prove preview/apply retries, changed source revisions, a later private edit, selected PR summary updates, merged history retention and honest unknown/stale labels. Public reads must leave private data and provider-call counts unchanged. A private attempt advancing the review workspace must leave anonymous bytes, freshness metadata and events unchanged. Exercise unpublish during an open stream and reject replay afterward. Reuse the default layout at desktop and phone widths, with separate public/private navigation and no credential requirement for the shared route. These are required checks, not claims that the unimplemented website has passed.
+Prove preview/apply retries, changed source revisions, a later private edit, selected PR summary updates, merged history retention and honest unknown/stale labels. Public reads must leave private data and provider-call counts unchanged. A private attempt advancing the review workspace must leave anonymous bytes, freshness metadata and events unchanged. Exercise unpublish during an open stream and reject replay afterward. Reuse the default layout at desktop and phone widths, with separate public/private navigation and no credential requirement for the shared route. The proof status below distinguishes executed checks from remaining validation.
+
+## Publication API and administration
+
+An administrator bound to an explicit project and worker reads `GET /api/v1/projects/{project_id}/publication`. The initial configuration has revision zero, publication disabled and no manifest. A complete approved input contains `expected_revision`, `enabled` and `manifest`; omitted editorial sections normalize to empty collections. The manifest contains the public slug, validated project presentation, description, approved links, map/progress cards, worker lanes and explicitly enrolled PR numbers with approved titles and GitHub URLs.
+
+`POST /publication/preview` returns the normalized manifest, current eligible summary content and `preview_sha256`. `PUT /publication` accepts the same approved input plus that hash and an explicit `Idempotency-Key`. The hash binds the normalized editorial input and selected administrator/project/worker, not a private review snapshot. Apply checks the configuration revision; exact retained retries return the original outcome even after later changes. First publication, re-enabling or changing the slug starts a new public generation. Existing private credentials never appear in public links.
+
+`POST /publication/unpublish` accepts `expected_revision` and an explicit `Idempotency-Key`; no preview or complete manifest is needed to withdraw access. Publishing is optional and administrative. Routine agent reads and job/message mutations do not include manifests or public content.
+
+## Agent setup commands
+
+Use a deliberately selected administrator profile, separate from ordinary worker credentials:
+
+```sh
+fc --profile project-admin publication read
+fc --profile project-admin publication preview --file /private/publication.json
+fc --profile project-admin publication apply --file /private/publication.json --preview-sha256 SHA256_FROM_PREVIEW --key publish-website-1
+fc --profile project-admin publication unpublish --expect-revision 1 --key withdraw-website-1
+```
+
+The JSON file is the complete approved input, including the observed configuration revision. Select an absolute owner-private regular file of at most 256 KiB; symlinks and unsupported file kinds are refused before loading credentials or contacting the service. Preview also reserves the eventual apply-hash wrapper space. The CLI uses the ordinary five-second service budget and returns compact outcomes for writes. Keep the exact selected file, preview hash, key and binding for uncertain-outcome recovery. Preview content is an explicit full read; routine commands never append it.
+
+A minimal file can select the default fire presentation with a deliberate public name, for example:
+
+```json
+{
+  "expected_revision": 0,
+  "enabled": true,
+  "manifest": {
+    "slug": "my-project",
+    "presentation": { "name": "My project" },
+    "description": "Public development progress"
+  }
+}
+```
+
+Preview shows normalized empty sections and the default presentation. Add only text and destinations intended for anonymous readers. Publishing a private source's title or content requires that explicit selection; importing it privately does not imply permission to publish it.
+
+## Anonymous transport and retention
+
+The browser routes are `/public/{slug}` and `/public/{slug}/history/{revision}?generation={generation}`. The private workspace remains at `/`. Public transport omits credentials and never mounts the private session or query cache.
+
+Anonymous stored reads use `/api/v1/public/projects/{slug}`, `/history` and `/history/{revision}?generation={generation}`. Current responses carry a public generation/revision, publication time, cursor and approved content. History pages contain only public revision/time summaries. An unknown or disabled publication returns an opaque not-found response. Retained history is bounded to the current generation's last 1,000 snapshots and seven days; the current snapshot remains available. Retention applies to published snapshots, not to the selected queue's merged PRs or retained summary rounds.
+
+`/events?cursor={cursor}` supplies only public revision/time/cursor hints after committed changes. Attachment subscribes before replay; duplicate hints and keepalive comments cause no activity or JSON reads. Expired retention requires a new current snapshot. Bounded reconnect does not poll JSON on a timer. A connection closed by unpublication cannot use its old generation to read history after re-enabling.
+
+Review projection is part of the authoritative review write transaction. An invalid or over-budget optional projection preserves the private review write and last good public snapshot, recording only a private `refresh_error`. A public refresh reads that retained snapshot without provider calls. Backups preserve the approved settings and public snapshots; inactive restores serve no public data. Explicit coordination activation restores access to an enabled retained publication, while disabled publications stay disabled.
+
+## Proof status
+
+Focused tests exercise canonical approved content, real SQLite administration and separate anonymous reads, actual HTTP SSE, post-commit hints, privacy and unchanged freshness under private activity, preview/apply bounds and retry, unpublish, generation isolation and bounded retention. Actual review-domain integration covers observation, native capture publication and adjudication hooks, including finalized eligibility and retained merged history. Backup bundle tests create, inspect and restore the publication domain, reject rehashed malformed schema/content and exercise the inactive/activation boundary. Browser transport/component tests cover credential omission, strict public DTOs, bounded fetch, quiet streaming, cancellation and history rendering. These focused results do not establish deployment, physical-phone behavior, fleet throughput or operational cutover.
+
+### Executed public website checkpoint
+
+Clean source `c0052a470f198434c7414686ec2ad0b7b06a24d0` passed `make check build`: workflow validation, TypeScript and 240 browser tests, every Go package with the race detector, vet, formatting, documentation and generated assets. The backup package completed in 432.119 seconds and review execution in 475.820 seconds; these test durations are not ordinary command latency measurements. The build produced three CGO-free binaries.
+
+The clean built inputs then passed `make smoke browser-smoke`: packaged CLI/MCP/upgrade/publication groups in 0.551 seconds, and private/public Chromium groups in 3.231 seconds. The publication workflow used an actual administrator profile and `fc` process for read, preview, apply, exact retry, unpublish and historical retry; anonymous reads needed no credential, and retrying an old successful apply did not republish withdrawn content. A separate fixture writer supplied private sentinel records and retained review summaries to the browser workload. Real gzip proxy responses, omitted credentials despite an existing private cookie, desktop and 390px layouts, channel-separated rounds, retained merged work, live summary/history refresh, unchanged public freshness after a private edit, frozen historical views and unpublish all passed. Screenshots were visually inspected, including the readable duration text on completed round pills.
+
+The tested `fcd` SHA-256 was `bee913356376524442cc2a7e97e4f1597b4e5f38dc616caa2e3a67be364e13d9`, with clean VCS metadata for that source. Executable hashes stayed unchanged during the workloads; owned processes and disposable fixture state were cleaned up. No live provider, installed deployment, physical phone, fleet throughput or operational cutover was exercised. Later inherited scheduler/profile corrections retain their separate focused proof at the [backup owner](backups.md#terminal-scheduler-result-recovery); they do not change the source identity of this full-run checkpoint.

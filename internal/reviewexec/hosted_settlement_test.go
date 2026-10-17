@@ -301,11 +301,11 @@ func TestHostedSettlementRequiresCurrentAdminIncludingReplayAndTransaction(t *te
 	create.SetPathValue("project_id", attemptProject)
 	create.Header.Set("Authorization", "Bearer "+f.admin)
 	create.Header.Set("X-FC-Instance", f.store.InstanceID())
-	session, cookie, err := f.store.CreateBrowserSession(create, strings.Repeat("a", 32))
+	session, cookie, err := f.store.CreateBrowserSession(create, strings.Repeat("a", 32), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	browser := httptest.NewRequest("POST", hostedSettlementPath(attemptProject, a), strings.NewReader(encoded(hostedSettlementBody(a))))
+	browser := httptest.NewRequest("POST", "http://127.0.0.1"+hostedSettlementPath(attemptProject, a), strings.NewReader(encoded(hostedSettlementBody(a))))
 	browser.Header.Set("X-FC-Browser-Session", session.SessionID)
 	browser.Header.Set("X-FC-Instance", f.store.InstanceID())
 	browser.AddCookie(cookie)

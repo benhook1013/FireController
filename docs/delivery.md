@@ -12,9 +12,9 @@ The [native review workspace](review-workspace.md) implements stored queue, PR/r
 
 Implemented coordination, review and browser slices have passed their focused and controlled executable checks; the combined appearance/coordination head also passed full validation and is installed as QA. The product is not feature complete. Independent source audits identified the following remaining implementation boundaries; human GUI review follows that work, and live-provider proof and migration remain separate. The remaining feature work is:
 
-- Provide the selected browser inbox handling actions and project settings with explicit write authorization. Existing browser sessions remain read-only until that separate authority is implemented.
+- Finish integration and recovery proof for the implemented browser inbox actions and project settings, including explicitly approved session authority. Existing connections remain read-only by default.
 - Add prepared map/provenance preview and idempotent apply, then selected historical collection with bounded scope and resume. Prepared review import and editorial map CRUD do not establish this onboarding flow.
-- Deliver a shareable, opt-in [public project website](public-site.md) for approved overview, map/progress and review summaries/history. The current application requires authentication for all project data; it is not a public showcase.
+The opt-in [public project website](public-site.md) now has full validation and actual packaged CLI/browser proof at its recorded source checkpoint. Installing a tested build and approving its public presentation remain deployment/GUI boundaries; the existing QA deployment has not changed.
 
 These are implementation gaps, not merely GUI polish or unexecuted acceptance tests. Existing-installation migration, live native provider execution, actual agent-host asynchronous behavior, fleet measurements and operational recovery are separate proof or cutover boundaries. Optional multiple replicas, distributed execution and cloud backup integrations remain outside the selected first release.
 
@@ -59,3 +59,7 @@ The temporary runtime is not shipped as the product and does not implement the n
 | Native review workspace | Versioned administrator observation/import boundary, stored queue/PR/run/finding/fix views; full checks and four packaged API/integration plus three browser groups passed | Real-data queue/history adoption passed; optional native execution and policy proof is recorded in the [execution boundary](review-execution.md). Live-provider, remote deployment and fleet proof remain separate |
 
 Record proof in the owning slice and PR; do not silently turn planned commands into passing evidence. Main-branch merge remains a human action.
+
+## Human repository presentation pass
+
+- [ ] Remind the project owner to do a marketing and newcomer-facing pass after the core product work: explain why to use FireController, the problems it solves and the workflows it makes easier. Review the README and repository landing experience for clear examples of agent messaging, jobs, reviews and shareable project progress, with suitable screenshots and an easy route into onboarding. This is a reminder for the human pass, not another implementation or merge gate.

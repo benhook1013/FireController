@@ -17,6 +17,7 @@ import (
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
+	"github.com/benhook1013/FireController/internal/publicsite"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -218,8 +219,10 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"project_publications":             {"public_site", 1, "project_id revision slug enabled manifest_json round_salt generation public_revision public_updated_at refresh_error"},
+	"public_project_snapshots":         {"public_site", 1, "project_id generation revision content_json created_at"},
 	"managed_backup_publication_holds": {"managed_backup_publications", 1, "bundle_id destination source_instance_id manifest_sha256 summary_json"},
 	"project_presentations":            {"project_presentation", 1, "project_id revision state_json"},
 	"project_presentation_history":     {"project_presentation", 1, "project_id revision actor_id state_json created_at"},
@@ -364,6 +367,46 @@ func presentationColumn(table, column, kind string, notnull, pk int, defaultValu
 		return false
 	}
 	return kind == expectedKind && notnull == 1 && pk == expectedPK
+}
+
+// Public publication UPSERTs and generation-scoped immutable snapshots depend
+// on these exact identities, types and explicit values, not just column names.
+func publicSiteColumn(table, column, kind string, notnull, pk int, defaultValue any) bool {
+	if defaultValue != nil {
+		return false
+	}
+	expectedKind, expectedPK := "TEXT", 0
+	switch column {
+	case "project_id":
+		expectedPK = 1
+	case "generation":
+		if table == "public_project_snapshots" {
+			expectedPK = 2
+		}
+	case "revision":
+		expectedKind = "INTEGER"
+		if table == "public_project_snapshots" {
+			expectedPK = 3
+		}
+	case "enabled", "public_revision":
+		expectedKind = "INTEGER"
+	case "slug", "manifest_json", "round_salt", "public_updated_at", "refresh_error", "content_json", "created_at":
+	default:
+		return false
+	}
+	return kind == expectedKind && notnull == 1 && pk == expectedPK
+}
+
+func validatePublicSiteIdentity(ctx context.Context, db sqlReader) error {
+	var uniqueSlug bool
+	if db.QueryRowContext(ctx, `SELECT EXISTS (
+ SELECT 1 FROM pragma_index_list('project_publications') i WHERE i."unique"=1 AND i.partial=0
+ AND (SELECT count(*) FROM pragma_index_xinfo(i.name) WHERE key=1)=1
+ AND EXISTS (SELECT 1 FROM pragma_index_xinfo(i.name) WHERE key=1 AND name='slug' AND cid>=0 AND coll='BINARY')
+)`).Scan(&uniqueSlug) != nil || !uniqueSlug {
+		return invalid()
+	}
+	return nil
 }
 
 // These identities are required by checklist UPSERTs, immutable revisions and
@@ -580,6 +623,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if spec.domain == "public_site" && !publicSiteColumn(name, col, kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			if (name == "job_updates" || name == "job_checklists" || name == "job_checklist_history") && !jobProgressColumn(name, col, kind, notnull, pk, defaultValue) {
 				columnRows.Close()
 				return nil, invalid()
@@ -602,6 +649,11 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		}
 		if err = validateForeignKeys(ctx, db, name); err != nil {
 			return nil, err
+		}
+		if name == "project_publications" {
+			if err = validatePublicSiteIdentity(ctx, db); err != nil {
+				return nil, err
+			}
 		}
 		if name == "job_updates" {
 			if err = validateJobUpdateIdentity(ctx, db); err != nil {
@@ -732,6 +784,11 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["project_presentation"] > 0 {
 		if err = presentation.ValidateSnapshot(ctx, tx); err != nil {
+			return invalid()
+		}
+	}
+	if versions["public_site"] > 0 {
+		if err = publicsite.ValidateSnapshot(ctx, tx); err != nil {
 			return invalid()
 		}
 	}
@@ -888,6 +945,8 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"project_publications":         {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"public_project_snapshots":     {canonicalFK("project_publications", "project_id", "project_id", "CASCADE")},
 	"project_presentations":        {canonicalFK("projects", "project_id", "id", "CASCADE")},
 	"project_presentation_history": {canonicalFK("project_presentations", "project_id", "project_id", "CASCADE")},
 	"project_map_entries":          {canonicalFK("projects", "project_id", "id", "CASCADE")},

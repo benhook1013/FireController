@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/publicsite"
 )
 
 const nativeSource = "native-executor"
@@ -138,6 +139,9 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 		return Receipt{}, err
 	}
 	if err = core.AppendEvent(ctx, tx, scope, "review.observed", id, next, map[string]any{"snapshot_id": id, "pull_number": pull.Number, "source": nativeSource}); err != nil {
+		return Receipt{}, err
+	}
+	if err = publicsite.Refresh(ctx, tx, scope.ProjectID, PublicSiteReviewFacts); err != nil {
 		return Receipt{}, err
 	}
 	return Receipt{ID: id, Revision: next, Outcome: "observed"}, nil

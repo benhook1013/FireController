@@ -1,0 +1,66 @@
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import { Link, Route, Routes, useParams, useSearchParams } from 'react-router';
+import { PublicSiteApi, validPublicGeneration, validPublicSlug, type PublicCard, type PublicHistory, type PublicLink, type PublicRound, type PublicSnapshot } from './public-site-api';
+import { presentationDefaults, type ThemeToken } from './presentation';
+import flameEmber from './flame-ember.svg?no-inline';
+import './public-site.css';
+
+export function PublicSiteRouter() {
+  return <Routes><Route path="/public/:slug" element={<PublicProjectSite />} /><Route path="/public/:slug/history/:revision" element={<PublicProjectSite />} /><Route path="*" element={<PublicUnavailable />} /></Routes>;
+}
+export function PublicUnavailable() { return <main className="public-unavailable"><img className="flame" src={flameEmber} alt="" /><h1>Project unavailable</h1><p>This project has not been published, or its shared link is no longer available.</p><Link to="/">Sign in to the workspace</Link></main>; }
+function date(value: string) { return new Date(value).toLocaleString(); }
+function PublicLinks({ links }: { links: PublicLink[] }) { return <ul className="public-links">{links.map(link => <li key={link.key}><a href={link.url} target="_blank" rel="noreferrer noopener">{link.label}<span className="public-link-destination">{link.url}</span></a></li>)}</ul>; }
+function Cards({ title, cards, empty, anchor }: { title: string; cards: PublicCard[]; empty: string; anchor: string }) {
+  return <section id={anchor} className="public-section"><div className="section-heading"><h2>{title}</h2></div>{cards.length ? <div className="public-card-grid">{cards.map(card => <article className="panel public-card" key={card.key}><div className="item-meta">{card.phase && <span>{card.phase}</span>}{card.status && <span className="public-status">{card.status}</span>}</div><h3>{card.title}</h3>{card.description && <p className="full-text">{card.description}</p>}<PublicLinks links={card.links} /></article>)}</div> : <p className="muted">{empty}</p>}</section>;
+}
+function Rounds({ title, rounds }: { title: string; rounds: PublicRound[] }) {
+  const chronological = [...rounds].sort((a, b) => !a.observed_at ? !b.observed_at ? a.key.localeCompare(b.key) : 1 : !b.observed_at ? -1 : Date.parse(a.observed_at) - Date.parse(b.observed_at) || a.key.localeCompare(b.key));
+  return <section className="review-lane" aria-label={`${title} review rounds`}><div className="review-lane-heading"><h4>{title}</h4><span>{rounds.length} published {rounds.length === 1 ? 'round' : 'rounds'}</span></div>{!rounds.length ? <p className="review-lane-empty">No finalized rounds published.</p> : <ol className="review-round-pills public-rounds">{chronological.map((round, i) => <li key={round.key} className={`review-round-pill${round.complete && round.found === 0 ? ' review-pill-completed review-pill-zero' : ''}`}><span>Round {i + 1}</span><strong>{round.found} / {round.accepted} / {round.routed}</strong>{round.observed_at ? <time dateTime={round.observed_at}>{date(round.observed_at)}</time> : <span className="review-pill-age">Time unknown</span>}<span className="review-pill-age">{round.duration_milliseconds === null ? 'Duration unknown' : `${(round.duration_milliseconds / 1000).toLocaleString()} seconds`}</span>{!round.complete && <span className="review-pill-state">Incomplete coverage</span>}</li>)}</ol>}</section>;
+}
+export function PublicSnapshotView({ snapshot, historical = false, status = 'live', refreshing = false, refresh, history }: { snapshot: PublicSnapshot; historical?: boolean; status?: string; refreshing?: boolean; refresh?: () => void; history?: React.ReactNode }) {
+  const { content } = snapshot, presentation = content.presentation;
+  return <div className="public-project"><header className="mast"><div className="mast-inner"><Link className="brand" to={`/public/${snapshot.slug}`}><img className="flame" src={flameEmber} alt="" aria-hidden="true" />{presentation.brand_name}</Link><span className="mast-label">{presentation.tagline}</span><Link className="public-signin" to="/">Sign in</Link></div></header>
+    <main className="public-layout"><section className="public-hero"><div><p className="eyebrow">{historical ? 'Published history' : presentation.headings.hero_eyebrow ?? 'Project overview'}</p><h1>{presentation.headings.hero_title ?? presentation.name}</h1><p>{presentation.headings.hero_description ?? (content.description || presentation.tagline)}</p><PublicLinks links={content.links} /></div><div className="public-hero-status"><span className="public-hero-pill">{historical ? `Revision ${snapshot.revision} · frozen` : status === 'live' ? 'Live published view' : status === 'reconnecting' ? 'Reconnecting' : status === 'closed' ? 'Live connection ended' : 'Connecting'}</span><span>Published <time dateTime={snapshot.published_at}>{date(snapshot.published_at)}</time></span>{refresh && <button disabled={refreshing} onClick={refresh}>{refreshing ? 'Refreshing…' : 'Refresh published data'}</button>}</div></section>
+    {historical && <p className="notice">This approved revision is frozen. <Link to={`/public/${snapshot.slug}`}>View the current publication</Link>.</p>}
+    <nav className="public-navigation" aria-label="Public project sections"><a href="#project-map">{presentation.headings.map ?? 'Project map'}</a><a href="#progress">Progress</a><a href="#worker-lanes">{presentation.headings.workers ?? 'Worker lanes'}</a><a href="#reviews">{presentation.headings.reviews ?? 'Reviews'}</a><a href="#published-history">Published history</a></nav>
+    {content.description && <section className="public-section"><h2>About {presentation.name}</h2><p className="full-text">{content.description}</p></section>}
+    <Cards title={presentation.headings.map ?? 'Project map'} cards={content.project_map} anchor="project-map" empty="No project map entries have been published." /><Cards title="Progress" cards={content.progress} anchor="progress" empty="No progress summaries have been published." />
+    <section id="worker-lanes" className="public-section"><h2>{presentation.headings.workers ?? 'Worker lanes'}</h2>{content.worker_lanes.length ? <div className="public-card-grid">{content.worker_lanes.map(lane => <article className="panel public-card" key={lane.key}><div className="item-meta"><span>{lane.status}</span></div><h3>{lane.label}</h3>{lane.headline && <p>{lane.headline}</p>}{lane.milestones.length > 0 && <ul className="public-milestones">{lane.milestones.map((milestone, i) => <li key={i}>{milestone}</li>)}</ul>}</article>)}</div> : <p className="muted">No worker lanes have been published.</p>}</section>
+    <section id="reviews" className="public-section"><h2>{presentation.headings.reviews ?? 'Reviews'}</h2><p className="muted">Finalized historical summaries. Counts are found / accepted / routed; these summaries do not establish current review coverage or merge readiness.</p>{content.reviews.length ? <ul className="panel review-queue public-review-queue">{content.reviews.map(review => <li key={review.number}><div className="review-pull-heading"><a className="review-number" href={review.url} target="_blank" rel="noreferrer noopener">#{review.number}</a><h3><a href={review.url} target="_blank" rel="noreferrer noopener">{review.title}</a></h3><span className={`public-status public-lifecycle-${review.lifecycle}`}>{review.lifecycle === 'unknown' ? 'Lifecycle unknown' : review.lifecycle}</span></div><div className="review-lanes"><Rounds title="Hosted" rounds={review.hosted} /><Rounds title="CLI" rounds={review.cli} /></div></li>)}</ul> : <p className="muted">No pull requests have been selected for publication.</p>}</section>
+    <section id="published-history" className="public-section"><h2>Published history</h2>{history ?? <p className="muted">Only explicitly published revisions are available.</p>}</section></main><footer className="footer"><span>Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span><span>Public project website</span></footer></div>;
+}
+function PublicProjectSite() {
+  const { slug = '', revision: rawRevision } = useParams(), [query] = useSearchParams();
+  const generation = query.get('generation') ?? undefined, revision = rawRevision === undefined ? undefined : Number(rawRevision);
+  const valid = validPublicSlug(slug) && (rawRevision === undefined ? query.toString() === '' : Number.isSafeInteger(revision) && Number(revision) > 0 && String(revision) === rawRevision && validPublicGeneration(generation) && [...query.keys()].length === 1);
+  if (!valid) return <PublicUnavailable />;
+  return <PublicProjectBinding key={`${slug}:${rawRevision ?? ''}:${generation ?? ''}`} slug={slug} revision={revision} generation={generation} />;
+}
+function PublicProjectBinding({ slug, revision, generation }: { slug: string; revision?: number; generation?: string }) {
+  const api = useMemo(() => new PublicSiteApi(slug), [slug]);
+  const [snapshot, setSnapshot] = useState<PublicSnapshot | null>(null), [status, setStatus] = useState('connecting'), [failed, setFailed] = useState(false), [notice, setNotice] = useState(''), [refreshing, setRefreshing] = useState(false), [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController(); let active = true;
+    setRefreshing(true); setNotice('');
+    const fail = (error: unknown) => { if (!active) return; setStatus('closed'); setRefreshing(false); if (error && typeof error === 'object' && 'status' in error && (error.status === 404 || error.status === 409 || error.status === 403)) { setSnapshot(null); setFailed(true); } else setNotice('The published view could not be updated. Try refreshing.'); };
+    if (revision !== undefined) void api.snapshot(controller.signal, revision, generation).then(value => { if (active) { setSnapshot(value); setRefreshing(false); } }).catch(fail);
+    else void api.watch({ snapshot: value => { if (active) { setSnapshot(value); setRefreshing(false); } }, status: value => { if (active) setStatus(value); } }, controller.signal).catch(fail);
+    return () => { active = false; controller.abort(); };
+  }, [api, revision, generation, refresh]);
+  useLayoutEffect(() => {
+    if (!snapshot) return;
+    const oldTitle = document.title, root = document.documentElement, previous = new Map<string, string>();
+    for (const key of Object.keys(presentationDefaults.theme) as ThemeToken[]) { const name = `--fc-${key}`; previous.set(name, root.style.getPropertyValue(name)); root.style.setProperty(name, snapshot.content.presentation.theme[key] ?? presentationDefaults.theme[key]); }
+    document.title = `${snapshot.content.presentation.name} · FireController`;
+    return () => { document.title = oldTitle; for (const [key, value] of previous) { if (value) root.style.setProperty(key, value); else root.style.removeProperty(key); } };
+  }, [snapshot]);
+  if (failed) return <PublicUnavailable />;
+  if (!snapshot) return <main className="public-unavailable"><img className="flame" src={flameEmber} alt="" /><h1>Loading published project…</h1>{notice && <p role="alert">{notice}</p>}<button onClick={() => setRefresh(n => n + 1)}>Try again</button><Link to="/">Sign in</Link></main>;
+  return <><PublicSnapshotView snapshot={snapshot} historical={revision !== undefined} status={status} refreshing={refreshing} refresh={() => setRefresh(n => n + 1)} history={<PublishedHistory key={snapshot.generation} api={api} snapshot={snapshot} />} />{notice && <div className="public-notice" role="alert">{notice}</div>}</>;
+}
+function PublishedHistory({ api, snapshot }: { api: PublicSiteApi; snapshot: PublicSnapshot }) {
+  const [page, setPage] = useState<PublicHistory | null>(null), [error, setError] = useState(false), [requested, setRequested] = useState(false), [cursor, setCursor] = useState<string>();
+  useEffect(() => { if (!requested) return; const controller = new AbortController(); setError(false); void api.history(controller.signal, snapshot.generation, cursor).then(value => { if (!controller.signal.aborted) setPage(value); }).catch(() => { if (!controller.signal.aborted) setError(true); }); return () => controller.abort(); }, [api, snapshot, requested, cursor]);
+  return <>{!requested ? <button onClick={() => setRequested(true)}>Browse published revisions</button> : error ? <p role="alert">Published history is unavailable. Return to the current project view to reconnect.</p> : !page ? <p className="muted">Loading published history…</p> : <><ul className="public-history">{page.items.map(item => <li key={item.revision}><Link to={`/public/${snapshot.slug}/history/${item.revision}?generation=${snapshot.generation}`}>Revision {item.revision}</Link> <time dateTime={item.published_at}>{date(item.published_at)}</time></li>)}</ul><div className="public-history-controls">{cursor && <button onClick={() => setCursor(undefined)}>Newest published revisions</button>}{page.has_more && <button onClick={() => setCursor(page.cursor)}>Older published revisions</button>}</div></>}</>;
+}

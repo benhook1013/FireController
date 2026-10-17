@@ -7,7 +7,7 @@ import type {
   ReviewRunOptions, ReviewRuns, ReviewRunSummary, ReviewPolicyAssessment,
 } from './types';
 import { runMessageWatch, runEventWatch, type MessageWatchSource, type EventWatchCallbacks } from './events';
-import { validPresentationSnapshot, validPresentation, validMetadataPage } from './presentation';
+import { validPresentationSnapshot, validPresentation, validMetadataPage, validPresentationConfig, type PresentationConfig } from './presentation';
 import type { PresentationSnapshot, PresentationRevision, ProjectMetadataPage } from './types';
 import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
 
@@ -22,19 +22,32 @@ const serverErrorCodes = new Set([
   'method_not_allowed', 'not_found', 'note_not_found', 'worker_not_found', 'overloaded', 'provider_unavailable', 'response_too_large', 'review_held', 'review_capacity', 'resync_required', 'schema_invalid',
   'schema_unsupported', 'storage_unavailable', 'stream_failed', 'stream_frame_too_large', 'stream_unavailable',
   'unauthorized', 'validation_failed', 'worker_already_configured',
+  'project_presentation_revision_conflict', 'worker_required',
 ]);
 
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
+  readonly outcomeUnknown: boolean;
 
-  constructor(code: string, message: string, status = 0) {
+  constructor(code: string, message: string, status = 0, outcomeUnknown = false) {
     super(message);
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
+    this.outcomeUnknown = outcomeUnknown;
   }
 }
+
+export interface BrowserCapabilities { allow_writes: boolean; can_edit_presentation: boolean }
+export interface BrowserSessionView extends BrowserCapabilities { session_id: string; instance_id: string; project_id: string; expires_at: string }
+export type BrowserPresentationConfig = PresentationConfig;
+export interface BrowserMessageReceipt { id: string; conversation_id: string; outcome: 'sent' | 'seen' | 'acknowledged' | 'unchanged' }
+export interface BrowserPresentationReceipt { project_id: string; revision: number; outcome: 'updated' | 'unchanged' }
+function browserSessionView(value: unknown, selector: string, instance: string, project: string): value is BrowserSessionView {
+  return record(value) && keys(value, ['session_id', 'instance_id', 'project_id', 'expires_at', 'allow_writes', 'can_edit_presentation']) && value.session_id === selector && value.instance_id === instance && value.project_id === project && sessionExpiry(value.expires_at) && Date.parse(value.expires_at) > Date.now() && typeof value.allow_writes === 'boolean' && typeof value.can_edit_presentation === 'boolean' && (!value.can_edit_presentation || value.allow_writes);
+}
+function mutationKey(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length <= 128 && value.trim() === value && !/[^\x20-\x7e]/u.test(value); }
 
 type RequestBudget = { signal: AbortSignal; expired: () => boolean; close: () => void };
 function requestBudget(parents: Array<AbortSignal | undefined>, milliseconds: number): RequestBudget {
@@ -411,6 +424,7 @@ export class Api {
   private browserSessionID?: string;
   private pendingBrowserSessionID?: string;
   private expectedInstanceID?: string;
+  private capabilities: BrowserCapabilities = { allow_writes: false, can_edit_presentation: false };
 
   constructor(token: string, projectId: string) {
     if (!text(token, 4096) || !id(projectId)) throw new ApiError('invalid_binding', 'Select a valid project and credential.');
@@ -418,6 +432,7 @@ export class Api {
     this.projectId = projectId;
   }
   get instanceId(): string | undefined { return this.verifiedInstanceId; }
+  get browserCapabilities(): BrowserCapabilities { return { ...this.capabilities }; }
 
   static resume(projectID: string, sessionID: string, expectedInstanceID: string): Api {
     if (!sessionIdentity(projectID) || !sessionSelector(sessionID) || !sessionIdentity(expectedInstanceID)) throw new ApiError('invalid_binding', 'The saved project session is invalid.');
@@ -434,6 +449,7 @@ export class Api {
     if (this.closed) return;
     this.closed = true;
     this.verifiedInstanceId = undefined;
+    this.capabilities = { allow_writes: false, can_edit_presentation: false };
     this.token = '';
     this.session.abort();
     this.activeWatch?.abort();
@@ -444,21 +460,30 @@ export class Api {
     this.ensureOpen();
     const budget = requestBudget([signal, this.session.signal], 5000);
     this.verifiedInstanceId = undefined;
+    this.capabilities = { allow_writes: false, can_edit_presentation: false };
     try {
       const value = await this.getJson('/api/v1/instance', this.expectedInstanceID, budget.signal);
       if (!record(value) || !keys(value, ['instance_id']) || !id(value.instance_id)) throw new ApiError('invalid_response', 'The service returned an invalid instance identity.');
       if (this.expectedInstanceID && value.instance_id !== this.expectedInstanceID) throw new ApiError('instance_mismatch', 'The service identity differs from this saved project session.', 409);
       const project = await this.getJson(this.projectRoute(''), value.instance_id, budget.signal);
       if (!validProject(project, this.projectId)) throw new ApiError('invalid_response', 'The service returned a project outside this binding.');
+      let capabilities: BrowserCapabilities = { allow_writes: false, can_edit_presentation: false };
+      if (this.browserSessionID) {
+        const current = await this.getJson(this.projectRoute('browser-session'), value.instance_id, budget.signal, undefined, 4096, assessmentJSON);
+        if (!browserSessionView(current, this.browserSessionID, value.instance_id, this.projectId)) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
+        capabilities = { allow_writes: current.allow_writes, can_edit_presentation: current.can_edit_presentation };
+      }
       if (budget.signal.aborted) throw new ApiError('cancelled', 'The browser connection was cancelled.');
       this.verifiedInstanceId = value.instance_id;
+      this.capabilities = capabilities;
       return project;
     } catch (error) { throw this.transportError(error, budget.expired(), budget.signal); }
     finally { budget.close(); }
   }
 
-  async startBrowserSession(signal?: AbortSignal): Promise<{ session_id: string; instance_id: string; project_id: string; expires_at: string }> {
+  async startBrowserSession(signal?: AbortSignal, allowWrites = false): Promise<BrowserSessionView> {
     this.ensureOpen();
+    if (typeof allowWrites !== 'boolean') throw new ApiError('invalid_request', 'Choose whether browser changes are enabled.');
     if (!this.verifiedInstanceId || !this.token || this.browserSessionID || this.pendingBrowserSessionID) throw new ApiError('not_connected', 'Verify the project credential before starting a browser session.');
     const selector = newSessionID();
     const instance = this.verifiedInstanceId;
@@ -468,15 +493,16 @@ export class Api {
     this.expectedInstanceID = instance;
     try {
       const headers = new Headers({ Authorization: `Bearer ${this.token}`, Accept: 'application/json', 'Content-Type': 'application/json', 'X-FC-Instance': instance });
-      const response = await fetch(urlFor(this.projectRoute('browser-session')), { method: 'POST', headers, body: JSON.stringify({ session_id: selector }), redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
+      const response = await fetch(urlFor(this.projectRoute('browser-session')), { method: 'POST', headers, body: JSON.stringify({ session_id: selector, allow_writes: allowWrites }), redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
       if (!response.ok) throw await readFailure(response, budget.signal);
-      const value = await readJson(response, budget.signal, 4096);
-      if (!record(value) || !keys(value, ['session_id', 'instance_id', 'project_id', 'expires_at']) || value.session_id !== selector || value.instance_id !== instance || value.project_id !== this.projectId || !sessionExpiry(value.expires_at) || Date.parse(value.expires_at) <= Date.now()) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
+      const value = await readJson(response, budget.signal, 4096, assessmentJSON);
+      if (!browserSessionView(value, selector, instance, this.projectId) || !allowWrites && value.allow_writes) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
       if (budget.signal.aborted) throw new ApiError('cancelled', 'The browser connection was cancelled.');
       this.browserSessionID = selector;
       this.pendingBrowserSessionID = undefined;
       this.token = '';
-      return value as { session_id: string; instance_id: string; project_id: string; expires_at: string };
+      this.capabilities = { allow_writes: value.allow_writes, can_edit_presentation: value.can_edit_presentation };
+      return value;
     } catch (error) { throw this.transportError(error, budget.expired(), budget.signal); }
     finally { budget.close(); }
   }
@@ -492,8 +518,63 @@ export class Api {
       if (!response.ok) throw await readFailure(response, budget.signal);
       const value = await readJson(response, budget.signal, 4096);
       if (!record(value) || !keys(value, ['session_id', 'logged_out']) || value.session_id !== selector || value.logged_out !== true) throw new ApiError('invalid_response', 'The service returned an invalid logout response.');
+      this.capabilities = { allow_writes: false, can_edit_presentation: false };
     } catch (error) { throw this.transportError(error, budget.expired(), budget.signal); }
     finally { budget.close(); }
+  }
+
+  async sendMessage(worker: string, recipient: string, body: string, replyTo: string, key: string, signal?: AbortSignal): Promise<BrowserMessageReceipt & { outcome: 'sent' }> {
+    if (!id(worker) || !id(recipient) || !contentText(body, 16 << 10) || body.trim() === '' || replyTo !== '' && !id(replyTo) || !mutationKey(key)) throw new ApiError('invalid_request', 'Use a selected worker, recipient, bounded message and original action key.');
+    return this.browserMutation(this.projectRoute('messages'), 'POST', worker, key, { recipient_worker_id: recipient, body, reply_to_message_id: replyTo }, 201,
+      (value): value is BrowserMessageReceipt & { outcome: 'sent' } => record(value) && keys(value, ['id', 'conversation_id', 'outcome']) && id(value.id) && id(value.conversation_id) && value.outcome === 'sent', signal);
+  }
+  async markMessageSeen(worker: string, messageId: string, key: string, signal?: AbortSignal): Promise<BrowserMessageReceipt> {
+    return this.messageTransition(worker, messageId, key, false, signal);
+  }
+  async acknowledgeMessage(worker: string, messageId: string, key: string, signal?: AbortSignal): Promise<BrowserMessageReceipt> {
+    return this.messageTransition(worker, messageId, key, true, signal);
+  }
+  private async messageTransition(worker: string, messageId: string, key: string, acknowledge: boolean, signal?: AbortSignal): Promise<BrowserMessageReceipt> {
+    if (!id(worker) || !id(messageId) || !mutationKey(key)) throw new ApiError('invalid_request', 'Use the selected recipient, message and original action key.');
+    return this.browserMutation(this.projectRoute(`messages/${encodeURIComponent(messageId)}/${acknowledge ? 'ack' : 'seen'}`), 'POST', worker, key, {}, 200,
+      (value): value is BrowserMessageReceipt => record(value) && keys(value, ['id', 'conversation_id', 'outcome']) && value.id === messageId && id(value.conversation_id) && (value.outcome === 'unchanged' || value.outcome === (acknowledge ? 'acknowledged' : 'seen')), signal);
+  }
+  async replacePresentation(worker: string, config: BrowserPresentationConfig, expectedRevision: number, key: string, signal?: AbortSignal): Promise<BrowserPresentationReceipt> {
+    if (!id(worker) || !validPresentationConfig(config) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || expectedRevision >= Number.MAX_SAFE_INTEGER || !mutationKey(key)) throw new ApiError('invalid_request', 'Use a validated presentation, observed revision, selected worker and original action key.');
+    return this.browserMutation(this.projectRoute('presentation'), 'PUT', worker, key, { expected_revision: expectedRevision, presentation: config }, 200,
+      (value): value is BrowserPresentationReceipt => record(value) && keys(value, ['project_id', 'revision', 'outcome']) && value.project_id === this.projectId && (value.outcome === 'updated' && value.revision === expectedRevision + 1 || value.outcome === 'unchanged' && value.revision === expectedRevision), signal, true);
+  }
+
+  private async browserMutation<T>(path: string, method: 'POST' | 'PUT', worker: string, key: string, body: unknown, expectedStatus: number, validate: (value: unknown) => value is T, signal?: AbortSignal, presentation = false): Promise<T> {
+    this.ensureOpen();
+    if (!this.browserSessionID || !this.verifiedInstanceId) throw new ApiError('not_connected', 'Verify the browser session before changing this project.');
+    if (!this.capabilities.allow_writes || presentation && !this.capabilities.can_edit_presentation) throw new ApiError('forbidden', 'This browser session does not permit this action.', 403);
+    const budget = requestBudget([signal, this.session.signal], 5000);
+    let dispatched = false, knownRefusal = false;
+    try {
+      const url = urlFor(path), headers = this.headers(this.verifiedInstanceId, worker);
+      headers.set('Idempotency-Key', key); headers.set('Content-Type', 'application/json');
+      const encoded = JSON.stringify(body);
+      if (budget.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      // Once Fetch is invoked, cancellation or transport failure cannot prove
+      // that the transaction was unsent. Recovery keeps this exact body/key.
+      dispatched = true;
+      const response = await fetch(url, { method, headers, body: encoded, redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
+      if (response.status !== expectedStatus) {
+        if (response.status < 400 || response.status >= 600) { void response.body?.cancel().catch(() => {}); throw new ApiError('invalid_response', 'The action returned an unexpected response.', response.status); }
+        const value = await readJson(response, budget.signal, 64 << 10, assessmentJSON);
+        if (!record(value) || !keys(value, ['error', 'request_id']) || !id(value.request_id) || !record(value.error) || !keys(value.error, ['code', 'message'], ['details']) || !text(value.error.code, 64) || !text(value.error.message, 512)) throw new ApiError('invalid_response', 'The action returned an invalid refusal.', response.status);
+        knownRefusal = response.status < 500 && !(record(value.error.details) && value.error.details.outcome_unknown === true);
+        throw serverError(value, response.status);
+      }
+      const value = await readJson(response, budget.signal, 4096, assessmentJSON);
+      if (budget.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      if (!validate(value)) throw new ApiError('invalid_response', 'The action result could not be verified.', response.status);
+      return value;
+    } catch (error) {
+      const failure = this.transportError(error, budget.expired(), budget.signal);
+      throw new ApiError(failure.code, failure.message, failure.status, dispatched && !knownRefusal);
+    } finally { budget.close(); }
   }
 
   async workers(options: PageOptions = {}, signal?: AbortSignal): Promise<Page<Worker>> {

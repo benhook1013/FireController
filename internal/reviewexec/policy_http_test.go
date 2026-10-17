@@ -108,7 +108,7 @@ func TestPolicyHTTPAuthorizationCookieInstanceAndRevocation(t *testing.T) {
 	login.Header.Set("Authorization", "Bearer "+f.admin)
 	login.Header.Set("X-FC-Instance", f.store.InstanceID())
 	id := strings.Repeat("a", 32)
-	_, cookie, err := f.store.CreateBrowserSession(login, id)
+	_, cookie, err := f.store.CreateBrowserSession(login, id, false)
 	if err != nil {
 		t.Fatal(err)
 	}

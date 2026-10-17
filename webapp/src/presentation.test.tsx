@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { Api } from './api';
-import { applyPresentationRoot, heading, presentationDefaults, validMetadataPage, validPresentationSnapshot } from './presentation';
+import { applyPresentationRoot, heading, presentationDefaults, validMetadataPage, validPresentationSnapshot, validPresentationConfig } from './presentation';
 import { PresentationContext, useProjectHeading } from './presentation-context';
 import { isCurrentProjectView, refreshProjectMetadata } from './project-metadata';
 import type { Presentation, PresentationSnapshot, ProjectMetadataPage } from './types';
@@ -15,6 +15,14 @@ const flush = async () => { for (let i = 0; i < 60; i++) await Promise.resolve()
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('project appearance and metadata boundary', () => {
+  it('validates editable configuration without fabricated state identity or timestamps', () => {
+    const config = { name: 'Project title', brand_name: 'Project brand', tagline: 'Project tagline', headings: { jobs: 'Current work' }, theme: { accent_text: '#fffffe' } };
+    expect(validPresentationConfig(config)).toBe(true);
+    expect(validPresentationConfig({ ...config, project_id: project.id })).toBe(false);
+    expect(validPresentationConfig({ ...config, revision: 1, updated_at: '2026-10-17T12:00:00Z' })).toBe(false);
+    expect(validPresentationConfig({ ...config, theme: { surface_text: '#f7f6f3' } })).toBe(false);
+    expect(validPresentationConfig({ ...config, headings: { jobs: 'Untrusted\nheading' } })).toBe(false);
+  });
   it('keeps every original fallback color/layout byte and covers the shared token vocabulary', async () => {
     const fs = await vi.importActual<{ readFileSync(path: URL, encoding: 'utf8'): string }>('node:fs');
     const styles = fs.readFileSync(new URL('./styles.css', import.meta.url), 'utf8');

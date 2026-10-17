@@ -32,9 +32,9 @@ browser-build:
 
 # Requires the actual outputs from make build; no implicit rebuild.
 smoke:
-	$(GO) test -tags=packaged_smoke -run '^TestPackaged(Smoke|UpgradeSmoke)$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -tags=packaged_smoke -run '^TestPackaged(Smoke|UpgradeSmoke|PublicationSmoke)$$' -count=1 -timeout=60s ./tools/packagedsmoke
 
 # Requires built fcd and the browser installed for webapp's pinned Playwright.
 browser-smoke:
 	@test "$$($(GO) env GOOS)" = linux || { printf '%s\n' 'browser-smoke requires Linux' >&2; exit 1; }
-	$(GO) test -tags=packaged_smoke -run '^TestPackagedBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -tags=packaged_smoke -run '^TestPackaged(BrowserSmoke|PublicBrowserSmoke)$$' -count=1 -timeout=60s ./tools/packagedsmoke
