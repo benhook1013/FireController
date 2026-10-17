@@ -105,10 +105,19 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	target, _ := url.Parse("http://" + daemon.address)
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.FlushInterval = -1
-	var requests, writes, observations atomic.Int64
+	var requests, writes, observations, instanceReads, scopedReads atomic.Int64
+	var lastScopedPath atomic.Value
+	lastScopedPath.Store("")
 	prefix := "/api/v1/projects/" + project
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/instance" {
+			instanceReads.Add(1)
+		}
+		if r.Method == http.MethodGet && (r.URL.Path == prefix || strings.HasPrefix(r.URL.Path, prefix+"/")) {
+			scopedReads.Add(1)
+			lastScopedPath.Store(r.URL.Path)
+		}
 		if r.Method != http.MethodGet {
 			writes.Add(1)
 			if r.Method == http.MethodPost && r.URL.Path == prefix+"/reviews/observations" {
@@ -125,9 +134,13 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	runCLI(t, ctx, binaries["fc"], env, "--profiles-file", profileFile, "--profile", "archive", "profile", "create", "--server", gateway.URL, "--instance", daemon.instance, "--project", project, "--worker", worker, "--credential-file", credential)
 	cli := func(args ...string) json.RawMessage {
 		t.Helper()
-		previous := requests.Load()
+		previous, previousInstance, previousScoped := requests.Load(), instanceReads.Load(), scopedReads.Load()
 		out := runCLI(t, ctx, binaries["fc"], env, append([]string{"--profiles-file", profileFile, "--profile", "archive", "reviews"}, args...)...)
-		if requests.Load() != previous+1 || bytes.Contains(out, bytes.TrimSpace(admin)) {
+		selected := prefix + "/reviews/pulls/" + args[1]
+		if args[0] != "pull" {
+			selected += "/" + args[0]
+		}
+		if requests.Load() != previous+2 || instanceReads.Load() != previousInstance+1 || scopedReads.Load() != previousScoped+1 || lastScopedPath.Load() != selected || bytes.Contains(out, bytes.TrimSpace(admin)) {
 			t.Fatal("archive CLI silently paged, made extra calls or disclosed authority")
 		}
 		return out
@@ -214,11 +227,12 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	t.Cleanup(closeMCP)
 	callTool := func(name string, args map[string]any) []byte {
 		t.Helper()
-		previous := requests.Load()
+		previous, previousInstance, previousScoped := requests.Load(), instanceReads.Load(), scopedReads.Load()
 		bounded, stop := context.WithTimeout(ctx, stepTimeout)
 		defer stop()
 		value, err := session.CallTool(bounded, &mcp.CallToolParams{Name: name, Arguments: args})
-		if err != nil || value == nil || value.IsError || len(value.Content) != 1 || requests.Load() != previous+1 {
+		selected := prefix + "/reviews/pulls/123/" + strings.TrimPrefix(name, "review_")
+		if err != nil || value == nil || value.IsError || len(value.Content) != 1 || requests.Load() != previous+2 || instanceReads.Load() != previousInstance+1 || scopedReads.Load() != previousScoped+1 || lastScopedPath.Load() != selected {
 			t.Fatal("archive MCP silently paged or failed")
 		}
 		body, err := json.Marshal(value.StructuredContent)
