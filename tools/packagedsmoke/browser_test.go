@@ -5,6 +5,9 @@ package packagedsmoke
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -18,6 +21,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/server"
 )
 
 // TestPackagedBrowserSmoke consumes the existing embedded-browser daemon. It
@@ -76,7 +82,8 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 		t.Fatal("private bootstrap credential unavailable")
 	}
 	bootstrap.stop(t)
-	project, worker, otherWorker, credentialFile := seedAccess(t, ctx, data, bootstrap.instance, strings.TrimSpace(string(admin)), private)
+	project, worker, otherWorker, _ := seedAccess(t, ctx, data, bootstrap.instance, strings.TrimSpace(string(admin)), private)
+	credentialFile := seedBrowserReadOnlyCredential(t, ctx, data, bootstrap.instance, project, strings.TrimSpace(string(admin)), private)
 	daemon := startDaemon(t, ctx, binary, data, env)
 	if daemon.instance != bootstrap.instance {
 		t.Fatal("browser fixture identity changed")
@@ -232,4 +239,42 @@ func (o *browserOutput) safePhase() string {
 		}
 	}
 	return "driver-start-or-cleanup"
+}
+
+// Give the browser a genuine read-only credential rather than asking a writer
+// session to pretend to be read-only. This setup runs before the actual daemon.
+func seedBrowserReadOnlyCredential(t *testing.T, ctx context.Context, data, instance, project, admin, private string) string {
+	t.Helper()
+	store, err := core.Open(ctx, data)
+	if err != nil {
+		t.Fatal("read-only browser fixture unavailable")
+	}
+	defer store.Close()
+	if store.InstanceID() != instance {
+		t.Fatal("read-only browser fixture identity changed")
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		t.Fatal("read-only browser credential unavailable")
+	}
+	token := hex.EncodeToString(secret)
+	digest := sha256.Sum256([]byte(token))
+	raw, err := json.Marshal(map[string]any{"token_sha256": hex.EncodeToString(digest[:]), "permissions": []string{"read"}})
+	if err != nil {
+		t.Fatal("read-only browser fixture JSON unavailable")
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+project+"/credentials", bytes.NewReader(raw)).WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer "+admin)
+	request.Header.Set("X-FC-Instance", instance)
+	request.Header.Set("Idempotency-Key", core.NewID("browser_readonly"))
+	response := httptest.NewRecorder()
+	server.New(store).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatal("read-only browser credential setup refused")
+	}
+	filename := filepath.Join(private, "browser-readonly.token")
+	if os.WriteFile(filename, []byte(token+"\n"), 0600) != nil {
+		t.Fatal("private read-only browser credential unavailable")
+	}
+	return filename
 }

@@ -47,7 +47,11 @@ try {
     const url = new URL(request.url());
     if (url.origin !== config.origin) { external++; return; }
     if (request.method() === 'GET') return;
-    if (url.pathname === prefix + '/browser-session' && request.method() === 'POST') sessionPosts++;
+    if (url.pathname === prefix + '/browser-session' && request.method() === 'POST') {
+      sessionPosts++;
+      try { const body=JSON.parse(request.postData()); if (Object.keys(body).length!==1 || typeof body.session_id!=='string' || !body.session_id) forbiddenWrites++; }
+      catch { forbiddenWrites++; }
+    }
     else if (url.pathname === prefix + '/browser-session/renew' && request.method() === 'POST') { sessionRenewals++; if (request.postData() !== '{}' || request.headers()['authorization'] || request.headers()['x-fc-instance'] !== config.instance) forbiddenWrites++; }
     else if (url.pathname === prefix + '/browser-session' && request.method() === 'DELETE') sessionDeletes++;
     else if (explicitActions && ((request.method() === 'POST' && (url.pathname === prefix + '/messages' || /^messages\/[^/]+\/(?:seen|ack)$/.test(url.pathname.slice(prefix.length + 1)))) || (request.method() === 'PUT' && url.pathname === prefix + '/presentation'))) actionWrites++;
@@ -71,8 +75,18 @@ try {
   await page.goto(config.origin);
   await page.getByLabel('Project ID', {exact:true}).fill(config.project);
   await page.getByLabel('Project credential', {exact:true}).fill(token);
+  need(await page.getByRole('checkbox').count() === 0);
+  const readOnlyLogin=page.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname===prefix+'/browser-session');
   await page.getByRole('button', {name:'Connect to project', exact:true}).click();
+  const readOnlyResponse=await readOnlyLogin; need(readOnlyResponse.status()===200);
+  const readOnlyCapabilities=await readOnlyResponse.json(); need(readOnlyCapabilities.allow_writes===false && readOnlyCapabilities.can_edit_presentation===false);
   await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
+  need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).count()===0);
+  await page.getByRole('button',{name:'Open Builder inbox',exact:true}).click();
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
+  await page.getByRole('heading',{name:'Builder inbox',exact:true}).waitFor();
+  need(await page.getByRole('button',{name:'New message',exact:true}).count()===0);
+  need(actionWrites===0 && fixtureWrites===0 && forbiddenWrites===0);
   await defaults();
   need((await appearance()).title === 'Packaged smoke · FireController');
   const bindingKey = 'firecontroller.browser-session.v1';
@@ -238,8 +252,12 @@ try {
   explicitActions = true;
   await page.getByLabel('Project ID', {exact:true}).fill(config.project);
   await page.getByLabel('Project credential', {exact:true}).fill(admin);
-  await page.getByLabel('Enable message and appearance changes', {exact:true}).check();
+  need(await page.getByRole('checkbox').count()===0);
+  const adminLogin=page.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname===prefix+'/browser-session');
   await page.getByRole('button', {name:'Connect to project',exact:true}).click();
+  const adminResponse=await adminLogin;need(adminResponse.status()===200);
+  const adminCapabilities=await adminResponse.json();need(adminCapabilities.allow_writes===true && adminCapabilities.can_edit_presentation===true);
+  need(actionWrites===0 && forbiddenWrites===0);
   await page.getByRole('heading', {name:title,exact:true}).waitFor();
   await page.getByRole('button', {name:'Open Builder inbox',exact:true}).click();
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox',exact:true}).click();

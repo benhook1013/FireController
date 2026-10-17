@@ -5,11 +5,11 @@ import { createMemoryRouter, RouterProvider } from 'react-router';
 import App, { leavesActionProject } from './App';
 import { decodePresentationDraft, presentationDraft } from './project-settings';
 
-describe('explicit browser connection and appearance input', () => {
-  it('defaults new connections to unchecked write consent without storing credentials or capabilities', () => {
+describe('browser connection and appearance input', () => {
+  it('offers one login without a permission-mode checkbox', () => {
     const router = createMemoryRouter([{ path: '*', element: <App /> }]);
     const html = renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><RouterProvider router={router} /></QueryClientProvider>);
-    expect(html).toContain('Enable message and appearance changes'); expect(html).toMatch(/type="checkbox"/u); expect(html).not.toMatch(/type="checkbox"[^>]*checked/u); expect(html).not.toContain('Save appearance');
+    expect(html).toContain('Connect to a project'); expect(html).not.toMatch(/type="checkbox"/u); expect(html).not.toContain('Enable message and appearance changes'); expect(html).not.toContain('Save appearance');
   });
   it('guards exits to another project, root and public routes while allowing same-project view changes', () => {
     for (const pathname of ['/', '/projects/project_two/inbox', '/public/showcase', '/public']) expect(leavesActionProject('project_one', pathname)).toBe(true);

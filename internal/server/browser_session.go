@@ -1,28 +1,10 @@
 package server
 
 import (
-	"bytes"
-	"errors"
 	"net/http"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
-
-// A supplied null is not an omitted approval. Its bool underlying type also
-// keeps strictjson's exact-field validation applicable to the request shape.
-type browserWriteApproval bool
-
-func (approval *browserWriteApproval) UnmarshalJSON(data []byte) error {
-	switch string(bytes.TrimSpace(data)) {
-	case "true":
-		*approval = true
-	case "false":
-		*approval = false
-	default:
-		return errors.New("browser write approval must be a boolean")
-	}
-	return nil
-}
 
 func (a *api) createBrowserSession(w http.ResponseWriter, r *http.Request) {
 	if err := core.BrowserSessionOrigin(r, false); err != nil {
@@ -34,14 +16,13 @@ func (a *api) createBrowserSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		SessionID   string               `json:"session_id"`
-		AllowWrites browserWriteApproval `json:"allow_writes"`
+		SessionID string `json:"session_id"`
 	}
 	if err := core.ReadJSON(w, r, &body); err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	response, cookie, err := a.store.CreateBrowserSession(r, body.SessionID, bool(body.AllowWrites))
+	response, cookie, err := a.store.CreateBrowserSession(r, body.SessionID)
 	if err != nil {
 		core.WriteError(w, err)
 		return

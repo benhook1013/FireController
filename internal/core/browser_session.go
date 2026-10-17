@@ -76,8 +76,9 @@ func browserSessionCookie(r *http.Request, id string) *http.Cookie {
 }
 
 // CreateBrowserSession derives an attenuated encrypted transport session from a
-// current bearer credential. It allocates no durable mutation or user receipt.
-func (s *Store) CreateBrowserSession(r *http.Request, id string, allowWrites bool) (BrowserSession, *http.Cookie, error) {
+// current bearer credential, pinning its effective initial capabilities. It
+// allocates no durable mutation or user receipt.
+func (s *Store) CreateBrowserSession(r *http.Request, id string) (BrowserSession, *http.Cookie, error) {
 	if !browserSessionID.MatchString(id) {
 		return BrowserSession{}, nil, Fail("validation_failed", "Provide a 32-character lowercase hexadecimal session identity.", 400)
 	}
@@ -94,17 +95,14 @@ func (s *Store) CreateBrowserSession(r *http.Request, id string, allowWrites boo
 	var writes, presentation bool
 	err = s.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
-		writes, presentation, err = s.browserCapabilities(ctx, tx, scope, allowWrites, true)
+		writes, presentation, err = s.browserCapabilities(ctx, tx, scope, true, true)
 		return err
 	})
 	if err != nil {
 		return BrowserSession{}, nil, err
 	}
-	if allowWrites && !writes {
-		return BrowserSession{}, nil, Fail("forbidden", "Project write permission is required to enable browser changes.", 403)
-	}
 	expires := time.Now().UTC().Truncate(time.Second).Add(browserSessionLifetime)
-	claims := browserSessionClaims{SessionID: id, InstanceID: s.instanceID, ProjectID: scope.ProjectID, CredentialHash: scope.tokenHash, ExpiresAt: expires.Unix(), AllowWrites: allowWrites, CanEditPresentation: presentation}
+	claims := browserSessionClaims{SessionID: id, InstanceID: s.instanceID, ProjectID: scope.ProjectID, CredentialHash: scope.tokenHash, ExpiresAt: expires.Unix(), AllowWrites: writes, CanEditPresentation: presentation}
 	cookie := browserSessionCookie(r, id)
 	cookie.Value, err = s.browserSessionCodec().Encode(cookie.Name, claims)
 	if err != nil {

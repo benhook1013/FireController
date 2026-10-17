@@ -19,7 +19,7 @@ func TestBrowserSessionRenewalPublicCookieIsolationStrictnessAndNoEffects(t *tes
 			id := strings.Repeat("a", 32)
 			secondID := strings.Repeat("b", 32)
 			cookie := browserLogin(t, f, project, token, id, host)
-			second := browserLogin(t, f, other, f.admin, secondID, host)
+			second := browserLoginCapabilities(t, f, other, f.admin, secondID, host, true, true)
 			// Login admission normally limits cookies to eight. Renewal must
 			// replace only its selected cookie even if a caller supplies more.
 			var additional []*http.Cookie

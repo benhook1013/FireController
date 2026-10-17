@@ -483,9 +483,8 @@ export class Api {
     finally { budget.close(); }
   }
 
-  async startBrowserSession(signal?: AbortSignal, allowWrites = false): Promise<BrowserSessionView> {
+  async startBrowserSession(signal?: AbortSignal): Promise<BrowserSessionView> {
     this.ensureOpen();
-    if (typeof allowWrites !== 'boolean') throw new ApiError('invalid_request', 'Choose whether browser changes are enabled.');
     if (!this.verifiedInstanceId || !this.token || this.browserSessionID || this.pendingBrowserSessionID) throw new ApiError('not_connected', 'Verify the project credential before starting a browser session.');
     const selector = newSessionID();
     const instance = this.verifiedInstanceId;
@@ -495,10 +494,10 @@ export class Api {
     this.expectedInstanceID = instance;
     try {
       const headers = new Headers({ Authorization: `Bearer ${this.token}`, Accept: 'application/json', 'Content-Type': 'application/json', 'X-FC-Instance': instance });
-      const response = await fetch(urlFor(this.projectRoute('browser-session')), { method: 'POST', headers, body: JSON.stringify({ session_id: selector, allow_writes: allowWrites }), redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
+      const response = await fetch(urlFor(this.projectRoute('browser-session')), { method: 'POST', headers, body: JSON.stringify({ session_id: selector }), redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
       if (!response.ok) throw await readFailure(response, budget.signal);
       const value = await readJson(response, budget.signal, 4096, assessmentJSON);
-      if (!browserSessionView(value, selector, instance, this.projectId) || !allowWrites && value.allow_writes) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
+      if (!browserSessionView(value, selector, instance, this.projectId)) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
       if (budget.signal.aborted) throw new ApiError('cancelled', 'The browser connection was cancelled.');
       this.browserSessionID = selector;
       this.pendingBrowserSessionID = undefined;
