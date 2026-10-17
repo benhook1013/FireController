@@ -102,13 +102,13 @@ func TestPolicyHTTPAuthorizationCookieInstanceAndRevocation(t *testing.T) {
 	if got := evidenceHTTPRequire(t, f.request("GET", otherPath, f.other, "", ""), 200, ""); got["project_id"] != otherAttemptProject || got["policy"].(map[string]any)["max_review_files"] != float64(1) {
 		t.Fatal("policy crossed projects")
 	}
-	// Even an administrator's derived browser session remains read-only.
+	// A reader's derived browser session permits only project reads.
 	login := httptest.NewRequest("POST", "http://localhost/api/v1/projects/"+attemptProject+"/browser-session", nil)
 	login.SetPathValue("project_id", attemptProject)
-	login.Header.Set("Authorization", "Bearer "+f.admin)
+	login.Header.Set("Authorization", "Bearer "+f.reader)
 	login.Header.Set("X-FC-Instance", f.store.InstanceID())
 	id := strings.Repeat("a", 32)
-	_, cookie, err := f.store.CreateBrowserSession(login, id, false)
+	_, cookie, err := f.store.CreateBrowserSession(login, id)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -301,7 +301,7 @@ func TestHostedSettlementRequiresCurrentAdminIncludingReplayAndTransaction(t *te
 	create.SetPathValue("project_id", attemptProject)
 	create.Header.Set("Authorization", "Bearer "+f.admin)
 	create.Header.Set("X-FC-Instance", f.store.InstanceID())
-	session, cookie, err := f.store.CreateBrowserSession(create, strings.Repeat("a", 32), false)
+	session, cookie, err := f.store.CreateBrowserSession(create, strings.Repeat("a", 32))
 	if err != nil {
 		t.Fatal(err)
 	}

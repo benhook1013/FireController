@@ -37,6 +37,11 @@ func TestBrowserSessionRenewalOriginalCapabilityCeilingAndCurrentGrants(t *testi
 	for _, kind := range []string{"readonly-promoted", "writer-promoted", "admin-demoted"} {
 		t.Run(kind, func(t *testing.T) {
 			s, _, _ := streamFixture(t)
+			if kind == "readonly-promoted" {
+				if _, err := s.DB().Exec(`UPDATE grants SET can_write=0 WHERE credential_id='credential'`); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if kind == "admin-demoted" {
 				if _, err := s.DB().Exec(`UPDATE credentials SET is_admin=1 WHERE id='credential'`); err != nil {
 					t.Fatal(err)
@@ -47,17 +52,20 @@ func TestBrowserSessionRenewalOriginalCapabilityCeilingAndCurrentGrants(t *testi
 			r.Header.Set("Authorization", "Bearer synthetic-core-stream-token-1234567")
 			r.Header.Set("X-FC-Instance", s.InstanceID())
 			id := strings.Repeat("a", 32)
-			_, cookie, err := s.CreateBrowserSession(r, id, kind != "readonly-promoted")
+			_, cookie, err := s.CreateBrowserSession(r, id)
 			if err != nil {
 				t.Fatal(err)
 			}
 			original := renewalClaims(t, s, cookie)
+			if original.AllowWrites != (kind != "readonly-promoted") || original.CanEditPresentation != (kind == "admin-demoted") {
+				t.Fatal("initial capability pins do not match login authority")
+			}
 			original.ExpiresAt = time.Now().Add(time.Hour).Unix()
 			cookie = renewalCookie(t, s, cookie, original)
 			if kind == "admin-demoted" {
 				_, err = s.DB().Exec(`UPDATE credentials SET is_admin=0 WHERE id='credential';UPDATE grants SET can_write=0 WHERE credential_id='credential'`)
 			} else {
-				_, err = s.DB().Exec(`UPDATE credentials SET is_admin=1 WHERE id='credential'`)
+				_, err = s.DB().Exec(`UPDATE credentials SET is_admin=1 WHERE id='credential';UPDATE grants SET can_write=1 WHERE credential_id='credential'`)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -85,6 +93,16 @@ func TestBrowserSessionRenewalOriginalCapabilityCeilingAndCurrentGrants(t *testi
 			current, err := s.CurrentBrowserSession(browserCoreRequest(s, id, next))
 			if err != nil || current != response {
 				t.Fatal("renewed cookie cannot resume", current, err)
+			}
+			if kind != "admin-demoted" {
+				fresh, _, err := s.CreateBrowserSession(r, strings.Repeat("b", 32))
+				if err != nil || !fresh.AllowWrites || !fresh.CanEditPresentation {
+					t.Fatal("new login did not receive promoted credential authority", fresh, err)
+				}
+				unchanged, err := s.CurrentBrowserSession(browserCoreRequest(s, id, next))
+				if err != nil || unchanged != response {
+					t.Fatal("new login promoted the existing session", unchanged, err)
+				}
 			}
 			if kind == "admin-demoted" {
 				if _, err = s.DB().Exec(`UPDATE credentials SET is_admin=1 WHERE id='credential';UPDATE grants SET can_write=1 WHERE credential_id='credential'`); err != nil {

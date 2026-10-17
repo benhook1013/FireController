@@ -13,12 +13,15 @@ import (
 
 func browserCoreSession(t *testing.T, s *Store) (string, *http.Cookie) {
 	t.Helper()
+	if _, err := s.DB().Exec(`UPDATE grants SET can_write=0 WHERE credential_id='credential'`); err != nil {
+		t.Fatal(err)
+	}
 	id := strings.Repeat("a", 32)
 	r := httptest.NewRequest("POST", "http://localhost/api/v1/projects/project/browser-session", nil)
 	r.SetPathValue("project_id", "project")
 	r.Header.Set("Authorization", "Bearer synthetic-core-stream-token-1234567")
 	r.Header.Set("X-FC-Instance", s.InstanceID())
-	response, cookie, err := s.CreateBrowserSession(r, id, false)
+	response, cookie, err := s.CreateBrowserSession(r, id)
 	if err != nil || response.ProjectID != "project" || response.SessionID != id {
 		t.Fatal("create session failed", err)
 	}

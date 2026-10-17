@@ -12,19 +12,17 @@ async function connected(writes = true, presentation = true): Promise<Api> {
   vi.stubGlobal('location', { origin: 'https://service.example' });
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input).endsWith('/instance')) return json({ instance_id: 'instance_one' });
-    if (String(input).endsWith('/browser-session')) { const body = JSON.parse(String(init?.body)); expect(body.allow_writes).toBe(writes); return json(session(body.session_id, writes, presentation)); }
+    if (String(input).endsWith('/browser-session')) { const body = JSON.parse(String(init?.body)); expect(Object.keys(body)).toEqual(['session_id']); return json(session(body.session_id, writes, presentation)); }
     return json(project);
   }));
-  const api = new Api('private-test-token', project.id); clients.push(api); await api.connect(); await api.startBrowserSession(undefined, writes); return api;
+  const api = new Api('private-test-token', project.id); clients.push(api); await api.connect(); await api.startBrowserSession(); return api;
 }
 afterEach(() => { for (const api of clients.splice(0)) api.close(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('verified browser action capabilities', () => {
-  it('does not promote an explicitly read-only connection from an unexpected session reply', async () => {
-    vi.stubGlobal('location', { origin: 'https://service.example' });
-    const api = new Api('private-test-token', project.id); clients.push(api);
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => String(input).endsWith('/instance') ? json({ instance_id: 'instance_one' }) : String(input).endsWith('/browser-session') ? json(session(JSON.parse(String(init?.body)).session_id, true, true)) : json(project)));
-    await api.connect(); await expect(api.startBrowserSession()).rejects.toMatchObject({ code: 'invalid_response' }); expect(api.browserCapabilities).toEqual({ allow_writes: false, can_edit_presentation: false });
+  it.each([[false, false], [true, false], [true, true]])('uses the service-authorized capabilities without a login mode (%s, %s)', async (writes, presentation) => {
+    const api = await connected(writes, presentation);
+    expect(api.browserCapabilities).toEqual({ allow_writes: writes, can_edit_presentation: presentation });
   });
   it('resumes with three current cookie reads and no saved permission flags', async () => {
     vi.stubGlobal('location', { origin: 'https://service.example' });

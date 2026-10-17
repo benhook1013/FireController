@@ -198,10 +198,10 @@ func TestEvidenceHTTPAuthorizationInstanceAndReadOnlyCookie(t *testing.T) {
 	}
 	login := httptest.NewRequest("POST", "http://localhost/api/v1/projects/"+attemptProject+"/browser-session", nil)
 	login.SetPathValue("project_id", attemptProject)
-	login.Header.Set("Authorization", "Bearer "+f.writer)
+	login.Header.Set("Authorization", "Bearer "+f.reader)
 	login.Header.Set("X-FC-Instance", f.store.InstanceID())
 	id := strings.Repeat("a", 32)
-	_, cookie, err := f.store.CreateBrowserSession(login, id, false)
+	_, cookie, err := f.store.CreateBrowserSession(login, id)
 	if err != nil {
 		t.Fatal(err)
 	}
