@@ -342,10 +342,14 @@ try {
   replyStatus = replyResponse.status(); checkpoint = 'reply-status';
   need(replyStatus===201);
   checkpoint = 'reply-binding';
-  conversationMatch = (await replyResponse.json()).conversation_id===incoming.conversation_id;
-  need(conversationMatch);
+  const replyRequest = replyResponse.request().postDataJSON();
+  need(replyRequest.reply_to_message_id===incoming.id && replyRequest.recipient_worker_id===config.other_worker && replyRequest.body==='Browser reply <literal>');
+  const originalConversation = config.origin + home + '/inbox/' + incoming.conversation_id;
+  need(page.url()===originalConversation);
   checkpoint = 'reply-visible';
-  await page.getByText('Browser reply <literal>',{exact:true}).waitFor();
+  await page.locator('.conversation-list').getByText('Browser reply <literal>',{exact:true}).waitFor();
+  need(page.url()===originalConversation);
+  conversationMatch = true;
 
   phase = 'explicit-actions-settings';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).click();
