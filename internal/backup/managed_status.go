@@ -32,15 +32,16 @@ type RetentionStatus struct {
 // Status is stored operator history. A past success is not a present-byte
 // verification; ReadStatus never inventories or hashes the destination.
 type Status struct {
-	State         string           `json:"state"`
-	Destination   string           `json:"destination"`
-	Interval      string           `json:"interval"`
-	Timeout       string           `json:"timeout"`
-	Keep          int              `json:"keep"`
-	NextAttemptAt string           `json:"next_attempt_at"`
-	LastAttempt   *AttemptStatus   `json:"last_attempt"`
-	LastSuccess   *Summary         `json:"last_success"`
-	Retention     *RetentionStatus `json:"retention"`
+	State              string           `json:"state"`
+	Destination        string           `json:"destination"`
+	Interval           string           `json:"interval"`
+	Timeout            string           `json:"timeout"`
+	Keep               int              `json:"keep"`
+	NextAttemptAt      string           `json:"next_attempt_at"`
+	LastAttempt        *AttemptStatus   `json:"last_attempt"`
+	LastSuccess        *Summary         `json:"last_success"`
+	UnregisteredBundle *Summary         `json:"unregistered_bundle,omitempty"`
+	Retention          *RetentionStatus `json:"retention"`
 }
 
 // Configuration must remain reportable even when a prior maximal manual
@@ -52,13 +53,14 @@ func scheduleStatusFits(cfg ScheduleConfig) bool {
 		LastAttempt: &AttemptStatus{StartedAt: latest, FinishedAt: latest, State: "interrupted", Reason: "backup_retention_interrupted", SourceInstanceID: "instance_00000000000000000000000000000000"},
 		Retention:   &RetentionStatus{AttemptedAt: latest, State: "failed", Reason: "backup_retention_interrupted"}}
 	public, err := json.Marshal(status)
-	// A manual Summary is at most 4095 encoded bytes, plus its output newline.
-	// Replacing the null value below by that largest permitted summary is exact.
-	if err != nil || len(public)-len("null")+maxManualSummaryBytes > maxManagedStatusBytes {
+	// Allow two maximal summaries: replacing LastSuccess's null and adding
+	// the optional unregistered publication, including its JSON field name.
+	const summaryGrowth = 2*(maxManualSummaryBytes-1) - len("null") + len(`,"unregistered_bundle":`)
+	if err != nil || len(public)+summaryGrowth+1 > maxManagedStatusBytes {
 		return false
 	}
 	private, err := json.Marshal(managedRecord{Configuration: cfg, Status: status, SourceInstanceID: "instance_00000000000000000000000000000000"})
-	return err == nil && len(private)-len("null")+maxManualSummaryBytes-1 <= maxManagedRecordBytes
+	return err == nil && len(private)+summaryGrowth <= maxManagedRecordBytes
 }
 
 type managedRecord struct {
@@ -111,7 +113,10 @@ func encodeManaged(r managedRecord) ([]byte, error) {
 		if s.State != "disabled" || s.Interval != "" || s.Timeout != "" || s.NextAttemptAt != "" {
 			return nil, invalid()
 		}
-	} else if (s.State != "scheduled" && s.State != "running") || s.Interval != c.Interval.String() || s.Timeout != c.Timeout.String() {
+	} else if (s.State != "scheduled" && s.State != "running" && s.State != "held") || s.Interval != c.Interval.String() || s.Timeout != c.Timeout.String() {
+		return nil, invalid()
+	}
+	if s.State == "held" && (s.UnregisteredBundle == nil || s.NextAttemptAt != "" || filepath.Dir(s.UnregisteredBundle.Path) != c.Destination || s.UnregisteredBundle.SourceInstanceID != r.SourceInstanceID) {
 		return nil, invalid()
 	}
 	if s.State == "running" && s.LastAttempt == nil || s.State == "scheduled" && s.NextAttemptAt == "" || s.State == "running" && s.NextAttemptAt != "" {
@@ -153,7 +158,10 @@ func encodeManaged(r managedRecord) ([]byte, error) {
 			}
 		}
 	}
-	if last := s.LastSuccess; last != nil {
+	for _, last := range []*Summary{s.LastSuccess, s.UnregisteredBundle} {
+		if last == nil {
+			continue
+		}
 		start, ok := canonicalTime(last.SnapshotStartedAt)
 		end, eok := canonicalTime(last.SnapshotFinishedAt)
 		if !backupID.MatchString(last.ID) || !instanceID.MatchString(last.SourceInstanceID) || last.State != "complete" || !filepath.IsAbs(last.Path) || filepath.Base(last.Path) != last.ID || !ok || !eok || end.Before(start) || last.EventSequence < 0 || last.DatabaseBytes <= 0 || last.ArtifactCount < 0 || last.ArtifactCount > maxArtifacts || last.ArtifactBytes < 0 {
@@ -235,7 +243,7 @@ func ReadStatus(ctx context.Context, dataDir string) (Status, error) {
 }
 func managedReason(reason string) bool {
 	switch reason {
-	case "backup_invalid", "backup_unavailable", "backup_interrupted", "backup_retention_failed", "backup_retention_interrupted":
+	case "backup_invalid", "backup_unavailable", "backup_interrupted", "backup_retention_failed", "backup_retention_interrupted", "backup_registration_failed":
 		return true
 	}
 	return false

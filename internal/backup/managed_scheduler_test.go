@@ -82,7 +82,7 @@ func TestManagedSnapshotsSerialRetentionAndReadOnlyStatus(t *testing.T) {
 	manualBefore := restoreTree(t, manual.Path)
 	create := m.create
 	calls := 0
-	m.create = func(ctx context.Context, s *core.Store, source, destination string) (Summary, error) {
+	m.create = func(ctx context.Context, s *core.Store, source, destination string) (createdBundle, error) {
 		calls++
 		out, err := create(ctx, s, source, destination)
 		return out, err
@@ -125,9 +125,9 @@ func TestManagedSnapshotsSerialRetentionAndReadOnlyStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	disabled.create = func(context.Context, *core.Store, string, string) (Summary, error) {
+	disabled.create = func(context.Context, *core.Store, string, string) (createdBundle, error) {
 		t.Fatal("disabled snapshot")
-		return Summary{}, nil
+		return createdBundle{}, nil
 	}
 	disabled.wait = func(context.Context, time.Duration) error { t.Fatal("disabled timer"); return nil }
 	if err = disabled.Run(t.Context(), nil); err != nil {
@@ -148,8 +148,8 @@ func TestManagedFailedAttemptPreservesSuccessAndDoesNotPrune(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := restoreTree(t, m.config.Destination)
-	m.create = func(context.Context, *core.Store, string, string) (Summary, error) {
-		return Summary{}, errors.New("private path or provider body must not escape")
+	m.create = func(context.Context, *core.Store, string, string) (createdBundle, error) {
+		return createdBundle{}, errors.New("private path or provider body must not escape")
 	}
 	reports := runManaged(t, m, 2)
 	if len(reports) != 2 {
@@ -220,7 +220,7 @@ func TestManagedRestartReconcilesRunningAndOverdueWithoutCatchup(t *testing.T) {
 		return ctx.Err()
 	}
 	create := m.create
-	m.create = func(ctx context.Context, s *core.Store, source, destination string) (Summary, error) {
+	m.create = func(ctx context.Context, s *core.Store, source, destination string) (createdBundle, error) {
 		out, err := create(ctx, s, source, destination)
 		clock = clock.Add(5 * time.Minute)
 		return out, err
@@ -272,7 +272,7 @@ func TestManagedEscapedDestinationKeepsRegisteredSuccessAndReportableStatus(t *t
 		t.Fatal("valid long configuration", err)
 	}
 	create := m.create
-	m.create = func(ctx context.Context, s *core.Store, source, destination string) (Summary, error) {
+	m.create = func(ctx context.Context, s *core.Store, source, destination string) (createdBundle, error) {
 		result, err := create(ctx, s, source, destination)
 		if err != nil {
 			t.Errorf("actual long-path creation failed: %#v", err)
