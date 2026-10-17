@@ -173,11 +173,16 @@ jobs:
           go build -trimpath -o "$FC_SMOKE_BIN_DIR/fc$exe" ./cmd/fc
           go build -trimpath -o "$FC_SMOKE_BIN_DIR/fcd$exe" ./cmd/fcd
           go build -trimpath -o "$FC_SMOKE_BIN_DIR/fcmcp$exe" ./cmd/fcmcp
-      - name: Smoke native packaged binaries
+      - name: Smoke native coordination binaries
         timeout-minutes: 2
         env:
           FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
-        run: go test -v -tags=packaged_smoke -run '^TestPackaged(Smoke|UpgradeSmoke)$' -count=1 -timeout=60s ./tools/packagedsmoke
+        run: go test -v -tags=packaged_smoke -run '^TestPackagedSmoke$' -count=1 -timeout=60s ./tools/packagedsmoke
+      - name: Smoke native upgrade binaries
+        timeout-minutes: 2
+        env:
+          FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
+        run: go test -v -tags=packaged_smoke -run '^TestPackagedUpgradeSmoke$' -count=1 -timeout=60s ./tools/packagedsmoke
 
   validate:
     name: validate
