@@ -80,6 +80,18 @@ describe('scoped read-only project map API', () => {
     client.close();
   });
 
+  it('keeps server-admitted HTTP links readable when the browser cannot navigate them', async () => {
+    const client = await api();
+    for (const url of ['https://example.com:99999/x', 'https://<example.com/x', 'https://>example.com/x', 'https://"example.com/x']) {
+      const captured = { ...entry, links: [{ label: 'Retained reference', url }] };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(captured)));
+      await expect(client.projectMapEntry(entry.id)).resolves.toEqual(captured);
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ ...history, state: captured })));
+      await expect(client.projectMapRevision(entry.id, 2)).resolves.toMatchObject({ state: captured });
+    }
+    client.close();
+  });
+
   it('requires complete compact pages, exact filter results and captured revision identities', async () => {
     const client = await api();
     for (const value of [
