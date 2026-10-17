@@ -10,6 +10,7 @@ let counters = () => ({});
 let failureClass = '';
 let sendStatus = 0, replyStatus = 0, conversationMatch = false;
 let failureSnapshot = async () => ({});
+let diagnostics = () => ({});
 const need = (value) => { if (!value) throw new Error('assertion'); };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
@@ -63,13 +64,25 @@ try {
  let controlledAccessFailure = false;
  const expectedMissingSessionRoute = url => { if (!controlledAccessFailure || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname); } catch { return false; } };
   counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
+  let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0;
+  let injectedRequest;
+  diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external });
   page.on('pageerror', () => errors++);
-  page.on('console', value => { if (value.type() === 'error' && !(expectedMissingSessionRoute(value.location().url)) && !(controlledMessageFailure && value.location().url === config.origin + prefix + '/messages')) errors++; });
-  page.on('response', value => { if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else errors++; } });
+  page.on('console', value => {
+    if (value.type() !== 'error' || expectedMissingSessionRoute(value.location().url) || (controlledMessageFailure && value.location().url === config.origin + prefix + '/messages')) return;
+    if (injectedRequest && injectedConsoleErrors === 0 && value.location().url === injectedRequest.url() && /^Failed to load resource: the server responded with a status of 400 \(Bad Request\)$/u.test(value.text())) injectedConsoleErrors++;
+    else errors++;
+  });
+  page.on('response', value => { if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else if (value.request() === injectedRequest && value.status() === 400) injectedResponses++; else errors++; } });
   page.on('request', request => {
     const url = new URL(request.url());
     if (url.origin !== config.origin) { external++; return; }
-    if (request.method() === 'GET') return;
+    if (request.method() === 'GET') {
+      if (url.pathname === prefix + '/presentation') presentationReads++;
+      if (url.pathname === prefix + '/project-events/stream') metadataStreams++;
+      if (url.pathname === prefix + '/message-events/stream') inboxStreams++;
+      return;
+    }
     if (url.pathname === prefix + '/browser-session' && request.method() === 'POST') {
       sessionPosts++;
       try { const body=JSON.parse(request.postData()); if (Object.keys(body).length!==1 || typeof body.session_id!=='string' || !body.session_id) forbiddenWrites++; }
@@ -82,6 +95,11 @@ try {
   });
   await context.route('**/*', async route => {
     if (new URL(route.request().url()).origin !== config.origin) { await route.abort(); return; }
+    if (!injectedRequest && route.request().method() === 'GET' && new URL(route.request().url()).pathname === prefix + '/project-events/stream') {
+      injectedRequest = route.request();
+      await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: { code: 'invalid_response' } }) });
+      return;
+    }
     await route.continue();
   });
   const appearance = () => page.evaluate(() => ({
@@ -121,9 +139,20 @@ try {
   need((await appearance()).title === 'Packaged smoke · FireController');
   const defaultIndicators = await indicatorColors();
   need(defaultIndicators.connection === 'rgb(103, 118, 89)' && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
+  phase = 'metadata-failure';
+  checkpoint = 'metadata-notice';
+  const reconnect = page.getByRole('button', {name:'Reconnect project updates', exact:true});
+  await reconnect.waitFor();
+  checkpoint = 'metadata-initial-counts';
+  need(metadataStreams === 1 && presentationReads === 1 && injectedResponses === 1);
+  await page.getByRole('button', {name:'Open Builder inbox', exact:true}).click();
+  checkpoint = 'metadata-inbox-ready';
+  await page.getByText('Live inbox connected', {exact:true}).waitFor();
+  need(metadataStreams === 1 && inboxStreams === 1);
+  checkpoint = 'none';
   const bindingKey = 'firecontroller.browser-session.v1';
   const binding = await page.evaluate(key => sessionStorage.getItem(key), bindingKey);
-  need(binding && !binding.includes(token));
+  need(binding && !binding.includes(token) && JSON.parse(binding).selectedworkerID === config.worker);
   const sessionID = JSON.parse(binding).sessionID;
   const cookieName = 'fc-local-browser-' + sessionID;
   const cookie = (await context.cookies()).find(value => value.name === cookieName);
@@ -143,9 +172,11 @@ try {
     if (['canvas', 'surface', 'header', 'hero'].includes(family)) theme[family + '_muted'] = '#000000';
   }
   const receipt = await write('PUT', '/presentation', {expected_revision:0, presentation:{name:title, brand_name:'Smoke <literal>', theme}});
-
   need(receipt.revision === 1 && receipt.outcome === 'updated');
-  phase = 'live-update';
+  await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
+  need(metadataStreams === 1 && presentationReads === 1);
+  phase = 'metadata-reconnect';
+  await reconnect.click();
   const heading = page.getByRole('heading', {name:title, exact:true});
   await heading.waitFor();
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
@@ -175,12 +206,22 @@ try {
   });
   need(fits);
 
+  await expect(reconnect).toHaveCount(0);
+  await page.getByText('Live inbox connected', {exact:true}).waitFor();
+  need(metadataStreams === 2 && presentationReads === 2 && inboxStreams === 1 && sessionPosts === 1);
+  need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === binding);
+  await expect(page.getByRole('button', {name:'Open Builder inbox', exact:true})).toHaveAttribute('aria-pressed', 'true');
+  phase = 'metadata-live-update';
+  const liveReceipt = await write('PUT', '/presentation', {expected_revision:1, presentation:{name:title, brand_name:'Smoke live <literal>', theme}});
+  need(liveReceipt.revision === 2 && liveReceipt.outcome === 'updated');
+  await expect.poll(async () => (await appearance()).brand, {timeout:5000}).toBe('Smoke live <literal>');
+  need(metadataStreams === 2 && presentationReads === 3 && inboxStreams === 1 && sessionPosts === 1);
+
   // Mutate through a separate fixture client only after the relevant browser
   // view has rendered its preceding state. No Refresh click or browser reload
   // may be used to observe these changes; the project stream owns delivery.
   phase = 'live-jobs';
   const selected = page.getByRole('button', {name:'Open Builder inbox', exact:true});
-  await selected.click();
   const selectedBinding = await page.evaluate(key => sessionStorage.getItem(key), bindingKey);
   need(JSON.parse(selectedBinding).selectedworkerID === config.worker);
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Jobs', exact:true}).click();
@@ -249,6 +290,7 @@ try {
   need(new URL(page.url()).pathname === home + '/reviews');
 
   phase = 'reload';
+  checkpoint = 'reload-metadata-ready';
   await page.reload();
   await page.getByRole('heading', {name:title, exact:true}).waitFor();
   await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(1);
@@ -259,6 +301,14 @@ try {
   const resumed = (await context.cookies()).find(value => value.name === cookieName);
   need(resumed?.value !== cookie.value && resumed?.httpOnly && resumed?.sameSite === 'Strict' && sessionPosts === 1);
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
+  await page.getByText('Live inbox connected', {exact:true}).waitFor();
+
+  await expect(page.getByRole('status').filter({hasText:/^Project updates /})).toHaveCount(0);
+  need((await appearance()).brand === 'Smoke live <literal>' && metadataStreams >= 3 && metadataStreams <= 4 && presentationReads === 4 && inboxStreams >= 2 && inboxStreams <= 3);
+
+  // Renewal replaces streams that opened before its cookie response. Capture
+  // this reader phase before clock advancement and later writer sessions.
+  const metadataCounts = {presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams};
 
   phase = 'renewal-activity';
   // Advance only Chromium's clock across client throttle admission. The real
@@ -457,11 +507,11 @@ try {
   await context.close();
   await browser.close(); browser = undefined;
   await server.close(); server = undefined;
-  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites}));
+  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
 } catch (error) {
   failureClass = error?.name === 'TimeoutError' ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
   const snapshot = await failureSnapshot().catch(()=>({diagnostic_failed:true}));
-  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, send_status:sendStatus, reply_status:replyStatus, conversation_match:conversationMatch, ...counters(), ...snapshot}));
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, send_status:sendStatus, reply_status:replyStatus, conversation_match:conversationMatch, ...counters(), ...diagnostics(), ...snapshot}));
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});
