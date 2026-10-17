@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Rolling renewal replaces the fixed daily logout. Implementation and focused proof are in progress; the installed QA build still uses fixed 24-hour sessions.
+Rolling renewal replaces the fixed daily logout. The API, browser activity owner and reconnect handling are implemented. Focused and packaged proof are recorded below; the installed QA build still uses fixed 24-hour sessions until its separate upgrade proof completes.
 
 ## Selected behavior
 
@@ -16,4 +16,12 @@ Renewal uses one bounded finite request, with no overlapping renewals, automatic
 
 ## Proof boundary
 
-Focused service proof covers unchanged selector/security/initial allowances, current authorization and expiry, strict body/Origin/authentication, project/tab isolation and absence of domain/provider effects. Client proof covers activity admission/throttling, one in-flight request, finite timeout, transient/terminal failure and late-session cancellation. Actual packaged browser proof must exercise valid renewal, preserved connection/reload state, inactivity and revoked access without relaxing production defaults. Focused clock-controlled service tests establish the exact expiry boundary. Deployment and physical-phone observations remain separate.
+Focused service proof covers unchanged selector/security/initial allowances, current authorization and expiry, strict body/Origin/authentication, project/tab isolation and absence of domain/provider effects. Client proof covers activity admission/throttling, one in-flight request, finite timeout, transient/terminal failure and late-session cancellation. Packaged browser proof exercises valid renewal, preserved connection/reload state, activity admission and terminal missing-cookie handling without relaxing production defaults. Focused authenticated service tests own revoked-credential checks. Focused clock-controlled service tests establish the exact expiry boundary. Deployment and physical-phone observations remain separate.
+
+## Executed validation
+
+The renewal source passed full `make check build`: 280 browser tests, all Go race tests, vet, documentation checks, embedded assets and all three binaries. Focused service checks cover expired/revoked access, exact Origin/body/selector handling, unchanged initial capability ceilings and current grants. Client tests include lost successful Set-Cookie bodies, informational expiry recovery, retired-stream terminal-response isolation and current-generation terminal failure.
+
+The clean `f706f78e0788b83565e911287c6a682eec0ead4d` runtime checkpoint, passed packaged CLI/MCP, upgrade and publication checks. Against its unchanged daemon SHA-256 `f8da199d7b9ec2b930f65d56a1e8063cd1093fe0e816234c3e5ee245ec76a5d9`, the corrected packaged browser harness passed in 3.87 seconds: three real renewals, preserved project/session/worker and secure-cookie attributes, quiet/controlled-hidden silence, activity throttling, reload and terminal missing-cookie cleanup. It used three own login/logout pairs and preserved the existing fourteen fixture writes and seven explicit browser actions, with no application/provider external HTTP or remaining owned processes.
+
+Only Chromium's clock advanced across the five-minute client throttle; the daemon retained its ordinary 24-hour clock and defaults. Controlled document visibility proves client admission, not physical-device background lifecycle. Missing-cookie cleanup does not claim elapsed 24-hour expiry or credential revocation. A test navigation race initially filled the project field before the root form remounted; synchronizing that destination and narrowly recognizing its expected authenticated instance 401 corrected the harness without runtime changes. The combined prepared-map integration and installed HTTPS renewal proof are separate checkpoints.
