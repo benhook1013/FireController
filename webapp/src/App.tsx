@@ -3,6 +3,7 @@ import type { FormEvent, ReactNode } from 'react';
 import { Link, NavLink, Route, Routes, useLocation, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Api, ApiError } from './api';
+import { PublicSiteRouter } from './public-site';
 import { ProjectMap, ProjectMapEntryView, ProjectMapRevisionView, JobWorkstreamPanel } from './project-map';
 import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView, notesPath } from './coordination';
 import { refreshEventQueries } from './queries';
@@ -36,6 +37,11 @@ function errorText(error: unknown): string {
 function time(value: string): string { return new Date(value).toLocaleString(); }
 
 export default function App() {
+  const location = useLocation();
+  return location.pathname === '/public' || location.pathname.startsWith('/public/') ? <PublicSiteRouter /> : <PrivateApp />;
+}
+
+function PrivateApp() {
   const navigate = useNavigate();
   const location = useLocation();
   const route = useRef(location);

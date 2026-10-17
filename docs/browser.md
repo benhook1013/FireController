@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The service embeds a read-only browser for project connection, workers, basic jobs/full briefs and incoming conversations with live message updates. The [browser guide](browser-guide.md) records its implemented boundary, build and proof limits. The [native review workspace](review-workspace.md) provides stored review queue/history/findings. The [project map](project-map.md) adds revisioned workstreams, return points and explicit job references; its owner records current validation. Revisioned [project appearance and live metadata](project-presentation.md) are implemented with focused and packaged proof; browser mutations remain a separate slice. This contract replaces the legacy private refresh/render/publish cycle after a separately reviewed migration.
+The service embeds a read-only browser for project connection, workers, basic jobs/full briefs and incoming conversations with live message updates. The [browser guide](browser-guide.md) records its implemented boundary, build and proof limits. The [native review workspace](review-workspace.md) provides stored review queue/history/findings. The [project map](project-map.md) adds revisioned workstreams, return points and explicit job references; its owner records current validation. Revisioned [project appearance and live metadata](project-presentation.md) are implemented with focused and packaged proof; browser mutations remain a separate slice. The separate opt-in [public website](public-site.md) implements approved anonymous content and an independent public update feed; its owner records validation and deployment limits. This contract replaces the legacy private refresh/render/publish cycle after a separately reviewed migration.
 
 ## Target application
 

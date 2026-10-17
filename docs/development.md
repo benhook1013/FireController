@@ -159,3 +159,7 @@ On the checkpoint source identified in [checkpoint proof](job-checkpoints.md#pro
 Each compact checkpoint contained 560 bytes of structured JSON; CLI stdout added one newline, while MCP's structured result plus compatibility text and JSON-RPC framing totaled 1,267–1,268 bytes. Transport size is not measured model-token cost. The reference was WSL2 x86-64 on an i7-12700KF, ten exposed logical CPUs, about 9.7 GiB memory, Go 1.27.2 and the packaged development binaries. Source and binary hashes stayed unchanged throughout; disposable state/processes were cleaned.
 
 These small samples use one small checkpoint on one developer machine. They establish neither fleet throughput, a release latency budget, remote-network behavior, provider isolation measurements nor installed-model scheduling. The broader [performance plan](acceptance.md#performance-proof) remains unmeasured.
+
+## Public website administration
+
+The profile-bound `fc publication read`, `preview`, `apply` and `unpublish` commands configure opt-in anonymous project content under an administrator profile. The [public website contract](public-site.md#agent-setup-commands) owns the input format, preview hash, exact retry and private/public field boundary. Routine worker commands do not load publication manifests or expose private records to the public site.

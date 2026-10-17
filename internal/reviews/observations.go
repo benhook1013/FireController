@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/publicsite"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -350,6 +351,9 @@ func recordObservation(ctx context.Context, store *core.Store, scope core.Scope,
 		}
 		if err := core.AppendEvent(ctx, tx, scope, "review.observed", snapshotID, nextRevision,
 			map[string]any{"snapshot_id": snapshotID, "queue_count": len(req.Queue)}); err != nil {
+			return nil, err
+		}
+		if err := publicsite.Refresh(ctx, tx, scope.ProjectID, PublicSiteReviewFacts); err != nil {
 			return nil, err
 		}
 		return Receipt{ID: snapshotID, Revision: nextRevision, Outcome: "observed"}, nil

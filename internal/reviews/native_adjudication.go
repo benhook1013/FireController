@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/publicsite"
 )
 
 // NativeAdjudication projects authoritative ledger state inside its caller's
@@ -219,6 +220,9 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 		return Receipt{}, false, nativeAdjudicationConflict()
 	}
 	if err = core.AppendEvent(ctx, tx, scope, "review.observed", id, next, map[string]any{"snapshot_id": id, "pull_number": number, "source": nativeSource}); err != nil {
+		return Receipt{}, false, err
+	}
+	if err = publicsite.Refresh(ctx, tx, scope.ProjectID, PublicSiteReviewFacts); err != nil {
 		return Receipt{}, false, err
 	}
 	return Receipt{ID: id, Revision: next, Outcome: "observed"}, true, nil

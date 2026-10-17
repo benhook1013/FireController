@@ -71,3 +71,7 @@ Local review execution additionally needs administrator-configured source availa
 - Interrupt collection or application and resume; retained scope and idempotency keys prevent duplication or silent widening.
 - Import incomplete historical evidence; unknown times and unproven review coverage remain visible, and generated summaries do not count as captured review proof.
 - Onboard using CLI alone and using an AI-assisted flow; both resolve the same project/worker context and pass the same isolation and communication checks.
+
+## Optional public website
+
+Ask whether the project needs a shareable anonymous view. Private is the default. When requested, use the [publication preview/apply commands](public-site.md#agent-setup-commands) under an explicit administrator profile to select approved branding, summaries, links and PR enrollment. Show the resulting public fields and destinations before applying within the user's authorized scope. Share `/public/{slug}`, rather than a private workspace URL or credential. Existing private messages, briefs, notes and findings remain private regardless of publication. The public website contract records current executable proof and deployment limits.

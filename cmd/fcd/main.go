@@ -21,6 +21,7 @@ import (
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
+	"github.com/benhook1013/FireController/internal/publicsite"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewruntime"
 	"github.com/benhook1013/FireController/internal/reviews"
@@ -151,6 +152,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
+	if err = publicsite.EnsureSchema(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
 	for _, ensure := range []func(context.Context, *core.Store) error{reviewexec.EnsureSchema, reviewexec.EnsureEvidenceSchema, reviewexec.EnsureAdjudicationSchema, reviewexec.EnsurePolicySchema} {
 		if err = ensure(ctx, store); err != nil {
 			diagnosticError(stderr, err)
@@ -177,6 +182,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	presentation.Register(mux, store)
 	inbox.Register(mux, store)
 	reviews.Register(mux, store)
+	publicsite.New(store, reviews.PublicSiteReviewFacts).Register(mux, ctx)
 	execution.Register(mux)
 	server.RegisterMessageStream(mux, store, ctx)
 	server.RegisterProjectStream(mux, store, ctx)

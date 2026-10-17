@@ -158,3 +158,16 @@ func TestPublicHandlerUsesEmbeddedBuild(t *testing.T) {
 		t.Fatal("public handler did not serve embedded browser build")
 	}
 }
+
+func TestPublicProjectRoutesRemainExactAndServeNoProjectData(t *testing.T) {
+	handler := browserFixture()
+	for _, path := range []string{"/public/a", "/public/project-1", "/public/" + strings.Repeat("a", 64), "/public/project-1/history/1?generation=public_generation_fixture", "/public/project-1/history/9223372036854775807"} {
+		w := request(t, handler, http.MethodGet, path)
+		if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), "Embedded browser fixture") {
+			t.Fatalf("public SPA route unavailable: %s %d", path, w.Code)
+		}
+	}
+	for _, path := range []string{"/public", "/public/", "/public/UPPER", "/public/-bad", "/public/bad-", "/public/under_score", "/public/" + strings.Repeat("a", 65), "/public/a/private", "/public/a/history", "/public/a/history/0", "/public/a/history/01", "/public/a/history/-1", "/public/a/history/9223372036854775808", "/public/a/history/1/extra", "/public/a%2fhistory%2f1"} {
+		assertJSONError(t, request(t, handler, http.MethodGet, path), 404, "not_found")
+	}
+}
