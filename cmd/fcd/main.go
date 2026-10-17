@@ -17,6 +17,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/backup"
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/historycollect"
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/presentation"
@@ -48,6 +49,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	dataDir := flags.String("data-dir", "", "private local data directory (required)")
 	listen := flags.String("listen", "127.0.0.1:8080", "loopback HTTP listen address")
 	tokenFile := flags.String("github-token-file", "", "optional private GitHub credential file")
+	historyEnabled := flags.Bool("history-collection", false, "enable explicitly requested GitHub history collection")
 	reviewCatalog := flags.String("review-catalog", "", "optional private native CLI capability catalog")
 	backupDestination := flags.String("backup-destination", "", "explicit managed backup root")
 	backupInterval := flags.Duration("backup-interval", 0, "managed backup interval, 1m through 720h")
@@ -109,6 +111,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}
 	var catalog reviewruntime.Catalog
 	var resolver server.RepositoryResolver
+	var historyProvider historycollect.Provider
+	var historyFingerprint string
 	if !recovery.ProvidersHeld {
 		catalog, err = reviewruntime.LoadCatalog(*reviewCatalog)
 		if err != nil {
@@ -119,6 +123,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		if err != nil {
 			diagnosticError(stderr, err)
 			return 3
+		}
+		if *historyEnabled {
+			historyProvider, historyFingerprint, err = server.GitHubHistoryReader(*tokenFile)
+			if err != nil {
+				diagnosticError(stderr, err)
+				return 3
+			}
 		}
 	}
 	address := *listen
@@ -166,12 +177,21 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
+	if err = historycollect.EnsureSchema(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
 	backupManager, err := backup.NewManager(store, *dataDir, schedule)
 	if err != nil {
 		diagnosticError(stderr, err)
 		return 3
 	}
 	execution, drivers, err := buildReviewExecution(store, *dataDir, catalog)
+	if err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
+	collection, err := historycollect.New(store, historyProvider, historyFingerprint)
 	if err != nil {
 		diagnosticError(stderr, err)
 		return 3
@@ -184,6 +204,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	reviews.Register(mux, store)
 	publicsite.New(store, reviews.PublicSiteReviewFacts).Register(mux, ctx)
 	execution.Register(mux)
+	collection.Register(mux)
 	server.RegisterMessageStream(mux, store, ctx)
 	server.RegisterProjectStream(mux, store, ctx)
 	var listenConfig net.ListenConfig
@@ -231,6 +252,30 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			exitCode = 3
 		}
 	}()
+	var collectionDone <-chan error
+	if historyProvider != nil {
+		collectionDone, err = collection.Run(reviewCtx)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
+	}
+	defer func() {
+		cancelReviews()
+		if collectionDone == nil {
+			return
+		}
+		select {
+		case err := <-collectionDone:
+			if err != nil {
+				diagnosticError(stderr, err)
+				exitCode = 3
+			}
+		case <-time.After(12 * time.Second):
+			diagnostic(stderr, "shutdown_failed", "History collection did not settle within the shutdown budget.")
+			exitCode = 3
+		}
+	}()
 	srv := newHTTPServer(ctx, mux)
 	_ = json.NewEncoder(stdout).Encode(map[string]string{"event": "listening", "address": listener.Addr().String(), "instance_id": store.InstanceID()})
 	done := make(chan error, 1)
@@ -269,6 +314,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		}
 		if shutdownErr != nil || ctx.Err() == nil {
 			diagnostic(stderr, "review_execution_stopped", "The native review supervisor stopped unexpectedly.")
+			return 3
+		}
+	case collectionErr := <-collectionDone:
+		cancelReviews()
+		shutdownErr := shutdownHTTPServer(srv, 5*time.Second)
+		<-done
+		if collectionErr != nil {
+			diagnosticError(stderr, collectionErr)
+			return 3
+		}
+		if shutdownErr != nil || ctx.Err() == nil {
+			diagnostic(stderr, "history_collection_stopped", "The history collection worker stopped unexpectedly.")
 			return 3
 		}
 	}

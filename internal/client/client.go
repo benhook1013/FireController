@@ -252,6 +252,7 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 type sourceWaitOptions struct {
 	seconds int
 	status  *int
+	budget  time.Duration // Optional domain-owned budget; zero preserves existing waits.
 }
 
 func (c *Client) requestBoundedOptions(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions) error {
@@ -273,6 +274,9 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	timeout := requestTimeout
 	if wait != nil {
 		timeout = providerWaitBudget(wait.seconds)
+		if wait.budget > 0 {
+			timeout = wait.budget
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -311,7 +315,7 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	if wait != nil {
 		ownedClient := *c.http
 		ownedClient.Timeout = timeout
-		if wait.seconds > 2 {
+		if timeout > requestTimeout {
 			ownedTransport := c.transport.Clone()
 			ownedTransport.ResponseHeaderTimeout = timeout
 			defer ownedTransport.CloseIdleConnections()

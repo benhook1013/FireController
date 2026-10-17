@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/benhook1013/FireController/internal/historycollect"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
@@ -220,8 +221,11 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 5, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 5, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"history_collections":               {"history_collection", 1, "id project_id repository_id actor_id worker_id reader_fingerprint selection_json state revision reason position_json pass_number page_count record_count created_at updated_at"},
+	"history_collection_pages":          {"history_collection", 1, "id project_id collection_id sequence pass_number reader_fingerprint pull_number resource page_number record_count body_sha256 body_json created_at"},
+	"history_collection_seen":           {"history_collection", 1, "project_id collection_id pass_number record_id page_id"},
 	"review_route_policy_facts":         {"review_route_policy", 1, "route_id project_id target_pull_number revision active pending"},
 	"review_route_policy_invalidations": {"review_route_policy", 1, "project_id target_pull_number route_id"},
 	"review_comparison_proofs":          {"review_comparison", 1, "operation_id project_id pull_number channel state repository_id candidate_sha base_sha parent_sha parent_pull_number base_ref evidence_id"},
@@ -585,6 +589,11 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, err
 		}
 	}
+	if versions["history_collection"] > 0 {
+		if err = validateHistoryCollectionPhysicalSchema(ctx, db); err != nil {
+			return nil, err
+		}
+	}
 	for name := range actual {
 		if _, ok := tables[name]; !ok {
 			return nil, invalid()
@@ -851,6 +860,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["public_site"] > 0 {
 		if err = publicsite.ValidateSnapshot(ctx, tx); err != nil {
+			return invalid()
+		}
+	}
+	if versions["history_collection"] > 0 {
+		if err = historycollect.ValidateSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
 			return invalid()
 		}
 	}
@@ -1228,6 +1245,9 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"history_collections":               {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"history_collection_pages":          {canonicalFK("history_collections", "project_id,collection_id", "project_id,id", "NO ACTION")},
+	"history_collection_seen":           {canonicalFK("history_collection_pages", "project_id,collection_id,page_id", "project_id,collection_id,id", "NO ACTION")},
 	"review_route_policy_facts":         {canonicalFK("review_finding_routes", "route_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_route_policy_invalidations": {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_comparison_proofs":          {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},

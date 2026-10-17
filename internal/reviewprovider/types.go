@@ -76,3 +76,11 @@ type ReviewComment struct {
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
+
+// Page contains exactly one selected provider response, not a complete history.
+// NextPage is the validated adjacent page number, or zero for a terminal page.
+// Callers own cross-page identity checks, durable continuation and completeness.
+type Page[T any] struct {
+	Items    []T
+	NextPage int64
+}

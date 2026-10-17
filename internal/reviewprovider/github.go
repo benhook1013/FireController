@@ -449,6 +449,10 @@ func nextPage(linkHeaders []string, baseURL, path string, current int64) (int64,
 // Collection-specific fixed selectors must survive pagination exactly; a Link
 // may select only the adjacent page, never change the original request scope.
 func nextPageWithQuery(linkHeaders []string, baseURL, path string, current int64, fixed url.Values) (int64, bool, error) {
+	return nextPageWithLimit(linkHeaders, baseURL, path, current, fixed, githubMaxPages)
+}
+
+func nextPageWithLimit(linkHeaders []string, baseURL, path string, current int64, fixed url.Values, maxPage int64) (int64, bool, error) {
 	for key, values := range fixed {
 		if key == "" || key == "page" || key == "per_page" || len(values) != 1 || values[0] == "" {
 			return 0, false, errors.New("invalid fixed query")
@@ -491,7 +495,7 @@ func nextPageWithQuery(linkHeaders []string, baseURL, path string, current int64
 				}
 			}
 			page, err := strconv.ParseInt(query.Get("page"), 10, 64)
-			if err != nil || strconv.FormatInt(page, 10) != query.Get("page") || page != current+1 || page <= 0 || page > githubMaxPages {
+			if err != nil || strconv.FormatInt(page, 10) != query.Get("page") || page != current+1 || page <= 0 || page > maxPage {
 				return 0, false, errors.New("nonadvancing next")
 			}
 			next = page

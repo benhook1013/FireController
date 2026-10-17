@@ -54,6 +54,11 @@ func exactFields(data []byte, t reflect.Type) bool {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+	// RawMessage owns an arbitrary JSON value, not an array of byte values.
+	// Validate has already checked its complete nested syntax and key uniqueness.
+	if t == reflect.TypeOf(json.RawMessage(nil)) {
+		return true
+	}
 	switch t.Kind() {
 	case reflect.Struct:
 		var fields map[string]json.RawMessage

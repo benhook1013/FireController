@@ -545,9 +545,10 @@ type daemonProcess struct {
 	once     sync.Once
 }
 
-func startDaemon(t *testing.T, ctx context.Context, binary, data string, env []string) *daemonProcess {
+func startDaemon(t *testing.T, ctx context.Context, binary, data string, env []string, extra ...string) *daemonProcess {
 	t.Helper()
-	d := &daemonProcess{command: exec.CommandContext(ctx, binary, "--data-dir", data, "--listen", "127.0.0.1:0"), output: &listeningOutput{record: make(chan listeningRecord, 1)}, stderr: &boundedOutput{}, done: make(chan struct{})}
+	args := append([]string{"--data-dir", data, "--listen", "127.0.0.1:0"}, extra...)
+	d := &daemonProcess{command: exec.CommandContext(ctx, binary, args...), output: &listeningOutput{record: make(chan listeningRecord, 1)}, stderr: &boundedOutput{}, done: make(chan struct{})}
 	d.command.Env, d.command.Stdout, d.command.Stderr = env, d.output, d.stderr
 	d.command.WaitDelay = time.Second
 	if err := d.command.Start(); err != nil {
