@@ -16,7 +16,7 @@ make check build
 ./bin/fcd --data-dir /private/firecontroller --listen 127.0.0.1:8080
 ```
 
-`make check` type-checks the browser, runs its focused API/SSE tests, verifies Go formatting, runs Go tests with the race detector and `go vet`, and checks documentation. `make build` regenerates the embedded browser assets and produces CGO-free `fc`, `fcd` and `fcmcp` binaries. The [MCP guide](mcp.md) describes its local stdio tool interface. CI also cross-compiles Windows amd64 and macOS arm64; compilation is not proof that those platforms' configuration or runtime behavior works. Go's `GO` and `GOFMT` Make variables can select a locally installed toolchain. The browser guide documents committed asset verification and direct Go builds without Node.
+`make check` type-checks the browser, runs its focused API/SSE tests, verifies Go formatting, runs Go tests with the race detector using at most two concurrent packages and the unchanged ten-minute per-package timeout, runs `go vet`, and checks documentation. `make build` regenerates the embedded browser assets and produces CGO-free `fc`, `fcd` and `fcmcp` binaries. The [MCP guide](mcp.md) describes its local stdio tool interface. CI also cross-compiles Windows amd64 and macOS arm64; compilation is not proof that those platforms' configuration or runtime behavior works. Go's `GO` and `GOFMT` Make variables can select a locally installed toolchain. The browser guide documents committed asset verification and direct Go builds without Node.
 
 ## Private profile file
 
