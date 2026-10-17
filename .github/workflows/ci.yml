@@ -11,13 +11,42 @@ permissions:
 
 jobs:
   linux:
-    name: Linux checks
+    name: Linux checks (${{ matrix.shard }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [rest, backup, reviewexec, reviewruntime]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Select Go packages
+        id: packages
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          go list ./... > "$RUNNER_TEMP/firecontroller-go-packages"
+          selected=()
+          while IFS= read -r package; do
+            case "$package" in
+              github.com/benhook1013/FireController/internal/backup) shard=backup ;;
+              github.com/benhook1013/FireController/internal/reviewexec) shard=reviewexec ;;
+              github.com/benhook1013/FireController/internal/reviewruntime) shard=reviewruntime ;;
+              *) shard=rest ;;
+            esac
+            if [ "$shard" = "$SHARD" ]; then
+              selected+=("$package")
+            fi
+          done < "$RUNNER_TEMP/firecontroller-go-packages"
+          test "${#selected[@]}" -gt 0
+          printf 'packages=%s\n' "${selected[*]}" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: matrix.shard == 'rest'
         with:
           node-version: 22
           cache: npm
@@ -25,26 +54,38 @@ jobs:
             package-lock.json
             webapp/package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
+        if: matrix.shard == 'rest'
       - run: npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version-file: go.mod
-          cache: false
-      - run: make check build
+        if: matrix.shard == 'rest'
+      - name: Test isolated Go package
+        if: matrix.shard != 'rest'
+        env:
+          GO_TEST_PACKAGES: ${{ steps.packages.outputs.packages }}
+        run: make test
+      - name: Check and build remaining packages and browser
+        if: matrix.shard == 'rest'
+        env:
+          GO_TEST_PACKAGES: ${{ steps.packages.outputs.packages }}
+        run: make check build
       - name: Smoke packaged binaries
+        if: matrix.shard == 'rest'
         run: make smoke
       - name: Install pinned Chromium
+        if: matrix.shard == 'rest'
         working-directory: webapp
         timeout-minutes: 5
         run: npx --no-install playwright install --with-deps chromium
       - name: Smoke embedded browser lifecycle
+        if: matrix.shard == 'rest'
         timeout-minutes: 2
         run: make browser-smoke
       - name: Verify embedded browser assets match source
+        if: matrix.shard == 'rest'
         run: |
           git diff --exit-code -- internal/webui/assets
           test -z "$(git ls-files --others --exclude-standard -- internal/webui/assets)"
       - name: Check standalone Windows and macOS builds
+        if: matrix.shard == 'rest'
         run: |
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fc-windows.exe ./cmd/fc
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fc-macos ./cmd/fc
@@ -96,7 +137,7 @@ jobs:
     needs: [linux, native-smoke]
     if: ${{ always() }}
     steps:
-      - name: Require Linux and both native smoke results
+      - name: Require all Linux shards and both native smoke results
         env:
           LINUX_RESULT: ${{ needs.linux.result }}
           NATIVE_RESULT: ${{ needs.native-smoke.result }}
