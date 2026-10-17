@@ -3,10 +3,9 @@ package mcpadapter
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
-	"unicode"
-	"unicode/utf8"
+	"fmt"
 
+	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -29,25 +28,22 @@ func messageWaitArguments(data json.RawMessage) (arguments, error) {
 		Limit       *int   `json:"limit,omitempty"`
 		WaitSeconds *int   `json:"wait_seconds,omitempty"`
 	}
-	if strictjson.Decode(data, &in) != nil || in.Cursor == "" || len(in.Cursor) > 4096 || !utf8.ValidString(in.Cursor) || in.Cursor != strings.TrimSpace(in.Cursor) || strings.IndexFunc(in.Cursor, unicode.IsControl) >= 0 {
+	if strictjson.Decode(data, &in) != nil {
 		return args, invalidArguments()
 	}
-	args.cursor, args.limit, args.messageWaitSeconds = in.Cursor, 20, 25
+	args.cursor, args.limit, args.messageWaitSeconds = in.Cursor, client.MessageWaitDefaultLimit, client.MessageWaitDefaultSeconds
 	if in.Limit != nil {
-		if *in.Limit < 1 || *in.Limit > 100 {
-			return args, invalidArguments()
-		}
 		args.limit = *in.Limit
 	}
 	if in.WaitSeconds != nil {
-		if *in.WaitSeconds < 1 || *in.WaitSeconds > 60 {
-			return args, invalidArguments()
-		}
 		args.messageWaitSeconds = *in.WaitSeconds
+	}
+	if client.ValidateMessageWait(args.cursor, args.limit, args.messageWaitSeconds) != nil {
+		return args, invalidArguments()
 	}
 	return args, nil
 }
 
 func messageWaitDefinition() definition {
-	return definition{"wait_for_messages", "Wait for new incoming-message events after the bound-worker cursor; one compact page or timeout (default 25s, max 60s). Bodies require conversation reads. No acknowledgments, provider work or auto-reconnect. Background delivery depends on host.", map[string]any{"type": "object", "properties": map[string]any{"cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "wait_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 60}}, "required": []string{"cursor"}, "additionalProperties": false}}
+	return definition{"wait_for_messages", fmt.Sprintf("Wait for new incoming-message events after the bound-worker cursor; one compact page or timeout (default %ds, max %ds). Bodies require conversation reads. No acknowledgments, provider work or auto-reconnect. Background delivery depends on host.", client.MessageWaitDefaultSeconds, client.MessageWaitMaxSeconds), map[string]any{"type": "object", "properties": map[string]any{"cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": client.MessageWaitMaxLimit}, "wait_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": client.MessageWaitMaxSeconds}}, "required": []string{"cursor"}, "additionalProperties": false}}
 }

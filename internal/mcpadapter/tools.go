@@ -85,7 +85,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			}
 			timeout := 5 * time.Second
 			if tool.name == "wait_for_messages" {
-				timeout = time.Duration(args.messageWaitSeconds+5) * time.Second
+				timeout = client.MessageWaitBudget(args.messageWaitSeconds)
 			}
 			if tool.name == "review_source_refresh" || checkpointWrite(tool.name) {
 				timeout = client.SourceRefreshBudget(args.reviewSourceWait)

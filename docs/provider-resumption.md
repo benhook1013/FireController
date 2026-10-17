@@ -4,6 +4,8 @@
 
 The local reconciliation helper, operator command and release provenance are implemented. Focused normal/race checks, the full integrated check/build and two actual packaged recovery groups pass at the checkpoints below. Coordination activation and its durable provider hold already have their separate proof. This document does not claim completed operational recovery or cutover.
 
+Cancellation or a deadline during retained-work reconciliation returns `restore_reconciliation_interrupted`, with empty progress counts and guidance to retry the exact reconciliation command. The caller rolls back its entire transaction, including earlier local writes, and the provider hold remains. Invalid input, incompatible schema and inconsistent retained data remain separate diagnostics.
+
 ## Operator boundary
 
 A restored instance resumes provider work only through the explicit local operator command `fcd restore-resume-providers`. Local filesystem authority is required. Stop the destination daemon first, fence the predecessor, and independently reconcile all external provider effects, including the possible interval after the selected backup. Every relevant provider action must have ended or been otherwise settled before making this attestation. The command records the operator's assertion; it does not contact, stop or independently verify another process or provider.

@@ -130,7 +130,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	timeout := serviceTimeout
 	if call.command == "inbox" && call.subcommand == "wait" {
-		timeout = time.Duration(call.waitSeconds+5) * time.Second
+		timeout = client.MessageWaitBudget(call.waitSeconds)
 	}
 	if call.mutation != nil && (call.mutation.operation == "reviews source-refresh" || call.mutation.operation == "reviews publish" || call.mutation.operation == "reviews publication-recover") {
 		timeout = client.SourceRefreshBudget(call.mutation.reviewSourceWait)

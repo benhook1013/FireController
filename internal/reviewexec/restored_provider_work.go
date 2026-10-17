@@ -32,11 +32,20 @@ func restoredWorkSchema() error {
 // AbandonRestoredProviderWork participates in the caller's offline transaction.
 // The caller owns validated recovery authority and MUST roll back on any error.
 // It does not initialize domains, authorize external effects or contact providers.
-func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID string, at time.Time) (RestoredWorkSummary, error) {
-	var result RestoredWorkSummary
+func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID string, at time.Time) (result RestoredWorkSummary, err error) {
 	if ctx == nil || tx == nil || !identifier.MatchString(instanceID) || at.IsZero() || at.Year() < 1 || at.Year() > 9999 {
 		return result, restoredWorkInvalid()
 	}
+	// SQL and retained-data guards below deliberately expose only safe domain
+	// failures. Normalize interruption at this outer boundary so early schema or
+	// metadata reads cannot misclassify cancellation as inconsistent data. The
+	// caller must still roll back this entire transaction on the returned error.
+	defer func() {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			result = RestoredWorkSummary{}
+			err = core.Fail("restore_reconciliation_interrupted", "Restore reconciliation was interrupted; no provider release was recorded. Retry the exact reconciliation command.", 503)
+		}
+	}()
 	for key, want := range map[string]string{"instance_id": instanceID, "restore:state": "coordination_active", "restore:provider_state": "held"} {
 		var got string
 		if err := tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key=?`, key).Scan(&got); err != nil || got != want {
