@@ -16,10 +16,10 @@ func TestManagedBlockedAttemptLeavesCoordinationFreeAndCancellationJoins(t *test
 	f, m := newManagedFixture(t, 1)
 	entered := make(chan struct{})
 	m.wait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-	m.create = func(ctx context.Context, _ *core.Store, _, _ string) (Summary, error) {
+	m.create = func(ctx context.Context, _ *core.Store, _, _ string) (createdBundle, error) {
 		close(entered)
 		<-ctx.Done()
-		return Summary{}, ctx.Err()
+		return createdBundle{}, ctx.Err()
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

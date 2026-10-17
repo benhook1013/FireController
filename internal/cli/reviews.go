@@ -446,7 +446,7 @@ func parseReviewPublication(operation string, args []string) (*mutationInvocatio
 		}
 		if !assigned {
 			i++
-			if i >= len(args) {
+			if i >= len(args) || strings.HasPrefix(args[i], "--") {
 				return nil, false
 			}
 			value = args[i]

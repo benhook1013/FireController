@@ -145,7 +145,9 @@ func TestManagedRetentionFailureDoesNotMaskCreationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.create = func(context.Context, *core.Store, string, string) (Summary, error) { return Summary{}, invalid() }
+	m.create = func(context.Context, *core.Store, string, string) (createdBundle, error) {
+		return createdBundle{}, invalid()
+	}
 	m.remove = func(context.Context, string, Manifest) error { t.Fatal("failed create began retention"); return nil }
 	reports := runManaged(t, m, 1)
 	if len(reports) != 1 {
