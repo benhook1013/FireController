@@ -102,6 +102,14 @@ Actual `make smoke browser-smoke` then passed with unchanged clean binaries: CLI
 
 The same automatic-login runtime passed installed trusted-HTTPS checks at 1440px and 390px. Genuine reader and administrator credentials received the correct controls; reload and logout worked, and a read-only cookie issued before the upgrade stayed valid and read-only. Settled views showed both feeds connected. The checks created and removed only their own sessions, made no domain/provider writes and preserved the installed schema, retained data and identity. Viewport emulation does not establish physical-phone lifecycle behavior.
 
+## Quiet session restoration
+
+Reloading a tab with a saved connection shows **Opening project…** while the service verifies the existing cookie. The login form is absent during that check, and no private workspace is shown before verification. A temporary connection failure keeps the saved connection and offers **Retry connection** or **Cancel connection**. A terminal authorization failure clears the saved binding and returns to login. Successful restoration reuses the session and selected worker rather than creating another login.
+
+Clean runtime `f9130c9abf7f97bd18f01738977996a5aa5bb5d0` passed TypeScript and all 287 browser tests, actual packaged CLI/MCP/upgrade/publication/map checks and private/public browser smoke. Six additional real-browser cases at 1440px and 390px held session verification pending, exercised a controlled temporary failure followed by retry, and exercised a terminal refusal. They observed zero credential-form flashes, preserved the original session and worker on success, verified read-only controls, and waited for both live feeds. The redundant left hero label/permission pill and Jobs’ decorative eyebrow are removed; the configured connection-card heading remains.
+
+The same binary passed the six cases over installed trusted HTTPS with no domain or provider writes. A fresh backup was independently inspected before the update; installed schema, data, identity, captures and proxy configuration remained unchanged. These checks use controlled 503/401 responses for frontend recovery behavior and viewport emulation, not real elapsed expiry, physical-phone qualification or operational cutover.
+
 ## Explicit changes and uncertain results
 
 Sign in with the project credential. A read-only credential gives a view-only connection; a write credential automatically shows send/reply and recipient **Mark seen** and **Acknowledge** controls. Reading alone changes neither state. Administrator-enabled sessions also show **Settings** for the full project presentation. Settings edits use the observed revision and preserve another editor's changes through visible conflicts; they never publish private appearance to the approved public website.
