@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"net/http"
 	"regexp"
@@ -81,11 +80,11 @@ func validChecklistItems(items []checklistItem) bool {
 func decodeChecklistItems(raw string) ([]checklistItem, error) {
 	var items []checklistItem
 	if strictjson.Decode([]byte(raw), &items) != nil || !validChecklistItems(items) {
-		return nil, fmt.Errorf("invalid stored checklist")
+		return nil, core.Fail("storage_unavailable", "Stored checklist is unavailable.", http.StatusInternalServerError)
 	}
 	canonical, err := json.Marshal(items)
 	if err != nil || string(canonical) != raw {
-		return nil, fmt.Errorf("noncanonical stored checklist")
+		return nil, core.Fail("storage_unavailable", "Stored checklist is unavailable.", http.StatusInternalServerError)
 	}
 	return items, nil
 }
@@ -101,7 +100,7 @@ func readChecklist(ctx context.Context, tx *sql.Tx, project, job string) (int64,
 	}
 	items, err := decodeChecklistItems(raw)
 	if err != nil || revision < 1 {
-		return 0, nil, fmt.Errorf("invalid stored checklist state")
+		return 0, nil, core.Fail("storage_unavailable", "Stored checklist is unavailable.", http.StatusInternalServerError)
 	}
 	return revision, items, nil
 }
