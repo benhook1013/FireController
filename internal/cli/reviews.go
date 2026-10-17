@@ -20,9 +20,9 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 		call.pullNumber = number
 		return call, err == nil && number >= 1 && number <= 2147483647 && strconv.FormatInt(number, 10) == values["--pr"]
 	}
-	list := call.subcommand == "queue" || call.subcommand == "runs" || call.subcommand == "routes"
+	list := call.subcommand == "queue" || call.subcommand == "runs" || call.subcommand == "attempts" || call.subcommand == "routes"
 	switch call.subcommand {
-	case "queue", "pull", "runs", "run", "evidence", "adjudication", "operation", "assess", "source-operation", "route", "routes", "publication":
+	case "queue", "pull", "runs", "attempts", "run", "evidence", "adjudication", "operation", "assess", "source-operation", "route", "routes", "publication":
 	case "execution":
 		return call, len(args) == 0
 	default:
@@ -39,7 +39,7 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 			continue
 		}
 		flag, value, assigned := strings.Cut(argument, "=")
-		if seen[flag] || !(list && (flag == "--limit" || flag == "--cursor") || call.subcommand == "routes" && flag == "--pr" || call.subcommand == "operation" && flag == "--wait-seconds" || (call.subcommand == "pull" || call.subcommand == "runs" || call.subcommand == "run") && flag == "--snapshot") {
+		if seen[flag] || !(list && (flag == "--limit" || flag == "--cursor") || call.subcommand == "routes" && flag == "--pr" || call.subcommand == "operation" && flag == "--wait-seconds" || (call.subcommand == "pull" || call.subcommand == "runs" || call.subcommand == "attempts" || call.subcommand == "run") && flag == "--snapshot") {
 			return call, false
 		}
 		seen[flag] = true
@@ -152,6 +152,8 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 		return service.ReviewQueue(ctx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case "pull":
 		return service.ReviewPull(ctx, call.pullNumber, call.snapshot)
+	case "attempts":
+		return service.ReviewAttempts(ctx, call.pullNumber, client.ReviewAttemptOptions{PageOptions: client.PageOptions{Limit: call.limit, Cursor: call.cursor}, Snapshot: call.snapshot})
 	case "runs":
 		return service.ReviewRuns(ctx, call.pullNumber, client.ReviewRunOptions{PageOptions: client.PageOptions{Limit: call.limit, Cursor: call.cursor}, Snapshot: call.snapshot})
 	case "evidence":

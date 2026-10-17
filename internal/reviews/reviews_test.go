@@ -166,8 +166,13 @@ func TestReviewDetailsKeepCompactAndFullBoundaries(t *testing.T) {
 		t.Fatalf("historical attempt channel missing: %s", pull.Body.String())
 	}
 	var pullResult PullResponse
-	if err := json.Unmarshal(pull.Body.Bytes(), &pullResult); err != nil || len(pullResult.Attempts) != 2 || pullResult.Attempts[0].DurationSeconds == nil || *pullResult.Attempts[0].DurationSeconds != 60 || pullResult.Attempts[1].DurationSeconds != nil {
-		t.Fatalf("known/unknown durations were not retained: %v %+v", err, pullResult.Attempts)
+	if err := json.Unmarshal(pull.Body.Bytes(), &pullResult); err != nil || pullResult.Pull.AttemptCount != 2 || strings.Contains(pull.Body.String(), `"attempts":`) {
+		t.Fatalf("PR detail must remain compact: %v %s", err, pull.Body.String())
+	}
+	archive := f.call("GET", base+"/pulls/2/attempts?snapshot="+snapshot, f.readToken, "", nil)
+	var attemptPage AttemptsResponse
+	if err := json.Unmarshal(archive.Body.Bytes(), &attemptPage); archive.Code != 200 || err != nil || len(attemptPage.Items) != 2 || attemptPage.Items[0].DurationSeconds != nil || attemptPage.Items[1].DurationSeconds == nil || *attemptPage.Items[1].DurationSeconds != 60 || attemptPage.Items[1].Source != "test-import" {
+		t.Fatalf("known/unknown durations or producer were not retained: %v %s", err, archive.Body.String())
 	}
 
 	runs := f.call("GET", base+"/pulls/2/runs?snapshot="+snapshot, f.readToken, "", nil)

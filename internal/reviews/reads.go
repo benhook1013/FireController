@@ -143,7 +143,7 @@ func pull(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		response := PullResponse{ProjectID: scope.ProjectID, Attempts: []AttemptSummary{}}
+		response := PullResponse{ProjectID: scope.ProjectID}
 		err = store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
 			meta, found, err := selectSnapshot(ctx, tx, scope.ProjectID, query.Get("snapshot"))
 			if err != nil {
@@ -175,19 +175,7 @@ func pull(store *core.Store) http.HandlerFunc {
 			if err := strictStoredJSON(latestJSON, &response.Pull.LatestAttempts); err != nil {
 				return err
 			}
-			rows, err := tx.QueryContext(ctx, `SELECT source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id FROM review_attempts WHERE project_id=? AND snapshot_id=? AND pull_number=? ORDER BY position`, scope.ProjectID, meta.SnapshotID, number)
-			if err != nil {
-				return err
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var item AttemptSummary
-				if err := rows.Scan(&item.SourceAttemptID, &item.Channel, &item.HeadSHA, &item.State, &item.StartedAt, &item.FinishedAt, &item.DurationSeconds, &item.SourceRunID, &item.TriggerID, &item.ProviderReviewID); err != nil {
-					return err
-				}
-				response.Attempts = append(response.Attempts, item)
-			}
-			return rows.Err()
+			return nil
 		})
 		if err != nil {
 			core.WriteError(w, err)

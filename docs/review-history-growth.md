@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The current review projection copies snapshot-qualified history and refuses growth beyond its fixed count limits. Whole-document imports also have a 256 KiB transport bound and cannot preserve mixed producers. The normalized versioned history and bounded transfer described here are not implemented yet. Current data remains retained; a capacity hold is not permission to delete history or continue an unrecorded provider action.
+The current review projection copies snapshot-qualified history and refuses growth beyond its fixed count limits. Whole-document imports also have a 256 KiB transport bound and cannot preserve mixed producers. The normalized versioned history and bounded transfer described here are not implemented yet. The first implementation boundary adds explicit attempt pages and browser run/attempt continuation as described in the [review workspace](review-workspace.md#bounded-archive-implementation); it retains the existing publication limits until storage and transfer evolve together. Current data remains retained; a capacity hold is not permission to delete history or continue an unrecorded provider action.
 
 ## Goal
 

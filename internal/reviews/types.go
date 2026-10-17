@@ -167,14 +167,32 @@ type QueueResponse struct {
 }
 
 type PullResponse struct {
-	ProjectID  string           `json:"project_id"`
-	Revision   int64            `json:"revision"`
-	SnapshotID string           `json:"snapshot_id"`
-	Source     string           `json:"source"`
-	ObservedAt string           `json:"observed_at"`
-	RecordedAt string           `json:"recorded_at"`
-	Pull       PullSummary      `json:"pull"`
-	Attempts   []AttemptSummary `json:"attempts"`
+	ProjectID  string      `json:"project_id"`
+	Revision   int64       `json:"revision"`
+	SnapshotID string      `json:"snapshot_id"`
+	Source     string      `json:"source"`
+	ObservedAt string      `json:"observed_at"`
+	RecordedAt string      `json:"recorded_at"`
+	Pull       PullSummary `json:"pull"`
+}
+
+// AttemptHistoryItem keeps the original producer distinct from the snapshot
+// publisher. External attempt IDs need only be unique within that producer.
+type AttemptHistoryItem struct {
+	AttemptSummary
+	Source string `json:"source"`
+}
+
+type AttemptsResponse struct {
+	ProjectID  string               `json:"project_id"`
+	Revision   int64                `json:"revision"`
+	SnapshotID string               `json:"snapshot_id"`
+	Source     string               `json:"source"`
+	ObservedAt string               `json:"observed_at"`
+	RecordedAt string               `json:"recorded_at"`
+	Items      []AttemptHistoryItem `json:"items"`
+	Cursor     string               `json:"cursor,omitempty"`
+	HasMore    bool                 `json:"has_more"`
 }
 
 type RunsResponse struct {

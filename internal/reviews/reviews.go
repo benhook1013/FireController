@@ -19,5 +19,6 @@ func Register(mux *http.ServeMux, store *core.Store) {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/queue", queue(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{number}", pull(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{number}/runs", runs(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{number}/attempts", attempts(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/runs/{run_id}", runDetail(store))
 }
