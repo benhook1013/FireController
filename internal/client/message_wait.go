@@ -15,7 +15,28 @@ import (
 	"unicode/utf8"
 )
 
-const messageWaitFrameBytes = 1 << 20
+const (
+	MessageWaitDefaultLimit   = 20
+	MessageWaitDefaultSeconds = 25
+	MessageWaitMaxLimit       = 100
+	MessageWaitMaxSeconds     = 60
+	messageWaitFrameBytes     = 1 << 20
+)
+
+// ValidateMessageWait validates explicit wait arguments. Adapters call this
+// before credentials or network access; typed-client zero defaults are normalized
+// separately before applying the same strict bounds.
+func ValidateMessageWait(cursor string, limit, waitSeconds int) error {
+	if !validOpaqueCursor(cursor) || limit < 1 || limit > MessageWaitMaxLimit || waitSeconds < 1 || waitSeconds > MessageWaitMaxSeconds {
+		return validation()
+	}
+	return nil
+}
+
+// MessageWaitBudget returns the total budget for validated explicit wait seconds.
+func MessageWaitBudget(waitSeconds int) time.Duration {
+	return time.Duration(waitSeconds)*time.Second + requestTimeout
+}
 
 var errMessageWaitExpired = errors.New("message wait expired")
 
@@ -24,19 +45,19 @@ var errMessageWaitExpired = errors.New("message wait expired")
 // reconnects; the caller retains its cursor if any error occurs. Typed zero
 // limit/waitSeconds select 20 events and 25 seconds respectively.
 func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, waitSeconds int) (MessageEventPage, error) {
-	if !validOpaqueCursor(cursor) || limit < 0 || limit > 100 || waitSeconds < 0 || waitSeconds > 60 {
-		return MessageEventPage{}, validation()
-	}
 	if limit == 0 {
-		limit = 20
+		limit = MessageWaitDefaultLimit
 	}
 	if waitSeconds == 0 {
-		waitSeconds = 25
+		waitSeconds = MessageWaitDefaultSeconds
+	}
+	if err := ValidateMessageWait(cursor, limit, waitSeconds); err != nil {
+		return MessageEventPage{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return MessageEventPage{}, contextError(err)
 	}
-	outer, cancelOuter := context.WithTimeout(ctx, time.Duration(waitSeconds)*time.Second+requestTimeout)
+	outer, cancelOuter := context.WithTimeout(ctx, MessageWaitBudget(waitSeconds))
 	defer cancelOuter()
 	stream, cancelStream := context.WithCancelCause(outer)
 	defer cancelStream(context.Canceled)
