@@ -5,6 +5,8 @@ import fs from 'node:fs/promises';
 // Playwright diagnostics nor request/credential bytes are printed on failure.
 let server, browser;
 let phase = 'configuration';
+let checkpoint = '';
+let counters = () => ({});
 const need = (value) => { if (!value) throw new Error('assertion'); };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
@@ -36,9 +38,11 @@ try {
  let explicitActions = false;
  let controlledMessageFailure = false;
  let controlledAccessFailure = false;
+ const expectedMissingSessionRoute = url => { if (!controlledAccessFailure || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname); } catch { return false; } };
+  counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites});
   page.on('pageerror', () => errors++);
-  page.on('console', value => { if (value.type() === 'error' && !(controlledAccessFailure && value.location().url.startsWith(config.origin + prefix)) && !(controlledMessageFailure && value.location().url === config.origin + prefix + '/messages')) errors++; });
-  page.on('response', value => { if (value.status() >= 400) { if (controlledAccessFailure && value.status() === 401 && new URL(value.url()).pathname.startsWith(prefix)) terminalResponses++; else errors++; } });
+  page.on('console', value => { if (value.type() === 'error' && !(expectedMissingSessionRoute(value.location().url)) && !(controlledMessageFailure && value.location().url === config.origin + prefix + '/messages')) errors++; });
+  page.on('response', value => { if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else errors++; } });
   page.on('request', request => {
     const url = new URL(request.url());
     if (url.origin !== config.origin) { external++; return; }
@@ -333,27 +337,40 @@ try {
   await page.getByRole('button',{name:'Connect to project',exact:true}).waitFor();
   need(sessionPosts===2 && sessionDeletes===2 && sessionRenewals===3 && actionWrites===7 && forbiddenWrites===0 && errors===0 && external===0);
 
-  phase = 'renewal-missing-cookie';
+  phase = 'renewal-missing-cookie'; checkpoint = 'root-form';
+  // Disconnect renders its old project-route form before navigation replaces
+  // it. Wait for the destination form before filling either required input.
+  await page.waitForURL(config.origin + '/');
+  await expect(page.getByLabel('Project ID', {exact:true})).toHaveValue('');
+  checkpoint = 'project-input';
   explicitActions = false;
   await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+  checkpoint = 'credential-input';
   await page.getByLabel('Project credential', {exact:true}).fill(token);
+  checkpoint = 'submit';
   await page.getByRole('button', {name:'Connect to project', exact:true}).click();
+  checkpoint = 'heading';
   await page.getByRole('heading', {name:'Browser configured project',exact:true}).waitFor();
+  checkpoint = 'binding';
   const missingBinding = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey));
   need(sessionPosts === 3 && sessionRenewals === 3);
+  checkpoint = 'remove-cookie';
   await context.clearCookies({name:'fc-local-browser-' + missingBinding.sessionID});
-  controlledAccessFailure = true;
+  controlledAccessFailure = true; checkpoint = 'reload';
   await page.reload();
   await page.getByRole('button', {name:'Connect to project',exact:true}).waitFor();
+  checkpoint = 'cleanup';
   await expect.poll(() => sessionDeletes, {timeout:5000}).toBe(3);
+  checkpoint = 'storage';
   need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === null);
+  checkpoint = 'counters';
   need(terminalResponses > 0 && sessionRenewals === 3 && actionWrites === 7 && forbiddenWrites === 0 && errors === 0 && external === 0);
   await context.close();
   await browser.close(); browser = undefined;
   await server.close(); server = undefined;
   console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites}));
 } catch {
-  console.log(JSON.stringify({state:'FAIL', phase}));
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, ...counters()}));
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});
