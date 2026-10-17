@@ -104,7 +104,7 @@ func readJobContext(ctx context.Context, tx *sql.Tx, store *core.Store, scope co
 	}
 	checkpoint, err := scanLatestCheckpoint(ctx, tx, scope.ProjectID, id)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return result, contextUnavailable()
+		return result, err
 	}
 	if err == nil {
 		if !validContextCheckpoint(checkpoint, result.Job) {
@@ -115,15 +115,15 @@ func readJobContext(ctx context.Context, tx *sql.Tx, store *core.Store, scope co
 	result.Checklist = checklistResponse{JobID: id, JobRevision: result.Job.Revision}
 	result.Checklist.Revision, result.Checklist.Items, err = readChecklist(ctx, tx, scope.ProjectID, id)
 	if err != nil {
-		return result, contextUnavailable()
+		return result, err
 	}
 	result.Primary, err = readPrimaryJob(ctx, tx, scope.ProjectID, scope.WorkerID)
 	if err != nil {
-		return result, contextUnavailable()
+		return result, err
 	}
 	result.Pause, err = readWorkerPause(ctx, tx, scope.ProjectID, scope.WorkerID)
 	if err != nil {
-		return result, contextUnavailable()
+		return result, err
 	}
 	filter := noteListFilter{Route: "notes-current", WorkerID: scope.WorkerID, Status: "pending", IncludeAssignedJobs: true}
 	result.Notes, err = readNotePage(ctx, tx, store, scope, filter, limit, nil)
