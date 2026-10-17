@@ -69,7 +69,7 @@ func readProviderRelease(fields map[string]string, status RecoveryStatus) (provi
 	if err != nil || string(canonical) != body || release.Version != 1 || !validResumptionRequest(release.Request) || release.Request.ExpectedInstanceID != status.InstanceID || release.Request.FencedPredecessorID != status.SourceInstanceID || release.BundleID != status.BundleID || release.ActivatedAt != status.ActivatedAt || !activationOK || !atOK || at.Before(activation) {
 		return release, invalid()
 	}
-	for _, count := range []int64{release.Counts.QueuedOperations, release.Counts.Attempts, release.Counts.SourceRefreshes, release.Counts.Publications, release.Counts.PausedProjects} {
+	for _, count := range []int64{release.Counts.QueuedOperations, release.Counts.Attempts, release.Counts.SourceRefreshes, release.Counts.Publications, release.Counts.PausedProjects, release.Counts.Selections} {
 		if count < 0 || count > 10000 {
 			return release, invalid()
 		}
@@ -148,10 +148,18 @@ func ResumeProviders(ctx context.Context, dataDir string, in ProviderResumptionR
 	if at.Before(activation) {
 		at = activation
 	}
+	selections, err := reviewexec.AbandonReviewRuns(ctx, tx, at)
+	if err != nil {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return zero, core.Fail("restore_reconciliation_interrupted", "Restore reconciliation was interrupted; no provider release was recorded. Retry the exact reconciliation command.", 503)
+		}
+		return zero, err
+	}
 	counts, err := reviewexec.AbandonRestoredProviderWork(ctx, tx, status.InstanceID, at)
 	if err != nil {
 		return zero, err
 	}
+	counts.Selections = selections
 	release := providerRelease{Version: 1, Request: in, BundleID: status.BundleID, ActivatedAt: status.ActivatedAt, ReleasedAt: at.Format(time.RFC3339Nano), Counts: counts}
 	body, err := json.Marshal(release)
 	if err != nil {

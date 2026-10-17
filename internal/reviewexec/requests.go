@@ -107,47 +107,7 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 		return nil, invalid()
 	}
 	result, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.request", Target: "requests", Key: key, Request: r}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
-		if err != nil {
-			return nil, err
-		}
-		if revision != r.ExpectedConfigurationRevision {
-			return nil, conflict()
-		}
-		if c.Paused {
-			return nil, core.Fail("reviews_paused", "Review execution is paused for this project.", 409)
-		}
-		if err = e.validateConfiguration(c); err != nil {
-			return nil, core.Fail("capability_unavailable", "The configured review capability is unavailable.", 409)
-		}
-		if !slices.Contains(c.Queue, r.PullNumber) || !slices.Contains(c.Channels, r.Channel) {
-			return nil, core.Fail("review_not_configured", "The selected PR or channel is not configured.", 409)
-		}
-		policy, err := readPolicy(ctx, tx, scope.ProjectID)
-		if err != nil {
-			return nil, err
-		}
-		if slices.Contains(policy.Policy.PausedChannels, r.Channel) {
-			return nil, core.Fail("reviews_paused", "Review execution is paused for this channel.", 409)
-		}
-		var local, total int
-		if err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN project_id=? THEN 1 ELSE 0 END),0) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain')`, scope.ProjectID).Scan(&total, &local); err != nil {
-			return nil, err
-		}
-		if local >= 32 || total >= 256 {
-			return nil, core.Fail("overloaded", "Review request capacity is occupied; recover or finish existing operations.", 503)
-		}
-		id, at := core.NewID("review_operation"), stamp()
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',1,'','',?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, revision, policy.Revision, e.capabilities[c.CapabilityID].Fingerprint, r.PullNumber, r.Channel, r.HeadSHA, at, at); err != nil {
-			return nil, err
-		}
-		if err = bindRoundControl(ctx, tx, Operation{ID: id, ProjectID: scope.ProjectID, PullNumber: r.PullNumber, Channel: r.Channel, State: "queued"}); err != nil {
-			return nil, err
-		}
-		if err = core.AppendEvent(ctx, tx, scope, "review.requested", id, 1, map[string]any{"pull_number": r.PullNumber, "channel": r.Channel}); err != nil {
-			return nil, err
-		}
-		return Receipt{ID: id, State: "queued", Revision: 1}, nil
+		return e.enqueueRequestTx(ctx, tx, scope, r)
 	})
 	if err == nil {
 		select {
@@ -156,6 +116,52 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 		}
 	}
 	return result, err
+}
+
+// enqueueRequestTx shares native acceptance after the caller has established
+// current authority. scope supplies checked attribution; it is not authentication.
+func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Scope, r Request) (Receipt, error) {
+	c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if revision != r.ExpectedConfigurationRevision {
+		return Receipt{}, conflict()
+	}
+	if c.Paused {
+		return Receipt{}, core.Fail("reviews_paused", "Review execution is paused for this project.", 409)
+	}
+	if err = e.validateConfiguration(c); err != nil {
+		return Receipt{}, core.Fail("capability_unavailable", "The configured review capability is unavailable.", 409)
+	}
+	if !slices.Contains(c.Queue, r.PullNumber) || !slices.Contains(c.Channels, r.Channel) {
+		return Receipt{}, core.Fail("review_not_configured", "The selected PR or channel is not configured.", 409)
+	}
+	policy, err := readPolicy(ctx, tx, scope.ProjectID)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if slices.Contains(policy.Policy.PausedChannels, r.Channel) {
+		return Receipt{}, core.Fail("reviews_paused", "Review execution is paused for this channel.", 409)
+	}
+	var local, total int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN project_id=? THEN 1 ELSE 0 END),0) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain')`, scope.ProjectID).Scan(&total, &local); err != nil {
+		return Receipt{}, err
+	}
+	if local >= 32 || total >= 256 {
+		return Receipt{}, core.Fail("overloaded", "Review request capacity is occupied; recover or finish existing operations.", 503)
+	}
+	id, at := core.NewID("review_operation"), stamp()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',1,'','',?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, revision, policy.Revision, e.capabilities[c.CapabilityID].Fingerprint, r.PullNumber, r.Channel, r.HeadSHA, at, at); err != nil {
+		return Receipt{}, err
+	}
+	if err = bindRoundControl(ctx, tx, Operation{ID: id, ProjectID: scope.ProjectID, PullNumber: r.PullNumber, Channel: r.Channel, State: "queued"}); err != nil {
+		return Receipt{}, err
+	}
+	if err = core.AppendEvent(ctx, tx, scope, "review.requested", id, 1, map[string]any{"pull_number": r.PullNumber, "channel": r.Channel}); err != nil {
+		return Receipt{}, err
+	}
+	return Receipt{ID: id, State: "queued", Revision: 1}, nil
 }
 
 func readOperation(ctx context.Context, tx EvidenceQuery, project, id string) (Operation, error) {

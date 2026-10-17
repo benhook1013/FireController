@@ -97,6 +97,8 @@ type Attempt struct {
 }
 
 type Engine struct {
+	runWake                    chan struct{}
+	runRunning                 atomic.Bool
 	operationMu                sync.Mutex
 	operationWaiters           map[string]map[*operationWaiter]struct{}
 	operationWaiterPrincipals  map[string]int
@@ -134,7 +136,7 @@ var hash = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var repository = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$`)
 
 func New(store *core.Store, capabilities []Capability, options ...EngineOption) (*Engine, error) {
-	e := &Engine{checkpointWake: make(chan struct{}, 1), checkpointWaiters: make(map[string]map[*checkpointWaiter]struct{}), checkpointWaiterPrincipals: make(map[string]int), store: store, capabilities: map[string]Capability{}, wake: make(chan struct{}, 1), sourceWake: make(chan struct{}, 1), sourceWaiters: make(map[string]map[*sourceRefreshWaiter]struct{}), sourceWaiterPrincipals: make(map[string]int)}
+	e := &Engine{runWake: make(chan struct{}, 1), checkpointWake: make(chan struct{}, 1), checkpointWaiters: make(map[string]map[*checkpointWaiter]struct{}), checkpointWaiterPrincipals: make(map[string]int), store: store, capabilities: map[string]Capability{}, wake: make(chan struct{}, 1), sourceWake: make(chan struct{}, 1), sourceWaiters: make(map[string]map[*sourceRefreshWaiter]struct{}), sourceWaiterPrincipals: make(map[string]int)}
 	for _, input := range capabilities {
 		c, err := normalizedCapability(input)
 		if err != nil {

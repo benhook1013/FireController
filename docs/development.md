@@ -174,3 +174,15 @@ The profile-bound `fc publication read`, `preview`, `apply` and `unpublish` comm
 ## Per-PR review round controls
 
 The [round-control guide](review-round-controls.md#bound-commands-and-api) owns administrator `fc reviews rounds read|grant|close`, additional minimum/maximum/exact semantics, MCP arguments and exact-key recovery. These are compact local operations; granting or closing a channel does not itself start or cancel provider work.
+
+## Start the next review
+
+The bound command selects one channel’s earliest unfinished target through the service. An expected PR is optional and asserts the selection. Each call authorizes at most one review, using an explicit key; ordinary inspection reads stay provider-free. The [round-control contract](review-round-controls.md#one-explicit-channel-front-run) owns selection, waiting, replay and recovery.
+
+```sh
+fc reviews start --channel cli --key next-cli-review
+fc reviews start --channel hosted --expect-pr 42 --key hosted-42 --wait-seconds 900
+fc reviews run-read --selection-id review_selection_0123456789abcdef0123456789abcdef
+```
+
+The default short wait returns a useful terminal result when available, or the original compact selection receipt when work remains pending. Immediate return uses `--wait-seconds 0`. Preserve the original key and arguments after uncertain output; another key authorizes another selection. Historical `reviews run RUN_ID` remains a separate retained-history read.

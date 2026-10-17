@@ -48,6 +48,8 @@ Each local attempt mutation records one effective UTC timestamp shared by its op
 
 ## Bound execution tools
 
+The explicit [channel-front start](review-round-controls.md#one-explicit-channel-front-run) adds `fc reviews start` and MCP `review_start`. One finite background selection links to one ordinary exact-target operation. `run-read` and `review_selection_read` follow that original link; the historical run read remains separate. The selection and native operation share the caller’s bounded result-wait budget.
+
 Use the existing private profile for these commands; project and worker are inherited from that binding:
 
 ```sh

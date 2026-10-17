@@ -80,3 +80,9 @@ The workload checks compact receipts and useful default-wait results, a controll
 ## Additional review rounds
 
 `make smoke` includes `TestPackagedRoundControlsSmoke` against the supplied `fc`, `fcd` and official SDK stdio `fcmcp`. It exercises explicit grants, exact bounds, closure, scoped local reads, cross-client exact replay, output-loss recovery, restart and current administrator authority. Provider execution stays disabled; the workload checks unchanged execution journals and zero external calls. It complements the native runner/capture and backup invariant tests recorded in [round controls](../../docs/review-round-controls.md#focused-proof); it does not claim live review or automatic continuation.
+
+## Channel-front review selection
+
+`TestPackagedRunSelectionSmoke`, included in `make smoke`, exercises the actual built daemon, CLI and stdio MCP adapter. A private synthetic operator catalog and a restricted loopback HTTPS/proxy fixture provide source facts. One explicit start selects the expected front and links one normal native operation, deliberately held at a trusted Git stub before review execution. Expected-PR refusal, different wait preferences, original-key replay, lost stdout, configuration changes and restart preserve that link without new source acquisition. Inputs and unrelated data are conserved; owned processes and tunnels are joined.
+
+This Linux fixture uses POSIX stubs and explicit child CA trust and skips other platforms. It performs no real provider calls, allowance spend or captured-review credit. Ordinary cross-platform packaged smoke remains a separate check.

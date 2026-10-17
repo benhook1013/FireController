@@ -71,6 +71,7 @@ type invocation struct {
 	coordinationImport *coordinationImportInvocation
 	mapImport          *mapImportInvocation
 	history            *historyInvocation
+	reviewRun          *reviewRunInvocation
 	rounds             *reviewRoundsInvocation
 
 	waitSeconds int
@@ -187,6 +188,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if call.command == "reviews" && call.subcommand == "operation" {
 		timeout = client.ReviewOperationBudget(call.waitSeconds)
 	}
+	if call.reviewRun != nil {
+		timeout = client.ReviewOperationBudget(call.reviewRun.waitSeconds)
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	service, err := client.New(requestCtx, binding)
@@ -194,6 +198,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.reviewRun != nil {
+		return executeReviewRun(requestCtx, ctx, service, call.reviewRun, stdout, stderr)
+	}
 	if call.rounds != nil {
 		return executeReviewRounds(requestCtx, ctx, service, call.rounds, stdout, stderr)
 	}

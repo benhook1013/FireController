@@ -11,6 +11,9 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
+	if call.subcommand == "start" || call.subcommand == "run-read" {
+		return parseReviewRun(call, args)
+	}
 	if call.subcommand == "source-assess" || call.subcommand == "ci-assess" || call.subcommand == "readiness" {
 		values, ok := reviewSourceFlags(args, "--pr")
 		if !ok {

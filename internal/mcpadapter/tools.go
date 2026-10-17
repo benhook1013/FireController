@@ -15,6 +15,7 @@ import (
 )
 
 type arguments struct {
+	reviewRun                  client.ReviewRunRequest
 	roundChannel               string
 	roundControl               client.ConfigureReviewRoundControlRequest
 	notes                      *noteToolCall
@@ -56,6 +57,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128})
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
 	definitions = append(definitions, roundControlDefinitions()...)
+	definitions = append(definitions, reviewRunDefinitions()...)
 	definitions = append(definitions, jobProgressDefinitions()...)
 	definitions = append(definitions, primaryJobDefinitions()...)
 	definitions = append(definitions, workerPauseDefinitions()...)
@@ -67,7 +69,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	for _, tool := range definitions {
 		known[tool.name] = true
 		write := projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		openWorld := checkpointWrite(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
+		openWorld := checkpointWrite(tool.name) || tool.name == "review_start" || tool.name == "review_request" || tool.name == "review_source_refresh"
 		destructive := tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
@@ -98,7 +100,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			if tool.name == "review_source_refresh" || checkpointWrite(tool.name) {
 				timeout = client.SourceRefreshBudget(args.reviewSourceWait)
 			}
-			if tool.name == "review_request" || tool.name == "review_operation_read" {
+			if tool.name == "review_start" || tool.name == "review_selection_read" || tool.name == "review_request" || tool.name == "review_operation_read" {
 				timeout = client.ReviewOperationBudget(args.reviewSourceWait)
 			}
 			ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -111,6 +113,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			options := client.PageOptions{Limit: args.limit, Cursor: args.cursor}
 			var value any
 			switch tool.name {
+			case "review_start":
+				value, err = service.RunReview(ctx, args.key, args.reviewRun, args.reviewSourceWait)
+			case "review_selection_read":
+				value, err = service.WaitReviewSelection(ctx, args.id, args.reviewSourceWait)
 			case "review_rounds_read":
 				value, err = service.ReviewRoundControl(ctx, args.pullNumber, args.roundChannel)
 			case "review_rounds_configure":
