@@ -58,7 +58,7 @@ func TestWorkerPauseToolsSDKStdioReplayHistoryAndAnnotations(t *testing.T) {
 		}
 		raw, _ := json.Marshal(tool.InputSchema)
 		write := tool.Name == "worker_pause_replace"
-		if json.Unmarshal(raw, &shape) != nil || len(shape.Properties) != fields || shape.Additional || tool.Annotations.ReadOnlyHint == write || !tool.Annotations.IdempotentHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint || write && len(shape.Required) != 4 {
+		if json.Unmarshal(raw, &shape) != nil || len(shape.Properties) != fields || shape.Additional || tool.Annotations.ReadOnlyHint == write || !tool.Annotations.IdempotentHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint != write || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint || write && len(shape.Required) != 4 {
 			t.Fatal("incorrect schema/annotations", tool.Name)
 		}
 	}
