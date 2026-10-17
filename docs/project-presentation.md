@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Project appearance records and the separate project-metadata feed are implemented with focused model, authenticated HTTP, client/CLI/MCP, stream, browser-unit and backup/restore checks. Actual packaged CLI/MCP, Chromium and full integration checks passed at the checkpoints recorded below. The later combined [coordination browser views](browser-coordination.md) also passed full integration and packaged smoke at the checkpoint below; installed deployment proof is recorded separately in [hosting](hosting.md). The metadata feed refreshes map/reference views in the new browser; this has not been installed on the retained operational website. The existing incoming-message feed, agent message wait, project identity and provider workers retain their owning contracts. The new feed does not turn metadata events into messages or provide host chat wakeups.
+Project appearance records and the separate project-metadata feed are implemented with focused model, authenticated HTTP, client/CLI/MCP, stream, browser-unit and backup/restore checks. Actual packaged CLI/MCP, Chromium and full integration checks passed at the checkpoints recorded below. The later combined [coordination browser views](browser-coordination.md) also passed full integration and packaged smoke at the checkpoint below; installed deployment proof is recorded separately in [hosting](hosting.md). The metadata feed refreshes affected current jobs, workers, notes, map/reference and review views in the new browser; this has not been installed on the retained operational website. The existing incoming-message feed, agent message wait, project identity and provider workers retain their owning contracts. The new feed does not turn metadata events into messages or provide host chat wakeups.
 
 ## Stored presentation
 
@@ -49,7 +49,16 @@ Configuration, immutable history, canonical project-name update, compact event a
 
 ## Separate project-metadata stream
 
-The feed contains only `project.presentation_changed`, `map.entry_created`, `map.entry_updated` and `job.workstream_changed`. It exposes the existing durable sequence through an opaque cursor, not bodies, names, settings, messages or provider captures. A page is `{items,event_cursor,has_more}`; each item contains `event_type`, `resource_id`, `revision` and its own `event_cursor`. Ordering is ascending durable sequence; delivery is at least once. There is no acknowledgment mutation.
+The private project feed has an explicit allowlist of committed changes:
+
+- Appearance and map: `project.presentation_changed`, `map.entry_created`, `map.entry_updated`, `job.workstream_changed`.
+- Job progress: `job.created`, `job.updated`, `job.checkpointed`, `job.update_appended`, `job.checklist_replaced`.
+- Workers and notes: `workers.created`, `worker.pause_changed`, `worker.primary_job_changed`, `note.created`, `note.updated`.
+- Visible review state: `review.observed`, `reviews.policy_configured`, `review.evidence.adjudicated`, `review.evidence.finalized`, `review.evidence.fix_recorded`, `review.evidence.routed`, `review.route.routed`, `review.route.superseded`, `review.route.adjudicated`, `review.route.fix_recorded`.
+
+Internal preflight, allowance queries, source refresh/publication worker chatter, messages and unknown future event kinds are excluded. Evidence changes remain relevant even when an administrator replaced the workspace and retained native evidence is absent from its current projection. Both caller mutations and background worker writes publish notifications only after successful commit; rollback and failed commit produce no hints. There is no new polling loop.
+
+The feed is authenticated project data, not a public projection. The [public website](public-site.md) has a separate publication boundary. It exposes the existing durable sequence through an opaque cursor, not bodies, names, settings, messages or provider captures. A page is `{items,event_cursor,has_more}`; each item contains `event_type`, `resource_id`, `revision` and its own `event_cursor`. Ordering is ascending durable sequence; delivery is at least once. There is no acknowledgment mutation.
 
 Cursors bind instance, principal, project and the project-metadata feed namespace. They are intentionally independent of the browser's selected worker because this is project-wide read authority. Message cursors remain independently bound to their incoming-message scope and cannot be exchanged. Registration precedes the first durable read; a snapshot watermark and later replay cannot miss a committed change. Advance across irrelevant sequence gaps without inventing an item. Reject ahead/malformed/cross-scope cursors and use the existing seven-day replay-eligibility boundary; expired replay requires a fresh presentation snapshot before resubscribing.
 

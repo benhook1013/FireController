@@ -7,18 +7,50 @@ export function isCurrentProjectView(project: string, pathname: string, lifetime
   return lifetime === current && !lifetime.signal.aborted && (pathname === path || pathname.startsWith(`${path}/`));
 }
 
-// Invalidation stays scoped to stored map/reference views. Inactive pages are
-// marked stale by the shared helper without being fetched or walked.
+// Only affected stored-data views are invalidated. The shared helper cancels
+// pre-event reads, refetches active queries and leaves unopened bodies alone.
 export async function refreshProjectMetadata(client: QueryClient, key: QueryKey, page: ProjectMetadataPage | undefined, signal: AbortSignal): Promise<void> {
   const all = page === undefined;
-  const entries = new Set(page?.items.filter(item => item.event_type.startsWith('map.')).map(item => item.resource_id));
-  const jobs = new Set(page?.items.filter(item => item.event_type === 'job.workstream_changed').map(item => item.resource_id));
-  const prefixes: QueryKey[] = [];
-  if (all || entries.size > 0) {
-    prefixes.push([...key, 'map'], [...key, 'job-workstream']);
-    if (all) prefixes.push([...key, 'map-entry'], [...key, 'map-history']);
-    else for (const id of entries) prefixes.push([...key, 'map-entry', id], [...key, 'map-history', id]);
-  } else for (const id of jobs) prefixes.push([...key, 'job-workstream', id]);
-  // Sequential bounded prefixes avoid concurrent duplicate refetches of a view.
-  for (const prefix of prefixes) { if (signal.aborted) return; await refreshEventQueries(client, prefix, signal); }
+  const items = page?.items ?? [];
+  const prefixes = new Map<string, QueryKey>();
+  const add = (...parts: string[]) => { const prefix = [...key, ...parts]; prefixes.set(JSON.stringify(prefix), prefix); };
+  if (all) {
+    for (const domain of ['map', 'map-entry', 'map-history', 'job-workstream', 'job-workstream-history', 'jobs', 'job', 'workers', 'worker', 'worker-pause', 'worker-pause-history', 'worker-primary', 'worker-primary-history', 'notes', 'note', 'note-history', 'checklist-current', 'checklist-history', 'checkpoint-latest', 'checkpoints', 'job-updates']) add(domain);
+    add('reviews', 'current'); add('reviews', 'policy-assessment');
+  }
+  for (const { event_type: type, resource_id: id } of items) {
+    if (type.startsWith('map.')) {
+      add('map'); add('map-entry', id); add('map-history', id);
+      // An entry rename/archive affects recorded references in current views.
+      add('job-workstream');
+    } else if (type === 'job.created' || type === 'job.updated') {
+      add('jobs'); add('job', id);
+      // Captured revision labels must be compared with the new job revision.
+      add('checklist-current', id); add('checkpoint-latest', id);
+    } else if (type === 'job.workstream_changed') {
+      add('job-workstream', id); add('job-workstream-history', id);
+    } else if (type === 'job.checkpointed') {
+      // Append events identify the new record, not its owning job. Refresh only
+      // this domain's active views; do not expand every job's private context.
+      add('checkpoint-latest'); add('checkpoints');
+    } else if (type === 'job.update_appended') {
+      add('job-updates');
+    } else if (type === 'job.checklist_replaced') {
+      add('checklist-current', id); add('checklist-history', id);
+    } else if (type === 'workers.created') {
+      add('workers'); add('worker', id);
+    } else if (type === 'worker.pause_changed') {
+      add('worker-pause', id); add('worker-pause-history', id);
+    } else if (type === 'worker.primary_job_changed') {
+      add('worker-primary', id); add('worker-primary-history', id);
+    } else if (type === 'note.created' || type === 'note.updated') {
+      add('notes'); add('note', id); add('note-history', id);
+    } else if (type.startsWith('review.') || type.startsWith('reviews.')) {
+      add('reviews', 'current'); add('reviews', 'policy-assessment');
+    }
+  }
+  // Prefixes within a page can overlap (for example a map rename and job
+  // reference change); visit each active query only once for the batch.
+  const selected = [...prefixes.values()].filter(prefix => ![...prefixes.values()].some(other => other.length < prefix.length && other.every((part, index) => part === prefix[index])));
+  for (const prefix of selected) { if (signal.aborted) return; await refreshEventQueries(client, prefix, signal); }
 }

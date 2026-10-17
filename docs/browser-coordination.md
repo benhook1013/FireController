@@ -16,7 +16,7 @@ List pages show twenty compact previews with explicit truncation and next/previo
 
 Every query binds the existing connection nonce, instance and project, plus the selected resource and effective filters. Resource or filter changes remount their paging state. Old connection work is cancelled and cannot populate a new project's view. Responses must validate identities, required fields, known enums, positive safe revisions, bounded text/previews and paging before rendering. Unknown, malformed and foreign results fail visibly. Rich note/reason text is escaped plain text; it never supplies HTML, links, commands or authority.
 
-All new requests are finite reads under the existing cancellation and response budgets. No automatic provider refresh, JSON polling, note consumption or new live feed is added. Existing message and project metadata feeds retain their narrow scopes; these views update through the explicit visible-data refresh. Inactive histories and other worker details are not fetched. The existing project theme, typography and responsive components remain the default.
+All new requests are finite reads under the existing cancellation and response budgets. No automatic provider refresh, JSON polling, note consumption or new live feed is added. Existing message and project metadata feeds retain their narrow scopes; these views update through the explicit visible-data refresh and scoped project changes. Inactive histories and other worker details are not fetched. The existing project theme, typography and responsive components remain the default.
 
 ## Proof boundary
 

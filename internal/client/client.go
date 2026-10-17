@@ -27,10 +27,7 @@ const requestTimeout = 5 * time.Second
 // SourceRefreshBudget returns the total budget for an already validated source
 // wait preference. Argument validation remains with the command or request.
 func SourceRefreshBudget(waitSeconds int) time.Duration {
-	if waitSeconds > 2 {
-		return time.Duration(waitSeconds+5) * time.Second
-	}
-	return requestTimeout
+	return providerWaitBudget(waitSeconds)
 }
 
 type Client struct {
@@ -249,8 +246,9 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 	return c.requestBoundedOptions(ctx, method, segments, query, scoped, key, body, expectedStatus, mutation, dst, maxBytes, decode, nil)
 }
 
-// sourceWaitOptions is shared by explicit source-refresh and checkpoint mutations. It
-// preserves ordinary request budgets and never mutates shared transport state.
+// sourceWaitOptions is shared by explicit bounded provider waits. Each domain
+// validates its own limit before transport; ordinary request budgets and shared
+// transport state remain unchanged.
 type sourceWaitOptions struct {
 	seconds int
 	status  *int
@@ -274,7 +272,7 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	u.RawQuery = query.Encode()
 	timeout := requestTimeout
 	if wait != nil {
-		timeout = SourceRefreshBudget(wait.seconds)
+		timeout = providerWaitBudget(wait.seconds)
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

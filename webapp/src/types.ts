@@ -53,7 +53,7 @@ export interface ReviewPolicyAssessment {incoming_routes_pending?:number;incomin
 export interface Presentation {project_id: string; revision: number; name: string; brand_name: string; tagline: string; headings: Partial<Record<import('./presentation').HeadingKey, string>>; theme: Partial<Record<import('./presentation').ThemeToken, string>>; updated_at: string}
 export interface PresentationSnapshot {presentation: Presentation; event_cursor: string}
 export interface PresentationRevision {revision: number; actor_id: string; created_at: string; state: Presentation}
-export interface ProjectMetadataEvent {event_type: 'project.presentation_changed' | 'map.entry_created' | 'map.entry_updated' | 'job.workstream_changed'; resource_id: string; revision: number; event_cursor: string}
+export interface ProjectMetadataEvent {event_type: import('./project-event-types').ProjectEventType; resource_id: string; revision: number; event_cursor: string}
 export interface ProjectMetadataPage {items: ProjectMetadataEvent[]; event_cursor: string; has_more: boolean}
 
 export interface WorkerPrimary {worker_id: string; revision: number; job_id: string}

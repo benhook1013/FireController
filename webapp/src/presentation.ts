@@ -1,4 +1,6 @@
 import defaults from '../../internal/presentationmodel/defaults.json';
+import { projectEventTypes } from './project-event-types';
+const projectEventTypeSet: ReadonlySet<string> = new Set(projectEventTypes);
 import type { Presentation, PresentationSnapshot, ProjectMetadataPage } from './types';
 
 export { defaults as presentationDefaults };
@@ -59,7 +61,7 @@ export function validMetadataPage(v: unknown, limit: number): v is ProjectMetada
   if (!object(v) || !exact(v, ['items', 'event_cursor', 'has_more']) || !Array.isArray(v.items) || v.items.length > limit || !cursor(v.event_cursor) || typeof v.has_more !== 'boolean' || v.has_more && v.items.length === 0) return false;
   const seen = new Set<string>();
   for (const item of v.items) {
-    if (!object(item) || !exact(item, ['event_type', 'resource_id', 'revision', 'event_cursor']) || typeof item.event_type !== 'string' || !['project.presentation_changed', 'map.entry_created', 'map.entry_updated', 'job.workstream_changed'].includes(item.event_type) || !identity(item.resource_id) || !positive(item.revision) || !cursor(item.event_cursor) || seen.has(item.event_cursor)) return false;
+    if (!object(item) || !exact(item, ['event_type', 'resource_id', 'revision', 'event_cursor']) || typeof item.event_type !== 'string' || !projectEventTypeSet.has(item.event_type) || !identity(item.resource_id) || !positive(item.revision) || !cursor(item.event_cursor) || seen.has(item.event_cursor)) return false;
     seen.add(item.event_cursor);
   }
   return !v.has_more || v.items.at(-1)?.event_cursor === v.event_cursor;

@@ -98,6 +98,11 @@ func (f *httpFixture) request(method, path, token, key, body string) *httptest.R
 
 func (f *httpFixture) requestWithKeys(method, path, token string, keys []string, body string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	// Existing request/journal tests deliberately exercise immediate receipts;
+	// default and explicit result waiting have their own HTTP contract proof.
+	if method == http.MethodPost && strings.Contains(path, "/reviews/requests") {
+		r.Header.Set("Prefer", "wait=0")
+	}
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}

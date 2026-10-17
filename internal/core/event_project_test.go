@@ -55,7 +55,7 @@ func TestProjectEventsSnapshotRaceBoundedReplayAndGaps(t *testing.T) {
 	commitProjectEvent(t, s, scope, "project.presentation_changed", "two")
 	commitProjectEvent(t, s, scope, "map.entry_updated", "three")
 	commitProjectEvent(t, s, scope, "job.workstream_changed", "four")
-	commitProjectEvent(t, s, scope, "job.updated", "irrelevant-tail")
+	commitProjectEvent(t, s, scope, "project.unrecognized", "irrelevant-tail")
 	stop := errors.New("delivery rejected")
 	var first ProjectEventPage
 	err = s.StreamProjectEvents(context.Background(), scope, snapshot, 1, func(page ProjectEventPage) error { first = page; return stop }, func() error { return nil })
@@ -101,7 +101,7 @@ func TestProjectEventsSnapshotRaceBoundedReplayAndGaps(t *testing.T) {
 func TestProjectEventsRegistrationAndCallbacksOutsideTransaction(t *testing.T) {
 	s, scope, _ := streamFixture(t)
 	cursor := projectCursor(t, s, scope)
-	commitProjectEvent(t, s, scope, "job.updated", "filtered-before-registration")
+	commitProjectEvent(t, s, scope, "project.unrecognized", "filtered-before-registration")
 	initialCursor := projectCursor(t, s, scope)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

@@ -164,14 +164,14 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 		SessionPosts   int    `json:"session_posts"`
 		SessionDeletes int    `json:"session_deletes"`
 	}
-	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 1 || result.SessionPosts != 1 || result.SessionDeletes != 1 {
+	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 13 || result.SessionPosts != 1 || result.SessionDeletes != 1 {
 		t.Fatal("invalid packaged browser result")
 	}
 	daemon.stop(t)
 	if external.Load() != 0 {
 		t.Fatal("browser smoke attempted external HTTP")
 	}
-	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=1 session_posts=1 session_deletes=1 daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), engine.Load())
+	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=13 session_posts=1 session_deletes=1 daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), engine.Load())
 }
 
 // The only early driver output is its owned Chromium group ID. Keep all output
@@ -210,7 +210,7 @@ func (o *browserOutput) safePhase() string {
 			continue
 		}
 		switch record.Phase {
-		case "configuration", "launch", "connect", "fixture-update", "live-update", "reload", "disconnect":
+		case "configuration", "launch", "connect", "fixture-update", "live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "disconnect":
 			return record.Phase
 		}
 	}

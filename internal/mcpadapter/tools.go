@@ -94,6 +94,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			if tool.name == "review_source_refresh" || checkpointWrite(tool.name) {
 				timeout = client.SourceRefreshBudget(args.reviewSourceWait)
 			}
+			if tool.name == "review_request" || tool.name == "review_operation_read" {
+				timeout = client.ReviewOperationBudget(args.reviewSourceWait)
+			}
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			service, err := client.New(ctx, binding)
@@ -124,9 +127,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "review_execution_read":
 				value, err = service.ReviewExecution(ctx)
 			case "review_operation_read":
-				value, err = service.ReviewOperation(ctx, args.id)
+				value, err = service.WaitReviewOperation(ctx, args.id, args.reviewSourceWait)
 			case "review_request":
-				value, err = service.RequestReview(ctx, args.key, args.reviewRequest)
+				value, err = service.RequestReview(ctx, args.key, args.reviewRequest, args.reviewSourceWait)
 			case "review_checkpoint_publish":
 				value, err = service.RequestReviewCheckpoint(ctx, args.key, args.reviewCheckpoint, args.reviewSourceWait)
 			case "review_checkpoint_read":

@@ -97,6 +97,10 @@ type Attempt struct {
 }
 
 type Engine struct {
+	operationMu                sync.Mutex
+	operationWaiters           map[string]map[*operationWaiter]struct{}
+	operationWaiterPrincipals  map[string]int
+	operationWaiterCount       int
 	attemptNow                 func() time.Time
 	routeNow                   func() time.Time
 	checkpointNow              func() time.Time

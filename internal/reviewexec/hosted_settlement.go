@@ -193,6 +193,10 @@ func (e *Engine) settleHostedHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	var settled hostedSettlementReceipt
+	if json.Unmarshal(receipt, &settled) == nil {
+		e.notifyOperation(settled.OperationID)
+	}
 	core.WriteJSON(w, 200, json.RawMessage(receipt))
 }
 

@@ -19,6 +19,19 @@ import (
 
 const executionOperationID = "review_operation_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
+// queuedReviewRequest keeps receipt/replay tests explicit about requesting no wait.
+func queuedReviewRequest(t *testing.T, c *client.Client, ctx context.Context, key string, request client.ReviewRequest) (client.ReviewRequestReceipt, error) {
+	t.Helper()
+	result, err := c.RequestReview(ctx, key, request, 0)
+	if err != nil {
+		return client.ReviewRequestReceipt{}, err
+	}
+	if result.Receipt == nil || result.Operation != nil {
+		t.Fatalf("expected original queued receipt: %+v", result)
+	}
+	return *result.Receipt, nil
+}
+
 func sampleExecutionConfiguration() client.ReviewExecutionConfiguration {
 	return client.ReviewExecutionConfiguration{ProjectID: "project-one", Revision: 1, CapabilityID: "synthetic-cli", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli"}}
 }
@@ -96,7 +109,7 @@ func TestReviewExecutionPublicAPIRequestReplayAndLostCommittedResponse(t *testin
 	}
 	request := client.ReviewRequest{ExpectedConfigurationRevision: configuration.Revision, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)}
 	drop.Store(true)
-	_, err = c.RequestReview(t.Context(), "request-once", request)
+	_, err = queuedReviewRequest(t, c, t.Context(), "request-once", request)
 	var failure *client.Error
 	if !errors.As(err, &failure) || !failure.OutcomeUnknown || posts.Load() != 1 || executionCounts(t, f)[0] != 1 {
 		t.Fatal("lost request was retried or not marked unknown", err)
@@ -106,7 +119,7 @@ func TestReviewExecutionPublicAPIRequestReplayAndLostCommittedResponse(t *testin
 		t.Fatal(err)
 	}
 	committed := executionCounts(t, f)
-	receipt, err := c.RequestReview(t.Context(), "request-once", request)
+	receipt, err := queuedReviewRequest(t, c, t.Context(), "request-once", request)
 	if err != nil || receipt != (client.ReviewRequestReceipt{ID: id, State: "queued", Revision: 1}) || executionCounts(t, f) != committed || posts.Load() != 2 {
 		t.Fatal("exact retry changed request effect", receipt, err)
 	}
@@ -129,7 +142,7 @@ func TestReviewExecutionPublicAPIRequestReplayAndLostCommittedResponse(t *testin
 		t.Fatal(err)
 	}
 	advanced := executionCounts(t, f)
-	replay, err := c.RequestReview(t.Context(), "request-once", request)
+	replay, err := queuedReviewRequest(t, c, t.Context(), "request-once", request)
 	if err != nil || replay != receipt || executionCounts(t, f) != advanced {
 		t.Fatal("advanced operation changed original compact receipt", replay, err)
 	}
@@ -139,13 +152,13 @@ func TestReviewExecutionPublicAPIRequestReplayAndLostCommittedResponse(t *testin
 	}
 	changed := request
 	changed.HeadSHA = strings.Repeat("b", 40)
-	_, err = c.RequestReview(t.Context(), "request-once", changed)
+	_, err = queuedReviewRequest(t, c, t.Context(), "request-once", changed)
 	checkError(t, err, "idempotency_conflict")
 	f.call(t, "POST", "/api/v1/projects/"+f.project+"/reviews/execution/configuration", f.admin, f.sender, map[string]any{"expected_revision": 1, "capability_id": "synthetic-cli", "mode": "independent", "queue": []int64{2}, "channels": []string{"cli"}, "paused": false})
 	before = executionCounts(t, f)
-	_, err = c.RequestReview(t.Context(), "stale-new-key", request)
+	_, err = queuedReviewRequest(t, c, t.Context(), "stale-new-key", request)
 	checkError(t, err, "review_conflict")
-	if replay, err := c.RequestReview(t.Context(), "request-once", request); err != nil || replay != receipt {
+	if replay, err := queuedReviewRequest(t, c, t.Context(), "request-once", request); err != nil || replay != receipt {
 		t.Fatal("later configuration changed original request replay", replay, err)
 	}
 	if executionCounts(t, f) != before || f.providerCalls.Load() != provider {
@@ -279,11 +292,11 @@ func TestReviewExecutionValidationBeforeCredentialOrHTTP(t *testing.T) {
 		if client.ValidateReviewRequest(request) == nil {
 			t.Fatal("validator accepted invalid request")
 		}
-		_, err := c.RequestReview(t.Context(), "valid-key", request)
+		_, err := queuedReviewRequest(t, c, t.Context(), "valid-key", request)
 		checkError(t, err, "validation_failed")
 	}
 	for _, key := range []string{"", " padded ", "line\nbreak", strings.Repeat("k", 129)} {
-		_, err := c.RequestReview(t.Context(), key, valid)
+		_, err := queuedReviewRequest(t, c, t.Context(), key, valid)
 		checkError(t, err, "validation_failed")
 	}
 	for _, id := range []string{"", "../operation", "review_operation_" + strings.Repeat("A", 32), executionOperationID + "extra"} {
@@ -298,7 +311,7 @@ func TestReviewExecutionValidationBeforeCredentialOrHTTP(t *testing.T) {
 	}
 	// Nil receiver proves admission does not need even an already-loaded client.
 	var unloaded *client.Client
-	_, err := unloaded.RequestReview(t.Context(), "", valid)
+	_, err := queuedReviewRequest(t, unloaded, t.Context(), "", valid)
 	checkError(t, err, "validation_failed")
 	_, err = unloaded.ReviewOperation(t.Context(), "invalid")
 	checkError(t, err, "validation_failed")
@@ -322,7 +335,7 @@ func TestReviewExecutionInvalidReceiptsRemainUnknownAndSingleShot(t *testing.T) 
 			_, _ = w.Write([]byte(body))
 		}))
 		c := newClient(t, srv)
-		_, err := c.RequestReview(t.Context(), "explicit-key", client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+		_, err := queuedReviewRequest(t, c, t.Context(), "explicit-key", client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
 		var failure *client.Error
 		if !errors.As(err, &failure) || !failure.OutcomeUnknown || failure.Code != "invalid_response" || posts.Load() != 1 {
 			t.Fatal("invalid receipt lost ambiguity or auto-retried", err)
@@ -343,7 +356,7 @@ func TestReviewExecutionReadOnlyAndForeignProjectIsolation(t *testing.T) {
 	writer := f.newClient(t, f.admin, f.sender, srv.URL)
 	reader := f.newClient(t, readerToken, f.recipient, srv.URL)
 	request := client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)}
-	receipt, err := writer.RequestReview(t.Context(), "scoped-request", request)
+	receipt, err := queuedReviewRequest(t, writer, t.Context(), "scoped-request", request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +367,7 @@ func TestReviewExecutionReadOnlyAndForeignProjectIsolation(t *testing.T) {
 	if got, err := reader.ReviewOperation(t.Context(), receipt.ID); err != nil || got.WorkerID != f.sender {
 		t.Fatal("reader could not inspect same-project other-worker operation", got, err)
 	}
-	_, err = reader.RequestReview(t.Context(), "reader-must-not-dispatch", request)
+	_, err = queuedReviewRequest(t, reader, t.Context(), "reader-must-not-dispatch", request)
 	var failure *client.Error
 	if !errors.As(err, &failure) || failure.Code != "forbidden" || failure.OutcomeUnknown {
 		t.Fatal("reader request not known refused", err)
@@ -405,7 +418,7 @@ func TestReviewExecutionSafeFailureRequestIDAndErrorBudget(t *testing.T) {
 			defer srv.Close()
 			c := newClient(t, srv)
 			defer c.Close()
-			_, err := c.RequestReview(t.Context(), "same-key", client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+			_, err := queuedReviewRequest(t, c, t.Context(), "same-key", client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
 			var failure *client.Error
 			if !errors.As(err, &failure) || !failure.OutcomeUnknown || posts.Load() != 1 || strings.Contains(err.Error(), "PRIVATE_PROVIDER_MESSAGE") {
 				t.Fatal("failure privacy/outcome changed", err)
@@ -445,7 +458,7 @@ func TestReviewExecutionCancellationUsesSharedRequestBudget(t *testing.T) {
 			done := make(chan error, 1)
 			go func() {
 				if mutation {
-					_, err := c.RequestReview(ctx, "same-key", client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+					_, err := queuedReviewRequest(t, c, ctx, "same-key", client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
 					done <- err
 				} else {
 					_, err := c.ReviewExecution(ctx)
@@ -475,7 +488,7 @@ func TestReviewExecutionStoredReadsWorkWithoutProviderCatalog(t *testing.T) {
 	f, _ := executionFixture(t)
 	configured := httptest.NewServer(f.handler)
 	writer := f.newClient(t, f.admin, f.sender, configured.URL)
-	receipt, err := writer.RequestReview(t.Context(), "offline-retained-request", client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	receipt, err := queuedReviewRequest(t, writer, t.Context(), "offline-retained-request", client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
 	configured.Close()
 	if err != nil {
 		t.Fatal(err)
