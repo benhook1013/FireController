@@ -163,7 +163,13 @@ func TestPublishPreparedAttemptFallbackIsDisplayOnlyAndKeepsCurrentFacts(t *test
 		t.Fatal("replay replaced current facts or created snapshot", first, again)
 	}
 	// A real projection identity conflict is not repaired by fallback metadata.
-	if _, err := f.store.DB().Exec(`UPDATE review_attempts SET head_sha=? WHERE project_id=?`, strings.Repeat("f", 40), f.project); err != nil {
+	if _, err := f.store.DB().Exec(`UPDATE review_attempt_versions SET head_sha=?
+WHERE (project_id,source,source_attempt_id,version_revision) IN (
+ SELECT c.project_id,c.source,c.source_attempt_id,m.version_revision
+ FROM review_current_attempts c JOIN review_attempt_memberships m
+ USING(project_id,source,source_attempt_id,start_revision,pull_number,position)
+ WHERE c.project_id=?
+)`, strings.Repeat("f", 40), f.project); err != nil {
 		t.Fatal(err)
 	}
 	assertCoreErrorCode(t, publishPreparedAttempt(t.Context(), f.engine, f.project, a.ID, plan), "observation_conflict")

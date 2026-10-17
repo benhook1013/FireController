@@ -714,15 +714,15 @@ func TestNativePublicationRunRowsBindOwningSnapshotRevision(t *testing.T) {
 	if nativeSnapshotBytes(t, f, first) != firstBytes || nativeSnapshotBytes(t, f, corrected) != correctedBytes || nativeSnapshotBytes(t, f, appended.ID) != appendedBytes {
 		t.Fatal("publication rewrote historical snapshot bytes")
 	}
-	// A structurally valid extra row that omits the new field must be rejected,
-	// rather than silently becoming eligible under another snapshot's revision.
+	// Physical payload versions require an actual same-project owning snapshot.
+	// Test the real version constraints rather than a read view's blanket write refusal.
 	before := nativeSnapshotBytes(t, f, copied.ID)
-	_, err = f.store.DB().Exec(`INSERT INTO review_runs(project_id,snapshot_id,pull_number,run_order,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json) SELECT project_id,snapshot_id,pull_number,run_order+10,'omitted-owning-revision',source,'omitted-owning-source',channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json FROM review_runs WHERE project_id=? AND snapshot_id=? AND source=? AND source_run_id=?`, f.project, copied.ID, nativeSource, run.SourceRunID)
+	_, err = f.store.DB().Exec(`INSERT INTO review_run_versions(project_id,id,pull_number,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json) SELECT project_id,'omitted-owning-revision',pull_number,source,'omitted-owning-source',channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json FROM review_run_versions WHERE project_id=? AND source=? AND source_run_id=? LIMIT 1`, f.project, nativeSource, run.SourceRunID)
 	if err == nil {
-		t.Fatal("omitted snapshot revision was accepted")
+		t.Fatal("omitted owning version revision was accepted")
 	}
-	if _, err := f.store.DB().Exec(`UPDATE review_runs SET snapshot_revision=snapshot_revision-1 WHERE project_id=? AND snapshot_id=?`, f.project, copied.ID); err == nil {
-		t.Fatal("wrong owning snapshot revision update was accepted")
+	if _, err := f.store.DB().Exec(`UPDATE review_run_versions SET version_revision=(SELECT max(revision)+1 FROM review_snapshots WHERE project_id=review_run_versions.project_id) WHERE project_id=? AND source=? AND source_run_id=?`, f.project, nativeSource, run.SourceRunID); err == nil {
+		t.Fatal("version without owning snapshot was accepted")
 	}
 	if nativeSnapshotBytes(t, f, copied.ID) != before {
 		t.Fatal("rejected revision mismatch changed snapshot bytes")
