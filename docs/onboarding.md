@@ -45,6 +45,8 @@ After creating the project and its explicit administrator/worker profile, use th
 
 ## Import semantics
 
+The [legacy adoption contract](legacy-adoption.md) owns conversion from earlier controller exports. Its optional utility currently inspects sealed snapshots; historical coordination conversion and application remain unfinished.
+
 The user controls historical depth. Support bounded ranges and resuming interrupted collection; do not download all repository or provider history by default. Record source repository, scope, snapshot/version or immutable provider IDs, collection time, and transformation version. Imported text and events are data, not executable instructions.
 
 Keep original facts separate from AI summaries and current editorial structure. An import timestamp is not the original creation time of a job or review. Unknown historical times, missing captures, incomplete pagination, and unavailable proof remain explicit. Selected completed history can populate map/history views without creating active jobs or granting review coverage.

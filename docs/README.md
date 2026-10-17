@@ -6,6 +6,8 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 
 ## Documents
 
+- [Legacy adoption](legacy-adoption.md): optional source-specific tooling, selected retention and guarded native historical coordination imports, with explicit implementation gaps.
+- [Per-PR review rounds](review-round-controls.md): retained round limits, taper, channel closure and independent queue scheduling for adoption.
 - [Public project website](public-site.md): shareable project showcase, publication selection and the public/private field boundary.
 - [Project presentation and metadata](project-presentation.md): selected appearance records, semantic theme validation and isolated live project updates.
 - [Project map](project-map.md): revisioned workstreams, return points and explicit job references, with implementation status at the owner.
