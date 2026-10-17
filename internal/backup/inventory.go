@@ -220,8 +220,9 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 5, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 5, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"review_comparison_proofs":         {"review_comparison", 1, "operation_id project_id pull_number channel state repository_id candidate_sha base_sha parent_sha parent_pull_number base_ref evidence_id"},
 	"project_publications":             {"public_site", 1, "project_id revision slug enabled manifest_json round_salt generation public_revision public_updated_at refresh_error"},
 	"public_project_snapshots":         {"public_site", 1, "project_id generation revision content_json created_at"},
 	"managed_backup_publication_holds": {"managed_backup_publications", 1, "bundle_id destination source_instance_id manifest_sha256 summary_json"},
@@ -561,7 +562,7 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	if err != nil {
 		return nil, invalid()
 	}
-	if err = validateTriggers(ctx, db, versions["reviews"]); err != nil {
+	if err = validateTriggers(ctx, db, versions["reviews"], versions["review_comparison"]); err != nil {
 		return nil, err
 	}
 	if err = validateHistoryViews(ctx, db, versions["reviews"]); err != nil {
@@ -569,6 +570,11 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	}
 	if versions["reviews"] >= 4 {
 		if err = validateHistoryPhysicalSchema(ctx, db, versions["reviews"]); err != nil {
+			return nil, err
+		}
+	}
+	if versions["review_comparison"] > 0 {
+		if err = validateComparisonPhysicalSchema(ctx, db); err != nil {
 			return nil, err
 		}
 	}
@@ -849,6 +855,11 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return err
 		}
 	}
+	if versions["review_comparison"] > 0 {
+		if err = reviewexec.ValidateComparisonProofs(ctx, tx); err != nil {
+			return invalid()
+		}
+	}
 	return checkContext(ctx)
 }
 func reference(refs map[string]Artifact, attempt, captureID, hash string, size int64, hosted bool) bool {
@@ -1047,16 +1058,36 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version in
 	return nil
 }
 
-// Only reviews versions two and three contain the exact revision triggers.
+// Reviews versions two and three contain exact revision triggers; comparison
+// version one additionally owns exact invalidation and retained-proof triggers.
 // Exact text and table binding are required; inspection never executes custom
 // trigger programs, and restore must reject them before rotating credentials.
-func validateTriggers(ctx context.Context, db sqlReader, reviewVersion int) error {
+func validateTriggers(ctx context.Context, db sqlReader, reviewVersion, comparisonVersion int) error {
 	expected := map[string]string{}
+	expectedTables := map[string]string{}
 	if reviewVersion >= 2 && reviewVersion <= 3 {
 		expected["review_runs_snapshot_revision_insert"] = "CREATE TRIGGER review_runs_snapshot_revision_insert BEFORE INSERT ON review_runs WHEN NEW.snapshot_revision IS NOT (SELECT revision FROM review_snapshots WHERE project_id=NEW.project_id AND snapshot_id=NEW.snapshot_id) BEGIN SELECT RAISE(ABORT,'invalid review snapshot revision'); END"
 		expected["review_runs_snapshot_revision_update"] = "CREATE TRIGGER review_runs_snapshot_revision_update BEFORE UPDATE OF project_id,snapshot_id,snapshot_revision ON review_runs WHEN NEW.snapshot_revision IS NOT (SELECT revision FROM review_snapshots WHERE project_id=NEW.project_id AND snapshot_id=NEW.snapshot_id) BEGIN SELECT RAISE(ABORT,'invalid review snapshot revision'); END"
+		for name := range expected {
+			expectedTables[name] = "review_runs"
+		}
 	}
-	rows, err := db.QueryContext(ctx, `SELECT name,tbl_name,CASE WHEN length(CAST(sql AS BLOB))<=2048 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='trigger' LIMIT 3`)
+	if comparisonVersion > 0 {
+		for _, statement := range reviewexec.ComparisonSchemaSQL() {
+			fields := strings.Fields(statement)
+			if len(fields) < 4 || fields[1] != "TRIGGER" {
+				continue
+			}
+			expected[fields[2]] = historyDefinitionSQL(statement)
+			for i, field := range fields {
+				if field == "ON" && i+1 < len(fields) {
+					expectedTables[fields[2]] = fields[i+1]
+					break
+				}
+			}
+		}
+	}
+	rows, err := db.QueryContext(ctx, `SELECT CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,tbl_name,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='trigger' LIMIT `+strconv.Itoa(len(expected)+1))
 	if err != nil {
 		return invalid()
 	}
@@ -1069,12 +1100,53 @@ func validateTriggers(ctx context.Context, db sqlReader, reviewVersion int) erro
 			return invalid()
 		}
 		want, known := expected[name]
-		if !known || table != "review_runs" || want != strings.TrimSpace(definition.String) {
+		if !known || table != expectedTables[name] || want != historyDefinitionSQL(definition.String) {
 			return invalid()
 		}
 		count++
 	}
 	if rows.Err() != nil || count != len(expected) {
+		return invalid()
+	}
+	return nil
+}
+
+// Bind every comparison table/index detail to the frozen owning DDL, including
+// primary keys, defaults and both scoped comparison indexes.
+func validateComparisonPhysicalSchema(ctx context.Context, db sqlReader) error {
+	type object struct{ kind, definition string }
+	expected := map[string]object{}
+	for _, statement := range reviewexec.ComparisonSchemaSQL() {
+		fields := strings.Fields(statement)
+		if len(fields) < 4 {
+			return invalid()
+		}
+		if fields[1] == "TABLE" || fields[1] == "INDEX" {
+			expected[fields[2]] = object{strings.ToLower(fields[1]), historyDefinitionSQL(statement)}
+		}
+	}
+	if len(expected) != 3 {
+		return invalid()
+	}
+	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE tbl_name='review_comparison_proofs' AND (type='table' OR (type='index' AND sql IS NOT NULL)) LIMIT 4`)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var kind, name string
+		var definition sql.NullString
+		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
+			return invalid()
+		}
+		want, known := expected[name]
+		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
 		return invalid()
 	}
 	return nil
@@ -1092,6 +1164,7 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"review_comparison_proofs":     {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"project_publications":         {canonicalFK("projects", "project_id", "id", "CASCADE")},
 	"public_project_snapshots":     {canonicalFK("project_publications", "project_id", "project_id", "CASCADE")},
 	"project_presentations":        {canonicalFK("projects", "project_id", "id", "CASCADE")},

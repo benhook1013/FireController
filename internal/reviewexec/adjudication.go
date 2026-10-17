@@ -65,7 +65,7 @@ func adjudicationStorageError() error {
 
 // loadReviewAdjudication reads the immutable source and current projection in the
 // same snapshot. Source text is used internally and never included in the view.
-func loadReviewAdjudication(ctx context.Context, tx *sql.Tx, project, id string) (ReviewEvidence, ReviewAdjudication, error) {
+func loadReviewAdjudication(ctx context.Context, tx EvidenceQuery, project, id string) (ReviewEvidence, ReviewAdjudication, error) {
 	var captureBody string
 	var stateBody sql.NullString
 	var revision sql.NullInt64
@@ -172,6 +172,9 @@ func (e *Engine) persistReviewAdjudication(ctx context.Context, tx *sql.Tx, scop
 		if err = e.publishAdjudication(ctx, tx, scope, state); err != nil {
 			return nil, err
 		}
+	}
+	if err = refreshEvidenceComparison(ctx, tx, scope.ProjectID, state.EvidenceID); err != nil {
+		return nil, err
 	}
 	return Receipt{ID: state.EvidenceID, State: kind, Revision: state.Revision}, nil
 }
