@@ -1,9 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Link, NavLink, Route, Routes, useLocation, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
+import { Link, NavLink, Route, Routes, matchPath, useBlocker, useLocation, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Api, ApiError } from './api';
 import { PublicSiteRouter } from './public-site';
+import { BrowserActionMemory, MessageComposer, RecipientActions } from './browser-actions';
+import { ProjectSettings } from './project-settings';
 import { ProjectMap, ProjectMapEntryView, ProjectMapRevisionView, JobWorkstreamPanel } from './project-map';
 import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView, notesPath } from './coordination';
 import { refreshEventQueries } from './queries';
@@ -16,7 +18,7 @@ import flameEmber from './flame-ember.svg?no-inline';
 import type { Checkpoint, ChecklistItem, JobUpdate, InboxItem, JobSummary, LiveStatus, Page, Project, Worker, ReviewAttemptSummary, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
 
 const pageSize = 20;
-type Session = { api: Api; project: Project; instanceId: string; nonce: string; controller: AbortController; projectController: AbortController; presentationSnapshot: PresentationSnapshot; worker: Worker | null; binding: BrowserSessionBinding };
+type Session = { api: Api; project: Project; instanceId: string; nonce: string; controller: AbortController; projectController: AbortController; presentationSnapshot: PresentationSnapshot; worker: Worker | null; binding: BrowserSessionBinding; actions: BrowserActionMemory };
 type WorkspaceValue = { session: Session; key: readonly string[]; home: string; selectWorker(worker: Worker): void; fail(error: unknown): void; ready: boolean };
 const WorkspaceContext = createContext<WorkspaceValue | null>(null);
 export function useWorkspace(): WorkspaceValue { const value = useContext(WorkspaceContext); if (!value) throw new Error('Workspace unavailable'); return value; }
@@ -35,6 +37,11 @@ function errorText(error: unknown): string {
   return 'This information could not be loaded. Try refreshing this view.';
 }
 function time(value: string): string { return new Date(value).toLocaleString(); }
+const discardActionWarning = 'An action is still pending or its result is unknown. Keep this connection open to retry its original key and content. Leave this connection and discard that local recovery context?';
+
+export function leavesActionProject(projectId: string, pathname: string): boolean {
+  return matchPath('/projects/:projectId/*', pathname)?.params.projectId !== projectId;
+}
 
 export default function App() {
   const location = useLocation();
@@ -72,6 +79,17 @@ function PrivateApp() {
     if (old) { void queryClient.cancelQueries({ queryKey: ['fc', old.nonce] }); queryClient.removeQueries({ queryKey: ['fc', old.nonce] }); }
     setSession(null); setAppearance(undefined); applyPresentationRoot(document.documentElement, document); setConnecting(false); setNotice(message);
   }, [queryClient]);
+  // The data router asks before it unmounts this private workspace, including
+  // Back navigation and transitions to the separate public application.
+  const blocker = useBlocker(({ nextLocation }) => {
+    const live = current.current;
+    return Boolean(live && live.actions.unresolved > 0 && leavesActionProject(live.project.id, nextLocation.pathname));
+  });
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return;
+    if (window.confirm(discardActionWarning)) { clear(); blocker.proceed(); }
+    else blocker.reset();
+  }, [blocker, clear]);
   useEffect(() => {
     if (current.current && routeProject !== current.current.project.id) clear('Connect to open this project.');
     if (pending.current && location.key !== pending.current.routeKey) clear('Connect to open this project.');
@@ -89,7 +107,7 @@ function PrivateApp() {
     saved.current = binding; setResumable(binding);
     if (binding) void connect(binding.projectID, undefined, binding);
   }, [routeProject, reconnect]);
-  async function connect(projectId: string, token?: string, restored?: BrowserSessionBinding) {
+  async function connect(projectId: string, token?: string, restored?: BrowserSessionBinding, allowWrites = false) {
     if (!restored) clear();
     let api: Api;
     try { api = restored ? Api.resume(restored.projectID, restored.sessionID, restored.instanceID) : new Api(token ?? '', projectId); } catch (error) { setNotice(errorText(error)); return; }
@@ -103,7 +121,7 @@ function PrivateApp() {
       if (!api.instanceId) throw new ApiError('invalid_response', 'The service identity is unavailable.');
       let binding = restored;
       if (!binding) {
-        const started = await api.startBrowserSession(controller.signal);
+        const started = await api.startBrowserSession(controller.signal, allowWrites);
         if (!active()) return;
         binding = { version: 1, projectID: started.project_id, instanceID: started.instance_id, sessionID: started.session_id, expiresAt: started.expires_at, selectedworkerID: '' };
       }
@@ -114,7 +132,7 @@ function PrivateApp() {
       binding = { ...binding, selectedworkerID: worker?.id ?? '' };
       if (!saveBrowserSession(binding)) throw new ApiError('browser_storage_unavailable', 'The browser session could not be retained safely.');
       saved.current = binding; setResumable(binding);
-      const next: Session = { api, project, instanceId: api.instanceId!, nonce: nonce(), controller: new AbortController(), projectController: controller, presentationSnapshot, worker, binding };
+      const next: Session = { api, project, instanceId: api.instanceId!, nonce: nonce(), controller: new AbortController(), projectController: controller, presentationSnapshot, worker, binding, actions: new BrowserActionMemory() };
       pending.current = null; current.current = next; setAppearance(presentationSnapshot.presentation); setSession(next); setConnecting(false);
       if (routeProject !== project.id) navigate(`/projects/${encodeURIComponent(project.id)}`);
     } catch (error) {
@@ -149,6 +167,13 @@ function PrivateApp() {
   // This lifetime is project-bound: selecting an inbox worker replaces only
   // its content/message controller and does not restart the metadata feed.
   const projectLifetime = session?.projectController;
+  useEffect(() => {
+    if (!session) return;
+    const memory = session.actions;
+    const guard = (event: BeforeUnloadEvent) => { if (memory.unresolved > 0) { event.preventDefault(); event.returnValue = ''; } };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [projectLifetime]);
   useEffect(() => {
     if (!session || !projectLifetime) return;
     const api = session.api;
@@ -185,9 +210,9 @@ function PrivateApp() {
   useLayoutEffect(() => { applyPresentationRoot(document.documentElement, document, visibleAppearance); }, [visibleAppearance]);
   return <PresentationContext.Provider value={visibleAppearance}>
     <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><span className="mast-label">{visibleAppearance?.tagline ?? 'Project workspace'}</span></div></header>
-    {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} selectWorker={selectWorker} disconnect={() => { clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
-      : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={connect} reconnect={resumable ? () => setReconnect(value => value + 1) : undefined} cancel={() => clear('Connection cancelled.')} />}
-    <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span><span>Read-only project workspace</span></footer>
+    {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} selectWorker={selectWorker} disconnect={() => { if (session.actions.unresolved > 0 && !window.confirm(discardActionWarning)) return; clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
+      : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={(project, token, allowWrites) => void connect(project, token, undefined, allowWrites)} reconnect={resumable ? () => setReconnect(value => value + 1) : undefined} cancel={() => clear('Connection cancelled.')} />}
+    <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span><span>Private project workspace</span></footer>
   </PresentationContext.Provider>;
 }
 
@@ -216,17 +241,18 @@ async function restoredWorker(api: Api, workerID: string, signal: AbortSignal): 
 }
 
 function Flame() { return <img className="flame" src={flameEmber} alt="" aria-hidden="true" />; }
-function Connect({ projectId, busy, notice, onConnect, reconnect, cancel }: { projectId: string; busy: boolean; notice: string; onConnect(project: string, token: string): void; reconnect?: () => void; cancel(): void }) {
+function Connect({ projectId, busy, notice, onConnect, reconnect, cancel }: { projectId: string; busy: boolean; notice: string; onConnect(project: string, token: string, allowWrites: boolean): void; reconnect?: () => void; cancel(): void }) {
   const [project, setProject] = useState(projectId);
   const [token, setToken] = useState('');
-  function submit(event: FormEvent) { event.preventDefault(); const supplied = token; setToken(''); onConnect(project, supplied); }
+  const [allowWrites, setAllowWrites] = useState(false);
+  function submit(event: FormEvent) { event.preventDefault(); const supplied = token; setToken(''); onConnect(project, supplied, allowWrites); }
   return <main className="connect-layout"><section className="connect-intro"><p className="eyebrow">Your project, in view</p><h1>Keep work<br /> moving.</h1><p>A clear view of your workers, jobs and conversations.</p><div className="intro-rule" /><p className="quiet-light">Connect to a project on this service to begin.</p></section>
     <section className="connect-card"><p className="eyebrow">FireController</p><h2>Connect to a project</h2><p className="muted">Use the project ID and a credential with read access.</p>
       {notice && <div className="notice" role="alert">{notice}</div>}
       {reconnect && !busy && <button type="button" onClick={reconnect}>Reconnect to project</button>}
       <form onSubmit={submit} autoComplete="off"><label htmlFor="project-id">Project ID</label><input id="project-id" name="project-id" value={project} onChange={event => setProject(event.target.value)} required maxLength={128} spellCheck={false} autoCapitalize="none" disabled={busy} />
         <label htmlFor="project-credential">Project credential</label><input id="project-credential" name="project-credential" type="password" value={token} onChange={event => setToken(event.target.value)} required maxLength={4096} autoComplete="off" disabled={busy} />
-        <p className="field-note">Exchanged for a read-only session lasting up to 24 hours in this tab, including reloads. Disconnect to clear access and project data.</p>
+        <label className="write-consent"><input type="checkbox" checked={allowWrites} onChange={event => setAllowWrites(event.target.checked)} disabled={busy} /><span>Enable message and appearance changes</span></label><p className="field-note">Read-only by default. Changes require a credential with write access; appearance edits also require administrator access. The session lasts up to 24 hours, including reloads. Disconnect to clear access and project data.</p>
         <button className="primary" type="submit" disabled={busy}>{busy ? 'Connecting…' : 'Connect to project'}</button>{busy && <button type="button" onClick={cancel}>Cancel connection</button>}
       </form></section></main>;
 }
@@ -244,6 +270,8 @@ function Workspace({ session, metadataStatus, selectWorker, disconnect, fail }: 
   const [feedError, setFeedError] = useState<unknown>(null);
   const [attempt, setAttempt] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [unresolved, setUnresolved] = useState(session.actions.unresolved);
+  useEffect(() => session.actions.subscribe(() => setUnresolved(session.actions.unresolved)), [session.actions]);
   const failRef = useRef(fail);
   useEffect(() => { failRef.current = fail; }, [fail]);
   const onFailure = useCallback((error: unknown) => failRef.current(error), []);
@@ -285,12 +313,13 @@ function Workspace({ session, metadataStatus, selectWorker, disconnect, fail }: 
   const value = useMemo(() => ({ session, key, home, selectWorker, fail: onFailure, ready }), [session, key, home, selectWorker, onFailure, ready]);
   const liveLabel = !session.worker ? 'Choose a worker' : live === 'live' ? 'Live inbox connected' : live === 'reconnecting' ? 'Reconnecting inbox…' : live === 'closed' ? 'Inbox disconnected' : 'Connecting inbox…';
   return <WorkspaceContext.Provider value={value}><main className="workspace">
-    <section className="hero"><div className="hero-project"><p className="eyebrow">{presentation?.tagline ?? 'Project workspace'} <span className="read-only">Read only</span></p><h1>{presentation?.name ?? session.project.name}</h1><p className="repository">{session.project.repository}</p><p className="identity">Project {session.project.id}</p></div>
+    <section className="hero"><div className="hero-project"><p className="eyebrow">{presentation?.tagline ?? 'Project workspace'} <span className="read-only">{session.api.browserCapabilities.allow_writes ? 'Changes enabled' : 'Read only'}</span></p><h1>{presentation?.name ?? session.project.name}</h1><p className="repository">{session.project.repository}</p><p className="identity">Project {session.project.id}</p></div>
       <div className="hero-side"><div className="connection-card"><span className="eyebrow">{heroEyebrow}</span><strong>{heroTitle}</strong><p>{heroDescription}</p><div className="hero-actions"><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh visible data'}</button><button className="quiet-button" type="button" onClick={disconnect}>Disconnect</button></div></div></div></section>
-    <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink><NavLink to={`${home}/map`}>{mapHeading}</NavLink><NavLink to={`${home}/notes`}>{notesHeading}</NavLink><span className="connection-note">Connected</span></nav>
+    <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink><NavLink to={`${home}/map`}>{mapHeading}</NavLink><NavLink to={`${home}/notes`}>{notesHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}<span className="connection-note">Connected</span></nav>
     {metadataStatus !== 'live' && <p className="notice" role="status">Project updates {metadataStatus === 'connecting' ? 'connecting' : 'disconnected'}. Displayed project data may be stale.</p>}
+    {unresolved > 0 && <p className="notice" role="status">{unresolved} pending or uncertain action{unresolved === 1 ? '' : 's'} retained in this connection. Return to the original worker and view to retry before reloading or disconnecting.</p>}
     <div className="workspace-grid"><aside className="sidebar"><WorkerList compact /><section className="feed-card" aria-label="Inbox connection"><span className={`status-dot ${live === 'live' && session.worker ? 'online' : ''}`} /><strong role="status">{liveLabel}</strong><p>{session.worker ? session.worker.name : 'Select a worker to follow incoming messages.'}</p>{Boolean(feedError) && <><p className="error-copy">{errorText(feedError)}</p><button type="button" onClick={() => { setReady(false); setAttempt(value => value + 1); }}>Reconnect inbox</button></>}</section></aside>
-      <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Jobs />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/workers/:workerId" element={<WorkerCoordinationView />} /><Route path="/projects/:projectId/notes" element={<NotesView />} /><Route path="/projects/:projectId/notes/:noteId" element={<NoteView />} /><Route path="/projects/:projectId/notes/:noteId/history/:revision" element={<NoteRevisionView />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="/projects/:projectId/map" element={<ProjectMap />} /><Route path="/projects/:projectId/map/entries/:entryId" element={<ProjectMapEntryView />} /><Route path="/projects/:projectId/map/entries/:entryId/history/:revision" element={<ProjectMapRevisionView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to project jobs</Link></section>} /></Routes></div></div>
+      <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Jobs />} /><Route path="/projects/:projectId/settings" element={<ProjectSettings />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/workers/:workerId" element={<WorkerCoordinationView />} /><Route path="/projects/:projectId/notes" element={<NotesView />} /><Route path="/projects/:projectId/notes/:noteId" element={<NoteView />} /><Route path="/projects/:projectId/notes/:noteId/history/:revision" element={<NoteRevisionView />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="/projects/:projectId/map" element={<ProjectMap />} /><Route path="/projects/:projectId/map/entries/:entryId" element={<ProjectMapEntryView />} /><Route path="/projects/:projectId/map/entries/:entryId/history/:revision" element={<ProjectMapRevisionView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to project jobs</Link></section>} /></Routes></div></div>
   </main></WorkspaceContext.Provider>;
 }
 
@@ -420,7 +449,7 @@ function Inbox() {
   const presentation = usePresentation();
   const label = useProjectHeading('inbox');
   const { session } = useWorkspace();
-  return <><div className="page-heading"><p className="eyebrow">Conversations</p><h2>{session.worker ? presentation?.headings.inbox ? `${session.worker.name} · ${label}` : `${session.worker.name} inbox` : label}</h2><p>Read incoming messages without changing their seen or acknowledged state.</p></div>{session.worker ? <InboxPage /> : <ChooseWorker />}</>;
+  return <><div className="page-heading"><p className="eyebrow">Conversations</p><h2>{session.worker ? presentation?.headings.inbox ? `${session.worker.name} · ${label}` : `${session.worker.name} inbox` : label}</h2><p>Read incoming messages without changing their seen or acknowledged state.</p></div>{session.worker ? <><MessageComposer /><InboxPage /></> : <ChooseWorker />}</>;
 }
 function InboxPage() {
   const { session, key, home, ready } = useWorkspace();
@@ -429,7 +458,7 @@ function InboxPage() {
   return <section className="panel"><ReadState error={query.error} loading={!ready || query.isPending} empty={!query.data?.items.length}><ul className="inbox-list">{query.data?.items.map(item => <InboxRow key={item.id} item={item} home={home} />)}</ul></ReadState><Pager paging={paging} page={query.data} label="inbox" busy={query.isFetching || !ready} /></section>;
 }
 function InboxRow({ item, home }: { item: InboxItem; home: string }) {
-  return <li><div className="message-top"><strong>{item.sender_worker_id}</strong><time dateTime={item.created_at}>{time(item.created_at)}</time></div><Link className="message-preview" aria-label={`Read conversation from ${item.sender_worker_id}`} to={`${home}/inbox/${encodeURIComponent(item.conversation_id)}`}>{item.preview || 'Open conversation'}{item.preview_truncated ? '…' : ''}</Link><div className="item-meta"><span className={`badge ${item.seen ? 'neutral' : 'status-active'}`}>{item.seen ? 'Seen' : 'Unread'}</span><span>{item.acknowledged ? 'Acknowledged' : 'Not acknowledged'}</span></div></li>;
+  return <li><div className="message-top"><strong>{item.sender_worker_id}</strong><time dateTime={item.created_at}>{time(item.created_at)}</time></div><Link className="message-preview" aria-label={`Read conversation from ${item.sender_worker_id}`} to={`${home}/inbox/${encodeURIComponent(item.conversation_id)}`}>{item.preview || 'Open conversation'}{item.preview_truncated ? '…' : ''}</Link><div className="item-meta"><span className={`badge ${item.seen ? 'neutral' : 'status-active'}`}>{item.seen ? 'Seen' : 'Unread'}</span><span>{item.acknowledged ? 'Acknowledged' : 'Not acknowledged'}</span></div><RecipientActions item={item} /></li>;
 }
 function Conversation() {
   const { session, home } = useWorkspace();
@@ -440,7 +469,7 @@ function ConversationMessages({ id }: { id: string }) {
   const { session, key } = useWorkspace();
   const paging = usePaging();
   const query = useQuery({ queryKey: [...key, 'thread', id, paging.cursor], queryFn: ({ signal }) => session.api.thread(id, { limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
-  return <section className="panel"><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ol className="conversation-list">{query.data?.items.map(message => <li key={message.id}><div className="message-top"><strong>{message.sender_worker_id}<span className="message-direction"> to {message.recipient_worker_id}</span></strong><time dateTime={message.created_at}>{time(message.created_at)}</time></div><p className="full-text">{message.body}</p></li>)}</ol></ReadState><Pager paging={paging} page={query.data} label="messages" busy={query.isFetching} /></section>;
+  return <section className="panel"><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ol className="conversation-list">{query.data?.items.map(message => <li key={message.id}><div className="message-top"><strong>{message.sender_worker_id}<span className="message-direction"> to {message.recipient_worker_id}</span></strong><time dateTime={message.created_at}>{time(message.created_at)}</time></div><p className="full-text">{message.body}</p><MessageComposer reply={message} /></li>)}</ol></ReadState><Pager paging={paging} page={query.data} label="messages" busy={query.isFetching} /></section>;
 }
 
 function useReviewSnapshot(): string | undefined {

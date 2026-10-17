@@ -94,12 +94,12 @@ func (s *Store) checkExpectedInstance(r *http.Request) error {
 }
 
 func (s *Store) authorize(ctx context.Context, q querier, scope Scope, permission string) error {
-	if scope.readOnly {
+	if scope.sessionProject != "" || scope.readOnly {
 		if scope.expiresAt.IsZero() || !time.Now().Before(scope.expiresAt) {
 			return Fail("unauthorized", "The browser session has expired; connect again.", 401)
 		}
-		if permission != "read" || scope.sessionProject == "" || scope.ProjectID != scope.sessionProject {
-			return Fail("forbidden", "The browser session permits only its project reads.", 403)
+		if scope.sessionProject == "" || scope.ProjectID != scope.sessionProject || scope.readOnly && permission != "read" {
+			return Fail("forbidden", "The browser session does not permit this project operation.", 403)
 		}
 	}
 	if scope.instanceID != s.instanceID || scope.tokenHash == "" {

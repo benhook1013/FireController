@@ -33,7 +33,7 @@ func browserLogin(t *testing.T, f *fixture, project, token, id, host string) *ht
 	t.Helper()
 	w := browserRequest(f, "POST", "/api/v1/projects/"+project+"/browser-session", token, "", `{"session_id":"`+id+`"}`, host)
 	v := require(t, w, 200)
-	if len(v) != 4 || v["session_id"] != id || v["project_id"] != project || v["instance_id"] != f.store.InstanceID() {
+	if len(v) != 6 || v["allow_writes"] != false || v["can_edit_presentation"] != false || v["session_id"] != id || v["project_id"] != project || v["instance_id"] != f.store.InstanceID() {
 		t.Fatal("session response shape mismatch")
 	}
 	if expiry, err := time.Parse(time.RFC3339, v["expires_at"].(string)); err != nil || time.Until(expiry) < 23*time.Hour || time.Until(expiry) > 24*time.Hour {
