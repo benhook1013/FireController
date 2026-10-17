@@ -113,9 +113,11 @@ try {
   phase = 'live-jobs';
   const selected = page.getByRole('button', {name:'Open Builder inbox', exact:true});
   await selected.click();
+  const selectedBinding = await page.evaluate(key => sessionStorage.getItem(key), bindingKey);
+  need(JSON.parse(selectedBinding).selectedworkerID === config.worker);
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Jobs', exact:true}).click();
   await page.getByLabel('Job status', {exact:true}).waitFor();
-  const job = await write('POST', '/jobs', {title:'Live job before', brief:'Live brief before', worker_id:config.worker});
+  const job = await write('POST', '/jobs', {title:'Live job before', brief:'Live brief before', worker_id:config.worker}, 201);
   await page.getByRole('link', {name:'Live job before', exact:true}).waitFor();
   await write('PATCH', '/jobs/' + job.id, {expected_revision:1, title:'Live job list updated'});
   await page.getByRole('link', {name:'Live job list updated', exact:true}).click();
@@ -181,7 +183,7 @@ try {
   phase = 'reload';
   await page.reload();
   await page.getByRole('heading', {name:title, exact:true}).waitFor();
-  need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === binding);
+  need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === selectedBinding);
   const resumed = (await context.cookies()).find(value => value.name === cookieName);
   need(resumed?.value === cookie.value && sessionPosts === 1);
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
