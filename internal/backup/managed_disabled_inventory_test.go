@@ -33,9 +33,9 @@ func TestManagedDisabledDoesNotRequireBackupInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal("disabled startup required an unrelated backup inventory", err)
 	}
-	m.create = func(context.Context, *core.Store, string, string) (Summary, error) {
+	m.create = func(context.Context, *core.Store, string, string) (createdBundle, error) {
 		t.Fatal("disabled manager attempted a backup")
-		return Summary{}, nil
+		return createdBundle{}, nil
 	}
 	m.wait = func(context.Context, time.Duration) error { t.Fatal("disabled manager scheduled work"); return nil }
 	if err := m.Run(t.Context(), nil); err != nil {
