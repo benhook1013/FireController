@@ -354,20 +354,25 @@ func TestNativeAdjudicationZeroFindingsAndIncompleteFinalization(t *testing.T) {
 	}
 }
 
-func TestNativeAdjudicationCapacityCallerFailureAndExactMutationReplay(t *testing.T) {
-	for _, mode := range []string{"capacity", "caller_failure", "exact_replay"} {
+func TestNativeAdjudicationGrowthCallerFailureAndExactMutationReplay(t *testing.T) {
+	for _, mode := range []string{"caller_failure", "event_failure", "exact_replay"} {
 		t.Run(mode, func(t *testing.T) {
-			f, input, previous := nativeAdjudicationFixture(t)
+			f, input, original := nativeAdjudicationFixture(t)
+			oldBytes := nativeSnapshotBytes(t, f, original.ID)
+			var previous Receipt
+			for batch := 0; batch < 3; batch++ {
+				previous = nativeGrowthTransferBatch(t, f, nativePull(2), "retained-before-adjudication", batch*75, 75, 0)
+			}
 			if _, err := f.store.DB().Exec(`CREATE TABLE adjudication_test_ledger(note TEXT NOT NULL)`); err != nil {
 				t.Fatal(err)
 			}
-			if mode == "capacity" {
-				// Model a retained snapshot that exceeds the current capacity after
-				// an operator/import migration. The correction must refuse atomically.
-				historyFixtureOverflowAttempts(t, f, previous, 2, 101)
+			if mode == "event_failure" {
+				if _, err := f.store.DB().Exec(`CREATE TRIGGER adjudication_event_failure BEFORE INSERT ON events WHEN NEW.event_type='review.observed' BEGIN SELECT RAISE(ABORT,'synthetic adjudication event failure'); END`); err != nil {
+					t.Fatal(err)
+				}
 			}
 			decideNativeFinding(&input.Findings[0], "accepted")
-			before, counts := nativeSnapshotBytes(t, f, previous.ID), nativeProjectionCounts(t, f)
+			before, counts := importDatabaseState(t, f), nativeProjectionCounts(t, f)
 			r := httptest.NewRequest("POST", "/", nil)
 			r.SetPathValue("project_id", f.project)
 			r.Header.Set("Authorization", "Bearer "+f.admin)
@@ -399,49 +404,39 @@ func TestNativeAdjudicationCapacityCallerFailureAndExactMutationReplay(t *testin
 				if err != nil {
 					t.Fatal(err)
 				}
+				after := importDatabaseState(t, f)
 				replay, err := f.store.Mutate(context.Background(), scope, mutation, callback)
-				if err != nil || !bytes.Equal(first, replay) || calls != 1 || countRows(t, f.store, "adjudication_test_ledger") != 1 || countRows(t, f.store, "events") != counts["events"]+1 || countRows(t, f.store, "review_snapshots") != counts["review_snapshots"]+1 {
-					t.Fatal("same-key caller retry republished projection", err)
+				if err != nil || !bytes.Equal(first, replay) || calls != 1 || countRows(t, f.store, "adjudication_test_ledger") != 1 || countRows(t, f.store, "events") != counts["events"]+1 || countRows(t, f.store, "review_snapshots") != counts["review_snapshots"]+1 || !reflect.DeepEqual(after, importDatabaseState(t, f)) {
+					t.Fatal("same-key retry republished native adjudication above retained totals", err)
 				}
 				var receipt Receipt
 				if json.Unmarshal(first, &receipt) != nil || receipt.Revision != previous.Revision+1 {
 					t.Fatal("compact transaction receipt changed")
 				}
+				var current RunDetailResponse
+				nativeRead(t, f, "/runs/"+runOpaqueID(f.project, nativeSource, input.SourceRunID), &current)
+				if current.Run.Found != 2 || current.Run.Accepted != 1 || current.Run.Routed != 0 || current.Run.Source != nativeSource || current.Findings[0].Detail != "IMMUTABLE_NATIVE_SOURCE_0" {
+					t.Fatal("source facts changed during growth adjudication")
+				}
 			} else {
-				code := "workspace_capacity"
-				if mode == "caller_failure" {
-					code = "test_failure"
+				code := "test_failure"
+				if mode == "event_failure" {
+					code = "storage_unavailable"
 				}
 				nativeErrorCode(t, err, code)
-				if nativeSnapshotBytes(t, f, previous.ID) != before || !reflect.DeepEqual(counts, nativeProjectionCounts(t, f)) || countRows(t, f.store, "adjudication_test_ledger") != 0 {
-					t.Fatal("projection failure did not roll back caller ledger and snapshot")
+				if !reflect.DeepEqual(before, importDatabaseState(t, f)) {
+					t.Fatal("failed adjudication changed caller ledger, indexes or retained source history")
 				}
 			}
+			if nativeSnapshotBytes(t, f, original.ID) != oldBytes {
+				t.Fatal("growth adjudication rewrote old snapshot bytes")
+			}
+			if err := ValidateHistoryReferences(t.Context(), f.store.DB()); err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
+				t.Fatal(err)
+			}
 		})
-	}
-}
-
-// Model already-retained data above today's request capacity without bypassing
-// exact version/membership/current references in the installed physical schema.
-func historyFixtureOverflowAttempts(t *testing.T, f *apiFixture, snapshot Receipt, number int64, count int) {
-	t.Helper()
-	tx := historyWriterTx(t, f)
-	for i := 0; i < count; i++ {
-		id := fmt.Sprintf("capacity-%d", i)
-		if _, err := tx.Exec(`INSERT INTO review_attempt_versions VALUES(?,'test-import',?,?,?,'cli','','unknown','','',NULL,'','','')`, f.project, id, snapshot.Revision, number); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(`INSERT INTO review_attempt_memberships VALUES(?,'test-import',?,?,NULL,?,?,?)`, f.project, id, snapshot.Revision, snapshot.Revision, number, i); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(`INSERT INTO review_current_attempts VALUES(?,'test-import',?,?,?,?)`, f.project, id, snapshot.Revision, number, i); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateHistoryReferences(t.Context(), f.store.DB()); err != nil {
-		t.Fatal(err)
 	}
 }

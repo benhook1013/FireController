@@ -530,120 +530,47 @@ func TestNativeKnownAttemptIdentitiesCannotBeRewritten(t *testing.T) {
 	}
 }
 
-func TestNativeCapacityAndCallerFailureRollbackEntireTransaction(t *testing.T) {
-	for _, mode := range []string{"queue", "pull_runs", "all_runs", "pull_attempts", "all_attempts", "all_findings", "caller_failure"} {
+func TestNativeGrowthCallerAndEventFailureRollbackEntireTransaction(t *testing.T) {
+	f := newAPIFixture(t)
+	pull := nativePull(1)
+	var previous Receipt
+	for batch := 0; batch < 3; batch++ {
+		previous = nativeGrowthTransferBatch(t, f, pull, "retained-original", batch*75, 75, 0)
+	}
+	if _, err := f.store.DB().Exec(`CREATE TABLE native_test_journal(note TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"caller_failure", "event_failure"} {
 		t.Run(mode, func(t *testing.T) {
-			f := newAPIFixture(t)
-			queue := []PullInput{nativePull(1)}
-			switch mode {
-			case "queue":
-				for i := int64(2); i <= 100; i++ {
-					queue = append(queue, nativePull(i))
+			if mode == "event_failure" {
+				if _, err := f.store.DB().Exec(`CREATE TRIGGER native_event_failure BEFORE INSERT ON events WHEN NEW.event_type='review.observed' BEGIN SELECT RAISE(ABORT,'synthetic native event failure'); END`); err != nil {
+					t.Fatal(err)
 				}
-			case "pull_runs", "all_runs":
-				if mode == "all_runs" {
-					queue = append(queue, nativePull(2), nativePull(3))
-				}
-				for i := range queue {
-					count := 100
-					if mode == "all_runs" {
-						count = 67
-						if i == 2 {
-							count = 66
-						}
+				defer func() {
+					if _, err := f.store.DB().Exec(`DROP TRIGGER native_event_failure`); err != nil {
+						t.Error(err)
 					}
-					for n := 0; n < count; n++ {
-						queue[i].Runs = append(queue[i].Runs, RunInput{SourceRunID: fmt.Sprintf("old-%d-%d", i, n), Channel: "cli", Scope: "stored", Outcome: "unknown"})
-					}
-				}
-			case "pull_attempts", "all_attempts":
-				if mode == "all_attempts" {
-					queue = append(queue, nativePull(2), nativePull(3))
-				}
-				for i := range queue {
-					count := 100
-					if mode == "all_attempts" {
-						count = 67
-						if i == 2 {
-							count = 66
-						}
-					}
-					for n := 0; n < count; n++ {
-						queue[i].Attempts = append(queue[i].Attempts, nativeAttempt(fmt.Sprintf("old-%d-%d", i, n), "unknown"))
-					}
-				}
-			case "all_findings":
-				for n := 0; n < 10; n++ {
-					queue[0].Runs = append(queue[0].Runs, RunInput{SourceRunID: fmt.Sprintf("finding-cap-%d", n), Channel: "cli", Scope: "stored", Outcome: "unknown", Found: 100})
-				}
+				}()
 			}
-			old := f.observe(t, reviewRequest(0, queue), "capacity-fixture")["id"].(string)
-			if mode == "all_findings" {
-				// Local fixture setup inserts a valid retained1000-finding snapshot
-				// without routing a large historical observation through import.
-				for _, r := range queue[0].Runs {
-					if _, err := f.store.DB().Exec(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100) INSERT INTO review_finding_versions(project_id,run_version_revision,pull_number,run_id,position,source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at) SELECT ?,(SELECT revision FROM review_snapshots WHERE snapshot_id=?),1,?,x-1,'finding-'||x,'Retained','Exact source','unknown','unadjudicated','','','','','','' FROM n`, f.project, old, runOpaqueID(f.project, "test-import", r.SourceRunID)); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			if _, err := f.store.DB().Exec(`CREATE TABLE native_test_journal(note TEXT NOT NULL)`); err != nil {
-				t.Fatal(err)
-			}
-			before := nativeSnapshotBytes(t, f, old)
-			counts := map[string]int{}
-			for _, table := range []string{"review_snapshots", "review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls", "events", "receipts"} {
-				counts[table] = countRows(t, f.store, table)
-			}
-			p := NativePublication{Pull: nativePull(1)}
-			a := nativeAttempt("new-capacity-attempt", "prepared")
-			r := nativeRun("new-capacity-run")
-			switch mode {
-			case "queue":
-				p.Pull = nativePull(101)
-				p.Attempt = &a
-			case "pull_runs", "all_findings":
-				p.Run = &r
-			case "all_runs":
-				p.Pull = nativePull(3)
-				p.Run = &r
-			case "all_attempts":
-				p.Pull = nativePull(3)
-				p.Attempt = &a
-			default:
-				p.Attempt = &a
-			}
+			before := importDatabaseState(t, f)
+			oldBytes := nativeSnapshotBytes(t, f, previous.ID)
+			attempt := nativeAttempt("rollback-native-attempt", "prepared")
 			err := f.store.BackgroundWrite(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
 				if _, err := tx.ExecContext(ctx, `INSERT INTO native_test_journal(note) VALUES('staged attempt')`); err != nil {
 					return err
 				}
-				if _, err := PublishNative(ctx, tx, core.Scope{ProjectID: f.project, PrincipalID: "synthetic-publisher"}, p); err != nil {
+				if _, err := PublishNative(ctx, tx, core.Scope{ProjectID: f.project, PrincipalID: "synthetic-publisher"}, NativePublication{Pull: pull, Attempt: &attempt}); err != nil {
 					return err
 				}
-				if mode == "caller_failure" {
-					return core.Fail("test_failure", "Synthetic journal failure.", 409)
-				}
-				return nil
+				return core.Fail("test_failure", "Synthetic journal failure.", 409)
 			})
-			code := "workspace_capacity"
-			if mode == "queue" {
-				code = "validation_failed"
-			}
-			if mode == "caller_failure" {
-				code = "test_failure"
+			code := "test_failure"
+			if mode == "event_failure" {
+				code = "storage_unavailable"
 			}
 			nativeErrorCode(t, err, code)
-			if nativeSnapshotBytes(t, f, old) != before || countRows(t, f.store, "native_test_journal") != 0 {
-				t.Fatal("failed publication changed old bytes or caller journal")
-			}
-			for table, count := range counts {
-				if countRows(t, f.store, table) != count {
-					t.Fatal("failed publication left partial rows", table)
-				}
-			}
-			var current string
-			if err := f.store.DB().QueryRow(`SELECT snapshot_id FROM review_workspace WHERE project_id=?`, f.project).Scan(&current); err != nil || current != old {
-				t.Fatal("failed publication advanced current pointer", err)
+			if !reflect.DeepEqual(before, importDatabaseState(t, f)) || nativeSnapshotBytes(t, f, previous.ID) != oldBytes {
+				t.Fatal("failed native publication changed retained history, caller journal, indexes, events or receipts")
 			}
 		})
 	}

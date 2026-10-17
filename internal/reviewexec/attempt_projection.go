@@ -10,12 +10,12 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-func attemptProjectionCapacity(ctx context.Context, tx *sql.Tx, operation Operation) (bool, error) {
+func validateAttemptProjection(ctx context.Context, tx *sql.Tx, operation Operation) error {
 	_, err := currentReviewPull(ctx, tx, operation.ProjectID, operation.PullNumber)
 	if err != nil && !missingCurrentPull(err) {
-		return false, err
+		return err
 	}
-	return reviews.NativeAttemptCapacity(ctx, tx, operation.ProjectID, operation.PullNumber)
+	return nil
 }
 
 // Only the named absent-row result permits automatic ledger-only operation.
@@ -90,21 +90,6 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 	receipt, unchanged, err := attemptProjectionReplay(ctx, tx, attempt.ProjectID, operation.PullNumber, projected)
 	if err != nil || unchanged {
 		return receipt, err
-	}
-	if allowMissing {
-		var exists bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_workspace w JOIN review_attempts a ON a.project_id=w.project_id AND a.snapshot_id=w.snapshot_id WHERE w.project_id=? AND a.source='native-executor' AND a.source_attempt_id=?)`, attempt.ProjectID, attempt.ID).Scan(&exists); err != nil {
-			return reviews.Receipt{}, err
-		}
-		if !exists {
-			available, err := reviews.NativeAttemptCapacity(ctx, tx, attempt.ProjectID, operation.PullNumber)
-			if err != nil || !available {
-				// A replacement snapshot may omit this live attempt and fill the
-				// projection. Keep automatic transitions ledger-only without
-				// copying any snapshot rows; explicit publication still refuses.
-				return reviews.Receipt{}, err
-			}
-		}
 	}
 	return reviews.PublishNative(ctx, tx, core.Scope{ProjectID: operation.ProjectID, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}, reviews.NativePublication{Pull: pull, Attempt: &projected})
 }

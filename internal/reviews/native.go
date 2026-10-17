@@ -96,9 +96,6 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 			return Receipt{}, err
 		}
 	}
-	if err = checkNativeCapacity(ctx, tx, scope.ProjectID, id); err != nil {
-		return Receipt{}, err
-	}
 	if p.Run != nil {
 		if err = checkNativeRunDetail(ctx, tx, scope.ProjectID, id, runOpaqueID(scope.ProjectID, nativeSource, p.Run.SourceRunID)); err != nil {
 			return Receipt{}, err
@@ -143,11 +140,8 @@ func nativePullBody(ctx context.Context, tx *sql.Tx, project, previous string, p
 		complete = body[7]
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM review_pulls WHERE project_id=? AND snapshot_id=?", project, previous).Scan(&position); err != nil {
+		if err = tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(position),-1)+1 FROM review_current_pulls WHERE project_id=?", project).Scan(&position); err != nil {
 			return nil, 0, err
-		}
-		if position >= maxQueuePulls {
-			return nil, 0, validationError("The native workspace queue is at its current capacity.")
 		}
 		body[8], body[9], body[10], body[11] = int64(0), int64(0), "[]", "[]"
 	}
@@ -193,31 +187,6 @@ func publishNativeAttempt(ctx context.Context, tx *sql.Tx, write *historySnapsho
 	return write.attempt(ctx, tx, nativeSource, number, position, a)
 }
 
-func checkNativeCapacity(ctx context.Context, tx *sql.Tx, project, snapshot string) error {
-	for _, check := range []struct {
-		table string
-		max   int
-		group string
-		per   int
-	}{
-		{"review_runs", maxSnapshotRuns, "pull_number", maxPullRuns},
-		{"review_attempts", maxSnapshotAttempts, "pull_number", maxPullAttempts},
-		{"review_findings", maxSnapshotFindings, "run_id", maxRunFindings},
-	} {
-		var count, largest int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM `+check.table+` WHERE project_id=? AND snapshot_id=?`, project, snapshot).Scan(&count); err != nil {
-			return err
-		}
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(n),0) FROM (SELECT count(*) AS n FROM `+check.table+` WHERE project_id=? AND snapshot_id=? GROUP BY `+check.group+`)`, project, snapshot).Scan(&largest); err != nil {
-			return err
-		}
-		if count > check.max || largest > check.per {
-			return core.Fail("workspace_capacity", "The retained review projection is at its current capacity; no history was dropped.", 409)
-		}
-	}
-	return nil
-}
-
 func rebuildNativeSummary(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, snapshot string, number int64, position int, body []any) error {
 	totals, err := write.prospectiveTotals(ctx, tx, number)
 	if err != nil {
@@ -243,21 +212,4 @@ func rebuildCurrentSummary(ctx context.Context, tx *sql.Tx, write *historySnapsh
 	}
 	body[8], body[9], body[10], body[11] = totals.runs, totals.attempts, mustJSON(runs), mustJSON(attempts)
 	return write.pull(ctx, tx, number, position, body)
-}
-
-// NativeAttemptCapacity reports whether appending one attempt to the current
-// snapshot fits retained attempt bounds and, for a missing target, the pull-row
-// bound. It does not reserve a slot or mutate history; callers must check and
-// append in the same serialized write.
-func NativeAttemptCapacity(ctx context.Context, tx *sql.Tx, project string, pullNumber int64) (bool, error) {
-	var total, local int
-	err := tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN a.pull_number=? THEN 1 ELSE 0 END),0)
- FROM review_workspace w JOIN review_attempts a ON a.project_id=w.project_id AND a.snapshot_id=w.snapshot_id WHERE w.project_id=?`, pullNumber, project).Scan(&total, &local)
-	if err != nil {
-		return false, err
-	}
-	var pulls, selected int
-	err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN p.number=? THEN 1 ELSE 0 END),0)
- FROM review_workspace w JOIN review_pulls p ON p.project_id=w.project_id AND p.snapshot_id=w.snapshot_id WHERE w.project_id=?`, pullNumber, project).Scan(&pulls, &selected)
-	return err == nil && total < maxSnapshotAttempts && local < maxPullAttempts && (selected != 0 || pulls < maxQueuePulls), err
 }

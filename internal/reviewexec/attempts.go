@@ -118,12 +118,8 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 			return err
 		}
 		if e.publishAttempt != nil {
-			available, err := attemptProjectionCapacity(ctx, tx, o)
-			if err != nil {
+			if err := validateAttemptProjection(ctx, tx, o); err != nil {
 				return err
-			}
-			if !available {
-				return holdOperation(ctx, tx, o, "projection_capacity", at)
 			}
 		}
 		var busy int
