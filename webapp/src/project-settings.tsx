@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from './api';
 import type { BrowserPresentationConfig, BrowserPresentationReceipt } from './api';
-import { ReadState, signalFor, useWorkspace } from './App';
+import { ReadState, signalFor, useWorkspace } from './workspace';
 import { ActionNotice, useBrowserAction } from './browser-actions';
 import { validPresentationConfig } from './presentation';
 import type { Presentation } from './types';
