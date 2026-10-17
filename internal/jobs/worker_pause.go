@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"net/http"
 	"strconv"
@@ -228,7 +227,7 @@ func workerPauseHistory(store *core.Store) http.HandlerFunc {
 				}
 				entry.Paused = paused == 1
 				if entry.Revision < 1 || (paused != 0 && paused != 1) || !validPauseReason(entry.Paused, entry.Reason) {
-					return fmt.Errorf("invalid stored worker pause history")
+					return core.Fail("storage_unavailable", "Stored worker pause history is unavailable.", http.StatusInternalServerError)
 				}
 				result.Items = append(result.Items, entry)
 			}
