@@ -6,7 +6,7 @@ import { BrowserActionMemory, MessageComposer, RecipientActions, actionEndsAcces
 import type { InboxItem } from './types';
 
 const context = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
-vi.mock('./App', () => ({ useWorkspace: () => context.value, signalFor: (session: { controller: AbortController }, signal: AbortSignal) => AbortSignal.any([session.controller.signal, signal]) }));
+vi.mock('./workspace', () => ({ useWorkspace: () => context.value, signalFor: (session: { controller: AbortController }, signal: AbortSignal) => AbortSignal.any([session.controller.signal, signal]) }));
 function workspace(allowWrites = true, worker = 'worker_one', actions = new BrowserActionMemory(() => 'test_key')) {
   const api = { browserCapabilities: { allow_writes: allowWrites, can_edit_presentation: false }, sendMessage: vi.fn(), markMessageSeen: vi.fn(), acknowledgeMessage: vi.fn() };
   context.value = { session: { api, actions, controller: new AbortController(), worker: worker ? { id: worker, name: 'Worker' } : null }, key: ['test', worker], home: '/projects/project_one', fail: vi.fn() };

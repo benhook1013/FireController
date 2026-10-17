@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router';
 import { ApiError } from './api';
 import { newSessionID } from './browser-session';
-import { signalFor, useWorkspace } from './App';
+import { signalFor, useWorkspace } from './workspace';
 import type { InboxItem, Message } from './types';
 import './browser-actions.css';
 
