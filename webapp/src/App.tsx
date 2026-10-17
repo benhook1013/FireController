@@ -212,7 +212,7 @@ function PrivateApp() {
     <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><span className="mast-label">{visibleAppearance?.tagline ?? 'Project workspace'}</span></div></header>
     {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} selectWorker={selectWorker} disconnect={() => { if (session.actions.unresolved > 0 && !window.confirm(discardActionWarning)) return; clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
       : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={(project, token, allowWrites) => void connect(project, token, undefined, allowWrites)} reconnect={resumable ? () => setReconnect(value => value + 1) : undefined} cancel={() => clear('Connection cancelled.')} />}
-    <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span><span>Private project workspace</span></footer>
+    <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span></footer>
   </PresentationContext.Provider>;
 }
 
@@ -246,13 +246,13 @@ function Connect({ projectId, busy, notice, onConnect, reconnect, cancel }: { pr
   const [token, setToken] = useState('');
   const [allowWrites, setAllowWrites] = useState(false);
   function submit(event: FormEvent) { event.preventDefault(); const supplied = token; setToken(''); onConnect(project, supplied, allowWrites); }
-  return <main className="connect-layout"><section className="connect-intro"><p className="eyebrow">Your project, in view</p><h1>Keep work<br /> moving.</h1><p>A clear view of your workers, jobs and conversations.</p><div className="intro-rule" /><p className="quiet-light">Connect to a project on this service to begin.</p></section>
-    <section className="connect-card"><p className="eyebrow">FireController</p><h2>Connect to a project</h2><p className="muted">Use the project ID and a credential with read access.</p>
+  return <main className="connect-layout"><section className="connect-intro"><h1>Keep work<br /> moving.</h1><p>A clear view of your workers, jobs and conversations.</p><div className="intro-rule" /><p className="quiet-light">Connect to a project on this service to begin.</p></section>
+    <section className="connect-card"><h2>Connect to a project</h2>
       {notice && <div className="notice" role="alert">{notice}</div>}
       {reconnect && !busy && <button type="button" onClick={reconnect}>Reconnect to project</button>}
       <form onSubmit={submit} autoComplete="off"><label htmlFor="project-id">Project ID</label><input id="project-id" name="project-id" value={project} onChange={event => setProject(event.target.value)} required maxLength={128} spellCheck={false} autoCapitalize="none" disabled={busy} />
         <label htmlFor="project-credential">Project credential</label><input id="project-credential" name="project-credential" type="password" value={token} onChange={event => setToken(event.target.value)} required maxLength={4096} autoComplete="off" disabled={busy} />
-        <label className="write-consent"><input type="checkbox" checked={allowWrites} onChange={event => setAllowWrites(event.target.checked)} disabled={busy} /><span>Enable message and appearance changes</span></label><p className="field-note">Read-only by default. Changes require a credential with write access; appearance edits also require administrator access. The session lasts up to 24 hours, including reloads. Disconnect to clear access and project data.</p>
+        <label className="write-consent"><input type="checkbox" checked={allowWrites} onChange={event => setAllowWrites(event.target.checked)} disabled={busy} /><span>Enable message and appearance changes</span></label><p className="field-note">Stay logged in for up to 24 hours. Disconnect to log out.</p>
         <button className="primary" type="submit" disabled={busy}>{busy ? 'Connecting…' : 'Connect to project'}</button>{busy && <button type="button" onClick={cancel}>Cancel connection</button>}
       </form></section></main>;
 }
