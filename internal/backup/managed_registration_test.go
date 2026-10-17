@@ -357,3 +357,36 @@ func TestManagedRegistrationMultipleDestinationHoldsSurviveRecovery(t *testing.T
 		t.Fatal("recovery converted predecessor holds into retained ownership", predecessor, err)
 	}
 }
+
+func TestManagedRegistrationRuntimeHoldWaitsForCancellation(t *testing.T) {
+	f, m := newManagedFixture(t, 1)
+	removeTrigger := managedRegistrationRejectInserts(t, m)
+	defer removeTrigger()
+	m.wait = func(context.Context, time.Duration) error { return nil }
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	reported := make(chan error, 1)
+	go func() { done <- m.Run(ctx, func(err error) { reported <- err }) }()
+	select {
+	case <-reported:
+	case <-time.After(5 * time.Second):
+		t.Fatal("registration hold was not reported")
+	}
+	// Coordination remains usable while the enabled supervisor is idle.
+	f.request(t, "POST", "/api/v1/projects/"+f.project+"/messages", map[string]any{"recipient_worker_id": f.worker, "body": "Coordination during publication hold"})
+	select {
+	case err := <-done:
+		t.Fatal("held runtime worker exited before cancellation", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("held worker failed to join cancellation")
+	}
+}
