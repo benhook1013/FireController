@@ -19,7 +19,7 @@ const serverErrorCodes = new Set([
   'bootstrap_failed', 'configuration_invalid', 'credential_already_configured', 'empty_edit', 'forbidden',
   'idempotency_conflict', 'idempotency_key_required', 'instance_mismatch', 'internal_error', 'invalid_brief',
   'invalid_cursor', 'invalid_filter', 'invalid_query', 'invalid_revision', 'invalid_status', 'invalid_title',
-  'method_not_allowed', 'not_found', 'note_not_found', 'worker_not_found', 'overloaded', 'provider_unavailable', 'review_held', 'review_capacity', 'resync_required', 'schema_invalid',
+  'method_not_allowed', 'not_found', 'note_not_found', 'worker_not_found', 'overloaded', 'provider_unavailable', 'response_too_large', 'review_held', 'review_capacity', 'resync_required', 'schema_invalid',
   'schema_unsupported', 'storage_unavailable', 'stream_failed', 'stream_frame_too_large', 'stream_unavailable',
   'unauthorized', 'validation_failed', 'worker_already_configured',
 ]);
