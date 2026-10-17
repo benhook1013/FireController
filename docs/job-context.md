@@ -63,3 +63,7 @@ Four actual packaged groups passed on their first run in 9.200 seconds. Actual C
 A gateway separately held the response of an already completed context read: cancellation returned in 8.916 ms and the existing total deadline returned `deadline_exceeded` in 5006.721 ms, each with one domain read, no retry and no durable effect. These cases prove response-transport cancellation/deadlines, not database fault injection. All owned processes and ports closed after proof. Provider and review executable traps stayed at zero.
 
 This is local Linux packaged proof with controlled identities. Model-host wakeup/resume, browser integration, installed-service deployment, physical-phone use, fleet throughput and operational cutover are not established by these checks. The installed QA site and primary development controller are unchanged.
+
+## Transient storage error proof
+
+Focused HTTP/SQLite checks after the executed checkpoint above separately lock each checklist, checkpoint, primary-focus and pause helper table in an attached disposable database while the initial job and authorization remain readable. The combined route now returns retryable `overloaded` (503) for the verified SQLite busy error and recovers after unlock. Existing malformed-retained-section cases still return `storage_unavailable` (500). Focused normal/race checks and vet pass. This does not separately force SQLite locked errors or cancellation inside a helper.
