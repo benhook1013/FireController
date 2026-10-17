@@ -18,7 +18,7 @@
 .map-entry-title{overflow-wrap:anywhere}
 
 /* Bounded presentation text. */
-.brand,.mast-label,.connection-card,.navigation a{min-width:0;overflow-wrap:anywhere}.brand .flame{flex-shrink:0;transform:translateY(-.18em)}.navigation a{max-width:100%}
+.brand,.mast-label,.connection-card,.navigation a{min-width:0;overflow-wrap:anywhere}.brand .flame{flex-shrink:0;transform:translateY(-.09em)}.navigation a{max-width:100%}
 .panel,.worker-panel,.feed-card,.connect-card{color:var(--fc-surface_text,inherit)}
 
 /* Review cards keep text paired with their status surface. */
