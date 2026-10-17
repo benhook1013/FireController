@@ -116,12 +116,14 @@ func backfillCurrentSummaries(ctx context.Context, conn *sql.Conn) error {
 	return ValidateCurrentSummaries(ctx, conn)
 }
 
+const insertAttemptOrderSQL = `INSERT INTO review_current_attempt_order(project_id,source,source_attempt_id,pull_number,channel,sort_key,position) VALUES(?,?,?,?,?,?,?)`
+
 func insertAttemptOrder(ctx context.Context, q currentSummarySQL, project, source string, number, position int64, attempt Attempt) error {
 	key, err := attemptSortKey(attempt)
 	if err != nil {
 		return err
 	}
-	_, err = q.ExecContext(ctx, `INSERT INTO review_current_attempt_order(project_id,source,source_attempt_id,pull_number,channel,sort_key,position) VALUES(?,?,?,?,?,?,?)`, project, source, attempt.SourceAttemptID, number, attempt.Channel, key, position)
+	_, err = q.ExecContext(ctx, insertAttemptOrderSQL, project, source, attempt.SourceAttemptID, number, attempt.Channel, key, position)
 	return err
 }
 
@@ -141,75 +143,21 @@ func readSummaryTotals(ctx context.Context, q HistoryQuery, project string, numb
 	return totals, err
 }
 
-// Derive the prospective counters from indexed old totals and touched records.
-// Current references remain old until all preflight reads have completed.
+// Derive all touched PR counters together, while current references still
+// resolve the previous snapshot. Each changed record is read once per plan.
 func (w *historySnapshotWrite) prospectiveTotals(ctx context.Context, tx *sql.Tx, number int64) (summaryTotals, error) {
-	totals, err := readSummaryTotals(ctx, tx, w.project, number)
+	totals, err := w.prepareCurrentTotals(ctx, tx)
 	if err != nil {
-		return totals, err
+		return summaryTotals{}, err
 	}
-	for _, change := range w.pending {
-		if change.spec.current != historyRunRecord.current && change.spec.current != historyAttemptRecord.current {
-			continue
-		}
-		isRun := change.spec.current == historyRunRecord.current
-		columns := "c.pull_number"
-		join := ""
-		if isRun {
-			columns += ",v.complete"
-			join = " JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision"
-		}
-		where := []string{"c.project_id=?"}
-		for _, key := range change.spec.keys {
-			where = append(where, "c."+key+"=?")
-		}
-		args := append([]any{w.project}, change.keys...)
-		var oldNumber int64
-		var complete bool
-		targets := []any{&oldNumber}
-		if isRun {
-			targets = append(targets, &complete)
-		}
-		err := tx.QueryRowContext(ctx, "SELECT "+columns+" FROM "+change.spec.current+" c"+join+" WHERE "+strings.Join(where, " AND "), args...).Scan(targets...)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return totals, err
-		}
-		if err == nil && oldNumber == number {
-			if isRun {
-				totals.runs--
-				if !complete {
-					totals.incomplete--
-				}
-			} else {
-				totals.attempts--
-			}
-		}
-		if change.values == nil {
-			continue
-		}
-		newNumber, ok := change.values[1].(int64)
-		if !ok {
-			return totals, historyInconsistent()
-		}
-		if newNumber != number {
-			continue
-		}
-		if isRun {
-			totals.runs++
-			if err := tx.QueryRowContext(ctx, `SELECT v.complete FROM review_run_memberships m JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision WHERE m.project_id=? AND m.id=? AND m.start_revision=?`, w.project, change.keys[0], change.values[0]).Scan(&complete); err != nil {
-				return totals, err
-			}
-			if !complete {
-				totals.incomplete++
-			}
-		} else {
-			totals.attempts++
-		}
+	if total, ok := totals[number]; ok {
+		return total, nil
 	}
-	if totals.runs < 0 || totals.attempts < 0 || totals.incomplete < 0 || totals.incomplete > totals.runs {
-		return totals, historyInconsistent()
-	}
-	return totals, nil
+	return readSummaryTotals(ctx, tx, w.project, number)
+}
+
+func validSummaryTotals(totals summaryTotals) bool {
+	return totals.runs >= 0 && totals.attempts >= 0 && totals.incomplete >= 0 && totals.incomplete <= totals.runs
 }
 
 // ValidateCurrentSummaries is the read-only backup integrity boundary. It
@@ -268,32 +216,86 @@ func ValidateCurrentSummaries(ctx context.Context, q HistoryQuery) error {
 }
 
 func (w *historySnapshotWrite) prepareCurrentTotals(ctx context.Context, tx *sql.Tx) (map[int64]summaryTotals, error) {
-	numbers := map[int64]bool{}
+	if w.replacementTotals != nil {
+		return w.replacementTotals, nil
+	}
+	deltas := map[int64]summaryTotals{}
 	for _, change := range w.pending {
 		if change.spec.current == historyPullRecord.current {
-			numbers[change.keys[0].(int64)] = true
+			number := change.keys[0].(int64)
+			if _, ok := deltas[number]; !ok {
+				deltas[number] = summaryTotals{}
+			}
 			continue
 		}
 		if change.spec.current != historyRunRecord.current && change.spec.current != historyAttemptRecord.current {
 			continue
 		}
-		if change.values != nil {
-			numbers[change.values[1].(int64)] = true
+		isRun := change.spec.current == historyRunRecord.current
+		columns, join := "c.pull_number", ""
+		if isRun {
+			columns += ",v.complete"
+			join = " JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision"
 		}
-		var number int64
+		where := []string{"c.project_id=?"}
+		for _, key := range change.spec.keys {
+			where = append(where, "c."+key+"=?")
+		}
 		args := append([]any{w.project}, change.keys...)
-		err := tx.QueryRowContext(ctx, "SELECT pull_number FROM "+change.spec.current+" WHERE project_id=? AND "+historyPredicate(change.spec.keys), args...).Scan(&number)
-		if err == nil {
-			numbers[number] = true
-		} else if !errors.Is(err, sql.ErrNoRows) {
+		var oldNumber int64
+		var complete bool
+		targets := []any{&oldNumber}
+		if isRun {
+			targets = append(targets, &complete)
+		}
+		err := w.scan(ctx, tx, "SELECT "+columns+" FROM "+change.spec.current+" c"+join+" WHERE "+strings.Join(where, " AND "), args, targets...)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
+		if err == nil {
+			delta := deltas[oldNumber]
+			if isRun {
+				delta.runs--
+				if !complete {
+					delta.incomplete--
+				}
+			} else {
+				delta.attempts--
+			}
+			deltas[oldNumber] = delta
+		}
+		if change.values == nil {
+			continue
+		}
+		newNumber, ok := change.values[1].(int64)
+		if !ok {
+			return nil, historyInconsistent()
+		}
+		delta := deltas[newNumber]
+		if isRun {
+			if err := w.scan(ctx, tx, `SELECT v.complete FROM review_run_memberships m JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision WHERE m.project_id=? AND m.id=? AND m.start_revision=?`, []any{w.project, change.keys[0], change.values[0]}, &complete); err != nil {
+				return nil, err
+			}
+			delta.runs++
+			if !complete {
+				delta.incomplete++
+			}
+		} else {
+			delta.attempts++
+		}
+		deltas[newNumber] = delta
 	}
-	out := map[int64]summaryTotals{}
-	for number := range numbers {
-		totals, err := w.prospectiveTotals(ctx, tx, number)
+	out := make(map[int64]summaryTotals, len(deltas))
+	for number, delta := range deltas {
+		totals, err := readSummaryTotals(ctx, tx, w.project, number)
 		if err != nil {
 			return nil, err
+		}
+		totals.runs += delta.runs
+		totals.attempts += delta.attempts
+		totals.incomplete += delta.incomplete
+		if !validSummaryTotals(totals) {
+			return nil, historyInconsistent()
 		}
 		out[number] = totals
 	}
@@ -302,7 +304,7 @@ func (w *historySnapshotWrite) prepareCurrentTotals(ctx context.Context, tx *sql
 
 func (w *historySnapshotWrite) installCurrentSummaries(ctx context.Context, tx *sql.Tx, totals map[int64]summaryTotals) error {
 	for number, total := range totals {
-		_, err := tx.ExecContext(ctx, `INSERT INTO review_current_totals(project_id,pull_number,run_count,attempt_count,incomplete_run_count) SELECT project_id,number,?,?,? FROM review_current_pulls WHERE project_id=? AND number=? ON CONFLICT(project_id,pull_number) DO UPDATE SET run_count=excluded.run_count,attempt_count=excluded.attempt_count,incomplete_run_count=excluded.incomplete_run_count`, total.runs, total.attempts, total.incomplete, w.project, number)
+		_, err := w.exec(ctx, tx, `INSERT INTO review_current_totals(project_id,pull_number,run_count,attempt_count,incomplete_run_count) SELECT project_id,number,?,?,? FROM review_current_pulls WHERE project_id=? AND number=? ON CONFLICT(project_id,pull_number) DO UPDATE SET run_count=excluded.run_count,attempt_count=excluded.attempt_count,incomplete_run_count=excluded.incomplete_run_count`, total.runs, total.attempts, total.incomplete, w.project, number)
 		if err != nil {
 			return err
 		}
@@ -314,11 +316,15 @@ func (w *historySnapshotWrite) installCurrentSummaries(ctx context.Context, tx *
 		var attempt Attempt
 		var project, source string
 		var number, position int64
-		err := tx.QueryRowContext(ctx, currentAttemptRows+` WHERE c.project_id=? AND c.source=? AND c.source_attempt_id=?`, w.project, change.keys[0], change.keys[1]).Scan(&project, &source, &attempt.SourceAttemptID, &number, &position, &attempt.Channel, &attempt.StartedAt, &attempt.FinishedAt)
+		err := w.scan(ctx, tx, currentAttemptRows+` WHERE c.project_id=? AND c.source=? AND c.source_attempt_id=?`, []any{w.project, change.keys[0], change.keys[1]}, &project, &source, &attempt.SourceAttemptID, &number, &position, &attempt.Channel, &attempt.StartedAt, &attempt.FinishedAt)
 		if err != nil {
 			return err
 		}
-		if err := insertAttemptOrder(ctx, tx, project, source, number, position, attempt); err != nil {
+		key, err := attemptSortKey(attempt)
+		if err != nil {
+			return err
+		}
+		if _, err := w.exec(ctx, tx, insertAttemptOrderSQL, project, source, attempt.SourceAttemptID, number, attempt.Channel, key, position); err != nil {
 			return err
 		}
 	}

@@ -25,11 +25,19 @@ func (w *historySnapshotWrite) retired(ctx context.Context, tx *sql.Tx, number i
 // membership. Immutable bodies remain retained across omissions and returns.
 func (w *historySnapshotWrite) observation(ctx context.Context, tx *sql.Tx, req ObservationRequest) error {
 	selected := map[string]map[string]bool{}
+	totals := make(map[int64]summaryTotals, len(req.Queue))
 	for _, spec := range []historyRecordSpec{historyPullRecord, historyRunRecord, historyAttemptRecord, historyRetiredRecord} {
 		selected[spec.memberships] = map[string]bool{}
 	}
 	keep := func(spec historyRecordSpec, keys ...any) { selected[spec.memberships][mustJSON(keys)] = true }
 	for position, pull := range req.Queue {
+		total := summaryTotals{runs: int64(len(pull.Runs)), attempts: int64(len(pull.Attempts))}
+		for _, run := range pull.Runs {
+			if !run.Complete {
+				total.incomplete++
+			}
+		}
+		totals[pull.Number] = total
 		recent := make([]RunSummary, 0, 3)
 		for i := len(pull.Runs) - 1; i >= 0 && len(recent) < 3; i-- {
 			recent = append(recent, summarizeRun(w.project, req.Source, pull.Number, pull.Runs[i]))
@@ -63,6 +71,7 @@ func (w *historySnapshotWrite) observation(ctx context.Context, tx *sql.Tx, req 
 			return err
 		}
 	}
+	w.replacementTotals = totals
 	return nil
 }
 

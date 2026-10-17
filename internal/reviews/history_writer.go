@@ -31,6 +31,11 @@ type historySnapshotWrite struct {
 	project  string
 	revision int64
 	pending  map[string]historyCurrentChange
+	// A validated full observation already supplies the exact replacement
+	// counts, including unchanged records and excluding omitted membership.
+	replacementTotals map[int64]summaryTotals
+	statementTx       *sql.Tx
+	statements        map[string]*sql.Stmt
 }
 
 func newHistorySnapshotWrite(project string, revision int64) *historySnapshotWrite {
@@ -81,6 +86,50 @@ func historyInsert(ctx context.Context, tx *sql.Tx, table string, columns []stri
 	return err
 }
 
+// Reuse only repository-owned SQL shapes within this one snapshot transaction.
+// The transaction closes its prepared statements on commit or rollback.
+func (w *historySnapshotWrite) statement(ctx context.Context, tx *sql.Tx, query string) (*sql.Stmt, error) {
+	if w.statementTx == nil {
+		w.statementTx = tx
+		w.statements = map[string]*sql.Stmt{}
+	} else if w.statementTx != tx {
+		return nil, historyInconsistent()
+	}
+	if stmt := w.statements[query]; stmt != nil {
+		return stmt, nil
+	}
+	stmt, err := tx.PrepareContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	w.statements[query] = stmt
+	return stmt, nil
+}
+
+func (w *historySnapshotWrite) scan(ctx context.Context, tx *sql.Tx, query string, args []any, targets ...any) error {
+	stmt, err := w.statement(ctx, tx, query)
+	if err != nil {
+		return err
+	}
+	return stmt.QueryRowContext(ctx, args...).Scan(targets...)
+}
+
+func (w *historySnapshotWrite) exec(ctx context.Context, tx *sql.Tx, query string, args ...any) (sql.Result, error) {
+	stmt, err := w.statement(ctx, tx, query)
+	if err != nil {
+		return nil, err
+	}
+	return stmt.ExecContext(ctx, args...)
+}
+
+func (w *historySnapshotWrite) insert(ctx context.Context, tx *sql.Tx, table string, columns []string, values []any) error {
+	if len(columns) != len(values) || len(columns) == 0 {
+		return historyInconsistent()
+	}
+	_, err := w.exec(ctx, tx, "INSERT INTO "+table+"("+strings.Join(columns, ",")+") VALUES("+strings.TrimSuffix(strings.Repeat("?,", len(columns)), ",")+")", values...)
+	return err
+}
+
 // A run's caller sets changedDetail when its bounded findings changed even if
 // the scalar summary did not. That creates a new exact run/detail version.
 func (w *historySnapshotWrite) version(ctx context.Context, tx *sql.Tx, spec historyRecordSpec, keys, body []any, changedDetail bool) (int64, error) {
@@ -103,7 +152,7 @@ func (w *historySnapshotWrite) version(ctx context.Context, tx *sql.Tx, spec his
 		targets = append(targets, &stored[i])
 	}
 	columns := append([]string{"version_revision"}, spec.body...)
-	err = tx.QueryRowContext(ctx, "SELECT "+strings.Join(columns, ",")+" FROM "+spec.versions+" WHERE project_id=? AND "+historyPredicate(spec.keys)+" ORDER BY version_revision DESC LIMIT 1", args...).Scan(targets...)
+	err = w.scan(ctx, tx, "SELECT "+strings.Join(columns, ",")+" FROM "+spec.versions+" WHERE project_id=? AND "+historyPredicate(spec.keys)+" ORDER BY version_revision DESC LIMIT 1", args, targets...)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
@@ -124,7 +173,7 @@ func (w *historySnapshotWrite) version(ctx context.Context, tx *sql.Tx, spec his
 	columns = append(columns, spec.body...)
 	values := append(args, w.revision)
 	values = append(values, body...)
-	if err := historyInsert(ctx, tx, spec.versions, columns, values); err != nil {
+	if err := w.insert(ctx, tx, spec.versions, columns, values); err != nil {
 		return 0, err
 	}
 	return w.revision, nil
@@ -151,7 +200,7 @@ func (w *historySnapshotWrite) membership(ctx context.Context, tx *sql.Tx, spec 
 	}
 	columns := append([]string{"start_revision", "version_revision"}, spec.placement...)
 	where := "project_id=? AND " + historyPredicate(spec.keys) + " AND end_revision IS NULL"
-	err = tx.QueryRowContext(ctx, "SELECT "+strings.Join(columns, ",")+" FROM "+spec.memberships+" WHERE "+where, args...).Scan(targets...)
+	err = w.scan(ctx, tx, "SELECT "+strings.Join(columns, ",")+" FROM "+spec.memberships+" WHERE "+where, args, targets...)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -165,7 +214,7 @@ func (w *historySnapshotWrite) membership(ctx context.Context, tx *sql.Tx, spec 
 		if previous == w.revision {
 			return historyInconsistent()
 		}
-		result, err := tx.ExecContext(ctx, "UPDATE "+spec.memberships+" SET end_revision=? WHERE "+where+" AND start_revision=?", append(append([]any{w.revision}, args...), previous)...)
+		result, err := w.exec(ctx, tx, "UPDATE "+spec.memberships+" SET end_revision=? WHERE "+where+" AND start_revision=?", append(append([]any{w.revision}, args...), previous)...)
 		if err != nil {
 			return err
 		}
@@ -178,7 +227,7 @@ func (w *historySnapshotWrite) membership(ctx context.Context, tx *sql.Tx, spec 
 	columns = append(columns, spec.placement...)
 	values := append(append([]any{}, args...), w.revision, version)
 	values = append(values, placement...)
-	if err := historyInsert(ctx, tx, spec.memberships, columns, values); err != nil {
+	if err := w.insert(ctx, tx, spec.memberships, columns, values); err != nil {
 		return err
 	}
 	w.pending[spec.current+":"+mustJSON(keys)] = historyCurrentChange{spec: spec, keys: keys, values: append([]any{w.revision}, placement...)}
@@ -196,7 +245,7 @@ func (w *historySnapshotWrite) remove(ctx context.Context, tx *sql.Tx, spec hist
 	args := append([]any{w.project}, keys...)
 	where := "project_id=? AND " + historyPredicate(spec.keys) + " AND end_revision IS NULL"
 	var start int64
-	err = tx.QueryRowContext(ctx, "SELECT start_revision FROM "+spec.memberships+" WHERE "+where, args...).Scan(&start)
+	err = w.scan(ctx, tx, "SELECT start_revision FROM "+spec.memberships+" WHERE "+where, args, &start)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -206,7 +255,7 @@ func (w *historySnapshotWrite) remove(ctx context.Context, tx *sql.Tx, spec hist
 	if start < 1 || start >= w.revision {
 		return historyInconsistent()
 	}
-	result, err := tx.ExecContext(ctx, "UPDATE "+spec.memberships+" SET end_revision=? WHERE "+where+" AND start_revision=?", append(append([]any{w.revision}, args...), start)...)
+	result, err := w.exec(ctx, tx, "UPDATE "+spec.memberships+" SET end_revision=? WHERE "+where+" AND start_revision=?", append(append([]any{w.revision}, args...), start)...)
 	if err != nil {
 		return err
 	}
@@ -224,7 +273,7 @@ func (w *historySnapshotWrite) applyCurrent(ctx context.Context, tx *sql.Tx, sna
 		return historyInconsistent()
 	}
 	var recordedRevision int64
-	if err := tx.QueryRowContext(ctx, "SELECT revision FROM review_snapshots WHERE project_id=? AND snapshot_id=?", w.project, snapshot).Scan(&recordedRevision); err != nil {
+	if err := w.scan(ctx, tx, "SELECT revision FROM review_snapshots WHERE project_id=? AND snapshot_id=?", []any{w.project, snapshot}, &recordedRevision); err != nil {
 		return err
 	}
 	if recordedRevision != w.revision {
@@ -244,7 +293,7 @@ func (w *historySnapshotWrite) applyCurrent(ctx context.Context, tx *sql.Tx, sna
 	for _, key := range keys {
 		change := w.pending[key]
 		args := append([]any{w.project}, change.keys...)
-		if _, err := tx.ExecContext(ctx, "DELETE FROM "+change.spec.current+" WHERE project_id=? AND "+historyPredicate(change.spec.keys), args...); err != nil {
+		if _, err := w.exec(ctx, tx, "DELETE FROM "+change.spec.current+" WHERE project_id=? AND "+historyPredicate(change.spec.keys), args...); err != nil {
 			return err
 		}
 	}
@@ -258,15 +307,15 @@ func (w *historySnapshotWrite) applyCurrent(ctx context.Context, tx *sql.Tx, sna
 		columns = append(columns, change.spec.placement...)
 		values := append([]any{w.project}, change.keys...)
 		values = append(values, change.values...)
-		if err := historyInsert(ctx, tx, change.spec.current, columns, values); err != nil {
+		if err := w.insert(ctx, tx, change.spec.current, columns, values); err != nil {
 			return err
 		}
 	}
 	var result sql.Result
 	if previousRevision == 0 {
-		result, err = tx.ExecContext(ctx, "INSERT INTO review_workspace(project_id,revision,snapshot_id) VALUES(?,?,?)", w.project, w.revision, snapshot)
+		result, err = w.exec(ctx, tx, "INSERT INTO review_workspace(project_id,revision,snapshot_id) VALUES(?,?,?)", w.project, w.revision, snapshot)
 	} else {
-		result, err = tx.ExecContext(ctx, "UPDATE review_workspace SET revision=?,snapshot_id=? WHERE project_id=? AND revision=?", w.revision, snapshot, w.project, previousRevision)
+		result, err = w.exec(ctx, tx, "UPDATE review_workspace SET revision=?,snapshot_id=? WHERE project_id=? AND revision=?", w.revision, snapshot, w.project, previousRevision)
 	}
 	if err != nil {
 		return err

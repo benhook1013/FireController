@@ -8,6 +8,7 @@ let phase = 'configuration';
 let checkpoint = '';
 let counters = () => ({});
 let failureClass = '';
+let failureSnapshot = async () => ({});
 const need = (value) => { if (!value) throw new Error('assertion'); };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
@@ -23,6 +24,26 @@ try {
   page.setDefaultNavigationTimeout(5000);
   const prefix = '/api/v1/projects/' + config.project;
   const home = '/projects/' + config.project;
+  failureSnapshot = async () => {
+    if (phase !== 'explicit-actions-uncertain') return {};
+    const snapshot = {
+      sent_links: await page.getByRole('link',{name:'Open sent conversation',exact:true}).count(),
+      retry_buttons: await page.getByRole('button',{name:'Retry exact send',exact:true}).count(),
+      send_buttons: await page.getByRole('button',{name:'Send message',exact:true}).count(),
+      composer_forms: await page.locator('.browser-composer form').count(),
+      message_matches: await page.getByText('Uncertain browser message',{exact:true}).count(),
+      conversation_items: await page.locator('.conversation-list > li').count(),
+      alerts: await page.getByRole('alert').count(),
+      inbox_route: new URL(page.url()).pathname === home+'/inbox',
+      conversation_route: new URL(page.url()).pathname.startsWith(home+'/inbox/'),
+    };
+    if (config.diagnostic_directory) {
+      await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});
+      await page.screenshot({path:config.diagnostic_directory+'/failure.png', mask:[page.locator('input,textarea,code,.full-text,.message-preview')], timeout:2000});
+      await fs.writeFile(config.diagnostic_directory+'/failure.json',JSON.stringify({phase,checkpoint,...snapshot}),{mode:0o600});
+    }
+    return snapshot;
+  };
   let fixtureWrites = 0;
   const write = async (method, path, body, status = 200, sender = config.worker) => {
     const response = await fetch(config.origin + prefix + path, {
@@ -332,7 +353,8 @@ try {
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
   releaseSend(); checkpoint = 'retry-ready';
   const retry = page.getByRole('button',{name:'Retry exact send',exact:true});
-  if (!(await retry.count())) await page.getByRole('button',{name:'New message',exact:true}).click();
+  // The retained action must expose retry after remount without a manual
+  // composer-open click that could mask disappearing success feedback.
   await expect(retry).toBeEnabled();
   // Pop to the original root route: canceling the explicit discard prompt must
   // preserve this project and the original pending key/body, without a reload.
@@ -351,8 +373,9 @@ try {
   need(recovered.status()===201 && (await recovered.json()).id===heldReceipt.id);
   checkpoint = 'retry-identity';
   need(JSON.stringify(originalWire)===JSON.stringify(retryWire));
-  checkpoint = 'conversation';
+  checkpoint = 'conversation-link';
   await page.getByRole('link',{name:'Open sent conversation',exact:true}).click();
+  checkpoint = 'conversation-body';
   await page.getByText('Uncertain browser message',{exact:true}).waitFor();
   need(await page.getByText('Uncertain browser message',{exact:true}).count()===1);
   controlledMessageFailure=false; checkpoint = 'disconnect';
@@ -395,7 +418,8 @@ try {
   console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites}));
 } catch (error) {
   failureClass = error?.name === 'TimeoutError' ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
-  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, ...counters()}));
+  const snapshot = await failureSnapshot().catch(()=>({diagnostic_failed:true}));
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, ...counters(), ...snapshot}));
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});

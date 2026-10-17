@@ -116,6 +116,12 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 	}
 	env = append(env, "PLAYWRIGHT_BROWSERS_PATH="+browserPath)
 	config := map[string]string{"origin": "http://" + daemon.address, "project": project, "worker": worker, "other_worker": otherWorker, "instance": daemon.instance, "admin_file": adminFile, "credential_file": credentialFile, "executable": executable, "proxy": browserDeny.URL}
+	if directory := os.Getenv("FC_BROWSER_PROOF_DIR"); directory != "" {
+		if !filepath.IsAbs(directory) {
+			t.Fatal("FC_BROWSER_PROOF_DIR must be absolute")
+		}
+		config["diagnostic_directory"] = directory
+	}
 	raw, err := json.Marshal(config)
 	if err != nil {
 		t.Fatal("browser fixture configuration unavailable")
@@ -238,7 +244,7 @@ func (o *browserOutput) safePhase() string {
 					class = record.FailureClass
 				}
 				switch record.Checkpoint {
-				case "compose", "dispatch", "switch-view", "retry-ready", "navigation-guard", "retry-response", "retry-identity", "conversation", "disconnect", "action-counters":
+				case "compose", "dispatch", "switch-view", "retry-ready", "navigation-guard", "retry-response", "retry-identity", "conversation", "conversation-link", "conversation-body", "disconnect", "action-counters":
 					return fmt.Sprintf("%s/%s class=%s posts=%d deletes=%d renewals=%d errors=%d forbidden_writes=%d action_writes=%d external=%d", record.Phase, record.Checkpoint, class, record.Posts, record.Deletes, record.Renewals, record.Errors, record.Writes, record.ActionWrites, record.External)
 				}
 			}
