@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"context"
+	"strings"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -9,10 +10,10 @@ import (
 // EnsureRoundSchema installs explicit additional-round accounting. It never
 // derives grants or completion credit from existing execution/imported history.
 func EnsureRoundSchema(ctx context.Context, store *core.Store) error {
-	return store.EnsureSchema(ctx, "review_rounds", RoundSchemaSQL())
+	return store.EnsureSchema(ctx, "review_rounds", RoundSchemaV1SQL(), roundV2MigrationSQL())
 }
 
-var roundSchemaSQL = []string{
+var roundSchemaV1SQL = []string{
 	`CREATE TABLE review_round_controls(
  project_id TEXT NOT NULL REFERENCES projects(id),pull_number INTEGER NOT NULL CHECK(pull_number BETWEEN 1 AND 2147483647),channel TEXT NOT NULL CHECK(channel IN ('cli','hosted')),
  revision INTEGER NOT NULL CHECK(revision>=1),epoch INTEGER NOT NULL CHECK(epoch>=1),grant_revision INTEGER NOT NULL CHECK(grant_revision>=1 AND grant_revision<=revision),
@@ -35,5 +36,30 @@ var roundSchemaSQL = []string{
 	`CREATE INDEX review_round_operations_scope ON review_operations(project_id,pull_number,channel,state,id);`,
 }
 
-// RoundSchemaSQL returns a fresh canonical statement slice for physical snapshot inspection.
-func RoundSchemaSQL() []string { return append([]string(nil), roundSchemaSQL...) }
+// RoundSchemaV1SQL retains the original canonical predecessor declarations.
+func RoundSchemaV1SQL() []string { return append([]string(nil), roundSchemaV1SQL...) }
+
+// RoundSchemaSQL returns the current canonical physical schema as a fresh slice.
+func RoundSchemaSQL() []string {
+	out := RoundSchemaV1SQL()
+	out[0] = roundControlV2SQL()
+	return out
+}
+
+func roundControlV2SQL() string {
+	s := roundSchemaV1SQL[0]
+	s = strings.Replace(s, "maximum BETWEEN 1 AND 1000", "maximum BETWEEN 0 AND 1000", 1)
+	s = strings.Replace(s, "CHECK((channel='hosted' AND taper=1) OR (channel='cli' AND taper=3))", "CHECK(taper BETWEEN 1 AND 1000)", 1)
+	s = strings.Replace(s, "dry BETWEEN 0 AND used", "dry BETWEEN 0 AND used+initial_dry", 1)
+	s = strings.Replace(s, "actor_id TEXT NOT NULL", "initial_dry INTEGER NOT NULL CHECK(initial_dry BETWEEN 0 AND 1000),initially_tapered INTEGER NOT NULL CHECK(initially_tapered IN (0,1)),origin_source TEXT NOT NULL,origin_key TEXT NOT NULL,origin_sha256 TEXT NOT NULL,actor_id TEXT NOT NULL", 1)
+	return s
+}
+
+func roundV2MigrationSQL() []string {
+	return []string{
+		`ALTER TABLE review_round_controls RENAME TO legacy_review_round_controls`,
+		roundControlV2SQL(),
+		`INSERT INTO review_round_controls(` + roundColumns + `) SELECT ` + roundColumnsV1 + `,0,0,'','','' FROM legacy_review_round_controls`,
+		`DROP TABLE legacy_review_round_controls`,
+	}
+}

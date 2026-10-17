@@ -21,6 +21,7 @@ type CoordinationImportPreview = coordimportmodel.Preview
 type CoordinationImportReceipt = coordimportmodel.Receipt
 type CoordinationImportCounts = coordimportmodel.Counts
 type CoordinationImportMapping = coordimportmodel.Mapping
+type CoordinationImportMessageMapping = coordimportmodel.MessageMapping
 
 type CoordinationImportState struct {
 	Revision int64 `json:"revision"`
@@ -47,9 +48,17 @@ func coordinationImportDocument(raw json.RawMessage) (CoordinationImportBatch, C
 	}
 	if batch.Version != 1 || batch.RepositoryID <= 0 || batch.ExpectedRevision == nil || *batch.ExpectedRevision < 0 || *batch.ExpectedRevision == math.MaxInt64 ||
 		batch.Source == "" || batch.Source != strings.TrimSpace(batch.Source) || len(batch.Source) > 200 || !utf8.ValidString(batch.Source) ||
-		strings.IndexFunc(batch.Source, unicode.IsControl) >= 0 || !controlHex(batch.SourceSHA256, 64) || len(batch.Jobs) < 1 || len(batch.Jobs) > 25 {
+		strings.IndexFunc(batch.Source, unicode.IsControl) >= 0 || !controlHex(batch.SourceSHA256, 64) || len(batch.Jobs)+len(batch.Messages) < 1 || len(batch.Jobs) > 25 || len(batch.Messages) > 100 {
 		return batch, counts, "", coordinationImportInvalid()
 	}
+	if len(fields["messages"]) > 0 && bytes.Equal(bytes.TrimSpace(fields["messages"]), []byte("null")) {
+		return batch, counts, "", coordinationImportInvalid()
+	}
+	batch.Jobs = append([]coordimportmodel.PreparedJob{}, batch.Jobs...)
+	if !validPreparedMessages(batch.Messages) {
+		return batch, counts, "", coordinationImportInvalid()
+	}
+	counts.Messages = len(batch.Messages)
 	keys := make(map[string]bool, len(batch.Jobs))
 	counts.Jobs = len(batch.Jobs)
 	for i := range batch.Jobs {
@@ -119,7 +128,7 @@ func (c *Client) CoordinationImportState(ctx context.Context) (CoordinationImpor
 
 func validCoordinationCounts(result, expected CoordinationImportCounts) bool {
 	return result.Jobs == expected.Jobs && result.Checkpoints == expected.Checkpoints && result.NewJobs >= 0 && result.UnchangedJobs >= 0 &&
-		result.NewJobs <= expected.Jobs && result.UnchangedJobs <= expected.Jobs && result.NewJobs+result.UnchangedJobs == expected.Jobs
+		result.NewJobs <= expected.Jobs && result.UnchangedJobs <= expected.Jobs && result.NewJobs+result.UnchangedJobs == expected.Jobs && result.Messages == expected.Messages && result.NewMessages >= 0 && result.UnchangedMessages >= 0 && result.NewMessages <= expected.Messages && result.UnchangedMessages <= expected.Messages && result.NewMessages+result.UnchangedMessages == expected.Messages
 }
 
 func (c *Client) PreviewCoordinationImport(ctx context.Context, raw json.RawMessage) (CoordinationImportPreview, error) {
@@ -152,7 +161,7 @@ func (c *Client) ApplyCoordinationImport(ctx context.Context, key, preview strin
 		return CoordinationImportReceipt{}, err
 	}
 	valid := result.Revision >= 1 && validCoordinationCounts(result.Counts, counts) && len(result.Mappings) == len(batch.Jobs)
-	if result.Counts.NewJobs > 0 {
+	if result.Counts.NewJobs > 0 || result.Counts.NewMessages > 0 {
 		valid = valid && result.Outcome == "imported" && result.Revision == *batch.ExpectedRevision+1
 	} else {
 		valid = valid && result.Outcome == "unchanged" && result.Revision == *batch.ExpectedRevision
@@ -163,6 +172,14 @@ func (c *Client) ApplyCoordinationImport(ctx context.Context, key, preview strin
 			valid = false
 		}
 		seen[mapping.JobID] = true
+	}
+	valid = valid && len(result.MessageMappings) == len(batch.Messages)
+	seenMessages := make(map[string]bool, len(result.MessageMappings))
+	for i, mapping := range result.MessageMappings {
+		if i >= len(batch.Messages) || mapping.SourceKey != batch.Messages[i].SourceKey || !validID(mapping.MessageID) || !validID(mapping.ConversationID) || seenMessages[mapping.MessageID] {
+			valid = false
+		}
+		seenMessages[mapping.MessageID] = true
 	}
 	if !valid {
 		return CoordinationImportReceipt{}, unknownMutation("invalid_response", "The service returned an invalid import receipt; its outcome is unknown.", 200)

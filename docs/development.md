@@ -169,7 +169,7 @@ These small samples use one small checkpoint on one developer machine. They esta
 
 The profile-bound `fc publication read`, `preview`, `apply` and `unpublish` commands configure opt-in anonymous project content under an administrator profile. The [public website contract](public-site.md#agent-setup-commands) owns the input format, preview hash, exact retry and private/public field boundary. Routine worker commands do not load publication manifests or expose private records to the public site.
 
-`make legacyimport` separately builds the optional source-specific [migration utility](../tools/legacyimport/README.md). The ordinary service build has no runtime dependency on a legacy controller. Native `fc import` setup commands and their current scope are documented at the [adoption owner](legacy-adoption.md#selected-job-snapshot-import).
+`make legacyimport` separately builds the optional source-specific [migration utility](../tools/legacyimport/README.md). The ordinary service build has no runtime dependency on a legacy controller. Native `fc import` setup commands support selected jobs/checkpoints and historical messages; their scope is documented at the [adoption owner](legacy-adoption.md). The separate Python control adapter requires an explicitly provided canonical source frame; `make source-converter-check` covers standalone input/output contracts, with source-helper tests enabled only by an explicit trusted source root.
 
 ## Per-PR review round controls
 

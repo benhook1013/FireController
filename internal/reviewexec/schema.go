@@ -56,5 +56,8 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	if err := EnsureRoundSchema(ctx, store); err != nil {
 		return err
 	}
+	if err := ensureRoundAdoptionSchema(ctx, store); err != nil {
+		return err
+	}
 	return EnsureSelectionSchema(ctx, store)
 }

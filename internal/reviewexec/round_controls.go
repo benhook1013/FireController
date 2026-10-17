@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/strictjson"
@@ -21,22 +24,27 @@ type RoundControlRequest struct {
 }
 
 type RoundControl struct {
-	ProjectID  string `json:"project_id"`
-	PullNumber int64  `json:"pull_number"`
-	Channel    string `json:"channel"`
-	Configured bool   `json:"configured"`
-	Revision   int64  `json:"revision"`
-	Epoch      int64  `json:"epoch"`
-	Closed     bool   `json:"closed"`
-	Minimum    int64  `json:"minimum"`
-	Maximum    int64  `json:"maximum"`
-	Taper      int64  `json:"taper"`
-	Used       int64  `json:"used"`
-	Dry        int64  `json:"dry"`
-	Tapered    bool   `json:"tapered"`
-	ActorID    string `json:"actor_id"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	InitialDry       int64  `json:"initial_dry,omitempty"`
+	InitiallyTapered bool   `json:"initially_tapered,omitempty"`
+	OriginSource     string `json:"origin_source,omitempty"`
+	OriginKey        string `json:"origin_key,omitempty"`
+	OriginSHA256     string `json:"origin_sha256,omitempty"`
+	ProjectID        string `json:"project_id"`
+	PullNumber       int64  `json:"pull_number"`
+	Channel          string `json:"channel"`
+	Configured       bool   `json:"configured"`
+	Revision         int64  `json:"revision"`
+	Epoch            int64  `json:"epoch"`
+	Closed           bool   `json:"closed"`
+	Minimum          int64  `json:"minimum"`
+	Maximum          int64  `json:"maximum"`
+	Taper            int64  `json:"taper"`
+	Used             int64  `json:"used"`
+	Dry              int64  `json:"dry"`
+	Tapered          bool   `json:"tapered"`
+	ActorID          string `json:"actor_id"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
 }
 
 type RoundControlReceipt struct {
@@ -52,7 +60,8 @@ type roundRecord struct {
 	grantRevision int64
 }
 
-const roundColumns = `project_id,pull_number,channel,revision,epoch,grant_revision,closed,minimum,maximum,taper,used,dry,tapered,actor_id,created_at,updated_at`
+const roundColumnsV1 = `project_id,pull_number,channel,revision,epoch,grant_revision,closed,minimum,maximum,taper,used,dry,tapered,actor_id,created_at,updated_at`
+const roundColumns = roundColumnsV1 + `,initial_dry,initially_tapered,origin_source,origin_key,origin_sha256`
 const roundPendingStates = `('queued','preparing','posting','active','uncertain')`
 
 func roundUnavailable() error {
@@ -73,16 +82,37 @@ func roundTime(value string) bool {
 	at, err := time.Parse(time.RFC3339Nano, value)
 	return len(value) <= 64 && err == nil && !at.IsZero()
 }
+func validRoundOrigin(c RoundControl) bool {
+	return validRoundSource(c.OriginSource) && validRoundSource(c.OriginKey) && len(c.OriginSHA256) == 64 && strings.Trim(c.OriginSHA256, "0123456789abcdef") == ""
+}
+func validRoundSource(s string) bool {
+	return len(s) <= 200 && utf8.ValidString(s) && s != "" && s == strings.TrimSpace(s) && strings.IndexFunc(s, unicode.IsControl) < 0
+}
+func hasRoundOrigin(c RoundControl) bool {
+	return c.OriginSource != "" || c.OriginKey != "" || c.OriginSHA256 != ""
+}
 func validRoundControl(c RoundControl) bool {
-	return roundScope(c.ProjectID, c.PullNumber, c.Channel) && c.Configured && c.Revision >= 1 && c.Epoch >= 1 && c.Epoch <= c.Revision && c.Minimum >= 0 && c.Minimum <= c.Maximum && c.Maximum >= 1 && c.Maximum <= 1000 && c.Taper == roundTaper(c.Channel) && c.Used >= 0 && c.Used <= c.Maximum && c.Dry >= 0 && c.Dry <= c.Used && (!c.Tapered || c.Used >= c.Minimum && c.Dry >= c.Taper) && identifier.MatchString(c.ActorID) && roundTime(c.CreatedAt) && roundTime(c.UpdatedAt)
+	origin := hasRoundOrigin(c)
+	baseline := c.Maximum >= 1 && c.Taper == roundTaper(c.Channel) && c.InitialDry == 0 && !c.InitiallyTapered
+	if origin {
+		baseline = validRoundOrigin(c) && c.Maximum >= 0 && c.Taper >= 1 && c.Taper <= 1000 && c.InitialDry >= 0 && c.InitialDry <= 1000 && (c.InitialDry < c.Taper || c.InitiallyTapered)
+	}
+	return baseline && roundScope(c.ProjectID, c.PullNumber, c.Channel) && c.Configured && c.Revision >= 1 && c.Epoch >= 1 && c.Epoch <= c.Revision && c.Minimum >= 0 && c.Minimum <= c.Maximum && c.Maximum <= 1000 && c.Used >= 0 && c.Used <= c.Maximum && c.Dry >= 0 && c.Dry <= c.Used+c.InitialDry && (!c.Tapered || c.Used >= c.Minimum && (c.InitiallyTapered || c.Dry >= c.Taper)) && (!c.InitiallyTapered || c.Used < c.Minimum || c.Tapered) && identifier.MatchString(c.ActorID) && roundTime(c.CreatedAt) && roundTime(c.UpdatedAt)
 }
 
 func readRoundRecord(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string) (roundRecord, error) {
+	return readRoundRecordVersion(ctx, q, project, pull, channel, false)
+}
+func readRoundRecordVersion(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string, legacy bool) (roundRecord, error) {
 	c := roundRecord{RoundControl: RoundControl{ProjectID: project, PullNumber: pull, Channel: channel}}
 	if !roundScope(project, pull, channel) {
 		return c, invalid()
 	}
-	err := q.QueryRowContext(ctx, `SELECT `+roundColumns+` FROM review_round_controls WHERE project_id=? AND pull_number=? AND channel=?`, project, pull, channel).Scan(&c.ProjectID, &c.PullNumber, &c.Channel, &c.Revision, &c.Epoch, &c.grantRevision, &c.Closed, &c.Minimum, &c.Maximum, &c.Taper, &c.Used, &c.Dry, &c.Tapered, &c.ActorID, &c.CreatedAt, &c.UpdatedAt)
+	columns := roundColumns
+	if legacy {
+		columns = roundColumnsV1 + `,0,0,'','',''`
+	}
+	err := q.QueryRowContext(ctx, `SELECT `+columns+` FROM review_round_controls WHERE project_id=? AND pull_number=? AND channel=?`, project, pull, channel).Scan(&c.ProjectID, &c.PullNumber, &c.Channel, &c.Revision, &c.Epoch, &c.grantRevision, &c.Closed, &c.Minimum, &c.Maximum, &c.Taper, &c.Used, &c.Dry, &c.Tapered, &c.ActorID, &c.CreatedAt, &c.UpdatedAt, &c.InitialDry, &c.InitiallyTapered, &c.OriginSource, &c.OriginKey, &c.OriginSHA256)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -172,6 +202,8 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 			c.Closed = false
 			c.Minimum, c.Maximum = *input.Minimum, *input.Maximum
 			c.Used, c.Dry, c.Tapered = 0, 0, false
+			c.InitialDry, c.InitiallyTapered, c.OriginSource, c.OriginKey, c.OriginSHA256 = 0, false, "", "", ""
+			c.Taper = roundTaper(channel)
 		} else {
 			if c.Epoch == 0 {
 				c.Epoch = 1
@@ -186,9 +218,10 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 		if _, err = tx.ExecContext(ctx, `INSERT INTO review_round_changes(project_id,pull_number,channel,revision,epoch,action,body_json,worker_id) VALUES(?,?,?,?,?,?,?,?)`, c.ProjectID, c.PullNumber, c.Channel, c.Revision, c.Epoch, input.Action, encoded(c.RoundControl), scope.WorkerID); err != nil {
 			return nil, err
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_round_controls(`+roundColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,pull_number,channel) DO UPDATE SET revision=excluded.revision,epoch=excluded.epoch,grant_revision=excluded.grant_revision,closed=excluded.closed,minimum=excluded.minimum,maximum=excluded.maximum,taper=excluded.taper,used=excluded.used,dry=excluded.dry,tapered=excluded.tapered,actor_id=excluded.actor_id,updated_at=excluded.updated_at`, c.ProjectID, c.PullNumber, c.Channel, c.Revision, c.Epoch, c.grantRevision, c.Closed, c.Minimum, c.Maximum, c.Taper, c.Used, c.Dry, c.Tapered, c.ActorID, c.CreatedAt, c.UpdatedAt); err != nil {
+		if err = storeRoundRecord(ctx, tx, c); err != nil {
 			return nil, err
 		}
+
 		if err = core.AppendEvent(ctx, tx, scope, "reviews.rounds_configured", scope.ProjectID, c.Revision, map[string]any{"pull_number": pull, "channel": channel, "revision": c.Revision}); err != nil {
 			return nil, err
 		}
@@ -305,7 +338,7 @@ func readRoundGrant(ctx context.Context, q EvidenceQuery, project string, pull i
 		return RoundControl{}, err
 	}
 	var c RoundControl
-	if len(body) > 4096 || strictjson.Decode([]byte(body), &c) != nil || !validRoundControl(c) || c.ProjectID != project || c.PullNumber != pull || c.Channel != channel || c.Revision != revision || c.Epoch != epoch || action != "grant" || c.Closed || c.Used != 0 || c.Dry != 0 || c.Tapered {
+	if len(body) > 4096 || strictjson.Decode([]byte(body), &c) != nil || !validRoundControl(c) || c.ProjectID != project || c.PullNumber != pull || c.Channel != channel || c.Revision != revision || c.Epoch != epoch || action != "grant" || c.Closed || hasRoundOrigin(c) && roundDone(c) || c.Used != 0 || c.Dry != c.InitialDry || c.Tapered != (c.InitiallyTapered && c.Minimum == 0) {
 		return RoundControl{}, roundUnavailable()
 	}
 	return c, nil
@@ -402,7 +435,7 @@ func completeRoundControl(ctx context.Context, tx *sql.Tx, project, operationID 
 		} else {
 			c.Dry = 0
 		}
-		if c.Used >= c.Minimum && c.Dry >= c.Taper {
+		if c.Used >= c.Minimum && (c.InitiallyTapered || c.Dry >= c.Taper) {
 			c.Tapered = true
 		}
 	}
@@ -410,5 +443,10 @@ func completeRoundControl(ctx context.Context, tx *sql.Tx, project, operationID 
 		return roundUnavailable()
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE review_round_controls SET used=?,dry=?,tapered=?,updated_at=? WHERE project_id=? AND pull_number=? AND channel=? AND epoch=?`, c.Used, c.Dry, c.Tapered, at, project, pull, channel, epoch)
+	return err
+}
+
+func storeRoundRecord(ctx context.Context, tx *sql.Tx, c roundRecord) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO review_round_controls(`+roundColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,pull_number,channel) DO UPDATE SET revision=excluded.revision,epoch=excluded.epoch,grant_revision=excluded.grant_revision,closed=excluded.closed,minimum=excluded.minimum,maximum=excluded.maximum,taper=excluded.taper,used=excluded.used,dry=excluded.dry,tapered=excluded.tapered,actor_id=excluded.actor_id,updated_at=excluded.updated_at,initial_dry=excluded.initial_dry,initially_tapered=excluded.initially_tapered,origin_source=excluded.origin_source,origin_key=excluded.origin_key,origin_sha256=excluded.origin_sha256`, c.ProjectID, c.PullNumber, c.Channel, c.Revision, c.Epoch, c.grantRevision, c.Closed, c.Minimum, c.Maximum, c.Taper, c.Used, c.Dry, c.Tapered, c.ActorID, c.CreatedAt, c.UpdatedAt, c.InitialDry, c.InitiallyTapered, c.OriginSource, c.OriginKey, c.OriginSHA256)
 	return err
 }

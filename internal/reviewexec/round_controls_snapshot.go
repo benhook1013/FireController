@@ -14,7 +14,14 @@ import (
 // authority and derived progress. It is maintenance validation, not a per-read
 // scan or a defense against coherent rewriting of every authoritative row.
 func ValidateRoundSnapshot(ctx context.Context, q EvidenceQuery) error {
-	if err := validateRoundPhysical(ctx, q); err != nil {
+	var version int
+	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_rounds'`).Scan(&version); err != nil {
+		return err
+	}
+	if version != 1 && version != 2 {
+		return roundUnavailable()
+	}
+	if err := validateRoundPhysicalVersion(ctx, q, version); err != nil {
 		return err
 	}
 	for _, query := range []string{
@@ -57,7 +64,7 @@ func ValidateRoundSnapshot(ctx context.Context, q EvidenceQuery) error {
 			return err
 		}
 		for _, v := range page {
-			if err := validateRoundHistory(ctx, q, v.project, v.pull, v.channel); err != nil {
+			if err := validateRoundHistory(ctx, q, v.project, v.pull, v.channel, version == 1); err != nil {
 				return err
 			}
 			project, pull, channel = v.project, v.pull, v.channel
@@ -66,14 +73,24 @@ func ValidateRoundSnapshot(ctx context.Context, q EvidenceQuery) error {
 			break
 		}
 	}
-	return validateRoundBindings(ctx, q)
+	if err := validateRoundBindings(ctx, q); err != nil {
+		return err
+	}
+	return validateRoundAdoptions(ctx, q)
 }
 
 // Physical validation precedes keyset traversal: SQLite TEXT affinity alone
 // permits BLOB keys that cannot be resumed using a scanned Go string cursor.
 func validateRoundPhysical(ctx context.Context, q EvidenceQuery) error {
+	return validateRoundPhysicalVersion(ctx, q, 2)
+}
+func validateRoundPhysicalVersion(ctx context.Context, q EvidenceQuery, version int) error {
 	expected := map[string]string{}
-	for _, statement := range RoundSchemaSQL() {
+	definitions := RoundSchemaSQL()
+	if version == 1 {
+		definitions = RoundSchemaV1SQL()
+	}
+	for _, statement := range definitions {
 		fields := strings.Fields(statement)
 		if len(fields) < 3 {
 			return roundUnavailable()
@@ -114,6 +131,10 @@ func validateRoundPhysical(ctx context.Context, q EvidenceQuery) error {
 		{"review_round_operation_bindings", "pull_number epoch grant_revision", "operation_id project_id channel"},
 		{"review_round_completions", "pull_number epoch ordinal accepted", "operation_id evidence_id project_id channel completed_at"},
 	} {
+		if table.name == "review_round_controls" && version >= 2 {
+			table.integers += " initial_dry initially_tapered"
+			table.text += " origin_source origin_key origin_sha256"
+		}
 		checks := []string{}
 		for _, column := range strings.Fields(table.integers) {
 			checks = append(checks, "typeof("+column+")!='integer'")
@@ -123,6 +144,9 @@ func validateRoundPhysical(ctx context.Context, q EvidenceQuery) error {
 				checks = append(checks, column+"=''")
 			}
 			limit := 128
+			if column == "origin_source" || column == "origin_key" {
+				limit = 200
+			}
 			if column == "body_json" {
 				limit = 4096
 			}
@@ -176,7 +200,7 @@ func roundCompletionAuthority(ctx context.Context, q EvidenceQuery, project, ope
 // Only one bounded grant's scalar progress is retained at a time. Capture
 // bodies are loaded one operation at a time by the existing authority validator.
 func roundEpochProgress(ctx context.Context, q EvidenceQuery, grant RoundControl, action string) ([]roundProgress, error) {
-	progress := []roundProgress{{}}
+	progress := []roundProgress{{dry: grant.InitialDry, tapered: grant.InitiallyTapered && grant.Minimum == 0}}
 	last := int64(0)
 	for {
 		rows, err := q.QueryContext(ctx, `SELECT operation_id,evidence_id,ordinal,accepted,completed_at FROM review_round_completions WHERE project_id=? AND pull_number=? AND channel=? AND epoch=? AND ordinal>? ORDER BY ordinal LIMIT 64`, grant.ProjectID, grant.PullNumber, grant.Channel, grant.Epoch, last)
@@ -220,7 +244,7 @@ func roundEpochProgress(ctx context.Context, q EvidenceQuery, grant RoundControl
 				} else {
 					next.dry = 0
 				}
-				if v.ordinal >= grant.Minimum && next.dry >= grant.Taper {
+				if v.ordinal >= grant.Minimum && (grant.InitiallyTapered || next.dry >= grant.Taper) {
 					next.tapered = true
 				}
 			}
@@ -235,8 +259,8 @@ func roundEpochProgress(ctx context.Context, q EvidenceQuery, grant RoundControl
 	return progress, nil
 }
 
-func validateRoundHistory(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string) error {
-	current, err := readRoundRecord(ctx, q, project, pull, channel)
+func validateRoundHistory(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string, legacy bool) error {
+	current, err := readRoundRecordVersion(ctx, q, project, pull, channel, legacy)
 	if err != nil {
 		return err
 	}
@@ -280,7 +304,7 @@ func validateRoundHistory(ctx context.Context, q EvidenceQuery, project string, 
 				return roundUnavailable()
 			}
 			if v.action == "grant" {
-				if c.Closed || c.Used != 0 || c.Dry != 0 || c.Tapered || revision > 0 && c.Epoch != last.Epoch+1 {
+				if (!hasRoundOrigin(c) && c.Closed) || c.Used != 0 || c.Dry != c.InitialDry || c.Tapered != (c.InitiallyTapered && c.Minimum == 0) || revision > 0 && (c.Epoch != last.Epoch+1 || hasRoundOrigin(c)) {
 					return roundUnavailable()
 				}
 				grantRevision = c.Revision
@@ -295,7 +319,7 @@ func validateRoundHistory(ctx context.Context, q EvidenceQuery, project string, 
 					}
 					grantRevision = 1
 					progress, err = roundEpochProgress(ctx, q, c, v.action)
-				} else if c.Epoch != last.Epoch || c.Minimum != last.Minimum || c.Maximum != last.Maximum || c.Taper != last.Taper {
+				} else if c.Epoch != last.Epoch || c.Minimum != last.Minimum || c.Maximum != last.Maximum || c.Taper != last.Taper || c.InitialDry != last.InitialDry || c.InitiallyTapered != last.InitiallyTapered || c.OriginSource != last.OriginSource || c.OriginKey != last.OriginKey || c.OriginSHA256 != last.OriginSHA256 {
 					return roundUnavailable()
 				}
 				if err == nil && (c.Used >= int64(len(progress)) || c.Used < last.Used || c.Dry != progress[c.Used].dry || c.Tapered != progress[c.Used].tapered) {

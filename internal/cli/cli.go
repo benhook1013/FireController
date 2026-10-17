@@ -73,6 +73,7 @@ type invocation struct {
 	history            *historyInvocation
 	reviewRun          *reviewRunInvocation
 	rounds             *reviewRoundsInvocation
+	roundAdoption      *roundAdoptionInvocation
 
 	waitSeconds int
 }
@@ -130,6 +131,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.reviewTransfer != nil {
 		if err := prepareReviewTransfer(ctx, call.reviewTransfer); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+	}
+	if call.roundAdoption != nil {
+		if err := prepareRoundAdoption(ctx, call.roundAdoption); err != nil {
 			return reportClientError(stderr, err, ctx)
 		}
 	}
@@ -200,6 +206,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	defer service.Close()
 	if call.reviewRun != nil {
 		return executeReviewRun(requestCtx, ctx, service, call.reviewRun, stdout, stderr)
+	}
+	if call.roundAdoption != nil {
+		return executeRoundAdoption(requestCtx, ctx, service, call.roundAdoption, stdout, stderr)
 	}
 	if call.rounds != nil {
 		return executeReviewRounds(requestCtx, ctx, service, call.rounds, stdout, stderr)
@@ -410,6 +419,9 @@ func parseInvocation(args []string) (invocation, bool) {
 		return call, ok
 	}
 	if call.command == "reviews" && call.subcommand == "rounds" {
+		if len(operationArgs) > 0 && operationArgs[0] == "adopt" {
+			return parseRoundAdoption(call, operationArgs[1:])
+		}
 		var ok bool
 		call.rounds, ok = parseReviewRounds(operationArgs)
 		return call, ok

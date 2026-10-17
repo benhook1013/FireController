@@ -17,6 +17,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/coordimportmodel"
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
 )
 
@@ -26,13 +27,14 @@ type Counts = coordimportmodel.Counts
 type Preview = coordimportmodel.Preview
 type Mapping = coordimportmodel.Mapping
 type Receipt = coordimportmodel.Receipt
+type MessageMapping = coordimportmodel.MessageMapping
 
 func EnsureSchema(ctx context.Context, store *core.Store) error {
 	return store.EnsureSchema(ctx, "coordination_import", []string{
 		`CREATE TABLE coordination_import_state(project_id TEXT PRIMARY KEY REFERENCES projects(id),revision INTEGER NOT NULL CHECK(revision>=1));`,
 		`CREATE TABLE coordination_import_records(project_id TEXT NOT NULL,source TEXT NOT NULL,source_key TEXT NOT NULL,job_id TEXT NOT NULL,import_revision INTEGER NOT NULL,item_sha256 TEXT NOT NULL,source_sha256 TEXT NOT NULL,item_json TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(project_id,source,source_key),UNIQUE(project_id,job_id),FOREIGN KEY(project_id,job_id) REFERENCES jobs(project_id,id),FOREIGN KEY(project_id,import_revision) REFERENCES coordination_import_batches(project_id,revision) DEFERRABLE INITIALLY DEFERRED);`,
 		`CREATE TABLE coordination_import_batches(project_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1),source TEXT NOT NULL,source_sha256 TEXT NOT NULL,payload_sha256 TEXT NOT NULL,actor_id TEXT NOT NULL,worker_id TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(project_id,revision),FOREIGN KEY(project_id) REFERENCES projects(id));`,
-	})
+	}, []string{messageSchemaSQL})
 }
 
 func Register(mux *http.ServeMux, store *core.Store) {
@@ -51,10 +53,10 @@ func validHash(s string) bool   { return len(s) == 64 && strings.Trim(s, "012345
 // Normalize checks the eventual apply wrapper as well as individual records,
 // so a valid preview cannot produce an oversized follow-up request.
 func Normalize(batch Batch) (Batch, []byte, error) {
-	if batch.Version != 1 || batch.RepositoryID <= 0 || batch.ExpectedRevision == nil || *batch.ExpectedRevision < 0 || *batch.ExpectedRevision == int64(^uint64(0)>>1) || batch.Source == "" || strings.TrimSpace(batch.Source) != batch.Source || len(batch.Source) > 200 || !utf8.ValidString(batch.Source) || strings.IndexFunc(batch.Source, unicode.IsControl) >= 0 || !validHash(batch.SourceSHA256) || len(batch.Jobs) < 1 || len(batch.Jobs) > 25 {
-		return Batch{}, nil, invalid("Provide a version-one prepared batch, repository identity, expected revision, source and digest, and one to twenty-five selected jobs.")
+	if batch.Version != 1 || batch.RepositoryID <= 0 || batch.ExpectedRevision == nil || *batch.ExpectedRevision < 0 || *batch.ExpectedRevision == int64(^uint64(0)>>1) || batch.Source == "" || strings.TrimSpace(batch.Source) != batch.Source || len(batch.Source) > 200 || !utf8.ValidString(batch.Source) || strings.IndexFunc(batch.Source, unicode.IsControl) >= 0 || !validHash(batch.SourceSHA256) || len(batch.Jobs)+len(batch.Messages) < 1 || len(batch.Jobs) > 25 || len(batch.Messages) > 100 {
+		return Batch{}, nil, invalid("Provide a version-one prepared batch, repository identity, expected revision, source and digest, and up to twenty-five jobs and one hundred selected messages.")
 	}
-	batch.Jobs = append([]jobs.PreparedJob(nil), batch.Jobs...)
+	batch.Jobs = append([]jobs.PreparedJob{}, batch.Jobs...)
 	keys := map[string]bool{}
 	checkpoints := 0
 	for i, item := range batch.Jobs {
@@ -71,6 +73,19 @@ func Normalize(batch Batch) (Batch, []byte, error) {
 			return Batch{}, nil, invalid("A prepared batch contains at most one hundred checkpoints.")
 		}
 		batch.Jobs[i] = normalized
+	}
+	batch.Messages = append([]inbox.PreparedMessage(nil), batch.Messages...)
+	messageKeys := map[string]bool{}
+	for i, item := range batch.Messages {
+		normalized, err := inbox.NormalizePreparedMessage(item)
+		if err != nil {
+			return Batch{}, nil, err
+		}
+		if messageKeys[normalized.SourceKey] {
+			return Batch{}, nil, invalid("Prepared message source keys must be unique.")
+		}
+		messageKeys[normalized.SourceKey] = true
+		batch.Messages[i] = normalized
 	}
 	body, err := json.Marshal(batch)
 	if err != nil {
@@ -225,6 +240,13 @@ func preview(store *core.Store) http.HandlerFunc {
 		err = store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
 			var e error
 			counts, _, e = admit(ctx, tx, scope, batch)
+			if e != nil {
+				return e
+			}
+			plans, e := admitMessages(ctx, tx, scope.ProjectID, batch)
+			if e == nil {
+				countMessages(&counts, plans)
+			}
 			return e
 		})
 		if err != nil {
@@ -271,6 +293,11 @@ func apply(store *core.Store) http.HandlerFunc {
 			if err != nil {
 				return nil, err
 			}
+			plans, err := admitMessages(ctx, tx, scope.ProjectID, batch)
+			if err != nil {
+				return nil, err
+			}
+			countMessages(&counts, plans)
 			receipt := Receipt{Revision: *batch.ExpectedRevision, Outcome: "unchanged", Counts: counts, Mappings: make([]Mapping, 0, len(batch.Jobs))}
 			now := time.Now().UTC().Format(time.RFC3339Nano)
 			for i, item := range batch.Jobs {
@@ -291,7 +318,10 @@ func apply(store *core.Store) http.HandlerFunc {
 					return nil, err
 				}
 			}
-			if counts.NewJobs > 0 {
+			if err := insertMessages(ctx, tx, scope.ProjectID, batch, plans, now, &receipt); err != nil {
+				return nil, err
+			}
+			if counts.NewJobs+counts.NewMessages > 0 {
 				receipt.Revision++
 				receipt.Outcome = "imported"
 				if _, err := tx.ExecContext(ctx, `INSERT INTO coordination_import_state(project_id,revision) VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET revision=excluded.revision`, scope.ProjectID, receipt.Revision); err != nil {
@@ -300,7 +330,11 @@ func apply(store *core.Store) http.HandlerFunc {
 				if _, err := tx.ExecContext(ctx, `INSERT INTO coordination_import_batches(project_id,revision,source,source_sha256,payload_sha256,actor_id,worker_id,created_at) VALUES(?,?,?,?,?,?,?,?)`, scope.ProjectID, receipt.Revision, batch.Source, batch.SourceSHA256, digest(body), scope.PrincipalID, scope.WorkerID, now); err != nil {
 					return nil, err
 				}
-				if err := core.AppendEvent(ctx, tx, scope, "coordination.imported", scope.ProjectID, receipt.Revision, map[string]int{"jobs": counts.NewJobs}); err != nil {
+				eventCounts := map[string]int{"jobs": counts.NewJobs}
+				if counts.NewMessages > 0 {
+					eventCounts["messages"] = counts.NewMessages
+				}
+				if err := core.AppendEvent(ctx, tx, scope, "coordination.imported", scope.ProjectID, receipt.Revision, eventCounts); err != nil {
 					return nil, err
 				}
 			}

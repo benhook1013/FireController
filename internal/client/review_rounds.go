@@ -6,26 +6,34 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ReviewRoundControl is the scoped retained allowance and progress for one channel.
 type ReviewRoundControl struct {
-	ProjectID  string `json:"project_id"`
-	PullNumber int64  `json:"pull_number"`
-	Channel    string `json:"channel"`
-	Configured bool   `json:"configured"`
-	Revision   int64  `json:"revision"`
-	Epoch      int64  `json:"epoch"`
-	Closed     bool   `json:"closed"`
-	Minimum    int64  `json:"minimum"`
-	Maximum    int64  `json:"maximum"`
-	Taper      int64  `json:"taper"`
-	Used       int64  `json:"used"`
-	Dry        int64  `json:"dry"`
-	Tapered    bool   `json:"tapered"`
-	ActorID    string `json:"actor_id"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	ProjectID        string `json:"project_id"`
+	PullNumber       int64  `json:"pull_number"`
+	Channel          string `json:"channel"`
+	Configured       bool   `json:"configured"`
+	Revision         int64  `json:"revision"`
+	Epoch            int64  `json:"epoch"`
+	Closed           bool   `json:"closed"`
+	Minimum          int64  `json:"minimum"`
+	Maximum          int64  `json:"maximum"`
+	Taper            int64  `json:"taper"`
+	Used             int64  `json:"used"`
+	Dry              int64  `json:"dry"`
+	Tapered          bool   `json:"tapered"`
+	ActorID          string `json:"actor_id"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
+	InitialDry       int64  `json:"initial_dry,omitempty"`
+	InitiallyTapered bool   `json:"initially_tapered,omitempty"`
+	OriginSource     string `json:"origin_source,omitempty"`
+	OriginKey        string `json:"origin_key,omitempty"`
+	OriginSHA256     string `json:"origin_sha256,omitempty"`
 }
 
 type ConfigureReviewRoundControlRequest struct {
@@ -87,7 +95,20 @@ func (c *Client) validRoundControl(r ReviewRoundControl, pull int64, channel str
 	if channel == "hosted" {
 		taper = 1
 	}
-	return r.Revision >= 1 && r.Epoch >= 1 && r.Epoch <= r.Revision && r.Maximum >= 1 && r.Maximum <= 1000 && r.Minimum >= 0 && r.Minimum <= r.Maximum && r.Taper == taper && r.Used >= 0 && r.Used <= r.Maximum && r.Dry >= 0 && r.Dry <= r.Used && (!r.Tapered || r.Used >= r.Minimum && r.Dry >= r.Taper) && validID(r.ActorID) && controlTime(r.CreatedAt) && controlTime(r.UpdatedAt)
+	origin := r.OriginSource != "" || r.OriginKey != "" || r.OriginSHA256 != ""
+	maximumMinimum := int64(1)
+	if origin {
+		text := func(s string) bool {
+			return s != "" && s == strings.TrimSpace(s) && len(s) <= 200 && utf8.ValidString(s) && strings.IndexFunc(s, unicode.IsControl) < 0
+		}
+		if !text(r.OriginSource) || !text(r.OriginKey) || !controlHex(r.OriginSHA256, 64) || r.InitialDry < 0 || r.InitialDry > 1000 || r.Taper < 1 || r.Taper > 1000 || r.InitialDry >= r.Taper && !r.InitiallyTapered {
+			return false
+		}
+		maximumMinimum = 0
+	} else if r.InitialDry != 0 || r.InitiallyTapered || r.Taper != taper {
+		return false
+	}
+	return r.Revision >= 1 && r.Epoch >= 1 && r.Epoch <= r.Revision && r.Maximum >= maximumMinimum && r.Maximum <= 1000 && r.Minimum >= 0 && r.Minimum <= r.Maximum && r.Used >= 0 && r.Used <= r.Maximum && r.Dry >= 0 && r.Dry <= r.Used+r.InitialDry && (!r.Tapered || r.Used >= r.Minimum && (r.InitiallyTapered || r.Dry >= r.Taper)) && (!r.InitiallyTapered || r.Used < r.Minimum || r.Tapered) && validID(r.ActorID) && controlTime(r.CreatedAt) && controlTime(r.UpdatedAt)
 }
 
 func (c *Client) ConfigureReviewRoundControl(ctx context.Context, pull int64, channel, key string, input ConfigureReviewRoundControlRequest) (ReviewRoundControlReceipt, error) {

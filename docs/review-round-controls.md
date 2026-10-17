@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The native service, bound CLI and MCP implement explicit per-PR/channel additional-round grants, minimum/exact requirements, taper, closure/reopening and persistent native completion accounting. Source preparation and final admission recheck the grant independently of captured coverage; policy/readiness and browser assessment reads show outstanding round requirements. Backup validation preserves the control history and native completion links. Focused checks are recorded below. The service owns channel-front selection for one explicit start command. Conversion of effective legacy operational controls remains implementation work. A grant alone performs no provider action and does not weaken the separate [review policy](reviews.md#project-policy).
+The native service, bound CLI and MCP implement explicit per-PR/channel additional-round grants, minimum/exact requirements, taper, closure/reopening and persistent native completion accounting. Source preparation and final admission recheck the grant independently of captured coverage; policy/readiness and browser assessment reads show outstanding round requirements. Backup validation preserves the control history and native completion links. Focused checks are recorded below. The service owns channel-front selection for one explicit start command. Prepared operational adoption and the offline source-helper adapter implement the selected carry boundary; acquiring a complete canonical source frame and real-project adoption remain separate steps. A grant alone performs no provider action and does not weaken the separate [review policy](reviews.md#project-policy).
 
 ## Operational controls
 
@@ -70,6 +70,27 @@ Run calls and reads share the established short wait, explicit longer wait and i
 Carry effective current round limits, minimum/exact requirements, taper state and channel closure into the new operational policy with explicit provenance. Retain original records privately; rebuilding commands for retrospective allocation/credit-period manipulation is outside the adoption requirement. A converter must report unsupported live behavior rather than silently substitute a different rule.
 
 Map source behavior tests to functional outcomes before implementation: additional allowance baselines, minimum/exact requests, eligible dry streaks and reset, closure/reopen isolation, independent queue advancement, head/parent movement, exhausted-versus-taper status and outstanding findings. Test observable scheduling and evidence results rather than copying legacy storage or command internals. Imported historical settings must not manufacture native captured review credit.
+
+## Prepared operational adoption
+
+An administrator can adopt one explicitly selected effective PR/channel rule through a prepared native preview/apply operation. The prepared record carries remaining minimum and maximum, initial dry streak, taper threshold, reached taper and explicit closure, together with repository identity, source identity/key and source digest. It is configuration provenance, never a captured review or completed native round. Native `used` begins at zero. A carried CLI dry streak of two therefore needs one further eligible zero-accepted round to reach the usual threshold of three; a later accepted native round resets that streak normally.
+
+Remaining maximum zero means already exhausted and does not grant a replacement round. Reached taper is sticky even if the source's current dry counter is lower after later observations. A carried reached threshold still waits for any remaining required minimum; later accepted rounds can reset the dry counter without erasing that reached threshold. The carried threshold is explicit; ordinary new grants still use the default channel threshold and clear the carried initial state. Closure, taper and exhaustion remain separate facts. Import does not satisfy current coverage, pending findings, CI or merge readiness.
+
+Adoption initializes an unconfigured destination PR/channel only. Preview binds the normalized record to the destination instance/project, current administrator/worker and expected control revision zero. Apply uses an explicit idempotency key and rechecks repository identity, configuration/queue/channel, current authority and absence of unresolved native operations for that PR/channel before committing control, original baseline, provenance, receipt and one compact round-setting event atomically. Same-key exact replay returns the original receipt after later native activity; changed input refuses. A different key cannot overwrite an adopted or subsequently edited control. Ordinary grants and close retain their existing authority and replay rules.
+
+The native prepared record accepts bounded remaining limits up to 1,000, a positive threshold up to 1,000, and an initial dry counter up to 1,000. Unsupported unbounded or larger source rules require an explicit operator decision rather than a substituted cap or reset. A source-specific helper must obtain effective counts and taper from the canonical source projection, refuse active/ambiguous or unchecked evidence, preserve its private input and digest, and report unsupported source behavior. A sealed database and raw review-row counts alone do not establish that projection. Source export and conversion belong to optional tooling; the service accepts only the generic prepared record.
+
+The bound administrator commands use an owner-private prepared file of at most 16 KiB:
+
+```sh
+fc reviews rounds adopt preview --file /private/import/control.json
+fc reviews rounds adopt apply --file /private/import/control.json --preview SHA256 --key selected-control
+```
+
+These are setup commands rather than worker MCP mutations. The [optional source adapter guide](../tools/legacyimport/README.md#prepare-effective-review-controls) owns source input requirements and refusal boundaries.
+
+Backup validation checks both the original carried baseline and subsequent genuine native completions, including ordinary closure and replacement grants. Upgrading a version-one round domain preserves its original rows/history and zero initial carry. The imported baseline never inserts native attempts, captures or completion rows. Focused native HTTP/client/CLI and backup tests cover carried accounting, guarded replay, version-one upgrade and corruption refusal. The optional source adapter has synthetic proof against explicitly selected copied helpers; the actual combined packaged control/message adoption workload has passed on a dirty candidate, with its scope and earlier fixture failures recorded in the [adoption proof](legacy-adoption.md#executed-message-and-operational-adoption-proof).
 
 ## Explicit selection proof
 

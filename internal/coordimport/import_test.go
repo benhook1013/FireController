@@ -183,7 +183,7 @@ func (f *importFixture) apply(batch coordimport.Batch, preview coordimport.Previ
 func (f *importFixture) snapshot(skipReceipts bool) map[string]string {
 	f.t.Helper()
 	out := map[string]string{}
-	for _, table := range []string{"metadata", "projects", "workers", "credentials", "grants", "receipts", "events", "jobs", "job_history", "job_checkpoints", "job_updates", "job_checklists", "job_checklist_history", "worker_primary_jobs", "worker_primary_job_history", "worker_pause_state", "worker_pause_history", "notes", "note_revisions", "inbox_conversations", "inbox_messages", "inbox_recipient_state", "coordination_import_state", "coordination_import_records", "coordination_import_batches", "sqlite_sequence"} {
+	for _, table := range []string{"metadata", "projects", "workers", "credentials", "grants", "receipts", "events", "jobs", "job_history", "job_checkpoints", "job_updates", "job_checklists", "job_checklist_history", "worker_primary_jobs", "worker_primary_job_history", "worker_pause_state", "worker_pause_history", "notes", "note_revisions", "inbox_conversations", "inbox_messages", "inbox_recipient_state", "coordination_import_state", "coordination_import_records", "coordination_import_batches", "coordination_import_messages", "sqlite_sequence"} {
 		if skipReceipts && table == "receipts" {
 			continue
 		}

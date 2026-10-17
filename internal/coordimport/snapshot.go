@@ -141,8 +141,22 @@ func ValidateSnapshot(ctx context.Context, db SnapshotReader) error {
 			break
 		}
 	}
+	version, err := importVersion(ctx, db)
+	if err != nil {
+		return err
+	}
+	if version == 2 {
+		if err = validateMessageSnapshot(ctx, db, state); err != nil {
+			return err
+		}
+	}
 	var emptyBatch bool
-	if err = db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM coordination_import_batches b WHERE NOT EXISTS(SELECT 1 FROM coordination_import_records r WHERE r.project_id=b.project_id AND r.import_revision=b.revision))`).Scan(&emptyBatch); err != nil {
+	emptyQuery := `SELECT EXISTS(SELECT 1 FROM coordination_import_batches b WHERE NOT EXISTS(SELECT 1 FROM coordination_import_records r WHERE r.project_id=b.project_id AND r.import_revision=b.revision)`
+	if version == 2 {
+		emptyQuery += ` AND NOT EXISTS(SELECT 1 FROM coordination_import_messages m WHERE m.project_id=b.project_id AND m.import_revision=b.revision)`
+	}
+	emptyQuery += `)`
+	if err = db.QueryRowContext(ctx, emptyQuery).Scan(&emptyBatch); err != nil {
 		return err
 	}
 	if emptyBatch {

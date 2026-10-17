@@ -26,12 +26,13 @@ type PreparedCheckpoint struct {
 }
 
 type Batch struct {
-	Version          int           `json:"version"`
-	RepositoryID     int64         `json:"repository_id"`
-	ExpectedRevision *int64        `json:"expected_revision"`
-	Source           string        `json:"source"`
-	SourceSHA256     string        `json:"source_sha256"`
-	Jobs             []PreparedJob `json:"jobs"`
+	Version          int               `json:"version"`
+	RepositoryID     int64             `json:"repository_id"`
+	ExpectedRevision *int64            `json:"expected_revision"`
+	Source           string            `json:"source"`
+	SourceSHA256     string            `json:"source_sha256"`
+	Jobs             []PreparedJob     `json:"jobs"`
+	Messages         []PreparedMessage `json:"messages,omitempty"`
 }
 
 type ApplyRequest struct {
@@ -40,10 +41,13 @@ type ApplyRequest struct {
 }
 
 type Counts struct {
-	Jobs          int `json:"jobs"`
-	Checkpoints   int `json:"checkpoints"`
-	NewJobs       int `json:"new_jobs"`
-	UnchangedJobs int `json:"unchanged_jobs"`
+	Jobs              int `json:"jobs"`
+	Checkpoints       int `json:"checkpoints"`
+	NewJobs           int `json:"new_jobs"`
+	UnchangedJobs     int `json:"unchanged_jobs"`
+	Messages          int `json:"messages,omitempty"`
+	NewMessages       int `json:"new_messages,omitempty"`
+	UnchangedMessages int `json:"unchanged_messages,omitempty"`
 }
 
 type Preview struct {
@@ -59,9 +63,16 @@ type Mapping struct {
 	JobID     string `json:"job_id"`
 }
 
+type MessageMapping struct {
+	SourceKey      string `json:"source_key"`
+	MessageID      string `json:"message_id"`
+	ConversationID string `json:"conversation_id"`
+}
+
 type Receipt struct {
-	Revision int64     `json:"revision"`
-	Outcome  string    `json:"outcome"`
-	Counts   Counts    `json:"counts"`
-	Mappings []Mapping `json:"mappings"`
+	Revision        int64            `json:"revision"`
+	Outcome         string           `json:"outcome"`
+	Counts          Counts           `json:"counts"`
+	Mappings        []Mapping        `json:"mappings"`
+	MessageMappings []MessageMapping `json:"message_mappings,omitempty"`
 }

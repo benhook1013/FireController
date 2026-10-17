@@ -222,13 +222,15 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"coordination_import": 1, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 5, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "review_rounds": 1, "review_selection": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 5, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "review_rounds": 2, "review_round_adoption": 1, "review_selection": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_selections":                 {"review_selection", 1, "id project_id actor_id worker_id channel configuration_revision policy_revision capability_fingerprint expected_pull_number state reason revision operation_id created_at updated_at"},
+	"review_round_adoptions":            {"review_round_adoption", 1, "project_id pull_number channel grant_revision epoch source source_key source_sha256 prepared_json"},
 	"review_round_controls":             {"review_rounds", 1, "project_id pull_number channel revision epoch grant_revision closed minimum maximum taper used dry tapered actor_id created_at updated_at"},
 	"review_round_changes":              {"review_rounds", 1, "project_id pull_number channel revision epoch action body_json worker_id"},
 	"review_round_operation_bindings":   {"review_rounds", 1, "operation_id project_id pull_number channel epoch grant_revision"},
 	"review_round_completions":          {"review_rounds", 1, "operation_id evidence_id project_id pull_number channel epoch ordinal accepted completed_at"},
+	"coordination_import_messages":      {"coordination_import", 2, "project_id source source_key message_id conversation_id reply_message_id import_revision item_sha256 source_sha256 item_json created_at"},
 	"coordination_import_state":         {"coordination_import", 1, "project_id revision"},
 	"coordination_import_records":       {"coordination_import", 1, "project_id source source_key job_id import_revision item_sha256 source_sha256 item_json created_at"},
 	"coordination_import_batches":       {"coordination_import", 1, "project_id revision source source_sha256 payload_sha256 actor_id worker_id created_at"},
@@ -603,6 +605,11 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, err
 		}
 	}
+	if versions["coordination_import"] >= 2 {
+		if err = validateCoordinationMessagesPhysicalSchema(ctx, db); err != nil {
+			return nil, err
+		}
+	}
 	for name := range actual {
 		if _, ok := tables[name]; !ok {
 			return nil, invalid()
@@ -623,6 +630,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			continue
 		}
 		columns := spec.columns
+		if name == "review_round_controls" && versions["review_rounds"] >= 2 {
+			columns += " initial_dry initially_tapered origin_source origin_key origin_sha256"
+		}
 		receiptPK := map[string]int{}
 		if name == "receipts" {
 			keys := []string{"principal_id", "project_id", "operation", "target", "key"}
@@ -914,6 +924,9 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 		if err = reviewexec.ValidateRoutePolicyFacts(ctx, tx); err != nil {
 			return invalid()
 		}
+	}
+	if versions["review_round_adoption"] > 0 && versions["review_rounds"] < 2 {
+		return invalid()
 	}
 	if versions["review_rounds"] > 0 {
 		if err = reviewexec.ValidateRoundSnapshot(ctx, tx); err != nil {
@@ -1276,10 +1289,12 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 
 var canonicalForeignKeys = map[string][]foreignKey{
 	"review_selections":                 {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_policy_config", "project_id,policy_revision", "project_id,revision", "NO ACTION")},
+	"review_round_adoptions":            {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
 	"review_round_controls":             {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
 	"review_round_changes":              {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_round_operation_bindings":   {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
 	"review_round_completions":          {canonicalFK("review_execution_evidence", "evidence_id", "id", "NO ACTION"), canonicalFK("review_round_operation_bindings", "operation_id,project_id,pull_number,channel,epoch", "operation_id,project_id,pull_number,channel,epoch", "NO ACTION")},
+	"coordination_import_messages":      {canonicalFK("inbox_messages", "project_id,message_id", "project_id,id", "NO ACTION"), canonicalFK("inbox_conversations", "project_id,conversation_id", "project_id,id", "NO ACTION"), canonicalFK("coordination_import_batches", "project_id,import_revision", "project_id,revision", "NO ACTION")},
 	"coordination_import_state":         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"coordination_import_records":       {canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION"), canonicalFK("coordination_import_batches", "project_id,import_revision", "project_id,revision", "NO ACTION")},
 	"coordination_import_batches":       {canonicalFK("projects", "project_id", "id", "NO ACTION")},
@@ -1422,6 +1437,28 @@ func validateForeignKeys(ctx context.Context, db sqlReader, table string) error 
 		if remaining != 0 {
 			return invalid()
 		}
+	}
+	return nil
+}
+
+// Message provenance is the additive coordination-import v2 table. Compare its
+// exact owning declaration, including deferred batch linkage, before reads.
+func validateCoordinationMessagesPhysicalSchema(ctx context.Context, db sqlReader) error {
+	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql END FROM sqlite_schema WHERE tbl_name='coordination_import_messages' AND sql IS NOT NULL LIMIT 2`)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var kind, name, definition string
+		if rows.Scan(&kind, &name, &definition) != nil || kind != "table" || name != "coordination_import_messages" || historyDefinitionSQL(definition) != historyDefinitionSQL(coordimport.MessageSchemaSQL()) {
+			return invalid()
+		}
+		count++
+	}
+	if rows.Err() != nil || count != 1 {
+		return invalid()
 	}
 	return nil
 }

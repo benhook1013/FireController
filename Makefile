@@ -4,9 +4,9 @@ GO_TEST_PACKAGES ?= ./...
 GO_TEST_RUN ?= .
 ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-.PHONY: check workflow-check fmt-check test build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke
+.PHONY: check workflow-check fmt-check test build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke source-converter-check
 
-check: workflow-check browser-check fmt-check test docs-check
+check: workflow-check browser-check fmt-check test docs-check source-converter-check
 
 workflow-check:
 	$(ACTIONLINT) -shellcheck="" -pyflakes="" .github/workflows/ci.yml
@@ -30,6 +30,7 @@ legacyimport:
 # Requires make build and make legacyimport; never rebuild during the workload.
 migration-smoke:
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedCoordinationImportSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -tags=packaged_smoke -run '^TestPackagedOperationalAdoptionSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 
 docs-check:
 	npm run docs:check
@@ -57,3 +58,7 @@ browser-smoke:
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedPublicBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedReviewArchiveSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+
+# Optional source adapters: no installed source root is discovered by tests.
+source-converter-check:
+	python3 -m unittest discover -s tools/legacyimport -p 'test_*.py'

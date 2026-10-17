@@ -19,8 +19,8 @@ import (
 
 const usage = `Usage: legacyimport inspect --snapshot ABSOLUTE_PATH [options]
 
-The separate prepare-jobs command prepares selected historical job snapshots;
-use legacyimport prepare-jobs --help for its explicit file selection.
+The prepare-jobs and prepare-messages commands prepare explicitly selected history;
+use either command with --help for its explicit file selection.
 
 Inspect a sealed legacy-controller SQLite snapshot. Output is compact JSON;
 the command does not modify the snapshot or contact a service.
@@ -54,6 +54,9 @@ func diagnostic(w io.Writer, code, message string) {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "prepare-messages" {
+		return runPrepareMessages(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "prepare-jobs" {
 		return runPrepare(ctx, args[1:], stdout, stderr)
 	}
