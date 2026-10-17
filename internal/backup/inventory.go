@@ -219,7 +219,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"project_publications":             {"public_site", 1, "project_id revision slug enabled manifest_json round_salt generation public_revision public_updated_at refresh_error"},
 	"public_project_snapshots":         {"public_site", 1, "project_id generation revision content_json created_at"},
@@ -230,6 +230,9 @@ var tables = map[string]tableVersion{
 	"project_map_entry_history":        {"project_map", 1, "project_id entry_id revision actor_id state_json created_at"},
 	"job_workstreams":                  {"project_map", 1, "project_id job_id revision workstream_id workstream_title"},
 	"job_workstream_history":           {"project_map", 1, "project_id job_id revision workstream_id workstream_title actor_id job_revision created_at"},
+	"project_map_import_sources":       {"project_map", 2, "project_id source_key revision record_json"},
+	"project_map_import_history":       {"project_map", 2, "project_id source_key revision actor_id worker_id record_json created_at"},
+	"project_map_import_items":         {"project_map", 2, "project_id source_key item_key entry_id entry_revision source_revision"},
 
 	"notes":                      {"jobs", 6, "project_id id worker_id job_id phase kind body status status_reason revision created_at updated_at"},
 	"note_revisions":             {"jobs", 6, "project_id note_id revision worker_id job_id phase kind body status status_reason created_at updated_at actor_id actor_worker_id recorded_at"},
@@ -332,17 +335,23 @@ func projectMapColumn(table, column, kind string, notnull, pk int, defaultValue 
 	case "project_id":
 		expectedPK = 1
 	case "id", "entry_id", "job_id":
+		if table != "project_map_import_items" {
+			expectedPK = 2
+		}
+	case "source_key":
 		expectedPK = 2
+	case "item_key":
+		expectedPK = 3
 	case "revision":
 		expectedKind = "INTEGER"
-		if table == "project_map_entry_history" || table == "job_workstream_history" {
+		if table == "project_map_entry_history" || table == "job_workstream_history" || table == "project_map_import_history" {
 			expectedPK = 3
 		}
-	case "archived", "job_revision":
+	case "archived", "job_revision", "entry_revision", "source_revision":
 		expectedKind = "INTEGER"
 	case "workstream_id":
 		expectedNull = 0
-	case "kind", "title", "state", "state_json", "actor_id", "created_at", "workstream_title":
+	case "kind", "title", "state", "state_json", "actor_id", "worker_id", "record_json", "created_at", "workstream_title":
 	default:
 		return false
 	}
@@ -947,6 +956,9 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"project_map_entry_history":    {canonicalFK("project_map_entries", "project_id,entry_id", "project_id,id", "CASCADE")},
 	"job_workstreams":              {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
 	"job_workstream_history":       {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
+	"project_map_import_sources":   {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"project_map_import_history":   {canonicalFK("project_map_import_sources", "project_id,source_key", "project_id,source_key", "CASCADE")},
+	"project_map_import_items":     {canonicalFK("project_map_import_sources", "project_id,source_key", "project_id,source_key", "CASCADE"), canonicalFK("project_map_entry_history", "project_id,entry_id,entry_revision", "project_id,entry_id,revision", "NO ACTION"), canonicalFK("project_map_import_history", "project_id,source_key,source_revision", "project_id,source_key,revision", "NO ACTION")},
 
 	"notes":                           {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
 	"note_revisions":                  {canonicalFK("notes", "project_id,note_id", "project_id,id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
