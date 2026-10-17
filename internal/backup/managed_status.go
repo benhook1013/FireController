@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"path/filepath"
 	"strings"
 
@@ -51,6 +52,17 @@ type Status struct {
 // independent of a particular filesystem or SQLite VFS pathname limit.
 func scheduleStatusFits(cfg ScheduleConfig) bool {
 	const latest = "9999-12-31T23:59:59.999999999Z"
+	const id = "backup_00000000000000000000000000000000"
+	// A destination must also fit the individual creation/inspection summary,
+	// including its generated bundle directory and JSON escaping. Reserving
+	// room for summaries in operator status does not establish this smaller cap.
+	probe := Summary{ID: id, State: "complete", SourceInstanceID: "instance_00000000000000000000000000000000", Path: filepath.Join(cfg.Destination, id),
+		SnapshotStartedAt: latest, SnapshotFinishedAt: latest, EventSequence: math.MaxInt64, DatabaseBytes: maxDatabaseBytes,
+		ArtifactCount: maxArtifacts, ArtifactBytes: int64(maxArtifacts) * maxHostedCaptureBytes}
+	body, err := json.Marshal(probe)
+	if err != nil || len(body)+1 > maxManualSummaryBytes {
+		return false
+	}
 	status := Status{State: "scheduled", Destination: cfg.Destination, Interval: cfg.Interval.String(), Timeout: cfg.Timeout.String(), Keep: cfg.Keep, NextAttemptAt: latest,
 		LastAttempt: &AttemptStatus{StartedAt: latest, FinishedAt: latest, State: "interrupted", Reason: "backup_retention_interrupted", SourceInstanceID: "instance_00000000000000000000000000000000"},
 		Retention:   &RetentionStatus{AttemptedAt: latest, State: "failed", Reason: "backup_retention_interrupted"}}

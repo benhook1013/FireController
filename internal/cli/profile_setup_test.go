@@ -349,8 +349,8 @@ func TestProfileSetupLauncherDefaultSelectionPreflightAndCancellation(t *testing
 	code, out, stderr := run(profileCreateArgs(profilesPath, "builder", "https://example.invalid"), nil)
 	setupResult(t, code, out, stderr, "configured", "builder")
 	output := filepath.Join(root, "fc-builder")
-	env := map[string]string{"FC_PROFILE": "builder", "XDG_CONFIG_HOME": root}
-	args := []string{"profile", "launcher", "--output", output}
+	env := map[string]string{"FC_PROFILE": "builder"}
+	args := []string{"--profiles-file", profilesPath, "profile", "launcher", "--output", output}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	var canceledOut, canceledErr bytes.Buffer
