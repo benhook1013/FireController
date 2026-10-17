@@ -16,7 +16,7 @@ make check build
 ./bin/fcd --data-dir /private/firecontroller --listen 127.0.0.1:8080
 ```
 
-`make check` type-checks the browser, runs its focused API/SSE tests, verifies Go formatting, runs Go tests with the race detector and `go vet`, and checks documentation. `make build` regenerates the embedded browser assets and produces CGO-free `fc`, `fcd` and `fcmcp` binaries. The [MCP guide](mcp.md) describes its local stdio tool interface. CI also cross-compiles Windows amd64 and macOS arm64; compilation is not proof that those platforms' configuration or runtime behavior works. Go's `GO` and `GOFMT` Make variables can select a locally installed toolchain. The browser guide documents committed asset verification and direct Go builds without Node.
+`make check` type-checks the browser, runs its focused API/SSE tests, verifies Go formatting, runs Go tests with the race detector using at most two concurrent packages and the unchanged ten-minute per-package timeout, runs `go vet`, and checks documentation. `make build` regenerates the embedded browser assets and produces CGO-free `fc`, `fcd` and `fcmcp` binaries. The [MCP guide](mcp.md) describes its local stdio tool interface. CI also cross-compiles Windows amd64 and macOS arm64; compilation is not proof that those platforms' configuration or runtime behavior works. Go's `GO` and `GOFMT` Make variables can select a locally installed toolchain. The browser guide documents committed asset verification and direct Go builds without Node.
 
 ## Private profile file
 
@@ -94,7 +94,7 @@ Native execution reads and explicit-key requests are described in [review execut
 
 ## Explicit agent mutations
 
-Quick local mutations use the same private profile and one five-second command budget. They send one request and return a compact completed resource/revision result; they do not reread full history. Such a result is not a pending-operation receipt. Variable-duration [source refresh](review-source.md) waits briefly for its useful result, with an operation receipt as fallback and an explicit wait override. Each invocation requires an explicit `--key` of at most 128 printable ASCII bytes without surrounding whitespace. Use a distinct key for each intended action and preserve it with the exact normalized request and binding for recovery. No command silently generates a replacement key or retries after a transport failure.
+Quick local mutations use the same private profile and one five-second command budget. They send one request and return a compact completed resource/revision result; they do not reread full history. Such a result is not a pending-operation receipt. Variable-duration [source refresh](review-source.md) and explicit [public review checkpoints](review-publication.md) wait briefly for a useful result, with an operation receipt as fallback and an explicit wait override. Each invocation requires an explicit `--key` of at most 128 printable ASCII bytes without surrounding whitespace. Use a distinct key for each intended action and preserve it with the exact normalized request and binding for recovery. No command silently generates a replacement key or retries after a transport failure.
 
 | Command | Required and optional request fields |
 | --- | --- |

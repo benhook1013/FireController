@@ -17,8 +17,9 @@ type sourceReaderProvider interface {
 	SourceReader() reviewexec.TargetReader
 }
 
-// Startup recovery commits before any observer starts or HTTP accepts work.
-// The returned owner joins the supervisor, source worker and observers during shutdown.
+// Review-attempt recovery commits before any observer starts. All worker
+// startup completes before HTTP accepts work; the returned owner joins the
+// supervisor, source/publication workers and observers.
 func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drivers map[string]reviewexec.Driver, diagnostics io.Writer) (<-chan error, error) {
 	if len(drivers) == 0 {
 		return nil, execution.RecoverInterrupted(ctx)
@@ -52,9 +53,14 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 	}
 	if startupErr == nil {
 		readers := make(map[string]reviewexec.TargetReader)
+		publications := make(map[string]reviewexec.CheckpointProvider)
 		for id, driver := range drivers {
 			if provider, ok := driver.(sourceReaderProvider); ok {
-				readers[id] = provider.SourceReader()
+				reader := provider.SourceReader()
+				readers[id] = reader
+				if publisher, ok := reader.(reviewexec.CheckpointProvider); ok {
+					publications[id] = publisher
+				}
 			}
 		}
 		done, err := execution.StartSourceRefresh(workerCtx, readers)
@@ -63,6 +69,15 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 			cancel()
 		} else if done != nil {
 			channels = append(channels, worker{done: done})
+		}
+		if startupErr == nil {
+			done, err = execution.StartCheckpointPublications(workerCtx, publications)
+			if err != nil {
+				startupErr = err
+				cancel()
+			} else if done != nil {
+				channels = append(channels, worker{done: done})
+			}
 		}
 	}
 	result := make(chan error, 1)

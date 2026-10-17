@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +15,8 @@ import (
 )
 
 const sourceCIMaxBytes = 8 << 20
+
+const sourceCILatestQuery = `SELECT id FROM review_source_refreshes WHERE project_id=? AND pull_number=? AND state='completed' AND (include_ci=1 OR include_readiness=1) ORDER BY created_at DESC,id DESC LIMIT 1`
 
 // SourceCISummary is an as-of CI observation, never permission to merge. Zero
 // required with state unproven means unknown requirements, not absence.
@@ -99,12 +100,12 @@ func decodeSourceCI(body string, r *sourceRefresh) error {
 		return refreshStorageError()
 	}
 	if body == "null" {
-		if r.IncludeCI && r.State == "completed" {
+		if (r.IncludeCI || r.IncludeReadiness) && r.State == "completed" {
 			return refreshStorageError()
 		}
 		return nil
 	}
-	if !r.IncludeCI || r.State != "completed" || r.Observation == nil {
+	if !(r.IncludeCI || r.IncludeReadiness) || r.State != "completed" || r.Observation == nil {
 		return refreshStorageError()
 	}
 	var observation reviewprovider.CIObservation
@@ -242,7 +243,7 @@ func (e *Engine) ReadSourceCIAssessment(ctx context.Context, scope core.Scope, n
 	var result SourceCIAssessment
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		var id string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM review_source_refreshes WHERE project_id=? AND pull_number=? AND state='completed' AND include_ci=1 ORDER BY created_at DESC,id DESC LIMIT 1`, scope.ProjectID, number).Scan(&id)
+		err := tx.QueryRowContext(ctx, sourceCILatestQuery, scope.ProjectID, number).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return core.Fail("reviews_ci_unavailable", "Explicitly refresh selected source with CI before assessing it.", 409)
 		}
@@ -257,28 +258,13 @@ func (e *Engine) ReadSourceCIAssessment(ctx context.Context, scope core.Scope, n
 			return refreshStorageError()
 		}
 		result = SourceCIAssessment{ProjectID: scope.ProjectID, RefreshID: r.ID, Source: "observed_ci", ConfigurationRevision: r.ConfigurationRevision, SourceObservedAt: r.Observation.ObservedAt, EvaluatedAt: stamp(), Target: *r.Observation, SourceCISummary: *r.CI}
-		c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
+		revision, reason, err := e.assessmentSourceBinding(ctx, tx, r)
 		if err != nil {
-			var failure *core.Error
-			if !errors.As(err, &failure) || failure.Code != "reviews_unconfigured" {
-				return err
-			}
-			result.ConfigurationRevision = 0
-			result.State, result.Reason = "held", "source_configuration_changed"
-			return nil
+			return err
 		}
 		result.ConfigurationRevision = revision
-		var repositoryID int64
-		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, scope.ProjectID).Scan(&repositoryID); err != nil {
-			return err
-		}
-		retained, err := sourceConfiguration(ctx, tx, scope.ProjectID, r.ConfigurationRevision)
-		if err != nil {
-			return err
-		}
-		cap, ok := e.capabilities[c.CapabilityID]
-		if !sameSourceConfiguration(c, retained) || repositoryID != r.repositoryID || !ok || e.validateConfiguration(c) != nil || c.CapabilityID != r.capability || cap.Fingerprint != r.fingerprint || !slices.Contains(c.Queue, number) {
-			result.State, result.Reason = "held", "source_configuration_changed"
+		if reason != "" {
+			result.State, result.Reason = "held", reason
 			return nil
 		}
 		var latestID string

@@ -20,5 +20,12 @@ func EnsureSourceRefreshSchema(ctx context.Context, store *core.Store) error {
 		`DROP INDEX review_source_refresh_coalesce`,
 		`CREATE INDEX review_source_refresh_coalesce ON review_source_refreshes(project_id,repository_id,pull_number,head_sha,configuration_revision,capability_fingerprint,actor_id,worker_id,include_ci,state) WHERE state IN ('queued','running')`,
 		`CREATE INDEX review_source_refresh_ci_target ON review_source_refreshes(project_id,pull_number,state,include_ci,created_at DESC,id DESC)`,
+	}, []string{
+		`ALTER TABLE review_source_refreshes ADD COLUMN include_readiness INTEGER NOT NULL DEFAULT 0 CHECK(include_readiness IN (0,1))`,
+		`ALTER TABLE review_source_refreshes ADD COLUMN review_state_json TEXT NOT NULL DEFAULT 'null'`,
+		`DROP INDEX review_source_refresh_coalesce`,
+		`CREATE INDEX review_source_refresh_coalesce ON review_source_refreshes(project_id,repository_id,pull_number,head_sha,configuration_revision,capability_fingerprint,actor_id,worker_id,include_ci,include_readiness,state) WHERE state IN ('queued','running')`,
+		`CREATE INDEX review_source_refresh_ci_latest ON review_source_refreshes(project_id,pull_number,created_at DESC,id DESC) WHERE state='completed' AND (include_ci=1 OR include_readiness=1)`,
+		`CREATE INDEX review_source_refresh_readiness ON review_source_refreshes(project_id,pull_number,created_at DESC,id DESC) WHERE state='completed' AND include_readiness=1`,
 	})
 }

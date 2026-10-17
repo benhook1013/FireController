@@ -94,8 +94,12 @@ func TestSourceCIOptionCoalescingFingerprintAndRestartMigration(t *testing.T) {
 	// Reconstruct the actual prior v1 table shape with retained queued facts. V2
 	// must preserve those rows/receipts while defaulting their new flag to false.
 	admissionSQL(t, f, `DELETE FROM review_source_refreshes WHERE id=?`, ci.ID)
-	admissionSQL(t, f, `DROP INDEX review_source_refresh_ci_target`)
 	admissionSQL(t, f, `DROP INDEX review_source_refresh_coalesce`)
+	admissionSQL(t, f, `DROP INDEX review_source_refresh_ci_latest`)
+	admissionSQL(t, f, `DROP INDEX review_source_refresh_readiness`)
+	admissionSQL(t, f, `ALTER TABLE review_source_refreshes DROP COLUMN include_readiness`)
+	admissionSQL(t, f, `ALTER TABLE review_source_refreshes DROP COLUMN review_state_json`)
+	admissionSQL(t, f, `DROP INDEX review_source_refresh_ci_target`)
 	admissionSQL(t, f, `ALTER TABLE review_source_refreshes DROP COLUMN include_ci`)
 	admissionSQL(t, f, `ALTER TABLE review_source_refreshes DROP COLUMN ci_observation_json`)
 	admissionSQL(t, f, `CREATE INDEX review_source_refresh_coalesce ON review_source_refreshes(project_id,repository_id,pull_number,head_sha,configuration_revision,capability_fingerprint,actor_id,worker_id,state) WHERE state IN ('queued','running')`)
@@ -111,12 +115,21 @@ func TestSourceCIOptionCoalescingFingerprintAndRestartMigration(t *testing.T) {
 	if err != nil || !strings.Contains(string(raw), plain.ID) {
 		t.Fatal("migration lost original key", string(raw), err)
 	}
-	var plan string
-	rows, err := f.store.DB().Query(`EXPLAIN QUERY PLAN SELECT id FROM review_source_refreshes WHERE project_id=? AND pull_number=? AND state='completed' AND include_ci=1 ORDER BY created_at DESC,id DESC LIMIT 1`, attemptProject, 2)
+	assertSourceAssessmentPlan(t, f, sourceCILatestQuery, "")
+	// This separate eligibility check proves the migrated partial index exists
+	// and supports the production predicate, without forcing the runtime planner.
+	partial := strings.Replace(sourceCILatestQuery, "FROM review_source_refreshes", "FROM review_source_refreshes INDEXED BY review_source_refresh_ci_latest", 1)
+	assertSourceAssessmentPlan(t, f, partial, "review_source_refresh_ci_latest")
+}
+
+func assertSourceAssessmentPlan(t *testing.T, f *attemptFixture, query, index string) {
+	t.Helper()
+	rows, err := f.store.DB().QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+query, attemptProject, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
+	var plan string
 	for rows.Next() {
 		var a, b, c int
 		var detail string
@@ -125,8 +138,12 @@ func TestSourceCIOptionCoalescingFingerprintAndRestartMigration(t *testing.T) {
 		}
 		plan += detail
 	}
-	if !strings.Contains(plan, "review_source_refresh_ci_target") || strings.Contains(plan, "TEMP B-TREE") {
-		t.Fatal("CI read not indexed", plan)
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	indexed := strings.ReplaceAll(plan, "USING COVERING INDEX ", "USING INDEX ")
+	if !strings.Contains(indexed, "SEARCH review_source_refreshes USING INDEX ") || !strings.Contains(plan, "project_id=? AND pull_number=?") || strings.Contains(plan, "TEMP B-TREE") || index != "" && !strings.Contains(indexed, "USING INDEX "+index+" ") {
+		t.Fatal("assessment selection is not indexed by target and retained order", plan)
 	}
 }
 

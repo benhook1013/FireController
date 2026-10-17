@@ -497,6 +497,9 @@ func reviewShape(data []byte, typ reflect.Type) bool {
 				}
 				return false
 			}
+			if typ == reflect.TypeOf(ReviewSourceReviewStateSummary{}) && name == "review_decision" && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				continue
+			}
 			if name == "duration_seconds" && field.Type.Kind() == reflect.Pointer && field.Type.Elem().Kind() == reflect.Int64 && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 				continue
 			}
