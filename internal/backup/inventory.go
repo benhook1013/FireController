@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -215,10 +216,19 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"jobs": 2, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
-	"restore_history":                  {"recovery_history", 1, "instance_id body_json"},
 	"managed_backup_publication_holds": {"managed_backup_publications", 1, "bundle_id destination source_instance_id manifest_sha256 summary_json"},
+	"notes":                            {"jobs", 6, "project_id id worker_id job_id phase kind body status status_reason revision created_at updated_at"},
+	"note_revisions":                   {"jobs", 6, "project_id note_id revision worker_id job_id phase kind body status status_reason created_at updated_at actor_id actor_worker_id recorded_at"},
+	"worker_pause_state":               {"jobs", 5, "project_id worker_id revision paused reason"},
+	"worker_pause_history":             {"jobs", 5, "project_id worker_id revision paused reason actor_id actor_worker_id created_at"},
+	"worker_primary_jobs":              {"jobs", 4, "project_id worker_id revision job_id"},
+	"worker_primary_job_history":       {"jobs", 4, "project_id worker_id revision job_id actor_id actor_worker_id reason created_at"},
+	"job_updates":                      {"jobs", 3, "sequence id project_id job_id job_revision actor_id worker_id body evidence_json created_at"},
+	"job_checklists":                   {"jobs", 3, "project_id job_id revision job_revision actor_id worker_id items_json created_at"},
+	"job_checklist_history":            {"jobs", 3, "project_id job_id revision job_revision actor_id worker_id items_json created_at"},
+	"restore_history":                  {"recovery_history", 1, "instance_id body_json"},
 	"managed_backup_state":             {"managed_backups", 1, "singleton body_json"},
 	"managed_backup_bundles":           {"managed_backups", 1, "sequence id destination source_instance_id manifest_sha256 created_at state"},
 	"metadata":                         {"", 1, "key value"}, "projects": {"", 1, "id name github_repository_id repository"}, "workers": {"", 1, "project_id id name"}, "credentials": {"", 1, "id principal_id token_sha256 is_admin revoked"}, "grants": {"", 1, "credential_id project_id can_read can_write"}, "receipts": {"", 1, "principal_id project_id operation target key fingerprint response_json"}, "events": {"", 1, "sequence project_id event_type resource_id revision actor_id payload_json created_at"},
@@ -231,6 +241,144 @@ var tables = map[string]tableVersion{
 	"review_adjudication_state": {"review_adjudication", 1, "evidence_id project_id revision body_json"}, "review_adjudication_changes": {"review_adjudication", 1, "evidence_id revision project_id actor_id kind finding_index input_json created_at"}, "review_finding_routes": {"review_adjudication", 2, "id project_id repository_id source_evidence_id finding_index source_pull_number source_head_sha target_pull_number state revision disposition has_fix created_at body_json"}, "review_finding_route_revisions": {"review_adjudication", 2, "route_id project_id revision actor_id kind created_at body_json"},
 	"review_source_refreshes":        {"review_source_refresh", 1, "id project_id repository_id actor_id worker_id configuration_revision capability_id capability_fingerprint pull_number head_sha state revision reason created_at updated_at observation_json"},
 	"review_checkpoint_publications": {"review_checkpoint_publication", 1, "id project_id evidence_id state revision created_at body_json"}, "review_checkpoint_revisions": {"review_checkpoint_publication", 1, "publication_id revision actor_id created_at body_json"}, "review_checkpoint_intents": {"review_checkpoint_publication", 1, "publication_id revision body_json"},
+}
+
+// workerStateColumn preserves the composite identities and explicit values
+// required by worker-state UPSERTs and immutable per-worker revision history.
+func workerStateColumn(table, column, kind string, notnull, pk int, defaultValue any) bool {
+	if defaultValue != nil {
+		return false
+	}
+	history := table == "worker_primary_job_history" || table == "worker_pause_history"
+	pause := table == "worker_pause_state" || table == "worker_pause_history"
+	expectedKind, expectedNotNull, expectedPK := "TEXT", 1, 0
+	switch column {
+	case "project_id":
+		expectedPK = 1
+	case "worker_id":
+		expectedPK = 2
+	case "revision":
+		expectedKind = "INTEGER"
+		if history {
+			expectedPK = 3
+		}
+	case "job_id":
+		if pause {
+			return false
+		}
+		expectedNotNull = 0
+	case "paused":
+		if !pause {
+			return false
+		}
+		expectedKind = "INTEGER"
+	case "reason":
+		if !history && !pause {
+			return false
+		}
+	case "actor_id", "actor_worker_id", "created_at":
+		if !history {
+			return false
+		}
+	default:
+		return false
+	}
+	return kind == expectedKind && notnull == expectedNotNull && pk == expectedPK
+}
+
+func noteColumn(table, column, kind string, notnull, pk int, defaultValue any) bool {
+	if defaultValue != nil {
+		return false
+	}
+	expectedKind, expectedNull, expectedPK := "TEXT", 1, 0
+	switch column {
+	case "project_id":
+		expectedPK = 1
+	case "id", "note_id":
+		expectedPK = 2
+	case "revision":
+		expectedKind = "INTEGER"
+		if table == "note_revisions" {
+			expectedPK = 3
+		}
+	case "worker_id", "job_id":
+		expectedNull = 0
+	case "phase", "kind", "body", "status", "status_reason", "created_at", "updated_at", "actor_id", "actor_worker_id", "recorded_at":
+	default:
+		return false
+	}
+	return kind == expectedKind && notnull == expectedNull && pk == expectedPK
+}
+
+// These identities are required by checklist UPSERTs, immutable revisions and
+// server-generated update sequences. Column names alone do not establish them.
+func jobProgressColumn(table, column, kind string, notnull, pk int, defaultValue any) bool {
+	if defaultValue != nil {
+		return false
+	}
+	expectedKind, expectedNull, expectedPK := "TEXT", 1, 0
+	updates := table == "job_updates"
+	switch column {
+	case "sequence":
+		if !updates {
+			return false
+		}
+		expectedKind, expectedNull, expectedPK = "INTEGER", 0, 1
+	case "project_id":
+		if !updates {
+			expectedPK = 1
+		}
+	case "job_id":
+		if !updates {
+			expectedPK = 2
+		}
+	case "revision":
+		if updates {
+			return false
+		}
+		expectedKind = "INTEGER"
+		if table == "job_checklist_history" {
+			expectedPK = 3
+		}
+	case "job_revision":
+		expectedKind = "INTEGER"
+	case "id", "body", "evidence_json":
+		if !updates {
+			return false
+		}
+	case "items_json":
+		if updates {
+			return false
+		}
+	case "actor_id", "worker_id", "created_at":
+	default:
+		return false
+	}
+	return kind == expectedKind && notnull == expectedNull && pk == expectedPK
+}
+
+// SQLite exposes the primary-key shape through table_xinfo but not whether its
+// generated rowid is AUTOINCREMENT. Verify the supported migration's leading
+// declaration, rather than matching that keyword inside comments or strings.
+var jobUpdateSequence = regexp.MustCompile(`(?i)^CREATE\s+TABLE\s+(?:job_updates|"job_updates")\s*\(\s*sequence\s+INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\s*,`)
+
+func validateJobUpdateIdentity(ctx context.Context, db sqlReader) error {
+	var definition sql.NullString
+	if db.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(sql AS BLOB))<=4096 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='table' AND name='job_updates'`).Scan(&definition) != nil || !definition.Valid || !jobUpdateSequence.MatchString(definition.String) {
+		return invalid()
+	}
+	// The generated opaque ID is independently unique; an index with extra
+	// columns, an expression, a partial predicate or another collation cannot
+	// substitute for that identity. Index names are not part of the contract.
+	var uniqueID bool
+	if db.QueryRowContext(ctx, `SELECT EXISTS (
+ SELECT 1 FROM pragma_index_list('job_updates') i WHERE i."unique"=1 AND i.partial=0
+ AND (SELECT count(*) FROM pragma_index_xinfo(i.name) WHERE key=1)=1
+ AND EXISTS (SELECT 1 FROM pragma_index_xinfo(i.name) WHERE key=1 AND name='id' AND cid>=0 AND coll='BINARY')
+)`).Scan(&uniqueID) != nil || !uniqueID {
+		return invalid()
+	}
+	return nil
 }
 
 func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[string]int, error) {
@@ -360,6 +508,18 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if (name == "worker_primary_jobs" || name == "worker_primary_job_history" || name == "worker_pause_state" || name == "worker_pause_history") && !workerStateColumn(name, col, kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
+			if (name == "notes" || name == "note_revisions") && !noteColumn(name, col, kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
+			if (name == "job_updates" || name == "job_checklists" || name == "job_checklist_history") && !jobProgressColumn(name, col, kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			present[col] = true
 		}
 		e = columnRows.Err()
@@ -378,6 +538,11 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		}
 		if err = validateForeignKeys(ctx, db, name); err != nil {
 			return nil, err
+		}
+		if name == "job_updates" {
+			if err = validateJobUpdateIdentity(ctx, db); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if version == 2 {
@@ -484,6 +649,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	foreign.Close()
 	if bad || err != nil {
 		return invalid()
+	}
+	if versions["jobs"] >= 6 {
+		if err = jobs.ValidateNotesSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
 	}
 	refs := map[string]Artifact{}
 	for _, a := range m.Artifacts {
@@ -638,6 +811,15 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"notes":                           {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
+	"note_revisions":                  {canonicalFK("notes", "project_id,note_id", "project_id,id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
+	"worker_pause_state":              {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
+	"worker_pause_history":            {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
+	"worker_primary_jobs":             {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
+	"worker_primary_job_history":      {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
+	"job_updates":                     {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"job_checklists":                  {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"job_checklist_history":           {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
 	"restore_history":                 {},
 	"workers":                         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"grants":                          {canonicalFK("credentials", "credential_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},

@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The embedded [read-only browser](browser-guide.md) consumes the same API and persistent message stream. [Job checkpoints](job-checkpoints.md) implement guarded progress records, latest reads and explicit archives. The optional native CLI/hosted review pipelines, private operator catalog and bound agent tools are described in [review execution](review-execution.md), including their executed proof and live-provider limits. Local operator [backup bundles and inactive restore](backups.md) and managed scheduling, retention and read-only operator status are implemented with full checks and packaged proof. CLI/MCP persistent subscriptions and the remaining advanced job features are unimplemented.
+`fc version` and `fc context` are local commands: they contact no service or provider and write no configuration. `context` validates a selected profile and returns its configured identity, excluding the credential reference. It does not verify server identity, authenticate, or establish a connection. The coordination slice also implements the loopback `fcd` service, scoped projects/workers and access grants, basic jobs with revision history, and durable messages with explicit seen/acknowledgment. These operations are available through the [local API](local-api.md). The profile-bound CLI implements the read commands and explicit-key mutations documented below. The embedded [read-only browser](browser-guide.md) consumes the same API and persistent message stream. [Job checkpoints](job-checkpoints.md) implement guarded progress records, latest reads and explicit archives. The optional native CLI/hosted review pipelines, private operator catalog and bound agent tools are described in [review execution](review-execution.md), including their executed proof and live-provider limits. Local operator [backup bundles and inactive restore](backups.md) and managed scheduling, retention and read-only operator status are implemented with full checks and packaged proof. [Narrative updates and checklist state](job-progress.md) are available through the same API and agent clients. [Optional primary-job focus](worker-focus.md) is available through bound API/client/CLI/MCP operations. [Worker pause](worker-pause.md) and [deferred notes](notes.md) have API/client/CLI/MCP implementations; each owner records executed proof and remaining boundaries. [Job resume context](job-context.md) combines current state and selected pending coordination through an explicit read; its owner records validation status. CLI/MCP persistent subscriptions remain unimplemented.
 
 ## Build and checks
 
@@ -67,12 +67,24 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | --- | --- |
 | `fc doctor` | Verified instance/project/worker binding, without credentials or a PR scan. |
 | `fc workers list` | One compact worker page in the bound project. |
+| `fc jobs context JOB_ID [--limit N]` | Complete current brief/checkpoint/checklist plus bound-worker focus/pause and pending previews, explicit omissions, continuation cursors and incoming-event watermark. |
+| `fc notes read NOTE_ID` | One full current note. |
+| `fc notes list` | One compact pending page for the bound worker and its currently assigned jobs; explicit scope/filter flags narrow or broaden selection. |
+| `fc notes history NOTE_ID` | One compact immutable-revision page. |
+| `fc notes revision NOTE_ID REVISION` | One full selected revision. |
+| `fc workers pause-state` | Bound worker’s explicit pause, reason and independent revision. |
+| `fc workers pause-history` | One explicit bounded pause-history page. |
 | `fc jobs list` | One compact job page; optional worker/status filters. |
+| `fc jobs primary` | Bound worker’s compact primary-job selection and independent revision. |
+| `fc jobs primary-history` | One explicit bounded page of primary-job changes. |
 | `fc jobs assigned` | One compact page filtered to the bound worker; optional status filter. |
 | `fc jobs read ID` | Explicit full job detail and brief. |
 | `fc jobs history ID` | Explicit bounded revision-history page. |
 | `fc jobs checkpoint-latest ID` | Explicit latest checkpoint with current job revision, or an explicit null checkpoint. |
 | `fc jobs checkpoints ID` | Explicit newest-first checkpoint archive page. |
+| `fc jobs updates ID` | Explicit newest-first narrative-update page. |
+| `fc jobs checklist ID` | Current ordered checklist, its revision and the current job revision. |
+| `fc jobs checklist-history ID` | Explicit newest-first full checklist revision page. |
 | `fc reviews execution` | Stored project execution configuration and revision; no provider check. |
 | `fc reviews operation ID` | Explicit retained native operation state and reason. |
 | `fc reviews queue` | Stored review queue; defaults to five compact PR entries. |
@@ -96,13 +108,21 @@ Native execution reads and explicit-key requests are described in [review execut
 
 ## Explicit agent mutations
 
+[Primary-job replacement](worker-focus.md#agent-surfaces-and-proof) uses `jobs primary-set JOB_ID` or `jobs primary-clear`, with the independent focus `--expect-revision` and explicit `--key`. The target worker comes from the profile. It never changes job status or selects a primary automatically.
+
 Quick local mutations use the same private profile and one five-second command budget. They send one request and return a compact completed resource/revision result; they do not reread full history. Such a result is not a pending-operation receipt. Variable-duration [source refresh](review-source.md) and explicit [public review checkpoints](review-publication.md) wait briefly for a useful result, with an operation receipt as fallback and an explicit wait override. Each invocation requires an explicit `--key` of at most 128 printable ASCII bytes without surrounding whitespace. Use a distinct key for each intended action and preserve it with the exact normalized request and binding for recovery. No command silently generates a replacement key or retries after a transport failure.
 
 | Command | Required and optional request fields |
 | --- | --- |
+| `fc notes add --body TEXT --key KEY` | Reminder for the bound worker by default; explicit job/phase/worker and body-file selection follow the [note contract](notes.md). |
+| `fc notes update NOTE_ID --expect-revision N --key KEY` | Patch only supplied scope, kind, body or status fields; consuming a note requires no unchanged body echo. |
+| `fc workers pause --reason TEXT --key KEY --expect-revision N` | Guarded bound-worker coordination pause; reason is explicit, including an empty string. |
+| `fc workers resume --key KEY --expect-revision N` | Explicitly clear the pause and reason without changing jobs or focus. |
 | `fc jobs create --key KEY --title TITLE` | Optional `--brief TEXT`, `--worker ID`, `--status STATUS`; defaults to active. |
 | `fc jobs edit ID --key KEY --expect-revision N` | At least one of `--title`, `--brief`, `--worker`, `--status`; empty brief or worker explicitly clears that field. |
 | `fc jobs checkpoint ID --key KEY --expect-revision N --done TEXT --next TEXT` | Optional `--blocker TEXT`, repeatable `--evidence REF`; append immutable progress without editing the job. |
+| `fc jobs update ID --key KEY --expect-revision N --body TEXT` | Optional repeatable `--evidence REF`; append a narrative update without editing the job or checkpoint. |
+| `fc jobs checklist-set ID --key KEY --expect-revision N --expect-checklist-revision C` | Exactly one of `--items JSON` or `--items-file PATH`; guarded ordered replacement, with unchanged content reported explicitly. |
 | `fc inbox send --key KEY --to WORKER_ID --body TEXT` | Optional `--reply-to MESSAGE_ID`; the bound worker is the sender. |
 | `fc inbox seen MESSAGE_ID --key KEY` | Only the bound actual recipient can change seen state. |
 | `fc inbox ack MESSAGE_ID --key KEY` | Only the bound actual recipient can acknowledge; acknowledgment also establishes seen state. |

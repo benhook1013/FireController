@@ -28,7 +28,7 @@ func parseCheckpoint(args []string) (*mutationInvocation, bool) {
 		}
 		if !assigned {
 			i++
-			if i >= len(args) || strings.HasPrefix(args[i], "--") {
+			if i >= len(args) {
 				return nil, false
 			}
 			value = args[i]

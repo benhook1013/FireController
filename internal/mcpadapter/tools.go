@@ -15,6 +15,7 @@ import (
 )
 
 type arguments struct {
+	notes                      *noteToolCall
 	reviewCheckpoint           client.ReviewCheckpointRequest
 	reviewCheckpointRecovery   client.ReviewCheckpointRecovery
 	limit                      int
@@ -28,6 +29,10 @@ type arguments struct {
 	edit                       client.EditJobRequest
 	send                       client.SendMessageRequest
 	checkpoint                 client.AppendCheckpointRequest
+	update                     client.AppendUpdateRequest
+	checklist                  client.ReplaceChecklistRequest
+	primary                    client.ReplacePrimaryJobRequest
+	pause                      client.ReplaceWorkerPauseRequest
 	reviewRoute                client.ReviewRouteRequest
 	reviewRouteDecision        client.ReviewRouteDecisionRequest
 	reviewRouteFix             client.ReviewRouteFixRequest
@@ -46,14 +51,29 @@ type definition struct {
 func boundServer(binding profile.Binding) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 64})
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
+	definitions = append(definitions, jobProgressDefinitions()...)
+	definitions = append(definitions, primaryJobDefinitions()...)
+	definitions = append(definitions, workerPauseDefinitions()...)
+	definitions = append(definitions, noteDefinitions()...)
+	definitions = append(definitions, jobContextDefinition())
 	known := make(map[string]bool)
 	for _, tool := range definitions {
 		known[tool.name] = true
-		write := checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
+		write := noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		openWorld := checkpointWrite(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		destructive := tool.name == "job_edit" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
+		destructive := tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			args, err := parseArguments(tool.name, request.Params.Arguments)
+			var args arguments
+			var err error
+			if tool.name == "job_context" {
+				args, err = jobContextArguments(request.Params.Arguments)
+			} else if noteTool(tool.name) {
+				args, err = noteArguments(tool.name, request.Params.Arguments)
+			} else if workerPauseTool(tool.name) {
+				args, err = workerPauseArguments(tool.name, request.Params.Arguments)
+			} else {
+				args, err = parseArguments(tool.name, request.Params.Arguments)
+			}
 			if err != nil {
 				return resultFailure(err), nil
 			}
@@ -74,6 +94,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			options := client.PageOptions{Limit: args.limit, Cursor: args.cursor}
 			var value any
 			switch tool.name {
+			case "job_context":
+				value, err = service.JobContext(ctx, args.id, args.limit)
+			case "note_create", "note_update", "note_read", "note_list", "note_history", "note_revision_read":
+				value, err = executeNoteTool(ctx, service, args.notes)
 			case "doctor":
 				if _, err = service.Worker(ctx); err == nil {
 					value = struct {
@@ -133,12 +157,24 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.RecordReviewFix(ctx, args.key, args.id, args.reviewFix)
 			case "review_source_finalize":
 				value, err = service.FinalizeReviewSource(ctx, args.key, args.id, args.reviewFinalize)
+			case "worker_pause_read":
+				value, err = service.WorkerPause(ctx)
+			case "worker_pause_replace":
+				value, err = service.ReplaceWorkerPause(ctx, args.key, args.pause)
+			case "worker_pause_history":
+				value, err = service.WorkerPauseHistory(ctx, options)
 			case "workers_list":
 				value, err = service.Workers(ctx, options)
 			case "jobs_list":
 				value, err = service.Jobs(ctx, options, client.JobFilter{WorkerID: args.worker, Status: args.status})
 			case "jobs_assigned":
 				value, err = service.Jobs(ctx, options, client.JobFilter{WorkerID: binding.Context.WorkerID, Status: args.status})
+			case "job_primary_read":
+				value, err = service.PrimaryJob(ctx)
+			case "job_primary_history":
+				value, err = service.PrimaryJobHistory(ctx, options)
+			case "job_primary_replace":
+				value, err = service.ReplacePrimaryJob(ctx, args.key, args.primary)
 			case "job_read":
 				value, err = service.Job(ctx, args.id)
 			case "job_history":
@@ -149,6 +185,16 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.CheckpointHistory(ctx, args.id, options)
 			case "job_checkpoint_append":
 				value, err = service.AppendCheckpoint(ctx, args.key, args.id, args.checkpoint)
+			case "job_update_append":
+				value, err = service.AppendJobUpdate(ctx, args.key, args.id, args.update)
+			case "job_update_history":
+				value, err = service.JobUpdates(ctx, args.id, options)
+			case "job_checklist_read":
+				value, err = service.JobChecklist(ctx, args.id)
+			case "job_checklist_replace":
+				value, err = service.ReplaceJobChecklist(ctx, args.key, args.id, args.checklist)
+			case "job_checklist_history":
+				value, err = service.JobChecklistHistory(ctx, args.id, options)
 			case "inbox_list":
 				value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack})
 			case "inbox_snapshot":

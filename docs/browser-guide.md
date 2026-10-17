@@ -22,6 +22,8 @@ Job detail reads the latest [checkpoint](job-checkpoints.md), including its capt
 
 Native run details include an explicit **Assess captured comparison** panel for the current local review requirements. Opening it reads the [captured-comparison assessment](review-controls.md#captured-comparison-assessment); closing cancels its request, and reopening reads again. Imported history has no assessment control. The panel shows the returned captured target and observation time separately from policy evaluation; it does not verify current GitHub source, CI or merge readiness. Closed panels and ordinary queue reads perform no assessment request.
 
+Job details also show the current read-only ordered [checklist](job-progress.md), with explicit controls for narrative updates and checklist history. Archives load one page only when opened; closing cancels that view and removes it from refresh, and reopening reads current stored data. Brief/checklist revision differences prompt a refresh without hiding the standing brief. Progress text and evidence remain escaped plain text.
+
 “Refresh visible data” rereads only active stored-data queries. There is no timer-based JSON polling, focus-triggered refresh or provider refresh. Jobs and workers update when explicitly refreshed. Only incoming message changes currently have live transport; a connected inbox indicator does not claim that jobs, reviews or maps are live.
 
 ## Live delivery and failures
