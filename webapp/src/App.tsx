@@ -282,7 +282,7 @@ function Connect({ projectId, busy, notice, onConnect, reconnect, cancel }: { pr
   const [token, setToken] = useState('');
   const [allowWrites, setAllowWrites] = useState(false);
   function submit(event: FormEvent) { event.preventDefault(); const supplied = token; setToken(''); onConnect(project, supplied, allowWrites); }
-  return <main className="connect-layout"><section className="connect-intro"><h1>Keep work<br /> moving.</h1><p>A clear view of your workers, jobs and conversations.</p><div className="intro-rule" /><p className="quiet-light">Connect to a project on this service to begin.</p></section>
+  return <main className="connect-layout"><section className="connect-intro"><h1>Keep work<br /> moving.</h1><p>A clear view of your AI agents, their jobs, and your review and merge trains.</p><div className="intro-rule" /><p className="quiet-light">Connect to a project on this service to begin.</p></section>
     <section className="connect-card"><h2>Connect to a project</h2>
       {notice && <div className="notice" role="alert">{notice}</div>}
       {reconnect && !busy && <button type="button" onClick={reconnect}>Reconnect to project</button>}
