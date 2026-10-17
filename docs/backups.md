@@ -126,3 +126,9 @@ Clean runtime `2b00cebeed2f9e46782d94659359c8eeda050040` passed the seven existi
 ## Public website recovery
 
 Backups include the optional public publication settings and retained approved snapshots. Inspection validates their exact schema, canonical content, opaque public references and current revision pointers; a rehashed malformed bundle is still rejected. A restored instance serves no anonymous current/history/events until explicit coordination activation. Activation restores access to a retained enabled publication; a disabled publication stays disabled. Re-enabling a disabled publication starts a new generation, so old public history links and event cursors cannot cross into it. The [public website contract](public-site.md) owns publication and privacy behavior. Focused bundle tests cover preservation, inactive refusal, activation and malformed content/schema; they do not establish remote deployment recovery.
+
+## Terminal scheduler result recovery
+
+Creation failures and recorded retention outcomes settle worker state and its next due time in the same transaction. A stop before the outer scheduler update therefore preserves the terminal result on restart, including after local clock rollback. A failed creation never creates a new pruning result. Reconciliation of older running records preserves an existing retention result recorded at or after the completed creation; retained retention is the last recorded fact, not proof that an ambiguous older attempt pruned successfully.
+
+The restart-result regression reproduces overwritten outcomes before the fix and covers failed creation, completed/failed pruning, genuine pending pruning, the terminal transaction boundary and clock rollback. Focused normal/race checks passed; the broader managed-backup and profile regressions passed race checks in 131.044 and 2.205 seconds. This does not inject a driver-level lost commit acknowledgement or establish operational disaster recovery.
