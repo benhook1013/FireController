@@ -41,6 +41,16 @@ func newHistorySnapshotWrite(project string, revision int64) *historySnapshotWri
 	return &historySnapshotWrite{project: project, revision: revision, pending: map[string]historyCurrentChange{}}
 }
 
+func (w *historySnapshotWrite) historyRead(tx *sql.Tx) HistoryQuery {
+	if w.reads == nil {
+		w.reads = newHistoryReads(tx)
+	}
+	if w.reads.tx != tx {
+		return tx
+	}
+	return w.reads
+}
+
 func historyInconsistent() error {
 	return core.Fail("storage_unavailable", "Retained review history is inconsistent.", 500)
 }

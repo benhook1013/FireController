@@ -2,7 +2,6 @@ package reviews
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"sort"
 	"strings"
@@ -44,7 +43,7 @@ func scanOrderedCurrentRun(row interface{ Scan(...any) error }, number int64) (o
 // recentCurrentRuns reduces only the indexed old top three and the bounded
 // staged changes. Historical intervals are not scanned, and current references
 // remain unchanged until the caller has finished all prospective reads.
-func (w *historySnapshotWrite) recentCurrentRuns(ctx context.Context, tx *sql.Tx, number int64) ([]RunSummary, error) {
+func (w *historySnapshotWrite) recentCurrentRuns(ctx context.Context, tx HistoryQuery, number int64) ([]RunSummary, error) {
 	changed := []historyCurrentChange{}
 	args := []any{w.project, number}
 	for _, change := range w.pending {

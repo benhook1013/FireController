@@ -109,10 +109,11 @@ type RoundFacts struct {
 }
 
 type ReviewFacts struct {
-	Number    int64
-	Lifecycle string
-	CLI       []RoundFacts
-	Hosted    []RoundFacts
+	Number                    int64
+	Lifecycle                 string
+	CLI                       []RoundFacts
+	Hosted                    []RoundFacts
+	CLIHasMore, HostedHasMore bool
 }
 
 type PublicRound struct {
@@ -126,12 +127,14 @@ type PublicRound struct {
 }
 
 type PublicReview struct {
-	Number    int64         `json:"number"`
-	Title     string        `json:"title"`
-	URL       string        `json:"url"`
-	Lifecycle string        `json:"lifecycle"`
-	CLI       []PublicRound `json:"cli"`
-	Hosted    []PublicRound `json:"hosted"`
+	Number        int64         `json:"number"`
+	Title         string        `json:"title"`
+	URL           string        `json:"url"`
+	Lifecycle     string        `json:"lifecycle"`
+	CLI           []PublicRound `json:"cli"`
+	Hosted        []PublicRound `json:"hosted"`
+	CLIHasMore    bool          `json:"cli_has_more,omitempty"`
+	HostedHasMore bool          `json:"hosted_has_more,omitempty"`
 }
 
 // Content contains only approved editorial values and eligible summary facts.
@@ -291,13 +294,13 @@ func nonNull(value any) bool {
 	return true
 }
 
-func publicRounds(in []RoundFacts, keys map[string]bool) ([]PublicRound, error) {
+func publicRounds(in []RoundFacts, keys map[string]bool, limit int) ([]PublicRound, error) {
 	out := make([]PublicRound, 0)
 	for _, round := range in {
 		if !round.Completed || !round.Finalized {
 			continue
 		}
-		if len(out) >= MaxChannelRounds || !roundKeyPattern.MatchString(round.Key) || keys[round.Key] || round.Found < 0 || round.Found > maxJSONInteger || round.Accepted < 0 || round.Routed < 0 || round.Accepted > round.Found || round.Routed > round.Found-round.Accepted {
+		if len(out) >= limit || !roundKeyPattern.MatchString(round.Key) || keys[round.Key] || round.Found < 0 || round.Found > maxJSONInteger || round.Accepted < 0 || round.Routed < 0 || round.Accepted > round.Found || round.Routed > round.Found-round.Accepted {
 			return nil, invalidModel()
 		}
 		keys[round.Key] = true
@@ -339,7 +342,7 @@ func publicRounds(in []RoundFacts, keys map[string]bool) ([]PublicRound, error) 
 	return out, nil
 }
 
-func BuildContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
+func normalizeContent(manifest Manifest, facts []ReviewFacts, roundLimit int) (Content, error) {
 	approved, err := NormalizeManifest(manifest)
 	if err != nil {
 		return Content{}, err
@@ -364,14 +367,102 @@ func BuildContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
 		if fact.Lifecycle != "" {
 			out.Reviews[i].Lifecycle = fact.Lifecycle
 		}
-		if out.Reviews[i].CLI, err = publicRounds(fact.CLI, keys); err != nil {
+		if out.Reviews[i].CLI, err = publicRounds(fact.CLI, keys, roundLimit); err != nil {
 			return Content{}, err
 		}
-		if out.Reviews[i].Hosted, err = publicRounds(fact.Hosted, keys); err != nil {
+		if out.Reviews[i].Hosted, err = publicRounds(fact.Hosted, keys, roundLimit); err != nil {
 			return Content{}, err
 		}
+		out.Reviews[i].CLIHasMore, out.Reviews[i].HostedHasMore = fact.CLIHasMore, fact.HostedHasMore
+	}
+	return out, nil
+}
+
+// BuildContent remains the strict retained-content boundary. Historical reads
+// never trim a selected round or reinterpret earlier canonical content.
+func BuildContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
+	out, err := normalizeContent(manifest, facts, MaxChannelRounds)
+	if err != nil {
+		return Content{}, err
 	}
 	if raw, err := json.Marshal(out); err != nil || len(raw) > MaxContentBytes {
+		return Content{}, invalidModel()
+	}
+	return out, nil
+}
+
+// BuildWindowContent admits the bounded union of prior approved and current
+// eligible summaries. It preserves every editorial selection while exposing an
+// honest finite review window, without mutating either input.
+func BuildWindowContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
+	enrolled := make(map[int64]bool, len(manifest.Reviews))
+	for _, review := range manifest.Reviews {
+		enrolled[review.Number] = true
+	}
+	for _, fact := range facts {
+		if enrolled[fact.Number] && (len(fact.CLI) > 2*MaxChannelRounds || len(fact.Hosted) > 2*MaxChannelRounds) {
+			return Content{}, invalidModel()
+		}
+	}
+	out, err := normalizeContent(manifest, facts, 2*MaxChannelRounds)
+	if err != nil {
+		return Content{}, err
+	}
+	for i := range out.Reviews {
+		review := &out.Reviews[i]
+		if len(review.CLI) > MaxChannelRounds {
+			review.CLI = review.CLI[len(review.CLI)-MaxChannelRounds:]
+			review.CLIHasMore = true
+		}
+		if len(review.Hosted) > MaxChannelRounds {
+			review.Hosted = review.Hosted[len(review.Hosted)-MaxChannelRounds:]
+			review.HostedHasMore = true
+		}
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return Content{}, invalidModel()
+	}
+	size := len(raw)
+	for size > MaxContentBytes {
+		// Manifest order, then CLI before hosted, breaks equal-length ties.
+		var largest *[]PublicRound
+		var hasMore *bool
+		flagBytes := 0
+		for i := range out.Reviews {
+			review := &out.Reviews[i]
+			for _, channel := range []struct {
+				rounds *[]PublicRound
+				more   *bool
+				added  int
+			}{
+				{&review.CLI, &review.CLIHasMore, len(`,"cli_has_more":true`)},
+				{&review.Hosted, &review.HostedHasMore, len(`,"hosted_has_more":true`)},
+			} {
+				if len(*channel.rounds) > 0 && (largest == nil || len(*channel.rounds) > len(*largest)) {
+					largest, hasMore, flagBytes = channel.rounds, channel.more, channel.added
+				}
+			}
+		}
+		if largest == nil {
+			return Content{}, invalidModel()
+		}
+		removed, err := json.Marshal((*largest)[0])
+		if err != nil {
+			return Content{}, invalidModel()
+		}
+		size -= len(removed)
+		*largest = (*largest)[1:]
+		if len(*largest) > 0 {
+			size--
+		} // one array separator also disappears
+		if !*hasMore {
+			*hasMore = true
+			size += flagBytes
+		}
+	}
+	raw, err = json.Marshal(out)
+	if err != nil || len(raw) != size || len(raw) > MaxContentBytes {
 		return Content{}, invalidModel()
 	}
 	return out, nil
@@ -395,7 +486,7 @@ func DecodeContent(raw []byte) (Content, error) {
 			}
 			return out
 		}
-		facts[i] = ReviewFacts{Number: review.Number, Lifecycle: review.Lifecycle, CLI: copyRounds(review.CLI), Hosted: copyRounds(review.Hosted)}
+		facts[i] = ReviewFacts{Number: review.Number, Lifecycle: review.Lifecycle, CLI: copyRounds(review.CLI), Hosted: copyRounds(review.Hosted), CLIHasMore: review.CLIHasMore, HostedHasMore: review.HostedHasMore}
 	}
 	validated, err := BuildContent(manifest, facts)
 	if err != nil {

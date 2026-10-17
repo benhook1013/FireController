@@ -185,7 +185,7 @@ func TestPackagedPublicBrowserSmoke(t *testing.T) {
 		for _, line := range bytes.Split(output.bytes(), []byte("\n")) {
 			var record struct{ State, Phase string }
 			if json.Unmarshal(line, &record) == nil && record.State == "FAIL" {
-				for _, allowed := range []string{"configuration", "fixture", "launch", "desktop", "private-quiet", "live-summary", "frozen-history", "phone", "unpublish"} {
+				for _, allowed := range []string{"configuration", "fixture", "launch", "desktop", "private-quiet", "live-summary", "frozen-history", "phone", "public-window", "window-private-quiet", "window-history", "unpublish"} {
 					if record.Phase == allowed {
 						phase = allowed
 					}
@@ -205,13 +205,19 @@ func TestPackagedPublicBrowserSmoke(t *testing.T) {
 		ExternalRequests int    `json:"external_requests"`
 		Desktop          int    `json:"desktop"`
 		Phone            int    `json:"phone"`
+		WindowRounds     int    `json:"window_rounds"`
+		WindowHasMore    bool   `json:"window_has_more"`
+		WindowQuiet      bool   `json:"window_private_quiet"`
+		WindowHistory    bool   `json:"window_history"`
 	}
-	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureCalls != 10 || result.PrivateRequests != 0 || result.PageWrites != 0 || result.PageErrors != 0 || result.ExternalRequests != 0 || result.Desktop != 1280 || result.Phone != 390 {
+	// The window observation and subsequent private-only job edit add exactly
+	// two fixture writes; anonymous page clients still perform no writes.
+	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureCalls != 12 || result.PrivateRequests != 0 || result.PageWrites != 0 || result.PageErrors != 0 || result.ExternalRequests != 0 || result.Desktop != 1280 || result.Phone != 390 || result.WindowRounds != 100 || !result.WindowHasMore || !result.WindowQuiet || !result.WindowHistory {
 		t.Fatal("invalid public browser result")
 	}
 	daemon.stop(t)
 	if external.Load() != 0 || compressed.Load() < 6 {
 		t.Fatal("public browser attempted external HTTP or did not exercise compressed public JSON")
 	}
-	t.Logf("public browser passed total=%s desktop=1280 phone=390 fixture_calls=%d public_requests=%d compressed_json=%d private_requests=0 page_writes=0 external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.FixtureCalls, result.PublicRequests, compressed.Load(), engine.Load())
+	t.Logf("public browser passed total=%s desktop=1280 phone=390 fixture_calls=%d public_requests=%d compressed_json=%d window_rounds=100 window_has_more=true window_private_quiet=true window_history=true private_requests=0 page_writes=0 external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.FixtureCalls, result.PublicRequests, compressed.Load(), engine.Load())
 }

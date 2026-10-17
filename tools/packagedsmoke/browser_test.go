@@ -232,12 +232,25 @@ func (o *browserOutput) safePhase() string {
 			Refusals     int    `json:"terminal_responses"`
 			Errors       int    `json:"errors"`
 			Writes       int    `json:"forbidden_writes"`
+			SendStatus   int    `json:"send_status"`
+			ReplyStatus  int    `json:"reply_status"`
+			Conversation bool   `json:"conversation_match"`
 		}
 		if json.Unmarshal(line, &record) != nil || record.State != "FAIL" {
 			continue
 		}
 		switch record.Phase {
 		case "configuration", "launch", "connect", "fixture-update", "live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "renewal-activity", "renewal-missing-cookie", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
+			if record.Phase == "explicit-actions-send" {
+				class := "driver"
+				if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
+					class = record.FailureClass
+				}
+				switch record.Checkpoint {
+				case "composer-open", "recipient", "send-body", "send-dispatch", "send-response", "send-status", "conversation-open", "conversation-body", "reply-open", "reply-body", "reply-dispatch", "reply-response", "reply-status", "reply-binding", "reply-visible":
+					return fmt.Sprintf("%s/%s class=%s send_status=%d reply_status=%d conversation_match=%t posts=%d deletes=%d renewals=%d errors=%d forbidden_writes=%d action_writes=%d external=%d", record.Phase, record.Checkpoint, class, record.SendStatus, record.ReplyStatus, record.Conversation, record.Posts, record.Deletes, record.Renewals, record.Errors, record.Writes, record.ActionWrites, record.External)
+				}
+			}
 			if record.Phase == "explicit-actions-uncertain" {
 				class := "driver"
 				if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
@@ -258,6 +271,28 @@ func (o *browserOutput) safePhase() string {
 		}
 	}
 	return "driver-start-or-cleanup"
+}
+
+func TestBrowserSendFailureDiagnosticsAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"status-and-counters", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"reply-binding","failure_class":"assertion","send_status":201,"reply_status":201,"conversation_match":false,"session_posts":2,"session_deletes":1,"session_renewals":3,"errors":0,"forbidden_writes":0,"action_writes":4,"external":0,"body":"PRIVATE_SENTINEL","url":"PRIVATE_SENTINEL","credential":"PRIVATE_SENTINEL"}`, "explicit-actions-send/reply-binding class=assertion send_status=201 reply_status=201 conversation_match=false posts=2 deletes=1 renewals=3 errors=0 forbidden_writes=0 action_writes=4 external=0"},
+		{"timeout", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"send-response","failure_class":"timeout"}`, "explicit-actions-send/send-response class=timeout send_status=0 reply_status=0 conversation_match=false posts=0 deletes=0 renewals=0 errors=0 forbidden_writes=0 action_writes=0 external=0"},
+		{"unknown-class", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"conversation-open","failure_class":"PRIVATE_SENTINEL"}`, "explicit-actions-send/conversation-open class=driver send_status=0 reply_status=0 conversation_match=false posts=0 deletes=0 renewals=0 errors=0 forbidden_writes=0 action_writes=0 external=0"},
+		{"unknown-checkpoint", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"PRIVATE_SENTINEL","failure_class":"PRIVATE_SENTINEL"}`, "explicit-actions-send"},
+		{"unknown-phase", `{"state":"FAIL","phase":"PRIVATE_SENTINEL","checkpoint":"send-status"}`, "driver-start-or-cleanup"},
+		{"string-status", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"send-status","send_status":"PRIVATE_SENTINEL"}`, "driver-start-or-cleanup"},
+		{"numeric-match", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"reply-binding","conversation_match":1}`, "driver-start-or-cleanup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := &browserOutput{}
+			_, _ = output.Write([]byte(tc.body + "\n"))
+			if got := output.safePhase(); got != tc.want || strings.Contains(got, "PRIVATE_SENTINEL") {
+				t.Fatal("browser failure diagnostics did not preserve the fixed safe boundary")
+			}
+		})
+	}
 }
 
 // Give the browser a genuine read-only credential rather than asking a writer

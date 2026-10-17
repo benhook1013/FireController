@@ -43,15 +43,22 @@ func validateObservation(req *ObservationRequest) error {
 	if req.Retired == nil {
 		req.Retired = []RetiredPull{}
 	}
-	if len(req.Queue) > maxQueuePulls || len(req.Retired) > maxQueuePulls {
+	return validateObservationContent(req.Queue, req.Retired, true)
+}
+
+// validateObservationContent shares record admission without inventing retained
+// links. Complete observations require every linked run in their own document;
+// additive transfer resolves links against its retained destination separately.
+func validateObservationContent(queue []PullInput, retirements []RetiredPull, requireIncludedLinks bool) error {
+	if len(queue) > maxQueuePulls || len(retirements) > maxQueuePulls {
 		return validationError("The observation exceeds the bounded queue or retirement count.")
 	}
 	var runCount, attemptCount, findingCount int
-	pullNumbers := make(map[int64]struct{}, len(req.Queue))
+	pullNumbers := make(map[int64]struct{}, len(queue))
 	runIDs := make(map[string]struct{})
 	attemptIDs := make(map[string]struct{})
-	for pullIndex := range req.Queue {
-		pull := &req.Queue[pullIndex]
+	for pullIndex := range queue {
+		pull := &queue[pullIndex]
 		if pull.Number < 1 || pull.Number > 2147483647 {
 			return validationError("Pull request numbers must be positive 32-bit values.")
 		}
@@ -156,7 +163,7 @@ func validateObservation(req *ObservationRequest) error {
 				return validationError("source_attempt_id values must be unique within the observation source.")
 			}
 			attemptIDs[attempt.SourceAttemptID] = struct{}{}
-			if attempt.SourceRunID != "" {
+			if requireIncludedLinks && attempt.SourceRunID != "" {
 				if _, exists := localRuns[attempt.SourceRunID]; !exists {
 					return validationError("An attempt source_run_id must refer to a run on the same pull request.")
 				}
@@ -166,8 +173,8 @@ func validateObservation(req *ObservationRequest) error {
 			}
 		}
 	}
-	retired := make(map[int64]struct{}, len(req.Retired))
-	for _, entry := range req.Retired {
+	retired := make(map[int64]struct{}, len(retirements))
+	for _, entry := range retirements {
 		if entry.Number < 1 || entry.Number > 2147483647 || !oneOf(entry.Reason, "superseded", "defunct") {
 			return validationError("Retired pull requests require a valid number and reason.")
 		}

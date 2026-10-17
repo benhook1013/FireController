@@ -47,5 +47,8 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	if err := EnsureCheckpointSchema(ctx, store); err != nil {
 		return err
 	}
-	return ensureComparisonSchema(ctx, store)
+	if err := ensureComparisonSchema(ctx, store); err != nil {
+		return err
+	}
+	return ensureRoutePolicySchema(ctx, store)
 }

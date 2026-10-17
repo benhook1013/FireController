@@ -23,7 +23,7 @@ try {
   const pull = { number: 31, title: 'PRIVATE_PR_TITLE_SENTINEL', state: 'merged', head_sha: 'a'.repeat(40), base_ref: 'main', base_sha: 'b'.repeat(40), ci_state: 'unknown', mergeability: 'unknown', complete: true, runs: [], attempts: [] };
   const round = (source, channel) => { const at = new Date().toISOString(); return { source_run_id: source, channel, head_sha: pull.head_sha, reviewer: 'PRIVATE_REVIEWER_SENTINEL', scope: 'PRIVATE_SCOPE_SENTINEL', outcome: 'completed', attributable: true, complete: true, started_at: at, finished_at: at, found: 0, accepted: 0, routed: 0, finalized: true, coverage_limits: ['PRIVATE_COVERAGE_SENTINEL'], findings: [] }; };
   const hosted = [round('PRIVATE_HOSTED_RUN_ONE', 'hosted')], cli = [round('PRIVATE_CLI_RUN_ONE', 'cli')];
-  const observe = revision => call('POST', '/reviews/observations', { expected_revision: revision, repository_id: 991, source: 'PRIVATE_OBSERVER_SENTINEL', observed_at: new Date().toISOString(), queue: [{ ...pull, runs: [...hosted, ...cli] }], retired: [] }, 201);
+  const observe = (revision, runs = [...hosted, ...cli]) => call('POST', '/reviews/observations', { expected_revision: revision, repository_id: 991, source: 'PRIVATE_OBSERVER_SENTINEL', observed_at: new Date().toISOString(), queue: [{ ...pull, runs }], retired: [] }, 201);
   await observe(0);
   const manifest = { slug: 'public-smoke', presentation: { name: 'Public showcase', brand_name: 'Public flame', tagline: 'Shared development', headings: { hero_title: 'Public showcase', map: 'Public roadmap' }, theme: { accent_text: '#fffffe' } }, description: 'Approved public overview <literal>', links: [{ key: 'source', label: 'Project source', url: 'https://github.com/example/public-project' }], project_map: [{ key: 'delivery', title: 'Published roadmap card', description: 'Approved roadmap summary', phase: 'Delivery', status: 'Active', links: [] }], progress: [{ key: 'progress', title: 'Published milestone', description: 'Approved progress summary', phase: 'Build', status: 'Complete', links: [] }], worker_lanes: [{ key: 'builder', label: 'Public builder lane', headline: 'Shipping the public project', status: 'Active', milestones: ['Approved milestone'] }], reviews: [{ number: 31, title: 'Merged public work', url: 'https://github.com/example/public-project/pull/31' }] };
   const approved = { expected_revision: 0, enabled: true, manifest };
@@ -99,6 +99,39 @@ try {
   hosted.push(round('PRIVATE_HOSTED_RUN_THREE', 'hosted')); await observe(2);
   await verify(phone, 3); await verify(page, 1);
   if (config.proof_directory) { await phone.screenshot({ path: config.proof_directory + '/phone.png', fullPage: true }); await page.screenshot({ path: config.proof_directory + '/history.png', fullPage: true }); }
+  phase = 'public-window';
+  // One ordinary bounded observation adds 100 eligible rounds. Preservation
+  // retains the prior three Hosted rounds and omitted CLI round; only the
+  // anonymous transfer window clips the resulting 103 Hosted summaries.
+  await phone.evaluate(() => { window.publicSmokeIdentity = 'same-window-document'; });
+  await observe(3, Array.from({ length: 100 }, (_, i) => round(`PRIVATE_HOSTED_WINDOW_${i}`, 'hosted')));
+  await verify(phone, 100); await verify(page, 1);
+  need(await phone.evaluate(() => window.publicSmokeIdentity) === 'same-window-document');
+  const limited = await publicRead(publicPath), limitedReview = limited.content.reviews[0];
+  need(limited.revision === 4 && limitedReview.hosted.length === 100 && limitedReview.hosted_has_more === true && limitedReview.cli.length === 1 && !limitedReview.cli_has_more);
+  const hostedLane = phone.getByRole('region', { name: 'Hosted review rounds', exact: true });
+  await expect(hostedLane.getByText('Published round', { exact: true })).toHaveCount(100);
+  need(await hostedLane.getByText(/^Round \d+$/).count() === 0);
+  need(await phone.getByRole('region', { name: 'CLI review rounds', exact: true }).getByText('Round 1', { exact: true }).count() === 1);
+  need(await hostedLane.getByText('More published Hosted rounds are outside this view.', { exact: false }).count() === 1);
+  need(await hostedLane.getByText('these snapshots may not contain every round.', { exact: false }).count() === 1);
+  if (config.proof_directory) await phone.screenshot({ path: config.proof_directory + '/phone-window.png', fullPage: true });
+  phase = 'window-private-quiet';
+  const limitedReads = publicReads;
+  await call('PATCH', `/jobs/${privateJob.id}`, { expected_revision: 2, brief: 'PRIVATE_LIMITED_WINDOW_BRIEF_SENTINEL' });
+  await phone.waitForTimeout(150);
+  need(JSON.stringify(await publicRead(publicPath)) === JSON.stringify(limited) && publicReads === limitedReads);
+  phase = 'window-history';
+  const historyBeforeWindow = historyReads;
+  await hostedLane.getByRole('link', { name: 'Browse retained published revisions', exact: true }).click();
+  await expect.poll(() => historyReads, { timeout: 5000 }).toBe(historyBeforeWindow + 1);
+  await phone.getByRole('link', { name: 'Revision 1', exact: true }).click();
+  await phone.getByText('Revision 1 · frozen', { exact: true }).waitFor();
+  await verify(phone, 1);
+  need(JSON.stringify(await publicRead(`${publicPath}/history/1?generation=${first.generation}`)) === JSON.stringify(first));
+  await phone.getByRole('link', { name: 'View the current publication', exact: true }).click();
+  await verify(phone, 100);
+  await expect(phone.getByText('Live published view', { exact: true })).toBeVisible();
   phase = 'unpublish';
   await call('POST', '/publication/unpublish', { expected_revision: 1 });
   await phone.getByRole('heading', { name: 'Project unavailable', exact: true }).waitFor();
@@ -106,7 +139,7 @@ try {
   await page.reload(); await page.getByRole('heading', { name: 'Project unavailable', exact: true }).waitFor();
   need(pageErrors === 0 && privateRequests === 0 && pageWrites === 0 && external === 0);
   await context.close(); await browser.close(); browser = undefined; await server.close(); server = undefined;
-  console.log(JSON.stringify({ state: 'PASS', fixture_calls: writes, public_requests: publicReads, private_requests: privateRequests, page_writes: pageWrites, page_errors: pageErrors, external_requests: external, desktop: 1280, phone: 390 }));
+  console.log(JSON.stringify({ state: 'PASS', fixture_calls: writes, public_requests: publicReads, private_requests: privateRequests, page_writes: pageWrites, page_errors: pageErrors, external_requests: external, desktop: 1280, phone: 390, window_rounds: 100, window_has_more: limitedReview.hosted_has_more, window_private_quiet: true, window_history: true }));
 } catch {
   console.log(JSON.stringify({ state: 'FAIL', phase })); process.exitCode = 1;
 } finally {

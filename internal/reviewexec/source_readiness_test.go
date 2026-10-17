@@ -489,7 +489,7 @@ func TestSourceReadinessCIMergeFactCannotBeOverriddenBySeparateCleanReviewState(
 	}
 }
 
-func TestSourceReadinessIncomingCapacityIsExplicitHold(t *testing.T) {
+func TestSourceReadinessOver100IncomingPendingIsExactHold(t *testing.T) {
 	f, source, sourceID := routeFixture(t, 100)
 	adjudicationComplete(t, f, source)
 	receiver, _, _ := routePolicyReceiver(t, f, sourceID)
@@ -521,7 +521,7 @@ func TestSourceReadinessIncomingCapacityIsExplicitHold(t *testing.T) {
 	}
 	routeCreate(t, f, evidence.ID, "readiness-capacity-101", routeRequest(0, 0, 4))
 	got := readReadiness(t, f, reader, receiver, 4)
-	if got.State != "held" || !got.IncomingRoutesCapacity || got.IncomingRoutesPending != 0 || !slices.Contains(got.Reasons, "routed_findings_capacity") || !got.Channels[0].Covered {
+	if got.State != "held" || got.IncomingRoutesCapacity || got.IncomingRoutesPending != 101 || !slices.Contains(got.Reasons, "routed_findings_pending") || slices.Contains(got.Reasons, "routed_findings_capacity") || !got.Channels[0].Covered {
 		t.Fatal(got)
 	}
 }

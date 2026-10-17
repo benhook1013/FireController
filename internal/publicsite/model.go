@@ -30,4 +30,10 @@ func DecodeManifest(raw []byte) (Manifest, error)     { return publicsitemodel.D
 func BuildContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
 	return publicsitemodel.BuildContent(manifest, facts)
 }
+
+// BuildWindowContent constructs a bounded current projection. Historical
+// decoders deliberately keep using strict BuildContent without rewindowing.
+func BuildWindowContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
+	return publicsitemodel.BuildWindowContent(manifest, facts)
+}
 func ValidSlug(slug string) bool { return publicsitemodel.ValidSlug(slug) }

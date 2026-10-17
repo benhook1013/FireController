@@ -132,7 +132,7 @@ describe('native routed finding browser reads', () => {
 describe('incoming-route captured policy facts', () => {
   it('keeps incoming obligations separate from already covered channels, including exact capacity and omitted zeros', async () => {
     const client = await connected();
-    for (const optional of [{}, { incoming_routes_pending: 0, incoming_routes_capacity: false }, { state: 'held', incoming_routes_pending: 1, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_pending: 100, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_capacity: true, reason: 'routed_findings_capacity' }, { state: 'unconfigured', policy_revision: 0, channels: [] }]) {
+    for (const optional of [{}, { incoming_routes_pending: 0, incoming_routes_capacity: false }, { state: 'held', incoming_routes_pending: 1, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_pending: 100, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_pending: 101, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_pending: 1000, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_pending: Number.MAX_SAFE_INTEGER, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_capacity: true, reason: 'routed_findings_capacity' }, { state: 'unconfigured', policy_revision: 0, channels: [] }]) {
       const value = { ...assessment(), ...optional };
       const fetchMock = vi.fn().mockResolvedValueOnce(json(value)); vi.stubGlobal('fetch', fetchMock);
       const got = await client.reviewPolicyAssessment(evidenceID);
@@ -150,7 +150,7 @@ describe('incoming-route captured policy facts', () => {
     ['false sufficient with incoming', v => { Object.assign(v, { incoming_routes_pending: 1, reason: 'routed_findings_pending' }); }],
     ['false sufficient with capacity', v => { Object.assign(v, { incoming_routes_capacity: true, reason: 'routed_findings_capacity' }); }],
     ['negative count', v => { v.incoming_routes_pending = -1; }],
-    ['over 100 exact count', v => { Object.assign(v, { state: 'held', incoming_routes_pending: 101, reason: 'routed_findings_pending' }); }],
+    ['unsafe exact count', v => { Object.assign(v, { state: 'held', incoming_routes_pending: Number.MAX_SAFE_INTEGER + 1, reason: 'routed_findings_pending' }); }],
     ['fraction count', v => { v.incoming_routes_pending = 1.5; }],
     ['null count', v => { v.incoming_routes_pending = null; }],
     ['string count', v => { v.incoming_routes_pending = '1'; }],
