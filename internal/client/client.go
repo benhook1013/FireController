@@ -36,9 +36,14 @@ type Client struct {
 	token, credentialFile string
 	http                  *http.Client
 	transport             *http.Transport
+	borrowedTransport     bool
 }
 
 func New(ctx context.Context, binding profile.Binding) (*Client, error) {
+	return newClient(ctx, binding, nil)
+}
+
+func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool) (*Client, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, contextError(err)
 	}
@@ -51,14 +56,16 @@ func New(ctx context.Context, binding profile.Binding) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, IdleConnTimeout: 90 * time.Second, ExpectContinueTimeout: time.Second}
-	transport.DialContext = (&net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}).DialContext
-	transport.ResponseHeaderTimeout = requestTimeout
-	transport.TLSHandshakeTimeout = requestTimeout
-	transport.MaxConnsPerHost = 4
-	transport.MaxIdleConns = 4
-	transport.DisableCompression = true
-	c := &Client{identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	var transport *http.Transport
+	if pool == nil {
+		transport = newTransport()
+	} else {
+		transport, err = pool.borrow()
+		if err != nil {
+			return nil, err
+		}
+	}
+	c := &Client{identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, borrowedTransport: pool != nil, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	var instance struct {
 		InstanceID string `json:"instance_id"`
 	}
@@ -73,7 +80,11 @@ func New(ctx context.Context, binding profile.Binding) (*Client, error) {
 	return c, nil
 }
 
-func (c *Client) Close()                    { c.transport.CloseIdleConnections() }
+func (c *Client) Close() {
+	if !c.borrowedTransport {
+		c.transport.CloseIdleConnections()
+	}
+}
 func (c *Client) Identity() profile.Context { return c.identity }
 
 func fail(code, message, action string, status int) *Error {
