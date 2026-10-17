@@ -57,6 +57,7 @@ try {
     connection: getComputedStyle(document.querySelector('.connection-note'), '::before').backgroundColor,
     canvas: getComputedStyle(document.documentElement).backgroundColor,
     status: getComputedStyle(document.querySelector('.feed-card .status-dot')).backgroundColor,
+    online: document.querySelector('.feed-card .status-dot').classList.contains('online'),
     surface: getComputedStyle(document.querySelector('.feed-card')).backgroundColor,
   }));
   const defaults = async () => {
@@ -72,7 +73,7 @@ try {
   await defaults();
   need((await appearance()).title === 'Packaged smoke · FireController');
   const defaultIndicators = await indicatorColors();
-  need(defaultIndicators.connection === 'rgb(103, 118, 89)' && defaultIndicators.status === 'rgb(169, 164, 160)');
+  need(defaultIndicators.connection === 'rgb(103, 118, 89)' && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
   const bindingKey = 'firecontroller.browser-session.v1';
   const binding = await page.evaluate(key => sessionStorage.getItem(key), bindingKey);
   need(binding && !binding.includes(token));
