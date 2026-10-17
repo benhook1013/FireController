@@ -196,17 +196,97 @@ func TestInventoryReferencesCannotBeResealedAroundMissingOrChangedRawBytes(t *te
 		})
 	}
 }
+func TestInventoryExcludesUnrecognizedNonregularEntries(t *testing.T) {
+	f := newRestoreFixture(t)
+	outside := filepath.Join(t.TempDir(), "unrelated-private-file")
+	if err := os.WriteFile(outside, []byte("unrelated bytes must stay outside the backup"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"review-captures", "hosted-review-captures"} {
+		dir := filepath.Join(f.dir, name)
+		cache := filepath.Join(dir, "cache")
+		if err := os.Mkdir(cache, 0700); err != nil {
+			t.Fatal(err)
+		}
+		// A capture-shaped name below an unrelated directory is not a final
+		// managed artifact; inventory must not recursively traverse this cache.
+		if err := os.WriteFile(filepath.Join(cache, core.NewID("review_attempt")+".json"), []byte("nested private cache"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		for link, target := range map[string]string{
+			"unrelated-link": outside,
+			"dangling-link":  filepath.Join(dir, "absent"),
+			core.NewID("review_attempt") + ".json.tmp": outside,
+		} {
+			if err := os.Symlink(target, filepath.Join(dir, link)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	beforeFiles := map[string]map[string]string{}
+	for _, name := range []string{"review-captures", "hosted-review-captures"} {
+		beforeFiles[name] = restoreTree(t, filepath.Join(f.dir, name))
+	}
+	beforeRows := backupRows(t, f.store.DB())
+	created, err := Create(t.Context(), f.store, f.dir, filepath.Join(t.TempDir(), "bundles"))
+	if err != nil {
+		t.Fatal("unrelated nonregular entries prevented backup", err)
+	}
+	if created.ArtifactCount != 2 { // Genuine CLI and hosted forensic files from the fixture.
+		t.Fatal("unrelated entries changed the final artifact inventory", created.ArtifactCount)
+	}
+	if _, err = Inspect(t.Context(), created.Path); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "restored")
+	if _, err = Restore(t.Context(), created.Path, target); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{created.Path, target} {
+		for _, name := range []string{"review-captures", "hosted-review-captures"} {
+			entries, err := os.ReadDir(filepath.Join(root, name))
+			if err != nil || len(entries) != 1 || !entries[0].Type().IsRegular() {
+				t.Fatal("excluded source entries appeared in bundle or restore", err)
+			}
+		}
+	}
+	for name, files := range beforeFiles {
+		if !reflect.DeepEqual(files, restoreTree(t, filepath.Join(f.dir, name))) {
+			t.Fatal("backup or restore changed source capture files")
+		}
+		for _, link := range []string{"unrelated-link", "dangling-link"} {
+			if _, err := os.Readlink(filepath.Join(f.dir, name, link)); err != nil {
+				t.Fatal("excluded symlink changed", err)
+			}
+		}
+	}
+	if !reflect.DeepEqual(beforeRows, backupRows(t, f.store.DB())) {
+		t.Fatal("backup or restore changed source rows")
+	}
+	if body, err := os.ReadFile(outside); err != nil || string(body) != "unrelated bytes must stay outside the backup" {
+		t.Fatal("unrelated symlink target changed", err)
+	}
+}
+
 func TestInventorySourceSymlinkNonregularLimitsAndHostedFilenameHash(t *testing.T) {
-	for _, kind := range []string{"symlink", "fifo_like_directory", "oversize_cli", "hosted_wrong_hash", "directory_symlink", "custom_trigger"} {
+	for _, kind := range []string{"symlink", "fifo_like_directory", "hosted_symlink", "hosted_directory", "oversize_cli", "hosted_wrong_hash", "directory_symlink", "custom_trigger"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newRestoreFixture(t)
 			dir := filepath.Join(f.dir, "review-captures")
 			name := core.NewID("review_attempt") + ".json"
+			if kind == "hosted_symlink" || kind == "hosted_directory" {
+				dir = filepath.Join(f.dir, "hosted-review-captures")
+				name = core.NewID("review_attempt") + "-hosted-" + strings.Repeat("0", 64) + ".json"
+			}
 			switch kind {
-			case "symlink":
-				os.Symlink(filepath.Join(f.dir, "bootstrap-admin.token"), filepath.Join(dir, name))
-			case "fifo_like_directory":
-				os.Mkdir(filepath.Join(dir, name), 0700)
+			case "symlink", "hosted_symlink":
+				if err := os.Symlink(filepath.Join(f.dir, "bootstrap-admin.token"), filepath.Join(dir, name)); err != nil {
+					t.Fatal(err)
+				}
+			case "fifo_like_directory", "hosted_directory":
+				if err := os.Mkdir(filepath.Join(dir, name), 0700); err != nil {
+					t.Fatal(err)
+				}
 			case "oversize_cli":
 				file, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 				if err != nil {
