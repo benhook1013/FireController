@@ -21,6 +21,11 @@ func manifestHash(m Manifest) (string, error) {
 
 type ownedBundle struct{ id, destination, instance, hash, state string }
 
+// These private signals distinguish interrupted read-only verification and a
+// positively untouched removal from opaque failures. They retain safe errors.
+var errManagedVerificationInterrupted = unavailable()
+var errManagedRemovalNotStarted = unavailable()
+
 func (m *Manager) retain(ctx context.Context) error {
 	if checkContext(ctx) != nil {
 		return unavailable()
@@ -52,6 +57,9 @@ func (m *Manager) retain(ctx context.Context) error {
 		}
 		manifest, before, err := m.verifyOwnedBundle(ctx, b)
 		if err != nil {
+			if errors.Is(err, errManagedVerificationInterrupted) {
+				return err
+			}
 			return m.cleanupFailed(ctx, b.id)
 		}
 		path := filepath.Join(b.destination, b.id)
@@ -70,10 +78,16 @@ func (m *Manager) retain(ctx context.Context) error {
 			return err
 		}
 		current, err := os.Lstat(path)
-		if err != nil || !os.SameFile(before, current) || checkContext(ctx) != nil {
+		if err != nil || !os.SameFile(before, current) {
 			return m.cleanupFailed(ctx, b.id)
 		}
+		if checkContext(ctx) != nil {
+			return m.retainUntouched(b)
+		}
 		if err = m.remove(ctx, path, manifest); err != nil {
+			if errors.Is(err, errManagedRemovalNotStarted) {
+				return m.retainUntouched(b)
+			}
 			return m.cleanupFailed(ctx, b.id)
 		}
 		if err = syncDirectory(b.destination); err != nil {
@@ -132,6 +146,12 @@ func (m *Manager) verifyOwnedBundle(ctx context.Context, b ownedBundle) (Manifes
 	}
 	manifest, err := inspectManifest(ctx, path)
 	if err != nil {
+		// Inspection cannot unlink. Cancellation can obscure a validation
+		// failure inside hashing; defer that judgment, never deletion checks.
+		// The next attempt must inspect the entire bundle again.
+		if ctx.Err() != nil {
+			return zero, nil, errManagedVerificationInterrupted
+		}
 		return zero, nil, err
 	}
 	hash, err := manifestHash(manifest)
@@ -143,6 +163,27 @@ func (m *Manager) verifyOwnedBundle(ctx context.Context, b ownedBundle) (Manifes
 		return zero, nil, invalid()
 	}
 	return manifest, before, nil
+}
+
+// Revert only this exact admitted candidate, when no unlink has
+// started. A failed settlement leaves deleting for startup's strict hold.
+func (m *Manager) retainUntouched(b ownedBundle) error {
+	ctx, cancel := context.WithTimeout(context.Background(), managedSettlementTimeout)
+	defer cancel()
+	if err := m.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE managed_backup_bundles SET state='retained' WHERE id=? AND destination=? AND source_instance_id=? AND manifest_sha256=? AND state='deleting'`, b.id, b.destination, b.instance, b.hash)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil || n != 1 {
+			return invalid()
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return unavailable()
 }
 
 func (m *Manager) cleanupFailed(_ context.Context, id string) error {
@@ -162,7 +203,9 @@ func (m *Manager) cleanupFailed(_ context.Context, id string) error {
 // bundle if cancellation or a later unlink fails.
 func removeManagedBundle(ctx context.Context, path string, manifest Manifest) error {
 	if checkContext(ctx) != nil {
-		return unavailable()
+		// No os.Remove has been attempted. Never return this signal after
+		// the first unlink, even when a later error is cancellation.
+		return errManagedRemovalNotStarted
 	}
 	if err := os.Remove(filepath.Join(path, "manifest.sha256")); err != nil {
 		return unavailable()
