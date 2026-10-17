@@ -34,7 +34,9 @@ import (
 // This proves bounded archive reads, not cap-free publication or migration.
 func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Leave the canonical sixty-second smoke invocation time to join owned
+	// Chromium/daemon groups even when the workload itself times out.
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
 	private := privateFixtureDirectory(t)
 	if os.Chmod(private, 0700) != nil {
