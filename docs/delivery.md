@@ -59,3 +59,7 @@ The temporary runtime is not shipped as the product and does not implement the n
 | Native review workspace | Versioned administrator observation/import boundary, stored queue/PR/run/finding/fix views; full checks and four packaged API/integration plus three browser groups passed | Real-data queue/history adoption passed; optional native execution and policy proof is recorded in the [execution boundary](review-execution.md). Live-provider, remote deployment and fleet proof remain separate |
 
 Record proof in the owning slice and PR; do not silently turn planned commands into passing evidence. Main-branch merge remains a human action.
+
+## Human repository presentation pass
+
+- [ ] Remind the project owner to do a marketing and newcomer-facing pass after the core product work: explain why to use FireController, the problems it solves and the workflows it makes easier. Review the README and repository landing experience for clear examples of agent messaging, jobs, reviews and shareable project progress, with suitable screenshots and an easy route into onboarding. This is a reminder for the human pass, not another implementation or merge gate.
