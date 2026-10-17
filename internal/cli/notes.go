@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"unicode"
@@ -223,7 +224,7 @@ func parseNotes(operation string, args []string) (*noteInvocation, bool) {
 }
 func readNoteBodyFile(path string) (string, bool) {
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 16<<10 {
+	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) || info.Size() > 16<<10 {
 		return "", false
 	}
 	f, err := os.Open(path)
@@ -232,7 +233,7 @@ func readNoteBodyFile(path string) (string, bool) {
 	}
 	defer f.Close()
 	info, err = f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
 		return "", false
 	}
 	b, err := io.ReadAll(io.LimitReader(f, (16<<10)+1))
