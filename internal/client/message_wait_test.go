@@ -95,6 +95,22 @@ func TestMessageWaitFiltersHandlingAndReturnsFirstRelevantPage(t *testing.T) {
 	}
 }
 
+func TestMessageWaitExplicitUpperBoundsAndCursorBytes(t *testing.T) {
+	cursor := strings.Repeat("é", 2048) // The opaque cursor bound is bytes, not runes.
+	s := waitServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("cursor") != cursor || r.URL.Query().Get("limit") != "100" {
+			t.Error("explicit upper bounds did not reach the selected stream")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, waitFrame(waitPage("next", waitEvent(7, "message.sent"))))
+	})
+	c := newClient(t, s)
+	page, err := c.WaitForMessages(t.Context(), cursor, 100, 60)
+	if err != nil || len(page.Items) != 1 || page.Cursor != "next" || page.TimedOut {
+		t.Fatalf("valid boundary refused: page=%+v err=%v", page, err)
+	}
+}
+
 func TestMessageWaitQuietTimeoutUsesLastValidatedCursor(t *testing.T) {
 	closed := make(chan struct{})
 	s := waitServer(t, func(w http.ResponseWriter, r *http.Request) {

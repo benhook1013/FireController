@@ -3,9 +3,11 @@ package reviewexec
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
@@ -118,25 +120,59 @@ func TestRestoredProviderWorkCancelledContextAndCurrentShape(t *testing.T) {
 	f.configure(t, attemptProject, "test-capability", 0, false)
 	restoredHeld(t, f)
 	f.enqueue(t, attemptProject, "queued", "cli", 2, 1)
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
+	for _, kind := range []string{"cancelled", "deadline"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			if kind == "deadline" {
+				cancel()
+				ctx, cancel = context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+			}
+			cancel()
+			before := attemptClockRows(t, f)
+			metadata := restoredSQL(t, f, `SELECT json_group_array(json_array(key,value)) FROM (SELECT key,value FROM metadata ORDER BY key)`)
+			tx, err := f.store.DB().BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			// The caller owns rollback, including its own earlier local writes.
+			if _, err = tx.Exec(`INSERT INTO metadata(key,value) VALUES('restore:test_pending','not_committed')`); err != nil {
+				t.Fatal(err)
+			}
+			summary, err := AbandonRestoredProviderWork(ctx, tx, f.store.InstanceID(), time.Now())
+			attemptCode(t, err, "restore_reconciliation_interrupted")
+			var failure *core.Error
+			if !errors.As(err, &failure) || failure.Status != 503 || summary != (RestoredWorkSummary{}) || !strings.Contains(failure.Message, "Retry the exact") {
+				t.Fatal("interruption lost safe status, empty counts or exact retry guidance", summary, err)
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			if attemptClockRows(t, f) != before || restoredSQL(t, f, `SELECT json_group_array(json_array(key,value)) FROM (SELECT key,value FROM metadata ORDER BY key)`) != metadata || attemptCount(t, f.store, `SELECT count(*) FROM review_operations WHERE state='queued'`) != 1 {
+				t.Fatal("interrupted reconciliation escaped caller rollback")
+			}
+		})
+	}
 	tx, err := f.store.DB().BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = AbandonRestoredProviderWork(ctx, tx, f.store.InstanceID(), time.Now())
+	_, err = AbandonRestoredProviderWork(nil, tx, f.store.InstanceID(), time.Now())
+	attemptCode(t, err, "restore_reconciliation_invalid")
 	tx.Rollback()
-	if err == nil {
-		t.Fatal("cancelled context accepted")
-	}
-	if attemptCount(t, f.store, `SELECT count(*) FROM review_operations WHERE state='queued'`) != 1 {
-		t.Fatal("cancelled mutation")
+	summary, err := restoredCall(t, f, time.Now())
+	if err != nil || summary != (RestoredWorkSummary{QueuedOperations: 1, PausedProjects: 1}) || restoredSQL(t, f, `SELECT value FROM metadata WHERE key='restore:provider_state'`) != "held" {
+		t.Fatal("uninterrupted exact reconciliation retry failed or released providers", summary, err)
 	}
 	if _, err = f.store.DB().Exec(`DROP TABLE review_hosted_allowance_queries`); err != nil {
 		t.Fatal(err)
 	}
 	_, err = restoredCall(t, f, time.Now())
 	attemptCode(t, err, "restore_reconciliation_schema")
+	var failure *core.Error
+	if !errors.As(err, &failure) || failure.Status != 409 {
+		t.Fatal("actual schema failure lost conflict status", err)
+	}
 }
 
 func TestRestoredProviderWorkPublishedCheckpointPreserved(t *testing.T) {
