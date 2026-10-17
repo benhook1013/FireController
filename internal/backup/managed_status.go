@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"path/filepath"
+	"strings"
 
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -199,6 +201,25 @@ func storeManaged(ctx context.Context, tx *sql.Tx, r managedRecord) error {
 	return err
 }
 
+// Status reads only this v1 singleton, not the bundle ownership or publication
+// ledgers. Keep its exact shape aligned with EnsureManagedSchema; unrelated
+// coordination domains need not be understood by this read-only command.
+func managedStatusSchema(ctx context.Context, db sqlReader) (bool, error) {
+	var version sql.NullString
+	versionErr := db.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(value AS BLOB))<=16 THEN value ELSE NULL END FROM metadata WHERE key='schema:managed_backups'`).Scan(&version)
+	var kind string
+	var definition sql.NullString
+	objectErr := db.QueryRowContext(ctx, `SELECT type,CASE WHEN length(CAST(sql AS BLOB))<=1024 THEN sql ELSE NULL END FROM sqlite_schema WHERE name='managed_backup_state'`).Scan(&kind, &definition)
+	if errors.Is(versionErr, sql.ErrNoRows) && errors.Is(objectErr, sql.ErrNoRows) {
+		return false, nil
+	}
+	const canonical = `CREATE TABLE managed_backup_state(singleton INTEGER PRIMARY KEY CHECK(singleton=1),body_json TEXT NOT NULL)`
+	if versionErr != nil || !version.Valid || version.String != "1" || objectErr != nil || kind != "table" || !definition.Valid || strings.TrimSpace(definition.String) != canonical {
+		return false, invalid()
+	}
+	return true, nil
+}
+
 // ReadStatus reads one retained singleton in a read-only live SQLite snapshot.
 // Older valid installations remain unconfigured; no schema is installed here.
 func ReadStatus(ctx context.Context, dataDir string) (Status, error) {
@@ -221,17 +242,21 @@ func ReadStatus(ctx context.Context, dataDir string) (Status, error) {
 		return Status{}, unavailable()
 	}
 	defer tx.Rollback()
-	versions, err := validateSchema(ctx, tx, false)
+	recovery, err := readRecoveryStatus(ctx, tx)
 	if err != nil {
 		return Status{}, err
 	}
-	var identity string
-	if err = tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='instance_id'`).Scan(&identity); err != nil || !instanceID.MatchString(identity) {
+	if recovery.State == "inactive" {
 		return Status{}, invalid()
 	}
-	if versions["managed_backups"] == 0 {
+	present, err := managedStatusSchema(ctx, tx)
+	if err != nil {
+		return Status{}, err
+	}
+	if !present {
 		return Status{State: "unconfigured"}, nil
 	}
+
 	r, err := loadManaged(ctx, tx)
 	if err != nil {
 		return Status{}, err
