@@ -9,6 +9,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Public project website](public-site.md): shareable project showcase, publication selection and the public/private field boundary.
 - [Project presentation and metadata](project-presentation.md): selected appearance records, semantic theme validation and isolated live project updates.
 - [Project map](project-map.md): revisioned workstreams, return points and explicit job references, with implementation status at the owner.
+- [Browser session renewal](browser-session-renewal.md): activity-based cookie renewal, scoped authority and lost-response recovery.
 - [Browser guide](browser-guide.md): embedded UI, connection privacy and build/proof limits.
 - [Browser coordination views](browser-coordination.md): explicit note/history and worker pause/focus views over the existing read contracts.
 - [Development](development.md): implemented profile-bound CLI reads/mutations, build/check commands, and current proof limits.
