@@ -17,7 +17,7 @@ func TestBrowserSessionCleanupPreservesNewestAndBoundsEncodedBytes(t *testing.T)
 			r.SetPathValue("project_id", "project")
 			r.Header.Set("Authorization", "Bearer synthetic-core-stream-token-1234567")
 			r.Header.Set("X-FC-Instance", s.InstanceID())
-			_, current, err := s.CreateBrowserSession(r, strings.Repeat("f", 32), false)
+			_, current, err := s.CreateBrowserSession(r, strings.Repeat("f", 32))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -70,7 +70,7 @@ func TestBrowserSessionHTTPSCleanupIncludesLocalHTTPCookies(t *testing.T) {
 		return r
 	}
 	secure := request("https://localhost")
-	_, current, err := s.CreateBrowserSession(secure, strings.Repeat("f", 32), false)
+	_, current, err := s.CreateBrowserSession(secure, strings.Repeat("f", 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestBrowserSessionHTTPSCleanupIncludesLocalHTTPCookies(t *testing.T) {
 		if i%2 == 0 {
 			origin = "http://localhost"
 		}
-		_, cookie, err := s.CreateBrowserSession(request(origin), fmt.Sprintf("%032x", i), false)
+		_, cookie, err := s.CreateBrowserSession(request(origin), fmt.Sprintf("%032x", i))
 		if err != nil {
 			t.Fatal(err)
 		}

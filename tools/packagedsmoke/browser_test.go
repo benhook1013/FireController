@@ -5,7 +5,11 @@ package packagedsmoke
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +21,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/server"
 )
 
 // TestPackagedBrowserSmoke consumes the existing embedded-browser daemon. It
@@ -75,7 +82,8 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 		t.Fatal("private bootstrap credential unavailable")
 	}
 	bootstrap.stop(t)
-	project, worker, otherWorker, credentialFile := seedAccess(t, ctx, data, bootstrap.instance, strings.TrimSpace(string(admin)), private)
+	project, worker, otherWorker, _ := seedAccess(t, ctx, data, bootstrap.instance, strings.TrimSpace(string(admin)), private)
+	credentialFile := seedBrowserReadOnlyCredential(t, ctx, data, bootstrap.instance, project, strings.TrimSpace(string(admin)), private)
 	daemon := startDaemon(t, ctx, binary, data, env)
 	if daemon.instance != bootstrap.instance {
 		t.Fatal("browser fixture identity changed")
@@ -159,20 +167,22 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 	}
 	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
 	var result struct {
-		State          string `json:"state"`
-		FixtureWrites  int    `json:"fixture_writes"`
-		SessionPosts   int    `json:"session_posts"`
-		SessionDeletes int    `json:"session_deletes"`
-		ActionWrites   int    `json:"action_writes"`
+		State                  string `json:"state"`
+		FixtureWrites          int    `json:"fixture_writes"`
+		SessionPosts           int    `json:"session_posts"`
+		SessionDeletes         int    `json:"session_deletes"`
+		SessionRenewals        int    `json:"session_renewals"`
+		MissingSessionRefusals int    `json:"missing_session_refusals"`
+		ActionWrites           int    `json:"action_writes"`
 	}
-	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 14 || result.SessionPosts != 2 || result.SessionDeletes != 2 || result.ActionWrites != 7 {
+	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 14 || result.SessionPosts != 3 || result.SessionDeletes != 3 || result.SessionRenewals != 3 || result.MissingSessionRefusals < 1 || result.ActionWrites != 7 {
 		t.Fatal("invalid packaged browser result")
 	}
 	daemon.stop(t)
 	if external.Load() != 0 {
 		t.Fatal("browser smoke attempted external HTTP")
 	}
-	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=14 session_posts=2 session_deletes=2 browser_action_writes=7 daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), engine.Load())
+	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=14 session_posts=3 session_deletes=3 session_renewals=3 missing_session_control=passed browser_action_writes=7 daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), engine.Load())
 }
 
 // The only early driver output is its owned Chromium group ID. Keep all output
@@ -204,16 +214,67 @@ func (o *browserOutput) browserPID() int { o.pidMu.Lock(); defer o.pidMu.Unlock(
 func (o *browserOutput) safePhase() string {
 	for _, line := range bytes.Split(o.bytes(), []byte("\n")) {
 		var record struct {
-			State string `json:"state"`
-			Phase string `json:"phase"`
+			State      string `json:"state"`
+			Phase      string `json:"phase"`
+			Checkpoint string `json:"checkpoint"`
+			Posts      int    `json:"session_posts"`
+			Deletes    int    `json:"session_deletes"`
+			Renewals   int    `json:"session_renewals"`
+			Refusals   int    `json:"terminal_responses"`
+			Errors     int    `json:"errors"`
+			Writes     int    `json:"forbidden_writes"`
 		}
 		if json.Unmarshal(line, &record) != nil || record.State != "FAIL" {
 			continue
 		}
 		switch record.Phase {
-		case "configuration", "launch", "connect", "fixture-update", "live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
+		case "configuration", "launch", "connect", "fixture-update", "live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "renewal-activity", "renewal-missing-cookie", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
+			if record.Phase == "renewal-missing-cookie" {
+				switch record.Checkpoint {
+				case "connect", "root-form", "project-input", "credential-input", "submit", "heading", "binding", "remove-cookie", "reload", "cleanup", "storage", "counters":
+					return fmt.Sprintf("%s/%s posts=%d deletes=%d renewals=%d refusals=%d errors=%d forbidden_writes=%d", record.Phase, record.Checkpoint, record.Posts, record.Deletes, record.Renewals, record.Refusals, record.Errors, record.Writes)
+				}
+			}
 			return record.Phase
 		}
 	}
 	return "driver-start-or-cleanup"
+}
+
+// Give the browser a genuine read-only credential rather than asking a writer
+// session to pretend to be read-only. This setup runs before the actual daemon.
+func seedBrowserReadOnlyCredential(t *testing.T, ctx context.Context, data, instance, project, admin, private string) string {
+	t.Helper()
+	store, err := core.Open(ctx, data)
+	if err != nil {
+		t.Fatal("read-only browser fixture unavailable")
+	}
+	defer store.Close()
+	if store.InstanceID() != instance {
+		t.Fatal("read-only browser fixture identity changed")
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		t.Fatal("read-only browser credential unavailable")
+	}
+	token := hex.EncodeToString(secret)
+	digest := sha256.Sum256([]byte(token))
+	raw, err := json.Marshal(map[string]any{"token_sha256": hex.EncodeToString(digest[:]), "permissions": []string{"read"}})
+	if err != nil {
+		t.Fatal("read-only browser fixture JSON unavailable")
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+project+"/credentials", bytes.NewReader(raw)).WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer "+admin)
+	request.Header.Set("X-FC-Instance", instance)
+	request.Header.Set("Idempotency-Key", core.NewID("browser_readonly"))
+	response := httptest.NewRecorder()
+	server.New(store).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatal("read-only browser credential setup refused")
+	}
+	filename := filepath.Join(private, "browser-readonly.token")
+	if os.WriteFile(filename, []byte(token+"\n"), 0600) != nil {
+		t.Fatal("private read-only browser credential unavailable")
+	}
+	return filename
 }

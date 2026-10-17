@@ -5,6 +5,8 @@ import fs from 'node:fs/promises';
 // Playwright diagnostics nor request/credential bytes are printed on failure.
 let server, browser;
 let phase = 'configuration';
+let checkpoint = '';
+let counters = () => ({});
 const need = (value) => { if (!value) throw new Error('assertion'); };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
@@ -15,6 +17,7 @@ try {
   browser = await chromium.connect(server.wsEndpoint(), {timeout: 5000});
   const context = await browser.newContext({ viewport: { width: 390, height: 900 } });
   const page = await context.newPage();
+  await page.clock.install({time: new Date()});
   page.setDefaultTimeout(5000);
   page.setDefaultNavigationTimeout(5000);
   const prefix = '/api/v1/projects/' + config.project;
@@ -31,17 +34,25 @@ try {
     fixtureWrites++;
     return receipt;
   };
-  let sessionPosts = 0, sessionDeletes = 0, forbiddenWrites = 0, actionWrites = 0, errors = 0, external = 0;
+  let sessionPosts = 0, sessionDeletes = 0, sessionRenewals = 0, terminalResponses = 0, forbiddenWrites = 0, actionWrites = 0, errors = 0, external = 0;
  let explicitActions = false;
  let controlledMessageFailure = false;
+ let controlledAccessFailure = false;
+ const expectedMissingSessionRoute = url => { if (!controlledAccessFailure || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname); } catch { return false; } };
+  counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites});
   page.on('pageerror', () => errors++);
-  page.on('console', value => { if (value.type() === 'error' && !(controlledMessageFailure && value.location().url === config.origin + prefix + '/messages')) errors++; });
-  page.on('response', value => { if (value.status() >= 400) errors++; });
+  page.on('console', value => { if (value.type() === 'error' && !(expectedMissingSessionRoute(value.location().url)) && !(controlledMessageFailure && value.location().url === config.origin + prefix + '/messages')) errors++; });
+  page.on('response', value => { if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else errors++; } });
   page.on('request', request => {
     const url = new URL(request.url());
     if (url.origin !== config.origin) { external++; return; }
     if (request.method() === 'GET') return;
-    if (url.pathname === prefix + '/browser-session' && request.method() === 'POST') sessionPosts++;
+    if (url.pathname === prefix + '/browser-session' && request.method() === 'POST') {
+      sessionPosts++;
+      try { const body=JSON.parse(request.postData()); if (Object.keys(body).length!==1 || typeof body.session_id!=='string' || !body.session_id) forbiddenWrites++; }
+      catch { forbiddenWrites++; }
+    }
+    else if (url.pathname === prefix + '/browser-session/renew' && request.method() === 'POST') { sessionRenewals++; if (request.postData() !== '{}' || request.headers()['authorization'] || request.headers()['x-fc-instance'] !== config.instance) forbiddenWrites++; }
     else if (url.pathname === prefix + '/browser-session' && request.method() === 'DELETE') sessionDeletes++;
     else if (explicitActions && ((request.method() === 'POST' && (url.pathname === prefix + '/messages' || /^messages\/[^/]+\/(?:seen|ack)$/.test(url.pathname.slice(prefix.length + 1)))) || (request.method() === 'PUT' && url.pathname === prefix + '/presentation'))) actionWrites++;
     else forbiddenWrites++;
@@ -64,8 +75,18 @@ try {
   await page.goto(config.origin);
   await page.getByLabel('Project ID', {exact:true}).fill(config.project);
   await page.getByLabel('Project credential', {exact:true}).fill(token);
+  need(await page.getByRole('checkbox').count() === 0);
+  const readOnlyLogin=page.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname===prefix+'/browser-session');
   await page.getByRole('button', {name:'Connect to project', exact:true}).click();
+  const readOnlyResponse=await readOnlyLogin; need(readOnlyResponse.status()===200);
+  const readOnlyCapabilities=await readOnlyResponse.json(); need(readOnlyCapabilities.allow_writes===false && readOnlyCapabilities.can_edit_presentation===false);
   await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
+  need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).count()===0);
+  await page.getByRole('button',{name:'Open Builder inbox',exact:true}).click();
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
+  await page.getByRole('heading',{name:'Builder inbox',exact:true}).waitFor();
+  need(await page.getByRole('button',{name:'New message',exact:true}).count()===0);
+  need(actionWrites===0 && fixtureWrites===0 && forbiddenWrites===0);
   await defaults();
   need((await appearance()).title === 'Packaged smoke · FireController');
   const bindingKey = 'firecontroller.browser-session.v1';
@@ -74,7 +95,7 @@ try {
   const sessionID = JSON.parse(binding).sessionID;
   const cookieName = 'fc-local-browser-' + sessionID;
   const cookie = (await context.cookies()).find(value => value.name === cookieName);
-  need(cookie?.httpOnly && cookie.sameSite === 'Strict');
+  need(cookie?.httpOnly && cookie.sameSite === 'Strict' && sessionRenewals === 0);
 
   phase = 'fixture-update';
   const title = 'UnbrokenProjectTitle'.repeat(8) + '<literal>';
@@ -186,10 +207,36 @@ try {
   phase = 'reload';
   await page.reload();
   await page.getByRole('heading', {name:title, exact:true}).waitFor();
-  need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === selectedBinding);
+  await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(1);
+  await expect.poll(async () => JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey)).expiresAt, {timeout:5000}).not.toBe(JSON.parse(selectedBinding).expiresAt);
+  const retained = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey));
+  need(retained.projectID === config.project && retained.instanceID === config.instance && retained.sessionID === sessionID && retained.selectedworkerID === config.worker);
+  need(Date.parse(retained.expiresAt) > Date.now() && Date.parse(retained.expiresAt) <= Date.now() + 86400000 + 300000);
   const resumed = (await context.cookies()).find(value => value.name === cookieName);
-  need(resumed?.value === cookie.value && sessionPosts === 1);
+  need(resumed?.value !== cookie.value && resumed?.httpOnly && resumed?.sameSite === 'Strict' && sessionPosts === 1);
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
+
+  phase = 'renewal-activity';
+  // Advance only Chromium's clock across client throttle admission. The real
+  // daemon still issues and checks its ordinary24-hour cookies.
+  await page.clock.fastForward(300001);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  need(sessionRenewals === 1); // Timers and SSE alone are not user activity.
+  // Control only this disposable document's visibility getter; this is client
+  // admission proof, not a physical-device background/lifecycle assertion.
+  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', {configurable:true, value:'hidden'}); document.dispatchEvent(new Event('visibilitychange')); });
+  await page.keyboard.press('Shift');
+  await page.mouse.click(385, 895);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  need(sessionRenewals === 1);
+  await page.evaluate(() => { delete document.visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
+  await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(2);
+  await page.keyboard.press('Shift');
+  await page.mouse.click(385, 895);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  need(sessionRenewals === 2 && sessionPosts === 1);
+  const privateStorage = await page.evaluate(() => JSON.stringify({session:{...sessionStorage}, local:{...localStorage}}));
+  need(!privateStorage.includes(token) && !privateStorage.includes(admin) && !privateStorage.includes('allow_writes') && !privateStorage.includes('can_edit_presentation'));
 
   phase = 'disconnect';
   await page.getByRole('button', {name:'Disconnect', exact:true}).click();
@@ -205,8 +252,12 @@ try {
   explicitActions = true;
   await page.getByLabel('Project ID', {exact:true}).fill(config.project);
   await page.getByLabel('Project credential', {exact:true}).fill(admin);
-  await page.getByLabel('Enable message and appearance changes', {exact:true}).check();
+  need(await page.getByRole('checkbox').count()===0);
+  const adminLogin=page.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname===prefix+'/browser-session');
   await page.getByRole('button', {name:'Connect to project',exact:true}).click();
+  const adminResponse=await adminLogin;need(adminResponse.status()===200);
+  const adminCapabilities=await adminResponse.json();need(adminCapabilities.allow_writes===true && adminCapabilities.can_edit_presentation===true);
+  need(actionWrites===0 && forbiddenWrites===0);
   await page.getByRole('heading', {name:title,exact:true}).waitFor();
   await page.getByRole('button', {name:'Open Builder inbox',exact:true}).click();
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox',exact:true}).click();
@@ -247,6 +298,7 @@ try {
   await page.reload();
   await page.getByRole('heading',{name:'Browser configured project',exact:true}).waitFor();
   need(new URL(page.url()).pathname===home+'/settings');
+  await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(3);
   await page.getByLabel('Project name',{exact:true}).waitFor();
   need(await page.locator('literal').count()===0);
   need(!(await page.evaluate(()=>JSON.stringify(sessionStorage))).includes(admin));
@@ -301,13 +353,42 @@ try {
   controlledMessageFailure=false;
   await page.getByRole('button',{name:'Disconnect',exact:true}).click();
   await page.getByRole('button',{name:'Connect to project',exact:true}).waitFor();
-  need(sessionPosts===2 && sessionDeletes===2 && actionWrites===7 && forbiddenWrites===0 && errors===0 && external===0);
+  need(sessionPosts===2 && sessionDeletes===2 && sessionRenewals===3 && actionWrites===7 && forbiddenWrites===0 && errors===0 && external===0);
+
+  phase = 'renewal-missing-cookie'; checkpoint = 'root-form';
+  // Disconnect renders its old project-route form before navigation replaces
+  // it. Wait for the destination form before filling either required input.
+  await page.waitForURL(config.origin + '/');
+  await expect(page.getByLabel('Project ID', {exact:true})).toHaveValue('');
+  checkpoint = 'project-input';
+  explicitActions = false;
+  await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+  checkpoint = 'credential-input';
+  await page.getByLabel('Project credential', {exact:true}).fill(token);
+  checkpoint = 'submit';
+  await page.getByRole('button', {name:'Connect to project', exact:true}).click();
+  checkpoint = 'heading';
+  await page.getByRole('heading', {name:'Browser configured project',exact:true}).waitFor();
+  checkpoint = 'binding';
+  const missingBinding = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey));
+  need(sessionPosts === 3 && sessionRenewals === 3);
+  checkpoint = 'remove-cookie';
+  await context.clearCookies({name:'fc-local-browser-' + missingBinding.sessionID});
+  controlledAccessFailure = true; checkpoint = 'reload';
+  await page.reload();
+  await page.getByRole('button', {name:'Connect to project',exact:true}).waitFor();
+  checkpoint = 'cleanup';
+  await expect.poll(() => sessionDeletes, {timeout:5000}).toBe(3);
+  checkpoint = 'storage';
+  need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === null);
+  checkpoint = 'counters';
+  need(terminalResponses > 0 && sessionRenewals === 3 && actionWrites === 7 && forbiddenWrites === 0 && errors === 0 && external === 0);
   await context.close();
   await browser.close(); browser = undefined;
   await server.close(); server = undefined;
-  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, action_writes:actionWrites}));
+  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites}));
 } catch {
-  console.log(JSON.stringify({state:'FAIL', phase}));
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, ...counters()}));
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});

@@ -72,7 +72,7 @@ describe('read-only browser cookie session transport', () => {
       if (init?.method === 'POST') {
         selector = (JSON.parse(String(init.body)) as { session_id: string }).session_id;
         expect(selector).toMatch(/^[a-f0-9]{32}$/);
-        expect(JSON.parse(String(init.body))).toEqual({ session_id: selector, allow_writes: false });
+        expect(JSON.parse(String(init.body))).toEqual({ session_id: selector });
         expect(new Headers(init.headers).get('authorization')).toBe('Bearer private-token-do-not-leak');
         expect(new Headers(init.headers).has('x-fc-browser-session')).toBe(false);
         return json({ session_id: selector, instance_id: 'instance_one', project_id: 'project_one', expires_at: new Date(Date.now() + 24 * 3600000).toISOString(), allow_writes: false, can_edit_presentation: false });

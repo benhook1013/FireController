@@ -9,6 +9,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Public project website](public-site.md): shareable project showcase, publication selection and the public/private field boundary.
 - [Project presentation and metadata](project-presentation.md): selected appearance records, semantic theme validation and isolated live project updates.
 - [Project map](project-map.md): revisioned workstreams, return points and explicit job references, with implementation status at the owner.
+- [Browser session renewal](browser-session-renewal.md): activity-based cookie renewal, scoped authority and lost-response recovery.
 - [Browser guide](browser-guide.md): embedded UI, connection privacy and build/proof limits.
 - [Browser coordination views](browser-coordination.md): explicit note/history and worker pause/focus views over the existing read contracts.
 - [Development](development.md): implemented profile-bound CLI reads/mutations, build/check commands, and current proof limits.
@@ -39,6 +40,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Architecture](architecture.md) owns service boundaries, project isolation, storage, and provider observation rules.
 - [Agent and client contract](agent-client.md) owns profiles, tool calls, subscriptions, cancellation and reconnect semantics.
 - [AI usability](ai-usability.md) owns output budgets, agent interaction patterns, and attention-cost proof.
+- [Prepared map import](map-import.md): additive map preview/application, stable source mappings and private provenance/history.
 - [Prepared review import](review-import.md): scoped administrator preview/apply of a prepared historical review export, with explicit implementation and proof status.
 - [Onboarding](onboarding.md) owns AI-guided project setup and historical import; the bundled [onboarding skill](../skills/firecontroller-onboard/SKILL.md) guides the supported setup.
 - [Review orchestration](reviews.md) owns reusable review invariants and configurable policy.

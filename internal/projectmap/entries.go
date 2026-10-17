@@ -13,6 +13,7 @@ import (
 
 // Register mounts provider-free project-map and job association endpoints.
 func Register(mux *http.ServeMux, store *core.Store) {
+	registerImport(mux, store)
 	base := "/api/v1/projects/{project_id}"
 	mux.HandleFunc("POST "+base+"/map/entries", createEntry(store))
 	mux.HandleFunc("PUT "+base+"/map/entries/{entry_id}", replaceEntry(store))
@@ -142,12 +143,7 @@ func createEntry(store *core.Store) http.HandlerFunc {
 			return
 		}
 		result, err := store.Mutate(r.Context(), scope, core.Mutation{Operation: "map.entries.create", Target: "map.entries", Key: key, Request: value}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-			at := stamp()
-			e := entry(value, scope.ProjectID, core.NewID("map_entry"), 1, at, at)
-			if err := writeEntry(ctx, tx, scope, e, true); err != nil {
-				return nil, err
-			}
-			return Receipt{e.ID, 1, "created"}, nil
+			return createEntryTx(ctx, tx, scope, value)
 		})
 		respond(w, json.RawMessage(result), err, 201)
 	}
@@ -183,25 +179,7 @@ func replaceEntry(store *core.Store) http.HandlerFunc {
 			return
 		}
 		result, err := store.Mutate(r.Context(), scope, core.Mutation{Operation: "map.entries.replace", Target: id, Key: key, Request: req}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-			current, err := readEntry(ctx, tx, scope.ProjectID, id)
-			if err != nil {
-				return nil, err
-			}
-			if current.Revision != req.ExpectedRevision {
-				return nil, conflict(current.Revision)
-			}
-			old := editable(current)
-			if old.Kind != value.Kind || !retainsPhases(old, value) {
-				return nil, invalid()
-			}
-			if equalEditable(old, value) {
-				return Receipt{id, current.Revision, "unchanged"}, nil
-			}
-			next := entry(value, scope.ProjectID, id, current.Revision+1, current.CreatedAt, stamp())
-			if err := writeEntry(ctx, tx, scope, next, false); err != nil {
-				return nil, err
-			}
-			return Receipt{id, next.Revision, "updated"}, nil
+			return replaceEntryTx(ctx, tx, scope, id, req.ExpectedRevision, value)
 		})
 		respond(w, json.RawMessage(result), err, 200)
 	}
@@ -404,4 +382,52 @@ func getRevision(store *core.Store) http.HandlerFunc {
 		})
 		respond(w, value, err, 200)
 	}
+}
+
+// These transaction helpers are shared by ordinary mutations and prepared
+// imports. Their caller owns authorization, admission, receipt and commit.
+func createEntryTx(ctx context.Context, tx *sql.Tx, scope core.Scope, value Editable) (Receipt, error) {
+	if err := validateEditable(value); err != nil {
+		return Receipt{}, err
+	}
+	at := stamp()
+	e := entry(value, scope.ProjectID, core.NewID("map_entry"), 1, at, at)
+	if err := writeEntry(ctx, tx, scope, e, true); err != nil {
+		return Receipt{}, err
+	}
+	return Receipt{e.ID, 1, "created"}, nil
+}
+func admitEntryReplacement(current Entry, expected int64, value Editable) (bool, error) {
+	if !validGuard(&expected, 1) {
+		return false, invalid()
+	}
+	if err := validateEditable(value); err != nil {
+		return false, err
+	}
+	if current.Revision != expected {
+		return false, conflict(current.Revision)
+	}
+	old := editable(current)
+	if old.Kind != value.Kind || !retainsPhases(old, value) {
+		return false, invalid()
+	}
+	return !equalEditable(old, value), nil
+}
+func replaceEntryTx(ctx context.Context, tx *sql.Tx, scope core.Scope, id string, expected int64, value Editable) (Receipt, error) {
+	current, err := readEntry(ctx, tx, scope.ProjectID, id)
+	if err != nil {
+		return Receipt{}, err
+	}
+	changed, err := admitEntryReplacement(current, expected, value)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if !changed {
+		return Receipt{id, current.Revision, "unchanged"}, nil
+	}
+	next := entry(value, scope.ProjectID, id, current.Revision+1, current.CreatedAt, stamp())
+	if err := writeEntry(ctx, tx, scope, next, false); err != nil {
+		return Receipt{}, err
+	}
+	return Receipt{id, next.Revision, "updated"}, nil
 }

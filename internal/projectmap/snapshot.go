@@ -71,7 +71,13 @@ func ValidateSnapshot(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 	}
-	return associations.Err()
+	if err := associations.Err(); err != nil {
+		return err
+	}
+	if err := associations.Close(); err != nil {
+		return err
+	}
+	return validateImportSnapshot(ctx, tx)
 }
 func validateEntryHistory(ctx context.Context, tx *sql.Tx, current Entry) error {
 	rows, err := tx.QueryContext(ctx, `SELECT revision,actor_id,CASE WHEN length(CAST(state_json AS BLOB))<=? THEN state_json ELSE NULL END,created_at FROM project_map_entry_history WHERE project_id=? AND entry_id=? ORDER BY revision`, maxEntryBytes, current.ProjectID, current.ID)

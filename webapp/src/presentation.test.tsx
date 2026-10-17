@@ -23,13 +23,15 @@ describe('project appearance and metadata boundary', () => {
     expect(validPresentationConfig({ ...config, theme: { surface_text: '#f7f6f3' } })).toBe(false);
     expect(validPresentationConfig({ ...config, headings: { jobs: 'Untrusted\nheading' } })).toBe(false);
   });
-  it('keeps every original fallback color/layout byte and covers the shared token vocabulary', async () => {
+  it('preserves the approved fallback colors and layout and covers the shared token vocabulary', async () => {
     const fs = await vi.importActual<{ readFileSync(path: URL, encoding: 'utf8'): string }>('node:fs');
     const styles = fs.readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
     const base = styles.split('\n/* Bounded presentation text. */')[0];
+    // Baseline keeps the selected Inter 600 header/five-pixel gap and removes
+    // the redundant left hero eyebrow and permission pill as requested.
     const original = base.replace(/var\(--fc-[a-z_]+,([^()]+)\)/gu, '$1');
     const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(original));
-    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('723a8ad8312d157a0b357cde763b1d16e9b59f477b4ea51c97a3327700e4f54f');
+    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('09636463aa42411e444c63e2f24f388bd2a46b4b4b4f244235176135b2737ab2');
     const tokens = new Set(Array.from(styles.matchAll(/--fc-([a-z_]+)/gu), match => match[1]));
     expect([...tokens].sort()).toEqual(Object.keys(presentationDefaults.theme).sort());
     // Decorative shadows may stay literal. All informative declarations use

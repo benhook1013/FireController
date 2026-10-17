@@ -17,7 +17,7 @@ func browserCoreWritableSession(t *testing.T, s *Store) (string, *http.Cookie) {
 	r.SetPathValue("project_id", "project")
 	r.Header.Set("Authorization", "Bearer synthetic-core-stream-token-1234567")
 	r.Header.Set("X-FC-Instance", s.InstanceID())
-	v, cookie, err := s.CreateBrowserSession(r, id, true)
+	v, cookie, err := s.CreateBrowserSession(r, id)
 	if err != nil || !v.AllowWrites || v.CanEditPresentation {
 		t.Fatal("write session fixture capability mismatch", err)
 	}
@@ -86,6 +86,9 @@ func TestBrowserSessionWriteScopeReauthorizesInsideMutationAndReplay(t *testing.
 func TestBrowserSessionOldCookieCannotGainWriteCapability(t *testing.T) {
 	s, _, _ := streamFixture(t)
 	id, original := browserCoreSession(t, s)
+	if _, err := s.DB().Exec(`UPDATE grants SET can_write=1 WHERE credential_id='credential'`); err != nil {
+		t.Fatal(err)
+	}
 	var claims browserSessionClaims
 	if err := s.browserSessionCodec().Decode(original.Name, original.Value, &claims); err != nil {
 		t.Fatal("decode fixture")
@@ -160,7 +163,7 @@ func TestBrowserSessionAdminMutationRechecksAuthorityBeforeReceiptReplay(t *test
 	login.SetPathValue("project_id", "project")
 	login.Header.Set("Authorization", "Bearer synthetic-core-stream-token-1234567")
 	login.Header.Set("X-FC-Instance", s.InstanceID())
-	response, cookie, err := s.CreateBrowserSession(login, id, true)
+	response, cookie, err := s.CreateBrowserSession(login, id)
 	if err != nil || !response.CanEditPresentation {
 		t.Fatal("administrator session fixture failed", err)
 	}

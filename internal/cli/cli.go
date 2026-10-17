@@ -67,6 +67,7 @@ type invocation struct {
 	publication  *publicationInvocation
 
 	reviewImport *reviewImportInvocation
+	mapImport    *mapImportInvocation
 
 	waitSeconds int
 }
@@ -91,6 +92,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return emit(stdout, stderr, struct {
 			Version string `json:"version"`
 		}{Version})
+	}
+	if call.mapImport != nil {
+		if err := prepareMapImport(ctx, call.mapImport); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
 	}
 	if call.projectMap != nil {
 		if err := prepareProjectMap(ctx, call.projectMap); err != nil {
@@ -166,6 +172,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.mapImport != nil {
+		return executeMapImport(requestCtx, ctx, service, call.mapImport, stdout, stderr)
+	}
 	if call.publication != nil {
 		return executePublication(requestCtx, ctx, service, call.publication, stdout, stderr)
 	}
@@ -336,6 +345,11 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if call.command == "map" && strings.HasPrefix(call.subcommand, "import-") {
+		var ok bool
+		call.mapImport, ok = parseMapImport(call.subcommand, operationArgs)
+		return call, ok
+	}
 	if call.command == "publication" {
 		var ok bool
 		call.publication, ok = parsePublication(call.subcommand, operationArgs)

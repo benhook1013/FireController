@@ -56,5 +56,37 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
  FOREIGN KEY(project_id,job_id) REFERENCES jobs(project_id,id) ON DELETE CASCADE,
  FOREIGN KEY(project_id,workstream_id) REFERENCES project_map_entries(project_id,id)
  );`,
+	}, []string{
+		`CREATE TABLE project_map_import_sources (
+ project_id TEXT NOT NULL,
+ source_key TEXT NOT NULL,
+ revision INTEGER NOT NULL CHECK(revision>=1),
+ record_json TEXT NOT NULL,
+ PRIMARY KEY(project_id,source_key),
+ FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+ );
+ CREATE TABLE project_map_import_history (
+ project_id TEXT NOT NULL,
+ source_key TEXT NOT NULL,
+ revision INTEGER NOT NULL CHECK(revision>=1),
+ actor_id TEXT NOT NULL,
+ worker_id TEXT NOT NULL,
+ record_json TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,source_key,revision),
+ FOREIGN KEY(project_id,source_key) REFERENCES project_map_import_sources(project_id,source_key) ON DELETE CASCADE
+ );
+ CREATE TABLE project_map_import_items (
+ project_id TEXT NOT NULL,
+ source_key TEXT NOT NULL,
+ item_key TEXT NOT NULL,
+ entry_id TEXT NOT NULL,
+ entry_revision INTEGER NOT NULL CHECK(entry_revision>=1),
+ source_revision INTEGER NOT NULL CHECK(source_revision>=1),
+ PRIMARY KEY(project_id,source_key,item_key),
+ FOREIGN KEY(project_id,source_key) REFERENCES project_map_import_sources(project_id,source_key) ON DELETE CASCADE,
+ FOREIGN KEY(project_id,entry_id,entry_revision) REFERENCES project_map_entry_history(project_id,entry_id,revision),
+ FOREIGN KEY(project_id,source_key,source_revision) REFERENCES project_map_import_history(project_id,source_key,revision)
+ );`,
 	})
 }

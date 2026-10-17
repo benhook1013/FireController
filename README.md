@@ -107,4 +107,4 @@ AI contributors should read [AGENTS.md](AGENTS.md). The [documentation index](do
 
 ## License
 
-Copyright 2026 Benjamin James Hook. New FireController material is licensed under [Apache-2.0](LICENSE). Referenced historical source retains its original license.
+Copyright 2026 Benjamin James Hook. New FireController material is licensed under [Apache-2.0](LICENSE). Referenced historical source retains its original license. The bundled Inter header font uses the SIL Open Font License; its [copyright and license](webapp/public/fonts/Inter-OFL.txt) accompany the packaged website.
