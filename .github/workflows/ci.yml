@@ -31,6 +31,8 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: make check build
+      - name: Smoke packaged binaries
+        run: make smoke
       - name: Verify embedded browser assets match source
         run: |
           git diff --exit-code -- internal/webui/assets

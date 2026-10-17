@@ -119,7 +119,23 @@ func recoveryStatusFields(ctx context.Context, db sqlReader, identity string, fi
 		_, atOK := canonicalTime(status.ActivatedAt)
 		var principal, hash string
 		var admin, revoked int
-		if len(fields) != 9 || fields["restore:provider_state"] != "held" || !activationCredentialID.MatchString(status.CredentialID) || !atOK || db.QueryRowContext(ctx, `SELECT principal_id,token_sha256,is_admin,revoked FROM credentials WHERE id=?`, status.CredentialID).Scan(&principal, &hash, &admin, &revoked) != nil || !activationPrincipalID.MatchString(principal) || !digest.MatchString(hash) || admin != 1 || revoked < 0 || revoked > 1 {
+		if !activationCredentialID.MatchString(status.CredentialID) || !atOK || db.QueryRowContext(ctx, `SELECT principal_id,token_sha256,is_admin,revoked FROM credentials WHERE id=?`, status.CredentialID).Scan(&principal, &hash, &admin, &revoked) != nil || !activationPrincipalID.MatchString(principal) || !digest.MatchString(hash) || admin != 1 || revoked < 0 || revoked > 1 {
+			return RecoveryStatus{}, 0, invalid()
+		}
+		switch fields["restore:provider_state"] {
+		case "held":
+			if len(fields) != 9 {
+				return RecoveryStatus{}, 0, invalid()
+			}
+		case "released":
+			if len(fields) != 10 {
+				return RecoveryStatus{}, 0, invalid()
+			}
+			if _, err := readProviderRelease(fields, status); err != nil {
+				return RecoveryStatus{}, 0, err
+			}
+			status.ProvidersHeld = false
+		default:
 			return RecoveryStatus{}, 0, invalid()
 		}
 	default:

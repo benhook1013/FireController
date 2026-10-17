@@ -2,7 +2,7 @@
 
 ## Goal and implementation status
 
-Let a user ask their AI to add FireController to an existing project and receive a working, verified setup with clear ownership of the imported information. Local private profile creation and POSIX bound launcher commands are implemented. The bundled [onboarding skill](../skills/firecontroller-onboard/SKILL.md) guides the implemented API and client setup; a dedicated onboarding wizard and historical importer remain unimplemented. This is a first-release usability requirement; broad importer coverage is delivered incrementally.
+Let a user ask their AI to add FireController to an existing project and receive a working, verified setup with clear ownership of the imported information. Local private profile creation and POSIX bound launcher commands are implemented. The bundled [onboarding skill](../skills/firecontroller-onboard/SKILL.md) guides the implemented API and client setup; a dedicated onboarding wizard and general historical importer remain unimplemented. The [prepared review import](review-import.md) preview/apply boundary uses the existing administrator observation API; its owning contract records current proof and limits. This is a first-release usability requirement; broad importer coverage is delivered incrementally.
 
 ## Supported setup flow
 

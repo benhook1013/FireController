@@ -169,7 +169,7 @@ func NewManager(store *core.Store, dataDir string, cfg ScheduleConfig) (*Manager
 		}
 		// The singleton may be inherited from a predecessor. Its history stays
 		// visible, but its due time cannot schedule this new instance's work.
-		currentGeneration := old != nil && (old.SourceInstanceID == store.InstanceID() || old.SourceInstanceID == "" && !recovery.ProvidersHeld)
+		currentGeneration := old != nil && (old.SourceInstanceID == store.InstanceID() || old.SourceInstanceID == "" && recovery.State == "ordinary")
 		r := managedRecord{Configuration: cfg, SourceInstanceID: store.InstanceID()}
 		if old != nil {
 			r.Status = old.Status
@@ -198,7 +198,7 @@ func NewManager(store *core.Store, dataDir string, cfg ScheduleConfig) (*Manager
 			if currentGeneration && old.Configuration == cfg && old.Status.NextAttemptAt != "" {
 				m.next, _ = time.Parse(time.RFC3339Nano, old.Status.NextAttemptAt)
 			} else if currentGeneration && s.LastAttempt != nil && s.LastAttempt.FinishedAt != "" {
-				if s.LastAttempt.SourceInstanceID == store.InstanceID() || s.LastAttempt.SourceInstanceID == "" && !recovery.ProvidersHeld {
+				if s.LastAttempt.SourceInstanceID == store.InstanceID() || s.LastAttempt.SourceInstanceID == "" && recovery.State == "ordinary" {
 					finish, _ := time.Parse(time.RFC3339Nano, s.LastAttempt.FinishedAt)
 					m.next = finish.Add(cfg.Interval)
 				}

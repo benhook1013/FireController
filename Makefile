@@ -1,12 +1,12 @@
 GO ?= go
 GOFMT ?= gofmt
 
-.PHONY: check fmt-check test build docs-check browser-check browser-build
+.PHONY: check fmt-check test build docs-check browser-check browser-build smoke
 
 check: browser-check fmt-check test docs-check
 
 fmt-check:
-	@files="$$($(GOFMT) -l cmd internal)" || exit $$?; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi
+	@files="$$($(GOFMT) -l cmd internal tools)" || exit $$?; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi
 
 test:
 	$(GO) test -race -p=2 ./...
@@ -25,3 +25,7 @@ browser-check:
 
 browser-build:
 	npm --prefix webapp run build
+
+# Requires the actual outputs from make build; no implicit rebuild.
+smoke:
+	$(GO) test -tags=packaged_smoke -run '^TestPackagedSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke

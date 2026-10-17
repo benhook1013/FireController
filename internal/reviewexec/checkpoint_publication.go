@@ -193,7 +193,7 @@ func decodeCheckpoint(body string) (checkpointRecord, error) {
 	if (v.State == "queued" || v.State == "preparing") && (!r.Unposted || r.Intent != nil) || (v.State == "posting" || v.State == "recovering" || v.State == "recover_queued" || v.State == "uncertain") && r.Unposted {
 		return r, checkpointStorage()
 	}
-	if !checkpointActive(v.State) && v.State != "published" && v.State != "held" && v.State != "uncertain" {
+	if !checkpointActive(v.State) && v.State != "published" && v.State != "held" && v.State != "uncertain" && v.State != "cancelled" {
 		return r, checkpointStorage()
 	}
 	if r.Intent != nil {
@@ -364,6 +364,9 @@ func (e *Engine) RecoverCheckpointPublication(ctx context.Context, scope core.Sc
 		}
 		if r.View.Revision != n {
 			return nil, conflict()
+		}
+		if r.View.State == "cancelled" {
+			return nil, checkpointHold("restore_reconciled")
 		}
 		if r.View.State == "published" || checkpointActive(r.View.State) {
 			return checkpointReceipt(r), nil

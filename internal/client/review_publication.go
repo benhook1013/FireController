@@ -74,7 +74,7 @@ func ValidateReviewCheckpointRecovery(r ReviewCheckpointRecovery) error {
 }
 
 func (c *Client) validCheckpointPublication(v ReviewCheckpointPublication) bool {
-	if ValidateReviewCheckpointID(v.ID) != nil || v.ProjectID != c.identity.ProjectID || ValidateReviewEvidenceID(v.EvidenceID) != nil || !oneReviewOf(v.State, "queued", "preparing", "posting", "recover_queued", "recovering", "published", "held", "uncertain") || v.Revision < 1 || v.SourceRevision < 1 || v.Reason != "" && !validExecutionIdentifier(v.Reason) || !validControlAnchor(v.Anchor) || v.Anchor.ParentPullNumber == v.Anchor.PullNumber || v.Counts.Found < 0 || v.Counts.Found > 100 || v.Counts.Accepted < 0 || v.Counts.Routed < 0 || v.Counts.Accepted > v.Counts.Found || v.Counts.Routed > v.Counts.Found-v.Counts.Accepted || !controlTime(v.CreatedAt) || !controlTime(v.UpdatedAt) || v.CommentID < 0 || v.ProviderAuthorID < 0 {
+	if ValidateReviewCheckpointID(v.ID) != nil || v.ProjectID != c.identity.ProjectID || ValidateReviewEvidenceID(v.EvidenceID) != nil || !oneReviewOf(v.State, "queued", "preparing", "posting", "recover_queued", "recovering", "published", "held", "uncertain", "cancelled") || v.Revision < 1 || v.SourceRevision < 1 || v.Reason != "" && !validExecutionIdentifier(v.Reason) || !validControlAnchor(v.Anchor) || v.Anchor.ParentPullNumber == v.Anchor.PullNumber || v.Counts.Found < 0 || v.Counts.Found > 100 || v.Counts.Accepted < 0 || v.Counts.Routed < 0 || v.Counts.Accepted > v.Counts.Found || v.Counts.Routed > v.Counts.Found-v.Counts.Accepted || !controlTime(v.CreatedAt) || !controlTime(v.UpdatedAt) || v.CommentID < 0 || v.ProviderAuthorID < 0 {
 		return false
 	}
 	created, _ := time.Parse(time.RFC3339Nano, v.CreatedAt)
@@ -136,7 +136,7 @@ func (c *Client) checkpointMutation(ctx context.Context, key string, path []stri
 	}
 	valid := false
 	if v := value.Operation; v != nil {
-		valid = c.validCheckpointPublication(*v) && oneReviewOf(v.State, "published", "held", "uncertain") && (id == "" || v.ID == id) && (evidence == "" || v.EvidenceID == evidence)
+		valid = c.validCheckpointPublication(*v) && oneReviewOf(v.State, "published", "held", "uncertain", "cancelled") && (id == "" || v.ID == id) && (evidence == "" || v.EvidenceID == evidence)
 	} else if v := value.Receipt; v != nil {
 		valid = ValidateReviewCheckpointID(v.ID) == nil && v.State == "queued" && v.Revision >= 1 && (id == "" || v.ID == id)
 	}
