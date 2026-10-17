@@ -302,11 +302,12 @@ func syncRestoreDirectories(ctx context.Context, dir string) error {
 }
 
 // The newly created destination must be private. Its existing parent may be
-// public (for example /tmp), but no ancestor may redirect through a symlink.
+// public (for example /tmp), and existing ancestors may resolve through
+// directory symlinks. The destination itself is separately reserved by Lstat.
 func restoreParent(path string) error {
 	for {
-		info, err := os.Lstat(path)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		info, err := os.Stat(path)
+		if err != nil || !info.IsDir() {
 			return invalid()
 		}
 		next := filepath.Dir(path)
