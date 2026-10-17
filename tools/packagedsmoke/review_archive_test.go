@@ -58,6 +58,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	for _, directory := range []string{"../../cmd", "../../internal", "../../webapp/src"} {
 		sourceInputs[directory] = upgradeFileHashes(t, directory)
 	}
+	archiveDriverHash := binaryHash(t, "review_archive.mjs")
 	defer func() {
 		for name, path := range binaries {
 			if binaryHash(t, path) != hashes[name] {
@@ -68,6 +69,9 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 			if !reflect.DeepEqual(before, upgradeFileHashes(t, directory)) {
 				t.Errorf("archive smoke changed source/embedded assets in %s", directory)
 			}
+		}
+		if binaryHash(t, "review_archive.mjs") != archiveDriverHash {
+			t.Error("archive browser driver changed during packaged proof")
 		}
 	}()
 	var external, engine atomic.Int64
@@ -289,6 +293,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	}
 	var result struct {
 		State            string `json:"state"`
+		Phase            string `json:"phase"`
 		ArchiveRequests  int    `json:"archive_requests"`
 		MaxLimit         int    `json:"max_limit"`
 		SourceCollisions bool   `json:"source_collisions"`
@@ -297,8 +302,16 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		FixtureWrites    int    `json:"fixture_writes"`
 	}
 	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
-	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.MaxLimit != 20 || result.ArchiveRequests < 14 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || result.FixtureWrites != 1 {
-		t.Fatal("packaged archive browser failed; raw output withheld to protect fixture authority")
+	if len(lines) == 2 {
+		_ = json.Unmarshal(lines[1], &result)
+	}
+	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 20 || result.ArchiveRequests != 20 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || result.FixtureWrites != 1 {
+		phase := "unavailable"
+		switch result.Phase {
+		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "pinned-continuation":
+			phase = result.Phase
+		}
+		t.Fatalf("packaged archive browser failed at phase=%s; raw output withheld to protect fixture authority", phase)
 	}
 	daemon.stop(t)
 	after := readUpgradeState(t, ctx, data)
