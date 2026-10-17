@@ -67,6 +67,12 @@ try {
     overrides: [...document.documentElement.style].filter(name => name.startsWith('--fc-')),
     accent: document.documentElement.style.getPropertyValue('--fc-accent_text'),
   }));
+  const indicatorColors = () => page.evaluate(() => ({
+    connection: getComputedStyle(document.querySelector('.connection-note'), '::before').backgroundColor,
+    canvas: getComputedStyle(document.documentElement).backgroundColor,
+    status: getComputedStyle(document.querySelector('.feed-card .status-dot')).backgroundColor,
+    surface: getComputedStyle(document.querySelector('.feed-card')).backgroundColor,
+  }));
   const defaults = async () => {
     const value = await appearance();
     need(value.brand === 'FireController' && value.background === 'rgb(232, 231, 228)' && value.overrides.length === 0);
@@ -89,6 +95,8 @@ try {
   need(actionWrites===0 && fixtureWrites===0 && forbiddenWrites===0);
   await defaults();
   need((await appearance()).title === 'Packaged smoke · FireController');
+  const defaultIndicators = await indicatorColors();
+  need(defaultIndicators.connection === 'rgb(103, 118, 89)' && defaultIndicators.status === 'rgb(169, 164, 160)');
   const bindingKey = 'firecontroller.browser-session.v1';
   const binding = await page.evaluate(key => sessionStorage.getItem(key), bindingKey);
   need(binding && !binding.includes(token));
@@ -102,13 +110,25 @@ try {
   need(Buffer.byteLength(title) <= 200);
   // This writer is separate from page execution and uses the authenticated
   // public API, not SQL or browser mutation privileges.
-  const receipt = await write('PUT', '/presentation', {expected_revision:0, presentation:{name:title, brand_name:'Smoke <literal>', theme:{accent_text:'#fffffe'}}});
+  // A complete valid semantic theme covers the same-background indicator
+  // regression; accent-only overrides leave the old fallback dots visible.
+  const theme = {focus:'#767676', accent_background:'#000000', accent_text:'#fffffe', accent_soft_background:'#ffffff'};
+  for (const family of ['canvas', 'surface', 'header', 'hero', 'active', 'blocked', 'parked', 'completed']) {
+    theme[family + '_background'] = '#ffffff';
+    theme[family + '_text'] = '#000000';
+    if (['canvas', 'surface', 'header', 'hero'].includes(family)) theme[family + '_muted'] = '#000000';
+  }
+  const receipt = await write('PUT', '/presentation', {expected_revision:0, presentation:{name:title, brand_name:'Smoke <literal>', theme}});
+
   need(receipt.revision === 1 && receipt.outcome === 'updated');
   phase = 'live-update';
   const heading = page.getByRole('heading', {name:title, exact:true});
   await heading.waitFor();
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
   need((await appearance()).brand === 'Smoke <literal>' && (await appearance()).title === title + ' · FireController');
+  const themedIndicators = await indicatorColors();
+  need(themedIndicators.connection === 'rgb(0, 0, 0)' && themedIndicators.connection !== themedIndicators.canvas);
+  need(themedIndicators.status === 'rgb(0, 0, 0)' && themedIndicators.status !== themedIndicators.surface);
   need(await page.locator('literal').count() === 0);
   const fits = await heading.evaluate(element => {
     const range = document.createRange(); range.selectNodeContents(element);
