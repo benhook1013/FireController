@@ -8,6 +8,7 @@ let phase = 'configuration';
 let checkpoint = '';
 let counters = () => ({});
 let failureClass = '';
+let sendStatus = 0, replyStatus = 0, conversationMatch = false;
 let failureSnapshot = async () => ({});
 const need = (value) => { if (!value) throw new Error('assertion'); };
 try {
@@ -292,21 +293,37 @@ try {
   await row.getByRole('button',{name:'Acknowledge',exact:true}).click();
   await row.getByText('Acknowledged',{exact:true}).waitFor();
 
-  phase = 'explicit-actions-send';
+  phase = 'explicit-actions-send'; checkpoint = 'composer-open';
   await page.getByRole('button',{name:'New message',exact:true}).click();
+  checkpoint = 'recipient';
   await page.getByLabel('Recipient worker ID',{exact:true}).fill(config.other_worker);
+  checkpoint = 'send-body';
   await page.getByLabel('Message',{exact:true}).fill('Browser send <literal>');
   const sent = page.waitForResponse(r=>r.request().method()==='POST' && new URL(r.url()).pathname===prefix+'/messages');
+  checkpoint = 'send-dispatch';
   await page.getByRole('button',{name:'Send message',exact:true}).click();
-  need((await sent).status()===201);
+  checkpoint = 'send-response';
+  sendStatus = (await sent).status(); checkpoint = 'send-status';
+  need(sendStatus===201);
+  checkpoint = 'conversation-open';
   await row.getByRole('link').click();
+  checkpoint = 'conversation-body';
   await page.getByText('Action incoming <literal>',{exact:true}).waitFor();
+  checkpoint = 'reply-open';
   await page.getByRole('button',{name:'Reply',exact:true}).click();
+  checkpoint = 'reply-body';
   await page.getByLabel('Reply message',{exact:true}).fill('Browser reply <literal>');
   const replied = page.waitForResponse(r=>r.request().method()==='POST' && new URL(r.url()).pathname===prefix+'/messages');
+  checkpoint = 'reply-dispatch';
   await page.getByRole('button',{name:'Send reply',exact:true}).click();
+  checkpoint = 'reply-response';
   const replyResponse = await replied;
-  need(replyResponse.status()===201 && (await replyResponse.json()).conversation_id===incoming.conversation_id);
+  replyStatus = replyResponse.status(); checkpoint = 'reply-status';
+  need(replyStatus===201);
+  checkpoint = 'reply-binding';
+  conversationMatch = (await replyResponse.json()).conversation_id===incoming.conversation_id;
+  need(conversationMatch);
+  checkpoint = 'reply-visible';
   await page.getByText('Browser reply <literal>',{exact:true}).waitFor();
 
   phase = 'explicit-actions-settings';
@@ -419,7 +436,7 @@ try {
 } catch (error) {
   failureClass = error?.name === 'TimeoutError' ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
   const snapshot = await failureSnapshot().catch(()=>({diagnostic_failed:true}));
-  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, ...counters(), ...snapshot}));
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, send_status:sendStatus, reply_status:replyStatus, conversation_match:conversationMatch, ...counters(), ...snapshot}));
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});
