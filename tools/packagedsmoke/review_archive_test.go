@@ -354,7 +354,9 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 	r.Header.Set("X-FC-Worker", worker)
 	r.Header.Set("Idempotency-Key", "packaged-archive-initial")
 	w := httptest.NewRecorder()
-	server.New(store).ServeHTTP(w, r)
+	mux := server.New(store)
+	reviews.Register(mux, store)
+	mux.ServeHTTP(w, r)
 	var receipt reviews.Receipt
 	if w.Code != 201 || json.Unmarshal(w.Body.Bytes(), &receipt) != nil || receipt.ID == "" || receipt.Revision != 1 {
 		t.Fatal("authenticated initial archive observation failed")
