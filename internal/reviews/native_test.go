@@ -76,7 +76,7 @@ func nativeSnapshotBytes(t *testing.T, f *apiFixture, snapshot string) string {
 	t.Helper()
 	hash := sha256.New()
 	for _, table := range []string{"review_snapshots", "review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls"} {
-		rows, err := f.store.DB().Query("SELECT * FROM "+table+" WHERE project_id=? AND snapshot_id=? ORDER BY rowid", f.project, snapshot)
+		rows, err := f.store.DB().Query("SELECT * FROM "+table+" WHERE project_id=? AND snapshot_id=? ORDER BY 1,2,3,4", f.project, snapshot)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +121,7 @@ func TestNativePublicationPreservesUnrelatedPullCompleteness(t *testing.T) {
 	knownWithIncompleteRun.Complete = true
 	knownWithIncompleteRun.Runs = []RunInput{{SourceRunID: "imported-incomplete-run", Channel: "manual", HeadSHA: knownWithIncompleteRun.HeadSHA, Scope: "Retained partial finding inventory", Outcome: "unknown", Found: 1}}
 	old := f.observe(t, reviewRequest(0, []PullInput{incomplete, knownWithoutRuns, knownWithIncompleteRun}), "original-completeness")["id"].(string)
-	// Rebuilding all compact rows must still repair an older missing source,
+	// Reading an unchanged compact row must still resolve its older missing source,
 	// without changing this unrelated producer's completeness assertion.
 	var stored string
 	if err := f.store.DB().QueryRow(`SELECT recent_runs_json FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=6`, f.project, old).Scan(&stored); err != nil {
@@ -133,7 +133,7 @@ func TestNativePublicationPreservesUnrelatedPullCompleteness(t *testing.T) {
 	}
 	delete(summaries[0], "source")
 	data, _ := json.Marshal(summaries)
-	if _, err := f.store.DB().Exec(`UPDATE review_pulls SET recent_runs_json=? WHERE project_id=? AND snapshot_id=? AND number=6`, string(data), f.project, old); err != nil {
+	if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET recent_runs_json=? WHERE (project_id,number,version_revision) IN (SELECT m.project_id,m.number,m.version_revision FROM review_pull_memberships m JOIN review_snapshots s ON s.project_id=m.project_id WHERE m.project_id=? AND s.snapshot_id=? AND m.start_revision<=s.revision AND (m.end_revision IS NULL OR s.revision<m.end_revision)) AND number=6`, string(data), f.project, old); err != nil {
 		t.Fatal(err)
 	}
 	oldDigest := nativeSnapshotBytes(t, f, old)
@@ -155,8 +155,13 @@ func TestNativePublicationPreservesUnrelatedPullCompleteness(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT recent_runs_json FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=6`, f.project, next.ID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if json.Unmarshal([]byte(stored), &summaries) != nil || summaries[0]["source"] != "test-import" {
-		t.Fatal("full compact origin repair lost")
+	if json.Unmarshal([]byte(stored), &summaries) != nil || summaries[0]["source"] != nil {
+		t.Fatal("unrelated immutable compact body was rewritten")
+	}
+	var unchanged PullResponse
+	nativeRead(t, f, "/pulls/6", &unchanged)
+	if unchanged.Pull.RecentRuns[0].Source != "test-import" {
+		t.Fatal("read-time original source resolution lost")
 	}
 	if nativeSnapshotBytes(t, f, old) != oldDigest {
 		t.Fatal("publication rewrote retained imported snapshot")
@@ -241,7 +246,7 @@ func TestNativePreservesImportedOriginEvidenceAndOldBytes(t *testing.T) {
 	}
 	delete(compact[0], "source")
 	encoded, _ := json.Marshal(compact)
-	if _, err := f.store.DB().Exec(`UPDATE review_pulls SET recent_runs_json=? WHERE project_id=? AND snapshot_id=? AND number=1`, string(encoded), f.project, old); err != nil {
+	if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET recent_runs_json=? WHERE (project_id,number,version_revision) IN (SELECT m.project_id,m.number,m.version_revision FROM review_pull_memberships m JOIN review_snapshots s ON s.project_id=m.project_id WHERE m.project_id=? AND s.snapshot_id=? AND m.start_revision<=s.revision AND (m.end_revision IS NULL OR s.revision<m.end_revision)) AND number=1`, string(encoded), f.project, old); err != nil {
 		t.Fatal(err)
 	}
 	oldDigest := nativeSnapshotBytes(t, f, old)
@@ -577,7 +582,7 @@ func TestNativeCapacityAndCallerFailureRollbackEntireTransaction(t *testing.T) {
 				// Local fixture setup inserts a valid retained1000-finding snapshot
 				// without routing a large historical observation through import.
 				for _, r := range queue[0].Runs {
-					if _, err := f.store.DB().Exec(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100) INSERT INTO review_findings(project_id,snapshot_id,pull_number,run_id,position,source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at) SELECT ?,?,1,?,x-1,'finding-'||x,'Retained','Exact source','unknown','unadjudicated','','','','','','' FROM n`, f.project, old, runOpaqueID(f.project, "test-import", r.SourceRunID)); err != nil {
+					if _, err := f.store.DB().Exec(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100) INSERT INTO review_finding_versions(project_id,run_version_revision,pull_number,run_id,position,source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at) SELECT ?,(SELECT revision FROM review_snapshots WHERE snapshot_id=?),1,?,x-1,'finding-'||x,'Retained','Exact source','unknown','unadjudicated','','','','','','' FROM n`, f.project, old, runOpaqueID(f.project, "test-import", r.SourceRunID)); err != nil {
 						t.Fatal(err)
 					}
 				}

@@ -331,7 +331,16 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	}
 	daemon.stop(t)
 	after := readUpgradeState(t, ctx, data)
-	changed := map[string]int{"review_snapshots": 1, "review_pulls": 1, "review_runs": 1, "review_attempts": 1, "events": 1, "receipts": 1, "review_workspace": 0, "sqlite_sequence": 0}
+	// One new observation appends changed bodies/memberships, closes the old
+	// intervals, and replaces only current references. Retained payloads and the
+	// old resolved snapshot must remain intact; native ledgers stay unchanged.
+	changed := map[string]int{
+		"review_snapshots": 1, "review_workspace": 0,
+		"review_pull_versions": 1, "review_pull_memberships": 1, "review_current_pulls": 0,
+		"review_run_versions": 1, "review_run_memberships": 1, "review_current_runs": -122,
+		"review_attempt_versions": 1, "review_attempt_memberships": 1, "review_current_attempts": -122,
+		"events": 1, "receipts": 1, "sqlite_sequence": 0,
+	}
 	if len(before.tables) != len(after.tables) || !reflect.DeepEqual(before.metadata, after.metadata) || oldSnapshot != packagedArchiveSnapshotHash(t, ctx, data, project, snapshot) {
 		t.Fatal("archive browser changed schema, metadata or retained snapshot bytes")
 	}
@@ -360,7 +369,7 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 	zero := int64(0)
 	at := time.Now().UTC().Add(-time.Hour)
 	pull := reviews.PullInput{Number: 123, Title: "Retained archive metadata", State: "open", HeadSHA: strings.Repeat("a", 40), BaseRef: "main", BaseSHA: strings.Repeat("b", 40), CIState: "unknown", Mergeability: "unknown", Complete: true}
-	observation := reviews.ObservationRequest{ExpectedRevision: &zero, RepositoryID: 991, Source: "archive-publisher", ObservedAt: at.Format(time.RFC3339Nano), Queue: []reviews.PullInput{pull}, Retired: []reviews.RetiredPull{}}
+	observation := reviews.ObservationRequest{ExpectedRevision: &zero, RepositoryID: 991, Source: "archive-publisher", ObservedAt: at.Format(time.RFC3339Nano), Queue: []reviews.PullInput{}, Retired: []reviews.RetiredPull{}}
 	raw, _ := json.Marshal(observation)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+project+"/reviews/observations", bytes.NewReader(raw)).WithContext(ctx)
 	r.Header.Set("Authorization", "Bearer "+admin)
@@ -395,11 +404,22 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 		digest := sha256.Sum256([]byte(project + "\x00" + source + "\x00" + runSourceID))
 		id := "review_run_" + hex.EncodeToString(digest[:])[:32]
 		start, finish := at.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), at.Add(time.Duration(i+1)*time.Second).Format(time.RFC3339Nano)
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_runs(project_id,snapshot_id,snapshot_revision,pull_number,run_order,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json) VALUES(?,?,1,123,?,?,?,?,'cli',?,'Synthetic reviewer','full','completed',1,1,?,?,0,0,0,1,0,'[]')`, project, receipt.ID, i, id, source, runSourceID, pull.HeadSHA, start, finish); err != nil {
-			t.Fatal("synthetic retained run seed failed")
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_attempts(project_id,snapshot_id,pull_number,position,source,source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id) VALUES(?,?,123,?,?,?,'cli',?,'completed',?,?,1,?,'','')`, project, receipt.ID, i, source, attemptID, pull.HeadSHA, start, finish, runSourceID); err != nil {
-			t.Fatal("synthetic retained attempt seed failed")
+		// These stopped synthetic display rows bypass only observation admission.
+		// They never create native execution, captured evidence or provider credit.
+		for _, statement := range []struct {
+			sql  string
+			args []any
+		}{
+			{`INSERT INTO review_run_versions(project_id,id,version_revision,pull_number,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json) VALUES(?,?,1,123,?,?,'cli',?,'Synthetic reviewer','full','completed',1,1,?,?,0,0,0,1,0,'[]')`, []any{project, id, source, runSourceID, pull.HeadSHA, start, finish}},
+			{`INSERT INTO review_run_memberships(project_id,id,start_revision,end_revision,version_revision,pull_number,run_order) VALUES(?,?,1,NULL,1,123,?)`, []any{project, id, i}},
+			{`INSERT INTO review_current_runs(project_id,id,start_revision,pull_number,run_order) VALUES(?,?,1,123,?)`, []any{project, id, i}},
+			{`INSERT INTO review_attempt_versions(project_id,source,source_attempt_id,version_revision,pull_number,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id) VALUES(?,?,?,1,123,'cli',?,'completed',?,?,1,?,'','')`, []any{project, source, attemptID, pull.HeadSHA, start, finish, runSourceID}},
+			{`INSERT INTO review_attempt_memberships(project_id,source,source_attempt_id,start_revision,end_revision,version_revision,pull_number,position) VALUES(?,?,?,1,NULL,1,123,?)`, []any{project, source, attemptID, i}},
+			{`INSERT INTO review_current_attempts(project_id,source,source_attempt_id,start_revision,pull_number,position) VALUES(?,?,?,1,123,?)`, []any{project, source, attemptID, i}},
+		} {
+			if _, err = tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
+				t.Fatalf("synthetic retained version/reference seed failed: %v", err)
+			}
 		}
 		if i == 0 {
 			tail = id
@@ -415,8 +435,23 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 	}
 	recentJSON, _ := json.Marshal(recent)
 	latestJSON, _ := json.Marshal([]reviews.AttemptSummary{reviews.AttemptSummary(latest)})
-	if _, err = tx.ExecContext(ctx, `UPDATE review_pulls SET run_count=123,attempt_count=123,recent_runs_json=?,latest_attempts_json=? WHERE project_id=? AND snapshot_id=? AND number=123`, string(recentJSON), string(latestJSON), project, receipt.ID); err != nil || tx.Commit() != nil {
-		t.Fatal("synthetic compact archive projection failed")
+	// The authenticated initial observation established revision one with no
+	// pulls. Insert its synthetic body once rather than rewriting an immutable
+	// version or writing through a logical read-only compatibility view.
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO review_pull_versions(project_id,number,version_revision,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json) VALUES(?,123,1,?,'open',?,'main',?,'unknown','unknown',1,123,123,?,?)`, []any{project, pull.Title, pull.HeadSHA, pull.BaseSHA, string(recentJSON), string(latestJSON)}},
+		{`INSERT INTO review_pull_memberships(project_id,number,start_revision,end_revision,version_revision,position) VALUES(?,123,1,NULL,1,0)`, []any{project}},
+		{`INSERT INTO review_current_pulls(project_id,number,start_revision,position) VALUES(?,123,1,0)`, []any{project}},
+	} {
+		if _, err = tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatalf("synthetic compact archive version/reference failed: %v", err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatalf("synthetic archive transaction failed: %v", err)
 	}
 	one := int64(1)
 	pull.Title = "Current archive metadata"
@@ -436,8 +471,21 @@ func packagedArchiveSnapshotHash(t *testing.T, ctx context.Context, data, projec
 	}
 	defer db.Close()
 	hash := sha256.New()
-	for _, table := range []string{"review_snapshots", "review_pulls", "review_runs", "review_attempts", "review_findings", "review_retired_pulls"} {
-		rows, err := db.QueryContext(ctx, `SELECT * FROM `+table+` WHERE project_id=? AND snapshot_id=? ORDER BY rowid`, project, snapshot)
+	// Hash exact resolved snapshot contents with stable logical ordering. Interval
+	// end_revision/current-reference updates are intentional when newer state
+	// arrives; they must not alter what the pinned older snapshot resolves.
+	for _, selection := range []struct{ table, order string }{
+		{"review_snapshots", "revision"},
+		{"review_pulls", "position,number"},
+		{"review_runs", "pull_number,run_order,id"},
+		{"review_attempts", "pull_number,position,source,source_attempt_id"},
+		{"review_findings", "pull_number,run_id,position,source_finding_id"},
+		{"review_retired_pulls", "position,number"},
+	} {
+		if err := json.NewEncoder(hash).Encode(selection.table); err != nil {
+			t.Fatal("retained archive identity unavailable")
+		}
+		rows, err := db.QueryContext(ctx, `SELECT * FROM `+selection.table+` WHERE project_id=? AND snapshot_id=? ORDER BY `+selection.order, project, snapshot)
 		if err != nil {
 			t.Fatal("retained archive bytes unavailable")
 		}

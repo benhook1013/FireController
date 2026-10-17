@@ -188,15 +188,23 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	if _, err = tx.ExecContext(ctx, `INSERT INTO review_snapshots(project_id,snapshot_id,revision,repository_id,source,observed_at,recorded_at,payload_sha256) VALUES(?,?,?,?,?,?,?,?)`, scope.ProjectID, id, next, repositoryID, nativeSource, observed, recordedAt, hex.EncodeToString(digest[:])); err != nil {
 		return Receipt{}, false, err
 	}
-	if err = copyNativeSnapshot(ctx, tx, scope.ProjectID, previous, id); err != nil {
+	write := newHistorySnapshotWrite(scope.ProjectID, next)
+	detail, err := readRunDetail(ctx, tx, snapshotMeta{ProjectID: scope.ProjectID, SnapshotID: previous}, runID)
+	if err != nil {
 		return Receipt{}, false, err
 	}
-	for _, finding := range ordered {
-		if _, err = tx.ExecContext(ctx, `UPDATE review_findings SET disposition=?,decision_reason=?,actor=?,decided_at=?,fix_sha=?,proof_note=?,resolved_at=?,route_json=? WHERE project_id=? AND snapshot_id=? AND run_id=? AND source_finding_id=?`, finding.Disposition, finding.DecisionReason, finding.Actor, finding.DecidedAt, finding.FixSHA, finding.ProofNote, finding.ResolvedAt, mustJSON(finding.Route), scope.ProjectID, id, runID, finding.SourceFindingID); err != nil {
-			return Receipt{}, false, err
-		}
+	run := RunInput{SourceRunID: detail.Run.SourceRunID, Channel: detail.Run.Channel, HeadSHA: detail.Run.HeadSHA, Reviewer: detail.Run.Reviewer, Scope: detail.Run.Scope, Outcome: detail.Run.Outcome, Attributable: detail.Run.Attributable, Complete: detail.Run.Complete, StartedAt: detail.Run.StartedAt, FinishedAt: detail.Run.FinishedAt, Found: found, Accepted: accepted, Routed: routed, Finalized: input.Finalized, CoverageLimits: detail.Run.CoverageLimits, Findings: detail.Findings}
+	for i := range run.Findings {
+		finding := &run.Findings[i]
+		update := updates[finding.SourceFindingID]
+		finding.Disposition, finding.DecisionReason, finding.Actor, finding.DecidedAt = update.Disposition, update.DecisionReason, update.Actor, update.DecidedAt
+		finding.FixSHA, finding.ProofNote, finding.ResolvedAt, finding.Route = update.FixSHA, update.ProofNote, update.ResolvedAt, update.Route
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE review_runs SET accepted=?,routed=?,finalized=?,fixed=? WHERE project_id=? AND snapshot_id=? AND id=? AND source=?`, accepted, routed, input.Finalized, fixed, scope.ProjectID, id, runID, nativeSource); err != nil {
+	var order int
+	if err = tx.QueryRowContext(ctx, "SELECT run_order FROM review_runs WHERE project_id=? AND snapshot_id=? AND id=?", scope.ProjectID, previous, runID).Scan(&order); err != nil {
+		return Receipt{}, false, err
+	}
+	if err = write.run(ctx, tx, nativeSource, number, order, run); err != nil {
 		return Receipt{}, false, err
 	}
 	if err = checkNativeCapacity(ctx, tx, scope.ProjectID, id); err != nil {
@@ -205,19 +213,15 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	if err = checkNativeRunDetail(ctx, tx, scope.ProjectID, id, runID); err != nil {
 		return Receipt{}, false, err
 	}
-	if err = rebuildNativeSummaries(ctx, tx, scope.ProjectID, id, number); err != nil {
-		return Receipt{}, false, err
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE review_workspace SET revision=?,snapshot_id=? WHERE project_id=? AND revision=? AND snapshot_id=?`, next, id, scope.ProjectID, revision, previous)
+	body, position, err := retainedPullBody(ctx, tx, scope.ProjectID, previous, number)
 	if err != nil {
 		return Receipt{}, false, err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
+	if err = rebuildNativeSummary(ctx, tx, write, id, number, position, body); err != nil {
 		return Receipt{}, false, err
 	}
-	if affected != 1 {
-		return Receipt{}, false, nativeAdjudicationConflict()
+	if err = write.applyCurrent(ctx, tx, id, revision); err != nil {
+		return Receipt{}, false, err
 	}
 	if err = core.AppendEvent(ctx, tx, scope, "review.observed", id, next, map[string]any{"snapshot_id": id, "pull_number": number, "source": nativeSource}); err != nil {
 		return Receipt{}, false, err

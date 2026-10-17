@@ -93,12 +93,8 @@ func queue(store *core.Store) http.HandlerFunc {
 				if err := strictStoredJSON(recentJSON, &item.RecentRuns); err != nil {
 					return err
 				}
-				// Pre-mixed snapshots stored one producer in snapshot metadata.
-				// Fill their old compact projection only in the read response.
-				for i := range item.RecentRuns {
-					if item.RecentRuns[i].Source == "" {
-						item.RecentRuns[i].Source = meta.Source
-					}
+				if err := fillRecentRunSources(ctx, tx, scope.ProjectID, meta.SnapshotID, item.Number, item.RecentRuns); err != nil {
+					return err
 				}
 				if err := strictStoredJSON(latestJSON, &item.LatestAttempts); err != nil {
 					return err
@@ -167,10 +163,8 @@ func pull(store *core.Store) http.HandlerFunc {
 			if err := strictStoredJSON(recentJSON, &response.Pull.RecentRuns); err != nil {
 				return err
 			}
-			for i := range response.Pull.RecentRuns {
-				if response.Pull.RecentRuns[i].Source == "" {
-					response.Pull.RecentRuns[i].Source = meta.Source
-				}
+			if err := fillRecentRunSources(ctx, tx, scope.ProjectID, meta.SnapshotID, number, response.Pull.RecentRuns); err != nil {
+				return err
 			}
 			if err := strictStoredJSON(latestJSON, &response.Pull.LatestAttempts); err != nil {
 				return err
@@ -434,4 +428,18 @@ func setMetaDetail(response *RunDetailResponse, meta snapshotMeta) {
 	response.Source = meta.Source
 	response.ObservedAt = meta.ObservedAt
 	response.RecordedAt = meta.RecordedAt
+}
+
+// Historical compact summaries may omit source. A mixed snapshot's publisher
+// cannot supply that identity; resolve only the exact retained run in this PR.
+func fillRecentRunSources(ctx context.Context, tx *sql.Tx, project, snapshot string, number int64, runs []RunSummary) error {
+	for i := range runs {
+		if runs[i].Source != "" {
+			continue
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT source FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=? AND id=?`, project, snapshot, number, runs[i].ID).Scan(&runs[i].Source); err != nil {
+			return err
+		}
+	}
+	return nil
 }

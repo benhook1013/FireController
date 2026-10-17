@@ -25,13 +25,25 @@ type apiFixture struct {
 
 func newAPIFixture(t *testing.T) *apiFixture {
 	t.Helper()
+	return newAPIFixtureWithSchema(t, EnsureSchema)
+}
+
+func newLegacyAPIFixture(t *testing.T) *apiFixture {
+	t.Helper()
+	return newAPIFixtureWithSchema(t, func(ctx context.Context, store *core.Store) error {
+		return store.EnsureSchema(ctx, "reviews", reviewSchemaMigrations()...)
+	})
+}
+
+func newAPIFixtureWithSchema(t *testing.T, install func(context.Context, *core.Store) error) *apiFixture {
+	t.Helper()
 	dir := filepath.Join(t.TempDir(), "private")
 	store, err := core.Open(context.Background(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if err := EnsureSchema(context.Background(), store); err != nil {
+	if err := install(context.Background(), store); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "bootstrap-admin.token"))
@@ -216,7 +228,7 @@ func TestRunOriginRetainedAcrossPublisherAndOldCompactReadFallback(t *testing.T)
 				delete(compact[0], "source")
 				encoded, _ := json.Marshal(compact)
 				stored = string(encoded)
-				if _, err := f.store.DB().Exec(`UPDATE review_pulls SET recent_runs_json=? WHERE project_id=? AND snapshot_id=? AND number=1`, stored, f.project, snapshot); err != nil {
+				if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET recent_runs_json=? WHERE (project_id,number,version_revision) IN (SELECT m.project_id,m.number,m.version_revision FROM review_pull_memberships m JOIN review_snapshots s ON s.project_id=m.project_id WHERE m.project_id=? AND s.snapshot_id=? AND m.start_revision<=s.revision AND (m.end_revision IS NULL OR s.revision<m.end_revision)) AND number=1`, stored, f.project, snapshot); err != nil {
 					t.Fatal(err)
 				}
 			} else {
@@ -335,7 +347,7 @@ func TestReviewImportRepositoryFinalizedCountsAndAtomicRetry(t *testing.T) {
 	}
 
 	rollback := reviewRequest(1, []PullInput{samplePull(8, "PR 8 retry")})
-	if _, err := f.store.DB().Exec(`CREATE TRIGGER fail_review_pull BEFORE INSERT ON review_pulls BEGIN SELECT RAISE(ABORT,'private SQL detail'); END`); err != nil {
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER fail_review_pull BEFORE INSERT ON review_pull_versions BEGIN SELECT RAISE(ABORT,'private SQL detail'); END`); err != nil {
 		t.Fatal(err)
 	}
 	failed := f.call("POST", base+"/observations", f.admin, "atomic-retry", rollback)

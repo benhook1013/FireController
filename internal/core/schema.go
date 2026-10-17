@@ -5,7 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"strconv"
+	"time"
 )
+
+// Startup maintenance can rewrite retained domain history before serving. Its
+// budget is separate from the short admission/transaction budget for live work.
+const schemaMigrationTimeout = 30 * time.Second
 
 // EnsureSchema applies ordered, repository-owned domain migrations at exclusive
 // startup, before serving. Each statement group advances one schema version.
@@ -14,7 +19,7 @@ func (s *Store) EnsureSchema(ctx context.Context, domain string, migrations ...[
 	if domain == "" || len(migrations) == 0 {
 		return Fail("schema_invalid", "A domain schema requires an identity and migrations.", 500)
 	}
-	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, schemaMigrationTimeout)
 	defer cancel()
 	select {
 	case s.admission <- struct{}{}:
