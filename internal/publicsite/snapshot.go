@@ -31,7 +31,7 @@ func decodeSnapshotContent(raw string) (Content, error) {
 	}
 	facts := make([]ReviewFacts, len(content.Reviews))
 	for i, review := range content.Reviews {
-		fact := ReviewFacts{Number: review.Number, Lifecycle: review.Lifecycle}
+		fact := ReviewFacts{Number: review.Number, Lifecycle: review.Lifecycle, CLIHasMore: review.CLIHasMore, HostedHasMore: review.HostedHasMore}
 		copyRounds := func(rounds []PublicRound) []RoundFacts {
 			out := make([]RoundFacts, len(rounds))
 			for j, round := range rounds {

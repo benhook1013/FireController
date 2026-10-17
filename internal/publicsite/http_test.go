@@ -204,14 +204,14 @@ func TestPublicStreamReplayAfterSubscribeAndGeneration(t *testing.T) {
 	}
 }
 
-func TestPublicProjectionOverflowPreservesLastGood(t *testing.T) {
+func TestPublicProjectionOversizedCandidatesPreserveLastGood(t *testing.T) {
 	f := newPublicationFixture(t)
 	input := Approved{0, true, testPublicManifest()}
 	if w := f.apply(t, input, "publish"); w.Code != 200 {
 		t.Fatal(w.Code)
 	}
 	first := f.public(t)
-	rounds := make([]RoundFacts, MaxChannelRounds+1)
+	rounds := make([]RoundFacts, 2*MaxChannelRounds+1)
 	for i := range rounds {
 		rounds[i] = RoundFacts{Key: "public_round_" + strings.Repeat("a", 30) + hexByte(i), Completed: true, Finalized: true, Complete: true}
 	}
