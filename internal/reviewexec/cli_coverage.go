@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"strings"
 	"time"
-
-	"github.com/benhook1013/FireController/internal/core"
 )
 
 func validCoverageSource(current SourcePlan) bool {
@@ -33,7 +31,7 @@ func (e *Engine) Coverage(ctx context.Context, project string, current SourcePla
 	return state.Covered && !state.Pending, err
 }
 
-// Comparison reads bounded completed native history without provider work.
+// Comparison reads indexed native proof facts without provider work.
 // Callers supply fresh comparison facts; imported browser history is not credit.
 func (e *Engine) Comparison(ctx context.Context, project string, current SourcePlan, channel string) (ComparisonState, error) {
 	if channel != "cli" && channel != "hosted" || !identifier.MatchString(project) || !validCoverageSource(current) {
@@ -59,107 +57,29 @@ func (e *Engine) Comparison(ctx context.Context, project string, current SourceP
 	return result, nil
 }
 
-// comparison is shared with the final action guard in its existing snapshot.
-// Bound the all-head completed-operation scan before loading any capture body.
+// comparison reads indexed native proof facts. Pending and dirty obligations
+// apply across every retained head; exact comparison credit is separate.
 func comparison(ctx context.Context, tx *sql.Tx, project string, repositoryID, number int64, current Anchor, channel string) (ComparisonState, error) {
-	var result ComparisonState
 	if channel != "cli" && channel != "hosted" {
-		return result, invalid()
+		return ComparisonState{}, invalid()
 	}
-	// Bound completed operations before any evidence lookup. Failed or
-	// cancelled history must not expand this read's scan.
-	rows, err := tx.QueryContext(ctx, `SELECT id,attempt_id FROM review_operations
-   WHERE project_id=? AND pull_number=? AND channel=? AND state='completed'
-   ORDER BY id LIMIT 101`, project, number, channel)
+	var dirty bool
+	var result ComparisonState
+	err := tx.QueryRowContext(ctx, `SELECT
+ EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='dirty'),
+ EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='pending'),
+ EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='ready' AND repository_id=? AND candidate_sha=? AND base_sha=? AND parent_sha=? AND parent_pull_number=? AND base_ref=?)`,
+		project, number, channel, project, number, channel, project, number, channel, repositoryID, current.CandidateSHA, current.BaseSHA, current.ParentSHA, current.ParentPullNumber, current.BaseRef).Scan(&dirty, &result.Pending, &result.Covered)
 	if err != nil {
 		return ComparisonState{}, err
 	}
-	type candidate struct{ operation, attempt string }
-	candidates := make([]candidate, 0, 101)
-	for rows.Next() {
-		var next candidate
-		if err = rows.Scan(&next.operation, &next.attempt); err != nil {
-			break
-		}
-		candidates = append(candidates, next)
-	}
-	if err == nil {
-		err = rows.Err()
-	}
-	_ = rows.Close()
-	if err != nil {
-		return ComparisonState{}, err
-	}
-	if len(candidates) > 100 {
-		return ComparisonState{}, core.Fail("review_capacity", "The selected pull request has too many completed operations in the selected channel for a bounded coverage check; inspect its history before requesting another review.", 409)
-	}
-	for _, candidate := range candidates {
-		if ctx.Err() != nil {
-			return ComparisonState{}, ctx.Err()
-		}
-		rows, err := tx.QueryContext(ctx, `SELECT id,attempt_id FROM review_execution_evidence WHERE project_id=? AND operation_id=? ORDER BY id LIMIT 2`, project, candidate.operation)
-		if err != nil {
-			return ComparisonState{}, err
-		}
-		var evidenceID, evidenceAttempt string
-		found := 0
-		for rows.Next() {
-			if err = rows.Scan(&evidenceID, &evidenceAttempt); err != nil {
-				break
-			}
-			found++
-		}
-		if err == nil {
-			err = rows.Err()
-		}
-		_ = rows.Close()
-		if err != nil {
-			return ComparisonState{}, err
-		}
-		if found == 0 {
-			result.Pending = true
-			continue
-		}
-		if found != 1 || evidenceAttempt != candidate.attempt {
-			return ComparisonState{}, adjudicationStorageError()
-		}
-		evidence, state, err := loadReviewAdjudication(ctx, tx, project, evidenceID)
-		if err != nil {
-			return ComparisonState{}, err
-		}
-		attempt, err := readAttempt(ctx, tx, project, candidate.attempt)
-		if err != nil {
-			return ComparisonState{}, err
-		}
-		operation, err := readOperation(ctx, tx, project, candidate.operation)
-		if err != nil {
-			return ComparisonState{}, err
-		}
-		if validateReviewEvidence(evidence.Capture) != nil || !identifier.MatchString(evidence.ID) || !identifier.MatchString(evidence.AttemptID) || !identifier.MatchString(evidence.OperationID) || !identifier.MatchString(operation.ActorID) || operation.WorkerID != "" && !identifier.MatchString(operation.WorkerID) || evidence.AttemptID != attempt.ID || evidence.OperationID != operation.ID || attempt.OperationID != operation.ID || operation.AttemptID != attempt.ID || operation.Channel != channel || operation.State != "completed" || attempt.State != "completed" || operation.ConfigurationRevision < 1 ||
-			!identifier.MatchString(attempt.Provider) || !identifier.MatchString(attempt.Account) || !hash.MatchString(evidence.CapabilityFingerprint) || evidence.CapabilityFingerprint != operation.CapabilityFingerprint || attempt.Anchor == nil || !validEvidenceAnchor(evidence.Anchor) || *attempt.Anchor != evidence.Anchor || evidence.Capture.ExpectedAnchor != evidence.Anchor || operation.PullNumber != evidence.Anchor.PullNumber || operation.HeadSHA != evidence.Anchor.CandidateSHA || evidence.Anchor.RepositoryID != repositoryID {
-			return ComparisonState{}, adjudicationStorageError()
-		}
-		if channel == "hosted" && validateHostedEvidenceIdentity(attempt, operation, evidence.Capture) != nil {
-			return ComparisonState{}, adjudicationStorageError()
-		}
-		ready, err := coverageProof(ctx, tx, evidence, state, channel)
-		if err != nil {
-			return ComparisonState{}, err
-		}
-		if !ready {
-			result.Pending = true
-		}
-		anchor := evidence.Anchor
-		// Canonical names can change while stable repository and Git identities do
-		// not. Names remain validated above, but are not coverage identity keys.
-		if ready && anchor.RepositoryID == current.RepositoryID && anchor.PullNumber == number && anchor.CandidateSHA == current.CandidateSHA && anchor.BaseSHA == current.BaseSHA && anchor.ParentSHA == current.ParentSHA && anchor.ParentPullNumber == current.ParentPullNumber && anchor.BaseRef == current.BaseRef {
-			result.Covered = true
-		}
+	if dirty {
+		return ComparisonState{}, adjudicationStorageError()
 	}
 	return result, nil
 }
 
-func coverageProof(ctx context.Context, tx *sql.Tx, evidence ReviewEvidence, state ReviewAdjudication, channel string) (bool, error) {
+func coverageProof(ctx context.Context, tx EvidenceQuery, evidence ReviewEvidence, state ReviewAdjudication, channel string) (bool, error) {
 	if channel != "cli" && channel != "hosted" || channel == "cli" && evidence.Capture.Hosted != nil || channel == "hosted" && validateHostedEvidenceMetadata(evidence.Capture.Hosted, evidence.Anchor, evidence.Capture.Review) != nil {
 		return false, adjudicationStorageError()
 	}

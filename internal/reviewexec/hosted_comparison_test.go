@@ -2,7 +2,6 @@ package reviewexec
 
 import (
 	"encoding/json"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -107,8 +106,7 @@ func TestHostedComparisonExactScopeAndRepositoryBinding(t *testing.T) {
 func TestHostedComparisonReadyCannotMaskMissingCaptureAcrossHeads(t *testing.T) {
 	f, a, id, current := hostedComparisonFixture(t, true)
 	coverageFinalize(t, f, a, id, 0)
-	coverageSeedOperations(t, f, a, 1, "completed")
-	admissionSQL(t, f, `UPDATE review_operations SET head_sha=? WHERE id='history-operation-0'`, strings.Repeat("9", 40))
+	comparisonCompleteMissingCapture(t, f, "hosted-older-missing", "hosted", strings.Repeat("9", 40))
 	hostedComparisonRead(t, f, a, current, ComparisonState{Covered: true, Pending: true})
 	coverageComparison(t, f, a, current, ComparisonState{})
 }
@@ -116,8 +114,7 @@ func TestHostedComparisonReadyCannotMaskMissingCaptureAcrossHeads(t *testing.T) 
 func TestComparisonChannelsRemainIndependent(t *testing.T) {
 	f, a, id, current := coverageFixture(t, 0, false)
 	coverageFinalize(t, f, a, id, 0)
-	coverageSeedOperations(t, f, a, 1, "completed")
-	admissionSQL(t, f, `UPDATE review_operations SET channel='hosted' WHERE id='history-operation-0'`)
+	comparisonCompleteMissingCapture(t, f, "independent-hosted-missing", "hosted", current.Pull.HeadSHA)
 	coverageComparison(t, f, a, current, ComparisonState{Covered: true})
 	hostedComparisonRead(t, f, a, current, ComparisonState{Pending: true})
 	// Reject channel errors before touching even a nil engine/store.
@@ -208,25 +205,12 @@ func TestHostedComparisonClosedRunCannotMaskUnfinalizedRun(t *testing.T) {
 	hostedComparisonRead(t, f, a, current, ComparisonState{Covered: true})
 }
 
-func TestHostedComparisonCompletedMissingCaptureBudget(t *testing.T) {
-	for _, count := range []int{100, 101} {
-		t.Run(strconv.Itoa(count), func(t *testing.T) {
-			f, a, _, current := hostedComparisonFixture(t, true)
-			coverageSeedOperations(t, f, a, count, "completed")
-			before := adjudicationState(t, f, a)
-			got, err := f.e.Comparison(t.Context(), attemptProject, current, "hosted")
-			if count == 100 {
-				if err != nil || got != (ComparisonState{Pending: true}) {
-					t.Fatal("bounded missing capture history", got, err)
-				}
-			} else {
-				attemptCode(t, err, "review_capacity")
-			}
-			if adjudicationState(t, f, a) != before {
-				t.Fatal("capacity read changed evidence")
-			}
-		})
-	}
+func TestHostedComparisonCompletedMissingCaptureGrowth(t *testing.T) {
+	f, a, _, current := hostedComparisonFixture(t, true)
+	adjudicationComplete(t, f, a)
+	comparisonMissingHistory(t, f, 102, "hosted", strings.Repeat("9", 40))
+	hostedComparisonRead(t, f, a, current, ComparisonState{Pending: true})
+	coverageComparison(t, f, a, current, ComparisonState{})
 }
 
 func TestComparisonVersionFourUpgradePreservesJournal(t *testing.T) {

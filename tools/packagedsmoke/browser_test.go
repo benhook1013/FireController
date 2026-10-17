@@ -116,6 +116,12 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 	}
 	env = append(env, "PLAYWRIGHT_BROWSERS_PATH="+browserPath)
 	config := map[string]string{"origin": "http://" + daemon.address, "project": project, "worker": worker, "other_worker": otherWorker, "instance": daemon.instance, "admin_file": adminFile, "credential_file": credentialFile, "executable": executable, "proxy": browserDeny.URL}
+	if directory := os.Getenv("FC_BROWSER_PROOF_DIR"); directory != "" {
+		if !filepath.IsAbs(directory) {
+			t.Fatal("FC_BROWSER_PROOF_DIR must be absolute")
+		}
+		config["diagnostic_directory"] = directory
+	}
 	raw, err := json.Marshal(config)
 	if err != nil {
 		t.Fatal("browser fixture configuration unavailable")
@@ -214,21 +220,34 @@ func (o *browserOutput) browserPID() int { o.pidMu.Lock(); defer o.pidMu.Unlock(
 func (o *browserOutput) safePhase() string {
 	for _, line := range bytes.Split(o.bytes(), []byte("\n")) {
 		var record struct {
-			State      string `json:"state"`
-			Phase      string `json:"phase"`
-			Checkpoint string `json:"checkpoint"`
-			Posts      int    `json:"session_posts"`
-			Deletes    int    `json:"session_deletes"`
-			Renewals   int    `json:"session_renewals"`
-			Refusals   int    `json:"terminal_responses"`
-			Errors     int    `json:"errors"`
-			Writes     int    `json:"forbidden_writes"`
+			State        string `json:"state"`
+			Phase        string `json:"phase"`
+			Checkpoint   string `json:"checkpoint"`
+			FailureClass string `json:"failure_class"`
+			ActionWrites int    `json:"action_writes"`
+			External     int    `json:"external"`
+			Posts        int    `json:"session_posts"`
+			Deletes      int    `json:"session_deletes"`
+			Renewals     int    `json:"session_renewals"`
+			Refusals     int    `json:"terminal_responses"`
+			Errors       int    `json:"errors"`
+			Writes       int    `json:"forbidden_writes"`
 		}
 		if json.Unmarshal(line, &record) != nil || record.State != "FAIL" {
 			continue
 		}
 		switch record.Phase {
 		case "configuration", "launch", "connect", "fixture-update", "live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "renewal-activity", "renewal-missing-cookie", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
+			if record.Phase == "explicit-actions-uncertain" {
+				class := "driver"
+				if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
+					class = record.FailureClass
+				}
+				switch record.Checkpoint {
+				case "compose", "dispatch", "switch-view", "retry-ready", "navigation-guard", "retry-response", "retry-identity", "conversation", "conversation-link", "conversation-body", "disconnect", "action-counters":
+					return fmt.Sprintf("%s/%s class=%s posts=%d deletes=%d renewals=%d errors=%d forbidden_writes=%d action_writes=%d external=%d", record.Phase, record.Checkpoint, class, record.Posts, record.Deletes, record.Renewals, record.Errors, record.Writes, record.ActionWrites, record.External)
+				}
+			}
 			if record.Phase == "renewal-missing-cookie" {
 				switch record.Checkpoint {
 				case "connect", "root-form", "project-input", "credential-input", "submit", "heading", "binding", "remove-cookie", "reload", "cleanup", "storage", "counters":

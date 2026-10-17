@@ -267,7 +267,7 @@ func TestAttemptProjectionMissingTargetReadFailuresRollbackBeforePreparation(t *
 			receipt := f.enqueue(t, attemptProject, "storage-error-before-preparation", "cli", 2, 1)
 			// Break only the owned fixture's read schema, preserving a genuine queued
 			// operation so StartAttempt, rather than the pending query, reaches failure.
-			admissionSQL(t, f, `ALTER TABLE `+table+` RENAME TO unavailable_projection_rows`)
+			admissionSQL(t, f, `DROP VIEW `+table)
 			beforeEvents := attemptCount(t, f.store, `SELECT count(*) FROM events`)
 			a, err := f.e.StartAttempt(t.Context(), attemptProject, receipt.ID)
 			if err == nil || a.ID != "" {

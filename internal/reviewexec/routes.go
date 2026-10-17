@@ -157,7 +157,7 @@ func sameRouteOrigin(a, b ReviewRoute) bool {
 
 // readFindingRoute never loads source adjudication, avoiding recursive loaders.
 // Consumers validate the current source link before using an active obligation.
-func readFindingRoute(ctx context.Context, tx *sql.Tx, project, id string) (ReviewRoute, error) {
+func readFindingRoute(ctx context.Context, tx EvidenceQuery, project, id string) (ReviewRoute, error) {
 	var route ReviewRoute
 	var repositoryID, finding, sourcePull, targetPull, revision, hasFix int64
 	var sourceEvidence, head, state, disposition, created, body string
@@ -376,6 +376,9 @@ func (e *Engine) mutateFindingRoute(ctx context.Context, scope core.Scope, key, 
 			if err = e.publishAdjudication(ctx, tx, scope, state); err != nil {
 				return nil, err
 			}
+		}
+		if err = refreshEvidenceComparison(ctx, tx, scope.ProjectID, route.SourceEvidenceID); err != nil {
+			return nil, err
 		}
 		return Receipt{ID: id, State: kind, Revision: route.Revision}, nil
 	})

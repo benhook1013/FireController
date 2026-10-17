@@ -48,7 +48,7 @@ CLI creation took 13.013 ms and concurrent job/inbox reads took 4.506/4.452 ms i
 
 This proof uses synthetic trusted captures through the real capture/engine boundary. It does not establish live provider execution, a physical phone, an incoming-route browser-list page, combined readiness, fleet performance or operational cutover.
 
-Adjudication checks the exact candidate public run detail, including escaped nested receiver proof and next snapshot metadata, before copying history or writing a new snapshot. The final stored-response check remains. A regression installs a snapshot-insert rejection trigger during an oversized request: the operation must return `workspace_capacity` without attempting that write, then publish valid bounded proof after the trigger is removed. Focused route/detail/adjudication race tests and the full review-workspace race suite pass; the production write deadline is unchanged.
+Adjudication checks the exact candidate public run detail, including escaped nested receiver proof and next snapshot metadata, before staging a changed version or writing a new snapshot. The final stored-response check remains. A regression installs a snapshot-insert rejection trigger during an oversized request: the operation must return `workspace_capacity` without attempting that write, then publish valid bounded proof after the trigger is removed. Focused route/detail/adjudication race tests and the full review-workspace race suite pass; the production write deadline is unchanged.
 
 ## Effective receiving-journal timestamps
 

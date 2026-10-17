@@ -255,11 +255,11 @@ func TestCLICoverageMalformedRetainedProofFailsClosed(t *testing.T) {
 	}
 }
 
-func TestCLICoverageCandidateCapacityAndCancellation(t *testing.T) {
+func TestCLICoverageCorruptHistoryAndCancellation(t *testing.T) {
 	f, a, id, current := coverageFixture(t, 0, false)
 	coverageFinalize(t, f, a, id, 0)
 	// Duplicate only compact local journal rows, not captures or snapshots. The
-	// candidate limit must be checked before any of these malformed bodies load.
+	// invalidation triggers must refuse these malformed bodies without giving credit.
 	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		for i := 0; i < 100; i++ {
 			operation, attempt, evidence := fmt.Sprintf("bounded-operation-%d", i), fmt.Sprintf("bounded-attempt-%d", i), fmt.Sprintf("bounded-evidence-%d", i)
@@ -280,9 +280,9 @@ func TestCLICoverageCandidateCapacityAndCancellation(t *testing.T) {
 	}
 	before := adjudicationState(t, f, a)
 	got, err := f.e.Coverage(t.Context(), attemptProject, current, "cli")
-	attemptCode(t, err, "review_capacity")
+	attemptCode(t, err, "storage_unavailable")
 	if got || adjudicationState(t, f, a) != before {
-		t.Fatal("capacity hold changed state or yielded coverage")
+		t.Fatal("corrupt history changed state or yielded coverage")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -295,8 +295,11 @@ func TestCLICoverageCandidateCapacityAndCancellation(t *testing.T) {
 
 func coverageSeedOperations(t *testing.T, f *attemptFixture, a Attempt, count int, state string) {
 	t.Helper()
-	// Fixture setup must respect each production write's finite budget even on
-	// slower race-enabled runners, without reducing the history being tested.
+	// Model retained journals whose completed intents have no capture, as the
+	// startup backfill can encounter. Derive only pending from genuine absence;
+	// never fabricate ready credit or replace this fixture's engine options.
+	// Actual journal/capture/finalization growth is proved separately.
+	// Keep each fixture transaction within the ordinary write budget under race.
 	const batchSize = 64
 	for start := 0; start < count; start += batchSize {
 		err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
@@ -304,6 +307,11 @@ func coverageSeedOperations(t *testing.T, f *attemptFixture, a Attempt, count in
 				operation, attempt := fmt.Sprintf("history-operation-%d", i), fmt.Sprintf("history-attempt-%d", i)
 				if _, err := tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,?,revision,reason,?,created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations WHERE id=?`, operation, state, attempt, a.OperationID); err != nil {
 					return err
+				}
+				if state == "completed" {
+					if err := refreshComparisonProof(ctx, tx, attemptProject, operation); err != nil {
+						return err
+					}
 				}
 			}
 			return nil
@@ -323,28 +331,15 @@ func TestCLICoverageFailedSameHeadHistoryExcluded(t *testing.T) {
 	coverageRead(t, f, a, current, true)
 }
 
-func TestCLICoverageCompletedMissingCaptureBound(t *testing.T) {
-	for _, count := range []int{100, 101} {
+func TestCLICoverageCompletedMissingCaptureGrowth(t *testing.T) {
+	for _, count := range []int{100, 102} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			f, a, _, current := coverageFixture(t, 0, false)
-			// The original attempt is still active and therefore is excluded.
-			// Even without captures, completed operations consume the scan budget.
-			coverageSeedOperations(t, f, a, count, "completed")
-			// The all-head budget also includes completed intents on older heads.
-			admissionSQL(t, f, `UPDATE review_operations SET head_sha=? WHERE state='completed'`, strings.Repeat("9", 40))
-			before := adjudicationState(t, f, a)
-			got, err := f.e.Coverage(t.Context(), attemptProject, current, "cli")
-			if count == 100 {
-				if err != nil {
-					t.Fatal("missing captures should provide no coverage", err)
-				}
-				coverageComparison(t, f, a, current, ComparisonState{Pending: true})
-			} else {
-				attemptCode(t, err, "review_capacity")
-			}
-			if got || adjudicationState(t, f, a) != before {
-				t.Fatal("missing captures gave credit or changed retained state", got, err)
-			}
+			// Settle the original attempt to release its real reservation; its
+			// unfinalized capture and older missing captures remain obligations.
+			adjudicationComplete(t, f, a)
+			comparisonMissingHistory(t, f, count, "cli", strings.Repeat("9", 40))
+			coverageComparison(t, f, a, current, ComparisonState{Pending: true})
 		})
 	}
 }
@@ -435,44 +430,18 @@ func TestCLIComparisonReadyRunCannotMaskPendingRun(t *testing.T) {
 	adjudicationReceipt(t, body, err, receipt.ID, "finalized", 1)
 	coverageComparison(t, f, a, current, ComparisonState{Covered: true})
 	// A completed intent with no retained capture also dominates ready credit.
-	coverageSeedOperations(t, f, a, 1, "completed")
+	comparisonCompleteMissingCapture(t, f, "missing-after-ready", "cli", current.Pull.HeadSHA)
 	coverageComparison(t, f, a, current, ComparisonState{Covered: true, Pending: true})
 }
 
-func TestComparisonCompletedScanUsesBoundedChannelIndex(t *testing.T) {
+func TestComparisonGrowthUsesStateAndAnchorIndexes(t *testing.T) {
 	f, a, id, current := coverageFixture(t, 0, false)
 	coverageFinalize(t, f, a, id, 0)
-	// Only selected-channel completed rows enter the budget. Other-channel
-	// completed rows deliberately lack captures and would exceed that budget.
 	coverageSeedOperations(t, f, a, 1536, "failed")
-	admissionSQL(t, f, `UPDATE review_operations SET channel='hosted',state='completed' WHERE id LIKE 'history-operation-%' AND CAST(substr(id,19) AS INTEGER)%3=0`)
-	admissionSQL(t, f, `UPDATE review_operations SET state='cancelled' WHERE id LIKE 'history-operation-%' AND state='failed' AND CAST(substr(id,19) AS INTEGER)%2=0`)
+	comparisonCompleteMissingCapture(t, f, "indexed-hosted-missing", "hosted", current.Pull.HeadSHA)
 	coverageRead(t, f, a, current, true)
-	_, err := f.e.Comparison(t.Context(), attemptProject, current, "hosted")
-	attemptCode(t, err, "review_capacity")
-	for _, channel := range []string{"cli", "hosted"} {
-		rows, err := f.store.DB().Query(`EXPLAIN QUERY PLAN SELECT id,attempt_id FROM review_operations WHERE project_id=? AND pull_number=? AND channel=? AND state='completed' ORDER BY id LIMIT 101`, attemptProject, 2, channel)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var plan string
-		for rows.Next() {
-			var id, parent, unused int
-			var detail string
-			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
-				t.Fatal(err)
-			}
-			plan += detail
-		}
-		err = rows.Err()
-		_ = rows.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(plan, "SEARCH review_operations USING INDEX review_operations_completed_comparison (project_id=? AND channel=? AND pull_number=?)") || strings.Contains(plan, "TEMP B-TREE") {
-			t.Fatal("completed scan lost channel/index/order bound", channel, plan)
-		}
-	}
+	hostedComparisonRead(t, f, a, current, ComparisonState{Pending: true})
+	assertComparisonGrowthQueryPlans(t, f, current)
 	var obsolete int
 	if err := f.store.DB().QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='index' AND name='review_operations_cli_admission'`).Scan(&obsolete); err != nil || obsolete != 0 {
 		t.Fatal("obsolete index retained", obsolete, err)

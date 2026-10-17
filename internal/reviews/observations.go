@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -333,20 +332,11 @@ func recordObservation(ctx context.Context, store *core.Store, scope core.Scope,
 			req.ObservedAt, recordedAt, hex.EncodeToString(payloadHash[:])); err != nil {
 			return nil, err
 		}
-		for i, pull := range req.Queue {
-			if err := storePull(ctx, tx, scope.ProjectID, snapshotID, req.Source, i, pull); err != nil {
-				return nil, err
-			}
+		write := newHistorySnapshotWrite(scope.ProjectID, nextRevision)
+		if err := write.observation(ctx, tx, req); err != nil {
+			return nil, err
 		}
-		for i, retired := range req.Retired {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO review_retired_pulls(project_id,snapshot_id,position,number,reason) VALUES(?,?,?,?,?)`,
-				scope.ProjectID, snapshotID, i, retired.Number, retired.Reason); err != nil {
-				return nil, err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO review_workspace(project_id,revision,snapshot_id) VALUES(?,?,?)
-			ON CONFLICT(project_id) DO UPDATE SET revision=excluded.revision,snapshot_id=excluded.snapshot_id`,
-			scope.ProjectID, nextRevision, snapshotID); err != nil {
+		if err := write.applyCurrent(ctx, tx, snapshotID, currentRevision); err != nil {
 			return nil, err
 		}
 		if err := core.AppendEvent(ctx, tx, scope, "review.observed", snapshotID, nextRevision,
@@ -403,7 +393,9 @@ func admitObservation(ctx context.Context, tx *sql.Tx, projectID string, req Obs
 	if err := validateRetirements(previousPulls, req.Queue, req.Retired); err != nil {
 		return 0, err
 	}
-	if err := validateFinalizedCounts(ctx, tx, projectID, req.Source, req.Queue); err != nil {
+	reads := newHistoryReads(tx)
+	defer reads.close()
+	if err := validateFinalizedCounts(ctx, reads, projectID, req.Source, req.Queue); err != nil {
 		return 0, err
 	}
 	return currentRevision, nil
@@ -458,15 +450,15 @@ func validateRetirements(previous []int64, queue []PullInput, retired []RetiredP
 	return nil
 }
 
-const finalizedRunQuery = `SELECT snapshot_id,pull_number,channel,head_sha,reviewer,scope,found,accepted,routed,id FROM review_runs
- WHERE project_id=? AND source=? AND source_run_id=? AND finalized=1 ORDER BY snapshot_revision DESC LIMIT 1`
+const finalizedRunQuery = `SELECT version_revision,pull_number,channel,head_sha,reviewer,scope,found,accepted,routed,id FROM review_run_versions
+ WHERE project_id=? AND source=? AND source_run_id=? AND finalized=1 ORDER BY version_revision DESC LIMIT 1`
 
-func validateFinalizedCounts(ctx context.Context, tx *sql.Tx, projectID, source string, queue []PullInput) error {
+func validateFinalizedCounts(ctx context.Context, q HistoryQuery, projectID, source string, queue []PullInput) error {
 	for _, pull := range queue {
 		for _, run := range pull.Runs {
-			var snapshotID, channel, headSHA, reviewer, scope, runID string
-			var pullNumber, found, accepted, routed int64
-			err := tx.QueryRowContext(ctx, finalizedRunQuery, projectID, source, run.SourceRunID).Scan(&snapshotID, &pullNumber, &channel, &headSHA, &reviewer, &scope, &found, &accepted, &routed, &runID)
+			var channel, headSHA, reviewer, scope, runID string
+			var version, pullNumber, found, accepted, routed int64
+			err := q.QueryRowContext(ctx, finalizedRunQuery, projectID, source, run.SourceRunID).Scan(&version, &pullNumber, &channel, &headSHA, &reviewer, &scope, &found, &accepted, &routed, &runID)
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
@@ -480,7 +472,7 @@ func validateFinalizedCounts(ctx context.Context, tx *sql.Tx, projectID, source 
 			// Every admitted finalized copy retains all previously known findings.
 			// The latest finalized copy therefore carries their cumulative identity
 			// and text, even when intervening snapshots omitted the run entirely.
-			if err := validateFinalizedFindings(ctx, tx, projectID, snapshotID, pullNumber, runID, run.Findings); err != nil {
+			if err := validateFinalizedFindings(ctx, q, projectID, version, pullNumber, runID, run.Findings); err != nil {
 				return err
 			}
 		}
@@ -488,13 +480,13 @@ func validateFinalizedCounts(ctx context.Context, tx *sql.Tx, projectID, source 
 	return nil
 }
 
-func validateFinalizedFindings(ctx context.Context, tx *sql.Tx, projectID, snapshotID string, pullNumber int64, runID string, current []Finding) error {
+func validateFinalizedFindings(ctx context.Context, q HistoryQuery, projectID string, version, pullNumber int64, runID string, current []Finding) error {
 	currentByID := make(map[string]Finding, len(current))
 	for _, finding := range current {
 		currentByID[finding.SourceFindingID] = finding
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail FROM review_findings
-		WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=?`, projectID, snapshotID, pullNumber, runID)
+	rows, err := q.QueryContext(ctx, `SELECT source_finding_id,title,detail FROM review_finding_versions
+		WHERE project_id=? AND run_version_revision=? AND pull_number=? AND run_id=?`, projectID, version, pullNumber, runID)
 	if err != nil {
 		return err
 	}
@@ -510,70 +502,6 @@ func validateFinalizedFindings(ctx context.Context, tx *sql.Tx, projectID, snaps
 		}
 	}
 	return rows.Err()
-}
-
-func storePull(ctx context.Context, tx *sql.Tx, projectID, snapshotID, source string, position int, pull PullInput) error {
-	var snapshotRevision int64
-	if len(pull.Runs) > 0 {
-		if err := tx.QueryRowContext(ctx, `SELECT revision FROM review_snapshots WHERE project_id=? AND snapshot_id=?`, projectID, snapshotID).Scan(&snapshotRevision); err != nil {
-			return err
-		}
-	}
-	recent := make([]RunSummary, 0, 3)
-	for i := len(pull.Runs) - 1; i >= 0 && len(recent) < 3; i-- {
-		recent = append(recent, summarizeRun(projectID, source, pull.Number, pull.Runs[i]))
-	}
-	latest := latestAttempts(pull.Attempts)
-	recentJSON, err := json.Marshal(recent)
-	if err != nil {
-		return fmt.Errorf("encode compact run projection: %w", err)
-	}
-	latestJSON, err := json.Marshal(latest)
-	if err != nil {
-		return fmt.Errorf("encode compact attempt projection: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO review_pulls
-		(project_id,snapshot_id,position,number,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, snapshotID, position, pull.Number, pull.Title, pull.State,
-		pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, pull.Complete, len(pull.Runs), len(pull.Attempts),
-		string(recentJSON), string(latestJSON)); err != nil {
-		return err
-	}
-	for order, run := range pull.Runs {
-		id := runOpaqueID(projectID, source, run.SourceRunID)
-		fixed := int64(0)
-		for _, finding := range run.Findings {
-			if finding.FixSHA != "" {
-				fixed++
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO review_runs
-			(project_id,snapshot_id,snapshot_revision,pull_number,run_order,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, snapshotID, snapshotRevision, pull.Number, order, id, source,
-			run.SourceRunID, run.Channel, run.HeadSHA, run.Reviewer, run.Scope, run.Outcome, run.Attributable, run.Complete,
-			run.StartedAt, run.FinishedAt, run.Found, run.Accepted, run.Routed, run.Finalized, fixed, mustJSON(run.CoverageLimits)); err != nil {
-			return err
-		}
-		for index, finding := range run.Findings {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO review_findings
-				(project_id,snapshot_id,pull_number,run_id,position,source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json)
-				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, snapshotID, pull.Number, id, index,
-				finding.SourceFindingID, finding.Title, finding.Detail, finding.Severity, finding.Disposition,
-				finding.DecisionReason, finding.Actor, finding.DecidedAt, finding.FixSHA, finding.ProofNote, finding.ResolvedAt, mustJSON(finding.Route)); err != nil {
-				return err
-			}
-		}
-	}
-	for index, attempt := range pull.Attempts {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO review_attempts
-			(project_id,snapshot_id,pull_number,position,source,source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, snapshotID, pull.Number, index, source, attempt.SourceAttemptID,
-			attempt.Channel, attempt.HeadSHA, attempt.State, attempt.StartedAt, attempt.FinishedAt, attempt.DurationSeconds,
-			attempt.SourceRunID, attempt.TriggerID, attempt.ProviderReviewID); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func summarizeRun(projectID, source string, pullNumber int64, run RunInput) RunSummary {

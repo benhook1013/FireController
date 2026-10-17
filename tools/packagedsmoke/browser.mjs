@@ -7,6 +7,8 @@ let server, browser;
 let phase = 'configuration';
 let checkpoint = '';
 let counters = () => ({});
+let failureClass = '';
+let failureSnapshot = async () => ({});
 const need = (value) => { if (!value) throw new Error('assertion'); };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
@@ -22,6 +24,26 @@ try {
   page.setDefaultNavigationTimeout(5000);
   const prefix = '/api/v1/projects/' + config.project;
   const home = '/projects/' + config.project;
+  failureSnapshot = async () => {
+    if (phase !== 'explicit-actions-uncertain') return {};
+    const snapshot = {
+      sent_links: await page.getByRole('link',{name:'Open sent conversation',exact:true}).count(),
+      retry_buttons: await page.getByRole('button',{name:'Retry exact send',exact:true}).count(),
+      send_buttons: await page.getByRole('button',{name:'Send message',exact:true}).count(),
+      composer_forms: await page.locator('.browser-composer form').count(),
+      message_matches: await page.getByText('Uncertain browser message',{exact:true}).count(),
+      conversation_items: await page.locator('.conversation-list > li').count(),
+      alerts: await page.getByRole('alert').count(),
+      inbox_route: new URL(page.url()).pathname === home+'/inbox',
+      conversation_route: new URL(page.url()).pathname.startsWith(home+'/inbox/'),
+    };
+    if (config.diagnostic_directory) {
+      await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});
+      await page.screenshot({path:config.diagnostic_directory+'/failure.png', mask:[page.locator('input,textarea,code,.full-text,.message-preview')], timeout:2000});
+      await fs.writeFile(config.diagnostic_directory+'/failure.json',JSON.stringify({phase,checkpoint,...snapshot}),{mode:0o600});
+    }
+    return snapshot;
+  };
   let fixtureWrites = 0;
   const write = async (method, path, body, status = 200, sender = config.worker) => {
     const response = await fetch(config.origin + prefix + path, {
@@ -39,7 +61,7 @@ try {
  let controlledMessageFailure = false;
  let controlledAccessFailure = false;
  const expectedMissingSessionRoute = url => { if (!controlledAccessFailure || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname); } catch { return false; } };
-  counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites});
+  counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
   page.on('pageerror', () => errors++);
   page.on('console', value => { if (value.type() === 'error' && !(expectedMissingSessionRoute(value.location().url)) && !(controlledMessageFailure && value.location().url === config.origin + prefix + '/messages')) errors++; });
   page.on('response', value => { if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else errors++; } });
@@ -304,7 +326,7 @@ try {
   need(!(await page.evaluate(()=>JSON.stringify(sessionStorage))).includes(admin));
   need(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
 
-  phase = 'explicit-actions-uncertain';
+  phase = 'explicit-actions-uncertain'; checkpoint = 'compose';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
   await page.getByRole('button',{name:'New message',exact:true}).click();
   await page.getByLabel('Recipient worker ID',{exact:true}).fill(config.other_worker);
@@ -324,17 +346,19 @@ try {
     await releaseResponse;
     await route.abort('failed').catch(()=>{});
   });
-  controlledMessageFailure=true;
+  controlledMessageFailure=true; checkpoint = 'dispatch';
   await page.getByRole('button',{name:'Send message',exact:true}).click();
-  await committedSend;
+  await committedSend; checkpoint = 'switch-view';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Workers',exact:true}).click();
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
-  releaseSend();
+  releaseSend(); checkpoint = 'retry-ready';
   const retry = page.getByRole('button',{name:'Retry exact send',exact:true});
-  if (!(await retry.count())) await page.getByRole('button',{name:'New message',exact:true}).click();
+  // The retained action must expose retry after remount without a manual
+  // composer-open click that could mask disappearing success feedback.
   await expect(retry).toBeEnabled();
   // Pop to the original root route: canceling the explicit discard prompt must
   // preserve this project and the original pending key/body, without a reload.
+  checkpoint = 'navigation-guard';
   const rootDelta=await page.evaluate(root=>history.state.idx-root,actionRootHistoryIndex);
   need(rootDelta>0);
   const exitDialog=page.waitForEvent('dialog');
@@ -342,17 +366,22 @@ try {
   await (await exitDialog).dismiss();
   await expect(retry).toBeEnabled();
   need(new URL(page.url()).pathname===home+'/inbox');
+  checkpoint = 'retry-response';
   const retryResponse=page.waitForResponse(r=>r.request().method()==='POST' && new URL(r.url()).pathname===prefix+'/messages');
   await retry.click();
   const recovered=await retryResponse;
   need(recovered.status()===201 && (await recovered.json()).id===heldReceipt.id);
+  checkpoint = 'retry-identity';
   need(JSON.stringify(originalWire)===JSON.stringify(retryWire));
+  checkpoint = 'conversation-link';
   await page.getByRole('link',{name:'Open sent conversation',exact:true}).click();
+  checkpoint = 'conversation-body';
   await page.getByText('Uncertain browser message',{exact:true}).waitFor();
   need(await page.getByText('Uncertain browser message',{exact:true}).count()===1);
-  controlledMessageFailure=false;
+  controlledMessageFailure=false; checkpoint = 'disconnect';
   await page.getByRole('button',{name:'Disconnect',exact:true}).click();
   await page.getByRole('button',{name:'Connect to project',exact:true}).waitFor();
+  checkpoint = 'action-counters';
   need(sessionPosts===2 && sessionDeletes===2 && sessionRenewals===3 && actionWrites===7 && forbiddenWrites===0 && errors===0 && external===0);
 
   phase = 'renewal-missing-cookie'; checkpoint = 'root-form';
@@ -387,8 +416,10 @@ try {
   await browser.close(); browser = undefined;
   await server.close(); server = undefined;
   console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites}));
-} catch {
-  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, ...counters()}));
+} catch (error) {
+  failureClass = error?.name === 'TimeoutError' ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
+  const snapshot = await failureSnapshot().catch(()=>({diagnostic_failed:true}));
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, ...counters(), ...snapshot}));
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});

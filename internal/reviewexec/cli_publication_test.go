@@ -353,18 +353,20 @@ func TestPublishEvidenceReplayRejectsChangedAndHistoricalOnlyNativeSources(t *te
 			if _, err := f.e.PublishEvidence(context.Background(), attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
 				t.Fatal(err)
 			}
+			detail := cliPublicationDetail(t, f, 2, evidence.ID)
+			runID, version := projectionNativeVersion(t, f, detail.SnapshotID, evidence.ID)
 			var err error
 			switch mode {
 			case "text":
-				_, err = f.store.DB().Exec(`UPDATE review_findings SET detail='replaced' WHERE project_id=?`, attemptProject)
+				_, err = f.store.DB().Exec(`UPDATE review_finding_versions SET detail='replaced' WHERE project_id=? AND run_id=? AND run_version_revision=?`, attemptProject, runID, version)
 			case "finding-id":
-				_, err = f.store.DB().Exec(`UPDATE review_findings SET source_finding_id='replaced' WHERE project_id=? AND position=0`, attemptProject)
+				_, err = f.store.DB().Exec(`UPDATE review_finding_versions SET source_finding_id='replaced' WHERE project_id=? AND run_id=? AND run_version_revision=? AND position=0`, attemptProject, runID, version)
 			case "head":
-				_, err = f.store.DB().Exec(`UPDATE review_runs SET head_sha=? WHERE project_id=?`, strings.Repeat("9", 40), attemptProject)
+				_, err = f.store.DB().Exec(`UPDATE review_run_versions SET head_sha=? WHERE project_id=? AND id=? AND version_revision=?`, strings.Repeat("9", 40), attemptProject, runID, version)
 			case "counts":
-				_, err = f.store.DB().Exec(`UPDATE review_runs SET accepted=1 WHERE project_id=?`, attemptProject)
+				_, err = f.store.DB().Exec(`UPDATE review_run_versions SET accepted=1 WHERE project_id=? AND id=? AND version_revision=?`, attemptProject, runID, version)
 			case "decision":
-				_, err = f.store.DB().Exec(`UPDATE review_findings SET disposition='accepted' WHERE project_id=? AND position=0`, attemptProject)
+				_, err = f.store.DB().Exec(`UPDATE review_finding_versions SET disposition='accepted' WHERE project_id=? AND run_id=? AND run_version_revision=? AND position=0`, attemptProject, runID, version)
 			case "historical-only":
 				w := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/observations", f.admin, "replace-current-with-import", encoded(reviews.ObservationRequest{ExpectedRevision: adjudicationRevision(1), RepositoryID: evidence.Anchor.RepositoryID, Source: "synthetic-import", ObservedAt: stamp(), Queue: []reviews.PullInput{projectionPull(2)}}))
 				if w.Code != 201 {

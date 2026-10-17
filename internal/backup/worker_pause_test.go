@@ -21,7 +21,7 @@ func TestWorkerPauseBackupRoundTripPreservesCoordination(t *testing.T) {
 	}{{true, "Private pause <literal> 雪\n\t"}, {true, "Corrected reason"}, {false, ""}, {true, "Retained pause"}} {
 		f.request(t, "PUT", base+"/pause", map[string]any{"expected_revision": revision, "paused": state.paused, "reason": state.reason})
 	}
-	tables := []string{"worker_pause_state", "worker_pause_history", "worker_primary_jobs", "worker_primary_job_history", "jobs", "job_history", "job_checkpoints", "job_updates", "job_checklists", "job_checklist_history", "inbox_messages", "inbox_recipient_state", "review_policy_config", "review_execution_config", "review_operations", "review_attempts", "receipts", "events"}
+	tables := []string{"worker_pause_state", "worker_pause_history", "worker_primary_jobs", "worker_primary_job_history", "jobs", "job_history", "job_checkpoints", "job_updates", "job_checklists", "job_checklist_history", "inbox_messages", "inbox_recipient_state", "review_policy_config", "review_execution_config", "review_operations", "review_attempt_versions", "review_attempt_memberships", "review_current_attempts", "receipts", "events"}
 	original := map[string][][]any{}
 	for _, table := range tables {
 		original[table] = restoreRows(t, f.store.DB(), `SELECT * FROM `+table+` ORDER BY rowid`)

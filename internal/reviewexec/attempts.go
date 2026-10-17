@@ -157,7 +157,7 @@ func holdOperation(ctx context.Context, tx *sql.Tx, o Operation, reason, at stri
 	return err
 }
 
-func readAttempt(ctx context.Context, tx *sql.Tx, project, id string) (Attempt, error) {
+func readAttempt(ctx context.Context, tx EvidenceQuery, project, id string) (Attempt, error) {
 	var a Attempt
 	var anchor string
 	err := tx.QueryRowContext(ctx, `SELECT id,operation_id,project_id,provider,account,state,revision,anchor_json,intent,external_id FROM review_execution_attempts WHERE project_id=? AND id=?`, project, id).Scan(&a.ID, &a.OperationID, &a.ProjectID, &a.Provider, &a.Account, &a.State, &a.Revision, &anchor, &a.Intent, &a.ExternalID)
@@ -324,6 +324,11 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 		}
 		if err = e.transitionRow(ctx, tx, a, reason, at); err != nil {
 			return err
+		}
+		if state == "completed" {
+			if err = refreshComparisonProof(ctx, tx, project, a.OperationID); err != nil {
+				return err
+			}
 		}
 		result = a
 		return nil

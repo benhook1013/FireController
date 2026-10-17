@@ -451,11 +451,11 @@ func TestAttemptProjectionCapacityHoldsOnceBeforeDriver(t *testing.T) {
 	for _, total := range []bool{false, true} {
 		t.Run(fmt.Sprint("total-", total), func(t *testing.T) {
 			f := attemptProjectionFixture(t, true)
-			// Populate only compact rows in the owned current snapshot, not hundreds of
-			// whole snapshots. The existing imported row already contributes one item.
+			// Seed only the owned fixture's typed attempt bodies and exact membership /
+			// current references, not hundreds of snapshots. The imported row counts too.
 			err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
-				var snapshot string
-				if err := tx.QueryRowContext(ctx, `SELECT snapshot_id FROM review_workspace WHERE project_id=?`, attemptProject).Scan(&snapshot); err != nil {
+				var revision int64
+				if err := tx.QueryRowContext(ctx, `SELECT revision FROM review_workspace WHERE project_id=?`, attemptProject).Scan(&revision); err != nil {
 					return err
 				}
 				for number, count := range map[int]int{2: 100, 4: 0} {
@@ -467,7 +467,14 @@ func TestAttemptProjectionCapacityHoldsOnceBeforeDriver(t *testing.T) {
 						}
 					}
 					for i := 0; i < count; i++ {
-						if _, err := tx.ExecContext(ctx, `INSERT INTO review_attempts(project_id,snapshot_id,pull_number,position,source,source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id) VALUES(?,?,?,?,'synthetic-history',?,'cli',?,'prepared','','',NULL,'','','')`, attemptProject, snapshot, number, i, fmt.Sprintf("retained-%d-%d", number, i), strings.Repeat("a", 40)); err != nil {
+						id := fmt.Sprintf("retained-%d-%d", number, i)
+						if _, err := tx.ExecContext(ctx, `INSERT INTO review_attempt_versions(project_id,source,source_attempt_id,version_revision,pull_number,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id) VALUES(?,'synthetic-history',?,?,?,'cli',?,'prepared','','',NULL,'','','')`, attemptProject, id, revision, number, strings.Repeat("a", 40)); err != nil {
+							return err
+						}
+						if _, err := tx.ExecContext(ctx, `INSERT INTO review_attempt_memberships(project_id,source,source_attempt_id,start_revision,end_revision,version_revision,pull_number,position) VALUES(?,'synthetic-history',?,?,NULL,?,?,?)`, attemptProject, id, revision, revision, number, i); err != nil {
+							return err
+						}
+						if _, err := tx.ExecContext(ctx, `INSERT INTO review_current_attempts(project_id,source,source_attempt_id,start_revision,pull_number,position) VALUES(?,'synthetic-history',?,?,?,?)`, attemptProject, id, revision, number, i); err != nil {
 							return err
 						}
 					}

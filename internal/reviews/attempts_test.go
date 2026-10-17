@@ -6,17 +6,22 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/benhook1013/FireController/internal/core"
 )
 
 // This fixture deliberately bypasses observation admission: it proves bounded
 // archive reads beyond the old count ceiling, not cap-free publication.
-func seedAttemptArchive(t *testing.T, f *apiFixture, snapshot string, count int) {
+func seedAttemptArchive(t *testing.T, f *apiFixture, count int) string {
 	t.Helper()
-	tx, err := f.store.DB().Begin()
-	if err != nil {
+	tx := historyWriterTx(t, f)
+	snapshot := core.NewID("review_snapshot")
+	observed := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(t.Context(), `INSERT INTO review_snapshots(project_id,snapshot_id,revision,repository_id,source,observed_at,recorded_at,payload_sha256) VALUES(?,?,1,701,'test-import',?,?,?)`, f.project, snapshot, observed, observed, strings.Repeat("a", 64)); err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
+	write := newHistorySnapshotWrite(f.project, 1)
 	for position := 0; position < count; position++ {
 		source, id := "producer-a", fmt.Sprintf("attempt-%03d", position)
 		if position < 2 {
@@ -25,7 +30,7 @@ func seedAttemptArchive(t *testing.T, f *apiFixture, snapshot string, count int)
 				source = "producer-b"
 			}
 		}
-		if _, err := tx.Exec(`INSERT INTO review_attempts(project_id,snapshot_id,pull_number,position,source,source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id) VALUES(?,?,1,?,?,?,'cli','','unknown','','',NULL,'','','')`, f.project, snapshot, position, source, id); err != nil {
+		if err := write.attempt(t.Context(), tx, source, 1, position, Attempt{SourceAttemptID: id, Channel: "cli", State: "unknown"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -37,16 +42,24 @@ func seedAttemptArchive(t *testing.T, f *apiFixture, snapshot string, count int)
 		}
 		latest = append(latest, AttemptSummary{SourceAttemptID: id, Channel: "cli", State: "unknown"})
 	}
-	encoded, err := json.Marshal(latest)
-	if err != nil {
-		t.Fatal(err)
+	for position, pull := range []PullInput{samplePull(1, "Retained"), samplePull(2, "Other")} {
+		attempts, compact := 0, "[]"
+		if pull.Number == 1 {
+			attempts = count
+			compact = mustJSON(latest)
+		}
+		body := []any{pull.Title, pull.State, pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, pull.Complete, 0, attempts, "[]", compact}
+		if err := write.pull(t.Context(), tx, pull.Number, position, body); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := tx.Exec(`UPDATE review_pulls SET attempt_count=?,latest_attempts_json=? WHERE project_id=? AND snapshot_id=? AND number=1`, count, string(encoded), f.project, snapshot); err != nil {
+	if err := write.applyCurrent(t.Context(), tx, snapshot, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	return snapshot
 }
 
 func attemptArchivePage(t *testing.T, f *apiFixture, path string) AttemptsResponse {
@@ -61,9 +74,7 @@ func attemptArchivePage(t *testing.T, f *apiFixture, path string) AttemptsRespon
 
 func TestAttemptArchiveBoundedStablePagesAndOriginalProducers(t *testing.T) {
 	f := newAPIFixture(t)
-	created := f.observe(t, reviewRequest(0, []PullInput{samplePull(1, "Retained"), samplePull(2, "Other")}), "archive-before")
-	snapshot := created["id"].(string)
-	seedAttemptArchive(t, f, snapshot, 123)
+	snapshot := seedAttemptArchive(t, f, 123)
 	before := nativeSnapshotBytes(t, f, snapshot)
 	events, receipts := countRows(t, f.store, "events"), countRows(t, f.store, "receipts")
 	page := attemptArchivePage(t, f, "/pulls/1/attempts")
@@ -112,9 +123,7 @@ func TestAttemptArchiveBoundedStablePagesAndOriginalProducers(t *testing.T) {
 
 func TestAttemptArchiveRejectsCrossScopeAndMalformedQueries(t *testing.T) {
 	f := newAPIFixture(t)
-	created := f.observe(t, reviewRequest(0, []PullInput{samplePull(1, "Retained"), samplePull(2, "Other")}), "archive-scopes")
-	snapshot := created["id"].(string)
-	seedAttemptArchive(t, f, snapshot, 3)
+	_ = seedAttemptArchive(t, f, 3)
 	page := attemptArchivePage(t, f, "/pulls/1/attempts?limit=1")
 	cursor := url.QueryEscape(page.Cursor)
 	base := "/api/v1/projects/" + f.project + "/reviews"

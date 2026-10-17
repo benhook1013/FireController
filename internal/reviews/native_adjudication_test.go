@@ -364,9 +364,7 @@ func TestNativeAdjudicationCapacityCallerFailureAndExactMutationReplay(t *testin
 			if mode == "capacity" {
 				// Model a retained snapshot that exceeds the current capacity after
 				// an operator/import migration. The correction must refuse atomically.
-				if _, err := f.store.DB().Exec(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<101) INSERT INTO review_attempts(project_id,snapshot_id,pull_number,position,source,source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id) SELECT ?,?,2,x-1,'test-import','capacity-'||x,'cli','','unknown','','',NULL,'','','' FROM n`, f.project, previous.ID); err != nil {
-					t.Fatal(err)
-				}
+				historyFixtureOverflowAttempts(t, f, previous, 2, 101)
 			}
 			decideNativeFinding(&input.Findings[0], "accepted")
 			before, counts := nativeSnapshotBytes(t, f, previous.ID), nativeProjectionCounts(t, f)
@@ -420,5 +418,30 @@ func TestNativeAdjudicationCapacityCallerFailureAndExactMutationReplay(t *testin
 				}
 			}
 		})
+	}
+}
+
+// Model already-retained data above today's request capacity without bypassing
+// exact version/membership/current references in the installed physical schema.
+func historyFixtureOverflowAttempts(t *testing.T, f *apiFixture, snapshot Receipt, number int64, count int) {
+	t.Helper()
+	tx := historyWriterTx(t, f)
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("capacity-%d", i)
+		if _, err := tx.Exec(`INSERT INTO review_attempt_versions VALUES(?,'test-import',?,?,?,'cli','','unknown','','',NULL,'','','')`, f.project, id, snapshot.Revision, number); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(`INSERT INTO review_attempt_memberships VALUES(?,'test-import',?,?,NULL,?,?,?)`, f.project, id, snapshot.Revision, snapshot.Revision, number, i); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(`INSERT INTO review_current_attempts VALUES(?,'test-import',?,?,?,?)`, f.project, id, snapshot.Revision, number, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateHistoryReferences(t.Context(), f.store.DB()); err != nil {
+		t.Fatal(err)
 	}
 }

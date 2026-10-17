@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -94,7 +95,16 @@ func TestPolicyAssessmentCombinesRequiredChannelsAndCurrentPolicy(t *testing.T) 
 	assessmentRead(t, f, a, id, "sufficient", 2, PolicyAssessmentChannel{Channel: "cli", Covered: true}, PolicyAssessmentChannel{Channel: "hosted", Covered: true})
 	// An enabled but no longer required channel's missing capture is irrelevant.
 	coverageSeedOperations(t, f, hosted, 1, "completed")
-	admissionSQL(t, f, `UPDATE review_operations SET head_sha=? WHERE id='history-operation-0'`, strings.Repeat("9", 40))
+	// This is deliberate retained missing-capture fixture setup, not a
+	// corrupted ready operation. Re-derive its pending proof in the same write.
+	if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE review_operations SET head_sha=? WHERE id='history-operation-0'`, strings.Repeat("9", 40)); err != nil {
+			return err
+		}
+		return refreshComparisonProof(ctx, tx, attemptProject, "history-operation-0")
+	}); err != nil {
+		t.Fatal(err)
+	}
 	assessmentPolicy(t, f, 2, []string{"cli"}, []string{})
 	assessmentRead(t, f, a, id, "sufficient", 3, PolicyAssessmentChannel{Channel: "cli", Covered: true})
 	assessmentPolicy(t, f, 3, []string{"cli", "hosted"}, []string{})
@@ -247,17 +257,19 @@ func TestPolicyAssessmentRejectsMalformedMissingOrCorruptTarget(t *testing.T) {
 	}
 }
 
-func TestPolicyAssessmentBoundedCompletedHistoryAndCancellation(t *testing.T) {
+func TestPolicyAssessmentPendingHistoryCorruptionAndCancellation(t *testing.T) {
 	f, a, id, _ := coverageFixture(t, 0, false)
 	coverageSeedOperations(t, f, a, 100, "completed")
 	assessmentRead(t, f, a, id, "held", 1, PolicyAssessmentChannel{Channel: "cli", Pending: true}, PolicyAssessmentChannel{Channel: "hosted"})
+	// Directly completing only the operation leaves its actual attempt active.
+	// Invalidation must refuse this corruption rather than pass cached facts.
 	admissionSQL(t, f, `UPDATE review_operations SET state='completed' WHERE id=?`, a.OperationID)
 	before := adjudicationState(t, f, a) + policyState(t, f)
 	scope := evidenceReadScope(t, f, attemptProject, f.reader)
 	got, err := f.e.ReadPolicyAssessment(t.Context(), scope, id)
-	attemptCode(t, err, "review_capacity")
+	attemptCode(t, err, "storage_unavailable")
 	if !reflect.DeepEqual(got, PolicyAssessment{}) || before != adjudicationState(t, f, a)+policyState(t, f) {
-		t.Fatal("capacity refusal created credit or state", got)
+		t.Fatal("corrupt journal refusal created credit or state", got)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
