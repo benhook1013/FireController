@@ -421,6 +421,9 @@ func (m *Manager) registerCreated(ctx context.Context, b createdBundle, started 
 			return e
 		}
 		r.Status.LastSuccess = &b.Summary
+		// A newly registered creation starts its own unsettled pruning phase.
+		// Wall-clock ordering cannot attribute the previous pass's result.
+		r.Status.Retention = nil
 		r.Status.LastAttempt = &AttemptStatus{StartedAt: started, FinishedAt: managedFinish(started, m.now()), State: "complete", SourceInstanceID: m.store.InstanceID()}
 		return nil
 	})
