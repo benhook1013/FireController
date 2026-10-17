@@ -112,6 +112,8 @@ func TestJobProgressToolsRejectBeforeCredentialAndNetwork(t *testing.T) {
 		{"job_update_append", `{"job_id":"job-one","idempotency_key":"explicit","expected_job_revision":1,"body":"Update","actor_id":"override"}`},
 		{"job_checklist_read", `{"job_id":"job-one","limit":1}`},
 		{"job_checklist_history", `{"job_id":"job-one","limit":0}`},
+		{"job_checklist_history", `{"job_id":"job-one","cursor":""}`},
+		{"job_update_history", `{"job_id":"job-one","cursor":""}`},
 		{"job_update_history", `{"job_id":"../other"}`},
 	}
 	for _, test := range cases {

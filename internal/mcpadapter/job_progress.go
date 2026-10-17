@@ -62,19 +62,26 @@ func jobProgressArguments(name string, data json.RawMessage) (arguments, error) 
 		}
 		args.id = in.JobID
 	default:
-		var in historyInput
+		var in struct {
+			JobID  string  `json:"job_id"`
+			Limit  *int    `json:"limit,omitempty"`
+			Cursor *string `json:"cursor,omitempty"`
+		}
 		if strictjson.Decode(data, &in) != nil || !validID(in.JobID) {
 			return args, invalidArguments()
 		}
-		args.id, args.cursor, args.limit = in.JobID, in.Cursor, 20
+		args.id, args.limit = in.JobID, 20
 		if in.Limit != nil {
 			if *in.Limit < 1 || *in.Limit > 100 {
 				return args, invalidArguments()
 			}
 			args.limit = *in.Limit
 		}
-		if in.Cursor != "" && !validEventCursor(in.Cursor) {
-			return args, invalidArguments()
+		if in.Cursor != nil {
+			if !validEventCursor(*in.Cursor) {
+				return args, invalidArguments()
+			}
+			args.cursor = *in.Cursor
 		}
 	}
 	return args, nil
