@@ -22,7 +22,7 @@ func TestReviewPolicyAssessmentMCPDiscoveryAndInvalidArgumentsAreLocal(t *testin
 	binding := localContext()
 	binding.ServerURL = service.URL
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"alpha": binding}, "absent-private-credential"), "alpha")
-	listed, err := session.ListTools(t.Context(), nil)
+	listed, err := allDiscoveredTools(t, session)
 	if err != nil {
 		t.Fatal(err)
 	}

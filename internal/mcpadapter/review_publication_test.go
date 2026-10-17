@@ -80,23 +80,23 @@ func TestReviewCheckpointMCPDiscoveryAndInvalidBeforeCredentials(t *testing.T) {
 	binding := localContext()
 	binding.ServerURL = srv.URL
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": binding}, "missing-checkpoint-token"), "chosen")
-	tools, err := session.ListTools(t.Context(), nil)
+	tools, err := allDiscoveredTools(t, session)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]int{"review_checkpoint_publish": 4, "review_checkpoint_read": 1, "review_checkpoint_recover": 5}
 	reads, writes := 0, 0
 	for _, tool := range tools.Tools {
-		if tool.Annotations.ReadOnlyHint {
-			reads++
-		} else {
-			writes++
-		}
 		n, ok := want[tool.Name]
 		if !ok {
 			continue
 		}
 		delete(want, tool.Name)
+		if tool.Annotations.ReadOnlyHint {
+			reads++
+		} else {
+			writes++
+		}
 		var shape struct {
 			Properties map[string]any
 			Required   []string
@@ -112,7 +112,7 @@ func TestReviewCheckpointMCPDiscoveryAndInvalidBeforeCredentials(t *testing.T) {
 			t.Fatal("incorrect checkpoint schema/effects", tool.Name)
 		}
 	}
-	if len(want) != 0 || len(tools.Tools) != 64 || reads != 42 || writes != 22 {
+	if len(want) != 0 || reads != 1 || writes != 2 {
 		t.Fatal("discovery totals wrong", want, reads, writes)
 	}
 	id := "review_publication_" + strings.Repeat("a", 32)

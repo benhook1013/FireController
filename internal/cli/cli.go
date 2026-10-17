@@ -62,6 +62,7 @@ type invocation struct {
 	mutation   *mutationInvocation
 	setup      *profileSetupInvocation
 	notes      *noteInvocation
+	projectMap *projectMapInvocation
 
 	reviewImport *reviewImportInvocation
 
@@ -88,6 +89,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return emit(stdout, stderr, struct {
 			Version string `json:"version"`
 		}{Version})
+	}
+	if call.projectMap != nil {
+		if err := prepareProjectMap(ctx, call.projectMap); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
 	}
 	if call.reviewImport != nil {
 		if err := prepareReviewImport(ctx, call.reviewImport); err != nil {
@@ -144,6 +150,29 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	defer service.Close()
 	if call.reviewImport != nil {
 		return executeReviewImport(requestCtx, ctx, service, call.reviewImport, stdout, stderr)
+	}
+	if call.projectMap != nil {
+		value, err := executeProjectMap(requestCtx, service, call.projectMap)
+		if err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+		if call.projectMap.write() {
+			var encoded []byte
+			encoded, err = json.Marshal(value)
+			if err == nil {
+				encoded = append(encoded, '\n')
+				var written int
+				written, err = stdout.Write(encoded)
+				if err == nil && written != len(encoded) {
+					err = io.ErrShortWrite
+				}
+			}
+			if err != nil {
+				return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The map mutation receipt could not be written.", Action: "Retry the exact same key, request and bound instance; do not use a replacement key.", OutcomeUnknown: true})
+			}
+			return ExitSuccess
+		}
+		return emit(stdout, stderr, value)
 	}
 	if call.notes != nil {
 		value, err := executeNotes(requestCtx, service, call.notes)
@@ -278,7 +307,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.setup, ok = parseProfileSetup(call.subcommand, remaining[2:])
 		return call, ok && (!call.hasProfile || validSetupText(call.profile)) && (!call.hasProfilesFile || validSetupText(call.profilesFile))
 	}
-	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" || len(remaining) < 2 {
+	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" || len(remaining) < 2 {
 		return call, false
 	}
 	call.subcommand = remaining[1]
@@ -291,6 +320,11 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	if call.command == "jobs" && call.subcommand == "context" {
 		return parseJobContext(call, operationArgs)
+	}
+	if call.command == "map" || call.command == "jobs" && (call.subcommand == "workstream" || call.subcommand == "workstream-set" || call.subcommand == "workstream-history") {
+		var ok bool
+		call.projectMap, ok = parseProjectMap(call.command, call.subcommand, operationArgs)
+		return call, ok
 	}
 	if call.command == "notes" {
 		var ok bool

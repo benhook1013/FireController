@@ -1,7 +1,7 @@
 import type {
   Checkpoint, ConversationPage, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
   JobSummary, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
-  Project, WatchCallbacks, Worker,
+  Project, WatchCallbacks, Worker, ProjectMapEntry, ProjectMapSummary, ProjectMapOptions, ProjectMapHistorySummary, ProjectMapRevision, JobWorkstream, JobWorkstreamHistoryEntry,
   ReviewAttemptSummary, ReviewFinding, ReviewPull, ReviewPullSummary, ReviewQueue, ReviewRunDetail,
   ReviewRunOptions, ReviewRuns, ReviewRunSummary, ReviewPolicyAssessment,
 } from './types';
@@ -190,6 +190,47 @@ function validChecklistItems(value: unknown): value is ChecklistItem[] {
 }
 function validChecklistHistoryEntry(value: unknown): value is ChecklistHistoryEntry {
   return record(value) && keys(value, ['revision', 'job_revision', 'actor_id', 'worker_id', 'items', 'created_at']) && positive(value.revision) && positive(value.job_revision) && id(value.actor_id) && (value.worker_id === '' || id(value.worker_id)) && validChecklistItems(value.items) && assessmentTime(value.created_at);
+}
+function mapText(value: unknown, max: number, prose = false): value is string {
+  return contentText(value, max, true) && !(prose ? /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u : /\p{Cc}/u).test(value);
+}
+function mapName(value: unknown, max: number): value is string {
+  return mapText(value, max) && value.length > 0 && !/^\p{White_Space}|\p{White_Space}$/u.test(value);
+}
+// Stored HTTP link text stays readable even when browser URL parsing differs
+// from the service parser. Navigation applies the stricter browser check below.
+function projectMapLinkText(value: unknown): value is string {
+  if (!mapText(value, 2048) || !/^https?:\/\//iu.test(value) || /\p{White_Space}/u.test(value)) return false;
+  const authority = value.split(/[/?#]/u)[2];
+  return !!authority && !authority.includes('@');
+}
+export function projectMapURL(value: unknown): value is string {
+  if (!projectMapLinkText(value)) return false;
+  try { const url = new URL(value); return (url.protocol === 'https:' || url.protocol === 'http:') && !!url.hostname && !url.username && !url.password; }
+  catch { return false; }
+}
+function validMapSummary(value: unknown): value is ProjectMapSummary {
+  return record(value) && keys(value, ['id', 'kind', 'title', 'state', 'archived', 'revision']) && id(value.id) && (value.kind === 'workstream' || value.kind === 'return_point') && mapName(value.title, 240) && mapText(value.state, 240) && typeof value.archived === 'boolean' && positive(value.revision);
+}
+function validMapEntry(value: unknown, project: string, expected: string): value is ProjectMapEntry {
+  if (!record(value) || !keys(value, ['id', 'kind', 'title', 'state', 'archived', 'revision', 'project_id', 'description', 'where', 'next', 'trigger', 'phases', 'links', 'created_at', 'updated_at']) || value.id !== expected || !id(value.id) || value.project_id !== project || (value.kind !== 'workstream' && value.kind !== 'return_point') || !mapName(value.title, 240) || !mapText(value.state, 240) || typeof value.archived !== 'boolean' || !positive(value.revision) || !assessmentTime(value.created_at) || !assessmentTime(value.updated_at) || !mapText(value.description, 8192, true) || !mapText(value.where, 8192, true) || !mapText(value.next, 8192, true) || !mapText(value.trigger, 8192, true) || !Array.isArray(value.phases) || value.phases.length > 64 || !Array.isArray(value.links) || value.links.length > 12) return false;
+  const seen = new Set<string>();
+  for (const phase of value.phases) {
+    if (!record(phase) || !keys(phase, ['id', 'name', 'state', 'archived']) || typeof phase.id !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/u.test(phase.id) || seen.has(phase.id) || !mapName(phase.name, 160) || !mapText(phase.state, 240) || typeof phase.archived !== 'boolean') return false;
+    seen.add(phase.id);
+  }
+  if (!value.links.every(link => record(link) && keys(link, ['label', 'url']) && mapName(link.label, 120) && projectMapLinkText(link.url))) return false;
+  if (value.kind === 'workstream' ? value.trigger !== '' : value.where !== '' || value.next !== '' || value.phases.length !== 0) return false;
+  const editable = { kind: value.kind, title: value.title, description: value.description, state: value.state, where: value.where, next: value.next, trigger: value.trigger, phases: value.phases, links: value.links, archived: value.archived };
+  // Match the service's encoded editable budget, including Go's HTML escapes.
+  return new TextEncoder().encode(JSON.stringify(editable).replace(/[<>&\u2028\u2029]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`)).byteLength <= 64 << 10;
+}
+function mapPageQuery(options: PageOptions): URLSearchParams { return pageOptions({ ...options, limit: options.limit ?? 25 }); }
+function validMapHistory(value: unknown): value is ProjectMapHistorySummary {
+  return record(value) && keys(value, ['revision', 'actor_id', 'created_at']) && positive(value.revision) && id(value.actor_id) && assessmentTime(value.created_at);
+}
+function validWorkstreamReference(value: Record<string, unknown>): boolean {
+  return value.workstream_id === '' ? value.workstream_title === '' : id(value.workstream_id) && mapName(value.workstream_title, 240);
 }
 function reviewEvidenceID(value: unknown): value is string { return typeof value === 'string' && /^review_evidence_[a-f0-9]{32}$/u.test(value); }
 // JSON.parse alone loses duplicate keys. This bounded response additionally
@@ -471,6 +512,57 @@ export class Api {
       previous = entry.revision;
     }
     return value as Page<ChecklistHistoryEntry>;
+  }
+  async projectMapEntries(options: ProjectMapOptions = {}, signal?: AbortSignal): Promise<Page<ProjectMapSummary>> {
+    const query = mapPageQuery(options);
+    if (options.kind !== undefined) { if (options.kind !== 'workstream' && options.kind !== 'return_point') throw new ApiError('invalid_request', 'The map kind filter is invalid.'); query.set('kind', options.kind); }
+    if (options.archived !== undefined && typeof options.archived !== 'boolean') throw new ApiError('invalid_request', 'The map archive filter is invalid.');
+    query.set('archived', String(options.archived ?? false));
+    const value = await this.finiteGet(withQuery(this.projectRoute('map/entries'), query), signal, undefined, maxBytes, assessmentJSON);
+    if (!validPage(value, options.limit ?? 25) || !value.has_more && !!value.cursor) throw new ApiError('invalid_response', 'The service returned an invalid map page.');
+    let previous = '';
+    for (const row of value.items) {
+      if (!validMapSummary(row) || row.archived !== (options.archived ?? false) || options.kind !== undefined && row.kind !== options.kind || previous !== '' && row.id <= previous) throw new ApiError('invalid_response', 'The service returned an invalid map page.');
+      previous = row.id;
+    }
+    return value as Page<ProjectMapSummary>;
+  }
+  async projectMapEntry(entryId: string, signal?: AbortSignal): Promise<ProjectMapEntry> {
+    if (!id(entryId)) throw new ApiError('invalid_request', 'The map entry identifier is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`map/entries/${encodeURIComponent(entryId)}`), signal, undefined, maxBytes, assessmentJSON);
+    if (!validMapEntry(value, this.projectId, entryId)) throw new ApiError('invalid_response', 'The service returned an invalid map entry.');
+    return value;
+  }
+  async projectMapHistory(entryId: string, options: PageOptions = {}, signal?: AbortSignal): Promise<Page<ProjectMapHistorySummary>> {
+    if (!id(entryId)) throw new ApiError('invalid_request', 'The map entry identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`map/entries/${encodeURIComponent(entryId)}/history`), mapPageQuery(options)), signal, undefined, maxBytes, assessmentJSON);
+    if (!validPage(value, options.limit ?? 25) || !value.has_more && !!value.cursor) throw new ApiError('invalid_response', 'The service returned invalid map history.');
+    let previous = Infinity;
+    for (const row of value.items) { if (!validMapHistory(row) || row.revision >= previous) throw new ApiError('invalid_response', 'The service returned invalid map history.'); previous = row.revision; }
+    return value as Page<ProjectMapHistorySummary>;
+  }
+  async projectMapRevision(entryId: string, revision: number, signal?: AbortSignal): Promise<ProjectMapRevision> {
+    if (!id(entryId) || !positive(revision)) throw new ApiError('invalid_request', 'The selected map revision is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`map/entries/${encodeURIComponent(entryId)}/history/${revision}`), signal, undefined, maxBytes, assessmentJSON);
+    if (!record(value) || !keys(value, ['revision', 'actor_id', 'created_at', 'state']) || value.revision !== revision || !id(value.actor_id) || !assessmentTime(value.created_at) || !validMapEntry(value.state, this.projectId, entryId) || value.state.revision !== revision) throw new ApiError('invalid_response', 'The service returned an invalid captured map revision.');
+    return value as unknown as ProjectMapRevision;
+  }
+  async jobWorkstream(jobId: string, signal?: AbortSignal): Promise<JobWorkstream> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/workstream`), signal, undefined, maxBytes, assessmentJSON);
+    if (!record(value) || !keys(value, ['job_id', 'workstream_id', 'workstream_title', 'revision']) || value.job_id !== jobId || !nonnegative(value.revision) || !validWorkstreamReference(value) || value.revision === 0 && value.workstream_id !== '') throw new ApiError('invalid_response', 'The service returned an invalid workstream reference.');
+    return value as unknown as JobWorkstream;
+  }
+  async jobWorkstreamHistory(jobId: string, options: PageOptions = {}, signal?: AbortSignal): Promise<Page<JobWorkstreamHistoryEntry>> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/workstream/history`), mapPageQuery(options)), signal, undefined, maxBytes, assessmentJSON);
+    if (!validPage(value, options.limit ?? 25) || !value.has_more && !!value.cursor) throw new ApiError('invalid_response', 'The service returned invalid workstream reference history.');
+    let previous = Infinity;
+    for (const row of value.items) {
+      if (!record(row) || !keys(row, ['revision', 'workstream_id', 'workstream_title', 'job_revision', 'actor_id', 'created_at']) || !positive(row.revision) || row.revision >= previous || !validWorkstreamReference(row) || !positive(row.job_revision) || !id(row.actor_id) || !assessmentTime(row.created_at)) throw new ApiError('invalid_response', 'The service returned invalid workstream reference history.');
+      previous = row.revision;
+    }
+    return value as Page<JobWorkstreamHistoryEntry>;
   }
   async reviewQueue(options: PageOptions = {}, signal?: AbortSignal): Promise<ReviewQueue> {
     const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), pageOptions(options)), signal);

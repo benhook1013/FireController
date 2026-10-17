@@ -142,7 +142,7 @@ func TestReviewControlsStdioSchemasAndLocalContext(t *testing.T) {
 	c.ServerURL = service.URL
 	path := profiles(t, map[string]profile.Context{"alpha": c}, "missing-private-credential")
 	session := reviewControlsStdio(t, path, "alpha")
-	listed, err := session.ListTools(context.Background(), nil)
+	listed, err := allDiscoveredTools(t, session)
 	if err != nil {
 		t.Fatal(err)
 	}

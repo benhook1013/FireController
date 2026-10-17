@@ -232,17 +232,43 @@ func TestPackagedSmoke(t *testing.T) {
 	}
 	t.Cleanup(closeMCP)
 	toolCtx, cancelTools := context.WithTimeout(ctx, stepTimeout)
-	tools, err := session.ListTools(toolCtx, nil)
-	cancelTools()
-	if err != nil {
-		t.Fatal("actual fcmcp tool discovery failed")
-	}
-	needed := map[string]bool{"job_read": false, "inbox_snapshot": false, "wait_for_messages": false}
-	for _, tool := range tools.Tools {
-		if _, exists := needed[tool.Name]; exists {
-			needed[tool.Name] = true
+	defer cancelTools()
+	needed := map[string]bool{"job_read": false, "inbox_snapshot": false, "wait_for_messages": false, "workers_list": false, "worker_pause_read": false, "worker_pause_history": false, "worker_pause_replace": false}
+	params, seen := &mcp.ListToolsParams{}, map[string]bool{}
+	for {
+		tools, err := session.ListTools(toolCtx, params)
+		if err != nil {
+			t.Fatal("actual fcmcp tool discovery failed")
 		}
+		if params.Cursor == "" {
+			if tools.NextCursor != "" {
+				t.Fatal("actual fcmcp current inventory must fit the first discovery page")
+			}
+			firstNames := map[string]bool{}
+			for _, tool := range tools.Tools {
+				firstNames[tool.Name] = true
+			}
+			for name := range needed {
+				if !firstNames[name] {
+					t.Fatalf("critical packaged tool %s absent from first discovery page", name)
+				}
+			}
+		}
+		for _, tool := range tools.Tools {
+			if _, exists := needed[tool.Name]; exists {
+				needed[tool.Name] = true
+			}
+		}
+		if tools.NextCursor == "" {
+			break
+		}
+		if seen[tools.NextCursor] {
+			t.Fatal("actual fcmcp discovery repeated a page cursor")
+		}
+		seen[tools.NextCursor] = true
+		params.Cursor = tools.NextCursor
 	}
+	cancelTools()
 	for name, found := range needed {
 		if !found {
 			t.Fatalf("needed packaged tool %s is missing", name)

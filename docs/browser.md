@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The service embeds a read-only browser for project connection, workers, basic jobs/full briefs and incoming conversations with live message updates. The [browser guide](browser-guide.md) records its implemented boundary, build and proof limits. The [native review workspace](review-workspace.md) provides stored review queue/history/findings. Project settings, maps and browser mutations remain later slices. This contract replaces the legacy private refresh/render/publish cycle after a separately reviewed migration.
+The service embeds a read-only browser for project connection, workers, basic jobs/full briefs and incoming conversations with live message updates. The [browser guide](browser-guide.md) records its implemented boundary, build and proof limits. The [native review workspace](review-workspace.md) provides stored review queue/history/findings. The [project map](project-map.md) adds revisioned workstreams, return points and explicit job references; its owner records current validation. Project appearance settings and browser mutations remain later slices. This contract replaces the legacy private refresh/render/publish cycle after a separately reviewed migration.
 
 ## Target application
 
@@ -23,6 +23,8 @@ Store a versioned, revision-guarded presentation record with semantic theme toke
 Appearance changes emit project-scoped events. Existing views update without a static rebuild; a fallback theme keeps the app usable if optional presentation fields are absent. Asset upload and logos need bounded sizes, content-type validation, and a separate authorization contract before being implemented.
 
 The browser includes a small “Powered by FireController” attribution linked to the public repository so users can discover and adopt the tool. Project branding remains the primary presentation. Platform attribution does not appear in agent JSON responses or create repetitive tool-output notices.
+
+The [project map contract](project-map.md) owns workstreams, return points, stable phases, history and job references.
 
 ## Legacy disk inputs
 

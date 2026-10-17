@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/jobs"
+	"github.com/benhook1013/FireController/internal/projectmap"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -216,22 +217,27 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"project_map": 1, "jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"managed_backup_publication_holds": {"managed_backup_publications", 1, "bundle_id destination source_instance_id manifest_sha256 summary_json"},
-	"notes":                            {"jobs", 6, "project_id id worker_id job_id phase kind body status status_reason revision created_at updated_at"},
-	"note_revisions":                   {"jobs", 6, "project_id note_id revision worker_id job_id phase kind body status status_reason created_at updated_at actor_id actor_worker_id recorded_at"},
-	"worker_pause_state":               {"jobs", 5, "project_id worker_id revision paused reason"},
-	"worker_pause_history":             {"jobs", 5, "project_id worker_id revision paused reason actor_id actor_worker_id created_at"},
-	"worker_primary_jobs":              {"jobs", 4, "project_id worker_id revision job_id"},
-	"worker_primary_job_history":       {"jobs", 4, "project_id worker_id revision job_id actor_id actor_worker_id reason created_at"},
-	"job_updates":                      {"jobs", 3, "sequence id project_id job_id job_revision actor_id worker_id body evidence_json created_at"},
-	"job_checklists":                   {"jobs", 3, "project_id job_id revision job_revision actor_id worker_id items_json created_at"},
-	"job_checklist_history":            {"jobs", 3, "project_id job_id revision job_revision actor_id worker_id items_json created_at"},
-	"restore_history":                  {"recovery_history", 1, "instance_id body_json"},
-	"managed_backup_state":             {"managed_backups", 1, "singleton body_json"},
-	"managed_backup_bundles":           {"managed_backups", 1, "sequence id destination source_instance_id manifest_sha256 created_at state"},
-	"metadata":                         {"", 1, "key value"}, "projects": {"", 1, "id name github_repository_id repository"}, "workers": {"", 1, "project_id id name"}, "credentials": {"", 1, "id principal_id token_sha256 is_admin revoked"}, "grants": {"", 1, "credential_id project_id can_read can_write"}, "receipts": {"", 1, "principal_id project_id operation target key fingerprint response_json"}, "events": {"", 1, "sequence project_id event_type resource_id revision actor_id payload_json created_at"},
+	"project_map_entries":              {"project_map", 1, "project_id id kind title state archived revision state_json"},
+	"project_map_entry_history":        {"project_map", 1, "project_id entry_id revision actor_id state_json created_at"},
+	"job_workstreams":                  {"project_map", 1, "project_id job_id revision workstream_id workstream_title"},
+	"job_workstream_history":           {"project_map", 1, "project_id job_id revision workstream_id workstream_title actor_id job_revision created_at"},
+
+	"notes":                      {"jobs", 6, "project_id id worker_id job_id phase kind body status status_reason revision created_at updated_at"},
+	"note_revisions":             {"jobs", 6, "project_id note_id revision worker_id job_id phase kind body status status_reason created_at updated_at actor_id actor_worker_id recorded_at"},
+	"worker_pause_state":         {"jobs", 5, "project_id worker_id revision paused reason"},
+	"worker_pause_history":       {"jobs", 5, "project_id worker_id revision paused reason actor_id actor_worker_id created_at"},
+	"worker_primary_jobs":        {"jobs", 4, "project_id worker_id revision job_id"},
+	"worker_primary_job_history": {"jobs", 4, "project_id worker_id revision job_id actor_id actor_worker_id reason created_at"},
+	"job_updates":                {"jobs", 3, "sequence id project_id job_id job_revision actor_id worker_id body evidence_json created_at"},
+	"job_checklists":             {"jobs", 3, "project_id job_id revision job_revision actor_id worker_id items_json created_at"},
+	"job_checklist_history":      {"jobs", 3, "project_id job_id revision job_revision actor_id worker_id items_json created_at"},
+	"restore_history":            {"recovery_history", 1, "instance_id body_json"},
+	"managed_backup_state":       {"managed_backups", 1, "singleton body_json"},
+	"managed_backup_bundles":     {"managed_backups", 1, "sequence id destination source_instance_id manifest_sha256 created_at state"},
+	"metadata":                   {"", 1, "key value"}, "projects": {"", 1, "id name github_repository_id repository"}, "workers": {"", 1, "project_id id name"}, "credentials": {"", 1, "id principal_id token_sha256 is_admin revoked"}, "grants": {"", 1, "credential_id project_id can_read can_write"}, "receipts": {"", 1, "principal_id project_id operation target key fingerprint response_json"}, "events": {"", 1, "sequence project_id event_type resource_id revision actor_id payload_json created_at"},
 	"jobs": {"jobs", 1, "project_id id title brief worker_id status revision created_at updated_at"}, "job_history": {"jobs", 1, "project_id job_id revision actor_id state_json created_at"}, "job_checkpoints": {"jobs", 2, "sequence id project_id job_id job_revision actor_id worker_id done next blocker evidence_json created_at"},
 	"inbox_conversations": {"inbox", 1, "project_id id root_message_id"}, "inbox_messages": {"inbox", 1, "sequence project_id id conversation_id sender_worker_id recipient_worker_id reply_to_message_id body created_at"}, "inbox_recipient_state": {"inbox", 1, "project_id message_id worker_id seen acknowledged revision"},
 	"review_snapshots": {"reviews", 1, "project_id snapshot_id revision repository_id source observed_at recorded_at payload_sha256"}, "review_workspace": {"reviews", 1, "project_id revision snapshot_id"}, "review_pulls": {"reviews", 1, "project_id snapshot_id position number title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"}, "review_runs": {"reviews", 1, "project_id snapshot_id pull_number run_order id source source_run_id channel head_sha reviewer scope outcome attributable complete started_at finished_at found accepted routed finalized fixed coverage_limits_json"}, "review_findings": {"reviews", 1, "project_id snapshot_id pull_number run_id position source_finding_id title detail severity disposition decision_reason actor decided_at fix_sha proof_note resolved_at"}, "review_attempts": {"reviews", 1, "project_id snapshot_id pull_number position source source_attempt_id channel head_sha state started_at finished_at duration_seconds source_run_id trigger_id provider_review_id"}, "review_retired_pulls": {"reviews", 1, "project_id snapshot_id position number reason"},
@@ -304,6 +310,33 @@ func noteColumn(table, column, kind string, notnull, pk int, defaultValue any) b
 	case "worker_id", "job_id":
 		expectedNull = 0
 	case "phase", "kind", "body", "status", "status_reason", "created_at", "updated_at", "actor_id", "actor_worker_id", "recorded_at":
+	default:
+		return false
+	}
+	return kind == expectedKind && notnull == expectedNull && pk == expectedPK
+}
+
+// Map UPSERTs and retained identities depend on exact integer/nullable and key shapes.
+func projectMapColumn(table, column, kind string, notnull, pk int, defaultValue any) bool {
+	if defaultValue != nil {
+		return false
+	}
+	expectedKind, expectedNull, expectedPK := "TEXT", 1, 0
+	switch column {
+	case "project_id":
+		expectedPK = 1
+	case "id", "entry_id", "job_id":
+		expectedPK = 2
+	case "revision":
+		expectedKind = "INTEGER"
+		if table == "project_map_entry_history" || table == "job_workstream_history" {
+			expectedPK = 3
+		}
+	case "archived", "job_revision":
+		expectedKind = "INTEGER"
+	case "workstream_id":
+		expectedNull = 0
+	case "kind", "title", "state", "state_json", "actor_id", "created_at", "workstream_title":
 	default:
 		return false
 	}
@@ -516,6 +549,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if spec.domain == "project_map" && !projectMapColumn(name, col, kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			if (name == "job_updates" || name == "job_checklists" || name == "job_checklist_history") && !jobProgressColumn(name, col, kind, notnull, pk, defaultValue) {
 				columnRows.Close()
 				return nil, invalid()
@@ -652,6 +689,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["jobs"] >= 6 {
 		if err = jobs.ValidateNotesSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["project_map"] > 0 {
+		if err = projectmap.ValidateSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
 				return unavailable()
 			}
@@ -811,6 +856,11 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"project_map_entries":       {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"project_map_entry_history": {canonicalFK("project_map_entries", "project_id,entry_id", "project_id,id", "CASCADE")},
+	"job_workstreams":           {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
+	"job_workstream_history":    {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
+
 	"notes":                           {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
 	"note_revisions":                  {canonicalFK("notes", "project_id,note_id", "project_id,id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
 	"worker_pause_state":              {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},

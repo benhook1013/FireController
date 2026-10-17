@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -122,6 +123,41 @@ func errorResult(t *testing.T, result *mcp.CallToolResult, code string, private 
 	}
 }
 
+// allDiscoveredTools follows the SDK's real discovery cursors without changing
+// the production page size or assuming the complete inventory fits one page.
+func allDiscoveredTools(t *testing.T, session *mcp.ClientSession) (*mcp.ListToolsResult, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	result := &mcp.ListToolsResult{}
+	params := &mcp.ListToolsParams{}
+	seenCursors := map[string]bool{}
+	seenNames := map[string]bool{}
+	for page := 0; page < 8; page++ {
+		listed, err := session.ListTools(ctx, params)
+		if err != nil {
+			return nil, err
+		}
+		for _, tool := range listed.Tools {
+			if seenNames[tool.Name] {
+				t.Fatal("duplicate discovered tool", tool.Name)
+			}
+			seenNames[tool.Name] = true
+			result.Tools = append(result.Tools, tool)
+		}
+		if listed.NextCursor == "" {
+			return result, nil
+		}
+		if len(listed.Tools) == 0 || seenCursors[listed.NextCursor] || listed.NextCursor == params.Cursor {
+			t.Fatal("tool discovery cursor did not progress")
+		}
+		seenCursors[listed.NextCursor] = true
+		params.Cursor = listed.NextCursor
+	}
+	t.Fatal("tool discovery exceeded bounded pages")
+	return nil, nil
+}
+
 func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 	c := localContext()
 	path := profiles(t, map[string]profile.Context{"alpha": c}, "missing-private-token")
@@ -135,16 +171,29 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			if caps.Logging != nil || caps.Resources != nil || caps.Prompts != nil {
 				t.Fatal("advertised unimplemented capability")
 			}
-			tools, err := cs.ListTools(context.Background(), nil)
+			first, err := cs.ListTools(context.Background(), nil)
+			if err != nil || first.NextCursor != "" {
+				t.Fatal("current inventory must be complete on the first discovery page", err)
+			}
+			firstNames := map[string]bool{}
+			for _, tool := range first.Tools {
+				firstNames[tool.Name] = true
+			}
+			for _, name := range []string{"wait_for_messages", "workers_list", "worker_pause_read", "worker_pause_history", "worker_pause_replace"} {
+				if !firstNames[name] {
+					t.Fatalf("critical tool %s absent from first discovery page", name)
+				}
+			}
+			tools, err := allDiscoveredTools(t, cs)
 			if err != nil {
 				t.Fatal(err)
-			}
-			if len(tools.Tools) != 64 || tools.NextCursor != "" {
-				t.Fatal("tool discovery incomplete")
 			}
 			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_snapshot": true, "inbox_events": true, "inbox_thread": true, "jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
 			expected["job_context"] = true
 			expected["wait_for_messages"] = true
+			for _, name := range []string{"map_entry_create", "map_entry_replace", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history"} {
+				expected[name] = true
+			}
 			expected["note_create"], expected["note_update"], expected["note_read"], expected["note_list"], expected["note_history"], expected["note_revision_read"] = true, true, true, true, true, true
 			expected["worker_pause_read"], expected["worker_pause_replace"], expected["worker_pause_history"] = true, true, true
 			expected["job_primary_read"], expected["job_primary_replace"], expected["job_primary_history"] = true, true, true
@@ -158,8 +207,12 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			expected["review_source_ci_assess"], expected["review_source_readiness"] = true, true
 			expected["review_source_refresh"], expected["review_source_refresh_read"], expected["review_source_policy_assess"] = true, true, true
 			expected["review_checkpoint_publish"], expected["review_checkpoint_read"], expected["review_checkpoint_recover"] = true, true, true
+			if len(first.Tools) != len(expected) {
+				t.Fatalf("first discovery page has %d tools, expected complete inventory of %d", len(first.Tools), len(expected))
+			}
 			writes := map[string]bool{"jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
 			writes["job_primary_replace"] = true
+			writes["map_entry_create"], writes["map_entry_replace"], writes["job_workstream_replace"] = true, true, true
 			writes["worker_pause_replace"] = true
 			writes["note_create"], writes["note_update"] = true, true
 			writes["job_update_append"], writes["job_checklist_replace"] = true, true
@@ -173,13 +226,16 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 				}
 				delete(expected, tool.Name)
 				a := tool.Annotations
-				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "note_update" || tool.Name == "job_edit" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
+				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_edit" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
 					t.Fatal("untruthful operation annotation")
 				}
 				data, _ := json.Marshal(tool.InputSchema)
 				if strings.Contains(string(data), "profile") || strings.Contains(string(data), "project_id") {
 					t.Fatal("per-call binding selector advertised")
 				}
+			}
+			if len(expected) != 0 {
+				t.Fatal("missing discovered tools", expected)
 			}
 			var got profile.Context
 			decodeResult(t, call(t, cs, "context", map[string]any{}), &got)
@@ -189,6 +245,53 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			result := call(t, cs, "doctor", map[string]any{})
 			errorResult(t, result, "credential_unreadable", path, "missing-private-token")
 		})
+	}
+}
+
+// Synthetic tools exist only in this test server. Keep the production page
+// bound while proving clients can still follow genuine SDK discovery cursors.
+func TestDiscoveryCursorBeyondCurrentFirstPageInventory(t *testing.T) {
+	path := profiles(t, map[string]profile.Context{"alpha": localContext()}, "missing-private-token")
+	server := adapter(t, path, "alpha")
+	session := connect(t, server, mcp.SupportedProtocolVersions()[0])
+	current, err := session.ListTools(t.Context(), nil)
+	if err != nil || current.NextCursor != "" {
+		t.Fatal("current inventory must fit before synthetic overflow", err)
+	}
+	extra := 129 - len(current.Tools)
+	if extra < 1 {
+		t.Fatal("current inventory exceeds selected discovery page bound")
+	}
+	for i := 0; i < extra; i++ {
+		server.AddTool(&mcp.Tool{Name: fmt.Sprintf("zz_fixture_%03d", i), InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{}}, nil
+		})
+	}
+	first, err := session.ListTools(t.Context(), nil)
+	if err != nil || len(first.Tools) != 128 || first.NextCursor == "" {
+		t.Fatal("synthetic overflow did not produce bounded first page", err)
+	}
+	second, err := session.ListTools(t.Context(), &mcp.ListToolsParams{Cursor: first.NextCursor})
+	if err != nil || len(second.Tools) != 1 || second.NextCursor != "" {
+		t.Fatal("synthetic discovery cursor did not return exact terminal tail", err)
+	}
+	all, err := allDiscoveredTools(t, session)
+	if err != nil || len(all.Tools) != 129 {
+		t.Fatal("cursor-capable discovery lost or duplicated tools", err)
+	}
+	names := map[string]bool{}
+	for _, tool := range all.Tools {
+		names[tool.Name] = true
+	}
+	for i := 0; i < extra; i++ {
+		if !names[fmt.Sprintf("zz_fixture_%03d", i)] {
+			t.Fatal("synthetic discovery tail incomplete")
+		}
+	}
+	for _, tool := range current.Tools {
+		if !names[tool.Name] {
+			t.Fatalf("cursor-capable discovery omitted current tool %s", tool.Name)
+		}
 	}
 }
 

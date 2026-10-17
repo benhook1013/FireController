@@ -48,7 +48,7 @@ func request(t *testing.T, handler http.Handler, method, path string) *httptest.
 
 func TestKnownBrowserRoutesServeOnlyEmbeddedIndex(t *testing.T) {
 	handler := browserFixture()
-	for _, path := range []string{"/", "/?ignored=query", "/projects/project_1", "/projects/" + strings.Repeat("a", 128), "/projects/p/jobs/job-1", "/projects/p/inbox", "/projects/p/inbox/conv_1", "/projects/p/workers", "/projects/p/reviews", "/projects/p/reviews/pulls/1", "/projects/p/reviews/pulls/2147483647?snapshot=review_snapshot_1", "/projects/p/reviews/runs/review_run_1"} {
+	for _, path := range []string{"/", "/?ignored=query", "/projects/project_1", "/projects/" + strings.Repeat("a", 128), "/projects/p/jobs/job-1", "/projects/p/inbox", "/projects/p/inbox/conv_1", "/projects/p/workers", "/projects/p/reviews", "/projects/p/reviews/pulls/1", "/projects/p/reviews/pulls/2147483647?snapshot=review_snapshot_1", "/projects/p/reviews/runs/review_run_1", "/projects/p/map", "/projects/p/map/entries/map_entry_1", "/projects/p/map/entries/map_entry_1/history/1", "/projects/p/map/entries/map_entry_1/history/9223372036854775807"} {
 		t.Run(path, func(t *testing.T) {
 			w := request(t, handler, http.MethodGet, path)
 			if w.Code != 200 || w.Header().Get("Content-Type") != "text/html; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), "Embedded browser fixture") {
@@ -86,6 +86,7 @@ func TestUnknownRoutesAssetsAndTraversalStayJSONNotFound(t *testing.T) {
 		"/unknown", "/index.html", "/package.json", "/projects", "/projects/", "/projects/p/", "/projects/p/jobs", "/projects/p/unknown", "/projects/p/workers/w", "/projects/p/inbox/c/extra",
 		"/projects/p/reviews/pulls", "/projects/p/reviews/runs", "/projects/p/reviews/unknown/1", "/projects/p/reviews/pulls/01", "/projects/p/reviews/pulls/0", "/projects/p/reviews/pulls/-1", "/projects/p/reviews/pulls/2147483648", "/projects/p/reviews/pulls/1a", "/projects/p/reviews/pulls/1/extra", "/projects/p/reviews/runs/run.json", "/projects/p/reviews/runs/" + strings.Repeat("a", 129),
 		"/projects/" + strings.Repeat("a", 129), "/projects/p/jobs/" + strings.Repeat("b", 129), "/projects/p.json", "/projects/雪", "/projects/a%20b",
+		"/projects/p/map/entries", "/projects/p/map/unknown/map_entry_1", "/projects/p/map/entries/map_entry_1/extra", "/projects/p/map/entries/map_entry_1/history", "/projects/p/map/entries/map_entry_1/history/0", "/projects/p/map/entries/map_entry_1/history/01", "/projects/p/map/entries/map_entry_1/history/-1", "/projects/p/map/entries/map_entry_1/history/9223372036854775808", "/projects/p/map/entries/map_entry_1/history/1/extra", "/projects/p/map/entries/" + strings.Repeat("a", 129),
 		"/assets", "/assets/", "/assets/missing.js", "/assets/index-Ab12_c-D.js.map", "/assets/manifest.json", "/assets/package.json", "/assets/.hidden.js", "/assets/nested", "/assets/INDEX.JS",
 		"//projects/p", "/projects//p", "/projects/../p", "/projects/./p", "/assets/../index.html", "/assets/nested/../../index.html", "/projects/p%2Fjobs%2Fj", "/projects/p%2fjobs%2fj", "/projects/%2e%2e", "/projects/%252e%252e", "/projects/p%5Cj", "/assets/%69ndex-Ab12_c-D.js", "/assets/nested%2Findex.js",
 	} {
