@@ -41,9 +41,12 @@ export interface ReviewFindingRoute {id:string;target_pull_number:number;revisio
 export interface ReviewFinding {route?:ReviewFindingRoute;source_finding_id: string; title: string; detail: string; severity: 'info'|'low'|'medium'|'high'|'critical'|'unknown'; disposition: 'unadjudicated'|'accepted'|'routed'|'rejected'; decision_reason: string; actor: string; decided_at: string; fix_sha: string; proof_note: string; resolved_at: string}
 export interface ReviewSnapshot {project_id: string; revision: number; snapshot_id: string; source: string; observed_at: string; recorded_at: string}
 export interface ReviewQueue extends ReviewSnapshot, Page<ReviewPullSummary> {configured: boolean}
-export interface ReviewPull extends ReviewSnapshot {pull: ReviewPullSummary; attempts: ReviewAttemptSummary[]}
+export interface ReviewPull extends ReviewSnapshot {pull: ReviewPullSummary}
 export interface ReviewRunOptions extends PageOptions {snapshot?: string}
 export interface ReviewRuns extends ReviewSnapshot, Page<ReviewRunSummary> {}
+export interface ReviewAttemptItem extends ReviewAttemptSummary {source: string}
+export interface ReviewAttemptOptions extends PageOptions {snapshot?: string}
+export interface ReviewAttempts extends ReviewSnapshot, Page<ReviewAttemptItem> {}
 export interface ReviewRunDetail extends ReviewSnapshot {pull_number: number; run: ReviewRunSummary; findings: ReviewFinding[]}
 
 export interface ReviewAnchor {repository_id: number; repository: string; pull_number: number; parent_pull_number: number; candidate_sha: string; base_sha: string; parent_sha: string; merge_base_sha: string; patch_sha256: string; base_ref: string; observed_at: string}

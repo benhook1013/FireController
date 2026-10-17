@@ -49,13 +49,26 @@ func projectedAttempt(t *testing.T, f *attemptFixture, a Attempt) (reviews.PullR
 	t.Helper()
 	var pull reviews.PullResponse
 	projectionRead(t, f, "/pulls/2", &pull)
-	for _, value := range pull.Attempts {
+	for _, value := range projectionAttempts(t, f, 2, pull.SnapshotID) {
 		if value.SourceAttemptID == a.ID {
-			return pull, reviews.Attempt(value)
+			return pull, reviews.Attempt(value.AttemptSummary)
 		}
 	}
 	t.Fatal("journal attempt absent from browser", a.ID)
 	return pull, reviews.Attempt{}
+}
+
+// Fixtures in this suite remain within the admitted one-hundred-attempt bound.
+// Read the explicit archive at the PR's pinned snapshot; never assume PR detail
+// contains its entire history.
+func projectionAttempts(t *testing.T, f *attemptFixture, number int64, snapshot string) []reviews.AttemptHistoryItem {
+	t.Helper()
+	var page reviews.AttemptsResponse
+	projectionRead(t, f, fmt.Sprintf("/pulls/%d/attempts?limit=100&snapshot=%s", number, snapshot), &page)
+	if page.HasMore || page.SnapshotID != snapshot {
+		t.Fatal("projection fixture archive is incomplete or changed snapshot")
+	}
+	return page.Items
 }
 
 func assertProjectedTimes(t *testing.T, f *attemptFixture, a Attempt, value reviews.Attempt, terminal bool) {
@@ -156,7 +169,7 @@ func TestAttemptProjectionTransitionsPreserveCurrentFactsAndHistory(t *testing.T
 	assertProjectedTimes(t, f, a, completed, true)
 	var afterMerged reviews.PullResponse
 	projectionRead(t, f, "/pulls/1", &afterMerged)
-	if !reflect.DeepEqual(merged.Pull, afterMerged.Pull) || !reflect.DeepEqual(merged.Attempts, afterMerged.Attempts) || originalDigest != projectionDigest(t, f, merged.SnapshotID) {
+	if !reflect.DeepEqual(merged.Pull, afterMerged.Pull) || !reflect.DeepEqual(projectionAttempts(t, f, 1, merged.SnapshotID), projectionAttempts(t, f, 1, afterMerged.SnapshotID)) || originalDigest != projectionDigest(t, f, merged.SnapshotID) {
 		t.Fatal("native journal projection changed imported/merged or historical evidence")
 	}
 	var actor string
@@ -334,13 +347,14 @@ func TestAttemptProjectionInitialFallbackPreservesInterveningCurrentObservation(
 	if after.Pull.Title != current.Title || after.Pull.State != current.State || after.Pull.HeadSHA != current.HeadSHA || after.Pull.BaseRef != current.BaseRef || after.Pull.BaseSHA != current.BaseSHA || after.Pull.CIState != current.CIState || after.Pull.Mergeability != current.Mergeability || after.Pull.Complete != current.Complete || projected.HeadSHA != strings.Repeat("a", 40) || after.ObservedAt != initial.ObservedAt {
 		t.Fatal("initial fallback overwrote intervening current PR facts", after.Pull)
 	}
-	if len(after.Attempts) != len(initial.Attempts)+1 || history != projectionDigest(t, f, initial.SnapshotID) {
+	initialAttempts, afterAttempts := projectionAttempts(t, f, 2, initial.SnapshotID), projectionAttempts(t, f, 2, after.SnapshotID)
+	if len(afterAttempts) != len(initialAttempts)+1 || history != projectionDigest(t, f, initial.SnapshotID) {
 		t.Fatal("fallback lost imported attempts or changed historical snapshot")
 	}
 	foundImported := false
-	for _, value := range after.Attempts {
+	for _, value := range afterAttempts {
 		if value.SourceAttemptID == "intervening-imported-attempt" {
-			foundImported = reflect.DeepEqual(value, initial.Attempts[0])
+			foundImported = reflect.DeepEqual(value, initialAttempts[0])
 		}
 	}
 	var afterMerged reviews.PullResponse

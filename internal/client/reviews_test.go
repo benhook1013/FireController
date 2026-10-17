@@ -141,11 +141,12 @@ func TestReviewReadsUseScopedNativeProjectionAndPreserveNullableDuration(t *test
 		t.Fatalf("queue=%+v err=%v", queue, err)
 	}
 	pull, err := f.client.ReviewPull(context.Background(), 1, snapshot)
-	if err != nil || pull.Pull.Number != 1 || len(pull.Attempts) != 2 {
+	if err != nil || pull.Pull.Number != 1 || pull.Pull.AttemptCount != 2 {
 		t.Fatalf("pull=%+v err=%v", pull, err)
 	}
-	if pull.Attempts[0].DurationSeconds != nil || pull.Attempts[1].DurationSeconds == nil || *pull.Attempts[1].DurationSeconds != 0 {
-		t.Fatalf("nullable duration collapsed: %+v", pull.Attempts)
+	attempts, err := f.client.ReviewAttempts(context.Background(), 1, client.ReviewAttemptOptions{Snapshot: snapshot})
+	if err != nil || len(attempts.Items) != 2 || attempts.Items[0].DurationSeconds == nil || *attempts.Items[0].DurationSeconds != 0 || attempts.Items[1].DurationSeconds != nil || attempts.Items[0].Source != "explicit-import" {
+		t.Fatalf("nullable duration or attempt origin collapsed: %+v %v", attempts, err)
 	}
 	runs, err := f.client.ReviewRuns(context.Background(), 1, client.ReviewRunOptions{PageOptions: client.PageOptions{Limit: 5}, Snapshot: snapshot})
 	if err != nil || len(runs.Items) != 1 || runs.Items[0].CoverageLimits[0] != "stored source only" || runs.Items[0].Source != "explicit-import" {
@@ -155,7 +156,7 @@ func TestReviewReadsUseScopedNativeProjectionAndPreserveNullableDuration(t *test
 	if err != nil || len(detail.Findings) != 1 || detail.Findings[0].Detail != "A detailed source finding" || detail.Run.Fixed != 1 || detail.Run.Source != "explicit-import" {
 		t.Fatalf("detail=%+v err=%v", detail, err)
 	}
-	if f.calls.Load() != 6 {
+	if f.calls.Load() != 7 {
 		t.Fatalf("unexpected handshake/provider/retry calls: %d", f.calls.Load())
 	}
 	var afterEvents, afterReceipts int
@@ -243,11 +244,11 @@ func TestReviewClientRejectsMalformedNullableAndUnscopedResponses(t *testing.T) 
 
 	validPull.AttemptCount = 1
 	validPull.LatestAttempts = []client.ReviewAttempt{{SourceAttemptID: "attempt", Channel: "manual", State: "unknown"}}
-	validResponse := client.ReviewPull{ProjectID: "project-one", Revision: 1, SnapshotID: meta["snapshot_id"].(string), Source: "import", ObservedAt: meta["observed_at"].(string), RecordedAt: meta["recorded_at"].(string), Pull: validPull, Attempts: []client.ReviewAttempt{{SourceAttemptID: "attempt", Channel: "manual", State: "unknown"}}}
+	validResponse := client.ReviewPull{ProjectID: "project-one", Revision: 1, SnapshotID: meta["snapshot_id"].(string), Source: "import", ObservedAt: meta["observed_at"].(string), RecordedAt: meta["recorded_at"].(string), Pull: validPull}
 	validPullBody, _ := json.Marshal(validResponse)
 	validMock := newReviewMock(t, string(validPullBody), "/api/v1/projects/project-one/reviews/pulls/1")
 	result, err := validMock.client.ReviewPull(context.Background(), 1, "")
-	if err != nil || len(result.Attempts) != 1 || result.Attempts[0].DurationSeconds != nil {
+	if err != nil || len(result.Pull.LatestAttempts) != 1 || result.Pull.LatestAttempts[0].DurationSeconds != nil {
 		t.Fatalf("nullable duration should remain unknown: %+v %v", result, err)
 	}
 	for _, tc := range []struct{ name, body string }{
@@ -255,7 +256,7 @@ func TestReviewClientRejectsMalformedNullableAndUnscopedResponses(t *testing.T) 
 		{"negative_duration", strings.Replace(string(validPullBody), `"duration_seconds":null`, `"duration_seconds":-1`, 1)},
 		{"duration_string", strings.Replace(string(validPullBody), `"duration_seconds":null`, `"duration_seconds":"unknown"`, 1)},
 		{"nullable_title", strings.Replace(string(validPullBody), `"title":"PR"`, `"title":null`, 1)},
-		{"truncated_attempts", strings.Replace(string(validPullBody), `"attempt_count":1`, `"attempt_count":2`, 1)},
+		{"obsolete_attempt_archive", strings.TrimSuffix(string(validPullBody), "}") + `,"attempts":[]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mock := newReviewMock(t, tc.body, "/api/v1/projects/project-one/reviews/pulls/1")
@@ -301,7 +302,7 @@ func TestReviewReadsDefaultToCurrentSnapshotAndKeepHistoricalCounts(t *testing.T
 		req.Queue[0].Runs[0].Accepted = 0
 	})
 	pull, err := f.client.ReviewPull(context.Background(), 1, "")
-	if err != nil || pull.SnapshotID != snapshot || len(pull.Attempts) != 2 {
+	if err != nil || pull.SnapshotID != snapshot || pull.Pull.AttemptCount != 2 {
 		t.Fatalf("current pull default failed: %+v %v", pull, err)
 	}
 	runs, err := f.client.ReviewRuns(context.Background(), 1, client.ReviewRunOptions{})
@@ -317,7 +318,7 @@ func TestReviewReadsDefaultToCurrentSnapshotAndKeepHistoricalCounts(t *testing.T
 	}
 }
 
-func TestReviewAttemptProgressStatesSurviveStoredQueueAndPullReads(t *testing.T) {
+func TestReviewAttemptProgressStatesSurviveStoredQueueAndArchiveReads(t *testing.T) {
 	f := newReviewClientFixture(t)
 	states := []string{"preparing", "held", "prepared"}
 	f.importSnapshot(t, func(req *domain.ObservationRequest) {
@@ -330,16 +331,16 @@ func TestReviewAttemptProgressStatesSurviveStoredQueueAndPullReads(t *testing.T)
 	if err != nil || len(queue.Items) != 1 || len(queue.Items[0].LatestAttempts) != len(states) {
 		t.Fatalf("queue progress states missing: %+v %v", queue, err)
 	}
-	pull, err := f.client.ReviewPull(context.Background(), 1, "")
-	if err != nil || len(pull.Attempts) != len(states) {
-		t.Fatalf("pull progress states missing: %+v %v", pull, err)
+	attempts, err := f.client.ReviewAttempts(context.Background(), 1, client.ReviewAttemptOptions{})
+	if err != nil || len(attempts.Items) != len(states) {
+		t.Fatalf("attempt progress states missing: %+v %v", attempts, err)
 	}
 	queueStates := make(map[string]string)
 	for _, attempt := range queue.Items[0].LatestAttempts {
 		queueStates[attempt.SourceAttemptID] = attempt.State
 	}
 	for i, state := range states {
-		if queueStates["attempt-"+state] != state || pull.Attempts[i].State != state {
+		if queueStates["attempt-"+state] != state || attempts.Items[len(states)-1-i].State != state {
 			t.Fatal("native progress state was normalized or legacy prepared was lost")
 		}
 	}
@@ -367,7 +368,7 @@ func TestReviewProgressStatesDoNotWeakenAttemptOrRunValidation(t *testing.T) {
 			body["configured"], body["items"], body["has_more"] = true, []client.ReviewPullSummary{pull}, false
 		case "pull":
 			path += "/pulls/1"
-			body["pull"], body["attempts"] = pull, []client.ReviewAttempt{currentAttempt}
+			body["pull"] = pull
 		case "runs":
 			path += "/pulls/1/runs"
 			body["items"], body["has_more"] = []client.ReviewRunSummary{currentRun}, false
@@ -419,7 +420,7 @@ func TestReviewClientRequiresRunOriginAndKeepsMixedProducerIdentity(t *testing.T
 		case "queue":
 			value["configured"], value["items"], value["has_more"] = true, []client.ReviewPullSummary{pull}, false
 		case "pull":
-			value["pull"], value["attempts"] = pull, []client.ReviewAttempt{}
+			value["pull"] = pull
 		case "runs":
 			value["items"], value["has_more"] = items, false
 		case "detail":
@@ -612,7 +613,7 @@ func TestReviewClientRejectsNoncanonicalSHAsInPublicResponses(t *testing.T) {
 		read       func(*client.Client) error
 	}{
 		{"queue", "/api/v1/projects/project-one/reviews/queue", queue, []string{"items.0.head_sha", "items.0.base_sha", "items.0.recent_runs.0.head_sha", "items.0.latest_attempts.0.head_sha"}, func(c *client.Client) error { _, err := c.ReviewQueue(t.Context(), client.PageOptions{}); return err }},
-		{"pull", "/api/v1/projects/project-one/reviews/pulls/1", pull, []string{"pull.head_sha", "pull.base_sha", "pull.recent_runs.0.head_sha", "pull.latest_attempts.0.head_sha", "attempts.0.head_sha"}, func(c *client.Client) error { _, err := c.ReviewPull(t.Context(), 1, ""); return err }},
+		{"pull", "/api/v1/projects/project-one/reviews/pulls/1", pull, []string{"pull.head_sha", "pull.base_sha", "pull.recent_runs.0.head_sha", "pull.latest_attempts.0.head_sha"}, func(c *client.Client) error { _, err := c.ReviewPull(t.Context(), 1, ""); return err }},
 		{"runs", "/api/v1/projects/project-one/reviews/pulls/1/runs", runs, []string{"items.0.head_sha"}, func(c *client.Client) error {
 			_, err := c.ReviewRuns(t.Context(), 1, client.ReviewRunOptions{})
 			return err

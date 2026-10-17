@@ -220,7 +220,7 @@ func TestCLIProjectionAdjudicationPreservesFrozenSourceAndHistory(t *testing.T) 
 	projectionRead(t, f, "/pulls/2", &pull)
 	projectionRead(t, f, "/pulls/1", &mergedNow)
 	// Source freshness and current PR metadata are not review decisions.
-	if pull.Pull.Title != current.Title || pull.Pull.HeadSHA != current.HeadSHA || pull.Pull.BaseSHA != current.BaseSHA || pull.Pull.CIState != current.CIState || pull.Pull.Mergeability != current.Mergeability || !reflect.DeepEqual(pull.Attempts, oldPull.Attempts) || pull.ObservedAt != oldPull.ObservedAt || !reflect.DeepEqual(mergedNow.Pull, oldMerged.Pull) || mergedNow.Pull.State != "merged" {
+	if pull.Pull.Title != current.Title || pull.Pull.HeadSHA != current.HeadSHA || pull.Pull.BaseSHA != current.BaseSHA || pull.Pull.CIState != current.CIState || pull.Pull.Mergeability != current.Mergeability || !reflect.DeepEqual(projectionAttempts(t, f, 2, pull.SnapshotID), projectionAttempts(t, f, 2, oldPull.SnapshotID)) || pull.ObservedAt != oldPull.ObservedAt || !reflect.DeepEqual(mergedNow.Pull, oldMerged.Pull) || mergedNow.Pull.State != "merged" {
 		t.Fatal("current facts, merged history, or conservative freshness changed")
 	}
 	var queue reviews.QueueResponse

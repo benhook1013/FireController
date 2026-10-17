@@ -20,6 +20,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Incoming message events](message-events.md): scoped inbox snapshots, replay and bounded waits.
 - [Local MCP tools](mcp.md): bound read/write stdio tools and protocol/host proof limits.
 - [Local API](local-api.md): implemented coordination endpoints, bootstrap and limits.
+- [Retained review history](review-history-growth.md): lifetime growth, original producers, immutable versions and bounded transfer/read requirements.
 - [Native review workspace](review-workspace.md): stored queue, PR/run history, findings, fix proof and explicit administrator observations.
 - [Public review checkpoints](review-publication.md): explicit historical source summaries, durable posting intent and recovery without blind reposting.
 - [Observed review readiness](review-readiness.md): explicit thread/merge-state collection and provider-free combined assessment.

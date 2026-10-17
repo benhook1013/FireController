@@ -4,7 +4,7 @@ import type {
   JobSummary, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
   Project, WatchCallbacks, Worker, ProjectMapEntry, ProjectMapSummary, ProjectMapOptions, ProjectMapHistorySummary, ProjectMapRevision, JobWorkstream, JobWorkstreamHistoryEntry,
   ReviewAttemptSummary, ReviewFinding, ReviewPull, ReviewPullSummary, ReviewQueue, ReviewRunDetail,
-  ReviewRunOptions, ReviewRuns, ReviewRunSummary, ReviewPolicyAssessment,
+  ReviewRunOptions, ReviewRuns, ReviewRunSummary, ReviewPolicyAssessment, ReviewAttemptOptions, ReviewAttempts, ReviewAttemptItem,
 } from './types';
 import { runMessageWatch, runEventWatch, type MessageWatchSource, type EventWatchCallbacks } from './events';
 import { validPresentationSnapshot, validPresentation, validMetadataPage, validPresentationConfig, type PresentationConfig } from './presentation';
@@ -373,8 +373,13 @@ function validReviewRun(value: unknown, number?: number): value is ReviewRunSumm
 function validReviewAttempt(value: unknown): value is ReviewAttemptSummary {
   return record(value) && keys(value, ['source_attempt_id', 'channel', 'head_sha', 'state', 'started_at', 'finished_at', 'duration_seconds', 'source_run_id', 'trigger_id', 'provider_review_id']) && checkpointText(value.source_attempt_id, 256, true) && typeof value.channel === 'string' && ['cli', 'hosted', 'manual', 'subagent'].includes(value.channel) && sha(value.head_sha) && typeof value.state === 'string' && reviewAttemptStates.has(value.state) && maybeTimestamp(value.started_at) && maybeTimestamp(value.finished_at) && orderedTimes(value.started_at, value.finished_at) && (value.state !== 'completed' || (!!value.started_at && !!value.finished_at)) && (value.duration_seconds === null || nonnegative(value.duration_seconds)) && checkpointText(value.source_run_id, 256, false) && checkpointText(value.trigger_id, 128, false) && checkpointText(value.provider_review_id, 128, false);
 }
+function validReviewAttemptItem(value: unknown): value is ReviewAttemptItem {
+  if (!record(value) || !checkpointText(value.source, 128, true)) return false;
+  const { source: _source, ...attempt } = value;
+  return validReviewAttempt(attempt);
+}
 function validReviewPull(value: unknown): value is ReviewPullSummary {
-  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'attempt_count', 'recent_runs', 'latest_attempts']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || value.run_count > 100 || !nonnegative(value.attempt_count) || value.attempt_count > 100 || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(validReviewAttempt) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
+  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'attempt_count', 'recent_runs', 'latest_attempts']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || !nonnegative(value.attempt_count) || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(validReviewAttempt) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
   return new Set(value.recent_runs.map(item => item.id)).size === value.recent_runs.length && new Set(value.latest_attempts.map(item => item.channel)).size === value.latest_attempts.length;
 }
 function validFindingRoute(value: unknown): boolean {
@@ -829,7 +834,7 @@ export class Api {
     if (!pullNumber(number)) throw new ApiError('invalid_request', 'The pull request number is invalid.');
     const query = reviewQuery(snapshot);
     const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}`), query), signal);
-    if (!record(value) || !keys(value, [...reviewMetadata, 'pull', 'attempts']) || !validReviewSnapshot(value, this.projectId, snapshot) || !validReviewPull(value.pull) || value.pull.number !== number || !Array.isArray(value.attempts) || value.attempts.length !== value.pull.attempt_count || !value.attempts.every(validReviewAttempt) || new Set(value.attempts.map(item => item.source_attempt_id)).size !== value.attempts.length) throw new ApiError('invalid_response', 'The service returned an invalid review pull request.');
+    if (!record(value) || !keys(value, [...reviewMetadata, 'pull']) || !validReviewSnapshot(value, this.projectId, snapshot) || !validReviewPull(value.pull) || value.pull.number !== number) throw new ApiError('invalid_response', 'The service returned an invalid review pull request.');
     return value as unknown as ReviewPull;
   }
   async reviewRuns(number: number, options: ReviewRunOptions = {}, signal?: AbortSignal): Promise<ReviewRuns> {
@@ -839,6 +844,14 @@ export class Api {
     const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}/runs`), query), signal);
     if (!record(value) || !keys(value, [...reviewMetadata, 'items', 'has_more'], ['cursor']) || !validReviewSnapshot(value, this.projectId, options.snapshot) || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options) || !value.items.every(item => validReviewRun(item, number)) || new Set(value.items.map(item => item.id)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review run page.');
     return value as unknown as ReviewRuns;
+  }
+  async reviewAttempts(number: number, options: ReviewAttemptOptions = {}, signal?: AbortSignal): Promise<ReviewAttempts> {
+    if (!pullNumber(number)) throw new ApiError('invalid_request', 'The pull request number is invalid.');
+    const query = pageOptions(options);
+    for (const [name, value] of reviewQuery(options.snapshot)) query.set(name, value);
+    const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}/attempts`), query), signal);
+    if (!record(value) || !keys(value, [...reviewMetadata, 'items', 'has_more'], ['cursor']) || !validReviewSnapshot(value, this.projectId, options.snapshot) || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options) || !value.items.every(validReviewAttemptItem) || new Set(value.items.map(item => JSON.stringify([item.source, item.source_attempt_id]))).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review attempt page.');
+    return value as unknown as ReviewAttempts;
   }
   async reviewRun(runId: string, snapshot?: string, signal?: AbortSignal): Promise<ReviewRunDetail> {
     if (!reviewRunID(runId)) throw new ApiError('invalid_request', 'The review run identifier is invalid.');

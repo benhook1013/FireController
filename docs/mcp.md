@@ -83,7 +83,8 @@ Startup validates configuration without opening the credential or contacting the
 | `review_route_decide` | Required idempotency_key/route_id/expected_revision/disposition/reason; independent receiving decision. |
 | `review_route_fix` | Required idempotency_key/route_id/expected_revision/expected_sha/fix_sha/proof_note; guarded receiving fix reference. |
 | `review_queue` | Optional limit/cursor; stored queue, default five PRs. |
-| `review_pull` | Required pull_number, optional snapshot; explicit PR summary and attempts. |
+| `review_pull` | Required pull_number, optional snapshot; compact PR summary without loading the attempt archive. |
+| `review_attempts` | Required pull_number, optional snapshot/limit/cursor; default five newest-first retained attempts with original producer identity, without automatic paging or provider work. |
 | `review_runs` | Required pull_number, optional snapshot/limit/cursor; default five stored run summaries. |
 | `review_run` | Required run_id, optional snapshot; explicit full findings/decisions/fix proof. |
 | `review_checkpoint_publish` | Required idempotency_key/evidence_id/expected_revision; optional wait_seconds (default 2, range 0–60). Explicitly publishes finalized historical source counts, returning terminal facts or a pending receipt. |

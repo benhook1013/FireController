@@ -93,7 +93,8 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc reviews execution` | Stored project execution configuration and revision; no provider check. |
 | `fc reviews operation ID` | Explicit retained native operation state and reason. |
 | `fc reviews queue` | Stored review queue; defaults to five compact PR entries. |
-| `fc reviews pull NUMBER` | Explicit PR summary and attempt history; optional `--snapshot`. |
+| `fc reviews pull NUMBER` | Compact PR summary without loading attempt history; optional `--snapshot`. |
+| `fc reviews attempts NUMBER` | One newest-first retained attempt page with original producer identity, default five; optional `--snapshot`, `--limit` and `--cursor`, without automatic paging. |
 | `fc reviews runs NUMBER` | Stored run summaries, default five; optional `--snapshot`. |
 | `fc reviews run ID` | Explicit full findings, decisions and fix evidence; optional `--snapshot`. |
 | `fc inbox list` | Bound worker's compact message previews; optional unread/unacknowledged filters. |

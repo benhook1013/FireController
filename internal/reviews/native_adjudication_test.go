@@ -192,7 +192,7 @@ func TestNativeAdjudicationProjectsCorrectionsWithoutRewritingSourceOrPRFacts(t 
 	}
 	var pull PullResponse
 	nativeRead(t, f, "/pulls/1", &pull)
-	if pull.Pull.Title != oldPull.Pull.Title || pull.Pull.HeadSHA != strings.Repeat("9", 40) || pull.Pull.BaseSHA != strings.Repeat("8", 40) || pull.Pull.CIState != "pending" || pull.Pull.Mergeability != "conflicting" || pull.Pull.State != "open" || !reflect.DeepEqual(pull.Attempts, oldPull.Attempts) {
+	if pull.Pull.Title != oldPull.Pull.Title || pull.Pull.HeadSHA != strings.Repeat("9", 40) || pull.Pull.BaseSHA != strings.Repeat("8", 40) || pull.Pull.CIState != "pending" || pull.Pull.Mergeability != "conflicting" || pull.Pull.State != "open" || !reflect.DeepEqual(pull.Pull.LatestAttempts, oldPull.Pull.LatestAttempts) {
 		t.Fatal("projection regressed current PR facts to captured source")
 	}
 	var imported RunDetailResponse

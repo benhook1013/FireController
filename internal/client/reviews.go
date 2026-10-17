@@ -21,8 +21,7 @@ const (
 	maxReviewListResponse = 1 << 20
 	maxReviewRunResponse  = 4 << 20
 	maxReviewPulls        = 100
-	maxReviewRunsPerPull  = 100
-	maxReviewAttempts     = 100
+	maxReviewPageItems    = 100
 	maxReviewFindings     = 100
 )
 
@@ -53,7 +52,6 @@ type ReviewPull struct {
 	ObservedAt string            `json:"observed_at"`
 	RecordedAt string            `json:"recorded_at"`
 	Pull       ReviewPullSummary `json:"pull"`
-	Attempts   []ReviewAttempt   `json:"attempts"`
 }
 
 type ReviewRuns struct {
@@ -181,7 +179,7 @@ func (c *Client) ReviewQueue(ctx context.Context, options PageOptions) (ReviewQu
 	return value, nil
 }
 
-// ReviewPull returns one pull summary and its bounded retained attempt records.
+// ReviewPull returns one compact PR summary, without loading its attempt archive.
 func (c *Client) ReviewPull(ctx context.Context, number int64, snapshot string) (ReviewPull, error) {
 	if !validPullNumber(number) || snapshot != "" && !validReviewSnapshot(snapshot) {
 		return ReviewPull{}, validation()
@@ -194,18 +192,8 @@ func (c *Client) ReviewPull(ctx context.Context, number int64, snapshot string) 
 	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "pulls", strconv.FormatInt(number, 10)), query, true, "", nil, http.StatusOK, false, &value, maxReviewListResponse, decodeReviewResponse); err != nil {
 		return ReviewPull{}, err
 	}
-	if !c.validReviewMeta(value.ProjectID, value.Revision, value.SnapshotID, value.Source, value.ObservedAt, value.RecordedAt, true) || snapshot != "" && value.SnapshotID != snapshot || value.Pull.Number != number || !c.validReviewPull(value.Pull) || value.Attempts == nil || len(value.Attempts) > maxReviewAttempts || int64(len(value.Attempts)) != value.Pull.AttemptCount {
+	if !c.validReviewMeta(value.ProjectID, value.Revision, value.SnapshotID, value.Source, value.ObservedAt, value.RecordedAt, true) || snapshot != "" && value.SnapshotID != snapshot || value.Pull.Number != number || !c.validReviewPull(value.Pull) {
 		return ReviewPull{}, invalidResponse()
-	}
-	seen := make(map[string]struct{}, len(value.Attempts))
-	for _, attempt := range value.Attempts {
-		if !validReviewAttempt(attempt) {
-			return ReviewPull{}, invalidResponse()
-		}
-		if _, exists := seen[attempt.SourceAttemptID]; exists {
-			return ReviewPull{}, invalidResponse()
-		}
-		seen[attempt.SourceAttemptID] = struct{}{}
 	}
 	return value, nil
 }
@@ -223,7 +211,7 @@ func (c *Client) ReviewRuns(ctx context.Context, number int64, options ReviewRun
 	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "pulls", strconv.FormatInt(number, 10), "runs"), query, true, "", nil, http.StatusOK, false, &value, maxReviewListResponse, decodeReviewResponse); err != nil {
 		return ReviewRuns{}, err
 	}
-	if !c.validReviewMeta(value.ProjectID, value.Revision, value.SnapshotID, value.Source, value.ObservedAt, value.RecordedAt, true) || options.Snapshot != "" && value.SnapshotID != options.Snapshot || !validReviewPage(value.Items, value.Cursor, value.HasMore, options.PageOptions) || len(value.Items) > maxReviewRunsPerPull {
+	if !c.validReviewMeta(value.ProjectID, value.Revision, value.SnapshotID, value.Source, value.ObservedAt, value.RecordedAt, true) || options.Snapshot != "" && value.SnapshotID != options.Snapshot || !validReviewPage(value.Items, value.Cursor, value.HasMore, options.PageOptions) || len(value.Items) > maxReviewPageItems {
 		return ReviewRuns{}, invalidResponse()
 	}
 	seen := make(map[string]struct{}, len(value.Items))
@@ -288,7 +276,7 @@ func (c *Client) validReviewPull(value ReviewPullSummary) bool {
 	if !validPullNumber(value.Number) || !cleanReviewText(value.Title, 500, true) || !oneReviewOf(value.State, "open", "merged", "closed", "unknown") ||
 		!validReviewSHA(value.HeadSHA) || !cleanReviewText(value.BaseRef, 256, false) || !validReviewSHA(value.BaseSHA) ||
 		!oneReviewOf(value.CIState, "unknown", "pending", "success", "failure") || !oneReviewOf(value.Mergeability, "unknown", "mergeable", "conflicting") ||
-		value.RunCount < 0 || value.RunCount > maxReviewRunsPerPull || value.AttemptCount < 0 || value.AttemptCount > maxReviewAttempts ||
+		value.RunCount < 0 || value.AttemptCount < 0 ||
 		value.RecentRuns == nil || len(value.RecentRuns) > 3 || int64(len(value.RecentRuns)) > value.RunCount || value.RunCount > 0 && len(value.RecentRuns) == 0 ||
 		value.LatestAttempts == nil || len(value.LatestAttempts) > 4 || int64(len(value.LatestAttempts)) > value.AttemptCount || value.AttemptCount > 0 && len(value.LatestAttempts) == 0 {
 		return false

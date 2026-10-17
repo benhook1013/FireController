@@ -378,9 +378,12 @@ func TestNativeAttemptLifecycleKeepsSourceIdentity(t *testing.T) {
 	last := mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &a, Run: &run})
 	var detail PullResponse
 	nativeRead(t, f, "/pulls/1", &detail)
-	if len(detail.Attempts) != 1 || detail.Attempts[0].State != "completed" || detail.Attempts[0].SourceRunID != run.SourceRunID || detail.Attempts[0].TriggerID != "trigger_123" || detail.Attempts[0].DurationSeconds == nil || *detail.Attempts[0].DurationSeconds != 60 || detail.Pull.RunCount != 1 || detail.Pull.AttemptCount != 1 {
+	var archive AttemptsResponse
+	nativeRead(t, f, "/pulls/1/attempts", &archive)
+	if len(archive.Items) != 1 || archive.Items[0].State != "completed" || archive.Items[0].SourceRunID != run.SourceRunID || archive.Items[0].TriggerID != "trigger_123" || archive.Items[0].DurationSeconds == nil || *archive.Items[0].DurationSeconds != 60 || archive.Items[0].Source != nativeSource || detail.Pull.RunCount != 1 || detail.Pull.AttemptCount != 1 {
 		t.Fatal("lifecycle did not update one retained native attempt")
 	}
+
 	if nativeSnapshotBytes(t, f, first.ID) != old {
 		t.Fatal("attempt update mutated prepared snapshot")
 	}
