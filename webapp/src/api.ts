@@ -342,7 +342,7 @@ function validPolicyAssessment(value: unknown, project: string, evidence: string
   const incoming = value.incoming_routes_pending ?? 0;
   const capacity = value.incoming_routes_capacity ?? false;
   const reason = value.reason ?? '';
-  if (!nonnegative(incoming) || incoming > 100 || typeof capacity !== 'boolean' || (capacity && incoming !== 0) || (capacity ? reason !== 'routed_findings_capacity' : incoming > 0 ? reason !== 'routed_findings_pending' : reason !== '')) return false;
+  if (!nonnegative(incoming) || typeof capacity !== 'boolean' || (capacity && incoming !== 0) || (capacity ? reason !== 'routed_findings_capacity' : incoming > 0 ? reason !== 'routed_findings_pending' : reason !== '')) return false;
   if (value.state === 'unconfigured') return value.policy_revision === 0 && channels.length === 0 && incoming === 0 && !capacity;
   return value.policy_revision > 0 && channels.length > 0 && (value.state === 'sufficient' || value.state === 'held') && (incoming === 0 && !capacity && channels.every(item => (item as Record<string, unknown>).covered && !(item as Record<string, unknown>).pending)) === (value.state === 'sufficient');
 }
