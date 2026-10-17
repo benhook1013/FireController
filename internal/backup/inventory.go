@@ -310,6 +310,77 @@ func noteColumn(table, column, kind string, notnull, pk int, defaultValue any) b
 	return kind == expectedKind && notnull == expectedNull && pk == expectedPK
 }
 
+// These identities are required by checklist UPSERTs, immutable revisions and
+// server-generated update sequences. Column names alone do not establish them.
+func jobProgressColumn(table, column, kind string, notnull, pk int, defaultValue any) bool {
+	if defaultValue != nil {
+		return false
+	}
+	expectedKind, expectedNull, expectedPK := "TEXT", 1, 0
+	updates := table == "job_updates"
+	switch column {
+	case "sequence":
+		if !updates {
+			return false
+		}
+		expectedKind, expectedNull, expectedPK = "INTEGER", 0, 1
+	case "project_id":
+		if !updates {
+			expectedPK = 1
+		}
+	case "job_id":
+		if !updates {
+			expectedPK = 2
+		}
+	case "revision":
+		if updates {
+			return false
+		}
+		expectedKind = "INTEGER"
+		if table == "job_checklist_history" {
+			expectedPK = 3
+		}
+	case "job_revision":
+		expectedKind = "INTEGER"
+	case "id", "body", "evidence_json":
+		if !updates {
+			return false
+		}
+	case "items_json":
+		if updates {
+			return false
+		}
+	case "actor_id", "worker_id", "created_at":
+	default:
+		return false
+	}
+	return kind == expectedKind && notnull == expectedNull && pk == expectedPK
+}
+
+// SQLite exposes the primary-key shape through table_xinfo but not whether its
+// generated rowid is AUTOINCREMENT. Verify the supported migration's leading
+// declaration, rather than matching that keyword inside comments or strings.
+var jobUpdateSequence = regexp.MustCompile(`(?i)^CREATE\s+TABLE\s+(?:job_updates|"job_updates")\s*\(\s*sequence\s+INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\s*,`)
+
+func validateJobUpdateIdentity(ctx context.Context, db sqlReader) error {
+	var definition sql.NullString
+	if db.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(sql AS BLOB))<=4096 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='table' AND name='job_updates'`).Scan(&definition) != nil || !definition.Valid || !jobUpdateSequence.MatchString(definition.String) {
+		return invalid()
+	}
+	// The generated opaque ID is independently unique; an index with extra
+	// columns, an expression, a partial predicate or another collation cannot
+	// substitute for that identity. Index names are not part of the contract.
+	var uniqueID bool
+	if db.QueryRowContext(ctx, `SELECT EXISTS (
+ SELECT 1 FROM pragma_index_list('job_updates') i WHERE i."unique"=1 AND i.partial=0
+ AND (SELECT count(*) FROM pragma_index_xinfo(i.name) WHERE key=1)=1
+ AND EXISTS (SELECT 1 FROM pragma_index_xinfo(i.name) WHERE key=1 AND name='id' AND cid>=0 AND coll='BINARY')
+)`).Scan(&uniqueID) != nil || !uniqueID {
+		return invalid()
+	}
+	return nil
+}
+
 func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[string]int, error) {
 	var version int
 	if db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version) != nil || (version != 1 && version != 2) {
@@ -445,6 +516,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if (name == "job_updates" || name == "job_checklists" || name == "job_checklist_history") && !jobProgressColumn(name, col, kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			present[col] = true
 		}
 		e = columnRows.Err()
@@ -463,6 +538,11 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		}
 		if err = validateForeignKeys(ctx, db, name); err != nil {
 			return nil, err
+		}
+		if name == "job_updates" {
+			if err = validateJobUpdateIdentity(ctx, db); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if version == 2 {
