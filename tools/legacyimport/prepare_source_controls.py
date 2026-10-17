@@ -2,8 +2,9 @@
 # Copyright 2026 FireController contributors. SPDX-License-Identifier: Apache-2.0
 """Offline, explicitly selected source-helper adapter; never acquires live history.
 
-The history envelope is a SOURCE OWNER assertion of a canonical effective frame
-and quiescence. This utility checks its shape/binding, not those live assertions.
+The history envelope is a SOURCE OWNER assertion of a canonical effective frame,
+quiescence and authoritative obligation clearance. This utility checks their
+shape/binding, not those live assertions.
 An explicit source-root is trusted executable Python code, not an inert dataset.
 """
 from __future__ import annotations
@@ -186,7 +187,14 @@ def selection_input(value):
 
 
 def selected_history(value, selected, snapshot_sha):
-    if (not exact_keys(value, ("version", "repository_id", "snapshot_sha256", "projection_complete", "quiescent", "prs"))
+    if type(value) is not dict:
+        refuse("history_invalid")
+    # This independent owner assertion covers accepted-finding resolution and
+    # incoming/outgoing routes. Unknown or unavailable clearance is not clear.
+    # Quiescence alone only excludes active operations, not unfinished findings.
+    if value.get("obligations_clear") is not True:
+        refuse("controls_unsettled")
+    if (not exact_keys(value, ("version", "repository_id", "snapshot_sha256", "projection_complete", "quiescent", "obligations_clear", "prs"))
             or type(value["version"]) is not int or value["version"] != 1
             or type(value["repository_id"]) is not int or value["repository_id"] != selected["repository_id"]
             or value["snapshot_sha256"] != snapshot_sha
@@ -221,6 +229,14 @@ def selected_history(value, selected, snapshot_sha):
         refuse("history_invalid")
     if any(any(item.get(key) is True for key in ("active_review", "active_reservation", "ambiguous", "terminal_ambiguous", "held", "unstable", "unreconciled")) for item in found):
         refuse("controls_unsettled")
+    for item in found:
+        if "source_resolution_status" in item and item["source_resolution_status"] != "resolved":
+            refuse("controls_unsettled")
+        eligible_accepted = (item.get("completed") is True and item.get("attributable") is True
+                             and not item.get("provisional") and not item.get("correction")
+                             and not item.get("non_counting") and item.get("accepted", 0) > 0)
+        if eligible_accepted and item.get("source_resolution_status") != "resolved":
+            refuse("controls_unsettled")
     return found
 
 
@@ -354,7 +370,7 @@ def prepare(args):
         provenance = dict(version=1, kind="offline_source_control_preparation", binding=binding,
                           source_sha256=prepared["source_sha256"], source_helpers=hashes,
                           selection_sha256=digest(selection_bytes), prepared_sha256=digest(canonical(prepared)),
-                          source_owner_assertions={"projection_complete": True, "quiescent": True},
+                          source_owner_assertions={"projection_complete": True, "quiescent": True, "obligations_clear": True},
                           independently_verified_live_assertions=False)
     if source_hash(args.source_root)[2] != code_hash:
         refuse("source_changed")
@@ -382,7 +398,7 @@ class UniqueInput(argparse.Action):
 
 
 def parser():
-    out = QuietParser(allow_abbrev=False, description=__doc__, epilog="History is owner-exported JSON v1: repository_id, snapshot_sha256, projection_complete:true, quiescent:true, prs:[{pull_number,channels:{cli:[effective rows],hosted:[effective rows]}}]. Selection is v1: repository_id, expected_revision:0, source, source_key, pull_number, channel. Output is a native 14-field prepared control; separate provenance records input/helper hashes. No live acquisition/quiescence verification or migration-readiness claim.")
+    out = QuietParser(allow_abbrev=False, description=__doc__, epilog="History is owner-exported JSON v1: repository_id, snapshot_sha256, projection_complete:true, quiescent:true, obligations_clear:true, prs:[{pull_number,channels:{cli:[effective rows],hosted:[effective rows]}}]. Selection is v1: repository_id, expected_revision:0, source, source_key, pull_number, channel. Output is a native 14-field prepared control; separate provenance records input/helper hashes. obligations_clear asserts authoritative accepted-finding and incoming/outgoing route clearance; unknown/unavailable clearance is not clear. No live acquisition or independent assertion verification or migration-readiness claim.")
     for flag in ("source-root", "snapshot", "history-file", "selection", "output", "provenance"):
         out.add_argument("--" + flag, required=True, action=UniqueInput)
     return out

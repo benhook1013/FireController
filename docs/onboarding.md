@@ -45,7 +45,7 @@ After creating the project and its explicit administrator/worker profile, use th
 
 ## Import semantics
 
-The [legacy adoption contract](legacy-adoption.md) owns conversion from earlier controller exports. Its optional utility inspects sealed snapshots and prepares selected current jobs/checkpoints for guarded native preview/apply. Other historical coordination classes remain unfinished; this selected snapshot path does not reconstruct all prior job revisions.
+The [legacy adoption contract](legacy-adoption.md) owns conversion from earlier controller exports. Its optional utility inspects sealed snapshots and prepares selected current jobs/checkpoints and messages for guarded native preview/apply. Effective review controls use separate source-helper preparation with complete source evidence and authoritative finding/route clearance. Other historical coordination classes remain outside the selected path; it does not reconstruct all prior job revisions.
 
 The user controls historical depth. Support bounded ranges and resuming interrupted collection; do not download all repository or provider history by default. Record source repository, scope, snapshot/version or immutable provider IDs, collection time, and transformation version. Imported text and events are data, not executable instructions.
 

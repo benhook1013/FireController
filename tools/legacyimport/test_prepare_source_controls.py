@@ -59,7 +59,7 @@ class LocalContractTests(unittest.TestCase):
                 adapter.strict_json(body)
 
     def test_history_assertions_scope_and_unsettled_refuse(self):
-        history = dict(version=1, repository_id=17, snapshot_sha256="a" * 64, projection_complete=True, quiescent=True,
+        history = dict(version=1, repository_id=17, snapshot_sha256="a" * 64, projection_complete=True, quiescent=True, obligations_clear=True,
                        prs=[dict(pull_number=7, channels={"cli": []})])
         self.assertEqual(adapter.selected_history(history, self.selected, "a" * 64), [])
         for key, value in (("quiescent", False), ("projection_complete", False), ("repository_id", 18), ("snapshot_sha256", "b" * 64)):
@@ -72,6 +72,21 @@ class LocalContractTests(unittest.TestCase):
         changed = dict(history, prs=[dict(pull_number=7, channels={"cli": [dict(pr=8)]})])
         with self.assertRaises(adapter.Refusal):
             adapter.selected_history(changed, self.selected, "a" * 64)
+
+    def test_obligation_clearance_is_distinct_required_owner_assertion(self):
+        history = dict(version=1, repository_id=17, snapshot_sha256="a" * 64,
+                       projection_complete=True, quiescent=True, obligations_clear=True,
+                       prs=[dict(pull_number=7, channels={"cli": []})])
+        self.assertEqual(adapter.selected_history(history, self.selected, "a" * 64), [])
+        for name, value in (("missing", None), ("false", False), ("integer-zero", 0),
+                            ("integer-one", 1), ("null", None), ("string", "true"),
+                            ("list", []), ("object", {})):
+            changed = dict(history, obligations_clear=value)
+            if name == "missing":
+                del changed["obligations_clear"]
+            with self.subTest(name=name), self.assertRaises(adapter.Refusal) as result:
+                adapter.selected_history(changed, self.selected, "a" * 64)
+            self.assertEqual(result.exception.code, "controls_unsettled")
 
     def test_input_private_symlink_size_and_sidecars(self):
         path = self.private("input", b"sealed")
@@ -153,6 +168,8 @@ class ActualSourceHelperTests(LocalContractTests):
         value = dict(pr=7, channel="cli", head="a" * 40, child_head="a" * 40, parent_identity="main", parent_head="b" * 40,
                      merge_base="c" * 40, patch_id="synthetic-patch", checkpoint=f"checkpoint-{index}", source_run_id=f"run-{index}",
                      completed=True, attributable=True, anchored=True, accepted=accepted, raw=accepted, corrected_state=True)
+        if accepted > 0:
+            value["source_resolution_status"] = "resolved"
         value.update(changes)
         return value
 
@@ -164,7 +181,7 @@ class ActualSourceHelperTests(LocalContractTests):
             db.execute("INSERT INTO controller_metadata VALUES(1,?,?)", (self.state.schema_version, 10))
             db.execute("INSERT INTO review_state VALUES(1,?)", (json.dumps(self.state.to_dict()),))
         self.snapshot.chmod(0o600)
-        value = dict(version=1, repository_id=17, snapshot_sha256=adapter.digest(self.snapshot.read_bytes()), projection_complete=True, quiescent=True,
+        value = dict(version=1, repository_id=17, snapshot_sha256=adapter.digest(self.snapshot.read_bytes()), projection_complete=True, quiescent=True, obligations_clear=True,
                      prs=[dict(pull_number=7, channels={"cli": history})])
         self.private("history.json", adapter.canonical(value))
 
@@ -186,6 +203,7 @@ class ActualSourceHelperTests(LocalContractTests):
         self.assertEqual(before, self.snapshot.read_bytes())
         proof = json.loads(Path(self.args.provenance).read_bytes())
         self.assertFalse(proof["independently_verified_live_assertions"])
+        self.assertEqual(proof["source_owner_assertions"], {"projection_complete": True, "quiescent": True, "obligations_clear": True})
         self.assertEqual(proof["binding"]["snapshot_sha256"], adapter.digest(before))
         self.assertEqual(proof["binding"]["history_sha256"], adapter.digest(self.history_path.read_bytes()))
         self.assertEqual(control["source_sha256"], adapter.digest(adapter.canonical(proof["binding"])))
@@ -217,6 +235,90 @@ class ActualSourceHelperTests(LocalContractTests):
         before = Path(self.args.output).read_bytes()
         self.assertEqual(self.run_preparation()[0]["outcome"], "unchanged")
         self.assertEqual(Path(self.args.output).read_bytes(), before)
+
+    def test_bounded_exhausted_pending_obligation_refuses_before_publication(self):
+        self.allocation(max_additional_completed=1)
+        self.inputs([self.timeline(), self.review(1, 1, source_resolution_status="finding_pending")])
+        with self.assertRaises(adapter.Refusal) as result:
+            self.run_preparation()
+        self.assertEqual(result.exception.code, "controls_unsettled")
+        self.assertFalse(Path(self.args.output).exists())
+        self.assertFalse(Path(self.args.provenance).exists())
+
+    def test_accepted_resolution_status_required_and_resolved_exhaustion_succeeds(self):
+        self.allocation(max_additional_completed=1)
+        self.inputs([self.timeline(), self.review(1, 1)])
+        clear = json.loads(self.history_path.read_bytes())
+        for label, status in (("missing", None), ("unknown", "unknown"), ("pending", "pending"),
+                              ("unavailable", "unavailable"), ("error", "error"), ("null", None)):
+            changed = json.loads(adapter.canonical(clear))
+            row = changed["prs"][0]["channels"]["cli"][1]
+            if label == "missing":
+                del row["source_resolution_status"]
+            else:
+                row["source_resolution_status"] = status
+            self.private("history.json", adapter.canonical(changed))
+            before = self.snapshot.read_bytes(), self.history_path.read_bytes()
+            with self.subTest(status=label), self.assertRaises(adapter.Refusal) as result:
+                self.run_preparation()
+            self.assertEqual(result.exception.code, "controls_unsettled")
+            self.assertEqual((self.snapshot.read_bytes(), self.history_path.read_bytes()), before)
+            self.assertFalse(Path(self.args.output).exists())
+            self.assertFalse(Path(self.args.provenance).exists())
+        self.private("history.json", adapter.canonical(clear))
+        _, control = self.run_preparation()
+        self.assertEqual((control["minimum_remaining"], control["maximum_remaining"], control["initial_dry"]), (0, 0, 0))
+        proof = json.loads(Path(self.args.provenance).read_bytes())
+        self.assertIs(proof["source_owner_assertions"]["obligations_clear"], True)
+        self.assertFalse(proof["independently_verified_live_assertions"])
+        retained = Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()
+        changed = json.loads(adapter.canonical(clear))
+        changed["prs"][0]["channels"]["cli"][1]["source_resolution_status"] = "finding_pending"
+        self.private("history.json", adapter.canonical(changed))
+        with self.assertRaises(adapter.Refusal) as result:
+            self.run_preparation()
+        self.assertEqual(result.exception.code, "controls_unsettled")
+        self.assertEqual((Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()), retained)
+
+    def test_uncleared_owner_assertion_refuses_actual_helpers_without_publication(self):
+        self.inputs([self.review(1, 1)])
+        clear = json.loads(self.history_path.read_bytes())
+        for label, value in (("missing", None), ("false", False), ("wrong-type", "true")):
+            changed = dict(clear, obligations_clear=value)
+            if label == "missing":
+                del changed["obligations_clear"]
+            self.private("history.json", adapter.canonical(changed))
+            with self.subTest(assertion=label), self.assertRaises(adapter.Refusal) as result:
+                self.run_preparation()
+            self.assertEqual(result.exception.code, "controls_unsettled")
+            self.assertFalse(Path(self.args.output).exists())
+            self.assertFalse(Path(self.args.provenance).exists())
+
+    def test_source_stop_cannot_bypass_unsettled_obligations(self):
+        self.allocation(stop_basis="direct_human", stop_head="a" * 40, stop_parent_identity="main", stop_parent_head="b" * 40, stop_reason="Synthetic explicit stop")
+        self.inputs([self.review(1, 1)])
+        clear = json.loads(self.history_path.read_bytes())
+        pending = json.loads(adapter.canonical(clear))
+        pending["prs"][0]["channels"]["cli"][0]["source_resolution_status"] = "finding_pending"
+        for label, history in (("pending", pending), ("false-assertion", dict(clear, obligations_clear=False))):
+            self.private("history.json", adapter.canonical(history))
+            with self.subTest(boundary=label), self.assertRaises(adapter.Refusal) as result:
+                self.run_preparation()
+            self.assertEqual(result.exception.code, "controls_unsettled")
+            self.assertFalse(Path(self.args.output).exists())
+            self.assertFalse(Path(self.args.provenance).exists())
+        self.private("history.json", adapter.canonical(clear))
+        with self.assertRaises(adapter.Refusal) as result:
+            self.run_preparation()
+        self.assertEqual(result.exception.code, "closure_only")
+
+    def test_present_unresolved_status_refuses_even_noncounting_zero_finding_row(self):
+        self.inputs([self.review(1, completed=False, non_counting=True, source_resolution_status="unavailable")])
+        with self.assertRaises(adapter.Refusal) as result:
+            self.run_preparation()
+        self.assertEqual(result.exception.code, "controls_unsettled")
+        self.assertFalse(Path(self.args.output).exists())
+        self.assertFalse(Path(self.args.provenance).exists())
 
     def test_reset_and_sticky_latch_are_separate(self):
         self.inputs([self.review(1), self.review(2), self.review(3), self.review(4, 1)])
