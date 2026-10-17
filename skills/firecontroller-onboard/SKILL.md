@@ -17,7 +17,7 @@ Use the installed `fc` and `fcd` binaries. If unavailable, build the matching ap
 
 ## New installation or project
 
-Read this section only when creating server resources. An already-provisioned worker can proceed to private client setup.
+Create only missing server resources. An existing project or worker skips its creation step; if this agent still needs a credential, complete the secret creation and credential registration below before private client setup. Proceed directly to private client setup only when the selected binding and a suitable private credential file already exist.
 
 For a local installation, start `fcd --data-dir PRIVATE_ABSOLUTE_DIRECTORY --listen 127.0.0.1:PORT` with one persistent owner-private data directory and one writer. The listening record contains the instance ID. The administrator credential is in `bootstrap-admin.token` inside that directory; it is never printed. Keep the service running through the host's supported process mechanism. A temporary background command is not a durable boot service. Remote hosting needs deployment-owned HTTPS in front of the loopback listener; see [hosting](https://github.com/benhook1013/FireController/blob/main/docs/hosting.md).
 
