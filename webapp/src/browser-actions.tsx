@@ -107,7 +107,7 @@ export function MessageComposer({ reply }: { reply?: Message }) {
   const slot = JSON.stringify([worker, 'send', reply?.id ?? 'new']);
   const action = useBrowserAction<SendInput, { id: string; conversation_id: string; outcome: 'sent' }>(slot,
     (input, actionKey, signal) => session.api.sendMessage(input.worker, input.recipient, input.body, input.replyTo, actionKey, signal),
-    async receipt => { setBody(''); setSentConversation(receipt.conversation_id); await queryClient.invalidateQueries({ queryKey: [...key, 'inbox'] }); if (reply) await queryClient.invalidateQueries({ queryKey: [...key, 'thread', reply.conversation_id] }); });
+    async receipt => { setOpen(true); setBody(''); setSentConversation(receipt.conversation_id); await queryClient.invalidateQueries({ queryKey: [...key, 'inbox'] }); if (reply) await queryClient.invalidateQueries({ queryKey: [...key, 'thread', reply.conversation_id] }); });
   if (!worker || !session.api.browserCapabilities.allow_writes || reply && reply.sender_worker_id !== worker && reply.recipient_worker_id !== worker) return null;
   const input = action.retained?.input;
   const submit = (event: FormEvent) => { event.preventDefault(); void action.run({ worker, recipient: replyRecipient || recipient, body, replyTo: reply?.id ?? '' }); };
