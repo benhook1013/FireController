@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The service implements additive prepared map import with profile-bound CLI preview/apply and private provenance/history reads. Focused API, client, migration and backup/restore checks pass; packaged CLI integration is pending. Historical provider collection and public website approval are separate boundaries.
+The service implements additive prepared map import with profile-bound CLI preview/apply and private provenance/history reads. Focused API, client, migration and backup/restore checks, full repository validation and actual packaged CLI integration pass at the checkpoints below. Historical provider collection and public website approval are separate boundaries.
 
 ## Approved input and scope
 
@@ -31,3 +31,9 @@ The deliberately selected administrator profile uses `fc map import-preview --fi
 ## Functional proof
 
 Prove private preview conservation, source/project/worker binding, strict normalized wire bounds, original-key retry after later edits/restart, new-key duplicate prevention, conflicting/manual edits, retained phases, additive omission, inference/provenance preservation, no unrelated jobs/messages/reviews/public changes, and rollback of every map/provenance write on failure. Actual packaged CLI proof must include private-file validation and a failed response/output followed by exact recovery. Backup/inspection/inactive restore must preserve canonical provenance and reject resealed malformed source mappings/history. Historical provider collection and installed legacy migration require their own proof; a prepared map import does not claim either is implemented.
+
+## Executed integration proof
+
+Source `37d4e7d` passed full `make check build`: 261 browser tests, all Go race tests, vet, documentation/link checks, regenerated assets and three binaries. Clean combined checkpoint `d3d4fa7b1544a3b26d74120a633a3de49c50cfd1`, including the subsequent parent browser polish, then passed actual packaged CLI/MCP/upgrade/publication/map-import checks in 0.771 seconds with unchanged sources/assets and clean-VCS executables. The map workload exercises private-file refusal before requests, read-only preview, creation and exact retry, positive update followed by a new-key unchanged result, retained provenance/history, additive omission, stale manual-edit conflicts and preservation of jobs, inboxes and publication. Provider-trap calls remain zero.
+
+Independent integration review found an inconsistent new-key retry after a successful positive-revision update. A failing regression reproduced it; the narrow retained-document exception now passes alongside multi-target conjunction, changed-document refusal, manual edits and edit-back refusal. Backup proof covers actual create/inspection/inactive restore, supported version-one migration, seventeen resealed logical corruptions and eight schema drifts. Focused client proof also covers lost committed responses and failed output followed by original-key recovery; those failures were not injected into the packaged child process. Historical provider collection/resume, live installed migration and native Windows execution remain separate.
