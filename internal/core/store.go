@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +19,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 type Store struct {
 	db               *sql.DB
@@ -153,7 +154,7 @@ func (s *Store) initialize(ctx context.Context, dir string) error {
 		if _, err = conn.ExecContext(ctx, "INSERT INTO credentials(id,principal_id,token_sha256,is_admin,revoked) VALUES(?,?,?,1,0)", NewID("credential"), NewID("principal"), tokenHash(token)); err != nil {
 			return storageError(err)
 		}
-		if _, err = conn.ExecContext(ctx, "PRAGMA user_version=1"); err != nil {
+		if _, err = conn.ExecContext(ctx, "PRAGMA user_version=2"); err != nil {
 			return storageError(err)
 		}
 	}
@@ -168,6 +169,11 @@ func (s *Store) initialize(ctx context.Context, dir string) error {
 	if err != nil || len(s.signingKey) != 32 || s.instanceID == "" {
 		return Fail("schema_invalid", "Required instance metadata is invalid.", 500)
 	}
+	if version == 1 {
+		if err = migrateReceiptOrigins(ctx, conn, s.instanceID); err != nil {
+			return err
+		}
+	}
 	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return storageError(err)
 	}
@@ -177,6 +183,69 @@ func (s *Store) initialize(ctx context.Context, dir string) error {
 		return Fail("storage_unavailable", "The database cannot enable durable WAL storage.", 500)
 	}
 	return nil
+}
+
+// migrateReceiptOrigins runs inside initialize's exclusive transaction. Inactive
+// restores retain predecessor receipt origins; this never activates a restore.
+func migrateReceiptOrigins(ctx context.Context, conn *sql.Conn, instance string) error {
+	origin := instance
+	rows, err := conn.QueryContext(ctx, "SELECT key,value FROM metadata WHERE key GLOB 'restore:*' LIMIT 7")
+	if err != nil {
+		return storageError(err)
+	}
+	metadata := make(map[string]string)
+	for rows.Next() {
+		var key, value string
+		if err = rows.Scan(&key, &value); err != nil {
+			rows.Close()
+			return storageError(err)
+		}
+		metadata[key] = value
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return storageError(err)
+	}
+	if len(metadata) != 0 {
+		start, startErr := time.Parse(time.RFC3339Nano, metadata["restore:snapshot_started_at"])
+		finish, finishErr := time.Parse(time.RFC3339Nano, metadata["restore:snapshot_finished_at"])
+		sequence, sequenceErr := strconv.ParseInt(metadata["restore:event_sequence"], 10, 64)
+		origin = metadata["restore:source_instance_id"]
+		// Six required fields also exclude any unknown restore metadata. Current
+		// supported restore output has exactly this inactive provenance shape.
+		if len(metadata) != 6 || metadata["restore:state"] != "inactive" || !receiptOriginID(origin, "instance_") || origin == instance || !receiptOriginID(metadata["restore:bundle_id"], "backup_") ||
+			startErr != nil || finishErr != nil || start.IsZero() || finish.IsZero() || finish.Before(start) || metadata["restore:snapshot_started_at"] != start.UTC().Format(time.RFC3339Nano) || metadata["restore:snapshot_finished_at"] != finish.UTC().Format(time.RFC3339Nano) ||
+			sequenceErr != nil || sequence < 0 || strconv.FormatInt(sequence, 10) != metadata["restore:event_sequence"] {
+			return Fail("schema_invalid", "Restored receipt origin metadata is unavailable or invalid.", 500)
+		}
+	}
+	if _, err = conn.ExecContext(ctx, `CREATE TABLE receipts_v2(instance_id TEXT NOT NULL,principal_id TEXT NOT NULL,project_id TEXT NOT NULL,operation TEXT NOT NULL,target TEXT NOT NULL,key TEXT NOT NULL,fingerprint TEXT NOT NULL,response_json TEXT NOT NULL,PRIMARY KEY(instance_id,principal_id,project_id,operation,target,key))`); err != nil {
+		return storageError(err)
+	}
+	if _, err = conn.ExecContext(ctx, `INSERT INTO receipts_v2(instance_id,principal_id,project_id,operation,target,key,fingerprint,response_json) SELECT ?,principal_id,project_id,operation,target,key,fingerprint,response_json FROM receipts`, origin); err != nil {
+		return storageError(err)
+	}
+	for _, statement := range []string{"DROP TABLE receipts", "ALTER TABLE receipts_v2 RENAME TO receipts", "PRAGMA user_version=2"} {
+		if _, err = conn.ExecContext(ctx, statement); err != nil {
+			return storageError(err)
+		}
+	}
+	return nil
+}
+
+func receiptOriginID(value, prefix string) bool {
+	if !strings.HasPrefix(value, prefix) || len(value) != len(prefix)+32 {
+		return false
+	}
+	for _, r := range value[len(prefix):] {
+		if r < '0' || r > '9' {
+			if r < 'a' || r > 'f' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func bootstrapToken(dir string) (string, error) {
@@ -233,7 +302,7 @@ var schema = []string{
 	`CREATE TABLE workers(project_id TEXT NOT NULL REFERENCES projects(id),id TEXT NOT NULL,name TEXT NOT NULL,PRIMARY KEY(project_id,id),UNIQUE(project_id,name))`,
 	`CREATE TABLE credentials(id TEXT PRIMARY KEY,principal_id TEXT NOT NULL UNIQUE,token_sha256 TEXT NOT NULL UNIQUE,is_admin INTEGER NOT NULL CHECK(is_admin IN(0,1)),revoked INTEGER NOT NULL CHECK(revoked IN(0,1)))`,
 	`CREATE TABLE grants(credential_id TEXT NOT NULL REFERENCES credentials(id),project_id TEXT NOT NULL REFERENCES projects(id),can_read INTEGER NOT NULL CHECK(can_read IN(0,1)),can_write INTEGER NOT NULL CHECK(can_write IN(0,1)),PRIMARY KEY(credential_id,project_id))`,
-	`CREATE TABLE receipts(principal_id TEXT NOT NULL,project_id TEXT NOT NULL,operation TEXT NOT NULL,target TEXT NOT NULL,key TEXT NOT NULL,fingerprint TEXT NOT NULL,response_json TEXT NOT NULL,PRIMARY KEY(principal_id,project_id,operation,target,key))`,
+	`CREATE TABLE receipts(instance_id TEXT NOT NULL,principal_id TEXT NOT NULL,project_id TEXT NOT NULL,operation TEXT NOT NULL,target TEXT NOT NULL,key TEXT NOT NULL,fingerprint TEXT NOT NULL,response_json TEXT NOT NULL,PRIMARY KEY(instance_id,principal_id,project_id,operation,target,key))`,
 	`CREATE TABLE events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT NOT NULL REFERENCES projects(id),event_type TEXT NOT NULL,resource_id TEXT NOT NULL,revision INTEGER NOT NULL,actor_id TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL)`,
 	`CREATE INDEX events_project_sequence ON events(project_id,sequence)`,
 }

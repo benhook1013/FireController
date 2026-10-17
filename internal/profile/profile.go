@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -103,26 +104,9 @@ func loadBinding(path, name string, resolve bool) (Binding, *Error) {
 	if len(data) > MaxConfigBytes {
 		return result, failure("profiles_too_large", "The profiles configuration exceeds the 1 MiB limit.", "Reduce the configuration size.")
 	}
-	var config configuration
-	if err := strictjson.Decode(data, &config); err != nil {
-		if errors.Is(err, strictjson.ErrEncoding) {
-			return result, invalidEncoding()
-		}
-		return result, invalidJSON()
-	}
-	if config.Version != 1 {
-		return result, failure("unsupported_profiles_version", "The profiles configuration must use version 1.", "Use the supported version 1 profiles schema.")
-	}
-	if len(config.Profiles) == 0 {
-		return result, failure("profiles_invalid", "The profiles configuration must contain named profiles.", "Add a profile with the required service and identity fields.")
-	}
-	for profileName, candidate := range config.Profiles {
-		if !cleanValue(profileName) || !cleanValue(candidate.InstanceID) || !cleanValue(candidate.ProjectID) || !cleanValue(candidate.WorkerID) || !cleanValue(candidate.CredentialFile) {
-			return result, failure("profiles_invalid", "Each profile requires an unambiguous name, instance ID, project ID, worker ID, and credential reference.", "Provide nonempty fields without surrounding whitespace.")
-		}
-		if !safeURL(candidate.ServerURL) {
-			return result, failure("profiles_unsafe_url", "Each server URL must use HTTP or HTTPS without user information, a query, or a fragment; remote hosts require HTTPS.", "Correct the server URL in the profiles configuration.")
-		}
+	config, configErr := decodeConfiguration(data)
+	if configErr != nil {
+		return result, configErr
 	}
 	selected, ok := config.Profiles[name]
 	if !ok {
@@ -141,6 +125,41 @@ func loadBinding(path, name string, resolve bool) (Binding, *Error) {
 		reference = filepath.Clean(reference)
 	}
 	return Binding{Context: Context{Profile: name, ServerURL: selected.ServerURL, InstanceID: selected.InstanceID, ProjectID: selected.ProjectID, WorkerID: selected.WorkerID}, CredentialFile: reference}, nil
+}
+
+func decodeConfiguration(data []byte) (configuration, *Error) {
+	var config configuration
+	if err := strictjson.Decode(data, &config); err != nil {
+		if errors.Is(err, strictjson.ErrEncoding) {
+			return config, invalidEncoding()
+		}
+		return config, invalidJSON()
+	}
+	return config, validateConfiguration(config)
+}
+
+func validateConfiguration(config configuration) *Error {
+	if config.Version != 1 {
+		return failure("unsupported_profiles_version", "The profiles configuration must use version 1.", "Use the supported version 1 profiles schema.")
+	}
+	if len(config.Profiles) == 0 {
+		return failure("profiles_invalid", "The profiles configuration must contain named profiles.", "Add a profile with the required service and identity fields.")
+	}
+	for name, candidate := range config.Profiles {
+		// Check supplied strings before JSON marshaling can replace invalid bytes.
+		for _, value := range []string{name, candidate.ServerURL, candidate.InstanceID, candidate.ProjectID, candidate.WorkerID, candidate.CredentialFile} {
+			if !utf8.ValidString(value) {
+				return invalidEncoding()
+			}
+		}
+		if !cleanValue(name) || !cleanValue(candidate.InstanceID) || !cleanValue(candidate.ProjectID) || !cleanValue(candidate.WorkerID) || !cleanValue(candidate.CredentialFile) {
+			return failure("profiles_invalid", "Each profile requires an unambiguous name, instance ID, project ID, worker ID, and credential reference.", "Provide nonempty fields without surrounding whitespace.")
+		}
+		if !safeURL(candidate.ServerURL) {
+			return failure("profiles_unsafe_url", "Each server URL must use HTTP or HTTPS without user information, a query, or a fragment; remote hosts require HTTPS.", "Correct the server URL in the profiles configuration.")
+		}
+	}
+	return nil
 }
 
 func notRegularFile() *Error {

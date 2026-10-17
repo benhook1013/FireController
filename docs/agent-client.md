@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The [local CLI foundation](development.md) implements version output, explicit profile selection and local context inspection. The [local API](local-api.md) implements service authentication and instance inspection, scoped projects/workers, basic jobs and durable messages. The typed client and CLI verify the expected instance, authenticate scoped reads and explicit-key job/message mutations, and reject instance replacement on subsequent requests. The [stdio MCP adapter](mcp.md) exposes bound reads and explicit-key job/message mutations through the same typed client. The [incoming-message feed](message-events.md) provides scoped snapshot/replay and bounded waits through CLI/MCP, plus HTTP SSE. Generated aliases and persistent CLI/MCP subscriptions remain unimplemented. The temporary legacy bootstrap is documented separately in [delivery](delivery.md). Codex host behavior has not yet been established by the application proof.
+The [local CLI foundation](development.md) implements version output, explicit profile selection and local context inspection. The [local API](local-api.md) implements service authentication and instance inspection, scoped projects/workers, basic jobs and durable messages. The typed client and CLI verify the expected instance, authenticate scoped reads and explicit-key job/message mutations, and reject instance replacement on subsequent requests. The [stdio MCP adapter](mcp.md) exposes bound reads and explicit-key job/message mutations through the same typed client. The [incoming-message feed](message-events.md) provides scoped snapshot/replay and bounded waits through CLI/MCP, plus HTTP SSE. Local [profile creation and POSIX bound launchers](onboarding.md#private-agent-setup-commands) are implemented; persistent CLI/MCP subscriptions remain unimplemented. The temporary legacy bootstrap is documented separately in [delivery](delivery.md). Codex host behavior has not yet been established by the application proof.
 
 ## Profiles and identity
 
@@ -15,7 +15,7 @@ fc inbox list
 fc jobs assigned
 ```
 
-When the host cannot provide a repeatable per-agent environment, a generated launcher can bind the profile on every invocation, for example `fc-builder inbox list`. Explicit `fc --profile project-builder inbox list` remains available for deliberate selection or diagnosis. These are target-interface examples; [delivery](delivery.md) records the implemented CLI boundary.
+When the host cannot provide a repeatable per-agent environment, a generated launcher can bind the profile on every invocation, for example `fc-builder inbox list`. Explicit `fc --profile project-builder inbox list` remains available for deliberate selection or diagnosis. The [private setup commands](onboarding.md#private-agent-setup-commands) create these bindings and POSIX launchers without service or credential access; [delivery](delivery.md) records the wider implemented boundary.
 
 The binding belongs to that agent's client process or connection, never to a workspace-wide active profile. Worker names resolve within the bound project. Concurrent chats using one project's worker share its assignments and inbox, with distinct session IDs for connection attribution. A named profile must never silently change another agent's current project or worker.
 
@@ -55,7 +55,7 @@ Ending a turn, closing a client or cancelling a wait does not complete or pause 
 
 Reconnect verifies the expected instance and authenticated project/worker binding before operations resume. Valid cursors continue replay; expired retention produces the explicit snapshot/resubscribe behavior owned by [architecture](architecture.md). Reconnect or a context read does not automatically resume a paused job.
 
-The client imposes no end-of-work checklist or checkpoint cadence. The separate [suggested agent workflow](agent-workflow.md) is optional guidance for projects and a future usage skill.
+The client imposes no end-of-work checklist or checkpoint cadence. The separate [suggested agent workflow](agent-workflow.md) is optional guidance for projects and the [onboarding skill](../skills/firecontroller-onboard/SKILL.md).
 
 ## CLI behavior
 
