@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Pager, ReadState, signalFor, usePaging, useWorkspace } from './App';
+import { Pager, ReadState, signalFor, usePaging, useWorkspace } from './workspace';
 import type { Note, NoteHistorySummary, NoteOptions, NoteRevision, NoteSummary, WorkerPause, WorkerPrimary } from './types';
 import { useProjectHeading } from './presentation-context';
 import './coordination.css';
