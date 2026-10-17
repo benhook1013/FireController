@@ -166,6 +166,15 @@ func TestCheckpointPublicationWaitCancellationAndAuthorization(t *testing.T) {
 	f, _, id := checkpointFixture(t, 0)
 	r, _ := checkpointRequest(t, f, id, "wait")
 	scope := evidenceReadScope(t, f, attemptProject, f.reader)
+	for _, seconds := range []int{0, 1} {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, terminal, err := f.e.WaitCheckpointPublication(ctx, scope, r.ID, seconds)
+		attemptCode(t, err, "overloaded")
+		if terminal {
+			t.Fatal("canceled wait reported a terminal result")
+		}
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	result := make(chan error, 1)
 	go func() { _, _, err := f.e.WaitCheckpointPublication(ctx, scope, r.ID, 60); result <- err }()

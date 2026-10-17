@@ -351,7 +351,11 @@ func (m *Manager) attempt(parent context.Context) error {
 		}
 		return safeManaged(err)
 	}
-	err = m.retain(ctx)
+	// Retention has its own bounded phase budget, still owned by this worker's
+	// parent cancellation rather than detached from shutdown.
+	retentionCtx, cancelRetention := context.WithTimeout(parent, m.config.Timeout)
+	err = m.retain(retentionCtx)
+	cancelRetention()
 	stamp := managedStamp(m.now())
 	settle, done := context.WithTimeout(context.Background(), 5*time.Second)
 	defer done()
