@@ -1086,6 +1086,24 @@ describe('captured comparison policy assessment', () => {
       patch_sha256: 'f'.repeat(64), base_ref: 'main', observed_at: '2026-10-15T12:00:00Z' },
     channels: [{ channel: 'hosted', covered: true, pending: true }, { channel: 'cli', covered: false, pending: false }],
   };
+  it('separates current capture coverage from unfinished configured rounds and refuses invented sufficiency', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    for (const complete of [false, true]) {
+      const value = { ...assessment, state: complete ? 'sufficient' : 'held', channels: [{ channel: 'cli', covered: true, pending: false, rounds_configured: true, rounds_complete: complete }] };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
+      await expect(client.reviewPolicyAssessment(evidenceID)).resolves.toEqual(value);
+    }
+    for (const channel of [
+      { channel: 'cli', covered: true, pending: false, rounds_complete: true },
+      { channel: 'cli', covered: true, pending: false, rounds_configured: false, rounds_complete: true },
+      { channel: 'cli', covered: true, pending: false, rounds_configured: true, rounds_complete: false },
+      { channel: 'cli', covered: true, pending: false, rounds_configured: 'true', rounds_complete: true },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...assessment, state: 'sufficient', channels: [channel] })));
+      await expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    client.close();
+  });
   it('makes one scoped finite GET, preserves pending dominance, and returns no findings', async () => {
     setupLocation();
     const client = api();

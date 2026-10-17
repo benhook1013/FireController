@@ -50,7 +50,7 @@ export interface ReviewAttempts extends ReviewSnapshot, Page<ReviewAttemptItem> 
 export interface ReviewRunDetail extends ReviewSnapshot {pull_number: number; run: ReviewRunSummary; findings: ReviewFinding[]}
 
 export interface ReviewAnchor {repository_id: number; repository: string; pull_number: number; parent_pull_number: number; candidate_sha: string; base_sha: string; parent_sha: string; merge_base_sha: string; patch_sha256: string; base_ref: string; observed_at: string}
-export interface ReviewPolicyAssessmentChannel {channel: 'cli'|'hosted'; covered: boolean; pending: boolean}
+export interface ReviewPolicyAssessmentChannel {channel: 'cli'|'hosted'; covered: boolean; pending: boolean; rounds_configured?: boolean; rounds_complete?: boolean}
 export interface ReviewPolicyAssessment {incoming_routes_pending?:number;incoming_routes_capacity?:boolean;reason?:string;project_id: string; evidence_id: string; anchor: ReviewAnchor; source: 'captured_comparison'; policy_revision: number; evaluated_at: string; state: 'sufficient'|'held'|'unconfigured'; channels: ReviewPolicyAssessmentChannel[]}
 
 export interface Presentation {project_id: string; revision: number; name: string; brand_name: string; tagline: string; headings: Partial<Record<import('./presentation').HeadingKey, string>>; theme: Partial<Record<import('./presentation').ThemeToken, string>>; updated_at: string}
