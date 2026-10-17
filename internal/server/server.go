@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -128,7 +129,7 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if !boundedText(request.Name, 200) || !validRepository(request.Repository) {
+	if !boundedText(request.Name, 200) || strings.IndexFunc(request.Name, unicode.IsControl) >= 0 || !validRepository(request.Repository) {
 		core.WriteError(w, core.Fail("validation_failed", "Provide a bounded project name and an owner/repository GitHub reference.", 400))
 		return
 	}

@@ -151,12 +151,15 @@ func AppendEvent(ctx context.Context, tx *sql.Tx, scope Scope, eventType, resour
 		if eventType == "credentials.revoked" {
 			changes.revoked = true
 		}
+		if projectEventType(eventType) {
+			changes.topics[messageTopic{project: scope.ProjectID, feed: projectFeed}] = struct{}{}
+		}
 		if eventType == "message.sent" || eventType == "message.seen" || eventType == "message.acknowledged" {
 			var recipient struct {
 				Worker string `json:"recipient_worker_id"`
 			}
 			if json.Unmarshal(data, &recipient) == nil && recipient.Worker != "" {
-				changes.topics[messageTopic{scope.ProjectID, recipient.Worker}] = struct{}{}
+				changes.topics[messageTopic{project: scope.ProjectID, worker: recipient.Worker, feed: messageFeed}] = struct{}{}
 			}
 		}
 	}

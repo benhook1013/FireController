@@ -1,9 +1,13 @@
 GO ?= go
 GOFMT ?= gofmt
+ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-.PHONY: check fmt-check test build docs-check browser-check browser-build smoke
+.PHONY: check workflow-check fmt-check test build docs-check browser-check browser-build smoke browser-smoke
 
-check: browser-check fmt-check test docs-check
+check: workflow-check browser-check fmt-check test docs-check
+
+workflow-check:
+	$(ACTIONLINT) -shellcheck="" -pyflakes="" .github/workflows/ci.yml
 
 fmt-check:
 	@files="$$($(GOFMT) -l cmd internal tools)" || exit $$?; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi
@@ -28,4 +32,9 @@ browser-build:
 
 # Requires the actual outputs from make build; no implicit rebuild.
 smoke:
-	$(GO) test -tags=packaged_smoke -run '^TestPackagedSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -tags=packaged_smoke -run '^TestPackaged(Smoke|UpgradeSmoke)$$' -count=1 -timeout=60s ./tools/packagedsmoke
+
+# Requires built fcd and the browser installed for webapp's pinned Playwright.
+browser-smoke:
+	@test "$$($(GO) env GOOS)" = linux || { printf '%s\n' 'browser-smoke requires Linux' >&2; exit 1; }
+	$(GO) test -tags=packaged_smoke -run '^TestPackagedBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke

@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/jobs"
+	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/strictjson"
@@ -217,9 +218,11 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"project_map": 1, "jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"managed_backup_publication_holds": {"managed_backup_publications", 1, "bundle_id destination source_instance_id manifest_sha256 summary_json"},
+	"project_presentations":            {"project_presentation", 1, "project_id revision state_json"},
+	"project_presentation_history":     {"project_presentation", 1, "project_id revision actor_id state_json created_at"},
 	"project_map_entries":              {"project_map", 1, "project_id id kind title state archived revision state_json"},
 	"project_map_entry_history":        {"project_map", 1, "project_id entry_id revision actor_id state_json created_at"},
 	"job_workstreams":                  {"project_map", 1, "project_id job_id revision workstream_id workstream_title"},
@@ -341,6 +344,26 @@ func projectMapColumn(table, column, kind string, notnull, pk int, defaultValue 
 		return false
 	}
 	return kind == expectedKind && notnull == expectedNull && pk == expectedPK
+}
+
+func presentationColumn(table, column, kind string, notnull, pk int, defaultValue any) bool {
+	if defaultValue != nil {
+		return false
+	}
+	expectedKind, expectedPK := "TEXT", 0
+	switch column {
+	case "project_id":
+		expectedPK = 1
+	case "revision":
+		expectedKind = "INTEGER"
+		if table == "project_presentation_history" {
+			expectedPK = 2
+		}
+	case "state_json", "actor_id", "created_at":
+	default:
+		return false
+	}
+	return kind == expectedKind && notnull == 1 && pk == expectedPK
 }
 
 // These identities are required by checklist UPSERTs, immutable revisions and
@@ -553,6 +576,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if spec.domain == "project_presentation" && !presentationColumn(name, col, kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			if (name == "job_updates" || name == "job_checklists" || name == "job_checklist_history") && !jobProgressColumn(name, col, kind, notnull, pk, defaultValue) {
 				columnRows.Close()
 				return nil, invalid()
@@ -700,6 +727,11 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			if checkContext(ctx) != nil {
 				return unavailable()
 			}
+			return invalid()
+		}
+	}
+	if versions["project_presentation"] > 0 {
+		if err = presentation.ValidateSnapshot(ctx, tx); err != nil {
 			return invalid()
 		}
 	}
@@ -856,10 +888,12 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
-	"project_map_entries":       {canonicalFK("projects", "project_id", "id", "CASCADE")},
-	"project_map_entry_history": {canonicalFK("project_map_entries", "project_id,entry_id", "project_id,id", "CASCADE")},
-	"job_workstreams":           {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
-	"job_workstream_history":    {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
+	"project_presentations":        {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"project_presentation_history": {canonicalFK("project_presentations", "project_id", "project_id", "CASCADE")},
+	"project_map_entries":          {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"project_map_entry_history":    {canonicalFK("project_map_entries", "project_id,entry_id", "project_id,id", "CASCADE")},
+	"job_workstreams":              {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
+	"job_workstream_history":       {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
 
 	"notes":                           {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
 	"note_revisions":                  {canonicalFK("notes", "project_id,note_id", "project_id,id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},

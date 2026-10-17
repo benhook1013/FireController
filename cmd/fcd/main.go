@@ -19,6 +19,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
+	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewruntime"
@@ -138,6 +139,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
+	if err = presentation.EnsureSchema(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
 	if err = inbox.EnsureSchema(ctx, store); err != nil {
 		diagnosticError(stderr, err)
 		return 3
@@ -169,10 +174,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	mux := server.New(store, server.WithRepositoryResolver(resolver), server.WithBrowser(webui.Handler()))
 	jobs.Register(mux, store)
 	projectmap.Register(mux, store)
+	presentation.Register(mux, store)
 	inbox.Register(mux, store)
 	reviews.Register(mux, store)
 	execution.Register(mux)
 	server.RegisterMessageStream(mux, store, ctx)
+	server.RegisterProjectStream(mux, store, ctx)
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp", address)
 	if err != nil {

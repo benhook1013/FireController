@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { Pager, ReadState, signalFor, usePaging, useWorkspace } from './workspace';
+import { useProjectHeading } from './presentation-context';
 import { projectMapURL } from './api';
 import type { JobWorkstream, ProjectMapEntry, ProjectMapKind, ProjectMapSummary, ProjectMapHistorySummary, ProjectMapRevision } from './types';
 
@@ -10,9 +11,10 @@ const entryPath = (home: string, id: string) => `${home}/map/entries/${encodeURI
 const date = (value: string) => new Date(value).toLocaleString();
 
 export function ProjectMap() {
+  const label = useProjectHeading('map');
   const [kind, setKind] = useState<ProjectMapKind | ''>('');
   const [archived, setArchived] = useState(false);
-  return <><div className="page-heading"><p className="eyebrow">Project direction</p><h2>Map</h2><p>Workstreams and return points. States are editorial notes, not completion or readiness verdicts.</p></div>
+  return <><div className="page-heading"><p className="eyebrow">Project direction</p><h2>{label}</h2><p>Workstreams and return points. States are editorial notes, not completion or readiness verdicts.</p></div>
     <div className="filters"><label>Kind<select aria-label="Map entry kind" value={kind} onChange={event => setKind(event.target.value as ProjectMapKind | '')}><option value="">All kinds</option><option value="workstream">Workstreams</option><option value="return_point">Return points</option></select></label>
       <label className="checkbox-label"><input type="checkbox" checked={archived} onChange={event => setArchived(event.target.checked)} />Archived entries</label></div>
     <MapList key={`${kind}/${archived}`} kind={kind} archived={archived} />
