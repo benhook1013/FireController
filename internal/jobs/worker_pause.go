@@ -62,7 +62,7 @@ func readWorkerPause(ctx context.Context, tx *sql.Tx, project, worker string) (w
 	}
 	result.Paused = paused == 1
 	if result.Revision < 1 || (paused != 0 && paused != 1) || !validPauseReason(result.Paused, result.Reason) {
-		return workerPause{}, fmt.Errorf("invalid stored worker pause")
+		return workerPause{}, core.Fail("storage_unavailable", "Stored worker pause is unavailable.", http.StatusInternalServerError)
 	}
 	return result, nil
 }
