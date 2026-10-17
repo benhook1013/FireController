@@ -49,6 +49,10 @@ func TestManagedDisabledDoesNotRequireBackupInventory(t *testing.T) {
 		t.Fatal("disabled status", status)
 	}
 	before := backupRows(t, f.store.DB())
+	status, err := ReadStatus(t.Context(), f.dir)
+	if err != nil || !reflect.DeepEqual(status, record.Status) || !reflect.DeepEqual(before, backupRows(t, f.store.DB())) {
+		t.Fatal("read-only disabled status required an unrelated backup inventory or changed rows", status, err)
+	}
 	cfg := ScheduleConfig{Destination: filepath.Join(t.TempDir(), "enabled"), Interval: time.Minute, Keep: 1}
 	_, err = NewManager(f.store, f.dir, cfg)
 	backupCode(t, err, "backup_invalid")
@@ -96,6 +100,11 @@ func TestManagedDisabledReconcilesInterruptedWorkBeyondBackupInventory(t *testin
 	}
 	if status := record.Status; status.State != "disabled" || status.NextAttemptAt != "" || status.LastAttempt == nil || status.LastAttempt.State != "interrupted" || status.LastAttempt.Reason != "backup_interrupted" || status.LastAttempt.SourceInstanceID != f.store.InstanceID() || !reflect.DeepEqual(status.LastSuccess, prior.LastSuccess) {
 		t.Fatal("disabled reconciliation lost retained history", status)
+	}
+	beforeStatus := backupRows(t, f.store.DB())
+	status, err := ReadStatus(t.Context(), f.dir)
+	if err != nil || !reflect.DeepEqual(status, record.Status) || !reflect.DeepEqual(beforeStatus, backupRows(t, f.store.DB())) {
+		t.Fatal("disabled status lost retained attempt/success or required unrelated inventory", status, err)
 	}
 	var state string
 	if err := f.store.DB().QueryRow(`SELECT state FROM managed_backup_bundles WHERE id=?`, prior.LastSuccess.ID).Scan(&state); err != nil || state != "cleanup_failed" {
