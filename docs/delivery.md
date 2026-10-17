@@ -14,7 +14,7 @@ Implemented coordination, review and browser slices have passed their focused an
 
 - Provide the selected browser inbox handling actions and project settings with explicit write authorization. Existing browser sessions remain read-only until that separate authority is implemented.
 - Add prepared map/provenance preview and idempotent apply, then selected historical collection with bounded scope and resume. Prepared review import and editorial map CRUD do not establish this onboarding flow.
-- Complete integrated executable and packaged-browser validation of the opt-in [public project website](public-site.md). Its publication, anonymous reads/events, browser and backup implementation have focused proof; the deployed QA site still requires authentication until a tested build is installed.
+The opt-in [public project website](public-site.md) now has full validation and actual packaged CLI/browser proof at its recorded source checkpoint. Installing a tested build and approving its public presentation remain deployment/GUI boundaries; the existing QA deployment has not changed.
 
 These are implementation gaps, not merely GUI polish or unexecuted acceptance tests. Existing-installation migration, live native provider execution, actual agent-host asynchronous behavior, fleet measurements and operational recovery are separate proof or cutover boundaries. Optional multiple replicas, distributed execution and cloud backup integrations remain outside the selected first release.
 
