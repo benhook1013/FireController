@@ -22,8 +22,9 @@ import (
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
-// privateDirectory rejects symlink components; only the selected directory must
-// be owner-private (ancestors such as /tmp need not be). No hostile same-user
+// privateDirectory requires a real private selected directory and real newly
+// created directories. Existing higher ancestors may resolve through directory
+// symlinks (including platform paths such as /var). No hostile same-user
 // filesystem-race protection is claimed.
 func privateDirectory(path string, create bool) error {
 	absolute, err := filepath.Abs(path)
@@ -40,19 +41,24 @@ func privateDirectory(path string, create bool) error {
 	for i := len(chain) - 1; i >= 0; i-- {
 		p := chain[i]
 		info, err := os.Lstat(p)
+		created := false
 		if errors.Is(err, os.ErrNotExist) && create {
 			err = os.Mkdir(p, 0700)
 			if err != nil {
 				return unavailable()
 			}
+			created = true
 			info, err = os.Lstat(p)
+		}
+		if err == nil && i > 0 && !created {
+			info, err = os.Stat(p)
 		}
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return invalid()
 		}
 	}
 	info, err := os.Lstat(absolute)
-	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
 		return invalid()
 	}
 	return nil
@@ -335,8 +341,54 @@ func Inspect(ctx context.Context, bundleDir string) (Summary, error) {
 	return summary(m, absolute, "verified")
 }
 func within(path, parent string) bool {
+	// These callers use containment only to refuse overlapping source/output
+	// paths. Resolve stable aliases before comparison; unresolved paths fail
+	// closed without creating any missing component.
+	path, err := resolveBackupPath(path)
+	if err != nil {
+		return true
+	}
+	parent, err = resolveBackupPath(parent)
+	if err != nil {
+		return true
+	}
+	if !strings.EqualFold(filepath.VolumeName(path), filepath.VolumeName(parent)) {
+		return false
+	}
 	relative, err := filepath.Rel(parent, path)
-	return err == nil && (relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+	return err != nil || relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func resolveBackupPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	var missing []string
+	for {
+		_, err := os.Lstat(absolute)
+		if err == nil {
+			resolved, err := filepath.EvalSymlinks(absolute)
+			if err != nil {
+				return "", err
+			}
+			if len(missing) > 0 {
+				info, err := os.Stat(resolved)
+				if err != nil || !info.IsDir() {
+					return "", invalid()
+				}
+			}
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) || filepath.Dir(absolute) == absolute {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(absolute))
+		absolute = filepath.Dir(absolute)
+	}
 }
 
 // Create snapshots the supplied Store and inventories recognized immutable raw
