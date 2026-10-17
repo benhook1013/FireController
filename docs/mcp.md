@@ -43,7 +43,7 @@ Startup validates configuration without opening the credential or contacting the
 | `job_primary_read` | No fields; bound worker’s optional primary job and independent focus revision. |
 | `job_primary_history` | Optional limit/cursor; one page of the bound worker’s focus history. |
 | `job_update_history` | Required job_id and optional limit/cursor; one newest-first narrative-update page. |
-| `job_checklist_read` | Required job_id; current ordered checklist and current job revision. |
+| `job_checklist_read` | Required job_id; current ordered checklist, its independent checklist revision and current job revision. |
 | `job_checklist_history` | Required job_id and optional limit/cursor; one newest-first full checklist revision page. |
 | `map_entry_list` | Optional kind/archived/limit/cursor; one compact map page, no phases or descriptions. |
 | `map_entry_read` | Required entry_id; one complete current workstream or return point. |
