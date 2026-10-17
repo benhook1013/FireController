@@ -256,8 +256,15 @@ function mapText(value: unknown, max: number, prose = false): value is string {
 function mapName(value: unknown, max: number): value is string {
   return mapText(value, max) && value.length > 0 && !/^\p{White_Space}|\p{White_Space}$/u.test(value);
 }
+// Stored HTTP link text stays readable even when browser URL parsing differs
+// from the service parser. Navigation applies the stricter browser check below.
+function projectMapLinkText(value: unknown): value is string {
+  if (!mapText(value, 2048) || !/^https?:\/\//iu.test(value) || /\p{White_Space}/u.test(value)) return false;
+  const authority = value.split(/[/?#]/u)[2];
+  return !!authority && !authority.includes('@');
+}
 export function projectMapURL(value: unknown): value is string {
-  if (!mapText(value, 2048) || !/^https?:\/\//iu.test(value) || /\p{White_Space}/u.test(value) || value.split(/[/?#]/u).slice(2, 3).join('').includes('@')) return false;
+  if (!projectMapLinkText(value)) return false;
   try { const url = new URL(value); return (url.protocol === 'https:' || url.protocol === 'http:') && !!url.hostname && !url.username && !url.password; }
   catch { return false; }
 }
@@ -271,7 +278,7 @@ function validMapEntry(value: unknown, project: string, expected: string): value
     if (!record(phase) || !keys(phase, ['id', 'name', 'state', 'archived']) || typeof phase.id !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/u.test(phase.id) || seen.has(phase.id) || !mapName(phase.name, 160) || !mapText(phase.state, 240) || typeof phase.archived !== 'boolean') return false;
     seen.add(phase.id);
   }
-  if (!value.links.every(link => record(link) && keys(link, ['label', 'url']) && mapName(link.label, 120) && projectMapURL(link.url))) return false;
+  if (!value.links.every(link => record(link) && keys(link, ['label', 'url']) && mapName(link.label, 120) && projectMapLinkText(link.url))) return false;
   if (value.kind === 'workstream' ? value.trigger !== '' : value.where !== '' || value.next !== '' || value.phases.length !== 0) return false;
   const editable = { kind: value.kind, title: value.title, description: value.description, state: value.state, where: value.where, next: value.next, trigger: value.trigger, phases: value.phases, links: value.links, archived: value.archived };
   // Match the service's encoded editable budget, including Go's HTML escapes.

@@ -785,6 +785,9 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["project_map"] > 0 {
 		if err = projectmap.ValidateSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
 			return invalid()
 		}
 	}

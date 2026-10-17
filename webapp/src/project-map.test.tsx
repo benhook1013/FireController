@@ -26,6 +26,14 @@ describe('read-only project map components', () => {
     expect(html).toContain('Unsafe link (unavailable link)');
     expect(html).not.toMatch(/<script>|<img|href="javascript:|dangerouslySetInnerHTML/u);
   });
+  it('renders an unavailable label for retained HTTP URLs that browsers reject', () => {
+    for (const url of ['https://example.com:99999/x', 'https://<example.com/x', 'https://>example.com/x']) {
+      const html = renderToStaticMarkup(<MapEntryContent entry={{ ...entry, links: [{ label: 'Retained reference', url }] }} />);
+      expect(html).toContain('Retained reference (unavailable link)');
+      expect(html).toContain('PRIVATE_DESCRIPTION');
+      expect(html).not.toContain('href=');
+    }
+  });
   it('distinguishes return-point triggers from workstream milestones and completion claims', () => {
     const html = renderToStaticMarkup(<MapEntryContent entry={{ ...entry, kind: 'return_point', where: '', next: '', phases: [], trigger: 'When prerequisite <lands>', state: 'HUMAN DECISION', links: [] }} />);
     expect(html).toContain('Return point · Archived');
