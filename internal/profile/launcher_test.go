@@ -44,7 +44,7 @@ func TestCreateLauncherExecutesLiteralFixedAndForwardedArguments(t *testing.T) {
 	if runErr != nil {
 		t.Fatal(runErr)
 	}
-	want := append([]string{"--profiles-file", profiles, "--profile", binding.Context.Profile}, args...)
+	want := append([]string{"--profiles-file", profiles, "--profile=" + binding.Context.Profile}, args...)
 	expected := []byte(strings.Join(want, "\x00") + "\x00")
 	if !bytes.Equal(actual, expected) {
 		t.Fatalf("literal arguments differ: got %q want %q", actual, expected)
@@ -167,7 +167,7 @@ func TestCreateLauncherInvalidInputsDoNotPublish(t *testing.T) {
 
 func TestCreateLauncherPublishedSyncFailurePreservesExactRetry(t *testing.T) {
 	output, profiles, executable, binding := launcherTestFixture(t)
-	body := []byte("#!/bin/sh\nexec " + shellLiteral(executable) + " --profiles-file " + shellLiteral(profiles) + " --profile " + shellLiteral(binding.Context.Profile) + " \"$@\"\n")
+	body := []byte("#!/bin/sh\nexec " + shellLiteral(executable) + " --profiles-file " + shellLiteral(profiles) + " " + shellLiteral("--profile="+binding.Context.Profile) + " \"$@\"\n")
 	err := publishSetupFile(output, body, 0o700, "launcher", func([]byte) *Error { t.Fatal("unexpected existing target"); return nil }, func(string) error { return errors.New("injected directory sync failure") })
 	requireSetupCode(t, err, "launcher_write_uncertain")
 	if _, err := CreateLauncher(output, profiles, binding.Context.Profile, executable); err != nil {
@@ -261,7 +261,7 @@ func TestCreateLauncherRejectsExecutableWithoutEffectiveAccess(t *testing.T) {
 		t.Fatalf("owner-executable target refused: %v", err)
 	}
 	actual, runErr := exec.Command(output, "version").Output()
-	want := []byte(strings.Join([]string{"--profiles-file", profiles, "--profile", binding.Context.Profile, "version"}, "\x00") + "\x00")
+	want := []byte(strings.Join([]string{"--profiles-file", profiles, "--profile=" + binding.Context.Profile, "version"}, "\x00") + "\x00")
 	if runErr != nil || !bytes.Equal(actual, want) {
 		t.Fatalf("owner-executable launcher failed: %q %v", actual, runErr)
 	}
