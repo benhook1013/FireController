@@ -39,7 +39,7 @@ func CreateLauncher(output, profilesPath, name, executable string) (Context, *Er
 	if _, err := exec.LookPath(executable); err != nil {
 		return zero, failure("launcher_invalid_executable", "The selected executable must be a regular executable file.", "Select an absolute path to the fc executable.")
 	}
-	body := []byte("#!/bin/sh\nexec " + shellLiteral(executable) + " --profiles-file " + shellLiteral(profilesPath) + " --profile " + shellLiteral(name) + " \"$@\"\n")
+	body := []byte("#!/bin/sh\nexec " + shellLiteral(executable) + " --profiles-file " + shellLiteral(profilesPath) + " " + shellLiteral("--profile="+name) + " \"$@\"\n")
 	if len(body) > MaxConfigBytes {
 		return zero, setupError("launcher", "write_failed")
 	}
