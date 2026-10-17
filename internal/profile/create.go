@@ -65,7 +65,7 @@ func setupError(family, kind string) *Error {
 	return failure(family+"_"+kind, messages[kind], "Check the private setup location; retain the exact request when retrying.")
 }
 
-// setupParent creates missing directories without following directory symlinks.
+// setupParent creates missing private directories and rejects a symlinked immediate parent.
 // Existing ancestors need not be private, but the immediate parent must be.
 func setupParent(path, family string) *Error {
 	parent := filepath.Dir(path)
@@ -89,6 +89,9 @@ func setupParent(path, family string) *Error {
 				}
 			}
 			info, err = os.Lstat(current)
+		}
+		if err == nil && i > 0 && info.Mode()&os.ModeSymlink != 0 {
+			info, err = os.Stat(current)
 		}
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return setupError(family, "write_failed")
