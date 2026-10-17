@@ -38,6 +38,15 @@ func (m *Manager) retain(ctx context.Context) error {
 	if failed != 0 {
 		return invalid()
 	}
+	// Without an excess owned copy, retention has nothing to delete and makes
+	// no claim about the present bytes of the protected bundles.
+	var candidate int
+	if err := m.store.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state='retained' ORDER BY sequence DESC LIMIT 1 OFFSET ?)`, m.config.Destination, m.store.InstanceID(), m.config.Keep).Scan(&candidate); err != nil {
+		return unavailable()
+	}
+	if candidate == 0 {
+		return nil
+	}
 	// Verify the retained safety floor once per maintenance pass, before any
 	// older copy can be removed. Ledger ownership alone is not a usable backup.
 	if err := m.verifyKeepers(ctx); err != nil {
