@@ -267,6 +267,7 @@ try {
   need(new URL(page.url()).pathname === home + '/reviews');
 
   phase = 'reload';
+  checkpoint = 'reload-metadata-ready';
   await page.reload();
   await page.getByRole('heading', {name:title, exact:true}).waitFor();
   await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(1);
@@ -278,8 +279,12 @@ try {
   need(resumed?.value !== cookie.value && resumed?.httpOnly && resumed?.sameSite === 'Strict' && sessionPosts === 1);
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
   await page.getByText('Live inbox connected', {exact:true}).waitFor();
-  need((await appearance()).brand === 'Smoke live <literal>' && metadataStreams === 3 && presentationReads === 4 && inboxStreams === 2);
 
+  await expect(page.getByRole('status').filter({hasText:/^Project updates /})).toHaveCount(0);
+  need((await appearance()).brand === 'Smoke live <literal>' && metadataStreams >= 3 && metadataStreams <= 4 && presentationReads === 4 && inboxStreams >= 2 && inboxStreams <= 3);
+
+  // Renewal replaces streams that opened before its cookie response. Capture
+  // this reader phase before clock advancement and later writer sessions.
   const metadataCounts = {presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams};
 
   phase = 'renewal-activity';
