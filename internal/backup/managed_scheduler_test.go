@@ -28,6 +28,9 @@ func runManaged(t *testing.T, m *Manager, n int) []error {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	if m.publicationHeld {
+		cancel()
+	}
 	now := m.next.Add(-m.config.Interval)
 	m.now = func() time.Time { return now }
 	steps := 0
@@ -44,7 +47,12 @@ func runManaged(t *testing.T, m *Manager, n int) []error {
 		return nil
 	}
 	var reports []error
-	if err := m.Run(ctx, func(err error) { reports = append(reports, err) }); err != nil {
+	if err := m.Run(ctx, func(err error) {
+		reports = append(reports, err)
+		if m.publicationHeld {
+			cancel()
+		}
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return reports
