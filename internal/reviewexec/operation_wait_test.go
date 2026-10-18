@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -384,4 +385,111 @@ func TestOperationHTTPPostAcceptanceCancelKeepsOriginalRecovery(t *testing.T) {
 	if w.Code != 202 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations WHERE state='queued'`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts WHERE operation='reviews.request'`) != 1 {
 		t.Fatal("canceling collection changed accepted work", w.Code, w.Body.String())
 	}
+}
+
+func TestOperationHTTPLifecycleCancellationDetachesPostAndGetWaits(t *testing.T) {
+	newLifecycleHTTP := func(t *testing.T, f *attemptFixture, lifetime context.Context) (*httptest.Server, *Engine) {
+		t.Helper()
+		engine, err := New(f.store, attemptCapabilities, WithResultWaitLifetime(lifetime))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux := http.NewServeMux()
+		engine.Register(mux)
+		return httptest.NewServer(mux), engine
+	}
+	request := func(t *testing.T, server *httptest.Server, f *attemptFixture, method, path, key, body, prefer string) *http.Response {
+		t.Helper()
+		r, err := http.NewRequest(method, server.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Header.Set("Authorization", "Bearer "+f.writer)
+		r.Header.Set("X-FC-Instance", f.store.InstanceID())
+		if key != "" {
+			r.Header.Set("Idempotency-Key", key)
+		}
+		if prefer != "" {
+			r.Header.Set("Prefer", prefer)
+		}
+		response, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	path := "/api/v1/projects/" + attemptProject + "/reviews/requests"
+	body := encoded(Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	long := "wait=900"
+
+	t.Run("POST preserves accepted receipt", func(t *testing.T) {
+		f := sourceHTTPFixture(t)
+		lifetime, cancelLifetime := context.WithCancel(context.Background())
+		defer cancelLifetime()
+		httpServer, engine := newLifecycleHTTP(t, f, lifetime)
+		defer httpServer.Close()
+		f.e = engine
+		done := make(chan *http.Response, 1)
+		go func() { done <- request(t, httpServer, f, http.MethodPost, path, "lifecycle-post", body, long) }()
+		operationWaitRegistered(t, engine, 1)
+		cancelLifetime()
+		select {
+		case response := <-done:
+			defer response.Body.Close()
+			data, _ := io.ReadAll(response.Body)
+			if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(data), `"outcome_unknown":true`) {
+				t.Fatal("lifecycle POST lost safe accepted-outcome response", response.StatusCode, string(data))
+			}
+		case <-time.After(time.Second):
+			t.Fatal("lifecycle cancellation did not detach POST wait")
+		}
+		operationWaitRegistered(t, engine, 0)
+		if attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts WHERE operation='reviews.request'`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations WHERE state='queued'`) != 1 {
+			t.Fatal("canceling result collection changed accepted operation or receipt")
+		}
+		// A fresh daemon lifetime can recover the exact original receipt/key.
+		recoveredEngine, err := New(f.store, attemptCapabilities)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recoveryMux := http.NewServeMux()
+		recoveredEngine.Register(recoveryMux)
+		recovery := httptest.NewServer(recoveryMux)
+		defer recovery.Close()
+		response := request(t, recovery, f, http.MethodPost, path, "lifecycle-post", body, "wait=0")
+		defer response.Body.Close()
+		data, _ := io.ReadAll(response.Body)
+		if response.StatusCode != http.StatusAccepted || !strings.Contains(string(data), `"state":"queued"`) || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
+			t.Fatal("original request receipt did not survive lifecycle wait", response.StatusCode, string(data))
+		}
+	})
+
+	t.Run("GET releases waiter without changing operation", func(t *testing.T) {
+		f := sourceHTTPFixture(t)
+		queued := f.enqueue(t, attemptProject, "lifecycle-get", "cli", 2, 1)
+		lifetime, cancelLifetime := context.WithCancel(context.Background())
+		defer cancelLifetime()
+		httpServer, engine := newLifecycleHTTP(t, f, lifetime)
+		defer httpServer.Close()
+		getPath := strings.Replace(path, "/requests", "/operations/"+queued.ID, 1)
+		done := make(chan *http.Response, 1)
+		go func() { done <- request(t, httpServer, f, http.MethodGet, getPath, "", "", long) }()
+		operationWaitRegistered(t, engine, 1)
+		before := attemptCount(t, f.store, `SELECT count(*) FROM receipts WHERE operation='reviews.request'`)
+		cancelLifetime()
+		select {
+		case response := <-done:
+			defer response.Body.Close()
+			data, _ := io.ReadAll(response.Body)
+			if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(data), `"code":"overloaded"`) {
+				t.Fatal("lifecycle GET lost safe canceled-wait response", response.StatusCode, string(data))
+			}
+		case <-time.After(time.Second):
+			t.Fatal("lifecycle cancellation did not detach GET wait")
+		}
+		operationWaitRegistered(t, engine, 0)
+		if attemptCount(t, f.store, `SELECT count(*) FROM review_operations WHERE id=? AND state='queued'`, queued.ID) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts WHERE operation='reviews.request'`) != before {
+			t.Fatal("canceling GET changed operation or receipt state")
+		}
+	})
 }

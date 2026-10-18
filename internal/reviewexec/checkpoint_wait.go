@@ -34,14 +34,19 @@ func (e *Engine) WaitCheckpointPublication(ctx context.Context, scope core.Scope
 	if ctx == nil || e == nil || e.store == nil || !validPublicationID(id) || !identifier.MatchString(scope.PrincipalID) || waitSeconds < 0 || waitSeconds > 60 {
 		return CheckpointPublication{}, false, invalid()
 	}
+	waitCtx, cleanupWait := e.resultWaitContext(ctx)
+	defer cleanupWait()
 	// A driver interrupt can lose the context cause while a read is in flight.
 	// Normalize only this caller's cancellation; preserve other read failures.
 	canceled := func() error {
 		return core.Fail("overloaded", "The checkpoint wait was canceled; the accepted action is unchanged.", 503)
 	}
 	read := func() (CheckpointPublication, error) {
-		v, err := e.ReadCheckpointPublication(ctx, scope, id)
-		if ctx.Err() != nil {
+		if waitCtx.Err() != nil {
+			return CheckpointPublication{}, canceled()
+		}
+		v, err := e.ReadCheckpointPublication(waitCtx, scope, id)
+		if waitCtx.Err() != nil {
 			return CheckpointPublication{}, canceled()
 		}
 		return v, err
@@ -49,6 +54,9 @@ func (e *Engine) WaitCheckpointPublication(ctx context.Context, scope core.Scope
 	if waitSeconds == 0 {
 		v, err := read()
 		return v, err == nil && !checkpointActive(v.State), err
+	}
+	if waitCtx.Err() != nil {
+		return CheckpointPublication{}, false, canceled()
 	}
 	w := &checkpointWaiter{principal: scope.PrincipalID, changed: make(chan struct{}, 1)}
 	e.checkpointMu.Lock()
@@ -87,7 +95,7 @@ func (e *Engine) WaitCheckpointPublication(ctx context.Context, scope core.Scope
 			return v, true, nil
 		}
 		select {
-		case <-ctx.Done():
+		case <-waitCtx.Done():
 			return CheckpointPublication{}, false, canceled()
 		case <-timer.C:
 			v, err = read()
