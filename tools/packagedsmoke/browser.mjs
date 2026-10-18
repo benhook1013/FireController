@@ -1,5 +1,6 @@
 import { chromium, expect } from '../../webapp/node_modules/@playwright/test/index.mjs';
 import fs from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
 
 // All inputs are synthetic, private files produced by browser_test.go. Neither
 // Playwright diagnostics nor request/credential bytes are printed on failure.
@@ -86,6 +87,14 @@ try {
  let explicitActions = false;
  let controlledMessageFailure = false;
  let controlledAccessFailure = false;
+ let failNextMetadataStream = false;
+ let holdNextPresentation = false;
+ let heldPresentationReady, signalHeldPresentation, heldPresentationGate, heldPresentationRelease, heldPresentationDone, finishHeldPresentation;
+ const armHeldPresentation = () => {
+   heldPresentationReady = new Promise(resolve => { signalHeldPresentation = resolve; });
+   heldPresentationGate = new Promise(resolve => { heldPresentationRelease = resolve; });
+   heldPresentationDone = new Promise(resolve => { finishHeldPresentation = resolve; });
+ };
  const expectedMissingSessionRoute = url => { if (!controlledAccessFailure || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname); } catch { return false; } };
   counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
   let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0, noteArchiveReads = 0;
@@ -123,10 +132,30 @@ try {
     else forbiddenWrites++;
   });
   await context.route('**/*', async route => {
-    if (new URL(route.request().url()).origin !== config.origin) { await route.abort(); return; }
-    if (!injectedRequest && route.request().method() === 'GET' && new URL(route.request().url()).pathname === prefix + '/project-events/stream') {
+    const url = new URL(route.request().url());
+    if (url.origin !== config.origin) { await route.abort(); return; }
+    if (!injectedRequest && route.request().method() === 'GET' && url.pathname === prefix + '/project-events/stream') {
       injectedRequest = route.request();
       await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: { code: 'invalid_response' } }) });
+      return;
+    }
+    if (failNextMetadataStream && route.request().method() === 'GET' && url.pathname === prefix + '/project-events/stream') {
+      failNextMetadataStream = false;
+      await route.fulfill({ status:400, contentType:'application/json', body:JSON.stringify({error:{code:'invalid_response'}}) });
+      return;
+    }
+    if (holdNextPresentation && route.request().method() === 'GET' && url.pathname === prefix + '/presentation') {
+      holdNextPresentation = false;
+      try {
+        const response = await route.fetch();
+        const body = await response.text();
+        signalHeldPresentation();
+        await heldPresentationGate;
+        try { await route.fulfill({response, body}); finishHeldPresentation('delivered'); }
+        catch { finishHeldPresentation('cancelled'); }
+      } catch {
+        signalHeldPresentation(); finishHeldPresentation('cancelled');
+      }
       return;
     }
     await route.continue();
@@ -720,10 +749,98 @@ try {
   need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === null);
   checkpoint = 'counters';
   need(terminalResponses > 0 && sessionRenewals === 3 && actionWrites === 7 && forbiddenWrites === 0 && errors === 0 && external === 0);
+
+  phase = 'manual-refresh-closed-feed'; checkpoint = 'connect-second-view';
+  const refreshPage = await context.newPage();
+  refreshPage.setDefaultTimeout(5000); refreshPage.setDefaultNavigationTimeout(5000);
+  let refreshPresentationReads = 0, refreshDeliveryReads = 0, refreshMetadataStreams = 0, refreshPageErrors = 0;
+  refreshPage.on('pageerror', () => refreshPageErrors++);
+  refreshPage.on('request', request => {
+    if (request.method() !== 'GET') return;
+    const url = new URL(request.url());
+    if (url.pathname === prefix + '/presentation') refreshPresentationReads++;
+    if (url.pathname === prefix + '/delivery') refreshDeliveryReads++;
+    if (url.pathname === prefix + '/project-events/stream') refreshMetadataStreams++;
+  });
+  failNextMetadataStream = true;
+  await refreshPage.goto(config.origin);
+  await refreshPage.getByLabel('Project ID',{exact:true}).fill(config.project);
+  await refreshPage.getByLabel('Project credential',{exact:true}).fill(token);
+  const refreshLogin = refreshPage.waitForResponse(value => value.request().method() === 'POST' && new URL(value.url()).pathname === prefix + '/browser-session');
+  await refreshPage.getByRole('button',{name:'Connect to project',exact:true}).click();
+  need((await refreshLogin).status() === 200);
+  await refreshPage.getByRole('heading',{name:'Packaged smoke',exact:true}).waitFor();
+  await refreshPage.getByRole('heading',{name:'Delivery',exact:true}).waitFor();
+  await expect.poll(() => refreshDeliveryReads,{timeout:5000}).toBeGreaterThan(0);
+  await refreshPage.getByText('Smoke live <literal>',{exact:true}).waitFor();
+  await refreshPage.getByText('Project updates disconnected.',{exact:false}).waitFor();
+  need(refreshMetadataStreams === 1);
+  const refreshTheme = {...theme, header_background:'#183451', header_text:'#fff1b8', accent_background:'#143a66', accent_text:'#ffffff'};
+  await seedDelivery('PUT','/presentation',{expected_revision:2,presentation:{name:'Refresh board view A',brand_name:'Refresh brand A',theme:refreshTheme}});
+  const recoveredJob = await seedDelivery('POST','/jobs',{title:'Refresh board row after missed event',brief:'Synthetic refresh proof only.',worker_id:config.worker},201);
+  need(await refreshPage.getByText('Refresh board row after missed event',{exact:true}).count() === 0);
+  const presentationReadsBeforeRefresh = refreshPresentationReads;
+  const deliveryReadsBeforeRefresh = refreshDeliveryReads;
+  const refreshButton = refreshPage.getByRole('button',{name:'Refresh visible data',exact:true});
+  await refreshButton.click();
+  await expect(refreshButton).toHaveAttribute('aria-busy','true');
+  await expect(refreshButton).toBeEnabled({timeout:5000});
+  await expect.poll(() => refreshPresentationReads,{timeout:5000}).toBe(presentationReadsBeforeRefresh + 1);
+  await expect.poll(() => refreshDeliveryReads,{timeout:5000}).toBeGreaterThan(deliveryReadsBeforeRefresh);
+  await refreshPage.getByRole('heading',{name:'Refresh board view A',exact:true}).waitFor();
+  await expect(refreshPage.locator('.brand')).toContainText('Refresh brand A');
+  await expect(refreshPage.getByRole('link',{name:'Refresh board row after missed event',exact:true})).toBeVisible();
+  need(await refreshPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--fc-header_background').trim()) === '#183451');
+  need(refreshMetadataStreams === 1 && await refreshPage.getByText('Project updates disconnected.',{exact:false}).count() > 0);
+
+  phase = 'cross-project-late-refresh'; checkpoint = 'prepare-target-project';
+  const adminHeader = {'Authorization':'Bearer '+admin,'X-FC-Instance':config.instance,'Content-Type':'application/json'};
+  const createTarget = async (path, body, key, status) => {
+    const response = await fetch(config.origin + path,{method:'POST',headers:{...adminHeader,'Idempotency-Key':key},body:JSON.stringify(body),signal:AbortSignal.timeout(5000)});
+    need(response.status === status); return response.json();
+  };
+  const target = await createTarget('/api/v1/projects',{name:'Refresh target B',repository:'synthetic/refresh-target-b'},'packaged-refresh-project-b',200);
+  const targetProject = target.id;
+  const targetToken = randomBytes(32).toString('hex');
+  const targetDigest = createHash('sha256').update(targetToken).digest('hex');
+  await createTarget('/api/v1/projects/'+targetProject+'/credentials',{token_sha256:targetDigest,permissions:['read']},'packaged-refresh-credential-b',200);
+  const targetPrefix = '/api/v1/projects/'+targetProject;
+  const targetWorker = (await createTarget(targetPrefix+'/workers',{name:'Target worker'},'packaged-refresh-worker-b',200)).id;
+  const targetTheme = {...theme,header_background:'#27452d',header_text:'#f5ffd8',accent_background:'#345a35',accent_text:'#ffffff'};
+  const targetPut = await fetch(config.origin+targetPrefix+'/presentation',{method:'PUT',headers:{...adminHeader,'X-FC-Worker':targetWorker,'Idempotency-Key':'packaged-refresh-presentation-b'},body:JSON.stringify({expected_revision:0,presentation:{name:'Refresh board view B',brand_name:'Refresh brand B',theme:targetTheme}}),signal:AbortSignal.timeout(5000)});
+  need(targetPut.status === 200);
+  const targetJobResponse = await fetch(config.origin+targetPrefix+'/jobs',{method:'POST',headers:{...adminHeader,'X-FC-Worker':targetWorker,'Idempotency-Key':'packaged-refresh-job-b'},body:JSON.stringify({title:'Target B only job',brief:'Synthetic isolated project.',worker_id:targetWorker}),signal:AbortSignal.timeout(5000)});
+  need(targetJobResponse.status === 201);
+  const targetJobReceipt = await targetJobResponse.json();
+  armHeldPresentation(); holdNextPresentation = true;
+  await refreshPage.getByRole('button',{name:'Refresh visible data',exact:true}).click();
+  await heldPresentationReady;
+  await refreshPage.getByRole('button',{name:'Disconnect',exact:true}).click();
+  await refreshPage.getByRole('button',{name:'Connect to project',exact:true}).waitFor();
+  await refreshPage.waitForURL(config.origin + '/');
+  await refreshPage.getByLabel('Project ID',{exact:true}).fill(targetProject);
+  await refreshPage.getByLabel('Project credential',{exact:true}).fill(targetToken);
+  const targetLogin = refreshPage.waitForResponse(value => value.request().method() === 'POST' && new URL(value.url()).pathname === targetPrefix + '/browser-session');
+  await refreshPage.getByRole('button',{name:'Connect to project',exact:true}).click();
+  need((await targetLogin).status() === 200);
+  await refreshPage.getByRole('heading',{name:'Refresh board view B',exact:true}).waitFor();
+  await refreshPage.getByRole('heading',{name:'Delivery',exact:true}).waitFor();
+  await refreshPage.getByRole('link',{name:'Target B only job',exact:true}).waitFor();
+  releaseHeldPresentation();
+  const lateResult = await heldPresentationDone;
+  await refreshPage.getByRole('heading',{name:'Refresh board view B',exact:true}).waitFor();
+  await expect(refreshPage.locator('.brand')).toContainText('Refresh brand B');
+  await expect(refreshPage.getByRole('link',{name:'Target B only job',exact:true})).toBeVisible();
+  need(await refreshPage.getByText('Refresh board row after missed event',{exact:true}).count() === 0);
+  need(await refreshPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--fc-header_background').trim()) === '#27452d');
+  const targetBodyText = await refreshPage.locator('body').innerText();
+  need(![config.project,config.worker,config.other_worker,recoveredJob.id,targetJobReceipt.id].some(id => targetBodyText.includes(id)));
+  need((lateResult === 'delivered' || lateResult === 'cancelled') && refreshPageErrors === 0);
+  await refreshPage.close();
   await context.close();
   await browser.close(); browser = undefined;
   await server.close(); server = undefined;
-  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
+  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, manual_refresh_closed_feed:true, refresh_presentation_reads:refreshPresentationReads, refresh_delivery_reads:refreshDeliveryReads, late_presentation_result:lateResult, late_page_errors:refreshPageErrors, ...metadataCounts}));
 } catch (error) {
   failureClass = error?.name === 'TimeoutError' ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
   const snapshot = await failureSnapshot().catch(()=>({diagnostic_failed:true}));
