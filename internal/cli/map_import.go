@@ -3,10 +3,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
-	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"unicode"
@@ -121,35 +120,11 @@ func prepareMapImport(ctx context.Context, m *mapImportInvocation) error {
 	invalid := func() error {
 		return &client.Error{Code: "invalid_import_file", Message: "Select an owner-private regular map import JSON file within 256 KiB.", Action: "Correct the selected file locally and retry the same intended request.", Status: 400}
 	}
-	private := func(i os.FileInfo) bool {
-		return i != nil && i.Mode().IsRegular() && i.Size() <= 256<<10 && (runtime.GOOS == "windows" || i.Mode().Perm()&0077 == 0)
-	}
-	before, err := os.Lstat(m.file)
-	if err != nil || !private(before) {
+	data, err := readOwnerPrivateJSON(ctx, m.file)
+	if errors.Is(err, errInvalidOwnerPrivateJSONFile) {
 		return invalid()
 	}
-	f, err := os.Open(m.file)
 	if err != nil {
-		return invalid()
-	}
-	defer f.Close()
-	after, err := f.Stat()
-	if err != nil || !private(after) || !os.SameFile(before, after) {
-		return invalid()
-	}
-	pathAfter, err := os.Lstat(m.file)
-	if err != nil || !private(pathAfter) || !os.SameFile(before, pathAfter) {
-		return invalid()
-	}
-	data, err := io.ReadAll(io.LimitReader(f, (256<<10)+1))
-	if err != nil || len(data) > 256<<10 {
-		return invalid()
-	}
-	after, err = f.Stat()
-	if err != nil || !private(after) || !os.SameFile(before, after) {
-		return invalid()
-	}
-	if err = ctx.Err(); err != nil {
 		return err
 	}
 	if err = client.ValidateMapImportDocument(data); err != nil {
