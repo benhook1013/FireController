@@ -55,6 +55,7 @@ func TestHistoryScanCancellationIsUnavailableAndReadOnly(t *testing.T) {
 	for _, phase := range []string{
 		"reviews.ValidateHistoryReferences",
 		"reviews.ValidateCurrentSummaries",
+		"reviews.ValidateCurrentRunOrder",
 		"reviewexec.ValidateComparisonProofs",
 	} {
 		for _, operation := range []string{"inspect", "restore"} {
