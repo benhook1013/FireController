@@ -36,11 +36,11 @@ The first actual Linux run against unchanged `265af4a` daemon inputs passed in 0
 
 ## Embedded browser lifecycle
 
-On Linux, `make browser-smoke` runs a separate bounded Chromium case against the existing `fcd`, using the same daemon/bootstrap/authenticated seed helpers. It does not build the daemon or install a browser. Install the Chromium revision selected by the existing pinned Playwright dependency first:
+On Linux, `make browser-smoke` runs a separate bounded Chromium case against the existing `fcd`, using the same daemon/bootstrap/authenticated seed helpers. It does not build the daemon or install a browser. Install the Chromium revision selected by the existing pinned Playwright dependency and its Linux system dependencies first:
 
 ```sh
 cd webapp
-npx --no-install playwright install chromium
+npx --no-install playwright install --with-deps chromium
 cd ..
 make browser-smoke
 ```
