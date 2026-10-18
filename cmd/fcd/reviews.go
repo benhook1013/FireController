@@ -15,12 +15,13 @@ import (
 
 // Operator configuration is composed once, before accepting requests. Ordinary
 // installations have no provider drivers or review-workspace directories.
-func buildReviewExecution(store *core.Store, dataDir string, catalog reviewruntime.Catalog) (*reviewexec.Engine, map[string]reviewexec.Driver, error) {
+func buildReviewExecution(store *core.Store, dataDir string, catalog reviewruntime.Catalog, options ...reviewexec.EngineOption) (*reviewexec.Engine, map[string]reviewexec.Driver, error) {
 	capabilities := make([]reviewexec.Capability, 0, len(catalog.Capabilities))
 	for _, capability := range catalog.Capabilities {
 		capabilities = append(capabilities, reviewexec.Capability{ID: capability.ID, Provider: "coderabbit", Account: capability.Account, Channels: capability.Channels, Fingerprint: capability.Fingerprint})
 	}
-	engine, err := reviewexec.New(store, capabilities, reviewexec.WithNativeProjection())
+	options = append(options, reviewexec.WithNativeProjection())
+	engine, err := reviewexec.New(store, capabilities, options...)
 	if err != nil {
 		return nil, nil, err
 	}
