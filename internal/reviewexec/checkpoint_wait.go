@@ -39,7 +39,7 @@ func (e *Engine) WaitCheckpointPublication(ctx context.Context, scope core.Scope
 	// A driver interrupt can lose the context cause while a read is in flight.
 	// Normalize only this caller's cancellation; preserve other read failures.
 	canceled := func() error {
-		return core.Fail("overloaded", "The checkpoint wait was canceled; the accepted action is unchanged.", 503)
+		return resultWaitCanceled(waitCtx, "The checkpoint wait was canceled; the accepted action is unchanged.")
 	}
 	read := func() (CheckpointPublication, error) {
 		if waitCtx.Err() != nil {
