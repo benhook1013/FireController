@@ -11,6 +11,9 @@ let failureClass = '';
 let sendStatus = 0, replyStatus = 0, conversationMatch = false;
 let failureSnapshot = async () => ({});
 let diagnostics = () => ({});
+let connectHTTPStatus = 0;
+let connectAllowWrites = false;
+let connectCanEditPresentation = false;
 const need = (value) => { if (!value) throw new Error('assertion'); };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
@@ -342,18 +345,40 @@ try {
   need(sessionPosts === 1 && sessionDeletes === 1 && forbiddenWrites === 0 && errors === 0 && external === 0);
 
   phase = 'explicit-actions-connect';
+  checkpoint = 'root-url';
+  await page.waitForURL(config.origin + '/');
+  checkpoint = 'root-form';
+  await expect(page.getByLabel('Project ID', {exact:true})).toHaveValue('');
+  checkpoint = 'history-index';
  const actionRootHistoryIndex=await page.evaluate(()=>history.state.idx);
   explicitActions = true;
+  checkpoint = 'project-input';
   await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+  checkpoint = 'credential-input';
   await page.getByLabel('Project credential', {exact:true}).fill(admin);
+  checkpoint = 'permission-control-check';
   need(await page.getByRole('checkbox').count()===0);
+  checkpoint = 'submit';
   const adminLogin=page.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname===prefix+'/browser-session');
   await page.getByRole('button', {name:'Connect to project',exact:true}).click();
-  const adminResponse=await adminLogin;need(adminResponse.status()===200);
-  const adminCapabilities=await adminResponse.json();need(adminCapabilities.allow_writes===true && adminCapabilities.can_edit_presentation===true);
+  checkpoint = 'session-response';
+  const adminResponse=await adminLogin;
+  connectHTTPStatus=adminResponse.status();
+  checkpoint = 'session-status';
+  need(connectHTTPStatus===200);
+  checkpoint = 'capabilities-read';
+  const adminCapabilities=await adminResponse.json();
+  connectAllowWrites=adminCapabilities.allow_writes===true;
+  connectCanEditPresentation=adminCapabilities.can_edit_presentation===true;
+  checkpoint = 'capabilities-check';
+  need(connectAllowWrites && connectCanEditPresentation);
+  checkpoint = 'no-action-writes';
   need(actionWrites===0 && forbiddenWrites===0);
+  checkpoint = 'heading';
   await page.getByRole('heading', {name:title,exact:true}).waitFor();
+  checkpoint = 'inbox-button';
   await page.getByRole('button', {name:'Open Builder inbox',exact:true}).click();
+  checkpoint = 'inbox-route';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox',exact:true}).click();
   const incoming = await write('POST','/messages',{recipient_worker_id:config.worker,body:'Action incoming <literal>',reply_to_message_id:''},201,config.other_worker);
   const row = page.locator('.inbox-list > li').filter({hasText:'Action incoming <literal>'});
@@ -511,7 +536,7 @@ try {
 } catch (error) {
   failureClass = error?.name === 'TimeoutError' ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
   const snapshot = await failureSnapshot().catch(()=>({diagnostic_failed:true}));
-  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, send_status:sendStatus, reply_status:replyStatus, conversation_match:conversationMatch, ...counters(), ...diagnostics(), ...snapshot}));
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, connect_http_status:connectHTTPStatus, connect_allow_writes:connectAllowWrites, connect_can_edit_presentation:connectCanEditPresentation, failure_class:failureClass, send_status:sendStatus, reply_status:replyStatus, conversation_match:conversationMatch, ...counters(), ...diagnostics(), ...snapshot}));
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});
