@@ -114,7 +114,7 @@ func parseProjectMap(command, operation string, args []string) (*projectMapInvoc
 		m.page.Cursor = v
 	}
 	m.filter.Kind = values["--kind"]
-	if m.filter.Kind != "" && m.filter.Kind != "workstream" && m.filter.Kind != "return_point" {
+	if m.filter.Kind != "" && m.filter.Kind != "workstream" && m.filter.Kind != "return_point" && m.filter.Kind != "section" {
 		return nil, false
 	}
 	if v, ok := values["--archived"]; ok {

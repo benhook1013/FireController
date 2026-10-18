@@ -10,6 +10,9 @@ import (
 // inspection. Ordinary map reads never scan archives. The caller owns a single
 // read transaction and schema/foreign-key validation.
 func ValidateSnapshot(ctx context.Context, tx *sql.Tx) error {
+	if err := validateSectionSchema(ctx, tx); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM project_map_entries ORDER BY project_id,id`)
 	if err != nil {
 		return err

@@ -124,7 +124,7 @@ func TestMapImportBundlePreservesProvenanceOmissionsAndPrivateState(t *testing.T
 		}
 	}
 	var version, state string
-	if err = db.QueryRow(`SELECT value FROM metadata WHERE key='schema:project_map'`).Scan(&version); err != nil || version != "2" {
+	if err = db.QueryRow(`SELECT value FROM metadata WHERE key='schema:project_map'`).Scan(&version); err != nil || version != "3" {
 		t.Fatal("map schema version changed", version, err)
 	}
 	if err = db.QueryRow(`SELECT value FROM metadata WHERE key='restore:state'`).Scan(&state); err != nil || state != "inactive" {
@@ -133,12 +133,12 @@ func TestMapImportBundlePreservesProvenanceOmissionsAndPrivateState(t *testing.T
 }
 
 func TestMapImportBundleV1RemainsReadableWithoutInstallingImportTables(t *testing.T) {
-	f, _, _ := mapRestoreFixture(t)
-	// Reconstruct an empty-import pre-v2 fixture while retaining genuine v1 map
-	// state and history. Inspection must not run the new migration.
-	if _, err := f.store.DB().Exec(`DROP TABLE project_map_import_items; DROP TABLE project_map_import_history; DROP TABLE project_map_import_sources; UPDATE metadata SET value='1' WHERE key='schema:project_map'`); err != nil {
+	f := newRestoreFixture(t)
+	if err := f.store.EnsureSchema(t.Context(), "project_map", backupMapVersionTwoMigrations[:1]...); err != nil {
 		t.Fatal(err)
 	}
+	projectmap.Register(f.handler.(*http.ServeMux), f.store)
+	f.request(t, "POST", "/api/v1/projects/"+f.project+"/map/entries", projectmap.Editable{Kind: "workstream", Title: "Authentic v1 map", Description: "Retained original history"})
 	bundle := restoreBundle(t, f)
 	before := restoreTree(t, bundle.Path)
 	if _, err := Inspect(t.Context(), bundle.Path); err != nil {

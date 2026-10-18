@@ -137,7 +137,7 @@ func projectMapArguments(name string, data json.RawMessage) (arguments, error) {
 		m.revision = *in.Revision
 	}
 	if in.Kind != nil {
-		if *in.Kind != "workstream" && *in.Kind != "return_point" {
+		if *in.Kind != "workstream" && *in.Kind != "return_point" && *in.Kind != "section" {
 			return args, invalidArguments()
 		}
 		m.filter.Kind = *in.Kind
@@ -194,16 +194,16 @@ func projectMapDefinitions() []definition {
 	revision := map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}
 	phase := object(map[string]any{"id": map[string]any{"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"}, "name": text(160), "state": text(240), "archived": map[string]any{"type": "boolean"}}, "id", "name")
 	link := object(map[string]any{"label": text(120), "url": text(2048)}, "label", "url")
-	entry := object(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"workstream", "return_point"}}, "title": text(240), "description": text(8192), "state": text(240), "where": text(8192), "next": text(8192), "trigger": text(8192), "phases": map[string]any{"type": []string{"array", "null"}, "items": phase, "maxItems": 64}, "links": map[string]any{"type": []string{"array", "null"}, "items": link, "maxItems": 12}, "archived": map[string]any{"type": "boolean"}}, "kind", "title")
+	entry := object(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"workstream", "return_point", "section"}}, "title": text(240), "description": text(8192), "state": text(240), "where": text(8192), "next": text(8192), "trigger": text(8192), "phases": map[string]any{"type": []string{"array", "null"}, "items": phase, "maxItems": 64}, "links": map[string]any{"type": []string{"array", "null"}, "items": link, "maxItems": 12}, "archived": map[string]any{"type": "boolean"}, "position": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000}}, "kind", "title")
 	pages := func(extra map[string]any) map[string]any {
 		extra["limit"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 100}
 		extra["cursor"] = map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}
 		return extra
 	}
 	return []definition{
-		{"map_entry_create", "Create one project-scoped workstream or return point. Entry is editable plain text, at most 64 KiB encoded; kind/title are required and omitted optional fields default empty. No provider work. Retain the exact key and request after an uncertain result.", object(map[string]any{"idempotency_key": id, "entry": entry}, "idempotency_key", "entry")},
+		{"map_entry_create", "Create one project-scoped section, workstream or return point. Prose supports safe browser Markdown; position selects editorial order. Entry is bounded text, at most 64 KiB encoded; kind/title are required and omitted optional fields default empty. No provider work. Retain the exact key and request after an uncertain result.", object(map[string]any{"idempotency_key": id, "entry": entry}, "idempotency_key", "entry")},
 		{"map_entry_replace", "Replace the complete editable map entry using its expected revision; omitted optional fields clear/default. Keep every previously introduced phase ID, optionally archived. Does not change job status or provider state. Retain the exact key/request after uncertainty.", object(map[string]any{"idempotency_key": id, "entry_id": id, "expected_revision": revision, "entry": entry}, "idempotency_key", "entry_id", "expected_revision", "entry")},
-		{"map_entry_list", "Read one compact map-entry page, default 25 active entries. Optional exact kind/archived filters; no bodies, automatic pagination or provider reads.", object(pages(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"workstream", "return_point"}}, "archived": map[string]any{"type": "boolean"}}))},
+		{"map_entry_list", "Read one compact map-entry page, default 25 active entries. Optional exact kind/archived filters; no bodies, automatic pagination or provider reads.", object(pages(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"workstream", "return_point", "section"}}, "archived": map[string]any{"type": "boolean"}}))},
 		{"map_entry_read", "Read one complete current map entry in the bound project.", object(map[string]any{"entry_id": id}, "entry_id")},
 		{"map_entry_history", "Read one newest-first compact map revision page, default 25; select full historical content explicitly.", object(pages(map[string]any{"entry_id": id}), "entry_id")},
 		{"map_entry_revision_read", "Read one full captured map revision with its actor and time.", object(map[string]any{"entry_id": id, "revision": map[string]any{"type": "integer", "minimum": 1}}, "entry_id", "revision")},

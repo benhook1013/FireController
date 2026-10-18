@@ -15,7 +15,7 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
   const prefixes = new Map<string, QueryKey>();
   const add = (...parts: string[]) => { const prefix = [...key, ...parts]; prefixes.set(JSON.stringify(prefix), prefix); };
   if (all) {
-    for (const domain of ['delivery', 'map', 'map-entry', 'map-history', 'job-workstream', 'job-workstream-history', 'jobs', 'job', 'workers', 'worker', 'worker-pause', 'worker-pause-history', 'worker-primary', 'worker-primary-history', 'notes', 'note', 'note-history', 'checklist-current', 'checklist-history', 'checkpoint-latest', 'checkpoints', 'job-updates']) add(domain);
+    for (const domain of ['delivery', 'map-editorial', 'map', 'map-entry', 'map-history', 'job-workstream', 'job-workstream-history', 'jobs', 'job', 'workers', 'worker', 'worker-pause', 'worker-pause-history', 'worker-primary', 'worker-primary-history', 'notes', 'note', 'note-history', 'checklist-current', 'checklist-history', 'checkpoint-latest', 'checkpoints', 'job-updates']) add(domain);
     add('reviews', 'current'); add('reviews', 'policy-assessment');
   }
   for (const { event_type: type, resource_id: id } of items) {
@@ -24,7 +24,7 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
       // Refresh active imported domains, leaving unopened bodies unfetched.
       for (const domain of ['delivery', 'jobs', 'job', 'checkpoint-latest', 'checkpoints']) add(domain);
     } else if (type.startsWith('map.')) {
-      add('map'); add('map-entry', id); add('map-history', id);
+      add('map-editorial'); add('map'); add('map-entry', id); add('map-history', id);
       // An entry rename/archive affects recorded references in current views.
       add('job-workstream');
     } else if (type === 'job.created' || type === 'job.updated') {

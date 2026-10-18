@@ -2,3 +2,5 @@
 @media(max-width:760px){.public-layout{padding:16px 15px 30px}.public-hero{grid-template-columns:minmax(0,1fr);padding:24px;gap:20px}.public-hero-status{align-items:flex-start;text-align:left;max-width:none}.public-project .mast-inner{flex-wrap:wrap;gap:10px}.public-project .mast-label{order:3;flex-basis:100%}.public-section{margin-top:26px}.public-navigation{gap:12px 18px;font-size:.85rem}.public-card{padding:18px}.public-hero .public-links{flex-direction:column}.public-hero .public-link-destination{max-width:100%}.public-review-queue .review-pull-heading{flex-wrap:wrap}.public-project .footer{gap:12px;flex-wrap:wrap}}
 
 .public-project .review-pill-zero .review-pill-age{color:var(--fc-accent_text,#fff)}
+
+.public-editorial{max-width:86ch}.public-story{padding:26px 0;border-top:1px solid var(--fc-canvas_border,#c8c7c4);min-width:0;overflow-wrap:anywhere}.public-story:first-child{border-top:0;padding-top:4px}.public-story h3{font-size:1.4rem;line-height:1.25;margin:8px 0 18px}.public-card .editorial-markdown{font-size:.95rem}@media(max-width:650px){.public-story{padding:20px 0}.public-story h3{font-size:1.2rem}}

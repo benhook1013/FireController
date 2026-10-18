@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/projectmap"
 )
 
@@ -161,12 +162,11 @@ func TestMapImportHashBindsActualWorkerPrincipalProjectAndInstance(t *testing.T)
 	expect(t, out, http.StatusForbidden)
 }
 func TestMapImportMigratesActualVersionOneWithoutChangingExistingMap(t *testing.T) {
-	f := setup(t)
+	f := setupWithMapSchema(t, func(ctx context.Context, s *core.Store) error {
+		return s.EnsureSchema(ctx, "project_map", preSectionMigrations[:1]...)
+	})
 	created := f.create("before-upgrade", workstream())
 	before := f.read(created.ID)
-	if _, err := f.store.DB().Exec(`DROP TABLE project_map_import_items;DROP TABLE project_map_import_history;DROP TABLE project_map_import_sources;UPDATE metadata SET value='1' WHERE key='schema:project_map'`); err != nil {
-		t.Fatal(err)
-	}
 	if err := f.validate(); err != nil {
 		t.Fatal("v1 snapshot invalid", err)
 	}
@@ -174,7 +174,7 @@ func TestMapImportMigratesActualVersionOneWithoutChangingExistingMap(t *testing.
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:project_map'`).Scan(&version); err != nil || version != "2" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:project_map'`).Scan(&version); err != nil || version != "3" {
 		t.Fatal("migration version", version, err)
 	}
 	if !reflect.DeepEqual(before, f.read(created.ID)) {

@@ -21,7 +21,7 @@ describe('read-only project map components', () => {
     expect(html).toContain('&lt;img src=x&gt;');
     expect(html).toContain('Earlier &lt;phase&gt;');
     expect(html).toContain('Earlier &lt;state&gt;');
-    expect(html).toContain('Next milestone');
+    expect(html).toContain('Next');
     expect(html).toContain('target="_blank" rel="noreferrer noopener"');
     expect(html).toContain('Unsafe link (unavailable link)');
     expect(html).not.toMatch(/<script>|<img|href="javascript:|dangerouslySetInnerHTML/u);

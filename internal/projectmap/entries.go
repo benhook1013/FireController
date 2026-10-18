@@ -18,6 +18,7 @@ func Register(mux *http.ServeMux, store *core.Store) {
 	mux.HandleFunc("POST "+base+"/map/entries", createEntry(store))
 	mux.HandleFunc("PUT "+base+"/map/entries/{entry_id}", replaceEntry(store))
 	mux.HandleFunc("GET "+base+"/map/entries", listEntries(store))
+	mux.HandleFunc("GET "+base+"/map/editorial", editorialEntries(store))
 	mux.HandleFunc("GET "+base+"/map/entries/{entry_id}", getEntry(store))
 	mux.HandleFunc("GET "+base+"/map/entries/{entry_id}/history", entryHistory(store))
 	mux.HandleFunc("GET "+base+"/map/entries/{entry_id}/history/{revision}", getRevision(store))
@@ -211,7 +212,7 @@ func listEntries(store *core.Store) http.HandlerFunc {
 		}
 		query := r.URL.Query()
 		kind := query.Get("kind")
-		if values, present := query["kind"]; present && (values[0] != "workstream" && values[0] != "return_point") {
+		if values, present := query["kind"]; present && !validKind(values[0]) {
 			core.WriteError(w, invalid())
 			return
 		}
@@ -258,7 +259,7 @@ func listEntries(store *core.Store) http.HandlerFunc {
 				if err = rows.Scan(&item.ID, &item.Kind, &item.Title, &item.State, &item.Archived, &item.Revision); err != nil {
 					return err
 				}
-				if !entryID.MatchString(item.ID) || item.Kind != "workstream" && item.Kind != "return_point" || !named(item.Title, 240) || !short(item.State, 240) || item.Revision < 1 {
+				if !entryID.MatchString(item.ID) || !validKind(item.Kind) || !named(item.Title, 240) || !short(item.State, 240) || item.Revision < 1 {
 					return unavailable()
 				}
 				if len(result.Items) == limit {

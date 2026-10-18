@@ -15,11 +15,11 @@ export interface JobUpdate {id: string; project_id: string; job_id: string; job_
 export interface ChecklistItem {id: string; text: string; done: boolean}
 export interface JobChecklist {job_id: string; job_revision: number; revision: number; items: ChecklistItem[]}
 export interface ChecklistHistoryEntry {revision: number; job_revision: number; actor_id: string; worker_id: string; items: ChecklistItem[]; created_at: string}
-export type ProjectMapKind = 'workstream'|'return_point';
+export type ProjectMapKind = 'workstream'|'return_point'|'section';
 export interface ProjectMapPhase {id: string; name: string; state: string; archived: boolean}
 export interface ProjectMapLink {label: string; url: string}
 export interface ProjectMapSummary {id: string; kind: ProjectMapKind; title: string; state: string; archived: boolean; revision: number}
-export interface ProjectMapEntry extends ProjectMapSummary {project_id: string; description: string; where: string; next: string; trigger: string; phases: ProjectMapPhase[]; links: ProjectMapLink[]; created_at: string; updated_at: string}
+export interface ProjectMapEntry extends ProjectMapSummary {project_id: string; description: string; where: string; next: string; trigger: string; phases: ProjectMapPhase[]; links: ProjectMapLink[]; created_at: string; updated_at: string; position?: number}
 export interface ProjectMapHistorySummary {revision: number; actor_id: string; created_at: string}
 export interface ProjectMapRevision extends ProjectMapHistorySummary {state: ProjectMapEntry}
 export interface ProjectMapOptions extends PageOptions {kind?: ProjectMapKind; archived?: boolean}

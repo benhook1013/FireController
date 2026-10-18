@@ -17,7 +17,7 @@ func validateImportSnapshot(ctx context.Context, tx *sql.Tx) error {
 	if version == "1" {
 		return nil
 	}
-	if version != "2" {
+	if version != "2" && version != "3" {
 		return unavailable()
 	}
 	var orphans int
