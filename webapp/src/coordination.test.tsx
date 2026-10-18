@@ -107,6 +107,8 @@ describe('worker pending-note placement', () => {
       expect(html.indexOf('Pending notes')).toBeLessThan(html.indexOf('Explicit pause'));
       expect(html).toContain('Preview &lt;img src=x&gt;');
       expect(html).toContain('Primary job');
+      expect(html).not.toContain('Notes for this worker');
+      expect(html).toContain('View all notes and history');
     } finally { router.dispose(); client.clear(); }
   });
 });

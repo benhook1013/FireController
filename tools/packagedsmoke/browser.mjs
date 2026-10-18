@@ -64,7 +64,7 @@ try {
  let controlledAccessFailure = false;
  const expectedMissingSessionRoute = url => { if (!controlledAccessFailure || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname); } catch { return false; } };
   counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
-  let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0;
+  let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0, noteArchiveReads = 0;
   let injectedRequest;
   diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external });
   page.on('pageerror', () => errors++);
@@ -79,6 +79,7 @@ try {
     if (url.origin !== config.origin) { external++; return; }
     if (request.method() === 'GET') {
       if (url.pathname === prefix + '/presentation') presentationReads++;
+      if (url.pathname === prefix + '/notes' && url.searchParams.get('status') === 'all') noteArchiveReads++;
       if (url.pathname === prefix + '/project-events/stream') metadataStreams++;
       if (url.pathname === prefix + '/message-events/stream') inboxStreams++;
       return;
@@ -179,6 +180,25 @@ try {
   const cookieName = 'fc-local-browser-' + sessionID;
   const cookie = (await context.cookies()).find(value => value.name === cookieName);
   need(cookie?.httpOnly && cookie.sameSite === 'Strict' && sessionRenewals === 0);
+
+  // A DOM-only text fixture measures the normal single-word title without
+  // changing project presentation or reducing the long-brand fixture below.
+  phase = 'normal-title-mobile-layout';
+  for (const width of [320, 390]) {
+    await page.setViewportSize({width, height:900});
+    need(await page.locator('.hero-project h1').evaluate(element => {
+      const original = element.textContent;
+      try {
+        element.textContent = 'FireController';
+        const range = document.createRange(); range.selectNodeContents(element);
+        const rects = [...range.getClientRects()];
+        const box = element.getBoundingClientRect();
+        return rects.length === 1 && rects[0].left >= box.left - 1 && rects[0].right <= box.right + 1
+          && document.documentElement.scrollWidth <= innerWidth;
+      } finally { element.textContent = original; }
+    }));
+  }
+  await page.setViewportSize({width:390, height:900});
 
   phase = 'fixture-update';
   const title = 'UnbrokenProjectTitle'.repeat(8) + '<literal>';
@@ -296,11 +316,26 @@ try {
   need(await selectedWorker() === config.worker);
 
   phase = 'live-notes';
-  await page.getByRole('link', {name:'Notes for this worker', exact:true}).click();
+  checkpoint = 'worker-history-link';
+  const emptyWorkerHistory = page.getByRole('link', {name:'Notes history', exact:true});
+  await emptyWorkerHistory.waitFor();
+  checkpoint = 'worker-history-empty';
+  need(await page.getByRole('region', {name:'Pending notes', exact:true}).count() === 0 && noteArchiveReads === 0);
+  need(await emptyWorkerHistory.getAttribute('href') === home + '/notes?status=all&worker_id=' + config.worker);
+  const workerArchive = page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/notes' && new URL(value.url()).searchParams.get('status') === 'all' && new URL(value.url()).searchParams.get('limit') === '20' && !new URL(value.url()).searchParams.has('cursor') && new URL(value.url()).searchParams.get('worker_id') === config.worker);
+  checkpoint = 'worker-history-open';
+  await emptyWorkerHistory.click();
+  checkpoint = 'worker-history-response';
+  need((await workerArchive).status() === 200 && noteArchiveReads === 1);
+  checkpoint = 'worker-history-filters';
+  await expect(page.getByLabel('Worker ID', {exact:true})).toHaveValue(config.worker);
+  await expect(page.getByRole('form', {name:'Note filters', exact:true}).getByRole('combobox', {name:/^Status/})).toHaveValue('all');
+  checkpoint = 'worker-history-phase-filter';
   await page.getByLabel('Phase', {exact:true}).fill('live-proof');
   const filtered = page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/notes' && new URL(value.url()).searchParams.get('phase') === 'live-proof');
   await page.getByRole('button', {name:'Apply note filters', exact:true}).click();
   need((await filtered).status() === 200);
+  checkpoint = 'worker-note-create';
   const noteBody = {worker_id:config.worker, job_id:'', phase:'live-proof', kind:'reminder', body:'Live note before'};
   const note = await write('POST', '/notes', noteBody, 201);
   await page.getByText('Live note before', {exact:true}).waitFor();
@@ -316,10 +351,23 @@ try {
 
   phase = 'contextual-notes';
   const pendingPanel = page.getByRole('region', {name:'Pending notes', exact:true});
+  const archiveReadsBeforeEmptyJob = noteArchiveReads;
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Jobs', exact:true}).click();
   await page.getByRole('link', {name:'Live job detail updated', exact:true}).click();
   checkpoint = 'job-empty';
+  const emptyJobHistory = page.getByRole('link', {name:'Notes history', exact:true});
+  await emptyJobHistory.waitFor();
   await expect(pendingPanel).toHaveCount(0);
+  need(await emptyJobHistory.getAttribute('href') === home + '/notes?status=all&job_id=' + job.id);
+  need(noteArchiveReads === archiveReadsBeforeEmptyJob);
+  const archiveReadsBeforeJob = noteArchiveReads;
+  const jobArchive = page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/notes' && new URL(value.url()).searchParams.get('status') === 'all' && new URL(value.url()).searchParams.get('limit') === '20' && !new URL(value.url()).searchParams.has('cursor') && new URL(value.url()).searchParams.get('job_id') === job.id);
+  await emptyJobHistory.click();
+  need((await jobArchive).status() === 200 && noteArchiveReads === archiveReadsBeforeJob + 1);
+  await expect(page.getByLabel('Job ID', {exact:true})).toHaveValue(job.id);
+  await expect(page.getByRole('form', {name:'Note filters', exact:true}).getByRole('combobox', {name:/^Status/})).toHaveValue('all');
+  await page.goBack();
+  await emptyJobHistory.waitFor();
   checkpoint = 'job-create';
   const jobNote = await write('POST', '/notes', {worker_id:'', job_id:job.id, phase:'', kind:'reminder', body:'Context job pending'}, 201);
   checkpoint = 'job-appeared';

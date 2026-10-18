@@ -38,6 +38,6 @@ function PendingNotes({ scope }: { scope: NoteScope }) {
   const paging = usePaging();
   const query = useQuery(contextualNotesQuery(session, key, scope, paging.cursor));
   const page = query.data;
-  if (!query.isPending && !query.error && page && page.items.length === 0 && !page.has_more && paging.number === 1) return null;
+  if (!query.isPending && !query.error && page && page.items.length === 0 && !page.has_more && paging.number === 1) return <p className="contextual-notes-history"><Link to={allNotesPath(home, scope)}>Notes history</Link></p>;
   return <section className="panel contextual-notes" aria-label="Pending notes"><div className="contextual-notes-heading"><h3>Pending notes</h3><Link to={allNotesPath(home, scope)}>View all notes and history</Link></div><ReadState error={query.error} loading={false} empty={false}>{query.isPending ? <PageSkeleton rows={1} label="Loading pending notes" /> : page?.items.length ? <ContextualNoteRows notes={page.items} home={home} /> : <p className="contextual-notes-empty">No pending notes on this page.</p>}</ReadState>{(page && (page.items.length > 0 || page.has_more || paging.number > 1)) && <Pager paging={paging} page={page} label="pending notes" busy={query.isFetching} />}</section>;
 }

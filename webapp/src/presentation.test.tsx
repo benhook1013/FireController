@@ -28,10 +28,12 @@ describe('project appearance and metadata boundary', () => {
     const styles = fs.readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
     const base = styles.split('\n/* Bounded presentation text. */')[0];
     // Baseline keeps the selected Inter 600 header/five-pixel gap and removes
-    // the redundant left hero eyebrow and permission pill as requested.
+    // the redundant left hero eyebrow and permission pill as requested. The
+    // mobile title now scales below 390px so ordinary words fit at 320px;
+    // the 390px and desktop title sizes remain unchanged.
     const original = base.replace(/var\(--fc-[a-z_]+,([^()]+)\)/gu, '$1');
     const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(original));
-    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('09636463aa42411e444c63e2f24f388bd2a46b4b4b4f244235176135b2737ab2');
+    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('be741206be6ffabd6407a5a3277b3a32efa212bc3413b853a92615f05bcb8af2');
     const tokens = new Set(Array.from(styles.matchAll(/--fc-([a-z_]+)/gu), match => match[1]));
     expect([...tokens].sort()).toEqual(Object.keys(presentationDefaults.theme).sort());
     // Decorative shadows may stay literal. All informative declarations use

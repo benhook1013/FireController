@@ -251,7 +251,7 @@ func (o *browserOutput) safePhase() string {
 			continue
 		}
 		switch record.Phase {
-		case "configuration", "launch", "connect", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "live-jobs", "live-workers", "live-notes", "contextual-notes", "live-reviews", "reload", "renewal-activity", "renewal-missing-cookie", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
+		case "configuration", "launch", "connect", "normal-title-mobile-layout", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "live-jobs", "live-workers", "live-notes", "contextual-notes", "live-reviews", "reload", "renewal-activity", "renewal-missing-cookie", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
 			if record.Phase == "metadata-failure" {
 				switch record.Checkpoint {
 				case "metadata-notice", "metadata-initial-counts", "metadata-inbox-ready":
@@ -262,6 +262,17 @@ func (o *browserOutput) safePhase() string {
 					if valid {
 						return fmt.Sprintf("metadata-failure/%s presentation_reads=%d metadata_streams=%d inbox_streams=%d injected_metadata_failures=%d injected_console_errors=%d errors=%d external=%d", record.Checkpoint, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.InjectedMetadataFailures, record.InjectedConsoleErrors, record.Errors, record.External)
 					}
+				}
+			}
+
+			if record.Phase == "live-notes" {
+				switch record.Checkpoint {
+				case "worker-history-link", "worker-history-empty", "worker-history-open", "worker-history-response", "worker-history-filters", "worker-history-phase-filter", "worker-note-create":
+					class := "driver"
+					if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
+						class = record.FailureClass
+					}
+					return fmt.Sprintf("live-notes/%s class=%s errors=%d forbidden_writes=%d", record.Checkpoint, class, record.Errors, record.Writes)
 				}
 			}
 
@@ -319,6 +330,7 @@ func TestBrowserSendFailureDiagnosticsAllowlist(t *testing.T) {
 		{"timeout", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"send-response","failure_class":"timeout"}`, "explicit-actions-send/send-response class=timeout send_status=0 reply_status=0 conversation_match=false posts=0 deletes=0 renewals=0 errors=0 forbidden_writes=0 action_writes=0 external=0"},
 		{"unknown-class", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"conversation-open","failure_class":"PRIVATE_SENTINEL"}`, "explicit-actions-send/conversation-open class=driver send_status=0 reply_status=0 conversation_match=false posts=0 deletes=0 renewals=0 errors=0 forbidden_writes=0 action_writes=0 external=0"},
 		{"unknown-checkpoint", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"PRIVATE_SENTINEL","failure_class":"PRIVATE_SENTINEL"}`, "explicit-actions-send"},
+		{"empty-worker-history", `{ "state":"FAIL","phase":"live-notes","checkpoint":"worker-history-response","failure_class":"timeout","body":"PRIVATE_SENTINEL"}`, "live-notes/worker-history-response class=timeout errors=0 forbidden_writes=0"},
 		{"contextual-note-selector", `{"state":"FAIL","phase":"contextual-notes","checkpoint":"job-scope-return","failure_class":"driver","body":"PRIVATE_SENTINEL"}`, "contextual-notes/job-scope-return class=driver errors=0 forbidden_writes=0"},
 		{"contextual-note-private-checkpoint", `{"state":"FAIL","phase":"contextual-notes","checkpoint":"PRIVATE_SENTINEL","failure_class":"assertion"}`, "contextual-notes"},
 		{"unknown-phase", `{"state":"FAIL","phase":"PRIVATE_SENTINEL","checkpoint":"send-status"}`, "driver-start-or-cleanup"},

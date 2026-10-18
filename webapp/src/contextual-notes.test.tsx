@@ -14,15 +14,15 @@ function environment(project = 'project_one', read = vi.fn()) {
   const session = { controller: new AbortController(), api: { notes: read } } as unknown as Session;
   return { key, session, read };
 }
-function renderPanel(value?: Page<NoteSummary>, error?: Error, target: { workerId: string } | { jobId: string } = { workerId: 'worker_one' }) {
-  const env = environment();
+function renderPanel(value?: Page<NoteSummary>, error?: Error, target: { workerId: string } | { jobId: string } = { workerId: 'worker_one' }, project = 'project_one', read = vi.fn()) {
+  const env = environment(project, read);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryOnMount: false } } });
   const scope = contextualNoteScope(target)!;
   const options = contextualNotesQuery(env.session, env.key, scope);
   if (value) client.setQueryData(options.queryKey, value);
   if (error) client.getQueryCache().build(client, options).setState({ status: 'error', error });
   try {
-    return renderToStaticMarkup(<QueryClientProvider client={client}><MemoryRouter><WorkspaceContext.Provider value={{ ...env, home: '/projects/project_one', selectWorker: () => {}, fail: () => {}, ready: false }}><ContextualNotes {...target} /></WorkspaceContext.Provider></MemoryRouter></QueryClientProvider>);
+    return renderToStaticMarkup(<QueryClientProvider client={client}><MemoryRouter><WorkspaceContext.Provider value={{ ...env, home: `/projects/${project}`, selectWorker: () => {}, fail: () => {}, ready: false }}><ContextualNotes {...target} /></WorkspaceContext.Provider></MemoryRouter></QueryClientProvider>);
   } finally { client.clear(); }
 }
 
@@ -32,8 +32,10 @@ describe('contextual pending notes', () => {
     expect(contextualNoteScope({ jobId: 'job_one' })).toEqual({ job_id: 'job_one' });
     for (const target of [{}, { workerId: '' }, { jobId: 'not/a/job' }, { workerId: 'worker_one', jobId: 'job_one' }]) expect(contextualNoteScope(target as never)).toBeUndefined();
   });
-  it('hides fetched-empty state but keeps concise loading and safe failure visible', () => {
-    expect(renderPanel(empty)).toBe('');
+  it('omits the fetched-empty panel but keeps concise loading and safe failure visible', () => {
+    const settled = renderPanel(empty);
+    expect(settled).toContain('Notes history');
+    expect(settled).not.toContain('Pending notes');
     const loading = renderPanel();
     expect(loading).toContain('Pending notes');
     expect(loading).toContain('aria-label="Loading pending notes"');
@@ -43,6 +45,19 @@ describe('contextual pending notes', () => {
     expect(failed).toContain('role="alert"');
     expect(failed).not.toContain('PRIVATE_RAW_ERROR');
     expect(failed).toContain('View all notes and history');
+  });
+  it('keeps empty worker and job history explicitly linked to their project and target without an archive read', () => {
+    for (const project of ['project_one', 'project_two']) {
+      for (const target of [{ workerId: 'worker_one' }, { jobId: 'job_one' }]) {
+        const read = vi.fn();
+        const html = renderPanel(empty, undefined, target, project, read);
+        const field = 'workerId' in target ? 'worker_id=worker_one' : 'job_id=job_one';
+        expect(html).toContain(`href="/projects/${project}/notes?status=all&amp;${field}"`);
+        expect(html.replace(/<[^>]*>/gu, '')).toBe('Notes history');
+        expect(html).not.toMatch(/<section|<button|include_assigned_jobs|cursor=/u);
+        expect(read).not.toHaveBeenCalled();
+      }
+    }
   });
   it('shows bounded pending previews with clear detail/history links and no repeated scope IDs', () => {
     const html = renderPanel({ items: [note], has_more: true, cursor: 'opaque_cursor' });
