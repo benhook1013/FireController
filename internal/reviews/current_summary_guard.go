@@ -7,9 +7,9 @@ import (
 	"errors"
 )
 
-// Validate the bounded front of the previous current summary before deriving a
-// successor. This detects a missing or corrupted cached winner, not corruption
-// of every nonwinning row; full maintenance validation owns that wider check.
+// Check one current compact summary against its bounded indexed winners.
+// Publication checks before deriving a successor; full maintenance reuses this
+// check for each current pull and separately audits every nonwinning order row.
 func validateCurrentSummaryFront(ctx context.Context, tx HistoryQuery, project string, number int64) error {
 	var runs, attempts int64
 	var cachedRuns, cachedAttempts sql.NullInt64
