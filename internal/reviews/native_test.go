@@ -280,6 +280,30 @@ func TestNativePreservesImportedOriginEvidenceAndOldBytes(t *testing.T) {
 	if detail.Source != nativeSource || runs.Source != nativeSource || len(runs.Items) != 2 || detail.Pull.RunCount != 2 || detail.Pull.AttemptCount != 2 {
 		t.Fatal("mixed native projection lost producer history")
 	}
+	positionRows, err := f.store.DB().Query(`SELECT v.source,c.run_order FROM review_current_runs c JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision WHERE c.project_id=? AND c.pull_number=1 ORDER BY c.run_order`, f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var placements []struct {
+		source string
+		order  int
+	}
+	for positionRows.Next() {
+		var placement struct {
+			source string
+			order  int
+		}
+		if err := positionRows.Scan(&placement.source, &placement.order); err != nil {
+			positionRows.Close()
+			t.Fatal(err)
+		}
+		placements = append(placements, placement)
+	}
+	err = positionRows.Err()
+	positionRows.Close()
+	if err != nil || len(placements) != 2 || placements[0].source != request.Source || placements[0].order != 0 || placements[1].source != nativeSource || placements[1].order != 1 {
+		t.Fatalf("native run did not append after retained producer placement: %+v err=%v", placements, err)
+	}
 	for _, summaries := range [][]RunSummary{queue.Items[0].RecentRuns, detail.Pull.RecentRuns, runs.Items} {
 		if len(summaries) != 2 || summaries[0].Source != nativeSource || summaries[1].Source != request.Source || summaries[1].ID != importedID || summaries[0].ID == summaries[1].ID {
 			t.Fatal("same external ID producers collapsed or origin relabeled", summaries)
