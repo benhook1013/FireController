@@ -61,6 +61,7 @@ type invocation struct {
 	pullNumber int64
 	mutation   *mutationInvocation
 	setup      *profileSetupInvocation
+	notes      *noteInvocation
 }
 
 // Run preserves the original embedding API while RunContext adds caller
@@ -129,6 +130,19 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.notes != nil {
+		value, err := executeNotes(requestCtx, service, call.notes)
+		if err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+		if call.notes.write() {
+			if err = json.NewEncoder(stdout).Encode(value); err != nil {
+				return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The note receipt could not be written.", Action: "Retry the exact same key, request and bound instance; do not use a replacement key.", OutcomeUnknown: true})
+			}
+			return ExitSuccess
+		}
+		return emit(stdout, stderr, value)
+	}
 	if call.mutation != nil {
 		value, err := executeMutation(requestCtx, service, call.mutation)
 		if err != nil {
@@ -152,8 +166,18 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		}{identity, true}
 	case call.command == "reviews":
 		value, err = executeReview(requestCtx, service, call)
+	case call.command == "workers" && call.subcommand == "pause-state":
+		value, err = service.WorkerPause(requestCtx)
+	case call.command == "workers" && call.subcommand == "pause-history":
+		value, err = service.WorkerPauseHistory(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "workers":
 		value, err = service.Workers(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+	case call.command == "jobs" && call.subcommand == "context":
+		value, err = service.JobContext(requestCtx, call.position[0], call.limit)
+	case call.command == "jobs" && call.subcommand == "primary":
+		value, err = service.PrimaryJob(requestCtx)
+	case call.command == "jobs" && call.subcommand == "primary-history":
+		value, err = service.PrimaryJobHistory(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "jobs" && call.subcommand == "list":
 		value, err = service.Jobs(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.JobFilter{WorkerID: call.worker, Status: call.status})
 	case call.command == "jobs" && call.subcommand == "assigned":
@@ -166,6 +190,12 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value, err = service.LatestCheckpoint(requestCtx, call.position[0])
 	case call.command == "jobs" && call.subcommand == "checkpoints":
 		value, err = service.CheckpointHistory(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+	case call.command == "jobs" && call.subcommand == "updates":
+		value, err = service.JobUpdates(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+	case call.command == "jobs" && call.subcommand == "checklist":
+		value, err = service.JobChecklist(requestCtx, call.position[0])
+	case call.command == "jobs" && call.subcommand == "checklist-history":
+		value, err = service.JobChecklistHistory(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "inbox" && call.subcommand == "list":
 		value, err = service.Inbox(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack})
 	case call.command == "inbox" && call.subcommand == "snapshot":
@@ -231,11 +261,19 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.setup, ok = parseProfileSetup(call.subcommand, remaining[2:])
 		return call, ok && (!call.hasProfile || validSetupText(call.profile)) && (!call.hasProfilesFile || validSetupText(call.profilesFile))
 	}
-	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" || len(remaining) < 2 {
+	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" || len(remaining) < 2 {
 		return call, false
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if call.command == "jobs" && call.subcommand == "context" {
+		return parseJobContext(call, operationArgs)
+	}
+	if call.command == "notes" {
+		var ok bool
+		call.notes, ok = parseNotes(call.subcommand, operationArgs)
+		return call, ok
+	}
 	if isMutation(call.command, call.subcommand) {
 		mutation, valid := parseMutation(call.command, call.subcommand, operationArgs)
 		call.mutation = mutation
@@ -246,7 +284,7 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	allowed := map[string]bool{}
 	switch call.command + " " + call.subcommand {
-	case "workers list", "jobs history", "jobs checkpoints", "inbox thread":
+	case "workers pause-history", "jobs primary-history", "workers list", "jobs history", "jobs checkpoints", "jobs updates", "jobs checklist-history", "inbox thread":
 		allowed["--limit"], allowed["--cursor"] = true, true
 	case "jobs list":
 		allowed["--limit"], allowed["--cursor"], allowed["--worker"], allowed["--status"] = true, true, true, true
@@ -258,7 +296,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"] = true, true, true, true
 	case "inbox events":
 		allowed["--cursor"], allowed["--limit"], allowed["--wait-ms"] = true, true, true
-	case "jobs read", "jobs checkpoint-latest":
+	case "workers pause-state", "jobs primary", "jobs read", "jobs checkpoint-latest", "jobs checklist":
 	default:
 		return call, false
 	}
@@ -310,6 +348,9 @@ func parseInvocation(args []string) (invocation, bool) {
 				}
 				call.waitMS = waitMS
 			case "--cursor":
+				if (call.command == "jobs" && call.subcommand == "primary-history" || call.command == "workers" && call.subcommand == "pause-history") && (value != strings.TrimSpace(value) || strings.IndexFunc(value, unicode.IsControl) >= 0) {
+					return call, false
+				}
 				if len(value) > 4096 || !utf8.ValidString(value) {
 					return call, false
 				}
@@ -328,7 +369,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		}
 	}
 	expected := 0
-	if call.command == "jobs" && (call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "checkpoint-latest" || call.subcommand == "checkpoints") || call.command == "inbox" && call.subcommand == "thread" {
+	if call.command == "jobs" && (call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "checkpoint-latest" || call.subcommand == "checkpoints" || call.subcommand == "updates" || call.subcommand == "checklist" || call.subcommand == "checklist-history") || call.command == "inbox" && call.subcommand == "thread" {
 		expected = 1
 	}
 	if len(call.position) != expected {

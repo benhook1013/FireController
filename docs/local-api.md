@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`fcd` serves scoped projects, workers, access grants, basic jobs and durable messages. The CLI implements local `version`/`context` and the profile-bound [read commands](development.md#read-only-agent-commands). The [explicit-key CLI mutations](development.md#explicit-agent-mutations) create/edit jobs and send/seen/ack messages. The [stdio MCP adapter](mcp.md) exposes read and explicit-key mutation tools against these same endpoints. The [incoming-message event API](message-events.md) supplies scoped snapshot/replay, bounded waits and a persistent SSE transport. The [embedded read-only browser](browser-guide.md) displays projects, jobs/checkpoint details, workers, live incoming conversations and stored review queue, PR and run views. [Job checkpoints](job-checkpoints.md) provide immutable progress records through the same API and agent clients. The [review workspace](review-workspace.md) implements administrator observation and scoped read routes. Optional [native review execution](review-execution.md) and explicit [source refresh and observed policy](review-source.md) use separate project-scoped routes and owned background workers. Browser mutations, a project/job event feed, backup API, primary-job selection, checklist and deferred-note API remain unavailable in this slice.
+`fcd` serves scoped projects, workers, access grants, basic jobs and durable messages. The CLI implements local `version`/`context` and the profile-bound [read commands](development.md#read-only-agent-commands). The [explicit-key CLI mutations](development.md#explicit-agent-mutations) cover jobs, checkpoints, progress, focus, pause, notes and messages. The [stdio MCP adapter](mcp.md) exposes read and explicit-key mutation tools against these same endpoints. The [incoming-message event API](message-events.md) supplies scoped snapshot/replay, bounded waits and a persistent SSE transport. The [embedded read-only browser](browser-guide.md) displays projects, jobs/checkpoint details, read-only checklists and narrative updates, workers, live incoming conversations and stored review queue, PR and run views. [Job checkpoints](job-checkpoints.md) provide immutable progress records through the same API and agent clients. The [review workspace](review-workspace.md) implements administrator observation and scoped read routes. Optional [native review execution](review-execution.md) and explicit [source refresh and observed policy](review-source.md) use separate project-scoped routes and owned background workers. [Deferred notes](notes.md) add explicit scoped reminder/source reads and guarded mutations. Browser mutations, a project/job event feed and backup API remain unavailable in this slice.
 
 The [architecture](architecture.md) owns target behavior. This page describes the current implementation and its limits.
 
@@ -71,6 +71,10 @@ Statuses are `active`, `parked`, `blocked` and `completed`; creation defaults to
 
 [Job checkpoints](job-checkpoints.md) add guarded progress records independently of job state. That page owns append/latest/archive endpoints, content limits, current integration status and client commands.
 
+## Job updates and checklist
+
+[Job progress](job-progress.md) owns immutable narrative-update appends and explicit archive reads, plus independently versioned checklist replacement/current/history routes. Both preserve the job brief and revision history and require explicit mutation keys and current revision guards.
+
 ## Durable messages
 
 | Endpoint | Request or result |
@@ -102,3 +106,19 @@ Jobs and inbox schemas have separate ordered migration versions stored in instan
 The [native review workspace](review-workspace.md) owns its administrator observation and project-scoped queue/PR/run read routes. Those handlers read indexed stored evidence without provider refresh or job/message effects.
 
 The [source refresh contract](review-source.md) owns its explicit POST, operation read and observed-policy read. Its short default wait returns a completed result directly where possible, with a pending receipt only when the work remains active; ordinary review reads never trigger that refresh.
+
+## Worker primary job
+
+[Worker primary focus](worker-focus.md) owns the scoped current, guarded replacement and explicit history routes. Focus is optional and independent of job status; reassignment clears the old worker’s selection atomically. These reads do not load the selected brief or a resume packet automatically.
+
+## Worker pause
+
+[Worker pause state](worker-pause.md) owns the scoped current, guarded replacement and explicit history routes. Pause is independent of job status, primary focus and execution. Reads never fetch jobs or history automatically.
+
+## Deferred notes
+
+[Deferred notes](notes.md) own `POST /notes`, `GET /notes`, `GET` and `PATCH /notes/{note_id}`, `GET /notes/{note_id}/history` and `GET /notes/{note_id}/history/{revision}`. Routes use the existing project prefix and authorization. Current/list reads do not load archives; compact history and selected full revisions require explicit reads. Status-only patches do not require resubmitting the body. Notes never consume themselves or change jobs, focus, pause or messages.
+
+## Job resume context
+
+[Job resume context](job-context.md) owns `GET /jobs/{job_id}/context`, with an explicit worker binding and optional bounded limit. One authorized snapshot combines the complete current brief/latest checkpoint/checklist, worker focus/pause, selected pending-note/inbox previews and incoming-event watermark. Required content is never truncated; the response states which bodies or additional pages need explicit reads. This deliberate operation does not expand routine job reads or perform provider work.

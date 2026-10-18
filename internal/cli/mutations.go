@@ -19,6 +19,10 @@ type mutationInvocation struct {
 	edit                     client.EditJobRequest
 	send                     client.SendMessageRequest
 	checkpoint               client.AppendCheckpointRequest
+	update                   client.AppendUpdateRequest
+	checklist                client.ReplaceChecklistRequest
+	primary                  client.ReplacePrimaryJobRequest
+	pause                    client.ReplaceWorkerPauseRequest
 	reviewRoute              client.ReviewRouteRequest
 	reviewRouteDecision      client.ReviewRouteDecisionRequest
 	reviewRouteFix           client.ReviewRouteFixRequest
@@ -31,6 +35,15 @@ type mutationInvocation struct {
 }
 
 func isMutation(command, operation string) bool {
+	if command == "workers" && (operation == "pause" || operation == "resume") {
+		return true
+	}
+	if command == "jobs" && (operation == "primary-set" || operation == "primary-clear") {
+		return true
+	}
+	if command == "jobs" && (operation == "update" || operation == "checklist-set") {
+		return true
+	}
 	switch command + " " + operation {
 	case "reviews publish", "reviews publication-recover", "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews finalize", "reviews request", "reviews source-refresh", "reviews route-create", "reviews route-decide", "reviews route-fix":
 		return true
@@ -42,6 +55,15 @@ func isMutation(command, operation string) bool {
 // keys make retries recoverable across separate CLI processes without a global
 // retry identity or silently regenerated key.
 func parseMutation(command, operation string, args []string) (*mutationInvocation, bool) {
+	if command == "workers" && (operation == "pause" || operation == "resume") {
+		return parseWorkerPause(operation, args)
+	}
+	if command == "jobs" && (operation == "primary-set" || operation == "primary-clear") {
+		return parsePrimaryJob(operation, args)
+	}
+	if command == "jobs" && (operation == "update" || operation == "checklist-set") {
+		return parseJobProgress(operation, args)
+	}
 	if command == "reviews" {
 		return parseReviewControl(operation, args)
 	}
@@ -156,12 +178,20 @@ func validMutationKey(key string) bool {
 
 func executeMutation(ctx context.Context, service *client.Client, call *mutationInvocation) (any, error) {
 	switch call.operation {
+	case "workers pause", "workers resume":
+		return service.ReplaceWorkerPause(ctx, call.key, call.pause)
+	case "jobs primary-set", "jobs primary-clear":
+		return service.ReplacePrimaryJob(ctx, call.key, call.primary)
 	case "jobs create":
 		return service.CreateJob(ctx, call.key, call.create)
 	case "jobs edit":
 		return service.EditJob(ctx, call.key, call.id, call.edit)
 	case "jobs checkpoint":
 		return service.AppendCheckpoint(ctx, call.key, call.id, call.checkpoint)
+	case "jobs update":
+		return service.AppendJobUpdate(ctx, call.key, call.id, call.update)
+	case "jobs checklist-set":
+		return service.ReplaceJobChecklist(ctx, call.key, call.id, call.checklist)
 	case "inbox send":
 		return service.SendMessage(ctx, call.key, call.send)
 	case "inbox seen":

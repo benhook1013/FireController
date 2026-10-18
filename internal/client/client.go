@@ -410,7 +410,7 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	}
 	result := fail(value.Error.Code, "The service refused this scoped request.", "Check the selected instance, project, worker and current access.", status)
 	result.RequestID = value.RequestID
-	result.Details = c.safeDetails(value.Error.Details)
+	result.Details = c.safeDetails(value.Error.Details, result.Code)
 	if result.Code == "instance_mismatch" {
 		result.Message = "The service instance does not match the selected profile."
 		result.Action = "Verify the service and explicitly update the private profile if its identity changed."
@@ -433,7 +433,7 @@ func safeCode(value string) bool {
 func (c *Client) sensitive(value string) bool {
 	return strings.Contains(value, c.token) || strings.Contains(value, c.credentialFile)
 }
-func (c *Client) safeDetails(value any) any {
+func (c *Client) safeDetails(value any, code string) any {
 	object, ok := value.(map[string]any)
 	if !ok {
 		return nil
@@ -442,7 +442,7 @@ func (c *Client) safeDetails(value any) any {
 	for key, item := range object {
 		switch key {
 		case "current_revision":
-			if n, ok := item.(float64); ok && n >= 1 && n == float64(int64(n)) && n < 1<<53 {
+			if n, ok := item.(float64); ok && (n >= 1 || n == 0 && (code == "primary_job_revision_conflict" || code == "checklist_revision_conflict" || code == "worker_pause_revision_conflict")) && n == float64(int64(n)) && n < 1<<53 {
 				result[key] = int64(n)
 			}
 		case "project_id":

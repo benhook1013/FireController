@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The coordination slice implements a loopback service with scoped projects/workers, basic jobs and durable messages; see the [local API](local-api.md). The embedded browser provides read-only jobs, workers and live incoming conversations; see the [browser guide](browser-guide.md). Remaining orchestration features are not implemented. The initial design was merged in [PR #1](https://github.com/benhook1013/FireController/pull/1). Temporary development tooling uses separate private state and does not establish production readiness.
+The service implements project-scoped jobs, durable messages and native CLI/hosted review orchestration, with profile-bound CLI and MCP clients. The embedded browser provides jobs, workers, conversations and review inspection; see the [local API](local-api.md), [browser guide](browser-guide.md) and [execution contract](review-execution.md) for exact boundaries. The [delivery plan](delivery.md) records proof and unfinished work. The retained development controller remains primary until implementation is complete and the new GUI passes human review.
 
 ## Documents
 
@@ -23,6 +23,11 @@ The coordination slice implements a loopback service with scoped projects/worker
 - [Native review execution](review-execution.md): durable operations, provider adapters, isolated workspaces and the remaining dispatch/cutover boundary.
 - [Source refresh and observed policy](review-source.md): explicit background source reads, retained observations and provider-free policy assessment.
 - [Job checkpoints](job-checkpoints.md): immutable progress records, guarded appends, explicit latest/archive reads and integration status.
+- [Job progress](job-progress.md): separate narrative updates and guarded checklist state, history and proof requirements.
+- [Worker pause state](worker-pause.md): explicit coordination pause independent of job status, focus and execution.
+- [Worker primary job](worker-focus.md): selected optional resume-focus contract, independent of concurrent jobs and status.
+- [Job resume context](job-context.md): one deliberate current brief/checkpoint and pending-coordination read with explicit completeness and continuation.
+- [Deferred notes](notes.md): scoped reminder/source records, compact reads and guarded history; the owning contract records validation status.
 - [Suggested agent workflow](agent-workflow.md): optional working practices for project instructions and a usage skill, separate from tool contracts.
 - [Product scope](product.md) defines the requirements.
 - [Architecture](architecture.md) owns service boundaries, project isolation, storage, and provider observation rules.

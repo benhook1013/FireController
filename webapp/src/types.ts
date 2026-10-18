@@ -6,6 +6,10 @@ export interface JobSummary {id: string; title: string; worker_id: string; statu
 export interface Job extends JobSummary {project_id: string; brief: string; created_at: string; updated_at: string}
 export interface Checkpoint {id: string; project_id: string; job_id: string; job_revision: number; sequence: number; actor_id: string; worker_id: string; done: string; next: string; blocker: string; evidence: string[]; created_at: string}
 export interface LatestCheckpoint {job_id: string; job_revision: number; checkpoint: Checkpoint|null}
+export interface JobUpdate {id: string; project_id: string; job_id: string; job_revision: number; sequence: number; actor_id: string; worker_id: string; body: string; evidence: string[]; created_at: string}
+export interface ChecklistItem {id: string; text: string; done: boolean}
+export interface JobChecklist {job_id: string; job_revision: number; revision: number; items: ChecklistItem[]}
+export interface ChecklistHistoryEntry {revision: number; job_revision: number; actor_id: string; worker_id: string; items: ChecklistItem[]; created_at: string}
 export interface JobOptions extends PageOptions {worker_id?: string; status?: JobSummary['status']}
 export interface InboxOptions extends PageOptions {unread?: boolean; unacknowledged?: boolean}
 export interface InboxItem {id: string; conversation_id: string; sender_worker_id: string; recipient_worker_id: string; preview: string; preview_truncated: boolean; seen: boolean; acknowledged: boolean; created_at: string}

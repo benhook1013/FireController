@@ -26,14 +26,32 @@ var validStatuses = map[string]bool{
 
 // Register mounts the basic jobs API on the shared project API mux.
 func Register(mux *http.ServeMux, store *core.Store) {
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/notes", createNote(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes", listNotes(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}", getNote(store))
+	mux.HandleFunc("PATCH /api/v1/projects/{project_id}/notes/{note_id}", patchNote(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}/history", noteHistory(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}/history/{revision}", getNoteRevision(store))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/jobs", createJob(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs", listJobs(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}", getJob(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/context", getJobContext(store))
 	mux.HandleFunc("PATCH /api/v1/projects/{project_id}/jobs/{job_id}", editJob(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/history", jobHistory(store))
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/jobs/{job_id}/updates", appendUpdate(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/updates", updateHistory(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checklist", getChecklist(store))
+	mux.HandleFunc("PUT /api/v1/projects/{project_id}/jobs/{job_id}/checklist", replaceChecklist(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checklist/history", checklistHistory(store))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints", appendCheckpoint(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints/latest", latestCheckpoint(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints", checkpointHistory(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/primary-job", getPrimaryJob(store))
+	mux.HandleFunc("PUT /api/v1/projects/{project_id}/workers/{worker_id}/primary-job", replacePrimaryJob(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/primary-job/history", primaryJobHistory(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/pause", getWorkerPause(store))
+	mux.HandleFunc("PUT /api/v1/projects/{project_id}/workers/{worker_id}/pause", replaceWorkerPause(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/pause/history", workerPauseHistory(store))
 }
 
 type job struct {
@@ -312,6 +330,9 @@ func editJob(store *core.Store) http.HandlerFunc {
 				if err := core.CheckWorker(ctx, tx, scope.ProjectID, next.WorkerID); err != nil {
 					return nil, err
 				}
+			}
+			if err := clearReassignedPrimary(ctx, tx, scope, current, next); err != nil {
+				return nil, err
 			}
 			next.Revision++
 			next.UpdatedAt = timestamp()
