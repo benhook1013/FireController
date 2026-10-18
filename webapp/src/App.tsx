@@ -232,7 +232,7 @@ function PrivateApp() {
   return <PresentationContext.Provider value={visibleAppearance}>
     <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><span className="mast-label">{visibleAppearance?.tagline ?? 'Project workspace'}</span></div></header>
     {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} reconnectProjectUpdates={reconnectProjectUpdates} selectWorker={selectWorker} disconnect={() => { if (session.actions.unresolved > 0 && !window.confirm(discardActionWarning)) return; clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
-      : restoring || resumable ? <OpeningProject busy={restoring || connecting} notice={notice} retry={() => setReconnect(value => value + 1)} cancel={() => clear('Connection cancelled.')} />
+      : session || restoring || resumable ? <OpeningProject busy={Boolean(session) || restoring || connecting} notice={notice} retry={() => setReconnect(value => value + 1)} cancel={() => clear('Connection cancelled.')} />
       : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={(project, token) => void connect(project, token)} cancel={() => clear('Connection cancelled.')} />}
     <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span></footer>
   </PresentationContext.Provider>;
