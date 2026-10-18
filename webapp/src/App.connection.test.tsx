@@ -26,15 +26,20 @@ function firstPaint(path = '/projects/project_one/jobs/job_one') {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('private connection first paint', () => {
-  it('renders a neutral opening shell before effects can resume saved access', () => {
+  it('renders only a loading indicator before effects can resume saved access', () => {
     const saved = storage(JSON.stringify(binding));
     const resume = vi.spyOn(Api, 'resume');
     const connect = vi.spyOn(Api.prototype, 'connect');
     const html = firstPaint();
-    expect(html).toContain('Opening project…');
-    expect(html).toContain('Verifying this tab’s saved connection.');
-    expect(html).toContain('role="status"');
-    expect(html).toContain('Cancel connection');
+    expect(html).toContain('class="loading-spinner"');
+    expect(html).toContain('role="status" aria-label="Opening project"');
+    expect(html).not.toContain('Opening project…');
+    expect(html).not.toContain('Verifying this tab’s saved connection.');
+    expect(html).not.toContain('<h1');
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('opening-project-card');
+    expect(html).not.toContain('class="connection-note"');
+    expect(html).toContain('class="mast-label">Project workspace</span>');
     expect(html).not.toContain('Connect to a project');
     expect(html).not.toContain('Project credential');
     expect(html).not.toContain('<form');
@@ -51,7 +56,7 @@ describe('private connection first paint', () => {
   it('does not infer terminal expiry from an informational saved timestamp', () => {
     storage(JSON.stringify({ ...binding, expiresAt: '2025-01-01T00:00:00Z' }));
     const html = firstPaint();
-    expect(html).toContain('Opening project…');
+    expect(html).toContain('aria-label="Opening project"');
     expect(html).not.toContain('Project credential');
   });
   it('shows the login form immediately for a fresh tab without saved metadata', () => {
@@ -60,7 +65,7 @@ describe('private connection first paint', () => {
     expect(html).toContain('Connect to a project');
     expect(html).toContain('Project credential');
     expect(html).toContain('<form');
-    expect(html).not.toContain('Opening project…');
+    expect(html).not.toContain('aria-label="Opening project"');
     expect(html).not.toContain('CACHED_PRIVATE_JOB');
   });
   it('keeps fresh login available if browser storage cannot be inspected', () => {
@@ -71,6 +76,8 @@ describe('private connection first paint', () => {
     const html = renderToStaticMarkup(<OpeningProject busy={false} notice="The service could not be reached in time. Try again when the connection is available." retry={() => {}} cancel={() => {}} />);
     expect(html).toContain('Project connection unavailable');
     expect(html).toContain('role="alert"');
+    expect(html).toContain('The service could not be reached in time. Try again when the connection is available.');
+    expect(html).not.toContain('loading-spinner');
     expect(html).toContain('Retry connection');
     expect(html).toContain('Cancel connection');
     expect(html).not.toContain('Project credential');

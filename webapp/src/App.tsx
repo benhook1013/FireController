@@ -230,7 +230,7 @@ function PrivateApp() {
   const visibleAppearance = connected ? appearance : undefined;
   useLayoutEffect(() => { applyPresentationRoot(document.documentElement, document, visibleAppearance); }, [visibleAppearance]);
   return <PresentationContext.Provider value={visibleAppearance}>
-    <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><span className="mast-label">{visibleAppearance?.tagline ?? 'Project workspace'}</span></div></header>
+    <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><div className="mast-meta"><span className="mast-label">{connected ? `${visibleAppearance?.name ?? session.project.name} workspace` : 'Project workspace'}</span>{connected && <span className="connection-note">Connected</span>}</div></div></header>
     {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} reconnectProjectUpdates={reconnectProjectUpdates} selectWorker={selectWorker} disconnect={() => { if (session.actions.unresolved > 0 && !window.confirm(discardActionWarning)) return; clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
       : restoring || resumable ? <OpeningProject busy={restoring || connecting} notice={notice} retry={() => setReconnect(value => value + 1)} cancel={() => clear('Connection cancelled.')} />
       : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={(project, token) => void connect(project, token)} cancel={() => clear('Connection cancelled.')} />}
@@ -264,10 +264,11 @@ async function restoredWorker(api: Api, workerID: string, signal: AbortSignal): 
 
 function Flame() { return <img className="flame" src={flameEmber} alt="" aria-hidden="true" />; }
 export function OpeningProject({ busy, notice, retry, cancel }: { busy: boolean; notice: string; retry(): void; cancel(): void }) {
+  if (busy) return <main className="opening-project opening-project-loading"><LoadingSpinner label="Opening project" /></main>;
   return <main className="opening-project"><section className="panel opening-project-card" aria-labelledby="opening-project-title">
-    <h1 id="opening-project-title">{busy ? 'Opening project…' : 'Project connection unavailable'}</h1>
-    {busy ? <p role="status">Verifying this tab’s saved connection.</p> : <p className="notice" role="alert">{notice || 'The project could not be reached. Try again when the connection is available.'}</p>}
-    <div className="opening-project-actions">{!busy && <button type="button" className="primary" onClick={retry}>Retry connection</button>}<button type="button" onClick={cancel}>Cancel connection</button></div>
+    <h1 id="opening-project-title">Project connection unavailable</h1>
+    <p className="notice" role="alert">{notice || 'The project could not be reached. Try again when the connection is available.'}</p>
+    <div className="opening-project-actions"><button type="button" className="primary" onClick={retry}>Retry connection</button><button type="button" onClick={cancel}>Cancel connection</button></div>
   </section></main>;
 }
 
@@ -285,9 +286,14 @@ function Connect({ projectId, busy, notice, onConnect, cancel }: { projectId: st
       </form></section></main>;
 }
 
+function LoadingSpinner({ label }: { label: string }) {
+  return <span className="loading-spinner" role="status" aria-label={label} />;
+}
+
 export function ProjectUpdateNotice({ status, reconnect }: { status: LiveStatus; reconnect(): void }) {
   if (status === 'live') return null;
-  return <p className="notice" role="status">Project updates {status === 'connecting' ? 'connecting' : 'disconnected'}. Displayed project data may be stale. {status === 'closed' && <button type="button" onClick={reconnect}>Reconnect project updates</button>}</p>;
+  if (status !== 'closed') return <div className="project-updates-loading"><LoadingSpinner label={status === 'connecting' ? 'Connecting project updates' : 'Reconnecting project updates'} /></div>;
+  return <p className="notice" role="status">Project updates disconnected. Displayed project data may be stale. <button type="button" onClick={reconnect}>Reconnect project updates</button></p>;
 }
 
 function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWorker, disconnect, fail }: { session: Session; metadataStatus: LiveStatus; reconnectProjectUpdates(): void; selectWorker(worker: Worker): void; disconnect(): void; fail(error: unknown): void }) {
@@ -348,7 +354,7 @@ function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWor
   return <WorkspaceContext.Provider value={value}><main className="workspace">
     <section className="hero"><div className="hero-project"><h1>{presentation?.name ?? session.project.name}</h1><p className="repository">{session.project.repository}</p><p className="identity">Project {session.project.id}</p></div>
       <div className="hero-side"><div className="connection-card"><span className="eyebrow">{heroEyebrow}</span><strong>{heroTitle}</strong><p>{heroDescription}</p><div className="hero-actions"><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh visible data'}</button><button className="quiet-button" type="button" onClick={disconnect}>Disconnect</button></div></div></div></section>
-    <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink><NavLink to={`${home}/map`}>{mapHeading}</NavLink><NavLink to={`${home}/notes`}>{notesHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}<span className="connection-note">Connected</span></nav>
+    <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink><NavLink to={`${home}/map`}>{mapHeading}</NavLink><NavLink to={`${home}/notes`}>{notesHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}</nav>
     <ProjectUpdateNotice status={metadataStatus} reconnect={reconnectProjectUpdates} />
     {unresolved > 0 && <p className="notice" role="status">{unresolved} pending or uncertain action{unresolved === 1 ? '' : 's'} retained in this connection. Return to the original worker and view to retry before reloading or disconnecting.</p>}
     <div className="workspace-grid"><aside className="sidebar"><WorkerList compact /><section className="feed-card" aria-label="Inbox connection"><span className={`status-dot ${live === 'live' && session.worker ? 'online' : ''}`} /><strong role="status">{liveLabel}</strong><p>{session.worker ? session.worker.name : 'Select a worker to follow incoming messages.'}</p>{Boolean(feedError) && <><p className="error-copy">{errorText(feedError)}</p><button type="button" onClick={() => { setReady(false); setAttempt(value => value + 1); }}>Reconnect inbox</button></>}</section></aside>
@@ -370,7 +376,7 @@ function Jobs() {
   const [status, setStatus] = useState('');
   const { session } = useWorkspace();
   const [assigned, setAssigned] = useState(false);
-  return <><div className="page-heading"><h2>{label}</h2><p>Current work and its full context, one job at a time.</p></div><div className="filters"><label>Status<select aria-label="Job status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label>{session.worker && <label className="checkbox-label"><input type="checkbox" checked={assigned} onChange={event => setAssigned(event.target.checked)} />Assigned to {session.worker.name}</label>}</div><JobList key={`${status}/${assigned}`} status={status as JobSummary['status'] | ''} assigned={assigned} /></>;
+  return <><div className="page-heading"><h2>{label}</h2></div><div className="filters"><label>Status<select aria-label="Job status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label>{session.worker && <label className="checkbox-label"><input type="checkbox" checked={assigned} onChange={event => setAssigned(event.target.checked)} />Assigned to {session.worker.name}</label>}</div><JobList key={`${status}/${assigned}`} status={status as JobSummary['status'] | ''} assigned={assigned} /></>;
 }
 function JobList({ status, assigned }: { status: JobSummary['status'] | ''; assigned: boolean }) {
   const { session, key, home } = useWorkspace();
