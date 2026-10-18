@@ -147,7 +147,7 @@ func TestPackagedEditorialBrowserSmoke(t *testing.T) {
 			var failure struct{ State, Phase, Checkpoint string }
 			if json.Unmarshal(line, &failure) == nil && failure.State == "FAIL" && (failure.Phase == "configuration" || failure.Phase == "connect" || failure.Phase == "project-editorial" || failure.Phase == "public-editorial") {
 				switch failure.Checkpoint {
-				case "", "connect-form", "ordered-content", "canvas-markdown", "layout-1440", "layout-390", "layout-320", "section-anchor-1440", "section-anchor-390", "section-anchor-320", "live-update", "closed-catalogue", "disconnect", "publication-fixture", "public-content", "public-heading", "public-snapshot", "public-order", "public-markdown", "public-links", "public-privacy", "public-layout-1440", "public-layout-390", "public-layout-320":
+				case "", "connect-form", "ordered-content", "canvas-markdown", "layout-1440", "layout-390", "layout-320", "section-anchor-1440", "section-anchor-390", "section-anchor-320", "live-update", "closed-catalogue", "catalogue-detail", "disconnect", "publication-fixture", "public-content", "public-heading", "public-snapshot", "public-order", "public-markdown", "public-links", "public-privacy", "public-layout-1440", "public-layout-390", "public-layout-320":
 					t.Logf("editorial safe failure phase=%s checkpoint=%s", failure.Phase, failure.Checkpoint)
 				}
 			}

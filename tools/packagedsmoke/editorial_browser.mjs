@@ -21,11 +21,11 @@ try {
     need(response.status === 201);
     return response.json();
   };
-  const first = await create({kind:'section', title:'Project intent', description:'## Direction\n\nA long-form **editorial section** with useful context.\n\n- Keep the narrative readable\n- Preserve the stored order\n\n![Synthetic illustration](https://example.invalid/blocked.png)\n\n<img src="https://example.invalid/raw.png">', state:'In progress', phases:[], links:[], position:10});
+  const first = await create({kind:'section', title:'Project intent', description:'## Direction\n\nA long-form **editorial section** with useful context.\n\n- Keep the narrative readable\n- Preserve the stored order\n\n![Synthetic illustration](https://example.invalid/blocked.png)\n\n> Canvas quote for contrast.\n\nInline `canvas sample` code.\n\n```sh\nprintf \'canvas contrast\'\n```\n\n<img src="https://example.invalid/raw.png">', state:'In progress', phases:[], links:[], position:10});
   const second = await create({kind:'section', title:'Project boundaries', description:'## Boundaries\n\nOptional progress metadata is absent here.'+'\n\nLong-form boundaries provide enough natural document content to test section navigation under the sticky header at every viewport. These synthetic paragraphs also exercise readable wrapping without relying on fixed spacer heights.'.repeat(12), state:'', phases:[], links:[], position:20});
 
-  // Distinct, contrast-valid semantic pairs expose wrong surface text on canvas.
-  const theme={canvas_text:'#132f46',surface_text:'#503020'};
+  // Every semantic pair remains valid while canvas and surface muted roles differ.
+  const theme={canvas_background:'#bcbcbc',canvas_text:'#000000',canvas_muted:'#000000',canvas_border:'#000000',surface_background:'#ffffff',surface_text:'#000000',surface_muted:'#757575',surface_border:'#757575',accent_background:'#000000',accent_text:'#ffffff',accent_soft_background:'#ffffff',header_background:'#ffffff',header_text:'#000000',header_muted:'#000000',hero_background:'#ffffff',hero_text:'#000000',hero_muted:'#000000',focus:'#5a5a5a',active_background:'#bcbcbc',active_text:'#000000',blocked_background:'#bcbcbc',blocked_text:'#000000',parked_background:'#bcbcbc',parked_text:'#000000',completed_background:'#bcbcbc',completed_text:'#000000'};
   const appearance=await fetch(config.origin+prefix+'/presentation',{method:'PUT',headers:{Authorization:'Bearer '+admin,'X-FC-Instance':config.instance,'X-FC-Worker':config.worker,'Idempotency-Key':'editorial-appearance-fixture','Content-Type':'application/json'},body:JSON.stringify({expected_revision:0,presentation:{name:'Packaged smoke',theme}}),signal:AbortSignal.timeout(5000)});
   need(appearance.status===200&&(await appearance.json()).revision===1);
 
@@ -74,7 +74,16 @@ try {
   need(![config.project, config.worker, config.other_worker, first.id, second.id].some(id => text.includes(id)));
   need(editorialReads === 1 && compactReads === 0 && individualReads === 0);
   checkpoint='canvas-markdown';
-  need(await entries.first().locator('.editorial-markdown').evaluate(element=>getComputedStyle(element).color==='rgb(19, 47, 70)'&&getComputedStyle(element.closest('.project-editorial')).color==='rgb(19, 47, 70)'));
+  const canvasMarkdown = entries.first().locator('.editorial-markdown');
+  need(await canvasMarkdown.evaluate(element=>{
+    const style=getComputedStyle(element),quote=getComputedStyle(element.querySelector('.editorial-quote'));
+    const image=getComputedStyle(element.querySelector('.editorial-image-alt'));
+    const inline=getComputedStyle(element.querySelector('p code'));
+    const block=getComputedStyle(element.querySelector('.editorial-code-block'));
+    return style.color==='rgb(0, 0, 0)' && quote.color==='rgb(0, 0, 0)' && quote.borderLeftColor==='rgb(0, 0, 0)'
+      && image.color==='rgb(0, 0, 0)' && inline.color==='rgb(0, 0, 0)' && inline.backgroundColor==='rgb(188, 188, 188)'
+      && block.color==='rgb(0, 0, 0)' && block.backgroundColor==='rgb(188, 188, 188)';
+  }));
 
   for (const width of [1440,390,320]) {
     checkpoint = 'layout-' + width;
@@ -110,6 +119,20 @@ try {
   await page.locator('.editorial-catalogue > summary').click();
   await expect.poll(() => compactReads,{timeout:5000}).toBe(1);
   need(individualReads === 0);
+  checkpoint='catalogue-detail';
+  await page.locator('.editorial-catalogue').getByRole('link',{name:'Project intent',exact:true}).click();
+  await expect(page.locator('.panel.brief')).toBeVisible();
+  await expect.poll(() => individualReads,{timeout:5000}).toBe(1);
+  const detailMarkdown=page.locator('.panel.brief .editorial-markdown').first();
+  need(await detailMarkdown.evaluate(element=>{
+    const quote=getComputedStyle(element.querySelector('.editorial-quote'));
+    const image=getComputedStyle(element.querySelector('.editorial-image-alt'));
+    const inline=getComputedStyle(element.querySelector('p code'));
+    const block=getComputedStyle(element.querySelector('.editorial-code-block'));
+    return quote.color==='rgb(117, 117, 117)' && quote.borderLeftColor==='rgb(117, 117, 117)'
+      && image.color==='rgb(117, 117, 117)' && inline.color==='rgb(0, 0, 0)' && inline.backgroundColor==='rgb(255, 255, 255)'
+      && block.color==='rgb(0, 0, 0)' && block.backgroundColor==='rgb(255, 255, 255)';
+  }));
   checkpoint='disconnect';
   need(domainWrites===0&&errors===0&&sessionPosts===1);
   const ended=page.waitForResponse(response=>response.request().method()==='DELETE'&&new URL(response.url()).pathname===prefix+'/browser-session');
