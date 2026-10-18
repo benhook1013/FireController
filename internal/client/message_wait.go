@@ -199,6 +199,9 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 func (c *Client) messageWaitError(data []byte, status int) *Error {
 	failure, valid := c.serviceError(data, status)
 	if valid && failure.Code == "resync_required" {
+		if status == 0 {
+			failure.Status = http.StatusConflict
+		}
 		failure.Action = "Read a fresh bound-worker inbox snapshot, then continue from its event cursor; pending messages remain unacknowledged."
 	}
 	return failure
