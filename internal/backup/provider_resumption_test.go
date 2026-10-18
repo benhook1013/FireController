@@ -8,8 +8,10 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -319,5 +321,86 @@ func TestProviderResumptionReleasedGenerationDoesNotAdoptLegacySchedule(t *testi
 	restarted, err := NewManager(s, dir, m.config)
 	if err != nil || !restarted.next.Equal(before) {
 		t.Fatal("same-generation schedule was lost", err)
+	}
+}
+
+// Cancel at a selected real database/sql call inside the actual validation
+// phase, after transaction acquisition. No timer or production hook is used.
+type resumptionValidationCancellation struct {
+	context.Context
+	cancel  context.CancelFunc
+	phase   string
+	once    sync.Once
+	reached atomic.Bool
+}
+
+func (c *resumptionValidationCancellation) Done() <-chan struct{} {
+	if c.Context.Err() == nil {
+		var pcs [48]uintptr
+		n := runtime.Callers(2, pcs[:])
+		frames := runtime.CallersFrames(pcs[:n])
+		selected, sqlCall, nestedValidation := false, false, false
+		for {
+			frame, more := frames.Next()
+			selected = selected || frame.Function == "github.com/benhook1013/FireController/internal/backup."+c.phase
+			sqlCall = sqlCall || strings.HasPrefix(frame.Function, "database/sql.")
+			// readRecoveryStatus is also called by validateSchema. Select the
+			// independent later call in ResumeProviders, not the earlier nested one.
+			nestedValidation = nestedValidation || c.phase == "readRecoveryStatus" && frame.Function == "github.com/benhook1013/FireController/internal/backup.validateSchema"
+			if !more {
+				break
+			}
+		}
+		if selected && sqlCall && !nestedValidation {
+			c.once.Do(func() { c.reached.Store(true); c.cancel() })
+		}
+	}
+	return c.Context.Done()
+}
+
+func TestProviderResumptionValidationCancellationIsRetryableAndUnchanged(t *testing.T) {
+	for _, phase := range []string{"validateSchema", "activationIntegrity", "readRecoveryStatus"} {
+		t.Run(phase, func(t *testing.T) {
+			f, in, _ := resumptionFixture(t)
+			rowsBefore := activationRows(t, f.dir)
+			filesBefore := restoreTree(t, f.dir)
+			base, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ctx := &resumptionValidationCancellation{Context: base, cancel: cancel, phase: phase}
+			result, err := ResumeProviders(ctx, f.dir, in)
+			if !ctx.reached.Load() || !errors.Is(base.Err(), context.Canceled) {
+				t.Fatal("selected SQL validation phase was not interrupted", phase)
+			}
+			var failure *core.Error
+			if !errors.As(err, &failure) || failure.Code != "restore_reconciliation_interrupted" || failure.Status != 503 || result != (ProviderResumptionSummary{}) {
+				t.Error("validation interruption lost retryable reconciliation result", result, err)
+			}
+			if !reflect.DeepEqual(rowsBefore, activationRows(t, f.dir)) || !reflect.DeepEqual(filesBefore, restoreTree(t, f.dir)) {
+				t.Fatal("interrupted prevalidation changed durable rows or retained files")
+			}
+			status, err := ReadRecoveryStatus(t.Context(), activationOpen(t, f.dir))
+			if err != nil || !status.ProvidersHeld {
+				t.Fatal("interrupted prevalidation released provider hold", status, err)
+			}
+			retried, err := ResumeProviders(t.Context(), f.dir, in)
+			if err != nil || retried.ProvidersHeld || retried.ReleasedAt == "" || retried.Counts.Attempts != 1 {
+				t.Fatal("same request did not reconcile after validation cancellation", retried, err)
+			}
+		})
+	}
+}
+
+func TestProviderResumptionInvalidSchemaRemainsInvalidAndUnchanged(t *testing.T) {
+	f, in, _ := resumptionFixture(t)
+	activationExec(t, f.dir, `PRAGMA user_version=99`)
+	rowsBefore := activationRows(t, f.dir)
+	filesBefore := restoreTree(t, f.dir)
+	result, err := ResumeProviders(t.Context(), f.dir, in)
+	var failure *core.Error
+	if !errors.As(err, &failure) || failure.Code != "backup_invalid" || result != (ProviderResumptionSummary{}) {
+		t.Fatal("actual incompatible schema was misclassified", result, err)
+	}
+	if !reflect.DeepEqual(rowsBefore, activationRows(t, f.dir)) || !reflect.DeepEqual(filesBefore, restoreTree(t, f.dir)) {
+		t.Fatal("refused incompatible schema changed durable state")
 	}
 }

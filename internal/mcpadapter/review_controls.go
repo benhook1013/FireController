@@ -146,7 +146,7 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 			args.reviewSourceWait = *in.Wait
 		}
 		var fields map[string]json.RawMessage
-		if json.Unmarshal(data, &fields) != nil || fields["wait_seconds"] != nil && in.Wait == nil || fields["include_ci"] != nil && in.IncludeCI == nil || fields["include_readiness"] != nil && in.IncludeReadiness == nil || client.ValidateReviewSourceWait(args.reviewSourceWait) != nil {
+		if json.Unmarshal(data, &fields) != nil || fields["wait_seconds"] != nil && in.Wait == nil || fields["include_ci"] != nil && in.IncludeCI == nil || fields["include_readiness"] != nil && in.IncludeReadiness == nil || client.ValidateReviewSourceWait(args.reviewSourceWait) != nil || args.reviewSourceWait > maxToolWaitSeconds {
 			return args, invalidArguments()
 		}
 		args.reviewSource = client.ReviewSourceRequest{ExpectedConfigurationRevision: *in.Revision, PullNumber: *in.Number, HeadSHA: in.Head, IncludeCI: in.IncludeCI != nil && *in.IncludeCI, IncludeReadiness: in.IncludeReadiness != nil && *in.IncludeReadiness}
@@ -296,7 +296,7 @@ func reviewExecutionDefinitions() []definition {
 			"head_sha":                        map[string]any{"type": "string", "minLength": 40, "maxLength": 40, "pattern": "^[a-f0-9]{40}$"},
 			"include_readiness":               map[string]any{"type": "boolean", "default": false, "description": "Also collect CI, review-thread resolution and merge-state facts for local readiness assessment."},
 			"include_ci":                      map[string]any{"type": "boolean", "default": false, "description": "Also collect required CI; ordinary reads remain provider-free."},
-			"wait_seconds":                    map[string]any{"type": "integer", "minimum": 0, "maximum": 60, "default": 2, "description": "Wait for terminal facts up to this many seconds; zero requests an immediate receipt. Extends this source-refresh call budget only."},
+			"wait_seconds":                    map[string]any{"type": "integer", "minimum": 0, "maximum": maxToolWaitSeconds, "default": 2, "description": "Wait for terminal facts up to this many seconds; zero requests an immediate receipt. Extends this source-refresh call budget only."},
 		}, "idempotency_key", "expected_configuration_revision", "pull_number", "head_sha")},
 		{"review_source_refresh_read", "Read one explicit retained source-refresh operation. Local provider-free read; no automatic polling or source refresh.", schema(map[string]any{"refresh_id": map[string]any{"type": "string", "minLength": 47, "maxLength": 47, "pattern": "^review_refresh_[a-f0-9]{32}$"}}, "refresh_id")},
 		{"review_source_policy_assess", "Read current project review policy as of a retained source observation for one PR. Local provider-free read; no current remote-source verification, CI or merge-readiness verdict.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
