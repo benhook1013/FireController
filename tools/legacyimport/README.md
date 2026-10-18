@@ -4,7 +4,7 @@ These optional tools keep source-specific SQLite and policy knowledge outside th
 
 ## Current implementation
 
-`inspect` reports a compact JSON source digest, byte count, recognized schema versions, table counts and selected migration diagnostics. It checks brief byte limits, unsupported instruction notes and message relationships without printing source paths, identifiers or bodies. Inspection is not complete source validation, an approved import or proof of native review coverage. `prepare-jobs` converts explicitly selected current jobs and checkpoints into the [native prepared import format](../../docs/legacy-adoption.md#selected-job-snapshot-import); `prepare-messages` converts explicitly selected historical messages into the same native batch. Notes, updates, checklists and full old job histories remain outside these selected paths.
+`inspect` reports a compact JSON source digest, byte count, recognized schema versions, table counts and selected migration diagnostics. It checks brief byte limits, unsupported instruction notes and message relationships without printing source paths, identifiers or bodies. Inspection is not complete source validation, an approved import or proof of native review coverage. `prepare-jobs` converts explicitly selected current jobs and checkpoints into the [native prepared import format](../../docs/legacy-adoption.md#selected-job-snapshot-import); `prepare-messages` converts explicitly selected historical messages into the same native batch. The separate `prepare_source_reviews.py` adapter prepares explicitly selected completed review runs and findings as additive native transfer batches. Notes, updates, checklists and full old job histories remain outside these selected paths.
 
 ```sh
 go build -trimpath -o bin/legacyimport ./tools/legacyimport
@@ -36,6 +36,24 @@ fc import apply --file /private/import/messages.json --preview SHA256 --key sele
 ```
 
 The command preserves selected body, creation/handling times, reply identities and known pending/handled state, with at most one hundred messages and the native 16 KiB body limit. Unsupported source job/PR message annotations remain in the sealed private archive; the required archive policy and compact count make that omission explicit. Retained-parent traversal stops at an explicitly named source boundary; native application checks its existing destination mapping and conversation graph. Missing mappings, unsupported timing/content, cyclic or unselected dependencies refuse preparation. No historical send or acknowledgement is replayed.
+
+## Prepare selected completed review history
+
+Use `prepare_source_reviews.py` for selected completed, finalized review runs and their known findings. This is an optional source-specific adapter, separate from the daemon, provider collection and effective control preparation. Supply an explicitly trusted source package and a sealed private snapshot. The tool loads source helper code deliberately and reads the admitted snapshot immutably; it does not discover a live controller, read credentials or contact a provider.
+
+```sh
+python3 tools/legacyimport/prepare_source_reviews.py --source-root /private/source-controller --snapshot /private/export/controller.sqlite3 --selection /private/import/review-selection.json --output /private/import/review-batch.json --provenance /private/import/review-provenance.json
+fc reviews transfer-preview --file /private/import/review-batch.json
+fc reviews transfer-apply --file /private/import/review-batch.json --preview SHA256 --key selected-review-history
+```
+
+The version-one selection supplies `repository_id`, destination `expected_revision`, transfer `publisher`, stable original producer `source` and `pulls`. Each selected pull supplies the native metadata fields `number`, `title`, `state`, `head_sha`, `base_ref`, `base_sha`, `ci_state` and `mergeability`, plus explicit `run_ids`. These offline metadata and repository assertions are included in the provenance binding; preparation does not establish that they are current provider facts. Native preview checks the actual destination and matching retained PR metadata. Choose the same producer identity for successive batches of the same source history.
+
+The output is one additive transfer batch with `complete: false` on each PR. Known finding text and source-supplied original finalized counts stay intact; when original counts are unavailable, canonical exported counts remain exact and provenance records that limitation. The converter never reconstructs missing original counts. Later effective decision/fix facts retain their original attribution and correction provenance. A bounded coverage note explains original-count versus later-correction differences; original source coverage limits remain in private provenance. Genuine start and finish times are required for selected completed runs. Unrepresentable text, counts, correction chains, timestamps or native bounds refuse rather than being truncated, guessed or dropped. Attempts, captures and receiving-route ledger history remain archived, with explicit omissions. No native coverage, review allocation or operational control is created by preparing or applying this history.
+
+Source admission is bounded to a 32 MiB snapshot, 256 KiB selection, at most one hundred tables/columns, five thousand rows per table/twenty thousand total rows, 256 KiB per cell and 8 MiB total cell bytes. The selected source history projection fits 1 MiB, and the native batch plus its apply wrapper each fit 256 KiB. Helper SQL has a fifteen-second/two-million-step bound. One batch selects at most one hundred PRs, two hundred runs and one thousand findings, within the native per-PR/per-run limits. A larger source or selected record refuses explicitly; choose a separately prepared supported selection or retain it in the archive rather than raising bounds silently.
+
+Output and private provenance use create-only publication. Preserve the exact inputs, output paths and provenance for repeatable recovery; differing existing files refuse. A stdout failure can leave valid prepared files available for exact retry. Native transfer preview/apply remains a separate administrator operation with its own payload, revision, fingerprint and idempotency guards. The [migration contract](../../docs/legacy-adoption.md#selected-completed-review-history) owns the retained facts and omissions.
 
 ## Acquire a source-owner history frame
 
