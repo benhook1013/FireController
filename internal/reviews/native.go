@@ -87,7 +87,7 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 		return Receipt{}, err
 	}
 	if p.Run != nil {
-		if err = appendNativeRun(ctx, tx, write, id, pull.Number, pull.Runs[0]); err != nil {
+		if err = appendNativeRun(ctx, tx, write, pull.Number, pull.Runs[0]); err != nil {
 			return Receipt{}, err
 		}
 	}
@@ -149,7 +149,7 @@ func nativePullBody(ctx context.Context, tx *sql.Tx, project, previous string, p
 	return body, position, nil
 }
 
-func appendNativeRun(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, snapshot string, number int64, run RunInput) error {
+func appendNativeRun(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, number int64, run RunInput) error {
 	var existing int
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_run_versions WHERE project_id=? AND source=? AND source_run_id=?)`, write.project, nativeSource, run.SourceRunID).Scan(&existing); err != nil {
 		return err
@@ -157,8 +157,10 @@ func appendNativeRun(ctx context.Context, tx *sql.Tx, write *historySnapshotWrit
 	if existing != 0 {
 		return core.Fail("observation_conflict", "A native captured run already exists; append decisions without replacing source evidence.", 409)
 	}
+	// No run has been staged yet. Use the indexed current placement table
+	// so retained history is not traversed merely to append the next run.
 	var order int
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(run_order),-1)+1 FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=?`, write.project, snapshot, number).Scan(&order); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(run_order),-1)+1 FROM review_current_runs WHERE project_id=? AND pull_number=?`, write.project, number).Scan(&order); err != nil {
 		return err
 	}
 	return write.run(ctx, tx, nativeSource, number, order, run)
@@ -167,7 +169,7 @@ func appendNativeRun(ctx context.Context, tx *sql.Tx, write *historySnapshotWrit
 func publishNativeAttempt(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, previousSnapshot, stagedSnapshot string, number int64, a Attempt) error {
 	if a.SourceRunID != "" {
 		var n int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=? AND source=? AND source_run_id=? AND channel=? AND head_sha=?`, write.project, stagedSnapshot, number, nativeSource, a.SourceRunID, a.Channel, a.HeadSHA).Scan(&n); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=? AND id=? AND source=? AND source_run_id=? AND channel=? AND head_sha=?`, write.project, stagedSnapshot, number, runOpaqueID(write.project, nativeSource, a.SourceRunID), nativeSource, a.SourceRunID, a.Channel, a.HeadSHA).Scan(&n); err != nil {
 			return err
 		}
 		if n != 1 {
