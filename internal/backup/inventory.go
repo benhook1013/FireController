@@ -910,6 +910,9 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["review_route_policy"] > 0 {
 		if err = reviewexec.ValidateRoutePolicyFacts(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
 			return invalid()
 		}
 	}
