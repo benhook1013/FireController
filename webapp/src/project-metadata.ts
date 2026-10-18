@@ -31,6 +31,8 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
       add('delivery'); add('jobs'); add('job', id);
       // Captured revision labels must be compared with the new job revision.
       add('checklist-current', id); add('checkpoint-latest', id);
+      // Assigned-job note lists depend on the job's current worker.
+      add('notes');
     } else if (type === 'job.workstream_changed') {
       add('job-workstream', id); add('job-workstream-history', id);
     } else if (type === 'job.checkpointed') {
