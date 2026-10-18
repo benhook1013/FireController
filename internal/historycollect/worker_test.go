@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -104,6 +106,14 @@ func collectionCounts(t *testing.T, s *core.Store, id string) (pages, seen, even
 		}
 	}
 	return
+}
+func collectionEventRevision(t *testing.T, s *core.Store, id string, revision int64) bool {
+	t.Helper()
+	var exists bool
+	if err := s.DB().QueryRow(`SELECT EXISTS(SELECT 1 FROM events WHERE resource_id=? AND event_type='history.collection_changed' AND revision=?)`, id, revision).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	return exists
 }
 func collectionJoin(t *testing.T, done <-chan error) {
 	t.Helper()
@@ -569,6 +579,12 @@ func TestCollectionWorkerQueuedContinuationRestartStartsNewPass(t *testing.T) {
 		collectionJoin(t, done)
 		t.Fatal("queued provider continuation was reused after restart")
 	}
+	if !collectionEventRevision(t, f.store, r.ID, before.Revision+1) {
+		close(release)
+		cancel()
+		collectionJoin(t, done)
+		t.Fatal("restart recovery changed the operation without a matching durable event")
+	}
 	close(release)
 	deadline := time.After(2 * time.Second)
 	for {
@@ -601,5 +617,112 @@ func TestCollectionWorkerQueuedContinuationRestartStartsNewPass(t *testing.T) {
 	defer tx.Rollback()
 	if err := ValidateSnapshot(t.Context(), tx); err != nil {
 		t.Fatal("genuine queued restart did not conserve a valid retained snapshot", err)
+	}
+}
+
+func TestCollectionWorkerRecoveryEventFailureRollsBackAndRetries(t *testing.T) {
+	f, e, scope, r := collectionWorkerSetup(t, Selection{[]int64{47}})
+	collectionAdvance(t, e)
+	collectionAdvance(t, e)
+	before := collectionWorkerRead(t, e, scope, r.ID)
+	if before.State != "queued" || before.Position.Page != 2 {
+		t.Fatal("fixture did not create a queued continuation")
+	}
+	rowsBefore := collectionStoreRows(t, f)
+	callsBefore := len(f.provider.calls)
+	trigger := `CREATE TRIGGER collection_recovery_event_fault BEFORE INSERT ON events WHEN NEW.resource_id='` + r.ID + `' AND NEW.event_type='history.collection_changed' AND NEW.revision=` + fmt.Sprint(before.Revision+1) + ` BEGIN SELECT RAISE(ABORT,'controlled recovery event failure'); END`
+	if _, err := f.store.DB().Exec(trigger); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := New(f.store, f.provider, strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done, err := restarted.Run(ctx)
+	if err == nil || done != nil {
+		if done != nil {
+			cancel()
+			collectionJoin(t, done)
+		}
+		t.Fatal("startup did not fail atomically when recovery event insertion failed")
+	}
+	if collectionStoreRows(t, f) != rowsBefore || len(f.provider.calls) != callsBefore {
+		t.Fatal("failed recovery changed collection, captures, receipts/events or invoked provider work")
+	}
+	if _, err := f.store.DB().Exec(`DROP TRIGGER collection_recovery_event_fault`); err != nil {
+		t.Fatal(err)
+	}
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	f.provider.after = func(call stepCall) error {
+		if call.resource == "reviews" {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	retryCtx, retryCancel := context.WithCancel(t.Context())
+	done, err = restarted.Run(retryCtx)
+	if err != nil {
+		retryCancel()
+		t.Fatal(err)
+	}
+	var releaseOnce sync.Once
+	releaseProvider := func() { releaseOnce.Do(func() { close(release) }) }
+	defer func() {
+		retryCancel()
+		releaseProvider()
+		collectionJoin(t, done)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not retry recovery after the event fault was removed")
+	}
+	if !collectionEventRevision(t, f.store, r.ID, before.Revision+1) {
+		t.Fatal("successful recovery retry omitted its durable event")
+	}
+}
+
+func TestCollectionWorkerPageOneStartupHasOnlyClaimEvent(t *testing.T) {
+	f, e, scope, r := collectionWorkerSetup(t, Selection{[]int64{47}})
+	entered, release := make(chan struct{}), make(chan struct{})
+	f.provider.after = func(call stepCall) error {
+		if call.resource == "pull" {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done, err := e.Run(ctx)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	var releaseOnce sync.Once
+	releaseProvider := func() { releaseOnce.Do(func() { close(release) }) }
+	defer func() {
+		cancel()
+		releaseProvider()
+		collectionJoin(t, done)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("page-one work did not start")
+	}
+	current := collectionWorkerRead(t, e, scope, r.ID)
+	if current.State != "running" || current.Revision != 2 || current.Position != Start() || current.PageCount != 0 || !collectionEventRevision(t, f.store, r.ID, 2) {
+		t.Fatal("ordinary queued page-one startup invented or omitted a transition")
+	}
+	var events int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM events WHERE resource_id=?`, r.ID).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 2 {
+		t.Fatal("ordinary page-one startup emitted an extra recovery event")
 	}
 }
