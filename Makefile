@@ -2,6 +2,7 @@ GO ?= go
 GOFMT ?= gofmt
 GO_TEST_PACKAGES ?= ./...
 GO_TEST_RUN ?= .
+REVIEW_TRANSFER_BUDGET_TEST := TestReviewTransferMaximumBatchUsesOrdinaryWriteBudget
 ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
 .PHONY: check workflow-check fmt-check test build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke source-converter-check
@@ -15,7 +16,16 @@ fmt-check:
 	@files="$$($(GOFMT) -l cmd internal tools)" || exit $$?; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi
 
 test:
-	$(GO) test -race -p=2 -timeout=20m -run '$(GO_TEST_RUN)' $(GO_TEST_PACKAGES)
+	$(GO) test -race -p=2 -timeout=20m -run '$(GO_TEST_RUN)' -skip '^$(REVIEW_TRANSFER_BUDGET_TEST)$$' $(GO_TEST_PACKAGES)
+	@packages="$$( $(GO) list $(GO_TEST_PACKAGES) )" || exit $$?; \
+	for package in $$packages; do \
+		if [ "$$package" = github.com/benhook1013/FireController/internal/reviews ]; then \
+			names="$$( $(GO) test -race=false -list '^$(REVIEW_TRANSFER_BUDGET_TEST)$$' "$$package" )" || exit $$?; \
+			printf '%s\n' "$$names" | grep -Fx -- '$(REVIEW_TRANSFER_BUDGET_TEST)' >/dev/null || { printf '%s\n' 'Ordinary review deadline test was not discovered.' >&2; exit 1; }; \
+			$(GO) test -race=false -v -count=1 -timeout=20m -run '^$(REVIEW_TRANSFER_BUDGET_TEST)$$' "$$package" || exit $$?; \
+			break; \
+		fi; \
+	done
 	$(GO) vet $(GO_TEST_PACKAGES)
 
 build: browser-build
