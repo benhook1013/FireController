@@ -566,14 +566,19 @@ export class Api {
       this.currentSession = { ...value };
       // Replace transport connections, not watch lifetimes. Their processed
       // cursors survive, so renewal does not resnapshot or expand archives.
-      for (const connection of this.streamConnections) connection.abort();
+      this.retireStreamConnections();
       return value;
     } catch (error) {
       // Set-Cookie can succeed before its response body is lost. Reopen using
       // the actual cookie instead of trusting an old connection's expiry.
-      if (dispatched && !knownRefusal) for (const connection of this.streamConnections) connection.abort();
+      if (dispatched && !knownRefusal) this.retireStreamConnections();
       throw this.transportError(error, budget.expired(), budget.signal);
     } finally { budget.close(); }
+  }
+
+  private retireStreamConnections(): void {
+    const reason = new ApiError('stream_retired', 'The event connection was replaced.');
+    for (const connection of this.streamConnections) connection.abort(reason);
   }
 
   async sendMessage(worker: string, recipient: string, body: string, replyTo: string, key: string, signal?: AbortSignal): Promise<BrowserMessageReceipt & { outcome: 'sent' }> {
@@ -1003,6 +1008,8 @@ export class Api {
       clearTimeout(timer);
       signal.removeEventListener('abort', abort);
       this.streamConnections.delete(controller);
+      const reason = controller.signal.reason;
+      if (controller.signal.aborted && reason instanceof ApiError && reason.code === 'stream_retired') throw reason;
       throw this.transportError(error, expired, controller.signal);
     }
   }
