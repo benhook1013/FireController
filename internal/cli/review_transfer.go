@@ -3,9 +3,8 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
-	"os"
-	"runtime"
 
 	"github.com/benhook1013/FireController/internal/client"
 )
@@ -32,41 +31,14 @@ func parseReviewTransfer(call invocation, args []string) (invocation, bool) {
 	return call, true
 }
 func prepareReviewTransfer(ctx context.Context, in *reviewTransferInvocation) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	invalid := func() error {
 		return &client.Error{Code: "invalid_transfer_file", Message: "Select an owner-private regular review transfer JSON file within 256 KiB.", Action: "Correct the selected file locally and retry the same intended request.", Status: 400}
 	}
-	private := func(info os.FileInfo) bool {
-		return info != nil && info.Mode().IsRegular() && info.Size() <= 256<<10 && (runtime.GOOS == "windows" || info.Mode().Perm()&0077 == 0)
-	}
-	before, err := os.Lstat(in.file)
-	if err != nil || !private(before) {
+	data, err := readOwnerPrivateJSON(ctx, in.file)
+	if errors.Is(err, errInvalidOwnerPrivateJSONFile) {
 		return invalid()
 	}
-	f, err := os.Open(in.file)
 	if err != nil {
-		return invalid()
-	}
-	defer f.Close()
-	after, err := f.Stat()
-	if err != nil || !private(after) || !os.SameFile(before, after) {
-		return invalid()
-	}
-	pathAfter, err := os.Lstat(in.file)
-	if err != nil || !private(pathAfter) || !os.SameFile(before, pathAfter) {
-		return invalid()
-	}
-	data, err := io.ReadAll(io.LimitReader(f, (256<<10)+1))
-	if err != nil || len(data) > 256<<10 {
-		return invalid()
-	}
-	after, err = f.Stat()
-	if err != nil || !private(after) || !os.SameFile(before, after) {
-		return invalid()
-	}
-	if err = ctx.Err(); err != nil {
 		return err
 	}
 	if err = client.ValidateReviewTransferDocument(data); err != nil {
