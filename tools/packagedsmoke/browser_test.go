@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -115,7 +116,7 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 		t.Fatal("PLAYWRIGHT_BROWSERS_PATH must be absolute")
 	}
 	env = append(env, "PLAYWRIGHT_BROWSERS_PATH="+browserPath)
-	config := map[string]string{"origin": "http://" + daemon.address, "project": project, "worker": worker, "other_worker": otherWorker, "instance": daemon.instance, "admin_file": adminFile, "credential_file": credentialFile, "executable": executable, "proxy": browserDeny.URL}
+	config := map[string]string{"origin": "http://" + daemon.address, "project": project, "worker": worker, "other_worker": otherWorker, "instance": daemon.instance, "admin_file": adminFile, "credential_file": credentialFile, "executable": executable, "proxy": browserDeny.URL, "progress_file": filepath.Join(private, "browser-progress.json")}
 	if directory := os.Getenv("FC_BROWSER_PROOF_DIR"); directory != "" {
 		if !filepath.IsAbs(directory) {
 			t.Fatal("FC_BROWSER_PROOF_DIR must be absolute")
@@ -160,13 +161,14 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 	case err = <-done:
 		joined = true
 	case <-ctx.Done():
+		lastProgress := safeBrowserProgress(config["progress_file"], time.Now())
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
 		select {
 		case <-done:
 			joined = true
 		case <-time.After(stepTimeout):
 		}
-		t.Fatal("packaged browser workload exceeded 45 seconds")
+		t.Fatalf("packaged browser workload exceeded 45 seconds: last_observed=%s", lastProgress)
 	}
 	if err != nil || stderr.len() != 0 || output.len() > 64<<10 {
 		stage := "before-browser-start"
@@ -260,6 +262,12 @@ func (o *browserOutput) safePhase() string {
 			continue
 		}
 		switch record.Phase {
+		case "cleanup":
+			switch record.Checkpoint {
+			case "context-close", "browser-close", "server-close":
+				return "cleanup/" + record.Checkpoint
+			}
+			return "cleanup"
 		case "configuration", "launch", "connect", "normal-title-mobile-layout", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "live-jobs", "live-workers", "live-notes", "contextual-notes", "live-reviews", "reload", "renewal-activity", "renewal-missing-cookie", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain", "delivery-overview":
 			if record.Phase == "connect" {
 				allowed := false
@@ -376,7 +384,10 @@ func (o *browserOutput) safePhase() string {
 				}
 			}
 			if record.Phase == "reload" {
-				return fmt.Sprintf("reload/%s presentation_reads=%d metadata_streams=%d inbox_streams=%d injected_metadata_failures=%d injected_console_errors=%d errors=%d external=%d", record.Checkpoint, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.InjectedMetadataFailures, record.InjectedConsoleErrors, record.Errors, record.External)
+				switch record.Checkpoint {
+				case "reload-before", "reload-after-navigation", "reload-heading-visible", "reload-session-renewed", "reload-current-authority", "reload-expiry-persistence", "reload-expiry-evidence", "reload-binding-retained", "reload-expiry-window", "reload-cookie-rotated", "reload-presentation-restored", "reload-sidebar-absent", "reload-connection-live", "reload-metadata-live", "reload-reader-counts":
+					return fmt.Sprintf("reload/%s presentation_reads=%d metadata_streams=%d inbox_streams=%d injected_metadata_failures=%d injected_console_errors=%d errors=%d external=%d", record.Checkpoint, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.InjectedMetadataFailures, record.InjectedConsoleErrors, record.Errors, record.External)
+				}
 			}
 
 			if record.Phase == "explicit-actions-send" {
@@ -411,6 +422,111 @@ func (o *browserOutput) safePhase() string {
 	return "driver-start-or-cleanup"
 }
 
+// Progress is a private observer record, never a source of response bodies or
+// output text. Reuse the terminal formatter's fixed phase/checkpoint vocabulary.
+func safeBrowserProgress(path string, now time.Time) string {
+	const limit = 4096
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+		return "unavailable"
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "unavailable"
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil || len(raw) > limit {
+		return "unavailable"
+	}
+	var progress struct {
+		Phase      string                     `json:"phase"`
+		Checkpoint string                     `json:"checkpoint"`
+		Operation  string                     `json:"operation"`
+		Observed   int64                      `json:"observed_unix_ms"`
+		Counters   map[string]json.RawMessage `json:"counters"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&progress) != nil || decoder.Decode(new(any)) != io.EOF || progress.Counters == nil || progress.Observed <= 0 || progress.Observed > now.UnixMilli() {
+		return "unavailable"
+	}
+	age := now.UnixMilli() - progress.Observed
+	if age > 60000 {
+		return "unavailable"
+	}
+	switch progress.Operation {
+	case "workload", "failure-snapshot", "cleanup":
+	default:
+		return "unavailable"
+	}
+	record := map[string]any{"state": "FAIL", "phase": progress.Phase, "checkpoint": progress.Checkpoint}
+	for name, raw := range progress.Counters {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return "unavailable"
+		}
+		switch name {
+		case "allow_writes", "can_edit_presentation":
+			var value bool
+			if json.Unmarshal(raw, &value) != nil {
+				return "unavailable"
+			}
+			record[name] = value
+		case "session_posts", "session_deletes", "session_renewals", "terminal_responses", "errors", "forbidden_writes", "action_writes", "external", "presentation_reads", "metadata_streams", "inbox_streams", "injected_metadata_failures", "injected_console_errors", "http_status":
+			var value int
+			if json.Unmarshal(raw, &value) != nil || value < 0 || value > 1000 {
+				return "unavailable"
+			}
+			record[name] = value
+		default:
+			return "unavailable"
+		}
+	}
+	body, _ := json.Marshal(record)
+	output := &browserOutput{}
+	_, _ = output.Write(append(body, '\n'))
+	phase := output.safePhase()
+	if phase == "driver-start-or-cleanup" {
+		return "unavailable"
+	}
+	return fmt.Sprintf("%s operation=%s age_ms=%d", phase, progress.Operation, age)
+}
+
+func TestBrowserProgressDiagnosticsAllowlist(t *testing.T) {
+	now := time.UnixMilli(1000000)
+	valid := `{"phase":"connect","checkpoint":"capabilities-read","operation":"workload","observed_unix_ms":999750,"counters":{"http_status":200,"errors":0,"external":0}}`
+	for _, tc := range []struct{ name, body, want string }{
+		{"current", valid, "connect/capabilities-read http_status=200 allow_writes=false can_edit_presentation=false errors=0 external=0 operation=workload age_ms=250"},
+		{"snapshot", strings.ReplaceAll(valid, `"workload"`, `"failure-snapshot"`), "connect/capabilities-read http_status=200 allow_writes=false can_edit_presentation=false errors=0 external=0 operation=failure-snapshot age_ms=250"},
+		{"cleanup", `{"phase":"cleanup","checkpoint":"browser-close","operation":"cleanup","observed_unix_ms":999750,"counters":{}}`, "cleanup/browser-close operation=cleanup age_ms=250"},
+		{"malformed", "{", "unavailable"},
+		{"oversize", strings.Repeat(" ", 4097), "unavailable"},
+		{"extra-private-field", strings.Replace(valid, `"counters":`, `"body":"PRIVATE_SENTINEL","counters":`, 1), "unavailable"},
+		{"private-phase", strings.Replace(valid, `"connect"`, `"PRIVATE_SENTINEL"`, 1), "unavailable"},
+		{"private-checkpoint", strings.Replace(valid, `"capabilities-read"`, `"PRIVATE_SENTINEL"`, 1), "connect operation=workload age_ms=250"},
+		{"reload-checkpoint", strings.Replace(strings.Replace(valid, `"connect"`, `"reload"`, 1), `"capabilities-read"`, `"reload-current-authority"`, 1), "reload/reload-current-authority presentation_reads=0 metadata_streams=0 inbox_streams=0 injected_metadata_failures=0 injected_console_errors=0 errors=0 external=0 operation=workload age_ms=250"},
+		{"reload-private-checkpoint", strings.Replace(strings.Replace(valid, `"connect"`, `"reload"`, 1), `"capabilities-read"`, `"PRIVATE_SENTINEL"`, 1), "reload operation=workload age_ms=250"},
+		{"private-operation", strings.Replace(valid, `"workload"`, `"PRIVATE_SENTINEL"`, 1), "unavailable"},
+		{"private-counter", strings.Replace(valid, `"errors":0`, `"errors":"PRIVATE_SENTINEL"`, 1), "unavailable"},
+		{"null-counter", strings.Replace(valid, `"errors":0`, `"errors":null`, 1), "unavailable"},
+		{"unbounded-counter", strings.Replace(valid, `"errors":0`, `"errors":1001`, 1), "unavailable"},
+		{"old", strings.Replace(valid, "999750", "1", 1), "unavailable"},
+		{"future", strings.Replace(valid, "999750", "1000001", 1), "unavailable"},
+		{"trailing", valid + `{}`, "unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "progress.json")
+			if os.WriteFile(path, []byte(tc.body), 0600) != nil {
+				t.Fatal("progress fixture")
+			}
+			got := safeBrowserProgress(path, now)
+			if got != tc.want || strings.Contains(got, "PRIVATE_SENTINEL") {
+				t.Fatalf("unsafe progress diagnostic: %q", got)
+			}
+		})
+	}
+}
+
 func TestBrowserSendFailureDiagnosticsAllowlist(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, want string
@@ -422,6 +538,7 @@ func TestBrowserSendFailureDiagnosticsAllowlist(t *testing.T) {
 		{"empty-worker-history", `{ "state":"FAIL","phase":"live-notes","checkpoint":"worker-history-response","failure_class":"timeout","body":"PRIVATE_SENTINEL"}`, "live-notes/worker-history-response class=timeout errors=0 forbidden_writes=0"},
 		{"contextual-note-selector", `{"state":"FAIL","phase":"contextual-notes","checkpoint":"job-scope-return","failure_class":"driver","body":"PRIVATE_SENTINEL"}`, "contextual-notes/job-scope-return class=driver errors=0 forbidden_writes=0"},
 		{"contextual-note-private-checkpoint", `{"state":"FAIL","phase":"contextual-notes","checkpoint":"PRIVATE_SENTINEL","failure_class":"assertion"}`, "contextual-notes"},
+		{"reload-private-checkpoint", `{"state":"FAIL","phase":"reload","checkpoint":"PRIVATE_SENTINEL"}`, "reload"},
 		{"unknown-phase", `{"state":"FAIL","phase":"PRIVATE_SENTINEL","checkpoint":"send-status"}`, "driver-start-or-cleanup"},
 		{"string-status", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"send-status","send_status":"PRIVATE_SENTINEL"}`, "driver-start-or-cleanup"},
 		{"numeric-match", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"reply-binding","conversation_match":1}`, "driver-start-or-cleanup"},

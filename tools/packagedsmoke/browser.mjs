@@ -1,11 +1,16 @@
 import { chromium, expect } from '../../webapp/node_modules/@playwright/test/index.mjs';
 import fs from 'node:fs/promises';
+import {writeFileSync, renameSync} from 'node:fs';
 
 // All inputs are synthetic, private files produced by browser_test.go. Neither
 // Playwright diagnostics nor request/credential bytes are printed on failure.
 let server, browser;
 let phase = 'configuration';
 let checkpoint = '';
+let operation = 'workload';
+let publishProgress = () => {};
+let stopProgress = () => {};
+let progressFailed = false;
 let counters = () => ({});
 let failureClass = '';
 let sendStatus = 0, replyStatus = 0, conversationMatch = false;
@@ -17,6 +22,22 @@ let diagnostics = () => ({});
 const need = (value) => { if (!value) throw new Error('assertion'); };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
+  need(typeof config.progress_file === 'string' && config.progress_file.startsWith('/'));
+  let previousProgress = '';
+  publishProgress = () => {
+    const observed = {phase, checkpoint, operation, counters:{...counters(), ...diagnostics(), http_status:lastHTTPStatus, allow_writes:lastAllowWrites, can_edit_presentation:lastCanEditPresentation}};
+    const fingerprint = JSON.stringify(observed);
+    if (fingerprint === previousProgress) return;
+    try {
+      writeFileSync(config.progress_file + '.tmp', JSON.stringify({...observed, observed_unix_ms:Date.now()}), {mode:0o600});
+      renameSync(config.progress_file + '.tmp', config.progress_file);
+      previousProgress = fingerprint;
+    } catch { progressFailed = true; }
+  };
+  publishProgress();
+  const progressTimer = setInterval(publishProgress, 250);
+  progressTimer.unref();
+  stopProgress = () => clearInterval(progressTimer);
   const [admin, token] = await Promise.all([config.admin_file, config.credential_file].map(async path => (await fs.readFile(path, 'utf8')).trim()));
   phase = 'launch';
   server = await chromium.launchServer({ headless: true, ...(config.executable ? { executablePath: config.executable } : {}), timeout: 5000, proxy: { server: config.proxy, bypass: '127.0.0.1,localhost' }, args: ['--disable-background-networking', '--no-first-run'] });
@@ -923,17 +944,24 @@ try {
   checkpoint = 'counters';
   need(terminalResponses > 0 && sessionRenewals === 3 && actionWrites === 7 && forbiddenWrites === 0 && errors === 0 && external === 0);
 
+  phase = 'cleanup'; operation = 'cleanup'; checkpoint = 'context-close'; publishProgress();
   await context.close();
+  checkpoint = 'browser-close'; publishProgress();
   await browser.close(); browser = undefined;
+  checkpoint = 'server-close'; publishProgress();
   await server.close(); server = undefined;
+  need(!progressFailed);
   console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
 } catch (error) {
   failureClass = error?.name === 'TimeoutError' || /timeout|timed out|exceeded.*limit/i.test(error?.message || '') ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
   const failureName = ['TimeoutError','Error','AssertionError','TypeError','ReferenceError','RangeError'].includes(error?.name) ? error.name : 'Other';
+  operation = 'failure-snapshot'; publishProgress();
   const snapshot = await failureSnapshot().catch(()=>({diagnostic_failed:true}));
   console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, failure_name:failureName, http_status:lastHTTPStatus, allow_writes:lastAllowWrites, can_edit_presentation:lastCanEditPresentation, send_status:sendStatus, reply_status:replyStatus, conversation_match:conversationMatch, ...counters(), ...diagnostics(), ...snapshot}));
   process.exitCode = 1;
 } finally {
-  if (browser) await browser.close().catch(() => {});
-  if (server) await server.close().catch(() => {});
+  phase = 'cleanup'; operation = 'cleanup';
+  if (browser) { checkpoint = 'browser-close'; publishProgress(); await browser.close().catch(() => {}); }
+  if (server) { checkpoint = 'server-close'; publishProgress(); await server.close().catch(() => {}); }
+  stopProgress();
 }
