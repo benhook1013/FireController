@@ -746,7 +746,7 @@ func (e *Engine) WaitSourceRefresh(ctx context.Context, scope core.Scope, id str
 	waitCtx, cleanupWait := e.resultWaitContext(ctx)
 	defer cleanupWait()
 	canceled := func() error {
-		return core.Fail("overloaded", "The source refresh wait was canceled; its retained operation is unchanged.", 503)
+		return resultWaitCanceled(waitCtx, "The source refresh wait was canceled; its retained operation is unchanged.")
 	}
 	read := func() (SourceRefreshOperation, error) {
 		if waitCtx.Err() != nil {
