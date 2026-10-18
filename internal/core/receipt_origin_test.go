@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 )
@@ -95,7 +95,7 @@ func receiptLegacyFixture(t *testing.T) (string, *Store, Scope, Mutation) {
 	if err = s.DB().QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &path); err != nil {
 		t.Fatal(err)
 	}
-	return strings.TrimSuffix(path, "/firecontroller.sqlite"), s, scope, mutation
+	return filepath.Dir(path), s, scope, mutation
 }
 
 func receiptInactiveMetadata(t *testing.T, s *Store) (string, string) {
