@@ -124,6 +124,12 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		operation, terminal, waitErr := e.WaitOperation(r.Context(), scope, queued.ID, wait)
 		if waitErr != nil {
+			if detached, detachErr := e.acceptedWaitDetached(r.Context(), scope, waitErr); detached {
+				core.WriteJSON(w, http.StatusAccepted, receipt)
+				return
+			} else {
+				waitErr = detachErr
+			}
 			var failure *core.Error
 			if errors.As(waitErr, &failure) && failure.Code == "overloaded" {
 				if details, ok := failure.Details.(map[string]string); ok && details["reason"] == "operation_wait_capacity" {

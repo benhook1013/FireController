@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"time"
@@ -31,19 +32,52 @@ func (e *Engine) notifyOperation(id string) {
 	}
 }
 
+var errResultWaitLifetime = errors.New("result wait lifetime ended")
+
 func (e *Engine) resultWaitContext(ctx context.Context) (context.Context, func()) {
-	waitCtx, cancelWait := context.WithCancel(ctx)
+	waitCtx, cancelWait := context.WithCancelCause(ctx)
 	if e.resultWaitLifetime == nil {
-		return waitCtx, cancelWait
+		return waitCtx, func() { cancelWait(context.Canceled) }
 	}
 	if e.resultWaitLifetime.Err() != nil {
-		cancelWait()
+		cancelWait(errResultWaitLifetime)
 	}
-	stop := context.AfterFunc(e.resultWaitLifetime, cancelWait)
+	stop := context.AfterFunc(e.resultWaitLifetime, func() { cancelWait(errResultWaitLifetime) })
 	return waitCtx, func() {
 		stop()
-		cancelWait()
+		cancelWait(context.Canceled)
 	}
+}
+
+func resultWaitCanceled(ctx context.Context, message string) error {
+	failure := &core.Error{Code: "overloaded", Message: message, Status: 503}
+	if errors.Is(context.Cause(ctx), errResultWaitLifetime) {
+		failure.Details = map[string]string{"reason": "result_wait_lifetime"}
+	}
+	return failure
+}
+
+// A committed POST already owns its receipt. Only a daemon observer shutdown
+// may detach to that known response; caller cancellation and failed fresh
+// authorization keep the recovery path. Existing in-flight cancellation
+// normalization still wins over a simultaneous earlier read error: the receipt
+// claims acceptance, not a successful observation. Reauthorize before exposing ID.
+func (e *Engine) acceptedWaitDetached(ctx context.Context, scope core.Scope, err error) (bool, error) {
+	var failure *core.Error
+	if ctx.Err() != nil || !errors.As(err, &failure) || failure.Code != "overloaded" {
+		return false, err
+	}
+	details, ok := failure.Details.(map[string]string)
+	if !ok || details["reason"] != "result_wait_lifetime" {
+		return false, err
+	}
+	if authErr := e.store.Read(ctx, scope, func(context.Context, *sql.Tx) error { return nil }); authErr != nil {
+		return false, authErr
+	}
+	if ctx.Err() != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string, waitSeconds int) (Operation, bool, error) {
@@ -53,7 +87,7 @@ func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string,
 	waitCtx, cleanupWait := e.resultWaitContext(ctx)
 	defer cleanupWait()
 	canceled := func() error {
-		return core.Fail("overloaded", "The review result wait was canceled; the retained operation is unchanged.", 503)
+		return resultWaitCanceled(waitCtx, "The review result wait was canceled; the retained operation is unchanged.")
 	}
 	read := func() (Operation, error) {
 		if waitCtx.Err() != nil {
