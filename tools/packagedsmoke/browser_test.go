@@ -246,12 +246,29 @@ func (o *browserOutput) safePhase() string {
 			InboxStreams             int    `json:"inbox_streams"`
 			InjectedMetadataFailures int    `json:"injected_metadata_failures"`
 			InjectedConsoleErrors    int    `json:"injected_console_errors"`
+			ConnectHTTPStatus        int    `json:"connect_http_status"`
+			ConnectAllowWrites       bool   `json:"connect_allow_writes"`
+			ConnectCanEdit           bool   `json:"connect_can_edit_presentation"`
 		}
 		if json.Unmarshal(line, &record) != nil || record.State != "FAIL" {
 			continue
 		}
 		switch record.Phase {
 		case "configuration", "launch", "connect", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "renewal-activity", "renewal-missing-cookie", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
+			if record.Phase == "explicit-actions-connect" {
+				switch record.Checkpoint {
+				case "root-url", "root-form", "history-index", "project-input", "credential-input", "permission-control-check", "submit", "session-response", "session-status", "capabilities-read", "capabilities-check", "no-action-writes", "heading", "inbox-button", "inbox-route":
+					valid := record.ConnectHTTPStatus >= 0 && record.ConnectHTTPStatus <= 599
+					for _, n := range []int{record.Posts, record.Deletes, record.Renewals, record.Refusals, record.Errors, record.Writes, record.ActionWrites, record.External} {
+						valid = valid && n >= 0 && n <= 1000
+					}
+					if valid {
+						return fmt.Sprintf("explicit-actions-connect/%s http_status=%d allow_writes=%t can_edit_presentation=%t posts=%d deletes=%d renewals=%d refusals=%d errors=%d forbidden_writes=%d action_writes=%d external=%d", record.Checkpoint, record.ConnectHTTPStatus, record.ConnectAllowWrites, record.ConnectCanEdit, record.Posts, record.Deletes, record.Renewals, record.Refusals, record.Errors, record.Writes, record.ActionWrites, record.External)
+					}
+					return record.Phase
+				}
+				return record.Phase
+			}
 			if record.Phase == "metadata-failure" {
 				switch record.Checkpoint {
 				case "metadata-notice", "metadata-initial-counts", "metadata-inbox-ready":
@@ -299,6 +316,34 @@ func (o *browserOutput) safePhase() string {
 		}
 	}
 	return "driver-start-or-cleanup"
+}
+
+func TestBrowserExplicitConnectDiagnosticsAllowlist(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{
+			name: "safe status and counters",
+			body: `{"state":"FAIL","phase":"explicit-actions-connect","checkpoint":"capabilities-check","connect_http_status":200,"connect_allow_writes":true,"connect_can_edit_presentation":true,"session_posts":2,"session_deletes":1,"session_renewals":3,"terminal_responses":0,"errors":0,"forbidden_writes":0,"action_writes":7,"external":0,"url":"PRIVATE_SENTINEL","credential":"PRIVATE_SENTINEL","error":"PRIVATE_SENTINEL"}`,
+			want: "explicit-actions-connect/capabilities-check http_status=200 allow_writes=true can_edit_presentation=true posts=2 deletes=1 renewals=3 refusals=0 errors=0 forbidden_writes=0 action_writes=7 external=0",
+		},
+		{
+			name: "checkpoint is fixed allowlist",
+			body: `{"state":"FAIL","phase":"explicit-actions-connect","checkpoint":"PRIVATE_SENTINEL","connect_http_status":403,"url":"PRIVATE_SENTINEL"}`,
+			want: "explicit-actions-connect",
+		},
+		{
+			name: "invalid counters fall back to phase",
+			body: `{"state":"FAIL","phase":"explicit-actions-connect","checkpoint":"session-status","connect_http_status":700,"session_posts":-1}`,
+			want: "explicit-actions-connect",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := &browserOutput{}
+			_, _ = output.Write(append([]byte(tc.body), '\n'))
+			if got := output.safePhase(); got != tc.want || strings.Contains(got, "PRIVATE_SENTINEL") {
+				t.Fatalf("unsafe explicit-connect diagnostic: %q", got)
+			}
+		})
+	}
 }
 
 func TestBrowserSendFailureDiagnosticsAllowlist(t *testing.T) {
