@@ -64,6 +64,12 @@ try {
     need(!(await page.content()).includes('PRIVATE_') && !(await page.content()).includes(config.project) && !(await page.content()).includes(config.worker));
     need(await page.locator('literal').count() === 0);
     need(await page.locator('.brand .flame').evaluate(image => image.complete && image.naturalWidth > 0));
+    await page.getByRole('navigation', { name: 'Public project sections' }).locator('a[href="#project-map"]').click();
+    await expect.poll(() => page.evaluate(() => {
+      const heading = document.querySelector('#project-map h2')?.getBoundingClientRect();
+      const mast = document.querySelector('.mast')?.getBoundingClientRect();
+      return !!heading && !!mast && heading.top >= mast.bottom;
+    }), { timeout: 5000 }).toBe(true);
     need(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.documentElement.style.getPropertyValue('--fc-accent_text') === '#fffffe'));
   };
   await verify(page, 1);
