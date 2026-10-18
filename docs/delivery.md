@@ -12,7 +12,6 @@ The [native review workspace](review-workspace.md) implements stored queue, PR/r
 
 Implemented coordination, review and browser slices have passed their focused and controlled executable checks; the combined appearance/coordination head also passed full validation and is installed as QA. The product is not feature complete. Independent source audits identified the following remaining implementation boundaries; human GUI review follows that work, and live-provider proof and migration remain separate. The remaining feature work is:
 
-- Finish integration and recovery proof for the implemented browser inbox actions and project settings, including explicitly approved session authority. Existing connections remain read-only by default.
 - Add prepared map/provenance preview and idempotent apply, then selected historical collection with bounded scope and resume. Prepared review import and editorial map CRUD do not establish this onboarding flow.
 The opt-in [public project website](public-site.md) now has full validation and actual packaged CLI/browser proof at its recorded source checkpoint. Installing a tested build and approving its public presentation remain deployment/GUI boundaries; the existing QA deployment has not changed.
 
