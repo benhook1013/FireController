@@ -15,6 +15,7 @@ All paths below are relative to `/api/v1/projects/{project_id}`. Existing instan
 | `POST /reviews/observations` | Administrator-only, revision-guarded observation append with a required idempotency key. |
 | `POST /reviews/import/preview` | Administrator-only, provider-free prepared observation preview; no receipt or write. |
 | `POST /reviews/import/apply` | Administrator-only prepared observation apply bound to its preview, with the existing observation receipt semantics. |
+| `POST /reviews/queue/edits` | Administrator-only bounded selected metadata, retirement and reactivation; preserves omitted history. |
 | `GET /reviews/queue` | Compact ordered PR summaries, including merged and closed history. |
 | `GET /reviews/pulls/{number}` | One compact PR summary, including latest attempt facts per channel. |
 | `GET /reviews/pulls/{number}/runs` | Newest-first run summaries with cursor pagination. |
@@ -49,11 +50,39 @@ Attempts retain source IDs, channel, head, state, timing, nullable duration and 
 
 ## Retention and browser behavior
 
-Merged PRs remain in the queue as completed history. Removing any previous queue entry requires an explicit `superseded` or `defunct` retirement in the new observation. Lifecycle changes never remove entries implicitly. Snapshots and retirement provenance remain retained; this slice does not introduce a pruning or project-deletion API.
+Merged PRs remain in the queue as completed history. Removing any previous queue entry requires an explicit `superseded` or `defunct` retirement, through a complete observation or the selected queue edits below. Lifecycle changes never remove entries implicitly. Snapshots and retirement provenance remain retained; this slice does not introduce a pruning or project-deletion API.
 
 The browser exposes Reviews, PR history and run-finding pages, with source timestamps, incomplete or missing data, head mismatches, historical counts and source coverage limitations visible. It escapes imported text and generates external PR/commit links only from the verified project repository. It does not render imported HTML or accept arbitrary link destinations. “Refresh visible data” rereads the stored snapshot; it neither refreshes GitHub nor starts a review. These pages have no timer-based polling or new live transport. The [browser guide](browser-guide.md) owns connection privacy and packaging.
 
 An initial installation may populate this boundary through a small explicit import. Profile-bound CLI commands `reviews queue`, `reviews pull`, `reviews runs`, `reviews attempts` and `reviews run`, plus the five matching [MCP read tools](mcp.md), inspect these stored projections without provider work. Queue/run/attempt tools default to five entries, while explicit run detail loads full findings. Snapshot selectors retain historical consistency. A general migration framework and continuous legacy compatibility service remain separate deliveries. Optional [native executors](review-execution.md) publish retained native evidence through their own trusted path. Review observation writes are not exposed as worker tools.
+
+## Selected queue edits
+
+Administrator queue edits are implemented through the API, typed client and bound CLI. Their focused and packaged proof is recorded below; the earlier complete-observation proofs remain separate.
+
+Complete observations replace a small workspace and retain their per-request bounds. A large workspace uses additive transfer for selected history and `POST /api/v1/projects/{project_id}/reviews/queue/edits` for selected metadata, retirement and reactivation. Neither operation requires a complete project export or a lifetime PR ceiling.
+
+Queue edits require administrator access, an explicit idempotency key, the current `expected_revision`, the configured `repository_id` and a bounded `source` label for administrator provenance. The strict JSON document is limited to 256 KiB. Its `queue` and `retired` arrays select between one and one hundred entries in total, with unique, disjoint PR numbers. Omitted arrays become empty; explicit null fields, unknown fields and duplicate keys are refused.
+
+Each `queue` entry contains only `number`, `title`, `state`, `head_sha`, `base_ref`, `base_sha`, `ci_state` and `mergeability`, using the existing metadata bounds. Omitted optional SHA/base strings become empty. Runs, attempts, findings, counts and completeness cannot be supplied. An existing PR keeps its position and retained producer histories; changing its head clears completeness. A new or previously absent PR appends with partial coverage. Explicitly selecting a retired PR reactivates it without inventing review evidence.
+
+Each `retired` entry names a currently visible PR and its `superseded` or `defunct` reason. Retirement changes queue visibility, preserving retained parent records and review histories. Later native publication can update retained facts without clearing the retirement marker or making the PR reappear. Historical transfer refuses a marked PR until explicit reactivation. Explicit retirement also governs a retained snapshot containing both a pull record and its retirement; the presence of the pull record alone cannot make it visible. Retirement does not cancel review operations, change execution policy or unpublish an explicitly enrolled public PR.
+
+Omitted PRs and records remain unchanged. Revision admission, the new snapshot, history references, compact summaries, receipt, event and public projection refresh commit together. A queue edit inherits the prior observation time and does no provider work; it cannot claim freshly collected source facts. Exact original-key replay returns its original receipt after later changes or restart, subject to current authorization. A changed request under the same key conflicts. Successful HTTP 201 returns only the snapshot `id`, new `revision` and `outcome: queue_edited`.
+
+The bound administrator CLI is:
+
+```sh
+fc reviews queue-edit --file /private/queue-edit.json --key retained-action-key
+```
+
+It validates a bounded regular file before credentials or network access, retains the ordinary five-second budget and never generates a key or retries automatically. A lost or invalid mutation response requires recovery with the original request, key and binding. This administrator maintenance action is not a worker MCP tool.
+
+### Queue edit proof
+
+Focused normal and race checks exercise a workspace grown through bounded transfers to 202 PRs, selected metadata and visibility changes, mixed original producers, native advancement while hidden, explicit reactivation and transfer, retained merged PRs, and unchanged valid historical cursor/detail bytes. They also cover administrator admission, strict input bounds, revision conflicts, exact replay after later writes, lost responses, cancellation and event-failure rollback. History and current-summary validators pass; scoped vet, formatting and documentation checks pass. Independent source inspection found no additional implementation defect. A broader package race run was interrupted and is not counted as passing.
+
+An actual packaged `fc`/`fcd` workload passed in 1.530 seconds on a private source candidate. Three bounded transfers admitted 202 PRs; selected edits and restart replay preserved original review detail, observation time, omitted merged history and old cursor bytes. Canonical backup, inspection and inactive restore preserved retained state, rotated recovery identity and revoked copied credentials; the restored daemon refused startup before activation. The workload used 28 CLI calls and four operator invocations, with zero external requests or surviving owned processes. Supplied source and binary hashes remained unchanged. This is local synthetic Linux proof, separate from full CI, browser rendering, installed deployment, native-platform execution, provider qualification and operational cutover.
 
 ## Validation status
 
