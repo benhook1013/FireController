@@ -8,10 +8,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/benhook1013/FireController/internal/presentationmodel"
 	"github.com/benhook1013/FireController/internal/publicsite"
 )
 
@@ -43,6 +47,9 @@ func publicWindowArchive(t *testing.T, f *apiFixture, revision int64, queue []Pu
 	}
 	if err := ValidateCurrentSummaries(t.Context(), tx); err != nil {
 		t.Fatal("trusted archive has invalid derived current rows", err)
+	}
+	if err := ValidateCurrentRunOrder(t.Context(), tx); err != nil {
+		t.Fatal("trusted archive has invalid current run-order cache", err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
@@ -168,6 +175,16 @@ func TestPublicSiteWindowIndependentEligibleChannelBounds(t *testing.T) {
 
 func TestPublicSiteWindowQueriesUseCurrentPositionIndexes(t *testing.T) {
 	f := newAPIFixture(t)
+	pull := nativePull(1)
+	for i := range 128 {
+		draft := publicWindowRun(1, "cli", i)
+		draft.Finalized = false
+		pull.Runs = append(pull.Runs, draft)
+	}
+	// A single eligible CLI run follows many current but ineligible rows; the
+	// Hosted channel has no eligible rows at all.
+	pull.Runs = append(pull.Runs, publicWindowRun(1, "cli", 128))
+	publicWindowArchive(t, f, 1, []PullInput{pull})
 	for _, channel := range []string{"cli", "hosted"} {
 		rows, err := f.store.DB().QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+publicSiteChannelRoundsSQL, f.project, 1, channel, 101)
 		if err != nil {
@@ -185,8 +202,112 @@ func TestPublicSiteWindowQueriesUseCurrentPositionIndexes(t *testing.T) {
 		}
 		err = rows.Err()
 		rows.Close()
-		if err != nil || !strings.Contains(plan, "SEARCH c USING INDEX") || !strings.Contains(plan, "project_id=? AND pull_number=?") || strings.Contains(plan, "SCAN ") || strings.Contains(plan, "TEMP B-TREE") {
-			t.Fatal("source window did not use scoped current-position access", plan, err)
+		if err != nil || !strings.Contains(plan, "SEARCH o USING INDEX review_current_run_order_eligible (project_id=? AND pull_number=? AND channel=?)") || strings.Contains(plan, "SCAN o") || strings.Contains(plan, "SCAN review_current_run_order") || strings.Contains(plan, "SCAN c") || strings.Contains(plan, "SCAN m") || strings.Contains(plan, "SCAN v") || strings.Contains(plan, "TEMP B-TREE") {
+			t.Fatal("source window did not use the bounded eligible current-run index", plan, err)
 		}
+	}
+}
+
+// The large seed uses the trusted immutable writer; the measured updates below
+// use actual admitted transfer/native writes and their optional public refresh.
+// This finite fixture is not a fleet latency guarantee.
+func TestPublicSiteSparseHistoryRefreshUnderOrdinaryWrites(t *testing.T) {
+	f := newAPIFixture(t)
+	pull := nativePull(1)
+	hosted := publicWindowRun(1, "hosted", 0)
+	hosted.HeadSHA, hosted.Finalized = pull.HeadSHA, false
+	pull.Runs = []RunInput{hosted}
+	for i := range 4096 {
+		run := publicWindowRun(1, "cli", i)
+		run.HeadSHA = pull.HeadSHA
+		pull.Runs = append(pull.Runs, run)
+	}
+	snapshot := publicWindowArchive(t, f, 1, []PullInput{pull})
+	historical := historyMigrationRead(t, f, "/pulls/1?snapshot="+snapshot)
+	// Exercise the real v5-to-v6 backfill across multiple 256-row pages,
+	// retaining the same private snapshot before ordinary writes resume.
+	if _, err := f.store.DB().Exec(`DROP TABLE review_current_run_order`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().Exec(`UPDATE metadata SET value='5' WHERE key='schema:reviews'`); err != nil {
+		t.Fatal(err)
+	}
+	migrationStarted := time.Now()
+	if err := EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal("multi-page current-run index migration failed", err)
+	}
+	t.Logf("schema6 backfill of 4097 current runs: %s", time.Since(migrationStarted))
+	if got := historyMigrationRead(t, f, "/pulls/1?snapshot="+snapshot); !reflect.DeepEqual(got, historical) {
+		t.Fatal("multi-page index migration changed pinned historical response")
+	}
+	if err := publicsite.EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	site := publicsite.New(f.store, PublicSiteReviewFacts)
+	site.Register(f.mux.(*http.ServeMux), t.Context())
+	request := httptest.NewRequest("PUT", "/api/v1/projects/"+f.project+"/publication", nil)
+	request.SetPathValue("project_id", f.project)
+	request.Header.Set("Authorization", "Bearer "+f.admin)
+	scope, err := f.store.AdminScope(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := publicsite.NormalizeManifest(publicsite.Manifest{Slug: "sparse-history", Presentation: presentationmodel.Config{Name: "Sparse history"}, Reviews: []publicsite.EnrolledReview{{Number: 1, Title: "Approved", URL: "https://github.com/owner/project/pull/1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := publicsite.Approved{ExpectedRevision: 0, Enabled: true, Manifest: manifest}
+	preview, err := site.Preview(t.Context(), scope, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := site.Apply(t.Context(), scope, "publish-sparse-history", input, preview.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	read := func() publicsite.Snapshot {
+		t.Helper()
+		response := f.call("GET", "/api/v1/public/projects/sparse-history", "", "", nil)
+		var result publicsite.Snapshot
+		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil {
+			t.Fatal("anonymous sparse history read failed", response.Code)
+		}
+		var refreshError string
+		if err := f.store.DB().QueryRow(`SELECT refresh_error FROM project_publications WHERE project_id=?`, f.project).Scan(&refreshError); err != nil || refreshError != "" {
+			t.Fatal("optional refresh silently failed", refreshError, err)
+		}
+		return result
+	}
+	before := read()
+	if len(before.Content.Reviews) != 1 || len(before.Content.Reviews[0].Hosted) != 0 || len(before.Content.Reviews[0].CLI) != 100 || !before.Content.Reviews[0].CLIHasMore {
+		t.Fatal("initial sparse public window", before.Content.Reviews)
+	}
+	// Finalization is a supported transition and must reach the sparse channel
+	// while keeping the independent CLI window and its older private tail.
+	hosted.Finalized = true
+	selected := pull
+	selected.Runs = []RunInput{hosted}
+	started := time.Now()
+	transferApplyFor(t, f, transferRequest(1, TransferGroup{Source: publicWindowSource, Pulls: []PullInput{selected}}), "finalize-sparse-hosted")
+	t.Logf("admitted transfer and preview on 4097 current runs: %s", time.Since(started))
+	after := read()
+	if after.Revision != before.Revision+1 || len(after.Content.Reviews[0].Hosted) != 1 || !reflect.DeepEqual(after.Content.Reviews[0].CLI, before.Content.Reviews[0].CLI) || !after.Content.Reviews[0].CLIHasMore {
+		t.Fatal("sparse finalization missed public refresh or changed other channel")
+	}
+	started = time.Now()
+	run := nativeRun("native-after-sparse-history")
+	// Make the new round newer than the retained public window; older rounds
+	// legitimately leave its bytes and revision unchanged.
+	run.FinishedAt = "2026-01-01T00:02:00Z"
+	mustNativePublish(t, f, NativePublication{Pull: nativePull(1), Run: &run})
+	t.Logf("admitted native publication on 4097 current runs: %s", time.Since(started))
+	native := read()
+	if native.Revision != after.Revision+1 || len(native.Content.Reviews[0].CLI) != 100 || !native.Content.Reviews[0].CLIHasMore || !reflect.DeepEqual(native.Content.Reviews[0].Hosted, after.Content.Reviews[0].Hosted) {
+		t.Fatal("native write did not refresh bounded channel windows")
+	}
+	if err := ValidateCurrentRunOrder(t.Context(), f.store.DB()); err != nil {
+		t.Fatal("ordinary updates left invalid run index", err)
+	}
+	if got := historyMigrationRead(t, f, "/pulls/1?snapshot="+snapshot); !reflect.DeepEqual(got, historical) {
+		t.Fatal("ordinary updates changed pinned historical response")
 	}
 }

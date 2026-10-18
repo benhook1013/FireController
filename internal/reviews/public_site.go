@@ -51,15 +51,23 @@ func PublicSiteReviewFacts(ctx context.Context, tx *sql.Tx, project string, mani
 	return facts, nil
 }
 
-// Current references provide position ordering independently for each channel.
-// Filtering may inspect other current rows; only 101 eligible scalar summaries
-// cross this query boundary, and no capture or finding bodies are decoded.
-const publicSiteChannelRoundsSQL = `SELECT v.source,v.source_run_id,v.complete,v.found,v.accepted,v.routed,v.started_at,v.finished_at
- FROM review_current_runs c
- CROSS JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision
- CROSS JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision
- WHERE c.project_id=? AND c.pull_number=? AND v.outcome='completed' AND v.finalized=1 AND v.channel=?
- ORDER BY c.run_order DESC LIMIT ?`
+// The partial eligible index selects at most 101 cached positions before the
+// query joins only those authoritative current versions. It reads no capture
+// or finding bodies and fails closed if selected cache facts disagree.
+const publicSiteChannelRoundsSQL = `WITH selected AS (
+ SELECT o.project_id,o.id,o.pull_number,o.channel,o.outcome,o.finalized,o.run_order
+ FROM review_current_run_order o
+ WHERE o.project_id=? AND o.pull_number=? AND o.channel=? AND o.outcome='completed' AND o.finalized=1
+ ORDER BY o.run_order DESC LIMIT ?
+)
+ SELECT selected.id,selected.pull_number,selected.channel,selected.outcome,selected.finalized,selected.run_order,
+ c.id,c.pull_number,c.run_order,v.channel,v.outcome,v.finalized,
+ v.source,v.source_run_id,v.complete,v.found,v.accepted,v.routed,v.started_at,v.finished_at
+ FROM selected
+ LEFT JOIN review_current_runs c ON c.project_id=selected.project_id AND c.id=selected.id
+ LEFT JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision
+ LEFT JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision
+ ORDER BY selected.run_order DESC`
 
 func publicSiteChannelRounds(ctx context.Context, tx *sql.Tx, project string, number int64, channel string, key []byte) ([]publicsite.RoundFacts, bool, error) {
 	rows, err := tx.QueryContext(ctx, publicSiteChannelRoundsSQL, project, number, channel, publicsite.MaxChannelRounds+1)
@@ -71,9 +79,22 @@ func publicSiteChannelRounds(ctx context.Context, tx *sql.Tx, project string, nu
 	more := false
 	for rows.Next() {
 		var source, run, started string
+		var cachedID, cachedChannel, cachedOutcome sql.NullString
+		var cachedPull, cachedFinalized, cachedOrder sql.NullInt64
+		var currentID, currentChannel, currentOutcome sql.NullString
+		var currentPull, currentOrder, currentFinalized sql.NullInt64
 		round := publicsite.RoundFacts{Completed: true, Finalized: true}
-		if err := rows.Scan(&source, &run, &round.Complete, &round.Found, &round.Accepted, &round.Routed, &started, &round.ObservedAt); err != nil {
+		if err := rows.Scan(&cachedID, &cachedPull, &cachedChannel, &cachedOutcome, &cachedFinalized, &cachedOrder,
+			&currentID, &currentPull, &currentOrder, &currentChannel, &currentOutcome, &currentFinalized,
+			&source, &run, &round.Complete, &round.Found, &round.Accepted, &round.Routed, &started, &round.ObservedAt); err != nil {
 			return nil, false, err
+		}
+		if !cachedID.Valid || !cachedPull.Valid || !cachedChannel.Valid || !cachedOutcome.Valid || !cachedFinalized.Valid || !cachedOrder.Valid ||
+			!currentID.Valid || !currentPull.Valid || !currentOrder.Valid || !currentChannel.Valid || !currentOutcome.Valid || !currentFinalized.Valid ||
+			cachedID.String != currentID.String || cachedPull.Int64 != currentPull.Int64 || cachedOrder.Int64 != currentOrder.Int64 ||
+			cachedChannel.String != currentChannel.String || cachedOutcome.String != currentOutcome.String || cachedFinalized.Int64 != currentFinalized.Int64 ||
+			currentPull.Int64 != number || currentChannel.String != channel || currentOutcome.String != "completed" || currentFinalized.Int64 != 1 {
+			return nil, false, historyInconsistent()
 		}
 		if len(rounds) == publicsite.MaxChannelRounds {
 			more = true

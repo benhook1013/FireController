@@ -35,21 +35,21 @@ func historyInventoryFixture(t *testing.T) (*core.Store, string) {
 		t.Fatal(err)
 	}
 	var version string
-	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "5" {
-		t.Fatal("owning startup must install reviews v5", version, err)
+	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "6" {
+		t.Fatal("owning startup must install reviews v6", version, err)
 	}
 	return store, dir
 }
 
-func TestHistoryInventoryV5CanonicalEmptySchemaIsReadOnly(t *testing.T) {
+func TestHistoryInventoryV6CanonicalEmptySchemaIsReadOnly(t *testing.T) {
 	store, dir := historyInventoryFixture(t)
 	before := backupRows(t, store.DB())
 	versions, err := validateSchema(t.Context(), store.DB(), false)
-	if err != nil || versions["reviews"] != 5 {
-		t.Fatal("canonical v5 refused", versions, err)
+	if err != nil || versions["reviews"] != 6 {
+		t.Fatal("canonical v6 refused", versions, err)
 	}
 	// The five/six-column groups are checked independently of exact DDL too.
-	for _, table := range []string{"review_current_runs", "review_current_attempts", "review_attempt_memberships"} {
+	for _, table := range []string{"review_current_runs", "review_current_attempts", "review_attempt_memberships", "review_current_run_order"} {
 		if err = validateForeignKeys(t.Context(), store.DB(), table); err != nil {
 			t.Fatalf("canonical grouped FK refused %s: %v", table, err)
 		}
@@ -69,7 +69,8 @@ func TestHistoryInventoryV5CanonicalEmptySchemaIsReadOnly(t *testing.T) {
 
 func historyTableDefinition(t *testing.T, name string) string {
 	t.Helper()
-	for _, statement := range reviews.HistorySchemaSQL() {
+	definitions := append(reviews.HistorySchemaSQL(), reviews.CurrentRunOrderSchemaSQL()...)
+	for _, statement := range definitions {
 		if strings.HasPrefix(statement, "CREATE TABLE "+name+" (") {
 			return statement
 		}
@@ -78,7 +79,7 @@ func historyTableDefinition(t *testing.T, name string) string {
 	return ""
 }
 
-func TestHistoryInventoryV5RehashedSchemaViewsAndIndexesRefused(t *testing.T) {
+func TestHistoryInventoryV6RehashedSchemaViewsAndIndexesRefused(t *testing.T) {
 	tests := []struct{ name, sql string }{
 		{"unknown-view", `CREATE VIEW private_dump AS SELECT * FROM credentials`},
 		{"missing-view", `DROP VIEW review_findings`},
@@ -91,7 +92,12 @@ func TestHistoryInventoryV5RehashedSchemaViewsAndIndexesRefused(t *testing.T) {
 		{"unknown-index", `CREATE INDEX unknown_history_index ON review_current_runs(project_id,id)`},
 		{"extra-column", `ALTER TABLE review_run_versions ADD COLUMN ignored TEXT`},
 		{"missing-table", `DROP TABLE review_current_attempts`},
+		{"missing-run-order-table", `DROP TABLE review_current_run_order`},
+		{"missing-run-order-index", `DROP INDEX review_current_run_order_eligible`},
+		{"wrong-run-order-index", `DROP INDEX review_current_run_order_eligible; CREATE INDEX review_current_run_order_eligible ON review_current_run_order(project_id,pull_number,channel,run_order ASC) WHERE outcome='completed' AND finalized=1`},
+		{"wrong-run-order-predicate", `DROP INDEX review_current_run_order_eligible; CREATE INDEX review_current_run_order_eligible ON review_current_run_order(project_id,pull_number,channel,run_order DESC) WHERE outcome='completed'`},
 		{"wrong-version", `UPDATE metadata SET value='3' WHERE key='schema:reviews'`},
+		{"future-version", `UPDATE metadata SET value='7' WHERE key='schema:reviews'`},
 	}
 	for _, test := range []struct{ name, table, old, new string }{
 		{"missing-order-check", "review_current_pulls", "CHECK (position >= 0)", "CHECK (position >= -1)"},
@@ -99,6 +105,8 @@ func TestHistoryInventoryV5RehashedSchemaViewsAndIndexesRefused(t *testing.T) {
 		{"changed-primary-key", "review_current_retired", "PRIMARY KEY (project_id,number)", "PRIMARY KEY (project_id,number,start_revision)"},
 		{"changed-six-column-fk", "review_current_attempts", "ON UPDATE NO ACTION", "ON UPDATE CASCADE"},
 		{"changed-default", "review_finding_versions", "DEFAULT 'null'", "DEFAULT '{}'"},
+		{"changed-run-order-check", "review_current_run_order", "CHECK(finalized IN(0,1))", "CHECK(finalized IN(0,1,2))"},
+		{"changed-run-order-cascade", "review_current_run_order", "ON DELETE CASCADE", "ON DELETE NO ACTION"},
 	} {
 		definition := historyTableDefinition(t, test.table)
 		changed := strings.Replace(definition, test.old, test.new, 1)
@@ -122,7 +130,7 @@ func TestHistoryInventoryV5RehashedSchemaViewsAndIndexesRefused(t *testing.T) {
 			_, err = Restore(t.Context(), bundle.Path, destination)
 			backupCode(t, err, "backup_invalid")
 			if _, err = os.Lstat(destination); !os.IsNotExist(err) {
-				t.Fatal("invalid v5 schema reached restore writes")
+				t.Fatal("invalid v6 schema reached restore writes")
 			}
 			if !reflect.DeepEqual(immutable, restoreTree(t, bundle.Path)) {
 				t.Fatal("rejection modified retained bundle")
@@ -176,7 +184,7 @@ func historyInventorySeedPull(t *testing.T, store *core.Store) {
 	}
 }
 
-func TestHistoryInventoryV5RehashedReferenceGraphRefused(t *testing.T) {
+func TestHistoryInventoryV6RehashedReferenceGraphRefused(t *testing.T) {
 	for _, test := range []struct{ name, sql string }{
 		{"missing-current", `DELETE FROM review_current_totals; DELETE FROM review_current_pulls`},
 		{"missing-workspace", `DELETE FROM review_workspace`},
@@ -201,11 +209,16 @@ func TestHistoryInventoryV5RehashedReferenceGraphRefused(t *testing.T) {
 	}
 }
 
-func TestHistoryInventoryV5InstalledSchemaCreateInspectRestore(t *testing.T) {
+func TestHistoryInventoryV6InstalledSchemaCreateInspectRestore(t *testing.T) {
 	store, dir := historyInventoryFixture(t)
 	// Source initialization uses the actual owner migration, then real bundle IO.
 	historyInventorySeedPull(t, store)
 	original := backupRows(t, store.DB())
+	var signing string
+	var sourceCredentials int
+	if err := store.DB().QueryRow(`SELECT value,(SELECT count(*) FROM credentials) FROM metadata WHERE key='signing_key'`).Scan(&signing, &sourceCredentials); err != nil || sourceCredentials < 1 {
+		t.Fatal("source identity/access fixture unavailable", err)
+	}
 	bundle, err := Create(t.Context(), store, dir, filepath.Join(t.TempDir(), "bundles"))
 	if err != nil {
 		t.Fatal(err)
@@ -216,7 +229,7 @@ func TestHistoryInventoryV5InstalledSchemaCreateInspectRestore(t *testing.T) {
 	}
 	destination := filepath.Join(t.TempDir(), "inactive")
 	restored, err := Restore(t.Context(), bundle.Path, destination)
-	if err != nil || restored.State != "inactive" {
+	if err != nil || restored.State != "inactive" || restored.SourceInstanceID != store.InstanceID() || restored.InstanceID == store.InstanceID() {
 		t.Fatal(restored, err)
 	}
 	db, err := openSnapshot(t.Context(), filepath.Join(destination, "firecontroller.sqlite"))
@@ -225,6 +238,11 @@ func TestHistoryInventoryV5InstalledSchemaCreateInspectRestore(t *testing.T) {
 	}
 	defer db.Close()
 	retained := backupRows(t, db)
+	var instance, nextSigning, state string
+	var activeCredentials, retainedCredentials int
+	if err := db.QueryRow(`SELECT (SELECT value FROM metadata WHERE key='instance_id'),(SELECT value FROM metadata WHERE key='signing_key'),(SELECT value FROM metadata WHERE key='restore:state'),(SELECT count(*) FROM credentials WHERE revoked!=1),(SELECT count(*) FROM credentials)`).Scan(&instance, &nextSigning, &state, &activeCredentials, &retainedCredentials); err != nil || instance != restored.InstanceID || nextSigning == signing || nextSigning == "" || state != "inactive" || activeCredentials != 0 || retainedCredentials != sourceCredentials {
+		t.Fatal("inactive restore identity/access/provider hold changed", err)
+	}
 	for _, table := range []string{"projects", "review_snapshots", "review_workspace", "review_pull_versions", "review_pull_memberships", "review_current_pulls"} {
 		got := retained[table]
 		if got != original[table] {
@@ -266,7 +284,7 @@ func historyInventoryAPIFixture(t *testing.T) *restoreFixture {
 	return f
 }
 
-func TestHistoryInventoryV5MixedHistoryReadsAndAdjudicationSurviveRestore(t *testing.T) {
+func TestHistoryInventoryV6MixedHistoryReadsAndAdjudicationSurviveRestore(t *testing.T) {
 	f := historyInventoryAPIFixture(t)
 	prefix := "/api/v1/projects/" + f.project + "/reviews"
 	read := func(handler http.Handler, store *core.Store, token, route string, status int) []byte {
@@ -372,6 +390,10 @@ func TestHistoryInventoryV5MixedHistoryReadsAndAdjudicationSurviveRestore(t *tes
 	if !latest.Run.Finalized || latest.Run.Fixed != 1 || latest.Findings[0].Detail != "NATIVE_IMMUTABLE_TEXT" || latest.Findings[0].ProofNote != "Native proof remains exact" {
 		t.Fatal("adjudicated proof missing")
 	}
+	var indexedRuns, eligibleRuns int
+	if err = f.store.DB().QueryRow(`SELECT count(*),sum(CASE WHEN channel='cli' AND outcome='completed' AND finalized=1 THEN 1 ELSE 0 END) FROM review_current_run_order WHERE project_id=?`, f.project).Scan(&indexedRuns, &eligibleRuns); err != nil || indexedRuns != 2 || eligibleRuns != 1 {
+		t.Fatal("mixed source/current adjudication cache was not retained", indexedRuns, eligibleRuns, err)
+	}
 	original := backupRows(t, f.store.DB())
 	bundle := restoreBundle(t, f)
 	immutable := restoreTree(t, bundle.Path)
@@ -442,7 +464,7 @@ func TestHistoryInventoryV5MixedHistoryReadsAndAdjudicationSurviveRestore(t *tes
 	}
 }
 
-func TestHistoryInventoryV5RehashedOwningPullVisibilityDamageRefused(t *testing.T) {
+func TestHistoryInventoryV6RehashedOwningPullVisibilityDamageRefused(t *testing.T) {
 	for _, kind := range []string{"run", "attempt"} {
 		for _, damage := range []string{"missing-parent", "historical-parent-gap"} {
 			t.Run(kind+"/"+damage, func(t *testing.T) {
@@ -513,5 +535,181 @@ func TestHistoryInventoryV5RehashedOwningPullVisibilityDamageRefused(t *testing.
 				}
 			})
 		}
+	}
+}
+
+// Reconstruct only the truthful older derived schema in an exclusively owned
+// fixture; no retained source/history bytes or IDs are rewritten or migrated by
+// backup creation, inspection or inactive restore.
+func TestHistoryInventoryV4V5RemainSupportedWithoutRunOrderCache(t *testing.T) {
+	for _, version := range []int{4, 5} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			f := historyInventoryRunOrderFixture(t)
+			if _, err := f.store.DB().Exec(`DROP TABLE review_current_run_order`); err != nil {
+				t.Fatal(err)
+			}
+			if version == 4 {
+				if _, err := f.store.DB().Exec(`DROP TABLE review_current_attempt_order; DROP TABLE review_current_totals`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := f.store.DB().Exec(`UPDATE metadata SET value=? WHERE key='schema:reviews'`, fmt.Sprint(version)); err != nil {
+				t.Fatal(err)
+			}
+			before := backupRows(t, f.store.DB())
+			bundle := restoreBundle(t, f)
+			immutable := restoreTree(t, bundle.Path)
+			if _, err := Inspect(t.Context(), bundle.Path); err != nil {
+				t.Fatal("supported older bundle refused", err)
+			}
+			target := filepath.Join(t.TempDir(), "inactive")
+			restored, err := Restore(t.Context(), bundle.Path, target)
+			if err != nil || restored.State != "inactive" {
+				t.Fatal(restored, err)
+			}
+			db, err := openSnapshot(t.Context(), filepath.Join(target, "firecontroller.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			after := backupRows(t, db)
+			var installed int
+			err = db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name='review_current_run_order'`).Scan(&installed)
+			db.Close()
+			if err != nil || installed != 0 {
+				t.Fatal("inspection/restore installed a future cache", err)
+			}
+			for table, hash := range before {
+				if table != "metadata" && table != "credentials" && after[table] != hash {
+					t.Fatal("old retained rows changed", table)
+				}
+			}
+			if !reflect.DeepEqual(before, backupRows(t, f.store.DB())) || !reflect.DeepEqual(immutable, restoreTree(t, bundle.Path)) {
+				t.Fatal("older source/bundle mutated")
+			}
+		})
+	}
+}
+
+func historyInventoryRunOrderFixture(t *testing.T) *restoreFixture {
+	t.Helper()
+	f := historyInventoryAPIFixture(t)
+	var revision int64
+	f.request(t, http.MethodPost, "/api/v1/projects/"+f.project+"/reviews/observations", reviews.ObservationRequest{
+		ExpectedRevision: &revision, RepositoryID: 991, Source: "original-cache-source", ObservedAt: "2026-01-01T00:00:00Z",
+		Queue: []reviews.PullInput{{Number: 7, Title: "Retained current run metadata", State: "merged", CIState: "unknown", Mergeability: "unknown", Runs: []reviews.RunInput{
+			{SourceRunID: "eligible-source-run", Channel: "cli", Scope: "retained selected evidence", Outcome: "completed", Complete: true, Finalized: true, StartedAt: "2026-01-01T00:00:00Z", FinishedAt: "2026-01-01T00:01:00Z"},
+			{SourceRunID: "ineligible-source-run", Channel: "hosted", Scope: "retained unknown outcome", Outcome: "unknown"},
+		}}},
+	})
+	return f
+}
+
+func TestHistoryInventoryV6RehashedCurrentRunOrderDamageRefused(t *testing.T) {
+	for _, damage := range []struct{ name, sql string }{
+		{"missing", `DELETE FROM review_current_run_order WHERE channel='cli'`},
+		{"channel", `UPDATE review_current_run_order SET channel='manual' WHERE channel='cli'`},
+		{"outcome", `UPDATE review_current_run_order SET outcome='failed' WHERE channel='cli'`},
+		{"finalized", `UPDATE review_current_run_order SET finalized=0 WHERE channel='cli'`},
+		{"order", `UPDATE review_current_run_order SET run_order=run_order+10 WHERE channel='cli'`},
+		{"owner", `UPDATE review_current_run_order SET pull_number=8 WHERE channel='cli'`},
+	} {
+		t.Run(damage.name, func(t *testing.T) {
+			f := historyInventoryRunOrderFixture(t)
+			source := backupRows(t, f.store.DB())
+			bundle := restoreBundle(t, f)
+			mutateBundleSQL(t, bundle.Path, damage.sql)
+			// Exact physical layout and the full retained reference graph remain valid;
+			// the new derived cache is the only damaged data, not source authority.
+			db, err := openSnapshot(t.Context(), filepath.Join(bundle.Path, "firecontroller.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			versions, err := validateSchema(t.Context(), db, false)
+			if err != nil || versions["reviews"] != 6 {
+				t.Fatal("logical fixture changed canonical physical layout", versions, err)
+			}
+			fk, err := db.QueryContext(t.Context(), `PRAGMA foreign_key_check`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hasFK := fk.Next()
+			fkErr := fk.Err()
+			fk.Close()
+			if hasFK || fkErr != nil {
+				t.Fatal("logical fixture broke physical FK", fkErr)
+			}
+			if err = reviews.ValidateHistoryReferences(t.Context(), db); err != nil {
+				t.Fatal("logical fixture changed retained source", err)
+			}
+			if err = reviews.ValidateCurrentSummaries(t.Context(), db); err != nil {
+				t.Fatal("logical fixture changed old caches", err)
+			}
+			if err = reviews.ValidateCurrentRunOrder(t.Context(), db); err == nil {
+				t.Fatal("derived current cache damage accepted")
+			}
+			db.Close()
+			before := restoreTree(t, bundle.Path)
+			_, err = Inspect(t.Context(), bundle.Path)
+			backupCode(t, err, "backup_invalid")
+			target := filepath.Join(t.TempDir(), "must-not-create")
+			_, err = Restore(t.Context(), bundle.Path, target)
+			backupCode(t, err, "backup_invalid")
+			if _, err = os.Lstat(target); !os.IsNotExist(err) {
+				t.Fatal("corrupt derived cache reached restore writes")
+			}
+			if !reflect.DeepEqual(before, restoreTree(t, bundle.Path)) || !reflect.DeepEqual(source, backupRows(t, f.store.DB())) {
+				t.Fatal("corruption refusal mutated source or sealed bundle")
+			}
+		})
+	}
+}
+
+func TestHistoryInventoryV6ExtraUnreferencedCacheRowRefused(t *testing.T) {
+	f := historyInventoryRunOrderFixture(t)
+	bundle := restoreBundle(t, f)
+	// A literal surplus row cannot retain its current-run FK when every current
+	// run already owns exactly one cache row. This case deliberately tests that
+	// physical refusal separately from FK-valid field/missing-row damage above.
+	mutateBundleSQL(t, bundle.Path, `INSERT INTO review_current_run_order SELECT project_id,'review_run_ffffffffffffffffffffffffffffffff',pull_number,channel,outcome,finalized,run_order FROM review_current_run_order LIMIT 1`)
+	before := restoreTree(t, bundle.Path)
+	_, err := Inspect(t.Context(), bundle.Path)
+	backupCode(t, err, "backup_invalid")
+	target := filepath.Join(t.TempDir(), "must-not-create")
+	_, err = Restore(t.Context(), bundle.Path, target)
+	backupCode(t, err, "backup_invalid")
+	if _, err = os.Lstat(target); !os.IsNotExist(err) || !reflect.DeepEqual(before, restoreTree(t, bundle.Path)) {
+		t.Fatal("extra row refusal changed destination/bundle")
+	}
+}
+
+func TestHistoryInventoryV6LiveCacheCorruptionRefusesCreateAndRetries(t *testing.T) {
+	f := historyInventoryRunOrderFixture(t)
+	if _, err := f.store.DB().Exec(`UPDATE review_current_run_order SET finalized=0 WHERE channel='cli'`); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := backupRows(t, f.store.DB())
+	root := filepath.Join(t.TempDir(), "bundles")
+	_, err := Create(t.Context(), f.store, f.dir, root)
+	backupCode(t, err, "backup_invalid")
+	if !reflect.DeepEqual(corrupt, backupRows(t, f.store.DB())) {
+		t.Fatal("failed creation repaired current cache")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatal("failed validation published a bundle")
+	}
+	// Restore the exact fixture value; ordinary creation then retries normally.
+	if _, err = f.store.DB().Exec(`UPDATE review_current_run_order SET finalized=1 WHERE channel='cli'`); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := Create(t.Context(), f.store, f.dir, root)
+	if err != nil {
+		t.Fatal("corrected fixture could not retry", err)
+	}
+	if _, err = Inspect(t.Context(), bundle.Path); err != nil {
+		t.Fatal(err)
 	}
 }
