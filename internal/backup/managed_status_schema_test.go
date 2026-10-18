@@ -1,11 +1,15 @@
 package backup
 
 import (
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/benhook1013/FireController/internal/core"
 )
 
 func TestManagedStatusUnconfiguredBeyondBackupInventory(t *testing.T) {
@@ -71,7 +75,11 @@ func TestManagedStatusPreservesRecoveryAndPathRefusals(t *testing.T) {
 	// A fully valid inactive copy remains refused; reporting cannot activate it.
 	before := restoreTree(t, destination)
 	_, err = ReadStatus(t.Context(), destination)
-	backupCode(t, err, "backup_invalid")
+	backupCode(t, err, "restore_inactive")
+	var inactive *core.Error
+	if !errors.As(err, &inactive) || inactive.Status != http.StatusConflict || !strings.Contains(inactive.Message, "restore-activate") {
+		t.Fatal("inactive status lacks activation guidance and conflict status", err)
+	}
 	if !reflect.DeepEqual(before, restoreTree(t, destination)) {
 		t.Fatal("status changed inactive restore")
 	}
