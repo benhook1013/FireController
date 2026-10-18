@@ -208,6 +208,7 @@ func TestMessageWaitPreservesSafeServiceErrorsAndRejectsTransportShape(t *testin
 		status                            int
 	}{
 		{"http_error", "application/json", failure, "", "resync_required", 409},
+		{"http_resync_with_actual_status", "application/json", failure, "", "resync_required", 503},
 		{"http_forbidden", "application/json", strings.Replace(failure, "resync_required", "forbidden", 1), "", "forbidden", 403},
 		{"instance_changed", "application/json", strings.Replace(failure, "resync_required", "instance_mismatch", 1), "", "instance_mismatch", 409},
 		{"stream_error", "text/event-stream", waitFrame(waitPage("ready")) + "event: error\ndata: " + failure + "\n\n", "", "resync_required", 200},
@@ -231,7 +232,11 @@ func TestMessageWaitPreservesSafeServiceErrorsAndRejectsTransportShape(t *testin
 			checkError(t, err, tc.code)
 			if tc.code == "resync_required" {
 				var failure *client.Error
-				if !errors.As(err, &failure) || failure.RequestID != "request-one" || failure.Action != "Read a fresh bound-worker inbox snapshot, then continue from its event cursor; pending messages remain unacknowledged." || strings.Contains(failure.Message, "Get a scoped snapshot.") {
+				wantStatus := tc.status
+				if tc.media == "text/event-stream" {
+					wantStatus = http.StatusConflict
+				}
+				if !errors.As(err, &failure) || failure.Status != wantStatus || failure.RequestID != "request-one" || failure.Action != "Read a fresh bound-worker inbox snapshot, then continue from its event cursor; pending messages remain unacknowledged." || strings.Contains(failure.Message, "Get a scoped snapshot.") {
 					t.Fatalf("resync action/request identity was lost or provider text reflected: %v", err)
 				}
 			}
