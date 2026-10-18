@@ -71,7 +71,7 @@ AI-guided onboarding connects to an instance or sets up a local one, creates the
 
 A packaged onboarding skill teaches those supported operations while preserving the project's existing instructions. Project appearance is configurable, and the browser includes a small repository link so other users can discover FireController.
 
-The [onboarding guide](docs/onboarding.md) defines this flow and documents the implemented local profile/launcher setup. The bundled [onboarding skill](skills/firecontroller-onboard/SKILL.md) guides the supported API and client setup. A dedicated onboarding wizard and historical importer remain to be implemented.
+The [onboarding guide](docs/onboarding.md) defines this flow and documents the implemented local profile/launcher setup. The bundled [onboarding skill](skills/firecontroller-onboard/SKILL.md) guides the supported API and client setup. [Prepared review import](docs/review-import.md) is available; a dedicated onboarding wizard and broader historical collection remain to be implemented.
 
 ## Development and contribution
 
