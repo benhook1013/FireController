@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/presentationmodel"
 )
@@ -80,6 +81,7 @@ func (c *Client) validPresentation(p Presentation) bool {
 		if p.BrandName != defaults.BrandName || p.Tagline != defaults.Tagline || len(p.Headings) != 0 || len(p.Theme) != 0 {
 			return false
 		}
+		return p.Name != "" && len(p.Name) <= 200 && utf8.ValidString(p.Name)
 	}
 	normalized, err := presentationmodel.Normalize(p.Config())
 	return err == nil && reflect.DeepEqual(normalized, p.Config())
