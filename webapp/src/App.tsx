@@ -11,6 +11,7 @@ import { ProjectSettings } from './project-settings';
 import { ProjectMap, ProjectMapEntryView, ProjectMapRevisionView, JobWorkstreamPanel } from './project-map';
 import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView } from './coordination';
 import { ContextualNotes } from './contextual-notes';
+import { Delivery, DeliveryHero } from './delivery';
 import { refreshEventQueries } from './queries';
 import { ReviewArchive, type ReviewArchivePage } from './review-archive';
 import { PageSkeleton, WorkspaceSkeleton } from './loading';
@@ -66,6 +67,7 @@ function PrivateApp() {
   const [restoring, setRestoring] = useState(hasSavedBrowserBinding);
   const [appearance, setAppearance] = useState<Presentation>();
   const [metadataStatus, setMetadataStatus] = useState<LiveStatus>('connecting');
+  const [refreshingSession, setRefreshingSession] = useState<Session | null>(null);
   const renewal = useRef<BrowserSessionRenewal<BrowserSessionView> | null>(null);
   const [metadataRetry, setMetadataRetry] = useState<{ lifetime: AbortController; attempt: number }>();
   const clear = useCallback((message = '') => {
@@ -78,7 +80,7 @@ function PrivateApp() {
     current.current = null;
     old?.controller.abort(); old?.projectController.abort(); old?.api.close();
     if (old) { void queryClient.cancelQueries({ queryKey: ['fc', old.nonce] }); queryClient.removeQueries({ queryKey: ['fc', old.nonce] }); }
-    setSession(null); setAppearance(undefined); applyPresentationRoot(document.documentElement, document); setConnecting(false); setRestoring(false); setNotice(message);
+    setSession(null); setRefreshingSession(null); setAppearance(undefined); applyPresentationRoot(document.documentElement, document); setConnecting(false); setRestoring(false); setNotice(message);
   }, [queryClient]);
   // The data router asks before it unmounts this private workspace, including
   // Back navigation and transitions to the separate public application.
@@ -228,12 +230,26 @@ function PrivateApp() {
     });
     return () => attempt.cancel();
   }, [projectLifetime, metadataAttempt, routeProject, queryClient, clear]);
+  async function refreshVisibleData() {
+    const live = current.current;
+    if (!live || live.controller.signal.aborted || refreshingSession === live) return;
+    setRefreshingSession(live);
+    const key = ['fc', live.nonce, live.instanceId, live.project.id, live.worker?.id ?? ''];
+    try { await refreshEventQueries(queryClient, key, live.controller.signal); }
+    catch (error) { if (current.current === live && terminal(error)) clear(errorText(error)); }
+    finally { setRefreshingSession(previous => previous === live ? null : previous); }
+  }
+  function disconnect() {
+    const live = current.current;
+    if (!live || live.actions.unresolved > 0 && !window.confirm(discardActionWarning)) return;
+    clear(); navigate('/');
+  }
   const connected = session && routeProject === session.project.id;
   const visibleAppearance = connected ? appearance : undefined;
   useLayoutEffect(() => { applyPresentationRoot(document.documentElement, document, visibleAppearance); }, [visibleAppearance]);
   return <PresentationContext.Provider value={visibleAppearance}>
-    <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><div className="mast-meta"><span className="mast-label">{connected ? `${visibleAppearance?.name ?? session.project.name} workspace` : 'Project workspace'}</span></div></div></header>
-    {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} reconnectProjectUpdates={reconnectProjectUpdates} selectWorker={selectWorker} disconnect={() => { if (session.actions.unresolved > 0 && !window.confirm(discardActionWarning)) return; clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
+    <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><div className="mast-meta"><span className="mast-label">{connected ? `${visibleAppearance?.name ?? session.project.name} workspace` : 'Project workspace'}</span>{connected && <ProjectHeaderUtilities status={metadataStatus} refreshing={refreshingSession === session} refresh={() => void refreshVisibleData()} disconnect={disconnect} />}</div></div></header>
+    {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} reconnectProjectUpdates={reconnectProjectUpdates} selectWorker={selectWorker} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
       : restoring || resumable ? <OpeningProject sidebar={Boolean(matchPath('/projects/:projectId/inbox/*', location.pathname))} busy={restoring || connecting} notice={notice} retry={() => setReconnect(value => value + 1)} cancel={() => clear('Connection cancelled.')} />
       : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={(project, token) => void connect(project, token)} cancel={() => clear('Connection cancelled.')} />}
     <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span></footer>
@@ -293,15 +309,22 @@ export function ProjectConnectionStatus({ status, connectedLabel = 'Connected' }
   return <span className={`connection-note connection-${status}`} role="status" aria-label={`Project updates: ${status === 'live' ? 'connected' : label.toLowerCase()}`}>{label}</span>;
 }
 
+export function ProjectHeaderUtilities({ status, refreshing, refresh, disconnect }: { status: LiveStatus; refreshing: boolean; refresh(): void; disconnect(): void }) {
+  return <div className="header-utilities" role="group" aria-label="Project utilities"><ProjectConnectionStatus status={status} /><button type="button" aria-label="Refresh visible data" aria-busy={refreshing} disabled={refreshing} onClick={refresh}>{refreshing ? 'Refreshing…' : 'Refresh'}</button><button type="button" onClick={disconnect}>Disconnect</button></div>;
+}
+
+export function ProjectIdentityHero({ name, repository }: { name: string; repository: string }) {
+  return <section className="hero project-identity"><div className="hero-project"><h1>{name}</h1><p className="repository">{repository}</p></div></section>;
+}
+
 export function ProjectUpdateNotice({ status, reconnect }: { status: LiveStatus; reconnect(): void }) {
   if (status !== 'closed') return null;
   return <p className="notice" role="status">Project updates disconnected. Displayed project data may be stale. <button type="button" onClick={reconnect}>Reconnect project updates</button></p>;
 }
 
-function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWorker, disconnect, fail }: { session: Session; metadataStatus: LiveStatus; reconnectProjectUpdates(): void; selectWorker(worker: Worker | null): void; disconnect(): void; fail(error: unknown): void }) {
+function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWorker, fail }: { session: Session; metadataStatus: LiveStatus; reconnectProjectUpdates(): void; selectWorker(worker: Worker | null): void; fail(error: unknown): void }) {
   const presentation = usePresentation();
   const jobsHeading = useProjectHeading('jobs'), workersHeading = useProjectHeading('workers'), inboxHeading = useProjectHeading('inbox'), reviewsHeading = useProjectHeading('reviews'), mapHeading = useProjectHeading('map');
-  const heroEyebrow = useProjectHeading('hero_eyebrow'), heroTitle = useProjectHeading('hero_title'), heroDescription = useProjectHeading('hero_description');
   const queryClient = useQueryClient();
   const key = useMemo(() => ['fc', session.nonce, session.instanceId, session.project.id, session.worker?.id ?? ''] as const, [session]);
   const home = `/projects/${encodeURIComponent(session.project.id)}`;
@@ -311,7 +334,6 @@ function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWor
   const [ready, setReady] = useState(false);
   const [feedError, setFeedError] = useState<unknown>(null);
   const [attempt, setAttempt] = useState(0);
-  const [refreshing, setRefreshing] = useState(false);
   const [unresolved, setUnresolved] = useState(session.actions.unresolved);
   useEffect(() => session.actions.subscribe(() => setUnresolved(session.actions.unresolved)), [session.actions]);
   const failRef = useRef(fail);
@@ -346,22 +368,15 @@ function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWor
     });
     return () => { active = false; controller.abort(); };
   }, [session, key, queryClient, onFailure, attempt]);
-  async function refresh() {
-    setRefreshing(true);
-    try { await refreshEventQueries(queryClient, key, session.controller.signal); }
-    catch (error) { onFailure(error); }
-    finally { if (!session.controller.signal.aborted) setRefreshing(false); }
-  }
   const value = useMemo(() => ({ session, key, home, selectWorker, fail: onFailure, ready }), [session, key, home, selectWorker, onFailure, ready]);
   const liveLabel = !session.worker ? 'Choose a worker' : live === 'live' ? 'Live inbox connected' : live === 'reconnecting' ? 'Reconnecting inbox…' : live === 'closed' ? 'Inbox disconnected' : 'Connecting inbox…';
   return <WorkspaceContext.Provider value={value}><main className="workspace">
-    <section className="hero"><div className="hero-project"><h1>{presentation?.name ?? session.project.name}</h1><p className="repository">{session.project.repository}</p><p className="identity">Project {session.project.id}</p></div>
-      <div className="hero-side"><div className="connection-card"><span className="eyebrow"><ProjectConnectionStatus status={metadataStatus} connectedLabel={heroEyebrow} /></span><strong>{heroTitle}</strong><p>{heroDescription}</p><div className="hero-actions"><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh visible data'}</button><button className="quiet-button" type="button" onClick={disconnect}>Disconnect</button></div></div></div></section>
-    <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink><NavLink to={`${home}/map`}>{mapHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}</nav>
+    <DeliveryHero><ProjectIdentityHero name={presentation?.name ?? session.project.name} repository={session.project.repository} /></DeliveryHero>
+    <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>Delivery</NavLink><NavLink to={`${home}/jobs`}>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink><NavLink to={`${home}/map`}>{mapHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}</nav>
     <ProjectUpdateNotice status={metadataStatus} reconnect={reconnectProjectUpdates} />
     {unresolved > 0 && <p className="notice" role="status">{unresolved} pending or uncertain action{unresolved === 1 ? '' : 's'} retained in this connection. Return to the original worker and view to retry before reloading or disconnecting.</p>}
     <div className={inboxArea ? 'workspace-grid' : 'project-main'}>{inboxArea && <aside className="sidebar"><WorkerList compact /><section className="feed-card" aria-label="Inbox connection"><span className={`status-dot ${live === 'live' && session.worker ? 'online' : ''}`} /><strong role="status">{liveLabel}</strong><p>{session.worker ? session.worker.name : 'Select a worker to follow incoming messages.'}</p>{Boolean(feedError) && <><p className="error-copy">{errorText(feedError)}</p><button type="button" onClick={() => { setReady(false); setAttempt(value => value + 1); }}>Reconnect inbox</button></>}</section></aside>}
-      <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Jobs />} /><Route path="/projects/:projectId/settings" element={<ProjectSettings />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/workers/:workerId" element={<WorkerCoordinationView />} /><Route path="/projects/:projectId/notes" element={<NotesView />} /><Route path="/projects/:projectId/notes/:noteId" element={<NoteView />} /><Route path="/projects/:projectId/notes/:noteId/history/:revision" element={<NoteRevisionView />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="/projects/:projectId/map" element={<ProjectMap />} /><Route path="/projects/:projectId/map/entries/:entryId" element={<ProjectMapEntryView />} /><Route path="/projects/:projectId/map/entries/:entryId/history/:revision" element={<ProjectMapRevisionView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to project jobs</Link></section>} /></Routes></div></div>
+      <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Delivery />} /><Route path="/projects/:projectId/jobs" element={<Jobs />} /><Route path="/projects/:projectId/settings" element={<ProjectSettings />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/workers/:workerId" element={<WorkerCoordinationView />} /><Route path="/projects/:projectId/notes" element={<NotesView />} /><Route path="/projects/:projectId/notes/:noteId" element={<NoteView />} /><Route path="/projects/:projectId/notes/:noteId/history/:revision" element={<NoteRevisionView />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="/projects/:projectId/map" element={<ProjectMap />} /><Route path="/projects/:projectId/map/entries/:entryId" element={<ProjectMapEntryView />} /><Route path="/projects/:projectId/map/entries/:entryId/history/:revision" element={<ProjectMapRevisionView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to Delivery</Link></section>} /></Routes></div></div>
   </main></WorkspaceContext.Provider>;
 }
 
@@ -399,7 +414,7 @@ function JobDetail() {
   const { session, key, home } = useWorkspace();
   const query = useQuery({ queryKey: [...key, 'job', jobId], queryFn: ({ signal }) => session.api.job(jobId, signalFor(session, signal)), staleTime: Infinity });
   const job = query.data;
-  return <><Link className="back-link" to={home}>← All jobs</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{job && <><div className="page-heading"><span className={`badge status-${job.status}`}>{job.status}</span><h2>{job.title}</h2><p>{job.worker_id ? <Link to={`${home}/workers/${encodeURIComponent(job.worker_id)}`}>{job.worker_id}</Link> : 'Unassigned'} · Revision {job.revision}</p></div><ContextualNotes key={`notes-${jobId}`} jobId={jobId} /><section className="panel brief"><h3>Job brief</h3><p className="full-text">{job.brief || 'No brief supplied.'}</p><dl className="metadata"><div><dt>Job ID</dt><dd>{job.id}</dd></div><div><dt>Created</dt><dd>{time(job.created_at)}</dd></div><div><dt>Updated</dt><dd>{time(job.updated_at)}</dd></div></dl></section><JobWorkstreamPanel key={`workstream-${jobId}`} jobId={jobId} /><JobChecklistPanel key={`checklist-${jobId}`} jobId={jobId} jobRevision={job.revision} /><JobCheckpointPanel key={jobId} jobId={jobId} jobRevision={job.revision} /><JobUpdatesPanel key={`updates-${jobId}`} jobId={jobId} jobRevision={job.revision} /></>}</ReadState></>;
+  return <><Link className="back-link" to={`${home}/jobs`}>← All jobs</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{job && <><div className="page-heading"><span className={`badge status-${job.status}`}>{job.status}</span><h2>{job.title}</h2><p>{job.worker_id ? <Link to={`${home}/workers/${encodeURIComponent(job.worker_id)}`}>{job.worker_id}</Link> : 'Unassigned'} · Revision {job.revision}</p></div><ContextualNotes key={`notes-${jobId}`} jobId={jobId} /><section className="panel brief"><h3>Job brief</h3><p className="full-text">{job.brief || 'No brief supplied.'}</p><dl className="metadata"><div><dt>Job ID</dt><dd>{job.id}</dd></div><div><dt>Created</dt><dd>{time(job.created_at)}</dd></div><div><dt>Updated</dt><dd>{time(job.updated_at)}</dd></div></dl></section><JobWorkstreamPanel key={`workstream-${jobId}`} jobId={jobId} /><JobChecklistPanel key={`checklist-${jobId}`} jobId={jobId} jobRevision={job.revision} /><JobCheckpointPanel key={jobId} jobId={jobId} jobRevision={job.revision} /><JobUpdatesPanel key={`updates-${jobId}`} jobId={jobId} jobRevision={job.revision} /></>}</ReadState></>;
 }
 function ChecklistItems({ items }: { items: ChecklistItem[] }) {
   return items.length ? <ol>{items.map(item => <li key={item.id}><span className="badge neutral">{item.done ? 'Completed' : 'To do'}</span><p className="full-text">{item.text}</p></li>)}</ol> : <p className="empty">No checklist items.</p>;

@@ -2,6 +2,8 @@
 
 ## Implementation status
 
+The [Delivery and Project website](browser-experience.md) defines the selected overview redesign. Delivery restores worker lanes with assigned jobs and a project-wide review queue; these contextual detail views remain secondary navigation.
+
 Contextual pending panels replace primary Notes navigation. Focused browser tests cover pending-only scope, cancellation and safe previews; actual packaged Chromium exercises the panels and explicit resolution. The historical checkpoints below cover the preceding catalogue and detail routes.
 
 Read-only browser views over the existing [notes](notes.md), [worker pause](worker-pause.md) and [primary-job focus](worker-focus.md) contracts are implemented. TypeScript, focused client/component tests, actual packaged-browser proof and full integrated validation pass at the checkpoints below. This slice changes no domain state, assignment, message handling or provider behavior. Human GUI review and operational cutover remain separate.
@@ -39,7 +41,6 @@ The run followed two reproduced product defects: direct coordination URLs were a
 This is local packaged behavior, not installed hosting, human GUI acceptance, general accessibility, physical-phone or fleet proof. At `765ccdf384b9f08c8f3d8136b4807cf80b73c172`, a follow-up applying the existing panel spacing passed the same actual matrix in 12.284 seconds with unchanged request counts and limits. All eight screenshots were inspected again, including the corrected card padding and text bounds; source, supplied binary and prior proof artifacts remained unchanged and owned cleanup completed.
 
 The combined checkpoint `265af4a5bc48f354516ee73bc578e586f4d2fcde` passed full `make check build`, including all 222 browser tests, Go race tests, vet, documentation checks, generated assets and three binaries. The resulting bytes exactly matched the inputs that passed the canonical packaged and Chromium lifecycle smoke targets. The separate full browser matrix above establishes coordination behavior; the narrow lifecycle smoke does not replace it.
-
 
 ## Contextual pending-note proof
 

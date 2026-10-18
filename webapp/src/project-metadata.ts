@@ -15,20 +15,20 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
   const prefixes = new Map<string, QueryKey>();
   const add = (...parts: string[]) => { const prefix = [...key, ...parts]; prefixes.set(JSON.stringify(prefix), prefix); };
   if (all) {
-    for (const domain of ['map', 'map-entry', 'map-history', 'job-workstream', 'job-workstream-history', 'jobs', 'job', 'workers', 'worker', 'worker-pause', 'worker-pause-history', 'worker-primary', 'worker-primary-history', 'notes', 'note', 'note-history', 'checklist-current', 'checklist-history', 'checkpoint-latest', 'checkpoints', 'job-updates']) add(domain);
+    for (const domain of ['delivery', 'map', 'map-entry', 'map-history', 'job-workstream', 'job-workstream-history', 'jobs', 'job', 'workers', 'worker', 'worker-pause', 'worker-pause-history', 'worker-primary', 'worker-primary-history', 'notes', 'note', 'note-history', 'checklist-current', 'checklist-history', 'checkpoint-latest', 'checkpoints', 'job-updates']) add(domain);
     add('reviews', 'current'); add('reviews', 'policy-assessment');
   }
   for (const { event_type: type, resource_id: id } of items) {
     if (type === 'coordination.imported') {
       // One batch notification replaces replay of historical operational events.
       // Refresh active imported domains, leaving unopened bodies unfetched.
-      for (const domain of ['jobs', 'job', 'checkpoint-latest', 'checkpoints']) add(domain);
+      for (const domain of ['delivery', 'jobs', 'job', 'checkpoint-latest', 'checkpoints']) add(domain);
     } else if (type.startsWith('map.')) {
       add('map'); add('map-entry', id); add('map-history', id);
       // An entry rename/archive affects recorded references in current views.
       add('job-workstream');
     } else if (type === 'job.created' || type === 'job.updated') {
-      add('jobs'); add('job', id);
+      add('delivery'); add('jobs'); add('job', id);
       // Captured revision labels must be compared with the new job revision.
       add('checklist-current', id); add('checkpoint-latest', id);
     } else if (type === 'job.workstream_changed') {
@@ -36,17 +36,17 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
     } else if (type === 'job.checkpointed') {
       // Append events identify the new record, not its owning job. Refresh only
       // this domain's active views; do not expand every job's private context.
-      add('checkpoint-latest'); add('checkpoints');
+      add('delivery'); add('checkpoint-latest'); add('checkpoints');
     } else if (type === 'job.update_appended') {
       add('job-updates');
     } else if (type === 'job.checklist_replaced') {
       add('checklist-current', id); add('checklist-history', id);
     } else if (type === 'workers.created') {
-      add('workers'); add('worker', id);
+      add('delivery'); add('workers'); add('worker', id);
     } else if (type === 'worker.pause_changed') {
-      add('worker-pause', id); add('worker-pause-history', id);
+      add('delivery'); add('worker-pause', id); add('worker-pause-history', id);
     } else if (type === 'worker.primary_job_changed') {
-      add('worker-primary', id); add('worker-primary-history', id);
+      add('delivery'); add('worker-primary', id); add('worker-primary-history', id);
     } else if (type === 'note.created' || type === 'note.updated') {
       add('notes'); add('note', id); add('note-history', id);
     } else if (type.startsWith('review.') || type.startsWith('reviews.')) {

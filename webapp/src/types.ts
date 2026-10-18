@@ -4,6 +4,11 @@ export interface Project {id: string; name: string; github_repository_id: number
 export interface Worker {id: string; project_id: string; name: string}
 export interface JobSummary {id: string; title: string; worker_id: string; status: 'active'|'parked'|'blocked'|'completed'; revision: number}
 export interface Job extends JobSummary {project_id: string; brief: string; created_at: string; updated_at: string}
+export interface DeliveryWorker extends Worker {primary_job_id: string; paused: boolean; pause_reason: string; pause_reason_truncated: boolean}
+export interface DeliveryCheckpoint {sequence: number; job_revision: number; done: string; next: string; blocker: string; done_truncated: boolean; next_truncated: boolean; blocker_truncated: boolean}
+export interface DeliveryJob extends JobSummary {worker_name: string; checkpoint: DeliveryCheckpoint|null}
+export interface DeliverySnapshot {workers: Page<DeliveryWorker>; jobs: Page<DeliveryJob>}
+export interface DeliveryOptions {worker_limit?: number; job_limit?: number; worker_cursor?: string; job_cursor?: string}
 export interface Checkpoint {id: string; project_id: string; job_id: string; job_revision: number; sequence: number; actor_id: string; worker_id: string; done: string; next: string; blocker: string; evidence: string[]; created_at: string}
 export interface LatestCheckpoint {job_id: string; job_revision: number; checkpoint: Checkpoint|null}
 export interface JobUpdate {id: string; project_id: string; job_id: string; job_revision: number; sequence: number; actor_id: string; worker_id: string; body: string; evidence: string[]; created_at: string}

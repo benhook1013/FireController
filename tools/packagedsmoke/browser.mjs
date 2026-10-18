@@ -54,10 +54,34 @@ try {
     });
     need(response.status === status);
     const receipt = await response.json();
-    need(receipt.id || receipt.project_id);
+    need(receipt && Object.keys(receipt).length > 0);
     fixtureWrites++;
     return receipt;
   };
+  let deliveryFixtureWrites = 0;
+  const seedDelivery = async (method, path, body, status = 200, sender = config.worker) => {
+    const response = await fetch(config.origin + prefix + path, {
+      method, headers: {'Authorization':'Bearer '+admin, 'X-FC-Instance':config.instance, 'X-FC-Worker':sender, 'Idempotency-Key':'packaged-delivery-fixture-' + (++deliveryFixtureWrites), 'Content-Type':'application/json'},
+      body:JSON.stringify(body), signal:AbortSignal.timeout(5000),
+    });
+    need(response.status === status);
+    const receipt = await response.json();
+    need(receipt && Object.keys(receipt).length > 0);
+    return receipt;
+  };
+  const deliveryFixture = { jobs: {} };
+  deliveryFixture.jobs.builderActive = (await seedDelivery('POST', '/jobs', {title:'Builder primary delivery', brief:'Private delivery identifier never rendered.', worker_id:config.worker}, 201)).id;
+  deliveryFixture.jobs.inspectorActive = (await seedDelivery('POST', '/jobs', {title:'Inspector active work', brief:'Fixture brief.', worker_id:config.other_worker}, 201)).id;
+  deliveryFixture.jobs.inspectorBlocked = (await seedDelivery('POST', '/jobs', {title:'Inspector blocked work', brief:'Fixture brief.', worker_id:config.other_worker}, 201)).id;
+  deliveryFixture.jobs.inspectorParked = (await seedDelivery('POST', '/jobs', {title:'Inspector parked work', brief:'Fixture brief.', worker_id:config.other_worker}, 201)).id;
+  deliveryFixture.jobs.unassigned = (await seedDelivery('POST', '/jobs', {title:'Unassigned parked work', brief:'Fixture brief.', worker_id:''}, 201)).id;
+  await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.inspectorBlocked, {expected_revision:1, status:'blocked'});
+  await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.inspectorParked, {expected_revision:1, status:'parked'});
+  await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.unassigned, {expected_revision:1, status:'parked'});
+  await seedDelivery('POST', '/jobs/' + deliveryFixture.jobs.inspectorActive + '/checkpoints', {expected_job_revision:1, done:'Earlier checkpoint only.', next:'Earlier next step.'}, 201);
+  await seedDelivery('POST', '/jobs/' + deliveryFixture.jobs.inspectorActive + '/checkpoints', {expected_job_revision:1, done:'Latest checkpoint is visible.', next:'Continue from the latest checkpoint.'}, 201);
+  await seedDelivery('PUT', '/workers/' + config.other_worker + '/pause', {expected_revision:0, paused:true, reason:'Paused for synthetic dependency review.'});
+  await seedDelivery('PUT', '/workers/' + config.worker + '/primary-job', {expected_revision:0, job_id:deliveryFixture.jobs.builderActive});
   let sessionPosts = 0, sessionDeletes = 0, sessionRenewals = 0, terminalResponses = 0, forbiddenWrites = 0, actionWrites = 0, errors = 0, external = 0;
  let explicitActions = false;
  let controlledMessageFailure = false;
@@ -65,6 +89,7 @@ try {
  const expectedMissingSessionRoute = url => { if (!controlledAccessFailure || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname); } catch { return false; } };
   counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
   let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0, noteArchiveReads = 0;
+  let deliveryReads = 0, jobBriefReads = 0, jobArchiveReads = 0;
   let injectedRequest;
   diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external });
   page.on('pageerror', () => errors++);
@@ -80,6 +105,9 @@ try {
     if (request.method() === 'GET') {
       if (url.pathname === prefix + '/presentation') presentationReads++;
       if (url.pathname === prefix + '/notes' && url.searchParams.get('status') === 'all') noteArchiveReads++;
+      if (url.pathname === prefix + '/delivery') deliveryReads++;
+      if (url.pathname === prefix + '/jobs' && url.searchParams.get('status') === 'all') jobArchiveReads++;
+      if (/\/jobs\/[^/]+$/u.test(url.pathname.slice(prefix.length))) jobBriefReads++;
       if (url.pathname === prefix + '/project-events/stream') metadataStreams++;
       if (url.pathname === prefix + '/message-events/stream') inboxStreams++;
       return;
@@ -110,10 +138,10 @@ try {
     accent: document.documentElement.style.getPropertyValue('--fc-accent_text'),
   }));
   const indicatorColors = () => page.evaluate(() => ({
-    connection: getComputedStyle(document.querySelector('.connection-card .connection-note'), '::before').backgroundColor,
+    connection: getComputedStyle(document.querySelector('.mast .header-utilities .connection-note'), '::before').backgroundColor,
     canvas: getComputedStyle(document.documentElement).backgroundColor,
     header: getComputedStyle(document.querySelector('.mast')).backgroundColor,
-    connectionSurface: getComputedStyle(document.querySelector('.connection-card')).backgroundColor,
+    connectionSurface: getComputedStyle(document.querySelector('.mast')).backgroundColor,
     status: getComputedStyle(document.querySelector('.feed-card .status-dot')).backgroundColor,
     online: document.querySelector('.feed-card .status-dot').classList.contains('online'),
     surface: getComputedStyle(document.querySelector('.feed-card')).backgroundColor,
@@ -122,8 +150,12 @@ try {
     for (const width of widths) {
       await page.setViewportSize({width, height:900});
       need(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-      need(await page.locator('.mast .connection-note').count() === 0);
-      need(await page.locator('.connection-card .connection-note').count() === 1);
+      need(await page.locator('.mast .header-utilities .connection-note').count() === 1);
+      need(await page.locator('.connection-note').count() === 1);
+      need(await page.locator('.connection-card .connection-note').count() === 0);
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      need(await page.locator('.mast').evaluate(element => Math.abs(element.getBoundingClientRect().top) <= 1));
+      await expect(page.getByRole('button', {name:'Refresh visible data', exact:true})).toBeVisible();
       if (config.diagnostic_directory) {
         await fs.mkdir(config.diagnostic_directory, {recursive:true, mode:0o700});
         await page.screenshot({path:config.diagnostic_directory + '/' + name + '-' + width + '.png', fullPage:true, timeout:2000});
@@ -147,10 +179,30 @@ try {
   await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
   need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).count()===0);
   need(await page.locator('.sidebar').count() === 0);
-  need(await page.locator('.mast .connection-note').count() === 0);
-  need(await page.locator('.connection-card .connection-note').count() === 1);
+  need(await page.locator('.mast .header-utilities .connection-note').count() === 1);
+  need(await page.locator('.connection-note').count() === 1);
+  need(await page.locator('.connection-card .connection-note').count() === 0);
   await expect(page.locator('.page-skeleton')).toHaveCount(0);
-  await captureLayouts('jobs', [1440, 390, 320]);
+  phase = 'delivery-overview'; checkpoint = 'initial-snapshot';
+  await page.getByRole('heading', {name:'Delivery', exact:true}).waitFor();
+  const builderLane = page.locator('.delivery-lane[aria-label="Builder jobs"]');
+  const inspectorLane = page.locator('.delivery-lane[aria-label="Inspector jobs"]');
+  const unassignedLane = page.locator('.delivery-lane[aria-label="Unassigned jobs"]');
+  await expect(builderLane.getByText('Builder primary delivery', {exact:true})).toBeVisible();
+  await expect(builderLane.getByText('Primary focus', {exact:true})).toBeVisible();
+  await expect(inspectorLane.getByText('Paused', {exact:true})).toBeVisible();
+  await expect(inspectorLane.getByText('Paused for synthetic dependency review.', {exact:true})).toBeVisible();
+  await expect(unassignedLane.getByText('Unassigned parked work', {exact:true})).toBeVisible();
+  const inspectorStatuses = await inspectorLane.locator('.delivery-job-state .badge').allTextContents();
+  need(inspectorStatuses.join('|') === 'active|blocked|parked');
+  await expect(inspectorLane.getByText('Latest checkpoint is visible.', {exact:true})).toBeVisible();
+  await expect(inspectorLane.getByText('Continue from the latest checkpoint.', {exact:true})).toBeVisible();
+  need(await page.getByText('Earlier checkpoint only.', {exact:true}).count() === 0);
+  need(deliveryReads === 1 && jobBriefReads === 0 && jobArchiveReads === 0);
+  need(await page.locator('.delivery-lane').count() === 3);
+  const deliveryBodyText = await page.locator('body').innerText();
+  need(![config.project, config.worker, config.other_worker, ...Object.values(deliveryFixture.jobs)].some(id => deliveryBodyText.includes(id)));
+  await captureLayouts('delivery', [1440, 390, 320]);
   need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Notes',exact:true}).count() === 0);
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
   await page.getByRole('button',{name:'Select worker Builder',exact:true}).click();
@@ -161,7 +213,7 @@ try {
   await defaults();
   need((await appearance()).title === 'Packaged smoke · FireController');
   const defaultIndicators = await indicatorColors();
-  need(defaultIndicators.connection === 'rgb(102, 104, 116)' && defaultIndicators.connection !== defaultIndicators.connectionSurface && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
+  need(defaultIndicators.connection === 'rgb(243, 203, 200)' && defaultIndicators.connection !== defaultIndicators.connectionSurface && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
   phase = 'metadata-failure';
   checkpoint = 'metadata-notice';
   const reconnect = page.getByRole('button', {name:'Reconnect project updates', exact:true});
@@ -441,6 +493,13 @@ try {
   await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
   await page.getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
   need(await page.getByText('merged · retained history', {exact:true}).count() === 1);
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
+  await page.getByRole('heading', {name:'Review queue', exact:true}).waitFor();
+  await expect(page.getByRole('link', {name:'#32 · Live review updated', exact:true}).first()).toBeVisible();
+  await expect(page.getByRole('region', {name:'Merge train head'}).getByRole('link', {name:'#32 · Live review updated', exact:true})).toBeVisible();
+  await expect(page.getByRole('region', {name:'PR #32 Hosted summary'}).getByRole('link', {name:/Open hosted run live-hosted-round/})).toBeVisible();
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
+  await page.getByRole('heading', {name:'Review workspace', exact:false}).waitFor();
   need(await selectedWorker() === config.worker);
   need(await page.locator('literal').count() === 0);
   need(new URL(page.url()).pathname === home + '/reviews');

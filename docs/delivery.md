@@ -10,6 +10,8 @@ The [native review workspace](review-workspace.md) implements stored queue, PR/r
 
 ## Remaining product work
 
+The [Delivery and Project website redesign](browser-experience.md) is active product work: restore the default worker/job lanes, Unassigned lane, review queue and merge-head hero, and replace the map catalogue with a flexible Markdown editorial website. Existing filters/detail views stay available. This work requires implementation and browser proof; prior UI acceptance does not establish the redesigned experience.
+
 Core coordination, review execution and browser feature slices are implemented in the current stack, with their focused and controlled executable proof recorded below.
 
 [Selected current jobs/checkpoints and messages](legacy-adoption.md) have guarded preparation/application and synthetic packaged proof. Native [per-PR review controls](review-round-controls.md) implement explicit additional grants, taper, closure, completion accounting and one explicit channel-front start. Prepared operational adoption and the optional offline adapter preserve effective source controls; the source owner must still acquire and seal the complete effective frame and authoritative finding/route clearance before a real rehearsal. Notes, updates, checklists and full prior job histories remain outside the selected import path. Imported review history supplies neither native completion credit nor current captured authority.

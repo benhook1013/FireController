@@ -1,6 +1,6 @@
 import type { WorkerPrimary, WorkerPrimaryHistoryEntry, WorkerPause, WorkerPauseHistoryEntry, NoteOptions, NoteSummary, Note, NoteHistorySummary, NoteRevision } from './types';
 import type {
-  Checkpoint, ConversationPage, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
+  Checkpoint, ConversationPage, DeliverySnapshot, DeliveryOptions, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
   JobSummary, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
   Project, WatchCallbacks, Worker, ProjectMapEntry, ProjectMapSummary, ProjectMapOptions, ProjectMapHistorySummary, ProjectMapRevision, JobWorkstream, JobWorkstreamHistoryEntry,
   ReviewAttemptSummary, ReviewFinding, ReviewPull, ReviewPullSummary, ReviewQueue, ReviewRunDetail,
@@ -164,6 +164,30 @@ function validWorker(value: unknown, projectId: string): value is Worker {
 }
 function validSummary(value: unknown): value is JobSummary {
   return record(value) && keys(value, ['id', 'title', 'worker_id', 'status', 'revision']) && id(value.id) && contentText(value.title, 240) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0;
+}
+function validDelivery(value: unknown, project: string, options: DeliveryOptions): value is DeliverySnapshot {
+  if (!record(value) || !keys(value, ['workers', 'jobs']) || !coordinationPage(value.workers, options.worker_limit ?? 20) || !coordinationPage(value.jobs, options.job_limit ?? 50)) return false;
+  let previousWorker = '';
+  for (const worker of value.workers.items) {
+    if (!record(worker) || !keys(worker, ['id', 'project_id', 'name', 'primary_job_id', 'paused', 'pause_reason', 'pause_reason_truncated']) || !id(worker.id) || worker.id <= previousWorker || worker.project_id !== project || !displayName(worker.name) || worker.primary_job_id !== '' && !id(worker.primary_job_id) || typeof worker.paused !== 'boolean' || !coordinationText(worker.pause_reason, 240, false, true) || typeof worker.pause_reason_truncated !== 'boolean' || !worker.paused && (worker.pause_reason !== '' || worker.pause_reason_truncated)) return false;
+    previousWorker = worker.id;
+  }
+  const ranks: Record<string, number> = { active: 0, blocked: 1, parked: 2 };
+  let previousRank = -1, previousJob = '';
+  for (const job of value.jobs.items) {
+    if (!record(job) || !keys(job, ['id', 'title', 'worker_id', 'status', 'revision', 'worker_name', 'checkpoint']) || !id(job.id) || !contentText(job.title, 240) || job.worker_id !== '' && !id(job.worker_id) || typeof job.status !== 'string' || !Object.hasOwn(ranks, job.status) || !positive(job.revision) || (job.worker_id === '' ? job.worker_name !== '' : !displayName(job.worker_name))) return false;
+    const rank = ranks[job.status];
+    if (rank < previousRank || rank === previousRank && job.id <= previousJob) return false;
+    previousRank = rank; previousJob = job.id;
+    const checkpoint = job.checkpoint;
+    if (checkpoint !== null) {
+      if (!record(checkpoint) || !keys(checkpoint, ['sequence', 'job_revision', 'done', 'next', 'blocker', 'done_truncated', 'next_truncated', 'blocker_truncated']) || !positive(checkpoint.sequence) || !positive(checkpoint.job_revision) || Number(checkpoint.job_revision) > Number(job.revision)) return false;
+      for (const field of ['done', 'next', 'blocker'] as const) {
+        if (!checkpointText(checkpoint[field], 240, field !== 'blocker') || typeof checkpoint[`${field}_truncated`] !== 'boolean') return false;
+      }
+    }
+  }
+  return true;
 }
 function validJob(value: unknown, projectId: string): value is Job {
   return record(value) && keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at']) && value.project_id === projectId && id(value.id) && contentText(value.title, 240) && contentText(value.brief, 32768, true) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && timestamp(value.created_at) && timestamp(value.updated_at);
@@ -719,6 +743,26 @@ export class Api {
     const value = await this.finiteGet(withQuery(this.projectRoute('jobs'), query), signal);
     if (!validPage(value, defaultLimit(options)) || !value.items.every(item => validSummary(item) && (options.worker_id === undefined || item.worker_id === options.worker_id) && (options.status === undefined || (options.status === 'open' ? item.status !== 'completed' : item.status === options.status)))) throw new ApiError('invalid_response', 'The service returned an invalid job page.');
     return value as Page<JobSummary>;
+  }
+  async delivery(options: DeliveryOptions = {}, signal?: AbortSignal): Promise<DeliverySnapshot> {
+    const query = new URLSearchParams();
+    for (const name of ['worker_limit', 'job_limit'] as const) {
+      const value = options[name];
+      if (value !== undefined) {
+        if (!Number.isInteger(value) || value < 1 || value > 100) throw new ApiError('invalid_request', 'Choose a Delivery page limit from 1 to 100.');
+        query.set(name, String(value));
+      }
+    }
+    for (const name of ['worker_cursor', 'job_cursor'] as const) {
+      const value = options[name];
+      if (value !== undefined) {
+        if (!cursor(value) || /\s/u.test(value)) throw new ApiError('invalid_request', 'The Delivery cursor is invalid.');
+        query.set(name, value);
+      }
+    }
+    const value = await this.finiteGet(withQuery(this.projectRoute('delivery'), query), signal, undefined, maxBytes, assessmentJSON);
+    if (!validDelivery(value, this.projectId, options)) throw new ApiError('invalid_response', 'The service returned an invalid Delivery overview.');
+    return value;
   }
   async job(jobId: string, signal?: AbortSignal): Promise<Job> {
     if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
