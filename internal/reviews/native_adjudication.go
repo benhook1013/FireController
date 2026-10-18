@@ -207,7 +207,7 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	if err = write.run(ctx, tx, nativeSource, number, order, run); err != nil {
 		return Receipt{}, false, err
 	}
-	if err = checkNativeCapacity(ctx, tx, scope.ProjectID, id); err != nil {
+	if err = checkNativeCapacity(ctx, tx, write); err != nil {
 		return Receipt{}, false, err
 	}
 	if err = checkNativeRunDetail(ctx, tx, scope.ProjectID, id, runID); err != nil {

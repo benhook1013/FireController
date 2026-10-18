@@ -87,7 +87,7 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 		return Receipt{}, err
 	}
 	if p.Run != nil {
-		if err = appendNativeRun(ctx, tx, write, id, pull.Number, pull.Runs[0]); err != nil {
+		if err = appendNativeRun(ctx, tx, write, pull.Number, pull.Runs[0]); err != nil {
 			return Receipt{}, err
 		}
 	}
@@ -96,7 +96,7 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 			return Receipt{}, err
 		}
 	}
-	if err = checkNativeCapacity(ctx, tx, scope.ProjectID, id); err != nil {
+	if err = checkNativeCapacity(ctx, tx, write); err != nil {
 		return Receipt{}, err
 	}
 	if p.Run != nil {
@@ -155,7 +155,7 @@ func nativePullBody(ctx context.Context, tx *sql.Tx, project, previous string, p
 	return body, position, nil
 }
 
-func appendNativeRun(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, snapshot string, number int64, run RunInput) error {
+func appendNativeRun(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, number int64, run RunInput) error {
 	var existing int
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_run_versions WHERE project_id=? AND source=? AND source_run_id=?)`, write.project, nativeSource, run.SourceRunID).Scan(&existing); err != nil {
 		return err
@@ -163,8 +163,10 @@ func appendNativeRun(ctx context.Context, tx *sql.Tx, write *historySnapshotWrit
 	if existing != 0 {
 		return core.Fail("observation_conflict", "A native captured run already exists; append decisions without replacing source evidence.", 409)
 	}
+	// No run has been staged yet. Use the indexed current placement table
+	// so retained history is not traversed merely to append the next run.
 	var order int
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(run_order),-1)+1 FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=?`, write.project, snapshot, number).Scan(&order); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(run_order),-1)+1 FROM review_current_runs WHERE project_id=? AND pull_number=?`, write.project, number).Scan(&order); err != nil {
 		return err
 	}
 	return write.run(ctx, tx, nativeSource, number, order, run)
@@ -173,7 +175,7 @@ func appendNativeRun(ctx context.Context, tx *sql.Tx, write *historySnapshotWrit
 func publishNativeAttempt(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, previousSnapshot, stagedSnapshot string, number int64, a Attempt) error {
 	if a.SourceRunID != "" {
 		var n int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=? AND source=? AND source_run_id=? AND channel=? AND head_sha=?`, write.project, stagedSnapshot, number, nativeSource, a.SourceRunID, a.Channel, a.HeadSHA).Scan(&n); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=? AND id=? AND source=? AND source_run_id=? AND channel=? AND head_sha=?`, write.project, stagedSnapshot, number, runOpaqueID(write.project, nativeSource, a.SourceRunID), nativeSource, a.SourceRunID, a.Channel, a.HeadSHA).Scan(&n); err != nil {
 			return err
 		}
 		if n != 1 {
@@ -197,29 +199,171 @@ func publishNativeAttempt(ctx context.Context, tx *sql.Tx, write *historySnapsho
 	return write.attempt(ctx, tx, nativeSource, number, position, a)
 }
 
-func checkNativeCapacity(ctx context.Context, tx *sql.Tx, project, snapshot string) error {
-	for _, check := range []struct {
-		table string
-		max   int
-		group string
-		per   int
-	}{
-		{"review_runs", maxSnapshotRuns, "pull_number", maxPullRuns},
-		{"review_attempts", maxSnapshotAttempts, "pull_number", maxPullAttempts},
-		{"review_findings", maxSnapshotFindings, "run_id", maxRunFindings},
-	} {
-		var count, largest int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM `+check.table+` WHERE project_id=? AND snapshot_id=?`, project, snapshot).Scan(&count); err != nil {
+func checkNativeCapacity(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite) error {
+	project := write.project
+	runs := make(map[string]nativeCapacityRun)
+	rows, err := tx.QueryContext(ctx, `SELECT c.id,c.pull_number,
+ (SELECT count(*) FROM review_finding_versions f WHERE f.project_id=v.project_id AND f.run_id=v.id AND f.run_version_revision=v.version_revision AND f.pull_number=v.pull_number)
+ FROM review_current_runs c
+ JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision
+ JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision
+ WHERE c.project_id=?`, project)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id string
+		var run nativeCapacityRun
+		if err := rows.Scan(&id, &run.pull, &run.findings); err != nil {
+			rows.Close()
 			return err
 		}
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(n),0) FROM (SELECT count(*) AS n FROM `+check.table+` WHERE project_id=? AND snapshot_id=? GROUP BY `+check.group+`)`, project, snapshot).Scan(&largest); err != nil {
+		runs[id] = run
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+
+	attempts := make(map[nativeCapacityAttemptKey]int64)
+	rows, err = tx.QueryContext(ctx, `SELECT c.source,c.source_attempt_id,c.pull_number
+ FROM review_current_attempts c
+ JOIN review_attempt_memberships m ON m.project_id=c.project_id AND m.source=c.source AND m.source_attempt_id=c.source_attempt_id AND m.start_revision=c.start_revision
+ JOIN review_attempt_versions v ON v.project_id=m.project_id AND v.source=m.source AND v.source_attempt_id=m.source_attempt_id AND v.version_revision=m.version_revision
+ WHERE c.project_id=?`, project)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var key nativeCapacityAttemptKey
+		var pull int64
+		if err := rows.Scan(&key.source, &key.id, &pull); err != nil {
+			rows.Close()
 			return err
 		}
-		if count > check.max || largest > check.per {
-			return core.Fail("workspace_capacity", "The retained review projection is at its current capacity; no history was dropped.", 409)
+		attempts[key] = pull
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+
+	// The current-reference queries above are bounded by today's admitted
+	// projection. Overlay only records touched by this transaction, resolving a
+	// replacement run through its exact staged membership/version, without
+	// aggregating every row in the staged historical snapshot.
+	for _, change := range write.pending {
+		switch change.spec.current {
+		case "review_current_runs":
+			if len(change.keys) != 1 {
+				return historyInconsistent()
+			}
+			id, ok := change.keys[0].(string)
+			if !ok {
+				return historyInconsistent()
+			}
+			delete(runs, id)
+			if change.values == nil {
+				continue
+			}
+			if len(change.values) != 3 {
+				return historyInconsistent()
+			}
+			startRevision, okRevision := change.values[0].(int64)
+			pull, okPull := change.values[1].(int64)
+			if !okRevision || !okPull || startRevision != write.revision {
+				return historyInconsistent()
+			}
+			var stagedPull int64
+			var findings int
+			err := tx.QueryRowContext(ctx, `SELECT m.pull_number,
+ (SELECT count(*) FROM review_finding_versions f WHERE f.project_id=m.project_id AND f.run_id=m.id AND f.run_version_revision=m.version_revision AND f.pull_number=m.pull_number)
+ FROM review_run_memberships m
+ JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision
+ WHERE m.project_id=? AND m.id=? AND m.start_revision=? AND m.pull_number=?`, project, id, startRevision, pull).Scan(&stagedPull, &findings)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return historyInconsistent()
+				}
+				return err
+			}
+			if stagedPull != pull {
+				return historyInconsistent()
+			}
+			runs[id] = nativeCapacityRun{pull: pull, findings: findings}
+		case "review_current_attempts":
+			if len(change.keys) != 2 {
+				return historyInconsistent()
+			}
+			source, okSource := change.keys[0].(string)
+			id, okID := change.keys[1].(string)
+			if !okSource || !okID {
+				return historyInconsistent()
+			}
+			key := nativeCapacityAttemptKey{source: source, id: id}
+			delete(attempts, key)
+			if change.values == nil {
+				continue
+			}
+			if len(change.values) != 3 {
+				return historyInconsistent()
+			}
+			startRevision, okRevision := change.values[0].(int64)
+			pull, okPull := change.values[1].(int64)
+			if !okRevision || !okPull || startRevision != write.revision {
+				return historyInconsistent()
+			}
+			attempts[key] = pull
+		}
+	}
+
+	runsByPull := make(map[int64]int)
+	findingsByRun := make(map[string]int)
+	findingsTotal := 0
+	for id, run := range runs {
+		runsByPull[run.pull]++
+		findingsByRun[id] = run.findings
+		findingsTotal += run.findings
+	}
+	attemptsByPull := make(map[int64]int)
+	for _, pull := range attempts {
+		attemptsByPull[pull]++
+	}
+	if len(runs) > maxSnapshotRuns || len(attempts) > maxSnapshotAttempts || findingsTotal > maxSnapshotFindings {
+		return nativeCapacityExceeded()
+	}
+	for _, count := range runsByPull {
+		if count > maxPullRuns {
+			return nativeCapacityExceeded()
+		}
+	}
+	for _, count := range attemptsByPull {
+		if count > maxPullAttempts {
+			return nativeCapacityExceeded()
+		}
+	}
+	for _, count := range findingsByRun {
+		if count > maxRunFindings {
+			return nativeCapacityExceeded()
 		}
 	}
 	return nil
+}
+
+type nativeCapacityRun struct {
+	pull     int64
+	findings int
+}
+
+type nativeCapacityAttemptKey struct {
+	source string
+	id     string
+}
+
+func nativeCapacityExceeded() error {
+	return core.Fail("workspace_capacity", "The retained review projection is at its current capacity; no history was dropped.", 409)
 }
 
 func rebuildNativeSummary(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, snapshot string, number int64, position int, body []any) error {
