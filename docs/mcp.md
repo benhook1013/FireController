@@ -72,7 +72,7 @@ Startup validates configuration without opening the credential or contacting the
 | `review_source_ci_assess` | Required pull_number; compact retained required-CI facts and local applicability, with observation age; no provider work or merge-readiness claim. |
 | `review_source_policy_assess` | Required pull_number; current local policy against the last completed source observation, with its age; no CI or merge-readiness claim. |
 | `review_policy_assess` | Required evidence_id; current local policy against that retained captured comparison; no source refresh, CI or merge-readiness claim. |
-| `review_start` | One explicit channel-front selection/request; required channel/key, optional expected PR/configuration and wait; no unattended successor. |
+| `review_start` | One explicit channel-front selection/request; required channel/key, optional expected PR/configuration and wait_seconds 0–50; no unattended successor. |
 | `review_selection_read` | One retained selection and original linked operation, with optional bounded wait; no provider action. |
 | `review_rounds_read` | Required pull_number and channel; compact stored additional-round progress and closure. No provider calls or readiness verdict. |
 | `review_rounds_configure` | Administrator grant/close with pull_number, channel, expected_revision, action and idempotency_key. Grant requires minimum/maximum; close omits both. Changes local controls without dispatching reviews. |
