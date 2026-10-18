@@ -144,7 +144,7 @@ async function readFailure(response: Response, signal: AbortSignal): Promise<Api
 }
 
 function validProject(value: unknown, expected: string): value is Project {
-  return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository']) && value.id === expected && displayName(value.name) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
+  return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository']) && value.id === expected && contentText(value.name, 200) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
 }
 function validWorker(value: unknown, projectId: string): value is Worker {
   return record(value) && keys(value, ['id', 'project_id', 'name']) && id(value.id) && value.project_id === projectId && displayName(value.name);
