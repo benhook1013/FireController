@@ -15,6 +15,12 @@ func TestModelWaitBoundsLeaveHostDeadlineMargin(t *testing.T) {
 		input map[string]any
 	}{
 		"wait_for_messages": {messageWaitArguments, map[string]any{"cursor": "cursor"}},
+		"review_start": {func(raw json.RawMessage) (arguments, error) {
+			return reviewRunArguments("review_start", raw)
+		}, map[string]any{"channel": "hosted", "idempotency_key": "start"}},
+		"review_selection_read": {func(raw json.RawMessage) (arguments, error) {
+			return reviewRunArguments("review_selection_read", raw)
+		}, map[string]any{"selection_id": "review_selection_" + strings.Repeat("a", 32)}},
 		"review_operation_read": {func(raw json.RawMessage) (arguments, error) {
 			return reviewControlArguments("review_operation_read", raw)
 		}, map[string]any{"operation_id": "review_operation_" + strings.Repeat("a", 32)}},
@@ -33,6 +39,7 @@ func TestModelWaitBoundsLeaveHostDeadlineMargin(t *testing.T) {
 	}
 	definitions := append([]definition{messageWaitDefinition()}, reviewExecutionDefinitions()...)
 	definitions = append(definitions, checkpointDefinitions()...)
+	definitions = append(definitions, reviewRunDefinitions()...)
 	for name, test := range parsers {
 		t.Run(name, func(t *testing.T) {
 			for _, wait := range []int{50, 51, 60} {
