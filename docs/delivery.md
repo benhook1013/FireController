@@ -18,12 +18,13 @@ Core coordination, review execution and browser feature slices are implemented i
 
 A same-instance retained-data QA upgrade is verified at the [installed boundary](history-collection.md#installed-qa-boundary), but that upgrade is not a cross-format legacy migration. Remaining adoption work includes source export and obligation clearance, an authorized migration rehearsal, live native review execution, human GUI review and explicit operational cutover. Source completion and local executable checks do not establish installed behavior. The remaining acceptance boundaries are:
 
-- Qualify installed use of the [selected historical collector](history-collection.md). Explicit acquisition, bounded result waiting, durable captures, resume/cancel and private export have focused and actual packaged proof. Authorized acquisition of one selected merged PR also has [live GitHub proof](history-collection.md#live-github-acquisition); transformation and prepared review/map application remain deliberate separate operations.
 - Qualify migration of existing installations separately from the completed same-instance QA schema upgrade. Versioned storage, additive mixed-producer transfer, bounded public windows, indexed policy reads and native publication beyond retained-total limits are implemented. Their [owning contract](review-history-growth.md) distinguishes focused and packaged proof. The QA upgrade conserved every retained source row; a deliberately partial display snapshot alone is not full migration proof. Retain complete source evidence and make selected omissions explicit.
 
 The earlier independent-audit implementation gaps now have delivered capability and proof at their owning contracts. Existing-installation migration, live native provider execution, native MCP host delivery, fleet measurements and operational recovery are separate proof or cutover boundaries. An actual background CLI wait has a bounded [host-session check](agent-client.md#actual-host-cli-wait-proof); that result does not establish automatic completion injection or idle wakeup. Optional multiple replicas, distributed execution and cloud backup integrations remain outside the selected first release.
 
 ## Delivered capability boundaries
+
+Selected installed history acquisition, exact-key recovery, private exports and return to disabled collection now have [live installed proof](history-collection.md#installed-selected-acquisition). Existing project data and review authority were preserved; interrupted-pass resume retains its separate controlled packaged proof.
 
 The opt-in [public project website](public-site.md) has full validation, actual packaged CLI/browser proof and an installed QA artifact. Public content still requires an explicit publication choice and presentation review; an upgrade does not enable it.
 
