@@ -135,6 +135,22 @@ jobs:
         run: |
           git diff --exit-code -- internal/webui/assets
           test -z "$(git ls-files --others --exclude-standard -- internal/webui/assets)"
+      - name: Build and check provider container runtime
+        if: matrix.shard == 'rest'
+        timeout-minutes: 10
+        run: |
+          docker build --platform linux/amd64 -t firecontroller:ci .
+          docker run --rm --pull=never --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=67108864,mode=1777 \
+            --entrypoint /bin/sh firecontroller:ci -ec '
+              test "$(id -u)" = 65532
+              test "$(id -g)" = 65532
+              git --version
+              test -x /usr/lib/git-core/git-remote-https
+              test -s /etc/ssl/certs/ca-certificates.crt
+              git init --bare --template= /tmp/source.git
+            '
       - name: Check standalone Windows and macOS builds
         if: matrix.shard == 'rest'
         run: |
