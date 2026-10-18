@@ -305,7 +305,7 @@ func TestBackupStatusRefusesIncompleteAndInactiveRestores(t *testing.T) {
 	runBackupResult(t, "restore", "--bundle", created.Path, "--data-dir", restored)
 	out.Reset()
 	diagnostics.Reset()
-	if code := run(t.Context(), []string{"backup-status", "--data-dir", restored}, &out, &diagnostics); code != 3 || out.Len() != 0 || !json.Valid(diagnostics.Bytes()) {
+	if code := run(t.Context(), []string{"backup-status", "--data-dir", restored}, &out, &diagnostics); code != 3 || out.Len() != 0 || !json.Valid(diagnostics.Bytes()) || !strings.Contains(diagnostics.String(), `"code":"restore_inactive"`) {
 		t.Fatal("status ignored inactive restore fence", code, diagnostics.String())
 	}
 	if _, err := os.Lstat(filepath.Join(restored, "bootstrap-admin.token")); !os.IsNotExist(err) {
