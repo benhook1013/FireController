@@ -60,7 +60,7 @@ func TestJobContextClientOneSnapshotAndExplicitContinuation(t *testing.T) {
 	if _, err = c.ReplaceWorkerPause(t.Context(), "context-pause", client.ReplaceWorkerPauseRequest{Paused: true, Reason: "Coordination pause"}); err != nil {
 		t.Fatal(err)
 	}
-	for i, in := range []client.CreateNoteRequest{{WorkerID: f.sender, Kind: "reminder", Body: "short pending note"}, {WorkerID: f.recipient, JobID: own.ID, Kind: "source", Body: strings.Repeat("界", 100)}, {Phase: "Unselected phase", Kind: "reminder", Body: "not caller context"}} {
+	for i, in := range []client.CreateNoteRequest{{WorkerID: f.sender, Kind: "reminder", Body: "short pending note"}, {WorkerID: f.recipient, JobID: own.ID, Kind: "source", Body: strings.Repeat("界", 100)}, {WorkerID: f.recipient, Phase: "Unselected phase", Kind: "reminder", Body: "not caller context"}} {
 		if _, err = c.CreateNote(t.Context(), "context-note-"+string(rune('a'+i)), in); err != nil {
 			t.Fatal(err)
 		}

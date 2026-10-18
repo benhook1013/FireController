@@ -36,6 +36,9 @@ func validStatus(value string) bool {
 	return value == "active" || value == "parked" || value == "blocked" || value == "completed"
 }
 
+// ValidJobStatusFilter includes the list-only open filter, never a stored job state.
+func ValidJobStatusFilter(value string) bool { return value == "open" || validStatus(value) }
+
 func (c *Client) Worker(ctx context.Context) (Worker, error) {
 	var value Worker
 	err := c.get(ctx, c.projectPath("workers", c.identity.WorkerID), nil, true, &value)
@@ -68,7 +71,7 @@ func (c *Client) Workers(ctx context.Context, options PageOptions) (Page[Worker]
 }
 func (c *Client) Jobs(ctx context.Context, options PageOptions, filter JobFilter) (Page[JobSummary], error) {
 	q, err := pageQuery(options)
-	if err != nil || filter.WorkerID != "" && !validID(filter.WorkerID) || filter.Status != "" && !validStatus(filter.Status) {
+	if err != nil || filter.WorkerID != "" && !validID(filter.WorkerID) || filter.Status != "" && !ValidJobStatusFilter(filter.Status) {
 		return Page[JobSummary]{}, validation()
 	}
 	if filter.WorkerID != "" {
@@ -85,7 +88,7 @@ func (c *Client) Jobs(ctx context.Context, options PageOptions, filter JobFilter
 		return Page[JobSummary]{}, invalidResponse()
 	}
 	for _, item := range value.Items {
-		if !validID(item.ID) || !cleanText(item.Title, 240) || item.WorkerID != "" && !validID(item.WorkerID) || !validStatus(item.Status) || item.Revision < 1 || filter.WorkerID != "" && item.WorkerID != filter.WorkerID || filter.Status != "" && item.Status != filter.Status {
+		if !validID(item.ID) || !cleanText(item.Title, 240) || item.WorkerID != "" && !validID(item.WorkerID) || !validStatus(item.Status) || item.Revision < 1 || filter.WorkerID != "" && item.WorkerID != filter.WorkerID || filter.Status == "open" && item.Status == "completed" || filter.Status != "" && filter.Status != "open" && item.Status != filter.Status {
 			return Page[JobSummary]{}, invalidResponse()
 		}
 	}

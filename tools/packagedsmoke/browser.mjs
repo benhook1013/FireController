@@ -109,13 +109,27 @@ try {
     accent: document.documentElement.style.getPropertyValue('--fc-accent_text'),
   }));
   const indicatorColors = () => page.evaluate(() => ({
-    connection: getComputedStyle(document.querySelector('.connection-note'), '::before').backgroundColor,
+    connection: getComputedStyle(document.querySelector('.connection-card .connection-note'), '::before').backgroundColor,
     canvas: getComputedStyle(document.documentElement).backgroundColor,
     header: getComputedStyle(document.querySelector('.mast')).backgroundColor,
+    connectionSurface: getComputedStyle(document.querySelector('.connection-card')).backgroundColor,
     status: getComputedStyle(document.querySelector('.feed-card .status-dot')).backgroundColor,
     online: document.querySelector('.feed-card .status-dot').classList.contains('online'),
     surface: getComputedStyle(document.querySelector('.feed-card')).backgroundColor,
   }));
+  const captureLayouts = async (name, widths) => {
+    for (const width of widths) {
+      await page.setViewportSize({width, height:900});
+      need(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      need(await page.locator('.mast .connection-note').count() === 0);
+      need(await page.locator('.connection-card .connection-note').count() === 1);
+      if (config.diagnostic_directory) {
+        await fs.mkdir(config.diagnostic_directory, {recursive:true, mode:0o700});
+        await page.screenshot({path:config.diagnostic_directory + '/' + name + '-' + width + '.png', fullPage:true, timeout:2000});
+      }
+    }
+    await page.setViewportSize({width:390, height:900});
+  };
   const defaults = async () => {
     const value = await appearance();
     need(value.brand === 'FireController' && value.background === 'rgb(232, 231, 228)' && value.overrides.length === 0);
@@ -131,22 +145,29 @@ try {
   const readOnlyCapabilities=await readOnlyResponse.json(); need(readOnlyCapabilities.allow_writes===false && readOnlyCapabilities.can_edit_presentation===false);
   await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
   need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).count()===0);
-  await page.getByRole('button',{name:'Open Builder inbox',exact:true}).click();
+  need(await page.locator('.sidebar').count() === 0);
+  need(await page.locator('.mast .connection-note').count() === 0);
+  need(await page.locator('.connection-card .connection-note').count() === 1);
+  await expect(page.locator('.page-skeleton')).toHaveCount(0);
+  await captureLayouts('jobs', [1440, 390, 320]);
+  need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Notes',exact:true}).count() === 0);
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
+  await page.getByRole('button',{name:'Select worker Builder',exact:true}).click();
   await page.getByRole('heading',{name:'Builder inbox',exact:true}).waitFor();
+  need(await page.locator('.sidebar').count() === 1);
   need(await page.getByRole('button',{name:'New message',exact:true}).count()===0);
   need(actionWrites===0 && fixtureWrites===0 && forbiddenWrites===0);
   await defaults();
   need((await appearance()).title === 'Packaged smoke · FireController');
   const defaultIndicators = await indicatorColors();
-  need(defaultIndicators.connection === 'rgb(243, 203, 200)' && defaultIndicators.connection !== defaultIndicators.header && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
+  need(defaultIndicators.connection === 'rgb(102, 104, 116)' && defaultIndicators.connection !== defaultIndicators.connectionSurface && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
   phase = 'metadata-failure';
   checkpoint = 'metadata-notice';
   const reconnect = page.getByRole('button', {name:'Reconnect project updates', exact:true});
   await reconnect.waitFor();
   checkpoint = 'metadata-initial-counts';
   need(metadataStreams === 1 && presentationReads === 1 && injectedResponses === 1);
-  await page.getByRole('button', {name:'Open Builder inbox', exact:true}).click();
+  await page.getByRole('button', {name:'Select worker Builder', exact:true}).click();
   checkpoint = 'metadata-inbox-ready';
   await page.getByText('Live inbox connected', {exact:true}).waitFor();
   need(metadataStreams === 1 && inboxStreams === 1);
@@ -184,7 +205,7 @@ try {
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
   need((await appearance()).brand === brand && (await appearance()).title === title + ' · FireController');
   const themedIndicators = await indicatorColors();
-  need(themedIndicators.connection === 'rgb(0, 0, 0)' && themedIndicators.connection !== themedIndicators.header);
+  need(themedIndicators.connection === 'rgb(0, 0, 0)' && themedIndicators.connection !== themedIndicators.connectionSurface);
   need(themedIndicators.status === 'rgb(0, 0, 0)' && themedIndicators.status !== themedIndicators.surface);
   need(await page.locator('literal').count() === 0);
   const fits = await heading.evaluate(element => {
@@ -218,7 +239,7 @@ try {
   await page.getByText('Live inbox connected', {exact:true}).waitFor();
   need(metadataStreams === 2 && presentationReads === 2 && inboxStreams === 1 && sessionPosts === 1);
   need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === binding);
-  await expect(page.getByRole('button', {name:'Open Builder inbox', exact:true})).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', {name:'Select worker Builder', exact:true})).toHaveAttribute('aria-pressed', 'true');
   phase = 'metadata-live-update';
   const liveReceipt = await write('PUT', '/presentation', {expected_revision:1, presentation:{name:title, brand_name:'Smoke live <literal>', theme}});
   need(liveReceipt.revision === 2 && liveReceipt.outcome === 'updated');
@@ -229,11 +250,26 @@ try {
   // view has rendered its preceding state. No Refresh click or browser reload
   // may be used to observe these changes; the project stream owns delivery.
   phase = 'live-jobs';
-  const selected = page.getByRole('button', {name:'Open Builder inbox', exact:true});
+  const selectedWorker = async () => JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey)).selectedworkerID;
   const selectedBinding = await page.evaluate(key => sessionStorage.getItem(key), bindingKey);
   need(JSON.parse(selectedBinding).selectedworkerID === config.worker);
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Jobs', exact:true}).click();
   await page.getByLabel('Job status', {exact:true}).waitFor();
+  await expect(page.getByLabel('Job status', {exact:true})).toHaveValue('open');
+  await expect(page.getByLabel('Job worker', {exact:true})).toHaveValue('');
+  need(await page.locator('.sidebar').count() === 0);
+  const completedJob = await write('POST', '/jobs', {title:'Completed job sentinel', brief:'Synthetic completed job', worker_id:config.worker}, 201);
+  await write('PATCH', '/jobs/' + completedJob.id, {expected_revision:1, status:'completed'});
+  await expect(page.getByRole('link', {name:'Completed job sentinel', exact:true})).toHaveCount(0);
+  await page.getByLabel('Job status', {exact:true}).selectOption('completed');
+  await page.getByRole('link', {name:'Completed job sentinel', exact:true}).waitFor();
+  await page.getByLabel('Job status', {exact:true}).selectOption('open');
+  await expect(page.getByRole('link', {name:'Completed job sentinel', exact:true})).toHaveCount(0);
+  await page.getByLabel('Job worker', {exact:true}).selectOption(config.other_worker);
+  need(await selectedWorker() === config.worker);
+  await page.getByRole('button', {name:'Show jobs for all workers', exact:true}).click();
+  await expect(page.getByLabel('Job worker', {exact:true})).toHaveValue('');
+  need(await selectedWorker() === config.worker);
   const job = await write('POST', '/jobs', {title:'Live job before', brief:'Live brief before', worker_id:config.worker}, 201);
   await page.getByRole('link', {name:'Live job before', exact:true}).waitFor();
   await write('PATCH', '/jobs/' + job.id, {expected_revision:1, title:'Live job list updated'});
@@ -244,10 +280,12 @@ try {
   await page.getByText('Live brief <literal> updated', {exact:true}).waitFor();
 
   phase = 'live-workers';
-  need(await selected.getAttribute('aria-pressed') === 'true');
+  need(await selectedWorker() === config.worker);
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Workers', exact:true}).click();
+  await page.getByRole('button', {name:'Open Builder inbox', exact:true}).waitFor();
   await write('POST', '/workers', {name:'Live newcomer'});
   await page.getByRole('button', {name:'Open Live newcomer inbox', exact:true}).waitFor();
-  need(await selected.getAttribute('aria-pressed') === 'true');
+  need(await selectedWorker() === config.worker);
   await page.getByRole('link', {name:'Read Builder details', exact:true}).click();
   await page.getByText('No pause reason recorded.', {exact:true}).waitFor();
   await page.getByText('No primary job selected.', {exact:true}).waitFor();
@@ -255,10 +293,10 @@ try {
   await page.getByText('Live pause <literal>', {exact:true}).waitFor();
   await write('PUT', '/workers/' + config.worker + '/primary-job', {expected_revision:0, job_id:job.id});
   await page.getByRole('link', {name:'Open primary job ' + job.id, exact:true}).waitFor();
-  need(await selected.getAttribute('aria-pressed') === 'true');
+  need(await selectedWorker() === config.worker);
 
   phase = 'live-notes';
-  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Notes', exact:true}).click();
+  await page.getByRole('link', {name:'Notes for this worker', exact:true}).click();
   await page.getByLabel('Phase', {exact:true}).fill('live-proof');
   const filtered = page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/notes' && new URL(value.url()).searchParams.get('phase') === 'live-proof');
   await page.getByRole('button', {name:'Apply note filters', exact:true}).click();
@@ -275,6 +313,68 @@ try {
   await page.getByRole('heading', {name:'Full body', exact:true}).waitFor();
   await write('PATCH', '/notes/' + note.id, {expected_revision:2, body:'Live note detail <literal> updated'});
   await page.getByText('Live note detail <literal> updated', {exact:true}).waitFor();
+
+  phase = 'contextual-notes';
+  const pendingPanel = page.getByRole('region', {name:'Pending notes', exact:true});
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Jobs', exact:true}).click();
+  await page.getByRole('link', {name:'Live job detail updated', exact:true}).click();
+  checkpoint = 'job-empty';
+  await expect(pendingPanel).toHaveCount(0);
+  checkpoint = 'job-create';
+  const jobNote = await write('POST', '/notes', {worker_id:'', job_id:job.id, phase:'', kind:'reminder', body:'Context job pending'}, 201);
+  checkpoint = 'job-appeared';
+  await pendingPanel.getByText('Context job pending', {exact:true}).waitFor();
+  const jobPanelBox = await pendingPanel.boundingBox();
+  const briefBox = await page.getByRole('heading', {name:'Job brief', exact:true}).boundingBox();
+  need(jobPanelBox && briefBox && jobPanelBox.y < briefBox.y);
+  await captureLayouts('job-pending-notes', [1440, 390, 320]);
+  checkpoint = 'job-read';
+  await pendingPanel.getByRole('link', {name:'Read note', exact:true}).click();
+  checkpoint = 'job-pending-detail';
+  await page.getByText('reminder · pending', {exact:true}).waitFor();
+  checkpoint = 'job-open-history';
+  await page.getByRole('button', {name:'Show note history', exact:true}).click();
+  checkpoint = 'job-history-loaded';
+  await page.getByRole('link', {name:'Read revision 1', exact:true}).waitFor();
+  checkpoint = 'job-scope-return';
+  await page.locator('.panel.brief').getByRole('link', {name:job.id, exact:true}).click();
+  await pendingPanel.getByText('Context job pending', {exact:true}).waitFor();
+  checkpoint = 'job-consume';
+  await write('PATCH', '/notes/' + jobNote.id, {expected_revision:1, status:'consumed'});
+  await expect(pendingPanel).toHaveCount(0);
+  checkpoint = 'consumed-history-return';
+  await page.goBack();
+  await page.getByText('reminder · consumed', {exact:true}).waitFor();
+  await page.getByRole('button', {name:'Show note history', exact:true}).click();
+  await page.getByRole('link', {name:'Read revision 1', exact:true}).click();
+  await page.getByRole('heading', {name:'Captured note revision 1', exact:true}).waitFor();
+  await page.getByText('reminder · pending', {exact:true}).waitFor();
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox', exact:true}).click();
+  await page.getByRole('heading', {name:'Builder inbox', exact:true}).waitFor();
+  need(await selectedWorker() === config.worker);
+  checkpoint = 'worker-create';
+  const workerNote = await write('POST', '/notes', {worker_id:config.worker, job_id:'', phase:'', kind:'source', body:'Context worker pending'}, 201);
+  checkpoint = 'worker-appeared';
+  await pendingPanel.getByText('Context worker pending', {exact:true}).waitFor();
+  const workerPanelBox = await pendingPanel.boundingBox();
+  const inboxBox = await page.locator('.main-content > .panel:not(.contextual-notes)').first().boundingBox();
+  need(workerPanelBox && inboxBox && workerPanelBox.y < inboxBox.y);
+  need(await page.locator('.sidebar').count() === 1);
+  await captureLayouts('inbox-pending-notes', [1440, 390, 320]);
+  checkpoint = 'worker-dismiss';
+  await write('PATCH', '/notes/' + workerNote.id, {expected_revision:1, status:'dismissed', status_reason:'Synthetic dismissal proof'});
+  await expect(pendingPanel.getByText('Context worker pending', {exact:true})).toHaveCount(0);
+  // The original library fixture stays pending: viewing it did not consume it.
+  await pendingPanel.getByText('Live note detail <literal> updated', {exact:true}).waitFor();
+  need(forbiddenWrites === 0 && actionWrites === 0);
+  await pendingPanel.getByRole('link', {name:'View all notes and history', exact:true}).click();
+  await page.getByRole('link', {name:'Read note ' + workerNote.id, exact:true}).click();
+  await page.getByText('source · dismissed', {exact:true}).waitFor();
+  await page.getByText('Synthetic dismissal proof', {exact:true}).waitFor();
+  await page.getByRole('button', {name:'Show note history', exact:true}).click();
+  await page.getByRole('link', {name:'Read revision 1', exact:true}).click();
+  await page.getByRole('heading', {name:'Captured note revision 1', exact:true}).waitFor();
+  await page.getByText('source · pending', {exact:true}).waitFor();
 
   phase = 'live-reviews';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
@@ -293,7 +393,7 @@ try {
   await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
   await page.getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
   need(await page.getByText('merged · retained history', {exact:true}).count() === 1);
-  need(await selected.getAttribute('aria-pressed') === 'true');
+  need(await selectedWorker() === config.worker);
   need(await page.locator('literal').count() === 0);
   need(new URL(page.url()).pathname === home + '/reviews');
 
@@ -309,9 +409,10 @@ try {
   const resumed = (await context.cookies()).find(value => value.name === cookieName);
   need(resumed?.value !== cookie.value && resumed?.httpOnly && resumed?.sameSite === 'Strict' && sessionPosts === 1);
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
-  await page.getByText('Live inbox connected', {exact:true}).waitFor();
+  need(await page.locator('.sidebar').count() === 0);
+  await page.locator('.connection-card .connection-live').waitFor();
 
-  await expect(page.getByRole('status').filter({hasText:/^Project updates /})).toHaveCount(0);
+  await expect(page.getByRole('status').filter({hasText:/^Project updates disconnected/})).toHaveCount(0);
   need((await appearance()).brand === 'Smoke live <literal>' && metadataStreams >= 3 && metadataStreams <= 4 && presentationReads === 4 && inboxStreams >= 2 && inboxStreams <= 3);
 
   // Renewal replaces streams that opened before its cookie response. Capture
@@ -361,8 +462,8 @@ try {
   const adminCapabilities=await adminResponse.json();need(adminCapabilities.allow_writes===true && adminCapabilities.can_edit_presentation===true);
   need(actionWrites===0 && forbiddenWrites===0);
   await page.getByRole('heading', {name:title,exact:true}).waitFor();
-  await page.getByRole('button', {name:'Open Builder inbox',exact:true}).click();
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox',exact:true}).click();
+  await page.getByRole('button', {name:'Select worker Builder',exact:true}).click();
   const incoming = await write('POST','/messages',{recipient_worker_id:config.worker,body:'Action incoming <literal>',reply_to_message_id:''},201,config.other_worker);
   const row = page.locator('.inbox-list > li').filter({hasText:'Action incoming <literal>'});
   await row.waitFor();

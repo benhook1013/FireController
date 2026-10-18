@@ -2,17 +2,21 @@
 
 ## Implementation status
 
+Contextual pending panels replace primary Notes navigation. Focused browser tests cover pending-only scope, cancellation and safe previews; actual packaged Chromium exercises the panels and explicit resolution. The historical checkpoints below cover the preceding catalogue and detail routes.
+
 Read-only browser views over the existing [notes](notes.md), [worker pause](worker-pause.md) and [primary-job focus](worker-focus.md) contracts are implemented. TypeScript, focused client/component tests, actual packaged-browser proof and full integrated validation pass at the checkpoints below. This slice changes no domain state, assignment, message handling or provider behavior. Human GUI review and operational cutover remain separate.
 
 ## Explicit reads
 
 An explicit worker-details route loads that worker's identity, current pause and current primary-job reference in the connected project. It displays pause and its literal reason as an explicit coordination choice, never inferred presence. Primary focus links to the selected job without loading its brief automatically. Default unpaused and absent-focus states remain clear. Worker lists gain a separate details link without changing their existing inbox selection or adding pause/focus requests per listed worker. Pause and primary-job histories load only when opened, one newest-first page at a time.
 
-A Notes navigation item opens project-scoped pending notes. Explicit worker, job, phase, kind and status filters compose with AND; an optional assigned-jobs expansion requires a worker selector and broadens only that worker predicate. Filter changes reset pagination. Worker and job detail pages link to explicitly scoped note lists. The project page does not fetch notes, notes do not imply ownership through assignment, and notes never become inbox messages or standing instructions.
+Pending notes appear near the top of their job details, worker details and selected worker inbox, below identity and before the main content. These contextual panels request only that entity’s pending notes, five previews per explicit page. A worker panel selects notes attached directly to that worker; it does not pull notes from assigned jobs. A note attached to both a worker and a job appears in both contexts. Reading never resolves a note. Consumed or dismissed notes leave the pending panel and remain available through its secondary notes/history link. Settled empty panels disappear; loading and failed reads never claim there are no notes.
 
-The `notes` heading uses the same project presentation record as the other navigation headings. Adding this view introduces no separate branding configuration or translation system.
+Notes have no primary navigation tab. The secondary notes browser retains project-scoped searches, note details and immutable history. Explicit worker, job, phase, kind and status filters compose with AND; an optional assigned-jobs expansion requires a worker selector and broadens only that worker predicate. Filter changes reset pagination. Notes do not imply ownership through assignment and never become inbox messages or standing instructions.
 
-List pages show twenty compact previews with explicit truncation and next/previous navigation; they never expand full bodies or archives automatically. Selected note pages display the exact current body, all scope selectors, kind/status and dismissal reason. An opened history shows compact attributed rows; selecting one revision fetches its immutable full content with a historical label and a link to current state. Opening or refreshing a note never consumes or dismisses it.
+The secondary `notes` heading uses the project presentation record. Adding this view introduces no separate branding configuration or translation system.
+
+Secondary catalogue pages show twenty compact previews with explicit truncation and next/previous navigation; they never expand full bodies or archives automatically. Selected note pages display the exact current body, all scope selectors, kind/status and dismissal reason. An opened history shows compact attributed rows; selecting one revision fetches its immutable full content with a historical label and a link to current state. Opening or refreshing a note never consumes or dismisses it.
 
 Every query binds the existing connection nonce, instance and project, plus the selected resource and effective filters. Resource or filter changes remount their paging state. Old connection work is cancelled and cannot populate a new project's view. Responses must validate identities, required fields, known enums, safe revisions (positive for notes and history entries; zero allowed only for default current pause/focus state), bounded text/previews and paging before rendering. Unknown, malformed and foreign results fail visibly. Rich note/reason text is escaped plain text; it never supplies HTML, links, commands or authority.
 
@@ -35,3 +39,10 @@ The run followed two reproduced product defects: direct coordination URLs were a
 This is local packaged behavior, not installed hosting, human GUI acceptance, general accessibility, physical-phone or fleet proof. At `765ccdf384b9f08c8f3d8136b4807cf80b73c172`, a follow-up applying the existing panel spacing passed the same actual matrix in 12.284 seconds with unchanged request counts and limits. All eight screenshots were inspected again, including the corrected card padding and text bounds; source, supplied binary and prior proof artifacts remained unchanged and owned cleanup completed.
 
 The combined checkpoint `265af4a5bc48f354516ee73bc578e586f4d2fcde` passed full `make check build`, including all 222 browser tests, Go race tests, vet, documentation checks, generated assets and three binaries. The resulting bytes exactly matched the inputs that passed the canonical packaged and Chromium lifecycle smoke targets. The separate full browser matrix above establishes coordination behavior; the narrow lifecycle smoke does not replace it.
+
+
+## Contextual pending-note proof
+
+The integrated GUI batch passes TypeScript and 340 browser tests. All four affected Go packages pass their full race suites; focused backup checks preserve note state and immutable history. Two earlier context fixtures that created phase-only notes were corrected without changing the new admission rule: the domain fixture now seeds its deliberately retained historical row and matching revision, while the client fixture attaches its unrelated note to the other existing worker.
+
+Actual packaged Chromium passed in 7.157 seconds under the unchanged 45-second budget. It exercises default Open jobs and independent worker filtering, Inbox-only worker selection, one genuine hero connection indicator, pending notes above the job brief and worker inbox, explicit consumed/dismissed transitions through controlled fixture writes, automatic pending-panel refresh, retained detail/reason/history, and unchanged browser write authority. Nine 1440-, 390- and 320-pixel captures show no horizontal overflow. These are synthetic packaged checks, not installed-service or physical-phone acceptance.

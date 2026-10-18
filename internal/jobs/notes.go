@@ -103,6 +103,9 @@ func (request *notePatchRequest) UnmarshalJSON(data []byte) error {
 func noteValidation() error {
 	return core.Fail("validation_failed", "Supply a valid scoped note with bounded text, explicit fields and revision.", 400)
 }
+func noteTargetValidation() error {
+	return core.Fail("validation_failed", "A note must target an existing project worker or job; phase is only a label.", 400)
+}
 func noteUnavailable() error {
 	return core.Fail("storage_unavailable", "Stored note history is unavailable.", 500)
 }
@@ -208,6 +211,9 @@ func createNote(store *core.Store) http.HandlerFunc {
 			return
 		}
 		result, err := store.Mutate(r.Context(), scope, core.Mutation{Operation: "notes.create", Target: "notes", Key: key, Request: req}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+			if n.WorkerID == "" && n.JobID == "" {
+				return nil, noteTargetValidation()
+			}
 			if err := checkNoteTargets(ctx, tx, n); err != nil {
 				return nil, err
 			}
@@ -292,6 +298,9 @@ func patchNote(store *core.Store) http.HandlerFunc {
 			}
 			if !validNoteContent(next) {
 				return nil, noteValidation()
+			}
+			if (req.WorkerID != nil || req.JobID != nil || req.Phase != nil) && next.WorkerID == "" && next.JobID == "" {
+				return nil, noteTargetValidation()
 			}
 			if err = checkNoteTargets(ctx, tx, next); err != nil {
 				return nil, err

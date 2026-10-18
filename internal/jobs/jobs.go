@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -197,7 +199,7 @@ func listJobs(store *core.Store) http.HandlerFunc {
 		}
 		workerID := strings.TrimSpace(r.URL.Query().Get("worker_id"))
 		status := r.URL.Query().Get("status")
-		if status != "" && !validStatuses[status] {
+		if status != "" && status != "open" && !validStatuses[status] {
 			core.WriteError(w, core.Fail("invalid_status", "status is not supported", http.StatusBadRequest))
 			return
 		}
@@ -207,23 +209,63 @@ func listJobs(store *core.Store) http.HandlerFunc {
 			return
 		}
 		filterKey := string(filter)
+		if status == "open" {
+			filterKey = "jobs-open-v1:" + filterKey
+		}
 		after, err := store.ParseCursor(scope, filterKey, r.URL.Query().Get("cursor"))
 		if err != nil {
 			core.WriteError(w, err)
 			return
 		}
-		query := `SELECT id,title,COALESCE(worker_id,''),status,revision FROM jobs WHERE project_id=? AND id>?`
-		args := []any{scope.ProjectID, after}
-		if workerID != "" {
-			query += ` AND worker_id=?`
-			args = append(args, workerID)
+		query := ""
+		var args []any
+		if status == "open" {
+			afterStatus, afterID := "", ""
+			if after != "" {
+				var position []string
+				if json.Unmarshal([]byte(after), &position) != nil || len(position) != 2 || !validStatuses[position[0]] || position[0] == "completed" || position[1] == "" || len(position[1]) > 128 || !utf8.ValidString(position[1]) || strings.TrimSpace(position[1]) != position[1] || strings.IndexFunc(position[1], unicode.IsControl) >= 0 {
+					core.WriteError(w, core.Fail("invalid_cursor", "Use a valid cursor from this open job list.", http.StatusBadRequest))
+					return
+				}
+				afterStatus, afterID = position[0], position[1]
+			}
+			var branches []string
+			for _, selectedStatus := range []string{"active", "blocked", "parked"} {
+				if selectedStatus < afterStatus {
+					continue
+				}
+				branch := `SELECT id,title,COALESCE(worker_id,''),status,revision FROM jobs WHERE project_id=? AND status=?`
+				args = append(args, scope.ProjectID, selectedStatus)
+				if selectedStatus == afterStatus {
+					branch += ` AND id>?`
+					args = append(args, afterID)
+				}
+				if workerID != "" {
+					branch += ` AND worker_id=?`
+					args = append(args, workerID)
+				}
+				branch += ` ORDER BY id LIMIT ?`
+				args = append(args, limit+1)
+				branches = append(branches, `SELECT * FROM (`+branch+`)`)
+			}
+			// Bound each indexed status seek before merging, including when a
+			// page crosses statuses. Completed jobs never enter the candidates.
+			query = `SELECT * FROM (` + strings.Join(branches, ` UNION ALL `) + `) ORDER BY status,id LIMIT ?`
+			args = append(args, limit+1)
+		} else {
+			query = `SELECT id,title,COALESCE(worker_id,''),status,revision FROM jobs WHERE project_id=? AND id>?`
+			args = []any{scope.ProjectID, after}
+			if workerID != "" {
+				query += ` AND worker_id=?`
+				args = append(args, workerID)
+			}
+			if status != "" {
+				query += ` AND status=?`
+				args = append(args, status)
+			}
+			query += ` ORDER BY id LIMIT ?`
+			args = append(args, limit+1)
 		}
-		if status != "" {
-			query += ` AND status=?`
-			args = append(args, status)
-		}
-		query += ` ORDER BY id LIMIT ?`
-		args = append(args, limit+1)
 		rows, err := store.DB().QueryContext(r.Context(), query, args...)
 		if err != nil {
 			core.WriteError(w, err)
@@ -231,7 +273,7 @@ func listJobs(store *core.Store) http.HandlerFunc {
 		}
 		defer rows.Close()
 		result := page{Items: make([]compactJob, 0, limit)}
-		lastID := ""
+		lastID, lastStatus := "", ""
 		for rows.Next() {
 			var item compactJob
 			if err := rows.Scan(&item.ID, &item.Title, &item.WorkerID, &item.Status, &item.Revision); err != nil {
@@ -242,7 +284,7 @@ func listJobs(store *core.Store) http.HandlerFunc {
 				result.HasMore = true
 				break
 			}
-			lastID = item.ID
+			lastID, lastStatus = item.ID, item.Status
 			result.Items = append(result.Items, item)
 		}
 		if err := rows.Err(); err != nil {
@@ -250,7 +292,12 @@ func listJobs(store *core.Store) http.HandlerFunc {
 			return
 		}
 		if result.HasMore && lastID != "" {
-			result.Cursor = store.Cursor(scope, filterKey, lastID)
+			after := lastID
+			if status == "open" {
+				position, _ := json.Marshal([]string{lastStatus, lastID})
+				after = string(position)
+			}
+			result.Cursor = store.Cursor(scope, filterKey, after)
 		}
 		core.WriteJSON(w, http.StatusOK, result)
 	}

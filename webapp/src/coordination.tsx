@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Pager, ReadState, signalFor, usePaging, useWorkspace } from './workspace';
 import type { Note, NoteHistorySummary, NoteOptions, NoteRevision, NoteSummary, WorkerPause, WorkerPrimary } from './types';
 import { useProjectHeading } from './presentation-context';
+import { ContextualNotes } from './contextual-notes';
 import './coordination.css';
 
 const pageSize = 20;
@@ -37,6 +38,7 @@ function WorkerDetails({ workerId }: { workerId: string }) {
   const pause = useQuery({ queryKey: [...key, 'worker-pause', workerId], queryFn: ({ signal }) => session.api.workerPause(workerId, signalFor(session, signal)), staleTime: Infinity });
   const primary = useQuery({ queryKey: [...key, 'worker-primary', workerId], queryFn: ({ signal }) => session.api.workerPrimary(workerId, signalFor(session, signal)), staleTime: Infinity });
   return <div className="coordination"><section className="panel"><ReadState error={worker.error} loading={worker.isPending} empty={false}>{worker.data && <><p className="eyebrow">Worker details</p><h2>{worker.data.name}</h2><p className="item-meta">{worker.data.id}</p><Link to={notesPath(home, { worker_id: workerId })}>Notes for this worker</Link></>}</ReadState></section>
+    <ContextualNotes workerId={workerId} />
     <section className="panel"><ReadState error={pause.error} loading={pause.isPending} empty={false}>{pause.data && <PauseContent value={pause.data} />}</ReadState><button type="button" aria-expanded={pauseHistory} onClick={() => setPauseHistory(value => !value)}>{pauseHistory ? 'Hide pause history' : 'Show pause history'}</button>{pauseHistory && <PauseHistory workerId={workerId} />}</section>
     <section className="panel"><ReadState error={primary.error} loading={primary.isPending} empty={false}>{primary.data && <PrimaryContent value={primary.data} home={home} />}</ReadState><button type="button" aria-expanded={primaryHistory} onClick={() => setPrimaryHistory(value => !value)}>{primaryHistory ? 'Hide focus history' : 'Show focus history'}</button>{primaryHistory && <PrimaryHistory workerId={workerId} />}</section>
   </div>;

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/mcpadapter"
 	"github.com/benhook1013/FireController/internal/profile"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -428,5 +429,123 @@ func TestRunUsesOnlySDKStdioProtocol(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("stdio session did not stop within bound")
+	}
+}
+
+func TestOpenJobFiltersThroughMCP(t *testing.T) {
+	f := mutationFixture(t)
+	var writes atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writes.Add(1)
+		}
+		f.handler.ServeHTTP(w, r)
+	}))
+	defer service.Close()
+	session := connect(t, f.adapter(t, service.URL, f.sender), "")
+	expected := map[string]string{}
+	for i, status := range []string{"parked", "completed", "active", "blocked", "blocked"} {
+		worker := f.sender
+		if i == 4 {
+			worker = f.recipient
+		}
+		var receipt client.JobReceipt
+		decodeResult(t, call(t, session, "jobs_create", map[string]any{"idempotency_key": fmt.Sprintf("open-fixture-%d", i), "title": "Job", "worker_id": worker, "status": status}), &receipt)
+		if status != "completed" {
+			expected[receipt.ID] = worker
+		}
+	}
+	beforeWrites, beforeProviders := writes.Load(), f.providers.Load()
+	for _, tool := range []string{"jobs_list", "jobs_assigned"} {
+		seen := map[string]bool{}
+		previous := ""
+		args := map[string]any{"status": "open", "limit": 1}
+		for page := 0; ; page++ {
+			if page > 5 {
+				t.Fatal("unbounded continuation")
+			}
+			var result client.Page[client.JobSummary]
+			decodeResult(t, call(t, session, tool, args), &result)
+			if len(result.Items) != 1 {
+				t.Fatalf("%s page has %d items", tool, len(result.Items))
+			}
+			item := result.Items[0]
+			if seen[item.ID] || expected[item.ID] == "" || item.Status == "completed" || item.Status < previous || tool == "jobs_assigned" && item.WorkerID != f.sender {
+				t.Fatalf("%s lost scoped open ordering", tool)
+			}
+			previous, seen[item.ID] = item.Status, true
+			if !result.HasMore {
+				break
+			}
+			if result.Cursor == "" {
+				t.Fatal("missing continuation")
+			}
+			args["cursor"] = result.Cursor
+		}
+		want := 4
+		if tool == "jobs_assigned" {
+			want = 3
+		}
+		if len(seen) != want {
+			t.Fatalf("%s got %d jobs, want %d", tool, len(seen), want)
+		}
+	}
+	if writes.Load() != beforeWrites || f.providers.Load() != beforeProviders {
+		t.Fatal("list reads wrote or called provider")
+	}
+}
+
+func TestOpenJobFilterDiscoveryAndMutationRefusal(t *testing.T) {
+	c := localContext()
+	var requests atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer service.Close()
+	c.ServerURL = service.URL
+	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"alpha": c}, "never-open-credential"), "alpha"), "")
+	tools, err := allDiscoveredTools(t, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, tool := range tools.Tools {
+		if tool.Name != "jobs_list" && tool.Name != "jobs_assigned" && tool.Name != "jobs_create" && tool.Name != "job_edit" {
+			continue
+		}
+		data, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var schema struct {
+			Properties map[string]struct {
+				Enum []string `json:"enum"`
+			} `json:"properties"`
+		}
+		if json.Unmarshal(data, &schema) != nil {
+			t.Fatal("invalid discovery schema")
+		}
+		values := schema.Properties["status"].Enum
+		found := false
+		for _, value := range values {
+			if value == "open" {
+				found = true
+			}
+		}
+		read := tool.Name == "jobs_list" || tool.Name == "jobs_assigned"
+		wantLength := 4
+		if read {
+			wantLength = 5
+		}
+		if found != read || len(values) != wantLength {
+			t.Fatalf("%s status enum=%v", tool.Name, values)
+		}
+		checked++
+	}
+	if checked != 4 {
+		t.Fatal("missing job schema")
+	}
+	errorResult(t, call(t, session, "jobs_create", map[string]any{"idempotency_key": "open-create", "title": "Job", "status": "open"}), "invalid_arguments")
+	errorResult(t, call(t, session, "job_edit", map[string]any{"idempotency_key": "open-edit", "job_id": "job-one", "expected_revision": 1, "status": "open"}), "invalid_arguments")
+	if requests.Load() != 0 {
+		t.Fatal("invalid mutation reached service")
 	}
 }

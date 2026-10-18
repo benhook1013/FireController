@@ -187,14 +187,14 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 		MetadataStreams          int    `json:"metadata_streams"`
 		InboxStreams             int    `json:"inbox_streams"`
 	}
-	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 15 || result.SessionPosts != 3 || result.SessionDeletes != 3 || result.SessionRenewals != 3 || result.MissingSessionRefusals < 1 || result.ActionWrites != 7 || !result.MetadataReconnect || result.InjectedMetadataFailures != 1 || result.InjectedConsoleErrors < 0 || result.InjectedConsoleErrors > 1 || result.PresentationReads != 4 || result.MetadataStreams < 3 || result.MetadataStreams > 4 || result.InboxStreams < 2 || result.InboxStreams > 3 {
+	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 21 || result.SessionPosts != 3 || result.SessionDeletes != 3 || result.SessionRenewals != 3 || result.MissingSessionRefusals < 1 || result.ActionWrites != 7 || !result.MetadataReconnect || result.InjectedMetadataFailures != 1 || result.InjectedConsoleErrors < 0 || result.InjectedConsoleErrors > 1 || result.PresentationReads != 4 || result.MetadataStreams < 3 || result.MetadataStreams > 4 || result.InboxStreams < 2 || result.InboxStreams > 3 {
 		t.Fatalf("invalid packaged browser result: fixture_writes=%d posts=%d deletes=%d renewals=%d refusals=%d actions=%d metadata=%t injected=%d console=%d reads=%d streams=%d inbox=%d", result.FixtureWrites, result.SessionPosts, result.SessionDeletes, result.SessionRenewals, result.MissingSessionRefusals, result.ActionWrites, result.MetadataReconnect, result.InjectedMetadataFailures, result.InjectedConsoleErrors, result.PresentationReads, result.MetadataStreams, result.InboxStreams)
 	}
 	daemon.stop(t)
 	if external.Load() != 0 {
 		t.Fatal("browser smoke attempted external HTTP")
 	}
-	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=15 session_posts=3 session_deletes=3 session_renewals=3 missing_session_control=passed browser_action_writes=7 metadata_reconnect=true injected_metadata_failures=1 reader_presentation_reads=4 reader_metadata_streams=%d reader_inbox_streams=%d daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.MetadataStreams, result.InboxStreams, engine.Load())
+	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=21 session_posts=3 session_deletes=3 session_renewals=3 missing_session_control=passed browser_action_writes=7 metadata_reconnect=true injected_metadata_failures=1 reader_presentation_reads=4 reader_metadata_streams=%d reader_inbox_streams=%d daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.MetadataStreams, result.InboxStreams, engine.Load())
 }
 
 // The only early driver output is its owned Chromium group ID. Keep all output
@@ -251,7 +251,7 @@ func (o *browserOutput) safePhase() string {
 			continue
 		}
 		switch record.Phase {
-		case "configuration", "launch", "connect", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "renewal-activity", "renewal-missing-cookie", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
+		case "configuration", "launch", "connect", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "live-jobs", "live-workers", "live-notes", "contextual-notes", "live-reviews", "reload", "renewal-activity", "renewal-missing-cookie", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
 			if record.Phase == "metadata-failure" {
 				switch record.Checkpoint {
 				case "metadata-notice", "metadata-initial-counts", "metadata-inbox-ready":
@@ -265,6 +265,16 @@ func (o *browserOutput) safePhase() string {
 				}
 			}
 
+			if record.Phase == "contextual-notes" {
+				switch record.Checkpoint {
+				case "none", "job-empty", "job-create", "job-appeared", "job-read", "job-pending-detail", "job-open-history", "job-history-loaded", "job-scope-return", "job-consume", "consumed-history-return", "worker-create", "worker-appeared", "worker-dismiss":
+					class := "driver"
+					if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
+						class = record.FailureClass
+					}
+					return fmt.Sprintf("contextual-notes/%s class=%s errors=%d forbidden_writes=%d", record.Checkpoint, class, record.Errors, record.Writes)
+				}
+			}
 			if record.Phase == "reload" {
 				return fmt.Sprintf("reload/%s presentation_reads=%d metadata_streams=%d inbox_streams=%d injected_metadata_failures=%d injected_console_errors=%d errors=%d external=%d", record.Checkpoint, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.InjectedMetadataFailures, record.InjectedConsoleErrors, record.Errors, record.External)
 			}
@@ -309,6 +319,8 @@ func TestBrowserSendFailureDiagnosticsAllowlist(t *testing.T) {
 		{"timeout", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"send-response","failure_class":"timeout"}`, "explicit-actions-send/send-response class=timeout send_status=0 reply_status=0 conversation_match=false posts=0 deletes=0 renewals=0 errors=0 forbidden_writes=0 action_writes=0 external=0"},
 		{"unknown-class", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"conversation-open","failure_class":"PRIVATE_SENTINEL"}`, "explicit-actions-send/conversation-open class=driver send_status=0 reply_status=0 conversation_match=false posts=0 deletes=0 renewals=0 errors=0 forbidden_writes=0 action_writes=0 external=0"},
 		{"unknown-checkpoint", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"PRIVATE_SENTINEL","failure_class":"PRIVATE_SENTINEL"}`, "explicit-actions-send"},
+		{"contextual-note-selector", `{"state":"FAIL","phase":"contextual-notes","checkpoint":"job-scope-return","failure_class":"driver","body":"PRIVATE_SENTINEL"}`, "contextual-notes/job-scope-return class=driver errors=0 forbidden_writes=0"},
+		{"contextual-note-private-checkpoint", `{"state":"FAIL","phase":"contextual-notes","checkpoint":"PRIVATE_SENTINEL","failure_class":"assertion"}`, "contextual-notes"},
 		{"unknown-phase", `{"state":"FAIL","phase":"PRIVATE_SENTINEL","checkpoint":"send-status"}`, "driver-start-or-cleanup"},
 		{"string-status", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"send-status","send_status":"PRIVATE_SENTINEL"}`, "driver-start-or-cleanup"},
 		{"numeric-match", `{"state":"FAIL","phase":"explicit-actions-send","checkpoint":"reply-binding","conversation_match":1}`, "driver-start-or-cleanup"},

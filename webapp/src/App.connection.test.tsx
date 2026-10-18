@@ -26,12 +26,15 @@ function firstPaint(path = '/projects/project_one/jobs/job_one') {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('private connection first paint', () => {
-  it('renders only a loading indicator before effects can resume saved access', () => {
+  it('renders a neutral stable skeleton before effects can resume saved access', () => {
     const saved = storage(JSON.stringify(binding));
     const resume = vi.spyOn(Api, 'resume');
     const connect = vi.spyOn(Api.prototype, 'connect');
     const html = firstPaint();
-    expect(html).toContain('class="loading-spinner"');
+    expect(html).toContain('workspace-skeleton');
+    expect(html).toContain('skeleton-hero');
+    expect(html).toContain('page-skeleton');
+    expect(html).not.toContain('Loading…');
     expect(html).toContain('role="status" aria-label="Opening project"');
     expect(html).not.toContain('Opening project…');
     expect(html).not.toContain('Verifying this tab’s saved connection.');

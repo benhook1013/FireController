@@ -42,7 +42,7 @@ func TestSharedArgumentValidatorBoundaries(t *testing.T) {
 			t.Errorf("valid status refused: %q", status)
 		}
 	}
-	for _, status := range []string{"", "Active", " active", "active ", "unknown", "completed\x00"} {
+	for _, status := range []string{"", "open", "Active", " active", "active ", "unknown", "completed\x00"} {
 		if client.ValidStatus(status) {
 			t.Errorf("invalid status accepted: %q", status)
 		}
@@ -588,5 +588,64 @@ func TestServerReplacementAfterHandshakeIsRejectedByRealGuard(t *testing.T) {
 	var failure *client.Error
 	if !errors.As(err, &failure) || failure.Status != 409 || providers.Load() != calls {
 		t.Fatal("replacement guard lost conflict or performed provider work")
+	}
+}
+
+func TestOpenJobListClientFilterAndContinuation(t *testing.T) {
+	var reads atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		reads.Add(1)
+		if r.Method != "GET" || r.URL.Query().Get("status") != "open" || r.URL.Query().Get("worker_id") != "worker-one" || r.URL.Query().Get("limit") != "1" {
+			t.Error("open filter or read semantics lost")
+		}
+		if r.URL.Query().Get("cursor") == "" {
+			write(w, 200, client.Page[client.JobSummary]{Items: []client.JobSummary{{ID: "job-a", Title: "A", Status: "active", WorkerID: "worker-one", Revision: 1}}, HasMore: true, Cursor: "signed-next"})
+		} else {
+			if r.URL.Query().Get("cursor") != "signed-next" {
+				t.Error("continuation changed")
+			}
+			write(w, 200, client.Page[client.JobSummary]{Items: []client.JobSummary{{ID: "job-b", Title: "B", Status: "parked", WorkerID: "worker-one", Revision: 1}}})
+		}
+	}))
+	defer service.Close()
+	c := newClient(t, service)
+	page, err := c.Jobs(t.Context(), client.PageOptions{Limit: 1}, client.JobFilter{Status: "open", WorkerID: "worker-one"})
+	if err != nil || !page.HasMore || len(page.Items) != 1 || page.Items[0].Status != "active" {
+		t.Fatal("first open page", err)
+	}
+	page, err = c.Jobs(t.Context(), client.PageOptions{Limit: 1, Cursor: page.Cursor}, client.JobFilter{Status: "open", WorkerID: "worker-one"})
+	if err != nil || page.HasMore || page.Items[0].Status != "parked" || reads.Load() != 2 {
+		t.Fatal("second open page", err)
+	}
+	if !client.ValidJobStatusFilter("open") || client.ValidStatus("open") {
+		t.Fatal("list-only validation changed actual states")
+	}
+	before := reads.Load()
+	_, err = c.CreateJob(t.Context(), "invalid-open", client.CreateJobRequest{Title: "Cannot store filter", Status: "open"})
+	checkError(t, err, "validation_failed")
+	if reads.Load() != before {
+		t.Fatal("open mutation dispatched")
+	}
+}
+
+func TestOpenJobListClientRejectsMismatchedResponses(t *testing.T) {
+	for _, tc := range []struct{ status, worker string }{{"completed", "worker-one"}, {"open", "worker-one"}, {"active", "worker-other"}} {
+		t.Run(tc.status+tc.worker, func(t *testing.T) {
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				write(w, 200, client.Page[client.JobSummary]{Items: []client.JobSummary{{ID: "job-one", Title: "Task", WorkerID: tc.worker, Status: tc.status, Revision: 1}}})
+			}))
+			defer service.Close()
+			c := newClient(t, service)
+			_, err := c.Jobs(t.Context(), client.PageOptions{}, client.JobFilter{Status: "open", WorkerID: "worker-one"})
+			checkError(t, err, "invalid_response")
+		})
 	}
 }

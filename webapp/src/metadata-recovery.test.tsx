@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ProjectUpdateNotice } from './App';
+import { ProjectConnectionStatus, ProjectUpdateNotice } from './App';
 
 describe('project update recovery control', () => {
   it('offers explicit retry only for a closed project update watch', () => {
@@ -12,15 +12,20 @@ describe('project update recovery control', () => {
     expect(closed).toContain('may be stale');
     expect(renderToStaticMarkup(<ProjectUpdateNotice status="live" reconnect={() => {}} />)).toBe('');
   });
-  it('uses a neutral loading indicator during attachment and automatic recovery', () => {
-    for (const status of ['connecting', 'reconnecting'] as const) {
-      const html = renderToStaticMarkup(<ProjectUpdateNotice status={status} reconnect={() => {}} />);
-      expect(html).toContain('class="loading-spinner"');
-      expect(html).toContain(`role="status" aria-label="${status === 'connecting' ? 'Connecting' : 'Reconnecting'} project updates"`);
-      expect(html).not.toContain('class="notice"');
-      expect(html).not.toContain('disconnected');
-      expect(html).not.toContain('may be stale');
-      expect(html).not.toContain('<button');
+  it('uses the hero label for a live project without losing transport attribution', () => {
+    const html = renderToStaticMarkup(<ProjectConnectionStatus status="live" connectedLabel="Connected project" />);
+    expect(html).toContain('>Connected project</span>');
+    expect(html).toContain('aria-label="Project updates: connected"');
+  });
+  it('inserts no project-data row during attachment or automatic recovery', () => {
+    for (const status of ['connecting', 'reconnecting', 'live'] as const) {
+      expect(renderToStaticMarkup(<ProjectUpdateNotice status={status} reconnect={() => {}} />)).toBe('');
+      const indicator = renderToStaticMarkup(<ProjectConnectionStatus status={status} />);
+      expect(indicator).toContain(`connection-${status}`);
+      expect(indicator).toContain('role="status"');
+      expect(indicator).not.toContain('<div');
+      expect(indicator).not.toContain('may be stale');
+      expect(indicator).not.toContain('notice');
     }
   });
 });

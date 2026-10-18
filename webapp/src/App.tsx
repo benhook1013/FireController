@@ -9,9 +9,11 @@ import { PublicSiteRouter } from './public-site';
 import { BrowserActionMemory, MessageComposer, RecipientActions } from './browser-actions';
 import { ProjectSettings } from './project-settings';
 import { ProjectMap, ProjectMapEntryView, ProjectMapRevisionView, JobWorkstreamPanel } from './project-map';
-import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView, notesPath } from './coordination';
+import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView } from './coordination';
+import { ContextualNotes } from './contextual-notes';
 import { refreshEventQueries } from './queries';
 import { ReviewArchive, type ReviewArchivePage } from './review-archive';
+import { PageSkeleton, WorkspaceSkeleton } from './loading';
 import { browserSessionKey, clearBrowserSession, loadBrowserSession, renewedBrowserSessionBinding, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
 import { BrowserSessionRenewal, listenForSessionActivity } from './session-renewal';
 import { applyPresentationRoot } from './presentation';
@@ -149,14 +151,14 @@ function PrivateApp() {
       }
     }
   }
-  function selectWorker(worker: Worker) {
+  function selectWorker(worker: Worker | null) {
     const old = current.current;
     if (!old) return;
-    if (old.worker?.id !== worker.id) {
+    if ((old.worker?.id ?? '') !== (worker?.id ?? '')) {
       old.controller.abort();
       void queryClient.cancelQueries({ queryKey: ['fc', old.nonce] });
       queryClient.removeQueries({ queryKey: ['fc', old.nonce] });
-      const binding = { ...old.binding, selectedworkerID: worker.id };
+      const binding = { ...old.binding, selectedworkerID: worker?.id ?? '' };
       if (!saveBrowserSession(binding)) {
         clear('The selected worker could not be retained. Enable session storage and connect again.');
         return;
@@ -165,7 +167,7 @@ function PrivateApp() {
       const next = { ...old, worker, binding, nonce: nonce(), controller: new AbortController() };
       current.current = next; setSession(next);
     }
-    if (old.worker !== null || conversationMatch?.params.projectId !== old.project.id) {
+    if (worker && ((old.worker?.id ?? '') !== worker.id || conversationMatch?.params.projectId !== old.project.id)) {
       navigate(`/projects/${encodeURIComponent(old.project.id)}/inbox`);
     }
   }
@@ -230,9 +232,9 @@ function PrivateApp() {
   const visibleAppearance = connected ? appearance : undefined;
   useLayoutEffect(() => { applyPresentationRoot(document.documentElement, document, visibleAppearance); }, [visibleAppearance]);
   return <PresentationContext.Provider value={visibleAppearance}>
-    <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><div className="mast-meta"><span className="mast-label">{connected ? `${visibleAppearance?.name ?? session.project.name} workspace` : 'Project workspace'}</span>{connected && <span className="connection-note">Connected</span>}</div></div></header>
+    <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><div className="mast-meta"><span className="mast-label">{connected ? `${visibleAppearance?.name ?? session.project.name} workspace` : 'Project workspace'}</span></div></div></header>
     {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} reconnectProjectUpdates={reconnectProjectUpdates} selectWorker={selectWorker} disconnect={() => { if (session.actions.unresolved > 0 && !window.confirm(discardActionWarning)) return; clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
-      : restoring || resumable ? <OpeningProject busy={restoring || connecting} notice={notice} retry={() => setReconnect(value => value + 1)} cancel={() => clear('Connection cancelled.')} />
+      : restoring || resumable ? <OpeningProject sidebar={Boolean(matchPath('/projects/:projectId/inbox/*', location.pathname))} busy={restoring || connecting} notice={notice} retry={() => setReconnect(value => value + 1)} cancel={() => clear('Connection cancelled.')} />
       : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={(project, token) => void connect(project, token)} cancel={() => clear('Connection cancelled.')} />}
     <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span></footer>
   </PresentationContext.Provider>;
@@ -263,8 +265,8 @@ async function restoredWorker(api: Api, workerID: string, signal: AbortSignal): 
 }
 
 function Flame() { return <img className="flame" src={flameEmber} alt="" aria-hidden="true" />; }
-export function OpeningProject({ busy, notice, retry, cancel }: { busy: boolean; notice: string; retry(): void; cancel(): void }) {
-  if (busy) return <main className="opening-project opening-project-loading"><LoadingSpinner label="Opening project" /></main>;
+export function OpeningProject({ busy, notice, retry, cancel, sidebar = false }: { busy: boolean; notice: string; retry(): void; cancel(): void; sidebar?: boolean }) {
+  if (busy) return <WorkspaceSkeleton sidebar={sidebar} />;
   return <main className="opening-project"><section className="panel opening-project-card" aria-labelledby="opening-project-title">
     <h1 id="opening-project-title">Project connection unavailable</h1>
     <p className="notice" role="alert">{notice || 'The project could not be reached. Try again when the connection is available.'}</p>
@@ -286,24 +288,25 @@ function Connect({ projectId, busy, notice, onConnect, cancel }: { projectId: st
       </form></section></main>;
 }
 
-function LoadingSpinner({ label }: { label: string }) {
-  return <span className="loading-spinner" role="status" aria-label={label} />;
+export function ProjectConnectionStatus({ status, connectedLabel = 'Connected' }: { status: LiveStatus; connectedLabel?: string }) {
+  const label = status === 'live' ? connectedLabel : status === 'closed' ? 'Disconnected' : status === 'reconnecting' ? 'Reconnecting' : 'Connecting';
+  return <span className={`connection-note connection-${status}`} role="status" aria-label={`Project updates: ${status === 'live' ? 'connected' : label.toLowerCase()}`}>{label}</span>;
 }
 
 export function ProjectUpdateNotice({ status, reconnect }: { status: LiveStatus; reconnect(): void }) {
-  if (status === 'live') return null;
-  if (status !== 'closed') return <div className="project-updates-loading"><LoadingSpinner label={status === 'connecting' ? 'Connecting project updates' : 'Reconnecting project updates'} /></div>;
+  if (status !== 'closed') return null;
   return <p className="notice" role="status">Project updates disconnected. Displayed project data may be stale. <button type="button" onClick={reconnect}>Reconnect project updates</button></p>;
 }
 
-function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWorker, disconnect, fail }: { session: Session; metadataStatus: LiveStatus; reconnectProjectUpdates(): void; selectWorker(worker: Worker): void; disconnect(): void; fail(error: unknown): void }) {
+function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWorker, disconnect, fail }: { session: Session; metadataStatus: LiveStatus; reconnectProjectUpdates(): void; selectWorker(worker: Worker | null): void; disconnect(): void; fail(error: unknown): void }) {
   const presentation = usePresentation();
   const jobsHeading = useProjectHeading('jobs'), workersHeading = useProjectHeading('workers'), inboxHeading = useProjectHeading('inbox'), reviewsHeading = useProjectHeading('reviews'), mapHeading = useProjectHeading('map');
-  const notesHeading = useProjectHeading('notes');
   const heroEyebrow = useProjectHeading('hero_eyebrow'), heroTitle = useProjectHeading('hero_title'), heroDescription = useProjectHeading('hero_description');
   const queryClient = useQueryClient();
   const key = useMemo(() => ['fc', session.nonce, session.instanceId, session.project.id, session.worker?.id ?? ''] as const, [session]);
   const home = `/projects/${encodeURIComponent(session.project.id)}`;
+  const pathname = useLocation().pathname;
+  const inboxArea = pathname === `${home}/inbox` || pathname.startsWith(`${home}/inbox/`);
   const [live, setLive] = useState<LiveStatus>('connecting');
   const [ready, setReady] = useState(false);
   const [feedError, setFeedError] = useState<unknown>(null);
@@ -353,11 +356,11 @@ function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWor
   const liveLabel = !session.worker ? 'Choose a worker' : live === 'live' ? 'Live inbox connected' : live === 'reconnecting' ? 'Reconnecting inbox…' : live === 'closed' ? 'Inbox disconnected' : 'Connecting inbox…';
   return <WorkspaceContext.Provider value={value}><main className="workspace">
     <section className="hero"><div className="hero-project"><h1>{presentation?.name ?? session.project.name}</h1><p className="repository">{session.project.repository}</p><p className="identity">Project {session.project.id}</p></div>
-      <div className="hero-side"><div className="connection-card"><span className="eyebrow">{heroEyebrow}</span><strong>{heroTitle}</strong><p>{heroDescription}</p><div className="hero-actions"><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh visible data'}</button><button className="quiet-button" type="button" onClick={disconnect}>Disconnect</button></div></div></div></section>
-    <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink><NavLink to={`${home}/map`}>{mapHeading}</NavLink><NavLink to={`${home}/notes`}>{notesHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}</nav>
+      <div className="hero-side"><div className="connection-card"><span className="eyebrow"><ProjectConnectionStatus status={metadataStatus} connectedLabel={heroEyebrow} /></span><strong>{heroTitle}</strong><p>{heroDescription}</p><div className="hero-actions"><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh visible data'}</button><button className="quiet-button" type="button" onClick={disconnect}>Disconnect</button></div></div></div></section>
+    <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink><NavLink to={`${home}/map`}>{mapHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}</nav>
     <ProjectUpdateNotice status={metadataStatus} reconnect={reconnectProjectUpdates} />
     {unresolved > 0 && <p className="notice" role="status">{unresolved} pending or uncertain action{unresolved === 1 ? '' : 's'} retained in this connection. Return to the original worker and view to retry before reloading or disconnecting.</p>}
-    <div className="workspace-grid"><aside className="sidebar"><WorkerList compact /><section className="feed-card" aria-label="Inbox connection"><span className={`status-dot ${live === 'live' && session.worker ? 'online' : ''}`} /><strong role="status">{liveLabel}</strong><p>{session.worker ? session.worker.name : 'Select a worker to follow incoming messages.'}</p>{Boolean(feedError) && <><p className="error-copy">{errorText(feedError)}</p><button type="button" onClick={() => { setReady(false); setAttempt(value => value + 1); }}>Reconnect inbox</button></>}</section></aside>
+    <div className={inboxArea ? 'workspace-grid' : 'project-main'}>{inboxArea && <aside className="sidebar"><WorkerList compact /><section className="feed-card" aria-label="Inbox connection"><span className={`status-dot ${live === 'live' && session.worker ? 'online' : ''}`} /><strong role="status">{liveLabel}</strong><p>{session.worker ? session.worker.name : 'Select a worker to follow incoming messages.'}</p>{Boolean(feedError) && <><p className="error-copy">{errorText(feedError)}</p><button type="button" onClick={() => { setReady(false); setAttempt(value => value + 1); }}>Reconnect inbox</button></>}</section></aside>}
       <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Jobs />} /><Route path="/projects/:projectId/settings" element={<ProjectSettings />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/workers/:workerId" element={<WorkerCoordinationView />} /><Route path="/projects/:projectId/notes" element={<NotesView />} /><Route path="/projects/:projectId/notes/:noteId" element={<NoteView />} /><Route path="/projects/:projectId/notes/:noteId/history/:revision" element={<NoteRevisionView />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="/projects/:projectId/map" element={<ProjectMap />} /><Route path="/projects/:projectId/map/entries/:entryId" element={<ProjectMapEntryView />} /><Route path="/projects/:projectId/map/entries/:entryId/history/:revision" element={<ProjectMapRevisionView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to project jobs</Link></section>} /></Routes></div></div>
   </main></WorkspaceContext.Provider>;
 }
@@ -366,30 +369,37 @@ function WorkerList({ compact = false }: { compact?: boolean }) {
   const presentation = usePresentation();
   const label = useProjectHeading('workers');
   const { session, key, home, selectWorker } = useWorkspace();
+  const navigate = useNavigate();
   const paging = usePaging();
   const query = useQuery({ queryKey: [...key, 'workers', paging.cursor], queryFn: ({ signal }) => session.api.workers({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
-  return <section className={compact ? 'worker-panel' : 'panel'}><div className="section-heading"><div><p className="eyebrow">People & agents</p><h2>{compact ? label : presentation?.headings.workers ?? 'Project workers'}</h2></div>{compact && <span className="small-label">Select inbox</span>}</div><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul className="worker-list">{query.data?.items.map(worker => <li key={worker.id}><button type="button" aria-label={`Open ${worker.name} inbox`} aria-pressed={session.worker?.id === worker.id} onClick={() => selectWorker(worker)}><span className="worker-avatar" aria-hidden="true">{worker.name.slice(0, 2).toUpperCase()}</span><span><strong>{worker.name}</strong><small>{worker.id}</small></span><span className="worker-arrow" aria-hidden="true">↗</span></button><Link className="worker-detail-link" to={`${home}/workers/${encodeURIComponent(worker.id)}`} aria-label={`Read ${worker.name} details`}>Worker details</Link></li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="workers" busy={query.isFetching} /></section>;
+  return <section className={compact ? 'worker-panel' : 'panel'}><div className="section-heading"><div><p className="eyebrow">People & agents</p><h2>{compact ? label : presentation?.headings.workers ?? 'Project workers'}</h2></div>{compact && <span className="small-label">Select worker</span>}</div><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul className="worker-list">{query.data?.items.map(worker => <li key={worker.id}><button type="button" aria-label={compact ? `Select worker ${worker.name}` : `Open ${worker.name} inbox`} aria-pressed={compact ? session.worker?.id === worker.id : undefined} onClick={() => { selectWorker(worker); if (!compact) void navigate(`${home}/inbox`); }}><span className="worker-avatar" aria-hidden="true">{worker.name.slice(0, 2).toUpperCase()}</span><span><strong>{worker.name}</strong><small>{worker.id}</small></span><span className="worker-arrow" aria-hidden="true">↗</span></button><Link className="worker-detail-link" to={`${home}/workers/${encodeURIComponent(worker.id)}`} aria-label={`Read ${worker.name} details`}>Worker details</Link></li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="workers" busy={query.isFetching} /></section>;
 }
-function Workers() { const label = useProjectHeading('workers'); return <><div className="page-heading"><p className="eyebrow">Connected project</p><h2>{label}</h2><p>Select a worker to read their inbox and follow new messages.</p></div><WorkerList /></>; }
-function Jobs() {
+function Workers() { const label = useProjectHeading('workers'); return <><div className="page-heading"><p className="eyebrow">Connected project</p><h2>{label}</h2><p>View worker details or open an inbox.</p></div><WorkerList /></>; }
+export function Jobs() {
   const label = useProjectHeading('jobs');
-  const [status, setStatus] = useState('');
-  const { session } = useWorkspace();
-  const [assigned, setAssigned] = useState(false);
-  return <><div className="page-heading"><h2>{label}</h2></div><div className="filters"><label>Status<select aria-label="Job status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label>{session.worker && <label className="checkbox-label"><input type="checkbox" checked={assigned} onChange={event => setAssigned(event.target.checked)} />Assigned to {session.worker.name}</label>}</div><JobList key={`${status}/${assigned}`} status={status as JobSummary['status'] | ''} assigned={assigned} /></>;
+  const [status, setStatus] = useState('open');
+  const [worker, setWorker] = useState<Worker | null>(null);
+  return <><div className="page-heading"><h2>{label}</h2></div><div className="filters"><label>Status<select aria-label="Job status" value={status} onChange={event => setStatus(event.target.value)}><option value="open">Open jobs</option><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label><JobWorkerFilter selected={worker} select={setWorker} /></div><JobList key={`${status}/${worker?.id ?? ''}`} status={status as JobSummary['status'] | 'open' | ''} worker={worker} /></>;
 }
-function JobList({ status, assigned }: { status: JobSummary['status'] | ''; assigned: boolean }) {
+function JobList({ status, worker }: { status: JobSummary['status'] | 'open' | ''; worker: Worker | null }) {
   const { session, key, home } = useWorkspace();
   const paging = usePaging();
-  const query = useQuery({ queryKey: [...key, 'jobs', status, assigned, paging.cursor], queryFn: ({ signal }) => session.api.jobs({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}), ...(status ? { status } : {}), ...(assigned && session.worker ? { worker_id: session.worker.id } : {}) }, signalFor(session, signal)), staleTime: Infinity });
+  const query = useQuery({ queryKey: [...key, 'jobs', status, worker?.id ?? '', paging.cursor], queryFn: ({ signal }) => session.api.jobs({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}), ...(status ? { status } : {}), ...(worker ? { worker_id: worker.id } : {}) }, signalFor(session, signal)), staleTime: Infinity });
   return <section className="panel"><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul className="job-list">{query.data?.items.map(job => <li key={job.id}><div><span className={`badge status-${job.status}`}>{job.status}</span><Link className="job-title" to={`${home}/jobs/${encodeURIComponent(job.id)}`}>{job.title}</Link><p className="item-meta">{job.worker_id || 'Unassigned'}<span>Revision {job.revision}</span></p></div><Link className="detail-link" aria-label={`Read job ${job.title}`} to={`${home}/jobs/${encodeURIComponent(job.id)}`}>Read job <span aria-hidden="true">→</span></Link></li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="jobs" busy={query.isFetching} /></section>;
+}function JobWorkerFilter({ selected, select }: { selected: Worker | null; select(worker: Worker | null): void }) {
+  const { session, key } = useWorkspace();
+  const paging = usePaging();
+  const query = useQuery({ queryKey: [...key, 'workers', paging.cursor], queryFn: ({ signal }) => session.api.workers({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
+  const workers = query.data?.items ?? [];
+  return <div className="job-worker-filter"><label>Worker<select aria-label="Job worker" value={selected?.id ?? ''} onChange={event => { if (!event.target.value) select(null); else { const worker = workers.find(item => item.id === event.target.value); if (worker) select(worker); } }}><option value="">All workers</option>{selected && !workers.some(worker => worker.id === selected.id) && <option value={selected.id}>{selected.name}</option>}{workers.map(worker => <option key={worker.id} value={worker.id}>{worker.name}</option>)}</select></label>{selected && <button className="worker-filter-clear" type="button" aria-label="Show jobs for all workers" onClick={() => select(null)}>×</button>}{(paging.number > 1 || query.data?.has_more) && <div className="worker-option-pages"><span>Workers page {paging.number}</span><button type="button" disabled={paging.number === 1 || query.isFetching} onClick={paging.previous}>Previous workers</button><button type="button" disabled={!query.data?.has_more || !query.data.cursor || query.isFetching} onClick={() => { if (query.data?.cursor) paging.next(query.data.cursor); }}>More workers</button></div>}{query.error && <span className="error-copy" role="alert">Worker choices could not be loaded.</span>}</div>;
 }
+
 function JobDetail() {
   const { jobId = '' } = useParams();
   const { session, key, home } = useWorkspace();
   const query = useQuery({ queryKey: [...key, 'job', jobId], queryFn: ({ signal }) => session.api.job(jobId, signalFor(session, signal)), staleTime: Infinity });
   const job = query.data;
-  return <><Link className="back-link" to={home}>← All jobs</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{job && <><div className="page-heading"><span className={`badge status-${job.status}`}>{job.status}</span><h2>{job.title}</h2><p>{job.worker_id ? <Link to={`${home}/workers/${encodeURIComponent(job.worker_id)}`}>{job.worker_id}</Link> : 'Unassigned'} · Revision {job.revision}</p><Link to={notesPath(home, {job_id:job.id})}>Notes for this job</Link></div><section className="panel brief"><h3>Job brief</h3><p className="full-text">{job.brief || 'No brief supplied.'}</p><dl className="metadata"><div><dt>Job ID</dt><dd>{job.id}</dd></div><div><dt>Created</dt><dd>{time(job.created_at)}</dd></div><div><dt>Updated</dt><dd>{time(job.updated_at)}</dd></div></dl></section><JobWorkstreamPanel key={`workstream-${jobId}`} jobId={jobId} /><JobChecklistPanel key={`checklist-${jobId}`} jobId={jobId} jobRevision={job.revision} /><JobCheckpointPanel key={jobId} jobId={jobId} jobRevision={job.revision} /><JobUpdatesPanel key={`updates-${jobId}`} jobId={jobId} jobRevision={job.revision} /></>}</ReadState></>;
+  return <><Link className="back-link" to={home}>← All jobs</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{job && <><div className="page-heading"><span className={`badge status-${job.status}`}>{job.status}</span><h2>{job.title}</h2><p>{job.worker_id ? <Link to={`${home}/workers/${encodeURIComponent(job.worker_id)}`}>{job.worker_id}</Link> : 'Unassigned'} · Revision {job.revision}</p></div><ContextualNotes key={`notes-${jobId}`} jobId={jobId} /><section className="panel brief"><h3>Job brief</h3><p className="full-text">{job.brief || 'No brief supplied.'}</p><dl className="metadata"><div><dt>Job ID</dt><dd>{job.id}</dd></div><div><dt>Created</dt><dd>{time(job.created_at)}</dd></div><div><dt>Updated</dt><dd>{time(job.updated_at)}</dd></div></dl></section><JobWorkstreamPanel key={`workstream-${jobId}`} jobId={jobId} /><JobChecklistPanel key={`checklist-${jobId}`} jobId={jobId} jobRevision={job.revision} /><JobCheckpointPanel key={jobId} jobId={jobId} jobRevision={job.revision} /><JobUpdatesPanel key={`updates-${jobId}`} jobId={jobId} jobRevision={job.revision} /></>}</ReadState></>;
 }
 function ChecklistItems({ items }: { items: ChecklistItem[] }) {
   return items.length ? <ol>{items.map(item => <li key={item.id}><span className="badge neutral">{item.done ? 'Completed' : 'To do'}</span><p className="full-text">{item.text}</p></li>)}</ol> : <p className="empty">No checklist items.</p>;
@@ -473,7 +483,7 @@ function Inbox() {
   const presentation = usePresentation();
   const label = useProjectHeading('inbox');
   const { session } = useWorkspace();
-  return <><div className="page-heading"><p className="eyebrow">Conversations</p><h2>{session.worker ? presentation?.headings.inbox ? `${session.worker.name} · ${label}` : `${session.worker.name} inbox` : label}</h2><p>Read incoming messages without changing their seen or acknowledged state.</p></div>{session.worker ? <><MessageComposer /><InboxPage /></> : <ChooseWorker />}</>;
+  return <><div className="page-heading"><p className="eyebrow">Conversations</p><h2>{session.worker ? presentation?.headings.inbox ? `${session.worker.name} · ${label}` : `${session.worker.name} inbox` : label}</h2><p>Read incoming messages without changing their seen or acknowledged state.</p></div>{session.worker ? <><ContextualNotes key={`notes-${session.worker.id}`} workerId={session.worker.id} /><MessageComposer /><InboxPage /></> : <ChooseWorker />}</>;
 }
 function InboxPage() {
   const { session, key, home, ready } = useWorkspace();
@@ -515,23 +525,62 @@ function ReviewProvenance({ value }: { value: ReviewSnapshot }) {
   const age = Math.max(0, Math.floor((Date.now() - Date.parse(value.observed_at)) / 3600000));
   return <section className="review-provenance" aria-label="Review observation"><dl><div><dt>Source</dt><dd>{value.source}</dd></div><div><dt>Observed</dt><dd><time dateTime={value.observed_at}>{time(value.observed_at)}</time><small>{age < 1 ? 'Less than an hour ago' : `${age} hours ago`} · reread does not refresh the source</small></dd></div><div><dt>Recorded</dt><dd><time dateTime={value.recorded_at}>{time(value.recorded_at)}</time></dd></div></dl><details><summary>Snapshot · revision {value.revision}</summary><code>{value.snapshot_id}</code></details></section>;
 }
+type HighlightState = { fingerprint: string; version: number };
+export function nextSemanticHighlight(previous: HighlightState | undefined, fingerprint: string): HighlightState {
+  if (!previous) return { fingerprint, version: 0 };
+  return previous.fingerprint === fingerprint ? previous : { fingerprint, version: previous.version + 1 };
+}
+function useSemanticHighlight(fingerprint: string, history?: Map<string, string>, identity = ''): string {
+  const [state, setState] = useState<HighlightState>(() => ({ fingerprint: history?.get(identity) ?? fingerprint, version: 0 }));
+  if (state.fingerprint !== fingerprint) setState(nextSemanticHighlight(state, fingerprint));
+  useLayoutEffect(() => {
+    if (!history) return;
+    history.set(identity, fingerprint);
+    if (history.size > 512) history.delete(history.keys().next().value!);
+  }, [history, identity, fingerprint]);
+  return state.version ? `semantic-change semantic-change-${state.version % 2}` : '';
+}
+export function runDisplayFingerprint(run: ReviewRunSummary, head: string): string {
+  return JSON.stringify([run.channel, run.outcome, run.found, run.accepted, run.routed, run.fixed,
+    run.complete, run.finalized, run.attributable, run.finished_at || run.started_at,
+    !head || !run.head_sha ? 'unknown' : head === run.head_sha ? 'same' : 'different']);
+}
+export function pullDisplayFingerprint(pull: ReviewPullSummary): string {
+  return JSON.stringify([pull.number, pull.title, pull.state, pull.ci_state, pull.mergeability,
+    pull.complete, pull.head_sha, pull.run_count, pull.attempt_count,
+    pull.latest_attempts.map(attempt => [attempt.channel, attempt.state, attempt.finished_at || attempt.started_at]),
+    pull.recent_runs.map(run => runDisplayFingerprint(run, pull.head_sha))]);
+}
+export function findingDisplayFingerprint(finding: ReviewFinding): string {
+  const route = finding.route;
+  return JSON.stringify([finding.title, finding.detail, finding.severity, finding.disposition,
+    finding.decision_reason, finding.actor, finding.decided_at,
+    route ? [route.target_pull_number, route.disposition, route.state, route.reason, route.actor, route.decided_at] : null,
+    route?.fix_sha ?? finding.fix_sha, route?.proof_note ?? finding.proof_note, route?.fixed_at ?? finding.resolved_at]);
+}
 function RunPill({ run, snapshot, head }: { run: ReviewRunSummary; snapshot: string; head: string }) {
   const { home } = useWorkspace();
   const mismatch = !!head && !!run.head_sha && head !== run.head_sha;
-  return <Link className={`review-round review-outcome-${run.outcome}`} to={reviewLink(home, 'runs', run.id, snapshot)} aria-label={`Open ${run.channel} run ${run.source_run_id}`}><span className="review-channel">{run.channel}</span><strong>{run.found}<small>found</small></strong><span>{run.outcome.replaceAll('_', ' ')}</span><small>{run.accepted} accepted · {run.routed} routed · {run.fixed} fixed</small>{!run.complete && <span className="review-warning">Incomplete record</span>}{!run.finalized && <span className="review-warning">Counts not finalized</span>}{!run.attributable && <span className="review-warning">Attribution unconfirmed</span>}{mismatch && <span className="review-warning">Different observed head</span>}</Link>;
+  const highlight = useSemanticHighlight(runDisplayFingerprint(run, head));
+  return <Link className={`review-round review-outcome-${run.outcome} ${highlight}`} to={reviewLink(home, 'runs', run.id, snapshot)} aria-label={`Open ${run.channel} run ${run.source_run_id}`}><span className="review-channel">{run.channel}</span><strong>{run.found}<small>found</small></strong><span>{run.outcome.replaceAll('_', ' ')}</span><small>{run.accepted} accepted · {run.routed} routed · {run.fixed} fixed</small>{!run.complete && <span className="review-warning">Incomplete record</span>}{!run.finalized && <span className="review-warning">Counts not finalized</span>}{!run.attributable && <span className="review-warning">Attribution unconfirmed</span>}{mismatch && <span className="review-warning">Different observed head</span>}</Link>;
 }
 function PullFacts({ pull }: { pull: ReviewPullSummary }) {
   return <div className="review-pull-facts"><span className={`badge ${pull.state === 'merged' ? 'neutral' : 'status-active'}`}>{pull.state}{pull.state === 'merged' ? ' · retained history' : ''}</span><span>Observed CI: {pull.ci_state}</span><span>Observed mergeability: {pull.mergeability}</span><span>{pull.run_count} runs · {pull.attempt_count} attempts</span>{!pull.complete && <span className="review-warning">Incomplete PR observation</span>}</div>;
 }
+function ReviewQueueRow({ pull, snapshot }: { pull: ReviewPullSummary; snapshot: string }) {
+  const { home } = useWorkspace();
+  const highlight = useSemanticHighlight(pullDisplayFingerprint(pull));
+  return <li className={highlight}><div className="review-pull-heading"><span className="review-number">#{pull.number}</span><h3><Link to={reviewLink(home, 'pulls', pull.number, snapshot)}>{pull.title}</Link></h3></div><PullFacts pull={pull} /><p className="review-head">Observed head: <code>{pull.head_sha || 'Unknown'}</code></p><ReviewRunsView number={pull.number} snapshot={snapshot} head={pull.head_sha} attempts={pull.latest_attempts} expected={pull.run_count} /><Link className="detail-link" to={reviewLink(home, 'pulls', pull.number, snapshot)}>Read PR #{pull.number} history →</Link></li>;
+}
 function ReviewQueueView() {
   const label = useProjectHeading('reviews');
-  const { session, key, home } = useWorkspace();
+  const { session, key } = useWorkspace();
   const paging = usePaging();
   const [continuationSnapshot, setContinuationSnapshot] = useState('current');
   const query = useQuery({ queryKey: [...key, 'reviews', paging.number === 1 ? 'current' : continuationSnapshot, 'queue', paging.cursor], queryFn: ({ signal }) => session.api.reviewQueue({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
   const page = query.data;
   const navigation = { ...paging, next: (cursor: string) => { if (page) setContinuationSnapshot(page.snapshot_id); paging.next(cursor); } };
-  return <><div className="page-heading"><p className="eyebrow">Review workspace</p><h2>{label}</h2><p>Stored queue, review rounds and finding evidence.</p></div><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{page && (page.configured ? <><ReviewProvenance value={page} /><section className="panel"><ul className="review-queue">{page.items.map(pull => <li key={pull.number}><div className="review-pull-heading"><span className="review-number">#{pull.number}</span><h3><Link to={reviewLink(home, 'pulls', pull.number, page.snapshot_id)}>{pull.title}</Link></h3></div><PullFacts pull={pull} /><p className="review-head">Observed head: <code>{pull.head_sha || 'Unknown'}</code></p><ReviewRunsView number={pull.number} snapshot={page.snapshot_id} head={pull.head_sha} attempts={pull.latest_attempts} expected={pull.run_count} /><Link className="detail-link" to={reviewLink(home, 'pulls', pull.number, page.snapshot_id)}>Read PR #{pull.number} history →</Link></li>)}</ul>{page.items.length === 0 && <p className="empty">No pull requests in this stored queue.</p>}<Pager paging={navigation} page={page} label="review queue" busy={query.isFetching} /></section></> : <section className="panel empty"><h3>Review workspace unconfigured</h3><p>No review observation has been recorded for this project.</p></section>)}</ReadState></>;
+  return <><div className="page-heading"><p className="eyebrow">Review workspace</p><h2>{label}</h2><p>Stored queue, review rounds and finding evidence.</p></div><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{page && (page.configured ? <><ReviewProvenance value={page} /><section className="panel"><ul className="review-queue">{page.items.map(pull => <ReviewQueueRow key={pull.number} pull={pull} snapshot={page.snapshot_id} />)}</ul>{page.items.length === 0 && <p className="empty">No pull requests in this stored queue.</p>}<Pager paging={navigation} page={page} label="review queue" busy={query.isFetching} /></section></> : <section className="panel empty"><h3>Review workspace unconfigured</h3><p>No review observation has been recorded for this project.</p></section>)}</ReadState></>;
 }
 function useReviewArchive<T extends ReviewRunSummary | ReviewAttemptItem>(feed: 'runs' | 'attempts', number: number, snapshot: string, expected: number) {
   const { session, key } = useWorkspace();
@@ -542,16 +591,16 @@ function useReviewArchive<T extends ReviewRunSummary | ReviewAttemptItem>(feed: 
   const archive = useMemo(() => new ReviewArchive<T>((cursor, signal) => read(cursor, signal), item => 'id' in item ? item.id : JSON.stringify([item.source, item.source_attempt_id])), [read]);
   const query = useQuery({ queryKey: [...key, 'reviews', snapshot, 'pull', number, feed, 'archive-first', pageSize], queryFn: ({ signal }) => read(undefined, signal), enabled: expected > 0, staleTime: Infinity });
   const state = useSyncExternalStore(archive.subscribe, archive.snapshot, archive.snapshot);
-  useLayoutEffect(() => { archive.reset(query.isFetching ? undefined : query.data, expected > 0 && (query.isFetching || query.isPending), query.error); }, [archive, expected, query.isFetching, query.isPending, query.data, query.dataUpdatedAt, query.error]);
+  useLayoutEffect(() => { archive.reset(expected > 0 ? query.data : undefined, expected > 0 && query.isPending, query.error); }, [archive, expected, query.data, query.dataUpdatedAt, query.error]);
   useLayoutEffect(() => { const cancel = () => archive.cancel(); session.controller.signal.addEventListener('abort', cancel, { once: true }); return () => { session.controller.signal.removeEventListener('abort', cancel); cancel(); }; }, [archive, session.controller]);
-  return { ...state, error: query.error ?? state.error, loading: expected > 0 && (query.isPending || query.isFetching && state.items.length === 0), more: () => { void archive.more(); } };
+  return { ...state, busy: state.busy || query.isFetching, error: query.error ?? state.error, loading: expected > 0 && query.isPending && state.items.length === 0, more: () => { if (!query.isFetching) void archive.more(); } };
 }
 function ArchiveProgress({ shown, expected, snapshot, label, hasMore, busy, more }: { shown: number; expected: number; snapshot: string; label: string; hasMore: boolean; busy: boolean; more(): void }) {
   return <div className="pager"><span>{shown} of {expected} {label} shown<small>Snapshot <code>{snapshot.slice(0, 15)}<wbr />{snapshot.slice(15, 31)}<wbr />{snapshot.slice(31)}</code> · {busy ? 'Loading bounded page…' : hasMore ? 'More available' : shown === expected ? 'End of retained archive' : 'Archive count differs; refresh to verify'}</small></span>{hasMore && <button type="button" onClick={more} disabled={busy}>Load more {label}</button>}</div>;
 }
 function ReviewAttempts({ number, snapshot, expected }: { number: number; snapshot: string; expected: number }) {
   const archive = useReviewArchive<ReviewAttemptItem>('attempts', number, snapshot, expected);
-  return <section className="panel review-attempts" aria-label={`PR #${number} attempts`}><details><summary>Attempts ({expected})</summary>{!!archive.error && <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>}{archive.loading ? <p role="status">Loading retained attempts…</p> : archive.items.length === 0 ? <p className="review-empty">{expected === 0 ? 'No attempts recorded.' : 'No attempts loaded.'}</p> : <ul>{archive.items.map(attempt => <li key={JSON.stringify([attempt.source, attempt.source_attempt_id])}><div><span className="review-channel">{attempt.channel}</span><strong>{attempt.state.replaceAll('_', ' ')}</strong></div><div><small>Original source</small><span>{attempt.source}</span></div><div><small>Started</small>{attempt.started_at ? time(attempt.started_at) : 'Unknown'}</div><div><small>Duration</small>{attempt.duration_seconds === null ? 'Unknown' : `${attempt.duration_seconds}s`}</div><div><small>Head</small><code>{attempt.head_sha || 'Unknown'}</code></div><div><small>Source attempt / run</small><span>{attempt.source_attempt_id}</span><span>{attempt.source_run_id || 'No run attached'}</span></div></li>)}</ul>}<ArchiveProgress shown={archive.items.length} expected={expected} snapshot={snapshot} label="attempts" hasMore={archive.hasMore} busy={archive.busy} more={archive.more} /></details></section>;
+  return <section className="panel review-attempts" aria-label={`PR #${number} attempts`}><details><summary>Attempts ({expected})</summary>{!!archive.error && <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>}{archive.loading ? <PageSkeleton rows={2} label="Loading retained attempts" /> : archive.items.length === 0 ? <p className="review-empty">{expected === 0 ? 'No attempts recorded.' : 'No attempts loaded.'}</p> : <ul>{archive.items.map(attempt => <li key={JSON.stringify([attempt.source, attempt.source_attempt_id])}><div><span className="review-channel">{attempt.channel}</span><strong>{attempt.state.replaceAll('_', ' ')}</strong></div><div><small>Original source</small><span>{attempt.source}</span></div><div><small>Started</small>{attempt.started_at ? time(attempt.started_at) : 'Unknown'}</div><div><small>Duration</small>{attempt.duration_seconds === null ? 'Unknown' : `${attempt.duration_seconds}s`}</div><div><small>Head</small><code>{attempt.head_sha || 'Unknown'}</code></div><div><small>Source attempt / run</small><span>{attempt.source_attempt_id}</span><span>{attempt.source_run_id || 'No run attached'}</span></div></li>)}</ul>}<ArchiveProgress shown={archive.items.length} expected={expected} snapshot={snapshot} label="attempts" hasMore={archive.hasMore} busy={archive.busy} more={archive.more} /></details></section>;
 }
 function ReviewPullView() {
   const { number: rawNumber = '' } = useParams();
@@ -560,7 +609,7 @@ function ReviewPullView() {
   const { session, key, home } = useWorkspace();
   const query = useQuery({ queryKey: [...key, 'reviews', snapshot ?? 'current', 'pull', number], queryFn: ({ signal }) => session.api.reviewPull(number, snapshot, signalFor(session, signal)), staleTime: Infinity });
   const value = query.data;
-  return <><Link className="back-link" to={`${home}/reviews`}>← Review queue</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">Pull request #{value.pull.number}</p><h2>{value.pull.title}</h2>{githubLink(session.project, `pull/${value.pull.number}`) && <a href={githubLink(session.project, `pull/${value.pull.number}`)} target="_blank" rel="noopener noreferrer">Open PR #{value.pull.number} on GitHub ↗</a>}</div><ReviewProvenance value={value} /><section className="panel review-pull-summary"><PullFacts pull={value.pull} /><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div></dl></section><ReviewRunsView key={`${value.snapshot_id}:${number}`} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} attempts={value.pull.latest_attempts} expected={value.pull.run_count} detail /><ReviewAttempts key={`attempts:${value.snapshot_id}:${number}`} number={number} snapshot={value.snapshot_id} expected={value.pull.attempt_count} /></>}</ReadState></>;
+  return <><Link className="back-link" to={`${home}/reviews`}>← Review queue</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">Pull request #{value.pull.number}</p><h2>{value.pull.title}</h2>{githubLink(session.project, `pull/${value.pull.number}`) && <a href={githubLink(session.project, `pull/${value.pull.number}`)} target="_blank" rel="noopener noreferrer">Open PR #{value.pull.number} on GitHub ↗</a>}</div><ReviewProvenance value={value} /><section className="panel review-pull-summary"><PullFacts pull={value.pull} /><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div></dl></section><ReviewRunsView key={number} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} attempts={value.pull.latest_attempts} expected={value.pull.run_count} detail /><ReviewAttempts key={`attempts:${number}`} number={number} snapshot={value.snapshot_id} expected={value.pull.attempt_count} /></>}</ReadState></>;
 }
 function roundAge(value: string): string {
   if (!value) return 'Date unknown';
@@ -571,29 +620,32 @@ function roundAge(value: string): string {
   if (minutes < 1440) return `${Math.floor(minutes / 60)}h ${minutes % 60}m ago`;
   return `${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h ago`;
 }
-function CompactRunPill({ run, snapshot, head }: { run: ReviewRunSummary; snapshot: string; head: string }) {
+function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSummary; snapshot: string; head: string; highlights: Map<string, string> }) {
   const { home } = useWorkspace();
   const date = run.finished_at || run.started_at;
+  const highlight = useSemanticHighlight(runDisplayFingerprint(run, head), highlights, JSON.stringify([run.source, run.source_run_id]));
   const warnings = [
     !run.complete && 'Incomplete record', !run.finalized && 'Counts not finalized',
     !run.attributable && 'Attribution unconfirmed',
     (!head || !run.head_sha) ? 'Head association unknown' : head !== run.head_sha && 'Different observed head',
   ].filter(Boolean).join('. ');
   const description = `${run.found}/${run.accepted}/${run.routed} (found / accepted / routed). ${run.outcome.replaceAll('_', ' ')}. ${date ? `${run.finished_at ? 'Finished' : 'Started'} ${time(date)} (${date})` : 'Date unknown'}.${warnings ? ` ${warnings}.` : ''}`;
-  return <Link className={`review-round-pill review-pill-${run.outcome}${run.outcome === 'completed' && run.accepted === 0 ? ' review-pill-zero' : ''}`} to={reviewLink(home, 'runs', run.id, snapshot)} title={description} aria-label={`Open ${run.channel} run ${run.source_run_id}: ${description}`}><strong>{run.found}/{run.accepted}/{run.routed}</strong>{run.outcome !== 'completed' && <span className="review-pill-state">{run.outcome.replaceAll('_', ' ')}</span>}{date ? <time dateTime={date}>{roundAge(date)}</time> : <span className="review-pill-age">Date unknown</span>}</Link>;
+  return <Link className={`review-round-pill review-pill-${run.outcome}${run.outcome === 'completed' && run.accepted === 0 ? ' review-pill-zero' : ''} ${highlight}`} to={reviewLink(home, 'runs', run.id, snapshot)} title={description} aria-label={`Open ${run.channel} run ${run.source_run_id}: ${description}`}><strong>{run.found}/{run.accepted}/{run.routed}</strong>{run.outcome !== 'completed' && <span className="review-pill-state">{run.outcome.replaceAll('_', ' ')}</span>}{date ? <time dateTime={date}>{roundAge(date)}</time> : <span className="review-pill-age">Date unknown</span>}</Link>;
 }
-function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, partial }: { channel: string; title: string; runs: ReviewRunSummary[]; attempts: ReviewAttemptSummary[]; snapshot: string; head: string; loading: boolean; failed: boolean; partial: boolean }) {
+function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, partial, highlights }: { channel: string; title: string; runs: ReviewRunSummary[]; attempts: ReviewAttemptSummary[]; snapshot: string; head: string; loading: boolean; failed: boolean; partial: boolean; highlights: Map<string, string> }) {
   const laneRuns = runs.filter(run => run.channel === channel);
   const attempt = [...attempts].reverse().find(item => item.channel === channel);
   const date = attempt?.finished_at || attempt?.started_at;
-  return <section className="review-lane" aria-label={title}><div className="review-lane-heading"><h4>{title}</h4><span title="Historical completed outcomes; no coverage or policy credit">{loading ? 'Loading…' : failed ? 'History unavailable' : `${laneRuns.filter(run => run.outcome === 'completed').length} completed${partial ? ' shown' : ''}`}</span></div>{attempt && <p className="review-lane-attempt">Latest attempt: <strong>{attempt.state.replaceAll('_', ' ')}</strong>{date && <> · <time dateTime={date} title={`${time(date)} (${date})`}>{roundAge(date)}</time></>}</p>}{loading ? <p className="review-lane-empty" role="status">Loading retained rounds…</p> : failed ? <p className="review-lane-empty">Round history could not be loaded.</p> : laneRuns.length ? <div className="review-round-pills">{laneRuns.map(run => <CompactRunPill key={run.id} run={run} snapshot={snapshot} head={head} />)}</div> : <p className="review-lane-empty">{partial ? 'No rounds in loaded pages. Coverage is unknown.' : 'No rounds recorded. Coverage is unknown.'}</p>}</section>;
+  return <section className="review-lane" aria-label={title}><div className="review-lane-heading"><h4>{title}</h4><span title="Historical completed outcomes; no coverage or policy credit">{loading ? '' : failed ? 'History unavailable' : `${laneRuns.filter(run => run.outcome === 'completed').length} completed${partial ? ' shown' : ''}`}</span></div>{attempt && <p className="review-lane-attempt">Latest attempt: <strong>{attempt.state.replaceAll('_', ' ')}</strong>{date && <> · <time dateTime={date} title={`${time(date)} (${date})`}>{roundAge(date)}</time></>}</p>}{loading ? <PageSkeleton rows={1} label="Loading retained rounds" /> : failed ? <p className="review-lane-empty">Round history could not be loaded.</p> : laneRuns.length ? <div className="review-round-pills">{laneRuns.map(run => <CompactRunPill key={JSON.stringify([run.source, run.source_run_id])} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}</div> : <p className="review-lane-empty">{partial ? 'No rounds in loaded pages. Coverage is unknown.' : 'No rounds recorded. Coverage is unknown.'}</p>}</section>;
 }
 function ReviewRunsView({ number, snapshot, head, attempts, expected, detail = false }: { number: number; snapshot: string; head: string; attempts: ReviewAttemptSummary[]; expected: number; detail?: boolean }) {
   const archive = useReviewArchive<ReviewRunSummary>('runs', number, snapshot, expected);
+  // Only semantic fingerprints survive snapshot transitions, never old rows.
+  const highlights = useRef(new Map<string, string>()).current;
   // The selected newest pages retain producer order; reverse only the shown
   // slice for the established oldest-to-newest channel layout.
   const runs = [...archive.items].reverse();
-  const lane = (channel: string, title: string) => <ReviewLane key={channel} channel={channel} title={title} runs={runs} attempts={attempts} snapshot={snapshot} head={head} loading={archive.loading} failed={!!archive.error} partial={archive.hasMore || runs.length !== expected} />;
+  const lane = (channel: string, title: string) => <ReviewLane key={channel} channel={channel} title={title} runs={runs} attempts={attempts} snapshot={snapshot} head={head} loading={archive.loading} failed={!!archive.error} partial={archive.hasMore || runs.length !== expected} highlights={highlights} />;
   const otherChannels = [['manual', 'Manual reviews'], ['subagent', 'Subagent reviews']].filter(([channel]) => runs.some(run => run.channel === channel) || attempts.some(attempt => attempt.channel === channel));
   return <section className={detail ? 'panel review-history' : 'review-history'} aria-label={`PR #${number} review rounds`}>{detail && <div className="section-heading"><h3>Review rounds</h3><span className="small-label">Shown rounds · oldest to newest per channel</span></div>}{!!archive.error && <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>}<div className="review-lanes">{lane('hosted', 'Hosted CodeRabbit')}{lane('cli', 'CLI CodeRabbit')}</div>{otherChannels.length > 0 && <section className="review-other-history"><h4>Other retained reviews</h4><div className="review-lanes">{otherChannels.map(([channel, title]) => lane(channel, title))}</div></section>}<ArchiveProgress shown={runs.length} expected={expected} snapshot={snapshot} label="review rounds" hasMore={archive.hasMore} busy={archive.busy} more={archive.more} /></section>;
 }
@@ -604,8 +656,9 @@ function FindingView({ finding }: { finding: ReviewFinding }) {
   const commit = route?.fix_sha ?? finding.fix_sha;
   const proof = route?.proof_note ?? finding.proof_note;
   const resolved = route?.fixed_at ?? finding.resolved_at;
-  return <li className="review-finding">
-    <div className="review-finding-heading"><span className={`badge review-severity-${finding.severity}`}>{finding.severity}</span><span className="badge neutral">{finding.disposition}</span></div>
+  const highlight = useSemanticHighlight(findingDisplayFingerprint(finding));
+  return <li className={`review-finding ${highlight}`}>
+    <div className="review-finding-heading"><span className={`badge review-severity-${finding.severity}`}>{finding.severity}</span><span className={`badge neutral ${highlight}`}>{finding.disposition}</span></div>
     <h3>{finding.title}</h3><p className="full-text">{finding.detail || 'No additional detail recorded.'}</p>
     <div className="review-decision"><h4>Decision</h4><p className="full-text">{finding.decision_reason || 'No decision reason recorded.'}</p><p className="item-meta">{finding.actor || 'Actor unknown'} · {finding.decided_at ? time(finding.decided_at) : 'Decision time unknown'}</p></div>
     {route && <div className="review-decision"><h4>Receiving PR</h4><p>{githubLink(session.project, `pull/${route.target_pull_number}`) ? <a href={githubLink(session.project, `pull/${route.target_pull_number}`)} target="_blank" rel="noopener noreferrer">PR #{route.target_pull_number}</a> : `PR #${route.target_pull_number}`} · {route.disposition} · {route.state}</p><p className="full-text">{route.reason || 'Awaiting receiving decision.'}</p><p className="item-meta">{route.actor || 'No receiving actor recorded'}{route.decided_at ? ` · ${time(route.decided_at)}` : ''}</p>{route.state === 'active' && (route.disposition === 'unadjudicated' || route.disposition === 'accepted' && !route.fix_sha) && <p className="notice">Receiving obligation remains pending.</p>}</div>}

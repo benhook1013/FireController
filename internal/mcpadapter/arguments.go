@@ -174,7 +174,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if _, ok := fields["worker_id"]; ok && !validID(args.worker) {
 		return args, invalidArguments()
 	}
-	if _, ok := fields["status"]; ok && !validStatus(args.status) {
+	if _, ok := fields["status"]; ok && !client.ValidJobStatusFilter(args.status) {
 		return args, invalidArguments()
 	}
 	if name == "job_read" || name == "job_history" || name == "job_checkpoint_latest" || name == "job_checkpoint_history" || name == "inbox_thread" {
@@ -338,6 +338,7 @@ func toolDefinitions() []definition {
 	cursor := map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Continuation cursor from this scoped read."}
 	id := map[string]any{"type": "string", "minLength": 1, "maxLength": 128}
 	status := map[string]any{"type": "string", "enum": []string{"active", "parked", "blocked", "completed"}}
+	statusFilter := map[string]any{"type": "string", "enum": []string{"active", "parked", "blocked", "completed", "open"}, "description": "Stored status or the list-only open filter, which selects active, blocked and parked jobs in that priority order."}
 	key := map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "Explicit printable ASCII idempotency key; retain the same key and request after an unknown outcome. Never generated or automatically retried."}
 	title := map[string]any{"type": "string", "minLength": 1, "maxLength": 240, "description": "Nonblank UTF-8 title, at most 240 bytes after trimming surrounding whitespace."}
 	brief := map[string]any{"type": "string", "maxLength": 32 << 10, "description": "Explicit UTF-8 brief, at most 32 KiB; empty clears it on edit."}
@@ -367,8 +368,8 @@ func toolDefinitions() []definition {
 		{"context", "Inspect the immutable local profile configuration; no service verification or credential read.", schema(map[string]any{})},
 		{"doctor", "Verify the configured service instance, project and worker without provider work.", schema(map[string]any{})},
 		{"workers_list", "Read one compact worker page in the bound project.", schema(map[string]any{"limit": limit, "cursor": cursor})},
-		{"jobs_list", "Read one compact job page with explicit optional worker/status filters.", schema(map[string]any{"limit": limit, "cursor": cursor, "worker_id": id, "status": status})},
-		{"jobs_assigned", "Read one compact job page assigned to the bound worker; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": status})},
+		{"jobs_list", "Read one compact job page with explicit optional worker/status filters.", schema(map[string]any{"limit": limit, "cursor": cursor, "worker_id": id, "status": statusFilter})},
+		{"jobs_assigned", "Read one compact job page assigned to the bound worker; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": statusFilter})},
 		{"job_read", "Read explicit full detail and brief for one job.", schema(map[string]any{"job_id": id}, "job_id")},
 		{"job_history", "Read one explicit bounded full-state history page for a job.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
 		{"job_checkpoint_append", "Append an immutable checkpoint with an explicit key and current expected job revision; return a compact receipt without changing the job or automatically retrying.", schema(map[string]any{"job_id": id, "idempotency_key": key, "expected_job_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64)}, "done": checkpointText(8<<10, true), "next": checkpointText(8<<10, true), "blocker": checkpointText(4<<10, false), "evidence": map[string]any{"type": "array", "maxItems": 10, "items": checkpointText(1024, true)}}, "job_id", "idempotency_key", "expected_job_revision", "done", "next")},

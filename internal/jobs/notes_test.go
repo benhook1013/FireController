@@ -2,6 +2,8 @@ package jobs_test
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -126,6 +128,158 @@ func noteCreate(t *testing.T, a *testAPI, base, token, actor, key, worker, job, 
 		t.Fatal(v)
 	}
 	return v
+}
+
+func TestNotesRequireWorkerOrJobAndRetainLegacyPhaseOnly(t *testing.T) {
+	a := setupAPI(t)
+	project := a.createProject("note-target", "owner/note-target")
+	token := a.grant(project, "note-target-token", "read", "write")
+	actor := a.createWorker(project, "actor")
+	base := "/api/v1/projects/" + project + "/notes"
+
+	before := noteCounts(t, a)
+	noteError(t, noteCall(a, "POST", base, token, actor, "phase-only-new", map[string]any{"worker_id": "", "job_id": "", "phase": "Later", "kind": "reminder", "body": "Not a target"}), 400, "validation_failed")
+	if !strings.Contains(noteCall(a, "POST", base, token, actor, "phase-only-msg", map[string]any{"worker_id": "", "job_id": "", "phase": "Later", "kind": "reminder", "body": "Not a target"}).Body.String(), "worker or job") {
+		t.Fatal("target error did not explain phase semantics")
+	}
+	if noteCounts(t, a) != before {
+		t.Fatal("phase-only create wrote effects")
+	}
+	workerNote := noteCreate(t, a, base, token, actor, "worker-target", actor, "", "Later", "Worker note")
+	jobResponse := a.call("POST", "/api/v1/projects/"+project+"/jobs", token, "target-job", map[string]any{"title": "Target job", "brief": "A valid target", "worker_id": actor})
+	noteOK(t, jobResponse, 201)
+	var job receipt
+	decodeResponse(t, jobResponse, &job)
+	jobNote := noteCreate(t, a, base, token, actor, "job-target", "", job.ID, "", "Job note")
+	if workerNote.ID == "" || jobNote.ID == "" {
+		t.Fatal("worker/job target creation failed")
+	}
+	bothNote := noteCreate(t, a, base, token, actor, "both-targets", actor, job.ID, "Later", "Two targets")
+	partial := noteCall(a, "PATCH", base+"/"+bothNote.ID, token, actor, "clear-one-target", map[string]any{"expected_revision": 1, "worker_id": ""})
+	noteOK(t, partial, 200)
+	if got := noteRead(t, a, base+"/"+bothNote.ID, token); got.WorkerID != "" || got.JobID != job.ID || got.Revision != 2 {
+		t.Fatal("partial selector clear ignored retained server scope", got)
+	}
+	before = noteCounts(t, a)
+	noteError(t, noteCall(a, "PATCH", base+"/"+bothNote.ID, token, actor, "clear-second-target", map[string]any{"expected_revision": 2, "job_id": ""}), 400, "validation_failed")
+	if noteCounts(t, a) != before || noteRead(t, a, base+"/"+bothNote.ID, token).Revision != 2 {
+		t.Fatal("clearing last remaining job target changed state")
+	}
+	before = noteCounts(t, a)
+	noteError(t, noteCall(a, "PATCH", base+"/"+workerNote.ID, token, actor, "clear-final-target", map[string]any{"expected_revision": 1, "worker_id": "", "phase": "Still a label"}), 400, "validation_failed")
+	if noteCounts(t, a) != before || noteRead(t, a, base+"/"+workerNote.ID, token).Revision != 1 {
+		t.Fatal("clearing final target changed note/history/receipt/event state")
+	}
+
+	// Seed records that predate the target rule. Current and immutable revision
+	// validation must continue accepting these rows, and exact old receipts must
+	// replay before the new-mutation target check.
+	created := "2024-01-02T03:04:05.000000000Z"
+	seedLegacy := func(id, phase, body, status, reason string) {
+		t.Helper()
+		_, err := a.store.DB().Exec(`INSERT INTO notes(project_id,id,worker_id,job_id,phase,kind,body,status,status_reason,revision,created_at,updated_at) VALUES(?,?,NULL,NULL,?,'reminder',?,?,?,1,?,?)`, project, id, phase, body, status, reason, created, created)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = a.store.DB().Exec(`INSERT INTO note_revisions(project_id,note_id,revision,worker_id,job_id,phase,kind,body,status,status_reason,created_at,updated_at,actor_id,actor_worker_id,recorded_at) VALUES(?,?,1,NULL,NULL,?,'reminder',?,?,?, ?,?,?,?,?)`, project, id, phase, body, status, reason, created, created, actor, actor, created)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedLegacy("note-legacycreate", "Old label", "Old create body", "pending", "")
+	type createReq struct {
+		WorkerID *string `json:"worker_id"`
+		JobID    *string `json:"job_id"`
+		Phase    *string `json:"phase"`
+		Kind     *string `json:"kind"`
+		Body     *string `json:"body"`
+	}
+	workerEmpty, jobEmpty, oldPhase, kind, oldBody := "", "", "Old label", "reminder", "Old create body"
+	createRequest := createReq{&workerEmpty, &jobEmpty, &oldPhase, &kind, &oldBody}
+	req := httptest.NewRequest("POST", base, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-FC-Instance", a.store.InstanceID())
+	req.Header.Set("X-FC-Worker", actor)
+	req.SetPathValue("project_id", project)
+	scope, err := a.store.Scope(req, "write")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.store.Mutate(t.Context(), scope, core.Mutation{Operation: "notes.create", Target: "notes", Key: "old-phase-create", Request: createRequest}, func(context.Context, *sql.Tx) (any, error) {
+		return receipt{ID: "note-legacycreate", Revision: 1, Outcome: "created"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	createdReplay := noteCall(a, "POST", base, token, actor, "old-phase-create", map[string]any{"worker_id": "", "job_id": "", "phase": oldPhase, "kind": kind, "body": oldBody})
+	noteOK(t, createdReplay, 201)
+	var oldCreateReceipt receipt
+	decodeResponse(t, createdReplay, &oldCreateReceipt)
+	if oldCreateReceipt.ID != "note-legacycreate" || noteRead(t, a, base+"/note-legacycreate", token).WorkerID != "" {
+		t.Fatal("legacy phase-only create receipt/current note was not retained", oldCreateReceipt)
+	}
+
+	seedLegacy("note-legacyupdate", "Before", "Old update body", "pending", "")
+	changedAt := "2024-01-02T03:05:05.000000000Z"
+	if _, err = a.store.DB().Exec(`INSERT INTO note_revisions(project_id,note_id,revision,worker_id,job_id,phase,kind,body,status,status_reason,created_at,updated_at,actor_id,actor_worker_id,recorded_at) VALUES(?,?,2,NULL,NULL,?,'reminder',?,'pending','',?,?,?, ?,?)`, project, "note-legacyupdate", "After", "Old update body", created, changedAt, actor, actor, changedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.store.DB().Exec(`UPDATE notes SET phase='After',revision=2,updated_at=? WHERE project_id=? AND id=?`, changedAt, project, "note-legacyupdate"); err != nil {
+		t.Fatal(err)
+	}
+	type patchReq struct {
+		ExpectedRevision *int64  `json:"expected_revision"`
+		Phase            *string `json:"phase,omitempty"`
+	}
+	expected := int64(1)
+	newPhase := "After"
+	if _, err = a.store.Mutate(t.Context(), scope, core.Mutation{Operation: "notes.patch", Target: "note-legacyupdate", Key: "old-phase-patch", Request: patchReq{&expected, &newPhase}}, func(context.Context, *sql.Tx) (any, error) {
+		return receipt{ID: "note-legacyupdate", Revision: 2, Outcome: "updated"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	patchReplay := noteCall(a, "PATCH", base+"/note-legacyupdate", token, actor, "old-phase-patch", map[string]any{"expected_revision": 1, "phase": "After"})
+	noteOK(t, patchReplay, 200)
+	var oldPatchReceipt receipt
+	decodeResponse(t, patchReplay, &oldPatchReceipt)
+	if oldPatchReceipt.Revision != 2 || noteRead(t, a, base+"/note-legacyupdate", token).Revision != 2 {
+		t.Fatal("legacy phase-only scope patch receipt was not replayed", oldPatchReceipt)
+	}
+
+	seedLegacy("note-legacybody", "Retained", "Before body", "pending", "")
+	legacyPath := base + "/note-legacybody"
+	if got := noteRead(t, a, legacyPath, token); got.WorkerID != "" || got.JobID != "" || got.Phase != "Retained" {
+		t.Fatal("phase-only legacy current read failed", got)
+	}
+	if got := noteRead(t, a, legacyPath+"/history/1", token); got.Phase != "Retained" || got.Body != "Before body" {
+		t.Fatal("phase-only immutable revision read failed", got)
+	}
+	before = noteCounts(t, a)
+	noteError(t, noteCall(a, "PATCH", legacyPath, token, actor, "new-phase-only-change", map[string]any{"expected_revision": 1, "phase": "Changed"}), 400, "validation_failed")
+	if noteCounts(t, a) != before {
+		t.Fatal("new phase-only scope change wrote effects")
+	}
+	if r := noteCall(a, "PATCH", legacyPath, token, actor, "legacy-body", map[string]any{"expected_revision": 1, "body": "After body"}); r.Code != 200 {
+		t.Fatalf("body-only legacy edit failed: %d %s", r.Code, r.Body.String())
+	}
+	if r := noteCall(a, "PATCH", legacyPath, token, actor, "legacy-dismiss", map[string]any{"expected_revision": 2, "status": "dismissed", "status_reason": "Done"}); r.Code != 200 {
+		t.Fatalf("status-only legacy dismissal failed: %d %s", r.Code, r.Body.String())
+	}
+	if got := noteRead(t, a, legacyPath, token); got.Status != "dismissed" || got.Body != "After body" || got.Revision != 3 {
+		t.Fatal("phase-only note could not be consumed", got)
+	}
+	if got := noteRead(t, a, legacyPath+"/history/1", token); got.Phase != "Retained" || got.Body != "Before body" {
+		t.Fatal("immutable legacy revision changed", got)
+	}
+	tx, err := a.store.DB().BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = jobs.ValidateNotesSnapshot(t.Context(), tx); err != nil {
+		t.Fatal("legacy phase-only rows are not backup-valid:", err)
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestNotesLifecycleExactTextHistoryReplayAndAtomicity(t *testing.T) {
@@ -257,7 +411,7 @@ func TestNotesFiltersAssignmentExpansionAndScopeIsolation(t *testing.T) {
 	decodeResponse(t, response, &job)
 	direct := noteCreate(t, a, base, token, w2, "direct", w1, "", "plan", "direct")
 	attached := noteCreate(t, a, base, token, w1, "attached", w2, job.ID, "plan", "job-related")
-	phase := noteCreate(t, a, base, token, w1, "phase", "", "", "other", "phase only")
+	phase := noteCreate(t, a, base, token, w1, "phase", w1, "", "other", "worker with phase")
 	noteOK(t, noteCall(a, "PATCH", base+"/"+phase.ID, token, w1, "consume", map[string]any{"expected_revision": 1, "status": "consumed"}), 200)
 	if page := noteList(t, a, base, token); len(page.Items) != 2 {
 		t.Fatal("default did not select pending", page)

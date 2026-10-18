@@ -535,7 +535,7 @@ func parseInvocation(args []string) (invocation, bool) {
 			case "--worker":
 				call.worker = value
 			case "--status":
-				if !validStatus(value) {
+				if !client.ValidJobStatusFilter(value) {
 					return call, false
 				}
 				call.status = value

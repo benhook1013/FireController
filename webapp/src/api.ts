@@ -715,9 +715,9 @@ export class Api {
   async jobs(options: JobOptions = {}, signal?: AbortSignal): Promise<Page<JobSummary>> {
     const query = pageOptions(options);
     if (options.worker_id !== undefined) { if (!id(options.worker_id)) throw new ApiError('invalid_request', 'The worker filter is invalid.'); query.set('worker_id', options.worker_id); }
-    if (options.status !== undefined) { if (!jobStatuses.has(options.status)) throw new ApiError('invalid_request', 'The job status filter is invalid.'); query.set('status', options.status); }
+    if (options.status !== undefined) { if (options.status !== 'open' && !jobStatuses.has(options.status)) throw new ApiError('invalid_request', 'The job status filter is invalid.'); query.set('status', options.status); }
     const value = await this.finiteGet(withQuery(this.projectRoute('jobs'), query), signal);
-    if (!validPage(value, defaultLimit(options)) || !value.items.every(validSummary)) throw new ApiError('invalid_response', 'The service returned an invalid job page.');
+    if (!validPage(value, defaultLimit(options)) || !value.items.every(item => validSummary(item) && (options.worker_id === undefined || item.worker_id === options.worker_id) && (options.status === undefined || (options.status === 'open' ? item.status !== 'completed' : item.status === options.status)))) throw new ApiError('invalid_response', 'The service returned an invalid job page.');
     return value as Page<JobSummary>;
   }
   async job(jobId: string, signal?: AbortSignal): Promise<Job> {

@@ -67,6 +67,8 @@ Routes below are relative to `/api/v1/projects/{project_id}`.
 | `PATCH /jobs/{job_id}` | Required `expected_revision` plus selected `title`, `brief`, `worker_id` or `status`; compact receipt. |
 | `GET /jobs/{job_id}/history` | Explicit bounded revision history with retained full job state. |
 
+The list-only `status=open` filter selects `active`, `blocked` and `parked` jobs in that priority order, with IDs ordered within each status across pages. It supports the same optional worker filter; cursors remain bound to the selected filters. Omitted or specific-status filters retain ID ordering. `open` is not a stored job status and mutations refuse it. The CLI and `jobs_list`/`jobs_assigned` MCP reads accept the same filter.
+
 Statuses are `active`, `parked`, `blocked` and `completed`; creation defaults to `active`. Title is bounded to 240 bytes and brief to 32 KiB. Assignments reference workers in the selected project. Creation starts revision 1. A guarded edit atomically changes the job, appends history/event metadata and stores its receipt; a losing revision race writes none of them. An empty worker ID clears an assignment on edit.
 
 ## Job checkpoints

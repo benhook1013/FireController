@@ -145,7 +145,16 @@ func TestJobContextPendingScopeExactOmissionsAndOrdinaryContinuation(t *testing.
 	noteOK(t, noteCall(a, "PATCH", base, token, worker, "assign", map[string]any{"expected_revision": 1, "worker_id": worker}), 200)
 	notesBase := "/api/v1/projects/" + p + "/notes"
 	// Phase-only, other worker and consumed notes are outside this packet.
-	noteCreate(t, a, notesBase, token, other, "phase", "", "", "phase", "outside phase")
+	// This is retained legacy phase-only state: create it with an immutable
+	// revision directly so the fixture does not exercise today's stricter API.
+	legacyID := "note-context-legacy-phase"
+	legacyTime := "2024-01-02T03:04:05.000000000Z"
+	if _, err := a.store.DB().Exec(`INSERT INTO notes(project_id,id,worker_id,job_id,phase,kind,body,status,status_reason,revision,created_at,updated_at) VALUES(?,?,NULL,NULL,'phase','reminder','outside phase','pending','',1,?,?)`, p, legacyID, legacyTime, legacyTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.store.DB().Exec(`INSERT INTO note_revisions(project_id,note_id,revision,worker_id,job_id,phase,kind,body,status,status_reason,created_at,updated_at,actor_id,actor_worker_id,recorded_at) VALUES(?,?,1,NULL,NULL,'phase','reminder','outside phase','pending','',?,?,?,?,?)`, p, legacyID, legacyTime, legacyTime, other, other, legacyTime); err != nil {
+		t.Fatal(err)
+	}
 	noteCreate(t, a, notesBase, token, other, "other", other, "", "", "outside worker")
 	consumed := noteCreate(t, a, notesBase, token, worker, "consumed", worker, "", "", "already handled")
 	noteOK(t, noteCall(a, "PATCH", notesBase+"/"+consumed.ID, token, worker, "consume", map[string]any{"expected_revision": 1, "status": "consumed"}), 200)

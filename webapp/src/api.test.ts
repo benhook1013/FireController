@@ -1266,3 +1266,34 @@ describe('captured comparison policy assessment', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });
+
+
+describe('open job list filter', () => {
+  it('passes explicit open/worker filters and preserves bounded continuation', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input)); calls.push(url.href);
+      expect(url.searchParams.get('status')).toBe('open');
+      expect(url.searchParams.get('worker_id')).toBe('worker_one');
+      expect(url.searchParams.get('limit')).toBe('1');
+      return url.searchParams.has('cursor') ? json({ items: [{ ...jobSummary, status: 'parked' }], has_more: false }) : json({ items: [jobSummary], has_more: true, cursor: 'signed-next' });
+    }));
+    const first = await client.jobs({ status: 'open', worker_id: 'worker_one', limit: 1 });
+    expect(first.has_more).toBe(true);
+    const last = await client.jobs({ status: 'open', worker_id: 'worker_one', limit: 1, cursor: first.cursor });
+    expect(last.items[0].status).toBe('parked'); expect(last.has_more).toBe(false);
+    expect(new URL(calls[1]).searchParams.get('cursor')).toBe('signed-next'); expect(calls).toHaveLength(2); client.close();
+  });
+  it.each([{ status: 'completed' }, { status: 'open' }, { worker_id: 'foreign_worker' }])('rejects a mismatched open job response %j', async change => {
+    setupLocation(); const client = api(); await connect(client);
+    vi.stubGlobal('fetch', vi.fn(async () => json({ items: [{ ...jobSummary, ...change }], has_more: false })));
+    await expect(client.jobs({ status: 'open', worker_id: 'worker_one' })).rejects.toMatchObject({ code: 'invalid_response' }); client.close();
+  });
+  it('refuses invalid list filters before network and never accepts open as a returned job state', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    const fetchMock = vi.fn(async () => json({ ...job, status: 'open' })); vi.stubGlobal('fetch', fetchMock);
+    await expect(client.jobs({ status: 'Open' as 'open' })).rejects.toMatchObject({ code: 'invalid_request' }); expect(fetchMock).not.toHaveBeenCalled();
+    await expect(client.job('job_one')).rejects.toMatchObject({ code: 'invalid_response' }); client.close();
+  });
+});

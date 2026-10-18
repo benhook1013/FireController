@@ -822,3 +822,45 @@ func TestReadOptionDashValuesReachTheirExistingFieldValidation(t *testing.T) {
 		t.Fatal("read values bypassed field validation or performed provider work")
 	}
 }
+
+func TestOpenJobsCLIUsesBoundListsAndRejectsOpenMutations(t *testing.T) {
+	f := setupServiceFixture(t)
+	project := f.project(t, "open-cli")
+	worker := f.worker(t, project, "Builder")
+	for _, status := range []string{"parked", "completed", "blocked", "active"} {
+		f.call(t, http.MethodPost, "/api/v1/projects/"+project+"/jobs", f.admin, "", map[string]string{"title": status, "worker_id": worker, "status": status})
+	}
+	service := httptest.NewServer(f.handler)
+	defer service.Close()
+	path := mutationProfiles(t, f, service.URL, map[string][2]string{"chosen": {project, worker}})
+	lookups := f.resolverHit.Load()
+	cursor := ""
+	for _, want := range []string{"active", "blocked", "parked"} {
+		args := []string{"--profiles-file", path, "--profile", "chosen", "jobs", "assigned", "--status", "open", "--limit", "1"}
+		if cursor != "" {
+			args = append(args, "--cursor", cursor)
+		}
+		code, out, diagnostics := run(args, nil)
+		if code != 0 || diagnostics != "" {
+			t.Fatal("open list failed", code, diagnostics)
+		}
+		var page struct {
+			Items []struct {
+				Status string `json:"status"`
+			} `json:"items"`
+			Cursor  string `json:"cursor"`
+			HasMore bool   `json:"has_more"`
+		}
+		if json.Unmarshal([]byte(out), &page) != nil || len(page.Items) != 1 || page.Items[0].Status != want || page.HasMore != (want != "parked") {
+			t.Fatal("open ordered continuation", out)
+		}
+		cursor = page.Cursor
+	}
+	if f.resolverHit.Load() != lookups {
+		t.Fatal("list performed provider work")
+	}
+	missing := filepath.Join(t.TempDir(), "must-not-read-profiles")
+	for _, args := range [][]string{{"jobs", "list", "--status", "Open"}, {"jobs", "create", "--title", "Invalid", "--status", "open", "--key", "key"}, {"jobs", "list", "--status", "open", "--status", "active"}} {
+		failure(t, append([]string{"--profiles-file", missing, "--profile", "chosen"}, args...), nil, cli.ExitUsage, "invalid_arguments")
+	}
+}

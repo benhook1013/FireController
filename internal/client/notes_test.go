@@ -118,6 +118,14 @@ func TestNotesClientPublicPartialCorrectionsHistoryAndReplay(t *testing.T) {
 	}
 }
 func TestNotesClientLocalValidationAndMalformedStates(t *testing.T) {
+	// Keep client admission permissive for exact retries of historical receipts;
+	// the service rejects a fresh phase-only mutation after replay lookup.
+	if err := client.ValidateCreateNoteRequest(client.CreateNoteRequest{Phase: "Retained label", Kind: "reminder", Body: "legacy retry"}); err != nil {
+		t.Fatal("client blocked a potentially retained create receipt", err)
+	}
+	if err := client.ValidateUpdateNoteRequest(client.UpdateNoteRequest{ExpectedRevision: 1, WorkerID: notePtr("")}); err != nil {
+		t.Fatal("client preflighted partial scope without server state", err)
+	}
 	var c client.Client
 	for _, in := range []client.CreateNoteRequest{{Kind: "reminder", Body: "x"}, {WorkerID: "worker", Kind: "other", Body: "x"}, {WorkerID: "worker", Kind: "source", Body: "\r"}, {WorkerID: "worker", Kind: "reminder", Body: string([]byte{0xff})}} {
 		_, err := c.CreateNote(t.Context(), "k", in)

@@ -20,7 +20,7 @@ export interface ProjectMapRevision extends ProjectMapHistorySummary {state: Pro
 export interface ProjectMapOptions extends PageOptions {kind?: ProjectMapKind; archived?: boolean}
 export interface JobWorkstream {job_id: string; workstream_id: string; workstream_title: string; revision: number}
 export interface JobWorkstreamHistoryEntry {revision: number; workstream_id: string; workstream_title: string; job_revision: number; actor_id: string; created_at: string}
-export interface JobOptions extends PageOptions {worker_id?: string; status?: JobSummary['status']}
+export interface JobOptions extends PageOptions {worker_id?: string; status?: JobSummary['status']|'open'}
 export interface InboxOptions extends PageOptions {unread?: boolean; unacknowledged?: boolean}
 export interface InboxItem {id: string; conversation_id: string; sender_worker_id: string; recipient_worker_id: string; preview: string; preview_truncated: boolean; seen: boolean; acknowledged: boolean; created_at: string}
 export interface Message {id: string; conversation_id: string; sender_worker_id: string; recipient_worker_id: string; reply_to_message_id?: string; body: string; created_at: string}
