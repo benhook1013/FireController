@@ -136,6 +136,9 @@ func assertCurrentSummaryInventoryRefused(t *testing.T, bundle Summary, physical
 
 func TestCurrentSummaryInventoryV5RehashedDerivedDamageRefused(t *testing.T) {
 	for _, tc := range []struct{ name, sql string }{
+		{"compact-run-count", `UPDATE review_pull_versions SET run_count=run_count+1 WHERE number=7`},
+		{"compact-attempt-count", `UPDATE review_pull_versions SET attempt_count=attempt_count+1 WHERE number=7`},
+		{"compact-latest-attempts", `UPDATE review_pull_versions SET latest_attempts_json='[]' WHERE number=7`},
 		{"run-count", `UPDATE review_current_totals SET run_count=run_count+1 WHERE pull_number=7`},
 		{"attempt-count", `UPDATE review_current_totals SET attempt_count=attempt_count+1 WHERE pull_number=7`},
 		{"incomplete-count", `UPDATE review_current_totals SET incomplete_run_count=0 WHERE pull_number=7`},
