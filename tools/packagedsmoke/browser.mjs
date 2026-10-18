@@ -8,6 +8,9 @@ let phase = 'configuration';
 let checkpoint = '';
 let counters = () => ({});
 let diagnostics = () => ({});
+let connectHTTPStatus = 0;
+let connectAllowWrites = false;
+let connectCanEditPresentation = false;
 const need = (value) => { if (!value) throw new Error('assertion'); };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
@@ -40,7 +43,7 @@ try {
  let controlledMessageFailure = false;
  let controlledAccessFailure = false;
  const expectedMissingSessionRoute = url => { if (!controlledAccessFailure || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname); } catch { return false; } };
-  counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites});
+  counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites});
   let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0;
   let injectedRequest;
   diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external });
@@ -319,18 +322,40 @@ try {
   need(sessionPosts === 1 && sessionDeletes === 1 && forbiddenWrites === 0 && errors === 0 && external === 0);
 
   phase = 'explicit-actions-connect';
+  checkpoint = 'root-url';
+  await page.waitForURL(config.origin + '/');
+  checkpoint = 'root-form';
+  await expect(page.getByLabel('Project ID', {exact:true})).toHaveValue('');
+  checkpoint = 'history-index';
  const actionRootHistoryIndex=await page.evaluate(()=>history.state.idx);
   explicitActions = true;
+  checkpoint = 'project-input';
   await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+  checkpoint = 'credential-input';
   await page.getByLabel('Project credential', {exact:true}).fill(admin);
+  checkpoint = 'permission-control-check';
   need(await page.getByRole('checkbox').count()===0);
+  checkpoint = 'submit';
   const adminLogin=page.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname===prefix+'/browser-session');
   await page.getByRole('button', {name:'Connect to project',exact:true}).click();
-  const adminResponse=await adminLogin;need(adminResponse.status()===200);
-  const adminCapabilities=await adminResponse.json();need(adminCapabilities.allow_writes===true && adminCapabilities.can_edit_presentation===true);
+  checkpoint = 'session-response';
+  const adminResponse=await adminLogin;
+  connectHTTPStatus=adminResponse.status();
+  checkpoint = 'session-status';
+  need(connectHTTPStatus===200);
+  checkpoint = 'capabilities-read';
+  const adminCapabilities=await adminResponse.json();
+  connectAllowWrites=adminCapabilities.allow_writes===true;
+  connectCanEditPresentation=adminCapabilities.can_edit_presentation===true;
+  checkpoint = 'capabilities-check';
+  need(connectAllowWrites && connectCanEditPresentation);
+  checkpoint = 'no-action-writes';
   need(actionWrites===0 && forbiddenWrites===0);
+  checkpoint = 'heading';
   await page.getByRole('heading', {name:title,exact:true}).waitFor();
+  checkpoint = 'inbox-button';
   await page.getByRole('button', {name:'Open Builder inbox',exact:true}).click();
+  checkpoint = 'inbox-route';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox',exact:true}).click();
   const incoming = await write('POST','/messages',{recipient_worker_id:config.worker,body:'Action incoming <literal>',reply_to_message_id:''},201,config.other_worker);
   const row = page.locator('.inbox-list > li').filter({hasText:'Action incoming <literal>'});
@@ -459,7 +484,7 @@ try {
   await server.close(); server = undefined;
   console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
 } catch {
-  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, ...counters(), ...diagnostics()}));
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, connect_http_status:connectHTTPStatus, connect_allow_writes:connectAllowWrites, connect_can_edit_presentation:connectCanEditPresentation, ...counters(), ...diagnostics()}));
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});
