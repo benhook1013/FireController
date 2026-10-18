@@ -169,7 +169,11 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 		t.Fatal("packaged browser workload exceeded 45 seconds")
 	}
 	if err != nil || stderr.len() != 0 || output.len() > 64<<10 {
-		t.Fatalf("packaged browser failed at phase=%s; raw output withheld to protect fixture credentials", output.safePhase())
+		stage := "before-browser-start"
+		if output.browserPID() > 1 {
+			stage = "after-browser-start"
+		}
+		t.Fatalf("packaged browser failed at phase=%s stage=%s stderr_bytes=%d driver_exit=%t; raw output withheld to protect fixture credentials", output.safePhase(), stage, stderr.len(), err != nil)
 	}
 	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
 	var result struct {
@@ -230,6 +234,10 @@ func (o *browserOutput) safePhase() string {
 			Phase                    string `json:"phase"`
 			Checkpoint               string `json:"checkpoint"`
 			FailureClass             string `json:"failure_class"`
+			FailureName              string `json:"failure_name"`
+			HTTPStatus               int    `json:"http_status"`
+			AllowWrites              bool   `json:"allow_writes"`
+			CanEditPresentation      bool   `json:"can_edit_presentation"`
 			ActionWrites             int    `json:"action_writes"`
 			External                 int    `json:"external"`
 			Posts                    int    `json:"session_posts"`
@@ -246,12 +254,93 @@ func (o *browserOutput) safePhase() string {
 			InboxStreams             int    `json:"inbox_streams"`
 			InjectedMetadataFailures int    `json:"injected_metadata_failures"`
 			InjectedConsoleErrors    int    `json:"injected_console_errors"`
+			ReviewRunReads           int    `json:"run_fetches"`
 		}
 		if json.Unmarshal(line, &record) != nil || record.State != "FAIL" {
 			continue
 		}
 		switch record.Phase {
-		case "configuration", "launch", "connect", "normal-title-mobile-layout", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "live-jobs", "live-workers", "live-notes", "contextual-notes", "live-reviews", "reload", "renewal-activity", "renewal-missing-cookie", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
+		case "configuration", "launch", "connect", "normal-title-mobile-layout", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "live-jobs", "live-workers", "live-notes", "contextual-notes", "live-reviews", "reload", "renewal-activity", "renewal-missing-cookie", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain", "delivery-overview":
+			if record.Phase == "connect" {
+				allowed := false
+				switch record.Checkpoint {
+				case "root", "project-input", "credential-input", "submit", "session-response", "session-status", "capabilities-finished", "capabilities-read", "capabilities-check", "heading":
+					allowed = true
+				}
+				if allowed && record.External >= 0 && record.External <= 1000 && record.Errors >= 0 && record.Errors <= 1000 {
+					return fmt.Sprintf("connect/%s http_status=%d allow_writes=%t can_edit_presentation=%t errors=%d external=%d", record.Checkpoint, record.HTTPStatus, record.AllowWrites, record.CanEditPresentation, record.Errors, record.External)
+				}
+			}
+			if record.Phase == "explicit-actions-connect" {
+				allowed := false
+				switch record.Checkpoint {
+				case "root-url", "root-form", "project-input", "credential-input", "submit", "session-response", "session-status", "capabilities-finished", "capabilities-read", "capabilities-check", "heading":
+					allowed = true
+				}
+				if allowed && record.External >= 0 && record.External <= 1000 && record.Errors >= 0 && record.Errors <= 1000 {
+					return fmt.Sprintf("explicit-actions-connect/%s http_status=%d allow_writes=%t can_edit_presentation=%t errors=%d external=%d", record.Checkpoint, record.HTTPStatus, record.AllowWrites, record.CanEditPresentation, record.Errors, record.External)
+				}
+			}
+			if record.Phase == "live-reviews" {
+				allowed := false
+				switch record.Checkpoint {
+				case "reviews-open", "unconfigured", "seed-observation", "initial-open-pull", "initial-merged-pull", "updated-observation", "updated-open-pull", "updated-merged-pull", "hosted-run", "merged-retention", "delivery-queue", "queue-heading", "queue-pull", "merge-head", "hosted-summary", "reviews-return", "reviews-heading", "selected-worker", "sanitized-literal", "reviews-url":
+					allowed = true
+				}
+				valid := allowed
+				for _, n := range []int{record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Errors, record.External, record.Writes, record.ActionWrites, record.ReviewRunReads} {
+					valid = valid && n >= 0 && n <= 1000
+				}
+				if valid {
+					class := "driver"
+					if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
+						class = record.FailureClass
+					}
+					return fmt.Sprintf("live-reviews/%s class=%s run_fetches=%d presentation_reads=%d metadata_streams=%d inbox_streams=%d forbidden_writes=%d action_writes=%d errors=%d external=%d", record.Checkpoint, class, record.ReviewRunReads, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Writes, record.ActionWrites, record.Errors, record.External)
+				}
+			}
+			if record.Phase == "live-workers" {
+				allowed := false
+				switch record.Checkpoint {
+				case "selected-builder-before-workers", "workers-nav", "builder-inbox-link", "create-worker", "newcomer-visible", "selection-preserved", "builder-details", "pause-default", "primary-existing", "pause-update", "pause-visible", "primary-update", "primary-link", "selected-builder-after-update":
+					allowed = true
+				}
+				valid := allowed
+				for _, n := range []int{record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Errors, record.External, record.Writes, record.ActionWrites} {
+					valid = valid && n >= 0 && n <= 1000
+				}
+				if valid {
+					class := "driver"
+					if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
+						class = record.FailureClass
+					}
+					return fmt.Sprintf("live-workers/%s class=%s presentation_reads=%d metadata_streams=%d inbox_streams=%d forbidden_writes=%d action_writes=%d errors=%d external=%d", record.Checkpoint, class, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Writes, record.ActionWrites, record.Errors, record.External)
+				}
+			}
+			if record.Phase == "delivery-overview" {
+				allowed := false
+				switch record.Checkpoint {
+				case "initial-snapshot", "delivery-heading", "builder-job", "builder-primary", "inspector-paused", "inspector-pause-reason", "unassigned-job", "status-order", "latest-checkpoint-done", "latest-checkpoint-next", "latest-checkpoint", "old-checkpoint-absent", "overview-request-budget", "lane-count", "private-identifiers-absent", "layout-capture", "notes-nav-absent", "inbox-nav-click", "inbox-worker-selected", "inbox-heading", "inbox-sidebar", "inbox-readonly-composer", "inbox-readonly-writes", "default-appearance", "default-title", "default-indicator-colors", "default-indicator-contrast":
+					allowed = true
+				}
+				valid := allowed
+				for _, n := range []int{record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Errors, record.External, record.Writes, record.ActionWrites} {
+					valid = valid && n >= 0 && n <= 1000
+				}
+				if valid {
+					class := "driver"
+					if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
+						class = record.FailureClass
+					}
+					name := record.FailureName
+					switch name {
+					case "TimeoutError", "Error", "AssertionError", "TypeError", "ReferenceError", "RangeError", "Other":
+					default:
+						name = "Other"
+					}
+					return fmt.Sprintf("delivery-overview/%s class=%s error=%s presentation_reads=%d metadata_streams=%d inbox_streams=%d forbidden_writes=%d action_writes=%d errors=%d external=%d", record.Checkpoint, class, name, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Writes, record.ActionWrites, record.Errors, record.External)
+				}
+			}
 			if record.Phase == "metadata-failure" {
 				switch record.Checkpoint {
 				case "metadata-notice", "metadata-initial-counts", "metadata-inbox-ready":

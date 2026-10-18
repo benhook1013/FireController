@@ -52,7 +52,7 @@ try {
     await expect.poll(() => attempts.locator('li').count()).toBe(20);
     need(await rounds.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).count() === 1);
     need(await rounds.getByRole('region',{name:'CLI CodeRabbit',exact:true}).count() === 1);
-    need(await page.getByText(`${count} runs · ${count} attempts`,{exact:true}).count() === 1);
+    need(await page.locator('.review-pull-summary').getByText(`${count} runs · ${count} attempts`,{exact:true}).count() === 1);
     const stored = await page.evaluate(() => JSON.stringify({session:{...sessionStorage},local:{...localStorage}}));
     need(!stored.includes(token) && !stored.includes(admin));
     return {page,rounds,attempts,name};
@@ -81,7 +81,7 @@ try {
   need(response.status === 201); await response.arrayBuffer();
   await expect.poll(() => current.rounds.locator('.review-round-pill').count()).toBe(1);
   await expect.poll(() => current.attempts.locator('li').count()).toBe(1);
-  await current.page.getByRole('heading',{name:'Current archive metadata',exact:true}).waitFor();
+  await current.page.locator('.page-heading').getByRole('heading',{name:'Current archive metadata',exact:true}).waitFor();
   need(await current.rounds.getByRole('link',{name:/current-only-run/u}).count() === 1);
   need(await current.attempts.getByText('current-only-attempt',{exact:true}).count() === 1);
   need(await current.rounds.getByRole('button',{name:'Load more review rounds',exact:true}).count() === 0);
