@@ -85,6 +85,12 @@ func (e *Engine) mutateCheckpointHTTP(w http.ResponseWriter, r *http.Request, re
 	// returns useful terminal facts rather than a stale pending receipt.
 	current, terminal, err := e.WaitCheckpointPublication(r.Context(), scope, queued.ID, int(wait/time.Second))
 	if err != nil {
+		if detached, detachErr := e.acceptedWaitDetached(r.Context(), scope, err); detached {
+			core.WriteJSON(w, http.StatusAccepted, receipt)
+			return
+		} else {
+			err = detachErr
+		}
 		var failure *core.Error
 		if errors.As(err, &failure) && failure.Code == "overloaded" {
 			current, err = e.ReadCheckpointPublication(r.Context(), scope, queued.ID)
