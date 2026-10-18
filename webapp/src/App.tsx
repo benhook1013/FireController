@@ -21,6 +21,7 @@ import { applyPresentationRoot } from './presentation';
 import { PresentationContext, usePresentation, useProjectHeading } from './presentation-context';
 import { isCurrentProjectView, refreshProjectMetadata } from './project-metadata';
 import { startMetadataAttempt } from './metadata-recovery';
+import { createAppearanceAcceptor, refreshProjectView } from './appearance-refresh';
 import type { Presentation } from './types';
 import flameEmber from './flame-ember.svg?no-inline';
 import type { Checkpoint, ChecklistItem, JobUpdate, InboxItem, JobSummary, LiveStatus, Project, Worker, ReviewAttemptSummary, ReviewAttemptItem, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
@@ -66,6 +67,7 @@ function PrivateApp() {
   const [connecting, setConnecting] = useState(false);
   const [restoring, setRestoring] = useState(hasSavedBrowserBinding);
   const [appearance, setAppearance] = useState<Presentation>();
+  const appearanceAcceptor = useRef<ReturnType<typeof createAppearanceAcceptor> | null>(null);
   const [metadataStatus, setMetadataStatus] = useState<LiveStatus>('connecting');
   const [refreshingSession, setRefreshingSession] = useState<Session | null>(null);
   const renewal = useRef<BrowserSessionRenewal<BrowserSessionView> | null>(null);
@@ -77,7 +79,7 @@ function PrivateApp() {
     clearBrowserSession(); saved.current = null; setResumable(null);
     pending.current?.controller.abort(); pending.current?.api.close(); pending.current = null;
     const old = current.current;
-    current.current = null;
+    current.current = null; appearanceAcceptor.current = null;
     old?.controller.abort(); old?.projectController.abort(); old?.api.close();
     if (old) { void queryClient.cancelQueries({ queryKey: ['fc', old.nonce] }); queryClient.removeQueries({ queryKey: ['fc', old.nonce] }); }
     setSession(null); setRefreshingSession(null); setAppearance(undefined); applyPresentationRoot(document.documentElement, document); setConnecting(false); setRestoring(false); setNotice(message);
@@ -142,7 +144,10 @@ function PrivateApp() {
       if (!saveBrowserSession(binding)) throw new ApiError('browser_storage_unavailable', 'The browser session could not be retained safely.');
       saved.current = binding; setResumable(binding);
       const next: Session = { api, project, instanceId: api.instanceId!, nonce: nonce(), controller: new AbortController(), projectController: controller, presentationSnapshot, worker, binding, actions: new BrowserActionMemory(), renewalAttemptAt: restored ? undefined : performance.now() };
-      pending.current = null; current.current = next; setAppearance(presentationSnapshot.presentation); setMetadataStatus('connecting'); setSession(next); setConnecting(false); setRestoring(false);
+      pending.current = null; current.current = next;
+      appearanceAcceptor.current = createAppearanceAcceptor(project.id, () => current.current?.api === api && current.current?.projectController === controller && !controller.signal.aborted, setAppearance);
+      appearanceAcceptor.current(presentationSnapshot.presentation);
+      setMetadataStatus('connecting'); setSession(next); setConnecting(false); setRestoring(false);
       if (routeProject !== project.id) navigate(`/projects/${encodeURIComponent(project.id)}`);
     } catch (error) {
       if (!restored) void api.endBrowserSession().catch(() => {});
@@ -218,14 +223,15 @@ function PrivateApp() {
     return () => window.removeEventListener('beforeunload', guard);
   }, [projectLifetime]);
   useEffect(() => {
-    if (!session || !projectLifetime || routeProject !== session.project.id) return;
+    const acceptAppearance = appearanceAcceptor.current;
+    if (!session || !projectLifetime || !acceptAppearance || routeProject !== session.project.id) return;
     const api = session.api;
     const valid = () => isCurrentProjectView(session.project.id, route.current.pathname, projectLifetime, current.current?.projectController);
     const queryKey = () => { const live = current.current!; return ['fc', live.nonce, live.instanceId, live.project.id, live.worker?.id ?? '']; };
     const attempt = startMetadataAttempt(api, session.presentationSnapshot, {
       lifetime: projectLifetime.signal, current: valid, retry: metadataAttempt > 0,
       refresh: (page, signal) => refreshProjectMetadata(queryClient, queryKey(), page, signal),
-      appearance: setAppearance, status: setMetadataStatus,
+      appearance: acceptAppearance, status: setMetadataStatus,
       failure: error => { if (terminal(error)) clear(errorText(error)); },
     });
     return () => attempt.cancel();
@@ -235,9 +241,13 @@ function PrivateApp() {
     if (!live || live.controller.signal.aborted || refreshingSession === live) return;
     setRefreshingSession(live);
     const key = ['fc', live.nonce, live.instanceId, live.project.id, live.worker?.id ?? ''];
-    try { await refreshEventQueries(queryClient, key, live.controller.signal); }
-    catch (error) { if (current.current === live && terminal(error)) clear(errorText(error)); }
-    finally { setRefreshingSession(previous => previous === live ? null : previous); }
+    const acceptAppearance = appearanceAcceptor.current;
+    const active = () => current.current === live && !live.controller.signal.aborted && isCurrentProjectView(live.project.id, route.current.pathname, live.projectController, current.current?.projectController);
+    try {
+      const failures = await refreshProjectView(() => live.api.presentation(live.controller.signal), () => refreshEventQueries(queryClient, key, live.controller.signal), active, value => acceptAppearance?.(value));
+      const failure = failures.find(terminal);
+      if (active() && failure) clear(errorText(failure));
+    } finally { setRefreshingSession(previous => previous === live ? null : previous); }
   }
   function disconnect() {
     const live = current.current;
