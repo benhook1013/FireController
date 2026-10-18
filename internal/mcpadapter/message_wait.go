@@ -38,12 +38,12 @@ func messageWaitArguments(data json.RawMessage) (arguments, error) {
 	if in.WaitSeconds != nil {
 		args.messageWaitSeconds = *in.WaitSeconds
 	}
-	if client.ValidateMessageWait(args.cursor, args.limit, args.messageWaitSeconds) != nil {
+	if client.ValidateMessageWait(args.cursor, args.limit, args.messageWaitSeconds) != nil || args.messageWaitSeconds > maxToolWaitSeconds {
 		return args, invalidArguments()
 	}
 	return args, nil
 }
 
 func messageWaitDefinition() definition {
-	return definition{"wait_for_messages", fmt.Sprintf("Wait for new incoming-message events after the bound-worker cursor; one compact page or timeout (default %ds, max %ds). Bodies require conversation reads. No acknowledgments, provider work or auto-reconnect. Background delivery depends on host.", client.MessageWaitDefaultSeconds, client.MessageWaitMaxSeconds), map[string]any{"type": "object", "properties": map[string]any{"cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": client.MessageWaitMaxLimit}, "wait_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": client.MessageWaitMaxSeconds}}, "required": []string{"cursor"}, "additionalProperties": false}}
+	return definition{"wait_for_messages", fmt.Sprintf("Wait for new incoming-message events after the bound-worker cursor; one compact page or timeout (default %ds, max %ds). Bodies require conversation reads. No acknowledgments, provider work or auto-reconnect. Background delivery depends on host.", client.MessageWaitDefaultSeconds, maxToolWaitSeconds), map[string]any{"type": "object", "properties": map[string]any{"cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": client.MessageWaitMaxLimit}, "wait_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": maxToolWaitSeconds}}, "required": []string{"cursor"}, "additionalProperties": false}}
 }
