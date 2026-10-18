@@ -816,11 +816,17 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["reviews"] >= 4 {
 		if err = reviews.ValidateHistoryReferences(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
 			return invalid()
 		}
 	}
 	if versions["reviews"] >= 5 {
 		if err = reviews.ValidateCurrentSummaries(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
 			return invalid()
 		}
 	}
@@ -872,6 +878,9 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["review_comparison"] > 0 {
 		if err = reviewexec.ValidateComparisonProofs(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
 			return invalid()
 		}
 	}
