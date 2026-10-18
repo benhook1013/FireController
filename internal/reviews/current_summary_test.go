@@ -252,3 +252,105 @@ func TestCurrentSummaryIntegrityRejectsMissingOrIncorrectDerivedRows(t *testing.
 		})
 	}
 }
+
+func TestCurrentSummaryMaintenanceCoversProjectsAndKeysetBoundary(t *testing.T) {
+	f := newAPIFixture(t)
+	first := f.project
+	for i, project := range []string{first, "z-summary-second-project"} {
+		count := 100
+		if i == 1 {
+			count = 31
+			if _, err := f.store.DB().Exec(`INSERT INTO projects VALUES(?,'Second summary project',702,'owner/summary-second')`, project); err != nil {
+				t.Fatal(err)
+			}
+		}
+		pulls := make([]PullInput, count)
+		for n := range pulls {
+			pulls[n] = samplePull(int64(n+1), fmt.Sprintf("Summary page pull %d", n+1))
+		}
+		f.project = project
+		request := reviewRequest(0, pulls)
+		request.RepositoryID += int64(i)
+		f.observe(t, request, "summary-pages")
+	}
+	f.project = first
+	before := historyMigrationDatabaseDigest(t, f)
+	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil || historyMigrationDatabaseDigest(t, f) != before {
+		t.Fatal("valid multi-project maintenance changed rows or refused", err)
+	}
+	// The first project has 100 keys. Check its tail, the last key of the
+	// first 128-row page, and the tail beyond that page in the next project.
+	for _, key := range []struct {
+		project string
+		number  int64
+	}{{first, 100}, {"z-summary-second-project", 28}, {"z-summary-second-project", 31}} {
+		if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET run_count=1 WHERE project_id=? AND number=?`, key.project, key.number); err != nil {
+			t.Fatal(err)
+		}
+		damaged := historyMigrationDatabaseDigest(t, f)
+		if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err == nil || historyMigrationDatabaseDigest(t, f) != damaged {
+			t.Fatal("maintenance missed a current compact count or repaired it", key)
+		}
+		if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET run_count=0 WHERE project_id=? AND number=?`, key.project, key.number); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil || historyMigrationDatabaseDigest(t, f) != before {
+		t.Fatal("fixture restoration lost valid multi-project state", err)
+	}
+}
+
+func TestCurrentSummaryMigrationCompactCorruptionRollsBackAndRetries(t *testing.T) {
+	for _, mode := range []string{"valid", "run-count", "attempt-count", "latest-attempts"} {
+		t.Run(mode, func(t *testing.T) {
+			f, snapshots, _, _ := historyMigrationLegacyFixture(t)
+			historyMigrationApply(t, f) // Genuine v4 tables, no v5 derived schema.
+			historical := historyMigrationRead(t, f, "/pulls/7?snapshot="+snapshots[0])
+			const selected = ` FROM review_current_pulls c JOIN review_pull_memberships m ON m.project_id=c.project_id AND m.number=c.number AND m.start_revision=c.start_revision JOIN review_pull_versions v ON v.project_id=m.project_id AND v.number=m.number AND v.version_revision=m.version_revision WHERE c.project_id=? AND c.number=7`
+			var revision, runs, attempts int64
+			var latest string
+			if err := f.store.DB().QueryRow(`SELECT v.version_revision,v.run_count,v.attempt_count,v.latest_attempts_json`+selected, f.project).Scan(&revision, &runs, &attempts, &latest); err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "run-count":
+				_, err := f.store.DB().Exec(`UPDATE review_pull_versions SET run_count=run_count+1 WHERE project_id=? AND number=7 AND version_revision=?`, f.project, revision)
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "attempt-count":
+				_, err := f.store.DB().Exec(`UPDATE review_pull_versions SET attempt_count=attempt_count+1 WHERE project_id=? AND number=7 AND version_revision=?`, f.project, revision)
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "latest-attempts":
+				_, err := f.store.DB().Exec(`UPDATE review_pull_versions SET latest_attempts_json='[]' WHERE project_id=? AND number=7 AND version_revision=?`, f.project, revision)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := historyMigrationDatabaseDigest(t, f)
+			err := EnsureSchema(t.Context(), f.store)
+			if mode != "valid" {
+				nativeErrorCode(t, err, "storage_unavailable")
+				if historyMigrationDatabaseDigest(t, f) != before {
+					t.Fatal("refused compact-summary migration changed v4 schema, metadata or retained rows")
+				}
+				// Undo only the test's deliberate corruption, then retry the same
+				// migration. Production migration never repairs retained versions.
+				if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET run_count=?,attempt_count=?,latest_attempts_json=? WHERE project_id=? AND number=7 AND version_revision=?`, runs, attempts, latest, f.project, revision); err != nil {
+					t.Fatal(err)
+				}
+				err = EnsureSchema(t.Context(), f.store)
+			}
+			if err != nil {
+				t.Fatal("valid compact migration or retry failed", err)
+			}
+			a := nativeAttempt("after-compact-migration", "active")
+			mustNativePublish(t, f, NativePublication{Pull: nativePull(7), Attempt: &a})
+			if got := historyMigrationRead(t, f, "/pulls/7?snapshot="+snapshots[0]); !reflect.DeepEqual(got, historical) {
+				t.Fatal("migration or subsequent publication changed original historical response bytes")
+			}
+		})
+	}
+}
