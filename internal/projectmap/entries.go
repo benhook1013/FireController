@@ -73,7 +73,7 @@ func revisionCursor(store *core.Store, scope core.Scope, filter string, r *http.
 }
 func readEntry(ctx context.Context, tx *sql.Tx, project, id string) (Entry, error) {
 	var summary Summary
-	var raw string
+	var raw sql.NullString
 	err := tx.QueryRowContext(ctx, `SELECT id,kind,title,state,archived,revision,CASE WHEN length(CAST(state_json AS BLOB))<=? THEN state_json ELSE NULL END FROM project_map_entries WHERE project_id=? AND id=?`, maxEntryBytes, project, id).Scan(&summary.ID, &summary.Kind, &summary.Title, &summary.State, &summary.Archived, &summary.Revision, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Entry{}, notFound()
@@ -81,7 +81,10 @@ func readEntry(ctx context.Context, tx *sql.Tx, project, id string) (Entry, erro
 	if err != nil {
 		return Entry{}, err
 	}
-	e, err := decodeEntry(raw)
+	if !raw.Valid {
+		return Entry{}, unavailable()
+	}
+	e, err := decodeEntry(raw.String)
 	if err != nil {
 		return Entry{}, err
 	}
@@ -363,7 +366,7 @@ func getRevision(store *core.Store) http.HandlerFunc {
 		}
 		var value Revision
 		err = store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
-			var raw string
+			var raw sql.NullString
 			err := tx.QueryRowContext(ctx, `SELECT revision,actor_id,created_at,CASE WHEN length(CAST(state_json AS BLOB))<=? THEN state_json ELSE NULL END FROM project_map_entry_history WHERE project_id=? AND entry_id=? AND revision=?`, maxEntryBytes, scope.ProjectID, id, rev).Scan(&value.Revision, &value.ActorID, &value.CreatedAt, &raw)
 			if errors.Is(err, sql.ErrNoRows) {
 				return notFound()
@@ -371,7 +374,10 @@ func getRevision(store *core.Store) http.HandlerFunc {
 			if err != nil {
 				return err
 			}
-			value.State, err = decodeEntry(raw)
+			if !raw.Valid {
+				return unavailable()
+			}
+			value.State, err = decodeEntry(raw.String)
 			if err != nil {
 				return err
 			}
