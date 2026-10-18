@@ -32,7 +32,7 @@ describe('finite existing-cookie renewal', () => {
 
   it('validates all six response fields, expiry, strict shape and identity before changing capabilities', async () => {
     const api = await connected(); vi.useFakeTimers();
-    for (const value of [{ ...session(), session_id: 'b'.repeat(32) }, { ...session(), project_id: 'project_other' }, { ...session(), instance_id: 'instance_other' }, { ...session(), expires_at: new Date(Date.now() - 1).toISOString() }, { ...session(), expires_at: '2026-02-30T12:00:00Z' }, { ...session(), expires_at: new Date(Date.now() + (24 * 60 + 5) * 60 * 1000 + 1).toISOString() }, { ...session(), allow_writes: null }, { ...session(), allow_writes: false, can_edit_presentation: true }, { ...session(), can_edit_presentation: undefined }, { ...session(), credential: 'PRIVATE_SENTINEL' }]) {
+    for (const value of [{ ...session(), session_id: 'b'.repeat(32) }, { ...session(), project_id: 'project_other' }, { ...session(), instance_id: 'instance_other' }, { ...session(), expires_at: '2026-02-30T12:00:00Z' }, { ...session(), expires_at: '2026-10-16T12:00:00+00:00' }, { ...session(), allow_writes: null }, { ...session(), allow_writes: false, can_edit_presentation: true }, { ...session(), can_edit_presentation: undefined }, { ...session(), credential: 'PRIVATE_SENTINEL' }]) {
       vi.stubGlobal('fetch', vi.fn(async () => json(value))); await expect(api.renewBrowserSession()).rejects.toMatchObject({ code: 'invalid_response' });
       expect(api.browserCapabilities).toEqual({ allow_writes: true, can_edit_presentation: true });
     }
@@ -40,6 +40,56 @@ describe('finite existing-cookie renewal', () => {
       vi.stubGlobal('fetch', vi.fn(async () => new Response(raw, { headers: { 'content-type': 'application/json' } })));
       await expect(api.renewBrowserSession()).rejects.toBeDefined(); expect(api.browserCapabilities.can_edit_presentation).toBe(true);
     }
+  });
+
+  it.each([-2880, -10, 10, 2880])('accepts a canonical server expiry with a device clock offset of %s minutes', async offsetMinutes => {
+    vi.useFakeTimers();
+    const serverNow = Date.parse('2026-10-15T12:00:00Z');
+    vi.setSystemTime(serverNow + offsetMinutes * 60 * 1000);
+    const api = await connected();
+    const reply = { ...session(), expires_at: '2026-10-16T12:00:00Z' };
+    vi.stubGlobal('fetch', vi.fn(async () => json(reply)));
+    await expect(api.renewBrowserSession()).resolves.toEqual(reply);
+  });
+
+  it.each([-48, 48])('accepts current-session GET expiry independent of a %s hour device clock offset', async offsetHours => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse('2026-10-15T12:00:00Z') + offsetHours * 60 * 60 * 1000);
+    vi.stubGlobal('location', { origin: 'https://service.example' });
+    const api = Api.resume(project.id, selector, 'instance_one'); clients.push(api);
+    const current = { ...session(), expires_at: '2026-10-16T12:00:00Z' };
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith('/instance')) return json({ instance_id: 'instance_one' });
+      if (path.endsWith('/browser-session')) return json(current);
+      return json(project);
+    }));
+    await expect(api.connect()).resolves.toEqual(project);
+    expect(api.browserSession).toEqual(current);
+  });
+
+  it.each([-48, 48])('keeps the current-session GET authoritative with a %s hour device clock offset', async offsetHours => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse('2026-10-15T12:00:00Z') + offsetHours * 60 * 60 * 1000);
+    vi.stubGlobal('location', { origin: 'https://service.example' });
+    const api = Api.resume(project.id, selector, 'instance_one'); clients.push(api);
+    const paths: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname; paths.push(path);
+      if (path.endsWith('/instance')) return json({ instance_id: 'instance_one' });
+      if (path.endsWith('/browser-session')) return json({ error: { code: 'unauthorized' } }, 401);
+      return json(project);
+    }));
+    await expect(api.connect()).rejects.toMatchObject({ code: 'unauthorized', status: 401 });
+    expect(paths).toEqual(['/api/v1/instance', `/api/v1/projects/${project.id}`, `/api/v1/projects/${project.id}/browser-session`]);
+  });
+
+  it.each([-48, 48])('does not let a valid future expiry hint override renewal denial at %s hours', async offsetHours => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse('2026-10-15T12:00:00Z') + offsetHours * 60 * 60 * 1000);
+    const api = await connected();
+    vi.stubGlobal('fetch', vi.fn(async () => json({ error: { code: 'unauthorized' } }, 401)));
+    await expect(api.renewBrowserSession()).rejects.toMatchObject({ code: 'unauthorized', status: 401 });
   });
 
   it('has a five-second bound and no automatic retry, preserving current capabilities on transient failures', async () => {

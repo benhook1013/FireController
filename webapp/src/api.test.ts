@@ -146,7 +146,7 @@ describe('read-only browser cookie session transport', () => {
 
   it('strictly rejects incomplete, unbound or oversized session receipts and supports safe cleanup after failure', async () => {
     setupLocation();
-    for (const kind of ['missing', 'null', 'unknown', 'project', 'instance', 'selector', 'expiry', 'oversize']) {
+    for (const kind of ['missing', 'null', 'unknown', 'project', 'instance', 'selector', 'oversize']) {
       const client = api(); await connect(client);
       let selector = '';
       vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -159,13 +159,27 @@ describe('read-only browser cookie session transport', () => {
         if (kind === 'project') value.project_id = 'project_two';
         if (kind === 'instance') value.instance_id = 'instance_other';
         if (kind === 'selector') value.session_id = 'b'.repeat(32);
-        if (kind === 'expiry') value.expires_at = '2000-01-01T00:00:00Z';
         if (kind === 'oversize') return new Response('x'.repeat(4097), { headers: { 'content-type': 'application/json' } });
         return json(value);
       }));
       await expect(client.startBrowserSession()).rejects.toMatchObject({ code: kind === 'oversize' ? 'response_too_large' : 'invalid_response' });
       client.close(); await client.endBrowserSession();
     }
+  });
+
+  it('accepts a canonical server expiry even when it is past the device clock', async () => {
+    setupLocation();
+    const client = api(); await connect(client);
+    let selector = '';
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return json({ session_id: selector, logged_out: true });
+      selector = (JSON.parse(String(init?.body)) as { session_id: string }).session_id;
+      return json({ session_id: selector, instance_id: 'instance_one', project_id: 'project_one', expires_at: '2000-01-01T00:00:00Z', allow_writes: false, can_edit_presentation: false });
+    }));
+    const started = await client.startBrowserSession();
+    expect(started).toMatchObject({ expires_at: '2000-01-01T00:00:00Z', allow_writes: false, can_edit_presentation: false });
+    expect(client.browserSession).toEqual(started);
+    await client.endBrowserSession();
   });
 
   it('cancels an old restore and permits a fresh StrictMode-style instance to verify the retained binding', async () => {
