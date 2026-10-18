@@ -721,20 +721,25 @@ describe('Api binding and bounded reads', () => {
     client.close();
   });
 
-  it.each(['project', 'worker'])('matches server display-name bounds and Unicode whitespace rules for $0 names', async (kind) => {
+  it.each(['project', 'worker'])('preserves retained project names and strict worker whitespace for $0 reads', async (kind) => {
     setupLocation();
-    for (const [name, valid] of [
-      ['Name\u001b[31mred\u001b[0m\u0000\u007f', true],
-      ['é'.repeat(100), true],
-      ['é'.repeat(101), false],
-      ['', false],
-      [123, false],
-      ['\ud800', false],
-      [' name', false],
-      ['name\n', false],
-      ['\u0085name', false],
-      ['name\u2003', false],
-      ['\ufeffname', true],
+    for (const [name, projectValid, workerValid] of [
+      ['Name\u001b[31mred\u001b[0m\u0000\u007f', true, true],
+      ['é'.repeat(100), true, true],
+      ['é'.repeat(101), false, false],
+      ['🔥'.repeat(50), true, true],
+      ['🔥'.repeat(51), false, false],
+      ['', false, false],
+      [123, false, false],
+      [null, false, false],
+      ['\ud800', false, false],
+      ['\udc00', false, false],
+      [' name', true, false],
+      ['name\n', true, false],
+      ['\u0085name', true, false],
+      ['name\u2003', true, false],
+      [' ', true, false],
+      ['\ufeffname', true, true],
     ] as const) {
       const client = api();
       let pending: Promise<unknown>;
@@ -748,7 +753,8 @@ describe('Api binding and bounded reads', () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ items: [{ ...worker, name }], has_more: false })));
         pending = client.workers();
       }
-      if (valid) await expect(pending).resolves.toBeDefined();
+      const valid = kind === 'project' ? projectValid : workerValid;
+      if (valid) await expect(pending).resolves.toEqual(kind === 'project' ? { ...project, name } : { items: [{ ...worker, name }], has_more: false });
       else await expect(pending).rejects.toMatchObject({ code: 'invalid_response' });
       client.close();
     }
