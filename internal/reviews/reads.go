@@ -69,8 +69,10 @@ func queue(store *core.Store) http.HandlerFunc {
 			}
 			response.Configured = true
 			setMetaQueue(&response, meta)
-			rows, err := tx.QueryContext(ctx, `SELECT number,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json,position
-				FROM review_pulls WHERE project_id=? AND snapshot_id=? AND position>? ORDER BY position LIMIT ?`,
+			rows, err := tx.QueryContext(ctx, `SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.run_count,p.attempt_count,p.recent_runs_json,p.latest_attempts_json,p.position
+				FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.position>? AND NOT EXISTS (
+					SELECT 1 FROM review_retired_pulls retired WHERE retired.project_id=p.project_id AND retired.snapshot_id=p.snapshot_id AND retired.number=p.number
+				) ORDER BY p.position LIMIT ?`,
 				scope.ProjectID, meta.SnapshotID, position, limit+1)
 			if err != nil {
 				return err
