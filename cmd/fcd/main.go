@@ -186,7 +186,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
-	execution, drivers, err := buildReviewExecution(store, *dataDir, catalog)
+	resultWaitLifetime, cancelOperationWaits := context.WithCancel(ctx)
+	defer cancelOperationWaits()
+	execution, drivers, err := buildReviewExecution(store, *dataDir, catalog, reviewexec.WithResultWaitLifetime(resultWaitLifetime))
 	if err != nil {
 		diagnosticError(stderr, err)
 		return 3
@@ -276,6 +278,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			exitCode = 3
 		}
 	}()
+	// Ensure result collectors detach before the worker and HTTP shutdown waits
+	// on every exit path, while ordinary in-flight mutations keep draining.
+	defer cancelOperationWaits()
 	srv := newHTTPServer(ctx, mux)
 	_ = json.NewEncoder(stdout).Encode(map[string]string{"event": "listening", "address": listener.Addr().String(), "instance_id": store.InstanceID()})
 	done := make(chan error, 1)
@@ -287,12 +292,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 	case <-ctx.Done():
+		cancelOperationWaits()
 		if err = shutdownHTTPServer(srv, 5*time.Second); err != nil {
 			diagnostic(stderr, "shutdown_failed", "The HTTP service required forced shutdown.")
 			return 3
 		}
 		<-done
 	case backupErr := <-backupDone:
+		cancelOperationWaits()
 		cancelReviews()
 		shutdownErr := shutdownHTTPServer(srv, 5*time.Second)
 		<-done
@@ -305,6 +312,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 	case reviewErr := <-reviewDone:
+		cancelOperationWaits()
 		cancelReviews()
 		shutdownErr := shutdownHTTPServer(srv, 5*time.Second)
 		<-done
@@ -317,6 +325,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 	case collectionErr := <-collectionDone:
+		cancelOperationWaits()
 		cancelReviews()
 		shutdownErr := shutdownHTTPServer(srv, 5*time.Second)
 		<-done

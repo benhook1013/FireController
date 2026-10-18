@@ -31,16 +31,36 @@ func (e *Engine) notifyOperation(id string) {
 	}
 }
 
+func (e *Engine) resultWaitContext(ctx context.Context) (context.Context, func()) {
+	waitCtx, cancelWait := context.WithCancel(ctx)
+	if e.resultWaitLifetime == nil {
+		return waitCtx, cancelWait
+	}
+	if e.resultWaitLifetime.Err() != nil {
+		cancelWait()
+	}
+	stop := context.AfterFunc(e.resultWaitLifetime, cancelWait)
+	return waitCtx, func() {
+		stop()
+		cancelWait()
+	}
+}
+
 func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string, waitSeconds int) (Operation, bool, error) {
 	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(id) || !identifier.MatchString(scope.PrincipalID) || waitSeconds < 0 || waitSeconds > 900 {
 		return Operation{}, false, invalid()
 	}
+	waitCtx, cleanupWait := e.resultWaitContext(ctx)
+	defer cleanupWait()
 	canceled := func() error {
 		return core.Fail("overloaded", "The review result wait was canceled; the retained operation is unchanged.", 503)
 	}
 	read := func() (Operation, error) {
-		value, err := e.ReadOperation(ctx, scope, id)
-		if ctx.Err() != nil {
+		if waitCtx.Err() != nil {
+			return Operation{}, canceled()
+		}
+		value, err := e.ReadOperation(waitCtx, scope, id)
+		if waitCtx.Err() != nil {
 			return Operation{}, canceled()
 		}
 		return value, err
@@ -48,6 +68,9 @@ func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string,
 	if waitSeconds == 0 {
 		value, err := read()
 		return value, err == nil && !operationPending(value.State), err
+	}
+	if waitCtx.Err() != nil {
+		return Operation{}, false, canceled()
 	}
 	waiter := &operationWaiter{principal: scope.PrincipalID, changed: make(chan struct{}, 1)}
 	e.operationMu.Lock()
@@ -90,7 +113,7 @@ func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string,
 			return value, true, nil
 		}
 		select {
-		case <-ctx.Done():
+		case <-waitCtx.Done():
 			return Operation{}, false, canceled()
 		case <-timer.C:
 			value, err = read()
