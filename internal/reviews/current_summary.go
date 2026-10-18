@@ -116,6 +116,27 @@ func backfillCurrentSummaries(ctx context.Context, conn *sql.Conn) error {
 	return ValidateCurrentSummaries(ctx, conn)
 }
 
+// backfillCurrentReviewIndexes rebuilds derived current indexes once during an
+// exclusive schema upgrade. Immutable history and current references are
+// validated before any cache is discarded; their bytes are never repaired.
+func backfillCurrentReviewIndexes(ctx context.Context, conn *sql.Conn) error {
+	if err := ValidateHistoryReferences(ctx, conn); err != nil {
+		return err
+	}
+	for _, table := range []string{"review_current_run_order", "review_current_attempt_order", "review_current_totals"} {
+		if _, err := conn.ExecContext(ctx, "DELETE FROM "+table); err != nil {
+			return err
+		}
+	}
+	if err := backfillCurrentSummaries(ctx, conn); err != nil {
+		return err
+	}
+	if err := backfillCurrentRunOrder(ctx, conn); err != nil {
+		return err
+	}
+	return ValidateCurrentRunOrder(ctx, conn)
+}
+
 const insertAttemptOrderSQL = `INSERT INTO review_current_attempt_order(project_id,source,source_attempt_id,pull_number,channel,sort_key,position) VALUES(?,?,?,?,?,?,?)`
 
 func insertAttemptOrder(ctx context.Context, q currentSummarySQL, project, source string, number, position int64, attempt Attempt) error {
@@ -448,4 +469,162 @@ func (w *historySnapshotWrite) latestCurrentAttempts(ctx context.Context, tx His
 		}
 	}
 	return result, nil
+}
+
+const currentRunOrderPageSize = 256
+
+// CurrentRunOrderSchemaSQL defines a derived index of every current run's
+// channel and eligibility metadata. It does not grant review authority.
+func CurrentRunOrderSchemaSQL() []string {
+	return []string{
+		`CREATE TABLE review_current_run_order (
+ project_id TEXT NOT NULL,
+ id TEXT NOT NULL,
+ pull_number INTEGER NOT NULL,
+ channel TEXT NOT NULL,
+ outcome TEXT NOT NULL,
+ finalized INTEGER NOT NULL CHECK(finalized IN(0,1)),
+ run_order INTEGER NOT NULL CHECK(run_order>=0),
+ PRIMARY KEY(project_id,id),
+ FOREIGN KEY(project_id,id) REFERENCES review_current_runs(project_id,id) ON DELETE CASCADE
+);`,
+		`CREATE INDEX review_current_run_order_eligible ON review_current_run_order(project_id,pull_number,channel,run_order DESC) WHERE outcome='completed' AND finalized=1;`,
+	}
+}
+
+const currentRunOrderSourceSQL = `SELECT c.project_id,c.id,c.pull_number,c.run_order,v.channel,v.outcome,v.finalized
+ FROM review_current_runs c
+ LEFT JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision
+ LEFT JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision`
+
+const insertCurrentRunOrderSQL = `INSERT INTO review_current_run_order(project_id,id,pull_number,channel,outcome,finalized,run_order)
+ SELECT c.project_id,c.id,c.pull_number,v.channel,v.outcome,v.finalized,c.run_order
+ FROM review_current_runs c
+ JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision
+ JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision
+ WHERE c.project_id=? AND c.id=?`
+
+type currentRunOrderExecutor interface {
+	HistoryQuery
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func insertCurrentRunOrder(ctx context.Context, q currentRunOrderExecutor, project, id string) error {
+	result, err := q.ExecContext(ctx, insertCurrentRunOrderSQL, project, id)
+	if err != nil {
+		return err
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		return historyInconsistent()
+	}
+	return nil
+}
+
+// backfillCurrentRunOrder runs only inside the exclusive schema migration. It
+// finishes each bounded keyset page before inserting rows on the same conn.
+func backfillCurrentRunOrder(ctx context.Context, q currentRunOrderExecutor) error {
+	type item struct {
+		project, id, channel, outcome string
+		pull, order                   int64
+		finalized                     int64
+	}
+	var project, id string
+	for {
+		rows, err := q.QueryContext(ctx, currentRunOrderSourceSQL+` WHERE (c.project_id,c.id)>(?,?) ORDER BY c.project_id,c.id LIMIT ?`, project, id, currentRunOrderPageSize)
+		if err != nil {
+			return err
+		}
+		var page []item
+		for rows.Next() {
+			var row item
+			var channel, outcome sql.NullString
+			var finalized sql.NullInt64
+			if err = rows.Scan(&row.project, &row.id, &row.pull, &row.order, &channel, &outcome, &finalized); err != nil {
+				break
+			}
+			if !channel.Valid || !outcome.Valid || !finalized.Valid || (finalized.Int64 != 0 && finalized.Int64 != 1) {
+				err = historyInconsistent()
+				break
+			}
+			row.channel, row.outcome, row.finalized = channel.String, outcome.String, finalized.Int64
+			page = append(page, row)
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, row := range page {
+			if _, err := q.ExecContext(ctx, insertCurrentRunOrderSQL, row.project, row.id); err != nil {
+				return err
+			}
+			project, id = row.project, row.id
+		}
+		if len(page) < currentRunOrderPageSize {
+			break
+		}
+	}
+	return nil
+}
+
+// ValidateCurrentRunOrder is the full read-only backup integrity check for the
+// derived current run-order cache. Source/current references remain authority.
+func ValidateCurrentRunOrder(ctx context.Context, q HistoryQuery) error {
+	var extra int
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM review_current_run_order o LEFT JOIN review_current_runs c ON c.project_id=o.project_id AND c.id=o.id WHERE c.project_id IS NULL LIMIT 1`).Scan(&extra)
+	if err == nil {
+		return historyInconsistent()
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	var project, id string
+	for {
+		rows, err := q.QueryContext(ctx, `SELECT c.project_id,c.id,c.pull_number,c.run_order,v.channel,v.outcome,v.finalized,
+ o.project_id,o.pull_number,o.channel,o.outcome,o.finalized,o.run_order
+ FROM review_current_runs c
+ LEFT JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision
+ LEFT JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision
+ LEFT JOIN review_current_run_order o ON o.project_id=c.project_id AND o.id=c.id
+ WHERE (c.project_id,c.id)>(?,?) ORDER BY c.project_id,c.id LIMIT ?`, project, id, currentRunOrderPageSize)
+		if err != nil {
+			return err
+		}
+		type key struct{ project, id string }
+		var page []key
+		for rows.Next() {
+			var current key
+			var pull, order, finalized sql.NullInt64
+			var channel, outcome sql.NullString
+			var cachedProject, cachedChannel, cachedOutcome sql.NullString
+			var cachedPull, cachedOrder, cachedFinalized sql.NullInt64
+			if err := rows.Scan(&current.project, &current.id, &pull, &order, &channel, &outcome, &finalized,
+				&cachedProject, &cachedPull, &cachedChannel, &cachedOutcome, &cachedFinalized, &cachedOrder); err != nil {
+				rows.Close()
+				return err
+			}
+			if !pull.Valid || !order.Valid || !channel.Valid || !outcome.Valid || !finalized.Valid ||
+				!cachedProject.Valid || !cachedPull.Valid || !cachedChannel.Valid || !cachedOutcome.Valid || !cachedFinalized.Valid || !cachedOrder.Valid ||
+				cachedProject.String != current.project || cachedPull.Int64 != pull.Int64 || cachedOrder.Int64 != order.Int64 ||
+				cachedChannel.String != channel.String || cachedOutcome.String != outcome.String || cachedFinalized.Int64 != finalized.Int64 {
+				rows.Close()
+				return historyInconsistent()
+			}
+			page = append(page, current)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, current := range page {
+			project, id = current.project, current.id
+		}
+		if len(page) < currentRunOrderPageSize {
+			return nil
+		}
+	}
 }
