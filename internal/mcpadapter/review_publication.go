@@ -42,7 +42,7 @@ func checkpointArguments(name string, data json.RawMessage) (arguments, error) {
 		if in.Wait != nil {
 			args.reviewSourceWait = *in.Wait
 		}
-		if client.ValidateReviewCheckpointRequest(args.reviewCheckpoint) != nil || client.ValidateReviewSourceWait(args.reviewSourceWait) != nil {
+		if client.ValidateReviewCheckpointRequest(args.reviewCheckpoint) != nil || client.ValidateReviewSourceWait(args.reviewSourceWait) != nil || args.reviewSourceWait > maxToolWaitSeconds {
 			return args, invalidArguments()
 		}
 		return args, nil
@@ -62,7 +62,7 @@ func checkpointArguments(name string, data json.RawMessage) (arguments, error) {
 	if in.Wait != nil {
 		args.reviewSourceWait = *in.Wait
 	}
-	if client.ValidateReviewCheckpointRecovery(args.reviewCheckpointRecovery) != nil || client.ValidateReviewSourceWait(args.reviewSourceWait) != nil {
+	if client.ValidateReviewCheckpointRecovery(args.reviewCheckpointRecovery) != nil || client.ValidateReviewSourceWait(args.reviewSourceWait) != nil || args.reviewSourceWait > maxToolWaitSeconds {
 		return args, invalidArguments()
 	}
 	return args, nil
@@ -73,7 +73,7 @@ func checkpointDefinitions() []definition {
 	}
 	key := map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "Explicit idempotency key; recover unknown outcomes with this same key and exact request. No automatic retry."}
 	id := map[string]any{"type": "string", "pattern": "^review_publication_[a-f0-9]{32}$"}
-	wait := map[string]any{"type": "integer", "minimum": 0, "maximum": 60, "default": 2, "description": "Explicit bounded result wait; zero returns a receipt if pending. No polling."}
+	wait := map[string]any{"type": "integer", "minimum": 0, "maximum": maxToolWaitSeconds, "default": 2, "description": "Explicit bounded result wait; zero returns a receipt if pending. No polling."}
 	return []definition{
 		{"review_checkpoint_publish", "Explicitly publish frozen historical native source counts to GitHub; no review request or merge action. Keep the exact key after an unknown outcome.", schema(map[string]any{"idempotency_key": key, "evidence_id": map[string]any{"type": "string", "pattern": "^review_evidence_[a-f0-9]{32}$"}, "expected_revision": map[string]any{"type": "integer", "minimum": 0, "maximum": int64(math.MaxInt64)}, "wait_seconds": wait}, "idempotency_key", "evidence_id", "expected_revision")},
 		{"review_checkpoint_read", "Read one compact stored public checkpoint operation; no provider calls or implicit recovery.", schema(map[string]any{"publication_id": id}, "publication_id")},
