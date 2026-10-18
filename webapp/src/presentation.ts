@@ -13,6 +13,8 @@ const identity = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z
 const positive = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) > 0;
 const cursor = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 4096 && !/[\s\p{Cc}]/u.test(v);
 const name = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && encoder.encode(v).length <= max && !/^\p{White_Space}|\p{White_Space}$/u.test(v) && !/[\p{Cc}\uD800-\uDFFF]/u.test(v);
+// Implicit snapshots preserve the retained project name without repairing it.
+const retainedName = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && encoder.encode(v).length <= 200 && !/[\uD800-\uDFFF]/u.test(v);
 function stamp(v: unknown): boolean {
   if (typeof v !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(v) || !Number.isFinite(Date.parse(v))) return false;
   const [year, month, day] = v.slice(0, 10).split('-').map(Number);
@@ -47,15 +49,16 @@ function validContrast(theme: Record<string, unknown>): boolean {
 }
 
 export type PresentationConfig = Pick<Presentation, 'name' | 'brand_name' | 'tagline' | 'headings' | 'theme'>;
-export function validPresentationConfig(v: unknown): v is PresentationConfig {
-  if (!object(v) || !exact(v, ['name', 'brand_name', 'tagline', 'headings', 'theme']) || !name(v.name, 200) || !name(v.brand_name, 120) || !name(v.tagline, 120) || !object(v.headings) || !object(v.theme)) return false;
+export function validPresentationConfig(v: unknown): v is PresentationConfig { return validConfig(v); }
+function validConfig(v: unknown, implicit = false): v is PresentationConfig {
+  if (!object(v) || !exact(v, ['name', 'brand_name', 'tagline', 'headings', 'theme']) || !(implicit ? retainedName(v.name) : name(v.name, 200)) || !name(v.brand_name, 120) || !name(v.tagline, 120) || !object(v.headings) || !object(v.theme)) return false;
   for (const [key, value] of Object.entries(v.headings)) if (!Object.hasOwn(defaults.headings, key) || !name(value, 240)) return false;
   for (const [key, value] of Object.entries(v.theme)) if (!Object.hasOwn(defaults.theme, key) || typeof value !== 'string' || !/^#[0-9a-f]{6}$/u.test(value)) return false;
   if (!validContrast(v.theme)) return false;
   return encoder.encode(JSON.stringify(v).replace(/[<>&\u2028\u2029]/gu, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)).length <= 16 << 10;
 }
 export function validPresentation(v: unknown, project: string): v is Presentation {
-  if (!object(v) || !exact(v, ['project_id', 'revision', 'name', 'brand_name', 'tagline', 'headings', 'theme', 'updated_at']) || v.project_id !== project || !identity(v.project_id) || !Number.isSafeInteger(v.revision) || Number(v.revision) < 0 || !validPresentationConfig({ name: v.name, brand_name: v.brand_name, tagline: v.tagline, headings: v.headings, theme: v.theme })) return false;
+  if (!object(v) || !exact(v, ['project_id', 'revision', 'name', 'brand_name', 'tagline', 'headings', 'theme', 'updated_at']) || v.project_id !== project || !identity(v.project_id) || !Number.isSafeInteger(v.revision) || Number(v.revision) < 0 || !validConfig({ name: v.name, brand_name: v.brand_name, tagline: v.tagline, headings: v.headings, theme: v.theme }, v.revision === 0)) return false;
   return v.revision === 0 ? v.updated_at === '' && v.brand_name === 'FireController' && v.tagline === 'Project workspace' && Object.keys(v.headings as object).length === 0 && Object.keys(v.theme as object).length === 0 : stamp(v.updated_at);
 }
 export function validPresentationSnapshot(v: unknown, project: string): v is PresentationSnapshot {
