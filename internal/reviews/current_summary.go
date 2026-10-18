@@ -197,22 +197,67 @@ func ValidateCurrentSummaries(ctx context.Context, q HistoryQuery) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var attempt Attempt
 		var stored string
 		if err := rows.Scan(&attempt.StartedAt, &attempt.FinishedAt, &stored); err != nil {
+			rows.Close()
 			return err
 		}
 		key, err := attemptSortKey(attempt)
 		if err != nil {
+			rows.Close()
 			return err
 		}
 		if key != stored {
+			rows.Close()
 			return historyInconsistent()
 		}
 	}
-	return rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	// Retained compact versions must agree with the same bounded front used
+	// before native publication. Finish each keyset page before its lookups so
+	// maintenance works on the migration's single connection as well as a tx.
+	var project string
+	var number int64
+	for {
+		rows, err := q.QueryContext(ctx, `SELECT project_id,number FROM review_current_pulls WHERE (project_id,number)>(?,?) ORDER BY project_id,number LIMIT 128`, project, number)
+		if err != nil {
+			return err
+		}
+		type pullKey struct {
+			project string
+			number  int64
+		}
+		var page []pullKey
+		for rows.Next() {
+			var key pullKey
+			if err = rows.Scan(&key.project, &key.number); err != nil {
+				break
+			}
+			page = append(page, key)
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, key := range page {
+			if err := validateCurrentSummaryFront(ctx, q, key.project, key.number); err != nil {
+				return err
+			}
+			project, number = key.project, key.number
+		}
+		if len(page) < 128 {
+			return nil
+		}
+	}
 }
 
 func (w *historySnapshotWrite) prepareCurrentTotals(ctx context.Context, tx *sql.Tx) (map[int64]summaryTotals, error) {
