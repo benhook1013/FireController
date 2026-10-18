@@ -34,7 +34,8 @@ describe('live private project views', () => {
     const updates = f.add(['job-updates', 'job_one', '']);
     const closedArchive = f.add(['checkpoints', 'job_one', ''], false);
     const otherJob = f.add(['job', 'other_job']);
-    const notes = f.add(['notes', {}, '']);
+    const notes = f.add(['notes', { worker_id: 'worker_one', include_assigned_jobs: true }, '']);
+    const inactiveNotes = f.add(['notes', { worker_id: 'worker_two', include_assigned_jobs: true }, ''], false);
     const inbox = f.add(['inbox', '']);
     const otherProject = f.add(['jobs', '', false, ''], true, ['fc', 'session', 'instance', 'other', 'worker']);
     try {
@@ -45,9 +46,10 @@ describe('live private project views', () => {
         { event_type: 'job.checklist_replaced', resource_id: 'job_one' },
         { event_type: 'job.update_appended', resource_id: 'update_record' },
       ]), new AbortController().signal);
-      for (const query of [jobs, job, checklist, checkpoint, updates]) expect(query.reads()).toBe(1);
+      for (const query of [jobs, job, checklist, checkpoint, updates, notes]) expect(query.reads()).toBe(1);
       expect(closedArchive.reads()).toBe(0); expect(closedArchive.state()?.isInvalidated).toBe(true);
-      for (const query of [otherJob, notes, inbox, otherProject]) expect(query.reads()).toBe(0);
+      expect(inactiveNotes.reads()).toBe(0); expect(inactiveNotes.state()?.isInvalidated).toBe(true);
+      for (const query of [otherJob, inbox, otherProject]) expect(query.reads()).toBe(0);
     } finally { f.close(); }
   });
 
