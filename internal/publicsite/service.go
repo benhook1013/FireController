@@ -432,6 +432,16 @@ func Refresh(ctx context.Context, tx *sql.Tx, project string, reader SourceReade
 	} else {
 		err = unavailable()
 	}
+	if err == nil {
+		var revision int64
+		err = tx.QueryRowContext(ctx, `SELECT public_revision FROM project_publications WHERE project_id=?`, project).Scan(&revision)
+		if err == nil && revision != r.publicRevision {
+			// Notification admission is part of optional publication too. Offline
+			// authoritative writes may have no collector; retain their last-good
+			// projection rather than releasing new bytes before marking fails.
+			err = core.MarkPublicProjectionChanged(ctx, project)
+		}
+	}
 	if err != nil {
 		if _, e := tx.ExecContext(ctx, `ROLLBACK TO public_projection_refresh`); e != nil {
 			return unavailable()
@@ -447,13 +457,6 @@ func Refresh(ctx context.Context, tx *sql.Tx, project string, reader SourceReade
 	}
 	if _, err = tx.ExecContext(ctx, `RELEASE public_projection_refresh`); err != nil {
 		return unavailable()
-	}
-	var revision int64
-	if tx.QueryRowContext(ctx, `SELECT public_revision FROM project_publications WHERE project_id=?`, project).Scan(&revision) != nil {
-		return unavailable()
-	}
-	if revision != r.publicRevision {
-		return core.MarkPublicProjectionChanged(ctx, project)
 	}
 	return nil
 }
