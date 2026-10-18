@@ -82,6 +82,9 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 		return Receipt{}, err
 	}
 	write := newHistorySnapshotWrite(scope.ProjectID, next)
+	if err = preserveRetiredNativeQueueEntry(ctx, tx, write, pull.Number); err != nil {
+		return Receipt{}, err
+	}
 	body, position, err := nativePullBody(ctx, tx, scope.ProjectID, previousID, pull)
 	if err != nil {
 		return Receipt{}, err
@@ -116,6 +119,44 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 		return Receipt{}, err
 	}
 	return Receipt{ID: id, Revision: next, Outcome: "observed"}, nil
+}
+
+// A full observation can close the last current retirement marker while its
+// latest immutable retirement record remains retained. If native execution
+// later reintroduces that missing parent, preserve its retired queue status.
+// Existing parents are left under explicit queue control, including parents
+// made visible by a deliberate queue-edit reactivation.
+func preserveRetiredNativeQueueEntry(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, number int64) error {
+	var parentExists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_current_pulls WHERE project_id=? AND number=?)`, write.project, number).Scan(&parentExists); err != nil {
+		return err
+	}
+	if parentExists {
+		return nil
+	}
+	var markerExists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_current_retired WHERE project_id=? AND number=?)`, write.project, number).Scan(&markerExists); err != nil {
+		return err
+	}
+	if markerExists {
+		return nil
+	}
+	var reason string
+	err := tx.QueryRowContext(ctx, `SELECT reason FROM review_retired_versions WHERE project_id=? AND number=? ORDER BY version_revision DESC LIMIT 1`, write.project, number).Scan(&reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !oneOf(reason, "superseded", "defunct") {
+		return historyInconsistent()
+	}
+	var position int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position),-1)+1 FROM review_current_retired WHERE project_id=?`, write.project).Scan(&position); err != nil {
+		return err
+	}
+	return write.retired(ctx, tx, number, position, reason)
 }
 
 func retainedPullBody(ctx context.Context, tx *sql.Tx, project, previous string, number int64) ([]any, int, error) {
