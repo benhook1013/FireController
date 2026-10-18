@@ -13,11 +13,12 @@ The [native review workspace](review-workspace.md) implements stored queue, PR/r
 Implemented coordination, review and browser slices have passed their focused and controlled executable checks; the combined appearance/coordination head also passed full validation and is installed as QA. The product is not feature complete. Independent source audits identified the following remaining implementation boundaries; human GUI review follows that work, and live-provider proof and migration remain separate. The remaining feature work is:
 
 - Add prepared map/provenance preview and idempotent apply, then selected historical collection with bounded scope and resume. Prepared review import and editorial map CRUD do not establish this onboarding flow.
-The opt-in [public project website](public-site.md) now has full validation and actual packaged CLI/browser proof at its recorded source checkpoint. Installing a tested build and approving its public presentation remain deployment/GUI boundaries; the existing QA deployment has not changed.
 
 These are implementation gaps, not merely GUI polish or unexecuted acceptance tests. Existing-installation migration, live native provider execution, actual agent-host asynchronous behavior, fleet measurements and operational recovery are separate proof or cutover boundaries. Optional multiple replicas, distributed execution and cloud backup integrations remain outside the selected first release.
 
 ## Delivered capability boundaries
+
+The opt-in [public project website](public-site.md) now has full validation and actual packaged CLI/browser proof at its recorded source checkpoint. Installing a tested build and approving its public presentation remain deployment/GUI boundaries; the existing QA deployment has not changed.
 
 The live project feed now covers affected jobs, workers, notes and current stored review views without provider refresh or archive expansion. Review requests and retained operation reads now support quiet bounded result waiting, explicit immediate return and selected longer waits through HTTP, CLI and MCP. Full checks/build and the actual packaged browser workload passed; the owning [presentation proof](project-presentation.md#live-project-view-proof) and [review-result proof](review-execution.md#result-wait-proof) record their limits. Browser inbox actions and project appearance settings are implemented and validated with scoped session authority; the public showcase has packaged CLI/browser proof. Historical onboarding remains feature work at this checkpoint; installed deployment, human GUI acceptance and operational cutover are separate boundaries.
 
