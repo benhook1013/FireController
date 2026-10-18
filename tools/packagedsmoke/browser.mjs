@@ -111,6 +111,7 @@ try {
   const indicatorColors = () => page.evaluate(() => ({
     connection: getComputedStyle(document.querySelector('.connection-note'), '::before').backgroundColor,
     canvas: getComputedStyle(document.documentElement).backgroundColor,
+    header: getComputedStyle(document.querySelector('.mast')).backgroundColor,
     status: getComputedStyle(document.querySelector('.feed-card .status-dot')).backgroundColor,
     online: document.querySelector('.feed-card .status-dot').classList.contains('online'),
     surface: getComputedStyle(document.querySelector('.feed-card')).backgroundColor,
@@ -138,7 +139,7 @@ try {
   await defaults();
   need((await appearance()).title === 'Packaged smoke · FireController');
   const defaultIndicators = await indicatorColors();
-  need(defaultIndicators.connection === 'rgb(103, 118, 89)' && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
+  need(defaultIndicators.connection === 'rgb(243, 203, 200)' && defaultIndicators.connection !== defaultIndicators.header && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
   phase = 'metadata-failure';
   checkpoint = 'metadata-notice';
   const reconnect = page.getByRole('button', {name:'Reconnect project updates', exact:true});
@@ -171,7 +172,8 @@ try {
     theme[family + '_text'] = '#000000';
     if (['canvas', 'surface', 'header', 'hero'].includes(family)) theme[family + '_muted'] = '#000000';
   }
-  const receipt = await write('PUT', '/presentation', {expected_revision:0, presentation:{name:title, brand_name:'Smoke <literal>', theme}});
+  const brand = 'UnbrokenProjectBrand'.repeat(5) + '<literal>';
+  const receipt = await write('PUT', '/presentation', {expected_revision:0, presentation:{name:title, brand_name:brand, theme}});
   need(receipt.revision === 1 && receipt.outcome === 'updated');
   await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
   need(metadataStreams === 1 && presentationReads === 1);
@@ -180,9 +182,9 @@ try {
   const heading = page.getByRole('heading', {name:title, exact:true});
   await heading.waitFor();
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
-  need((await appearance()).brand === 'Smoke <literal>' && (await appearance()).title === title + ' · FireController');
+  need((await appearance()).brand === brand && (await appearance()).title === title + ' · FireController');
   const themedIndicators = await indicatorColors();
-  need(themedIndicators.connection === 'rgb(0, 0, 0)' && themedIndicators.connection !== themedIndicators.canvas);
+  need(themedIndicators.connection === 'rgb(0, 0, 0)' && themedIndicators.connection !== themedIndicators.header);
   need(themedIndicators.status === 'rgb(0, 0, 0)' && themedIndicators.status !== themedIndicators.surface);
   need(await page.locator('literal').count() === 0);
   const fits = await heading.evaluate(element => {
@@ -204,7 +206,13 @@ try {
     }
     return true;
   });
+  checkpoint = 'long-brand-layout';
   need(fits);
+  need(await page.locator('.brand').evaluate(element => {
+    const range = document.createRange(); range.selectNodeContents(element);
+    return document.documentElement.scrollWidth <= innerWidth && [...range.getClientRects()].every(rect => rect.left >= -1 && rect.right <= innerWidth + 1);
+  }));
+  checkpoint = 'none';
 
   await expect(reconnect).toHaveCount(0);
   await page.getByText('Live inbox connected', {exact:true}).waitFor();
