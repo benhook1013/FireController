@@ -151,8 +151,9 @@ export async function runEventWatch<S, P>(source: EventWatchSource<S, P>, callba
     let connection: OpenStream | undefined;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let attachedAt: number | undefined;
-    const retired = () => connection?.signal?.aborted === true;
-    const requireCurrent = () => { if (signal.aborted || retired()) throw abortError(); };
+    const connectionClosed = () => connection?.signal?.aborted === true;
+    const retired = () => connectionClosed() && connection?.signal?.reason instanceof ApiError && connection.signal.reason.code === 'stream_retired';
+    const requireCurrent = () => { if (signal.aborted || connectionClosed()) throw abortError(); };
     try {
       connection = await source.openStream(cursor, signal);
       requireCurrent();
@@ -198,6 +199,7 @@ export async function runEventWatch<S, P>(source: EventWatchSource<S, P>, callba
     } catch (caught) {
       if (signal.aborted) break;
       const error = retired() ? new ApiError('stream_retired', 'The event connection was replaced.') : caught instanceof ApiError ? caught : new ApiError('stream_disconnected', 'The event stream disconnected.');
+      if (error.code === 'stream_retired') continue;
       if (error.code === 'resync_required') {
         try {
           callbacks.status('connecting');
