@@ -42,7 +42,7 @@ func reviewRunArguments(name string, data json.RawMessage) (arguments, error) {
 			args.reviewSourceWait = *in.Wait
 		}
 	}
-	if client.ValidateReviewOperationWait(args.reviewSourceWait) != nil {
+	if client.ValidateReviewOperationWait(args.reviewSourceWait) != nil || args.reviewSourceWait > maxToolWaitSeconds {
 		return arguments{}, invalidArguments()
 	}
 	return args, nil
@@ -52,7 +52,7 @@ func reviewRunDefinitions() []definition {
 	schema := func(properties map[string]any, required ...string) map[string]any {
 		return map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
 	}
-	wait := map[string]any{"type": "integer", "minimum": 0, "maximum": 900}
+	wait := map[string]any{"type": "integer", "minimum": 0, "maximum": maxToolWaitSeconds}
 	return []definition{
 		{"review_start", "Select this channel's earliest unfinished review target and request at most one review. Can consume included provider allowance. Expected PR is an assertion, never a forced target. Waits briefly for the result; pending work returns its original compact selection receipt. Retain the exact key and arguments for uncertain-output recovery; no automatic next review or retry.", schema(map[string]any{
 			"channel":                         map[string]any{"type": "string", "enum": []string{"cli", "hosted"}},
