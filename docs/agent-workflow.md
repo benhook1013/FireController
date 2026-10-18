@@ -2,7 +2,7 @@
 
 ## Scope and status
 
-This is optional guidance a project may adopt in its agent instructions or usage skill. It describes when and why an agent might use FireController. The [client contract](agent-client.md) describes what calls do; project instructions and existing human authorization determine the worker's actual responsibilities. The standalone application commands described by the target contracts remain unimplemented on the design branch.
+This is optional guidance a project may adopt in its agent instructions or usage skill. It describes when and why an agent might use FireController. The [client contract](agent-client.md) describes what calls do; project instructions and existing human authorization determine the worker's actual responsibilities. Use the [development command tables](development.md) and [onboarding skill](../skills/firecontroller-onboard/SKILL.md) for implemented operations; target-only capabilities remain identified in the owning documents.
 
 ## Milestones and working context
 

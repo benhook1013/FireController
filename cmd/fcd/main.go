@@ -10,10 +10,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/backup"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
@@ -31,12 +33,20 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode int) {
+	stderr = &daemonDiagnosticWriter{writer: stderr}
+	if len(args) > 0 && (args[0] == "backup" || args[0] == "backup-inspect" || args[0] == "backup-status" || args[0] == "restore" || args[0] == "restore-activate") {
+		return runBackupCommand(ctx, args[0], args[1:], stdout, stderr)
+	}
 	flags := flag.NewFlagSet("fcd", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	dataDir := flags.String("data-dir", "", "private local data directory (required)")
 	listen := flags.String("listen", "127.0.0.1:8080", "loopback HTTP listen address")
 	tokenFile := flags.String("github-token-file", "", "optional private GitHub credential file")
 	reviewCatalog := flags.String("review-catalog", "", "optional private native CLI capability catalog")
+	backupDestination := flags.String("backup-destination", "", "explicit managed backup root")
+	backupInterval := flags.Duration("backup-interval", 0, "managed backup interval, 1m through 720h")
+	backupKeep := flags.Int("backup-keep", 0, "managed verified bundles to retain, 1 through 1000")
+	backupTimeout := flags.Duration("backup-timeout", 0, "managed attempt deadline, default 5m and maximum 24h")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -47,26 +57,75 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnostic(stderr, "configuration_invalid", "Provide --data-dir and a loopback --listen address.")
 		return 2
 	}
-	catalog, err := reviewruntime.LoadCatalog(*reviewCatalog)
+	providedBackupFlags := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { providedBackupFlags[f.Name] = true })
+	hasSchedule := providedBackupFlags["backup-destination"] || providedBackupFlags["backup-interval"] || providedBackupFlags["backup-keep"]
+	if hasSchedule && (!providedBackupFlags["backup-destination"] || !providedBackupFlags["backup-interval"] || !providedBackupFlags["backup-keep"] || *backupDestination == "" || *backupInterval <= 0 || *backupKeep <= 0) || providedBackupFlags["backup-timeout"] && (!hasSchedule || *backupTimeout <= 0) {
+		diagnostic(stderr, "configuration_invalid", "Configure --backup-destination, --backup-interval and --backup-keep together; --backup-timeout requires a schedule and a positive duration.")
+		return 2
+	}
+	schedule, err := backup.ValidateScheduleConfig(*dataDir, backup.ScheduleConfig{Destination: *backupDestination, Interval: *backupInterval, Keep: *backupKeep, Timeout: *backupTimeout})
 	if err != nil {
 		diagnosticError(stderr, err)
+		return 2
+	}
+	if err := backup.CheckDataDirectory(*dataDir); err != nil {
+		diagnosticError(stderr, err)
 		return 3
+	}
+	// Existing restores must be fenced before reading any operator credential.
+	// New installations still validate optional credentials before creating state.
+	var store *core.Store
+	defer func() {
+		if store != nil {
+			_ = store.Close()
+		}
+	}()
+	_, existingErr := os.Lstat(filepath.Join(*dataDir, "firecontroller.sqlite"))
+	if existingErr == nil {
+		var err error
+		store, err = openGuardedDaemonStore(ctx, *dataDir)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
+	} else if !errors.Is(existingErr, os.ErrNotExist) {
+		diagnostic(stderr, "storage_unavailable", "The private database file is unavailable or unsafe.")
+		return 3
+	}
+	var recovery backup.RecoveryStatus
+	if store != nil {
+		recovery, err = backup.ReadRecoveryStatus(ctx, store)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
+	}
+	var catalog reviewruntime.Catalog
+	var resolver server.RepositoryResolver
+	if !recovery.ProvidersHeld {
+		catalog, err = reviewruntime.LoadCatalog(*reviewCatalog)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
+		resolver, err = server.GitHubResolver(*tokenFile)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
 	}
 	address := *listen
 	if host, port, _ := net.SplitHostPort(address); host == "localhost" {
 		address = net.JoinHostPort("127.0.0.1", port)
 	}
-	resolver, err := server.GitHubResolver(*tokenFile)
-	if err != nil {
-		diagnosticError(stderr, err)
-		return 3
+	if store == nil {
+		store, err = openGuardedDaemonStore(ctx, *dataDir)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
 	}
-	store, err := core.Open(ctx, *dataDir)
-	if err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	defer store.Close()
 	if err = jobs.EnsureSchema(ctx, store); err != nil {
 		diagnosticError(stderr, err)
 		return 3
@@ -84,6 +143,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			diagnosticError(stderr, err)
 			return 3
 		}
+	}
+	if err = backup.EnsureManagedSchema(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
+	backupManager, err := backup.NewManager(store, *dataDir, schedule)
+	if err != nil {
+		diagnosticError(stderr, err)
+		return 3
 	}
 	execution, drivers, err := buildReviewExecution(store, *dataDir, catalog)
 	if err != nil {
@@ -108,7 +176,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}
 	defer listener.Close()
 	reviewCtx, cancelReviews := context.WithCancel(ctx)
-	reviewDone, err := startReviewWorkers(reviewCtx, execution, drivers, stderr)
+	var reviewDone <-chan error
+	if !recovery.ProvidersHeld {
+		reviewDone, err = startReviewWorkers(reviewCtx, execution, drivers, stderr)
+	}
 	defer func() {
 		cancelReviews()
 		if reviewDone == nil {
@@ -130,6 +201,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
+	backupDone := startBackupWorker(reviewCtx, backupManager, schedule.Destination != "", func(err error) { diagnosticError(stderr, err) })
+	defer func() {
+		cancelReviews()
+		if err := waitBackupWorker(backupDone, 12*time.Second); err != nil {
+			diagnosticError(stderr, err)
+			exitCode = 3
+		}
+	}()
 	srv := newHTTPServer(ctx, mux)
 	_ = json.NewEncoder(stdout).Encode(map[string]string{"event": "listening", "address": listener.Addr().String(), "instance_id": store.InstanceID()})
 	done := make(chan error, 1)
@@ -146,6 +225,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 		<-done
+	case backupErr := <-backupDone:
+		cancelReviews()
+		shutdownErr := shutdownHTTPServer(srv, 5*time.Second)
+		<-done
+		if backupErr != nil {
+			diagnosticError(stderr, backupErr)
+			return 3
+		}
+		if shutdownErr != nil || ctx.Err() == nil {
+			diagnostic(stderr, "backup_worker_stopped", "The managed backup worker stopped unexpectedly.")
+			return 3
+		}
 	case reviewErr := <-reviewDone:
 		cancelReviews()
 		shutdownErr := shutdownHTTPServer(srv, 5*time.Second)

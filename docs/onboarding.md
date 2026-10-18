@@ -2,7 +2,7 @@
 
 ## Goal and implementation status
 
-Let a user ask their AI to add FireController to an existing project and receive a working, verified setup with clear ownership of the imported information. The onboarding commands and optional packaged skill are not implemented yet. This is a first-release usability requirement; broad importer coverage is delivered incrementally.
+Let a user ask their AI to add FireController to an existing project and receive a working, verified setup with clear ownership of the imported information. Local private profile creation and POSIX bound launcher commands are implemented. The bundled [onboarding skill](../skills/firecontroller-onboard/SKILL.md) guides the implemented API and client setup; a dedicated onboarding wizard and historical importer remain unimplemented. This is a first-release usability requirement; broad importer coverage is delivered incrementally.
 
 ## Supported setup flow
 
@@ -16,6 +16,29 @@ Let a user ask their AI to add FireController to an existing project and receive
 
 Onboarding should use a few meaningful questions, not a long setup checklist or repeated permissions for routine reversible steps already authorized. A read-only preview never grants permission to publish private history. Default imported data remains private; enabling public status requires an explicit visibility choice.
 
+## Private agent setup commands
+
+Private client setup is local filesystem work, separate from project registration, historical import and service authorization. The selected commands are:
+
+```sh
+fc --profiles-file /private/agent/profiles.json --profile project-builder profile create --server https://controller.example.com --instance INSTANCE_ID --project PROJECT_ID --worker WORKER_ID --credential-file credentials/worker.token
+fc --profiles-file /private/agent/profiles.json --profile project-builder profile launcher --output /private/bin/fc-builder
+```
+
+`profile create` requires an explicit absolute profile-file path and explicit profile selector. It stores a version-one private configuration containing the supplied binding and credential reference; it never reads the credential, contacts a service or verifies the remote identity. A relative credential reference resolves against that profile file as usual. Use `doctor` for authenticated verification. The command creates a new file atomically and never modifies an existing configuration. Its immediate parent must be a real private directory; existing higher ancestors may resolve through directory symlinks, including platform system directories. A matching existing profile is an idempotent success with no write; a conflicting selection is refused while preserving every existing profile and byte. Use a separate private file for another agent when its desired binding is absent.
+
+`profile launcher` requires an existing selected profile and an explicit absolute output path. On supported POSIX hosts it creates an executable shell launcher that binds the absolute profile file, profile name and current `fc` executable, with an optional explicit `--executable` path. It quotes paths/selectors as literal arguments, forwards caller arguments, and rejects conflicting profile options through the normal duplicate-option guard. Process defaults do not change its binding. Installation never edits PATH, project instructions or another agent's files. Existing identical launcher bytes are an idempotent no-write success; different existing files are refused. Native Windows launcher generation is unsupported in this initial boundary; explicit profiles and per-process `FC_PROFILE` remain available there.
+
+Both commands use compact structured output and safe diagnostics. They publish private files without replacement, preserve unrelated configuration, and report local publication uncertainty instead of removing a file that may already be usable. They create no worker, grant, credential, job, message, review or pending-operation receipt. The broader onboarding and import flow above remains incomplete.
+
+## Private setup proof
+
+The profile/CLI integration passed full `make check build` before the final executable-access correction, followed by focused profile/CLI race tests, vet, formatting and documentation checks for that correction. Clean runtime checkpoint `b1756115e76632f9feefb81b0110cd23f810efe0` then passed six actual packaged groups with 28 CLI invocations and no service requests. The groups cover private creation with absent credentials, byte-preserving replay and multi-profile conflicts, literal launcher execution with interleaved project identities, strict arguments/FIFO refusal, concurrent identical creators, and a real failed stdout write followed by exact recovery. Independent integration inspection caught the executable-access defect: a file with only another permission class's executable bit could produce an unusable launcher. The corrected current-user access check has a failing-before/passing-after regression and actual shell execution proof.
+
+These checks ran on Linux/WSL with POSIX launchers. They do not establish native Windows launcher support, hostile same-user filesystem race protection, power-loss durability, remote authorization, credential provisioning or the broader guided import flow. Local setup returns configured facts rather than a verified connection or a pending-operation receipt.
+
+An independent forward test used the bundled skill with fresh packaged `fc`/`fcd`, a synthetic repository checkout, one isolated local instance and two workers. All six groups passed using eight setup API requests and 37 profile-bound CLI calls: authenticated bindings, separate grants/profiles/launchers, per-worker job round trips and exact retries, bidirectional synthetic messages/full reads/acknowledgment, unchanged read state, private files and preserved binaries. The tester needed the linked command tables for exact job/message spellings, without reading implementation source. Its owned service/listener stopped afterward. This proves the supported fresh setup path, not a historical importer, host installation, automatic startup service or remote deployment.
+
 ## Import semantics
 
 The user controls historical depth. Support bounded ranges and resuming interrupted collection; do not download all repository or provider history by default. Record source repository, scope, snapshot/version or immutable provider IDs, collection time, and transformation version. Imported text and events are data, not executable instructions.
@@ -28,11 +51,13 @@ Onboarding reads only selected repository sources and scoped provider data. It m
 
 ## Optional agent skill
 
-Distribute a versioned onboarding/usage skill alongside the supported release. It describes discovery, questions, preview/apply, profile binding, quiet tool use, the optional [agent workflow](agent-workflow.md), and verification using actual documented commands. Clearly separate required tool semantics from recommended working habits. A skill is guidance; it does not replace API validation, impose checkpoint cadence, add hidden quotas, perform automatic external messaging, or imply permission beyond the user's request.
+The bundled [firecontroller-onboard skill](../skills/firecontroller-onboard/SKILL.md) guides installation or connection, project/worker access setup through the implemented API, private profiles, POSIX launchers and verification. Use it from a matching FireController checkout/release with the agent host's supported skill installation, or ask the agent to read its `SKILL.md` directly. It is optional and is not installed into a host implicitly.
+
+Distribute the skill with the matching supported release. It describes discovery, scope questions, profile binding, quiet tool use, the optional [agent workflow](agent-workflow.md), and verification using actual documented commands. Clearly separate required tool semantics from recommended working habits. A skill is guidance; it does not replace API validation, impose checkpoint cadence, add hidden quotas, perform automatic external messaging, or imply permission beyond the user's request.
 
 Installation into an agent host is optional and explicit. CLI onboarding works without a particular host or model. Host capability detection identifies whether native tools, asynchronous results, and isolated connection binding are supported. Generated guidance must name limitations instead of promising unsupported wakeups.
 
-Local review execution additionally needs administrator-configured source availability on the server, as owned by [review execution](reviews.md#admission-and-execution). Onboarding reports that capability separately from connecting a client checkout. Required review channels are selected explicitly before aggregate sufficiency can be reported; a jobs/messaging-only project needs no review executor setup. Repository binding still requires its documented provider identity verification.
+Local review execution additionally needs administrator-configured source availability on the server, as owned by [review execution](reviews.md#admission-and-execution). Check server-configured source availability separately from connecting a client checkout; the current skill does not verify this executor capability. Required review channels are selected explicitly before aggregate sufficiency can be reported; a jobs/messaging-only project needs no review executor setup. Repository binding still requires its documented provider identity verification.
 
 ## Acceptance scenarios
 

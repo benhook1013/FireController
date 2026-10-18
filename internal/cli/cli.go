@@ -60,6 +60,7 @@ type invocation struct {
 	snapshot   string
 	pullNumber int64
 	mutation   *mutationInvocation
+	setup      *profileSetupInvocation
 }
 
 // Run preserves the original embedding API while RunContext adds caller
@@ -83,6 +84,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 			Version string `json:"version"`
 		}{Version})
 	}
+	if call.command == "profile" && call.subcommand == "create" {
+		return createProfile(ctx, call, stdout, stderr)
+	}
 	if !call.hasProfile {
 		call.profile = env["FC_PROFILE"]
 	}
@@ -95,6 +99,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 			return report(stderr, ExitConfig, "config_directory_unavailable", "The user configuration directory could not be determined.", "Provide --profiles-file PATH or configure the user environment.")
 		}
 		call.profilesFile = filepath.Join(directory, "firecontroller", "profiles.json")
+	}
+	if call.command == "profile" {
+		return createProfileLauncher(ctx, call, stdout, stderr)
 	}
 	if call.command == "context" {
 		identity, err := profile.Load(call.profilesFile, call.profile)
@@ -214,6 +221,15 @@ func parseInvocation(args []string) (invocation, bool) {
 	call.command = remaining[0]
 	if call.command == "version" || call.command == "context" || call.command == "doctor" {
 		return call, len(remaining) == 1
+	}
+	if call.command == "profile" {
+		if len(remaining) < 2 {
+			return call, false
+		}
+		call.subcommand = remaining[1]
+		var ok bool
+		call.setup, ok = parseProfileSetup(call.subcommand, remaining[2:])
+		return call, ok && (!call.hasProfile || validSetupText(call.profile)) && (!call.hasProfilesFile || validSetupText(call.profilesFile))
 	}
 	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" || len(remaining) < 2 {
 		return call, false
