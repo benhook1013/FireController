@@ -85,12 +85,22 @@ func resumptionSummary(status RecoveryStatus, release providerRelease) ProviderR
 	return ProviderResumptionSummary{InstanceID: status.InstanceID, SourceInstanceID: status.SourceInstanceID, BundleID: status.BundleID, State: status.State, ReleasedAt: release.ReleasedAt, Counts: release.Counts}
 }
 
+// Only pre-write validation failures use this normalization. In particular,
+// commit failures retain their uncertain-outcome diagnostic, and successful
+// commits must never be reported as interrupted if cancellation arrives later.
+func providerResumptionValidationError(ctx context.Context, err error) error {
+	if err != nil && (ctx != nil && ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return core.Fail("restore_reconciliation_interrupted", "Restore reconciliation was interrupted; no provider release was recorded. Retry the exact reconciliation command.", 503)
+	}
+	return err
+}
+
 // ResumeProviders records local operator attestations and abandons retained
 // provider work atomically. It never opens/migrates a Store or invokes providers.
 func ResumeProviders(ctx context.Context, dataDir string, in ProviderResumptionRequest) (ProviderResumptionSummary, error) {
 	var zero ProviderResumptionSummary
 	if checkContext(ctx) != nil {
-		return zero, unavailable()
+		return zero, providerResumptionValidationError(ctx, unavailable())
 	}
 	if !validResumptionRequest(in) || CheckDataDirectory(dataDir) != nil || privateDirectory(dataDir, false) != nil {
 		return zero, invalid()
@@ -113,25 +123,25 @@ func ResumeProviders(ctx context.Context, dataDir string, in ProviderResumptionR
 	db.SetMaxOpenConns(1)
 	tx, err := beginProviderResumption(ctx, db)
 	if err != nil {
-		return zero, unavailable()
+		return zero, providerResumptionValidationError(ctx, unavailable())
 	}
 	defer tx.Rollback()
 	if _, err = validateSchema(ctx, tx, true); err != nil {
-		return zero, err
+		return zero, providerResumptionValidationError(ctx, err)
 	}
 	if err = activationIntegrity(ctx, tx); err != nil {
-		return zero, err
+		return zero, providerResumptionValidationError(ctx, err)
 	}
 	status, err := readRecoveryStatus(ctx, tx)
 	if err != nil {
-		return zero, err
+		return zero, providerResumptionValidationError(ctx, err)
 	}
 	if status.State != "coordination_active" || status.InstanceID != in.ExpectedInstanceID || status.SourceInstanceID != in.FencedPredecessorID {
 		return zero, activationConflict()
 	}
 	fields, err := readRestoreFields(ctx, tx)
 	if err != nil {
-		return zero, err
+		return zero, providerResumptionValidationError(ctx, err)
 	}
 	if !status.ProvidersHeld {
 		release, err := readProviderRelease(fields, status)
