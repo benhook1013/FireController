@@ -7,47 +7,22 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/benhook1013/FireController/internal/strictjson"
+	"github.com/benhook1013/FireController/internal/publicsitemodel"
 )
 
 var publicSaltPattern = regexp.MustCompile(`^public_salt_[0-9a-f]{32}$`)
 var publicGenerationPattern = regexp.MustCompile(`^public_generation_[0-9a-f]{32}$`)
 
 func manifestForContent(content Content) Manifest {
-	m := Manifest{Slug: content.Slug, Presentation: content.Presentation, Description: content.Description, Links: content.Links, ProjectMap: content.ProjectMap, Progress: content.Progress, WorkerLanes: content.WorkerLanes, Reviews: make([]EnrolledReview, len(content.Reviews))}
-	for i, review := range content.Reviews {
-		m.Reviews[i] = EnrolledReview{Number: review.Number, Title: review.Title, URL: review.URL}
-	}
-	return m
+	return publicsitemodel.EditorialManifest(content)
 }
 
 // decodeSnapshotContent validates the same explicit public model used to build
 // a publication. Historical summaries are checked against their own captured
 // editorial values, never current private facts or later approved revisions.
 func decodeSnapshotContent(raw string) (Content, error) {
-	var content Content
-	if len(raw) > MaxContentBytes || strictjson.Decode([]byte(raw), &content) != nil {
-		return Content{}, unavailable()
-	}
-	facts := make([]ReviewFacts, len(content.Reviews))
-	for i, review := range content.Reviews {
-		fact := ReviewFacts{Number: review.Number, Lifecycle: review.Lifecycle, CLIHasMore: review.CLIHasMore, HostedHasMore: review.HostedHasMore}
-		copyRounds := func(rounds []PublicRound) []RoundFacts {
-			out := make([]RoundFacts, len(rounds))
-			for j, round := range rounds {
-				out[j] = RoundFacts{Key: round.Key, Completed: true, Finalized: true, Complete: round.Complete, Found: round.Found, Accepted: round.Accepted, Routed: round.Routed, ObservedAt: round.ObservedAt, DurationMilliseconds: round.DurationMilliseconds}
-			}
-			return out
-		}
-		fact.CLI, fact.Hosted = copyRounds(review.CLI), copyRounds(review.Hosted)
-		facts[i] = fact
-	}
-	validated, err := BuildContent(manifestForContent(content), facts)
+	validated, err := publicsitemodel.DecodeContent([]byte(raw))
 	if err != nil {
-		return Content{}, unavailable()
-	}
-	canonical, err := json.Marshal(validated)
-	if err != nil || string(canonical) != raw {
 		return Content{}, unavailable()
 	}
 	return validated, nil
