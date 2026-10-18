@@ -130,6 +130,17 @@ func (w *historySnapshotWrite) insert(ctx context.Context, tx *sql.Tx, table str
 	return err
 }
 
+func (w *historySnapshotWrite) insertCurrentRunOrder(ctx context.Context, tx *sql.Tx, id string) error {
+	result, err := w.exec(ctx, tx, insertCurrentRunOrderSQL, w.project, id)
+	if err != nil {
+		return err
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		return historyInconsistent()
+	}
+	return nil
+}
+
 // A run's caller sets changedDetail when its bounded findings changed even if
 // the scalar summary did not. That creates a new exact run/detail version.
 func (w *historySnapshotWrite) version(ctx context.Context, tx *sql.Tx, spec historyRecordSpec, keys, body []any, changedDetail bool) (int64, error) {
@@ -315,7 +326,7 @@ func (w *historySnapshotWrite) applyCurrent(ctx context.Context, tx *sql.Tx, sna
 			if !ok || runID == "" {
 				return historyInconsistent()
 			}
-			if err := insertCurrentRunOrder(ctx, tx, w.project, runID); err != nil {
+			if err := w.insertCurrentRunOrder(ctx, tx, runID); err != nil {
 				return err
 			}
 		}
