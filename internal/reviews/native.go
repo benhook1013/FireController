@@ -92,7 +92,7 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 		}
 	}
 	if p.Attempt != nil {
-		if err = publishNativeAttempt(ctx, tx, write, id, pull.Number, *p.Attempt); err != nil {
+		if err = publishNativeAttempt(ctx, tx, write, previousID, id, pull.Number, *p.Attempt); err != nil {
 			return Receipt{}, err
 		}
 	}
@@ -164,10 +164,10 @@ func appendNativeRun(ctx context.Context, tx *sql.Tx, write *historySnapshotWrit
 	return write.run(ctx, tx, nativeSource, number, order, run)
 }
 
-func publishNativeAttempt(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, snapshot string, number int64, a Attempt) error {
+func publishNativeAttempt(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, previousSnapshot, stagedSnapshot string, number int64, a Attempt) error {
 	if a.SourceRunID != "" {
 		var n int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=? AND source=? AND source_run_id=? AND channel=? AND head_sha=?`, write.project, snapshot, number, nativeSource, a.SourceRunID, a.Channel, a.HeadSHA).Scan(&n); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=? AND source=? AND source_run_id=? AND channel=? AND head_sha=?`, write.project, stagedSnapshot, number, nativeSource, a.SourceRunID, a.Channel, a.HeadSHA).Scan(&n); err != nil {
 			return err
 		}
 		if n != 1 {
@@ -175,12 +175,16 @@ func publishNativeAttempt(ctx context.Context, tx *sql.Tx, write *historySnapsho
 		}
 	}
 	var position int
-	err := tx.QueryRowContext(ctx, `SELECT position FROM review_attempts WHERE project_id=? AND snapshot_id=? AND source=? AND source_attempt_id=?`, write.project, snapshot, nativeSource, a.SourceAttemptID).Scan(&position)
+	// No attempt has been staged yet. Resolve an existing attempt's position
+	// from the prior workspace snapshot, rather than traversing retained intervals
+	// at the new snapshot revision. For a new attempt, use the indexed current
+	// placement table directly; it still reflects the old workspace at this point.
+	err := tx.QueryRowContext(ctx, `SELECT position FROM review_attempts WHERE project_id=? AND snapshot_id=? AND source=? AND source_attempt_id=?`, write.project, previousSnapshot, nativeSource, a.SourceAttemptID).Scan(&position)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position),-1)+1 FROM review_attempts WHERE project_id=? AND snapshot_id=? AND pull_number=?`, write.project, snapshot, number).Scan(&position); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position),-1)+1 FROM review_current_attempts WHERE project_id=? AND pull_number=?`, write.project, number).Scan(&position); err != nil {
 			return err
 		}
 	}
