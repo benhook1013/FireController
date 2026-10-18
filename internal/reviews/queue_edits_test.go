@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -268,6 +269,118 @@ func TestQueueEditsReplayCASLimitsAndEventRollback(t *testing.T) {
 	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestNativeDoesNotResurfaceHistoricallyRetiredMissingParent(t *testing.T) {
+	for _, mode := range []string{"queue-edit", "complete-observation"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newAPIFixture(t)
+			one := samplePull(1, "One")
+			one.Complete = false
+			one.Runs = []RunInput{{SourceRunID: "original-one", Channel: "manual", Scope: "full", Outcome: "unknown"}}
+			one.Attempts = []Attempt{{SourceAttemptID: "original-one-attempt", Channel: "manual", State: "unknown"}}
+			two := samplePull(2, "Two")
+			f.observe(t, reviewRequest(0, []PullInput{one, two}), "historical-retirement-seed")
+			base := importBase(f)
+			oldQueue := f.call("GET", base+"/queue?limit=1", f.readToken, "", nil)
+			var oldPage QueueResponse
+			if oldQueue.Code != 200 || json.Unmarshal(oldQueue.Body.Bytes(), &oldPage) != nil || oldPage.Cursor == "" {
+				t.Fatalf("could not capture old queue cursor: %d %s", oldQueue.Code, oldQueue.Body.String())
+			}
+			oldContinuation := f.call("GET", base+"/queue?limit=1&cursor="+oldPage.Cursor, f.readToken, "", nil)
+			oldDetail := f.call("GET", base+"/pulls/1?snapshot="+oldPage.SnapshotID, f.readToken, "", nil)
+			if oldContinuation.Code != 200 || oldDetail.Code != 200 {
+				t.Fatalf("could not capture pinned old data: queue=%d detail=%d", oldContinuation.Code, oldDetail.Code)
+			}
+
+			revision := int64(1)
+			if mode == "queue-edit" {
+				edit := queueEditRequest(revision, nil, []RetiredPull{{Number: 1, Reason: "superseded"}})
+				if response := queueEditHTTP(f, edit, "retire-one"); response.Code != 201 {
+					t.Fatalf("queue edit retirement failed: %d %s", response.Code, response.Body.String())
+				}
+				revision++
+			}
+			// First retain PR1's retirement while replacing the visible parent;
+			// a later unrelated full observation closes the current marker.
+			f.observe(t, ObservationRequest{ExpectedRevision: &revision, RepositoryID: 701, Source: "complete-source", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Queue: []PullInput{two}, Retired: []RetiredPull{{Number: 1, Reason: "superseded"}}}, "retire-one-observation")
+			revision++
+			f.observe(t, ObservationRequest{ExpectedRevision: &revision, RepositoryID: 701, Source: "complete-source", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Queue: []PullInput{}, Retired: []RetiredPull{{Number: 2, Reason: "superseded"}}}, "retire-two-observation")
+			revision++
+			f.observe(t, ObservationRequest{ExpectedRevision: &revision, RepositoryID: 701, Source: "complete-source", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Queue: []PullInput{}, Retired: []RetiredPull{}}, "clear-current-retirements")
+			revision++
+
+			scope := transferTestScope(t, f)
+			publication := NativePublication{Pull: samplePull(1, "One"), Attempt: &Attempt{SourceAttemptID: "native-after-retirement", Channel: "cli", State: "unknown"}}
+			if _, err := f.store.DB().Exec(`CREATE TRIGGER native_retirement_event_failure BEFORE INSERT ON events WHEN NEW.event_type='review.observed' BEGIN SELECT RAISE(ABORT,'injected native event failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			beforeFailedNative := importDatabaseState(t, f)
+			if _, err := f.store.Mutate(t.Context(), scope, core.Mutation{Operation: "test.native.retired", Target: "workspace", Key: "native-failed", Request: publication}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+				return PublishNative(ctx, tx, scope, publication)
+			}); err == nil || !reflect.DeepEqual(beforeFailedNative, importDatabaseState(t, f)) {
+				t.Fatalf("failed native publication did not rollback staged retirement: %v", err)
+			}
+			if _, err := f.store.DB().Exec(`DROP TRIGGER native_retirement_event_failure`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.store.Mutate(t.Context(), scope, core.Mutation{Operation: "test.native.retired", Target: "workspace", Key: "native-after-retirement", Request: publication}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+				return PublishNative(ctx, tx, scope, publication)
+			}); err != nil {
+				t.Fatalf("native publication failed: %v", err)
+			}
+			current := f.call("GET", base+"/queue?limit=100", f.readToken, "", nil)
+			var currentPage QueueResponse
+			if current.Code != 200 || json.Unmarshal(current.Body.Bytes(), &currentPage) != nil {
+				t.Fatalf("queue after native publication: %d %s", current.Code, current.Body.String())
+			}
+			for _, item := range currentPage.Items {
+				if item.Number == 1 {
+					t.Fatalf("native publication resurfaced historically retired PR1 in %s mode", mode)
+				}
+			}
+			oldContinuationAgain := f.call("GET", base+"/queue?limit=1&cursor="+oldPage.Cursor, f.readToken, "", nil)
+			oldDetailAgain := f.call("GET", base+"/pulls/1?snapshot="+oldPage.SnapshotID, f.readToken, "", nil)
+			if oldContinuationAgain.Code != 200 || oldContinuationAgain.Body.String() != oldContinuation.Body.String() || oldDetailAgain.Code != 200 || oldDetailAgain.Body.String() != oldDetail.Body.String() {
+				t.Fatal("native publication changed old cursor or immutable detail bytes")
+			}
+			var runs, attempts int
+			if err := f.store.DB().QueryRow(`SELECT run_count,attempt_count FROM review_current_totals WHERE project_id=? AND pull_number=1`, f.project).Scan(&runs, &attempts); err != nil || runs != 0 || attempts != 1 {
+				t.Fatalf("native reintroduction claimed omitted history: runs=%d attempts=%d err=%v", runs, attempts, err)
+			}
+			if err := ValidateHistoryReferences(t.Context(), f.store.DB()); err != nil {
+				t.Fatal("history after native retirement preservation:", err)
+			}
+			if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
+				t.Fatal("summaries after native retirement preservation:", err)
+			}
+		})
+	}
+
+	t.Run("explicit-reactivation", func(t *testing.T) {
+		f := newAPIFixture(t)
+		pull := samplePull(1, "One")
+		f.observe(t, reviewRequest(0, []PullInput{pull}), "reactivate-seed")
+		if response := queueEditHTTP(f, queueEditRequest(1, nil, []RetiredPull{{Number: 1, Reason: "superseded"}}), "reactivate-retire"); response.Code != 201 {
+			t.Fatalf("retire: %d %s", response.Code, response.Body.String())
+		}
+		reactivate := QueuePullInput{Number: 1, Title: pull.Title, State: pull.State, BaseRef: pull.BaseRef, CIState: pull.CIState, Mergeability: pull.Mergeability}
+		if response := queueEditHTTP(f, queueEditRequest(2, []QueuePullInput{reactivate}, nil), "reactivate-explicit"); response.Code != 201 {
+			t.Fatalf("reactivate: %d %s", response.Code, response.Body.String())
+		}
+		scope := transferTestScope(t, f)
+		publication := NativePublication{Pull: pull, Attempt: &Attempt{SourceAttemptID: "native-after-reactivation", Channel: "cli", State: "unknown"}}
+		if _, err := f.store.Mutate(t.Context(), scope, core.Mutation{Operation: "test.native.reactivated", Target: "workspace", Key: "native-after-reactivation", Request: publication}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+			return PublishNative(ctx, tx, scope, publication)
+		}); err != nil {
+			t.Fatal("native publication after explicit reactivation:", err)
+		}
+		response := f.call("GET", importBase(f)+"/queue", f.readToken, "", nil)
+		var queue QueueResponse
+		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &queue) != nil || len(queue.Items) != 1 || queue.Items[0].Number != 1 {
+			t.Fatalf("explicitly reactivated PR did not remain visible: %d %s", response.Code, response.Body.String())
+		}
+	})
 }
 
 func int64Pointer(value int64) *int64 { return &value }
