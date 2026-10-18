@@ -743,18 +743,26 @@ func (e *Engine) WaitSourceRefresh(ctx context.Context, scope core.Scope, id str
 	if ctx == nil || e == nil || e.store == nil || !validRefreshID(id) || !identifier.MatchString(scope.PrincipalID) || maxWait < 0 || maxWait > 60*time.Second {
 		return SourceRefreshOperation{}, invalid()
 	}
+	waitCtx, cleanupWait := e.resultWaitContext(ctx)
+	defer cleanupWait()
 	canceled := func() error {
 		return core.Fail("overloaded", "The source refresh wait was canceled; its retained operation is unchanged.", 503)
 	}
 	read := func() (SourceRefreshOperation, error) {
-		value, err := e.ReadSourceRefresh(ctx, scope, id)
-		if ctx.Err() != nil {
+		if waitCtx.Err() != nil {
+			return SourceRefreshOperation{}, canceled()
+		}
+		value, err := e.ReadSourceRefresh(waitCtx, scope, id)
+		if waitCtx.Err() != nil {
 			return SourceRefreshOperation{}, canceled()
 		}
 		return value, err
 	}
 	if maxWait == 0 {
 		return read()
+	}
+	if waitCtx.Err() != nil {
+		return SourceRefreshOperation{}, canceled()
 	}
 	waiter := &sourceRefreshWaiter{principal: scope.PrincipalID, changed: make(chan struct{}, 1)}
 	e.sourceMu.Lock()
@@ -793,7 +801,7 @@ func (e *Engine) WaitSourceRefresh(ctx context.Context, scope core.Scope, id str
 			return value, nil
 		}
 		select {
-		case <-ctx.Done():
+		case <-waitCtx.Done():
 			return SourceRefreshOperation{}, canceled()
 		case <-timer.C:
 			return read()
