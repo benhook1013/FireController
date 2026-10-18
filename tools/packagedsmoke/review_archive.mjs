@@ -65,8 +65,42 @@ try {
     await expect.poll(() => section.locator(feed === 'runs' ? '.review-round-pill' : 'li').count()).toBe(shown);
     need(requests(view,feed).length === before+1);
   };
+  // The real head summary shares the archive fixture. Check rendered geometry,
+  // not CSS declarations: a no-overflow page can still crush one round into
+  // a character-wide column through inherited mobile grid styles.
+  const readableMergeHead = async page => {
+    const original = page.viewportSize();
+    try {
+      const head = page.getByRole('region',{name:'Merge train head',exact:true});
+      await head.waitFor();
+      const pills = head.locator('.review-round-pill');
+      await expect(pills).toHaveCount(1); // This fixture retains a CLI summary.
+      for (const width of [1440,390,320]) {
+        await page.setViewportSize({width,height:900});
+        need(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        const geometry = await head.evaluate(element => {
+          const rect = node => { const box=node.getBoundingClientRect();return {left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width}; };
+          const lineCount = node => { const range=document.createRange();range.selectNodeContents(node);return new Set([...range.getClientRects()].filter(box=>box.width>0&&box.height>0).map(box=>Math.round(box.top))).size; };
+          const identity=document.querySelector('.project-identity');
+          return {head:rect(element),identity:rect(identity),groups:[...element.querySelectorAll('.delivery-review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
+        });
+        need(geometry.groups.length === 2);
+        if (width === 1440) need(Math.abs(geometry.head.top-geometry.identity.top) <= 1 && geometry.head.left >= geometry.identity.right);
+        else {
+          need(Math.abs(geometry.head.left-geometry.identity.left) <= 1 && Math.abs(geometry.head.right-geometry.identity.right) <= 1 && geometry.head.top >= geometry.identity.bottom);
+          need(geometry.groups[1].top >= geometry.groups[0].bottom && Math.abs(geometry.groups[0].left-geometry.groups[1].left) <= 1 && Math.abs(geometry.groups[0].right-geometry.groups[1].right) <= 1);
+        }
+        for (const item of geometry.pills) {
+          need(item.text === '0/0/0' && Boolean(item.dateText));
+          need(item.pill.width >= 60 && item.statsLines === 1 && item.dateLines === 1);
+          need(item.stats.left >= item.pill.left && item.stats.right <= item.pill.right && item.date.left >= item.pill.left && item.date.right <= item.pill.right);
+        }
+      }
+    } finally { await page.setViewportSize(original); }
+  };
   phase = 'current-first-pages';
   const current = await connect('current');
+  await readableMergeHead(current.page);
   need(requests(current,'runs').length === 1 && requests(current,'attempts').length === 1);
   await more(current,'runs',40); await more(current,'attempts',40);
   phase = 'pinned-first-pages';
