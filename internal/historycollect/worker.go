@@ -36,8 +36,7 @@ func (e *Engine) Run(ctx context.Context) (<-chan error, error) {
 	// queued continuations may also outlive the provider pagination they follow.
 	// Restart either unfinished pass at page one, preserving committed captures.
 	if err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE history_collections SET state='queued',revision=revision+1,position_json=json_set(position_json,'$.page',1),pass_number=pass_number+1,reason='',updated_at=? WHERE state='running' OR (state='queued' AND json_extract(position_json,'$.page')>1)`, stamp())
-		return err
+		return recoverInterrupted(ctx, tx)
 	}); err != nil {
 		return nil, err
 	}
@@ -65,6 +64,57 @@ func (e *Engine) Run(ctx context.Context) (<-chan error, error) {
 		}
 	}()
 	return done, nil
+}
+
+type recoveryCandidate struct{ project, id string }
+
+func recoverInterrupted(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM history_collections WHERE state='running' OR (state='queued' AND json_extract(position_json,'$.page')>1) ORDER BY project_id,id LIMIT 65`)
+	if err != nil {
+		return err
+	}
+	candidates := make([]recoveryCandidate, 0, 64)
+	for rows.Next() {
+		var candidate recoveryCandidate
+		if err := rows.Scan(&candidate.project, &candidate.id); err != nil {
+			rows.Close()
+			return err
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	// The ordinary admission cap makes this recovery set finite. Refuse an
+	// inconsistent larger set instead of growing startup memory without bound.
+	if len(candidates) > 64 {
+		return storageError()
+	}
+	for _, candidate := range candidates {
+		r, err := readOperation(ctx, tx, candidate.project, candidate.id)
+		if err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE history_collections SET state='queued',revision=revision+1,position_json=json_set(position_json,'$.page',1),pass_number=pass_number+1,reason='',updated_at=? WHERE project_id=? AND id=? AND revision=? AND (state='running' OR (state='queued' AND json_extract(position_json,'$.page')>1))`, stamp(), r.ProjectID, r.ID, r.Revision)
+		if err != nil {
+			return err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed != 1 {
+			return conflict()
+		}
+		if err := core.AppendEvent(ctx, tx, core.Scope{ProjectID: r.ProjectID, PrincipalID: r.actor, WorkerID: r.worker}, "history.collection_changed", r.ID, r.Revision+1, struct{}{}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *Engine) binding(ctx context.Context, tx *sql.Tx, r retainedOperation) (string, error) {
