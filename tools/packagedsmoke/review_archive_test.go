@@ -339,7 +339,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		"review_pull_versions": 1, "review_pull_memberships": 1, "review_current_pulls": 0,
 		"review_run_versions": 1, "review_run_memberships": 1, "review_current_runs": -122,
 		"review_attempt_versions": 1, "review_attempt_memberships": 1, "review_current_attempts": -122,
-		"review_current_totals": 0, "review_current_attempt_order": -122,
+		"review_current_totals": 0, "review_current_attempt_order": -122, "review_current_run_order": -122,
 		"events": 1, "receipts": 1, "sqlite_sequence": 0,
 	}
 	if len(before.tables) != len(after.tables) || !reflect.DeepEqual(before.metadata, after.metadata) || oldSnapshot != packagedArchiveSnapshotHash(t, ctx, data, project, snapshot) {
@@ -419,6 +419,7 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 			{`INSERT INTO review_run_versions(project_id,id,version_revision,pull_number,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json) VALUES(?,?,1,123,?,?,'cli',?,'Synthetic reviewer','full','completed',1,1,?,?,0,0,0,1,0,'[]')`, []any{project, id, source, runSourceID, pull.HeadSHA, start, finish}},
 			{`INSERT INTO review_run_memberships(project_id,id,start_revision,end_revision,version_revision,pull_number,run_order) VALUES(?,?,1,NULL,1,123,?)`, []any{project, id, i}},
 			{`INSERT INTO review_current_runs(project_id,id,start_revision,pull_number,run_order) VALUES(?,?,1,123,?)`, []any{project, id, i}},
+			{`INSERT INTO review_current_run_order(project_id,id,pull_number,channel,outcome,finalized,run_order) VALUES(?,?,123,'cli','completed',1,?)`, []any{project, id, i}},
 			{`INSERT INTO review_attempt_versions(project_id,source,source_attempt_id,version_revision,pull_number,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id) VALUES(?,?,?,1,123,'cli',?,'completed',?,?,1,?,'','')`, []any{project, source, attemptID, pull.HeadSHA, start, finish, runSourceID}},
 			{`INSERT INTO review_attempt_memberships(project_id,source,source_attempt_id,start_revision,end_revision,version_revision,pull_number,position) VALUES(?,?,?,1,NULL,1,123,?)`, []any{project, source, attemptID, i}},
 			{`INSERT INTO review_current_attempts(project_id,source,source_attempt_id,start_revision,pull_number,position) VALUES(?,?,?,1,123,?)`, []any{project, source, attemptID, i}},
@@ -460,6 +461,9 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 	}
 	if err = reviews.ValidateCurrentSummaries(ctx, tx); err != nil {
 		t.Fatal("synthetic archive current summaries disagree with retained references")
+	}
+	if err = reviews.ValidateCurrentRunOrder(ctx, tx); err != nil {
+		t.Fatal("synthetic archive current run order disagrees with retained references")
 	}
 	if err = tx.Commit(); err != nil {
 		t.Fatalf("synthetic archive transaction failed: %v", err)

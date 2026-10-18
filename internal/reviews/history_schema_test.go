@@ -94,7 +94,7 @@ func TestHistoryPhysicalSchemaExactVersionsAndHistoricalMembership(t *testing.T)
 	f := historyPhysicalFixture(t)
 	historyPhysicalMemberships(t, f)
 	var schema string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&schema); err != nil || schema != "5" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&schema); err != nil || schema != "6" {
 		t.Fatal("physical declarations changed legacy schema version", schema, err)
 	}
 	var tables int
