@@ -181,6 +181,39 @@ func TestPresentationClientActualAPIHistoryReplayRestartAndLostReceipt(t *testin
 		t.Fatal("restart replay", replay, e)
 	}
 }
+
+func TestPresentationClientReadsRetainedRevisionZeroNameAndRepairsExplicitly(t *testing.T) {
+	f := presentationClientFixture(t)
+	legacyName := " \x01Legacy\tproject\n "
+	if _, err := f.store.DB().Exec(`UPDATE projects SET name=? WHERE id=?`, legacyName, f.project); err != nil {
+		t.Fatal(err)
+	}
+	service := httptest.NewServer(f.handler)
+	defer service.Close()
+	c := f.newClient(t, f.admin, f.sender, service.URL)
+	before := presentationClientCounts(t, f)
+	snapshot, err := c.Presentation(t.Context())
+	if err != nil || snapshot.Presentation.Revision != 0 || snapshot.Presentation.Name != legacyName || snapshot.Presentation.BrandName != "FireController" || snapshot.Presentation.Tagline != "Project workspace" || snapshot.EventCursor == "" {
+		t.Fatalf("retained revision-zero snapshot=%+v err=%v", snapshot, err)
+	}
+	if !reflect.DeepEqual(before, presentationClientCounts(t, f)) {
+		t.Fatal("revision-zero read repaired or wrote retained state")
+	}
+
+	receipt, err := c.ReplacePresentation(t.Context(), "explicit-repair", client.ReplacePresentationRequest{ExpectedRevision: 0, Presentation: client.PresentationConfig{Name: "Repaired project"}})
+	if err != nil || receipt.Revision != 1 || receipt.Outcome != "updated" || receipt.ProjectID != f.project {
+		t.Fatalf("repair receipt=%+v err=%v", receipt, err)
+	}
+	repaired, err := c.Presentation(t.Context())
+	if err != nil || repaired.Presentation.Revision != 1 || repaired.Presentation.Name != "Repaired project" {
+		t.Fatalf("repaired snapshot=%+v err=%v", repaired, err)
+	}
+	revision, err := c.PresentationRevision(t.Context(), 1)
+	if err != nil || revision.Revision != 1 || revision.State.Revision != 1 || revision.State.Name != "Repaired project" {
+		t.Fatalf("revision one=%+v err=%v", revision, err)
+	}
+}
+
 func TestPresentationClientStrictControlledResponses(t *testing.T) {
 	base := map[string]any{"presentation": map[string]any{"project_id": "project-one", "revision": 0, "name": "Project", "brand_name": "FireController", "tagline": "Project workspace", "headings": map[string]string{}, "theme": map[string]string{}, "updated_at": ""}, "event_cursor": "opaque-cursor"}
 	for _, mutate := range []func(map[string]any){func(v map[string]any) { delete(v, "event_cursor") }, func(v map[string]any) { v["event_cursor"] = nil }, func(v map[string]any) { v["event_cursor"] = " padded" }, func(v map[string]any) { v["extra"] = true }, func(v map[string]any) { v["presentation"].(map[string]any)["project_id"] = "foreign" }, func(v map[string]any) { delete(v["presentation"].(map[string]any), "theme") }, func(v map[string]any) { v["presentation"].(map[string]any)["headings"] = nil }, func(v map[string]any) {
@@ -190,7 +223,12 @@ func TestPresentationClientStrictControlledResponses(t *testing.T) {
 		p["revision"] = 1
 		p["updated_at"] = "2026-01-01T00:00:00Z"
 		p["theme"] = map[string]string{"canvas_text": "#e8e7e4"}
-	}, func(v map[string]any) { v["presentation"].(map[string]any)["name"] = nil }} {
+	}, func(v map[string]any) { v["presentation"].(map[string]any)["name"] = nil }, func(v map[string]any) { v["presentation"].(map[string]any)["name"] = "" }, func(v map[string]any) { v["presentation"].(map[string]any)["name"] = strings.Repeat("x", 201) }, func(v map[string]any) { v["presentation"].(map[string]any)["name"] = 42 }, func(v map[string]any) {
+		p := v["presentation"].(map[string]any)
+		p["revision"] = 1
+		p["updated_at"] = "2026-01-01T00:00:00Z"
+		p["name"] = " Project "
+	}} {
 		raw, _ := json.Marshal(base)
 		var v map[string]any
 		json.Unmarshal(raw, &v)
@@ -199,6 +237,10 @@ func TestPresentationClientStrictControlledResponses(t *testing.T) {
 		_, e := c.Presentation(t.Context())
 		presentationClientError(t, e, "invalid_response", false)
 	}
+	invalidUTF8 := `{"presentation":{"project_id":"project-one","revision":0,"name":"` + string([]byte{0xff}) + `","brand_name":"FireController","tagline":"Project workspace","headings":{},"theme":{},"updated_at":""},"event_cursor":"opaque-cursor"}`
+	c, _ := progressResponseClient(t, invalidUTF8)
+	_, e := c.Presentation(t.Context())
+	presentationClientError(t, e, "invalid_response", false)
 	for _, body := range []string{`{"items":null,"has_more":false}`, `{"items":[],"has_more":true}`, `{"items":[],"has_more":false,"cursor":"extra"}`, `{"items":[{"revision":1,"actor_id":"p","created_at":"bad"}],"has_more":false}`, `{"items":[{"revision":1,"actor_id":"p","created_at":"2026-01-01T00:00:00Z"},{"revision":2,"actor_id":"p","created_at":"2026-01-01T00:00:00Z"}],"has_more":false}`} {
 		c, _ := progressResponseClient(t, body)
 		_, e := c.PresentationHistory(t.Context(), client.PageOptions{})
