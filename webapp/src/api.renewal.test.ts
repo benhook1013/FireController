@@ -64,7 +64,7 @@ describe('finite existing-cookie renewal', () => {
     await expect(api.renewBrowserSession()).rejects.toMatchObject({ code: 'cancelled' });
   });
 
-  it('reconnects both private streams with processed cursors without reloading snapshots or acknowledging messages', async () => {
+  it('reopens both deliberately retired streams promptly without a false disconnect or snapshot reload', async () => {
     const api = await connected(); vi.useFakeTimers();
     const metadata: PresentationSnapshot = { presentation: { project_id: project.id, revision: 0, name: project.name, brand_name: 'FireController', tagline: 'Project workspace', headings: {}, theme: {}, updated_at: '' }, event_cursor: 'project_initial' };
     const paths: string[] = [], cursors: string[] = [], streamSignals: AbortSignal[] = [];
@@ -82,15 +82,76 @@ describe('finite existing-cookie renewal', () => {
       throw new Error(`unexpected API path ${url.pathname}`);
     }));
     const owner = new AbortController(), inboxSnapshots = vi.fn(), projectSnapshots = vi.fn(), inboxEvents = vi.fn(), projectEvents = vi.fn();
-    const messages = api.watchMessages('worker_one', {}, { snapshot: inboxSnapshots, events: inboxEvents, status: () => undefined }, owner.signal);
-    const projectWatch = api.watchProjectMetadata(metadata, { snapshot: projectSnapshots, events: projectEvents, status: () => undefined }, owner.signal);
+    const inboxStatus = vi.fn(), projectStatus = vi.fn();
+    const messages = api.watchMessages('worker_one', {}, { snapshot: inboxSnapshots, events: inboxEvents, status: inboxStatus }, owner.signal);
+    const projectWatch = api.watchProjectMetadata(metadata, { snapshot: projectSnapshots, events: projectEvents, status: projectStatus }, owner.signal);
     await flush(); expect(cursors).toHaveLength(2); expect(inboxEvents).toHaveBeenCalledTimes(1); expect(projectEvents).toHaveBeenCalledTimes(1);
     await api.renewBrowserSession(); await flush(); expect(streamSignals.slice(0, 2).every(signal => signal.aborted)).toBe(true); expect(owner.signal.aborted).toBe(false);
-    await vi.advanceTimersByTimeAsync(1000); await flush();
     expect(cursors).toHaveLength(4); expect(cursors.slice(2).sort()).toEqual(['message_processed', 'project_processed']);
     expect(inboxSnapshots).toHaveBeenCalledTimes(1); expect(projectSnapshots).toHaveBeenCalledTimes(1);
+    for (const status of [inboxStatus, projectStatus]) {
+      expect(status).not.toHaveBeenCalledWith('reconnecting');
+      expect(status).not.toHaveBeenCalledWith('closed');
+    }
     expect(paths.filter(path => path.endsWith('/inbox/worker_one/snapshot'))).toHaveLength(1); expect(paths.filter(path => !path.endsWith('/stream') && !path.endsWith('/inbox/worker_one/snapshot'))).toEqual([`/api/v1/projects/${project.id}/browser-session/renew`]);
     owner.abort(); await Promise.all([messages, projectWatch]); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('reopens an in-flight stream request after renewal but closes cleanly on owner abort', async () => {
+    const api = await connected(); vi.useFakeTimers();
+    const metadata: PresentationSnapshot = { presentation: { project_id: project.id, revision: 0, name: project.name, brand_name: 'FireController', tagline: 'Project workspace', headings: {}, theme: {}, updated_at: '' }, event_cursor: 'opening_cursor' };
+    let firstSignal: AbortSignal | undefined, opens = 0;
+    const cursors: string[] = [], snapshots = vi.fn(), events = vi.fn(), status = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/browser-session/renew')) return json(session());
+      if (!url.pathname.endsWith('/stream')) throw new Error(`unexpected API path ${url.pathname}`);
+      opens++; cursors.push(url.searchParams.get('cursor')!);
+      if (opens === 1) return new Promise<Response>((_resolve, reject) => {
+        firstSignal = init.signal!;
+        init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+      });
+      const page = { items: [], event_cursor: 'renewed_cursor', has_more: false };
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(new TextEncoder().encode(`event: project-events\nid: renewed_cursor\ndata: ${JSON.stringify(page)}\n\n`));
+        init.signal!.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true });
+      } });
+      return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+    }));
+    const owner = new AbortController();
+    const watch = api.watchProjectMetadata(metadata, { snapshot: snapshots, events, status }, owner.signal);
+    await flush(); expect(opens).toBe(1);
+    await api.renewBrowserSession(); await flush();
+    expect(firstSignal?.aborted).toBe(true); expect(opens).toBe(2); expect(cursors).toEqual(['opening_cursor', 'opening_cursor']);
+    expect(snapshots).toHaveBeenCalledTimes(1); expect(events).toHaveBeenCalledTimes(1);
+    expect(status).not.toHaveBeenCalledWith('reconnecting'); expect(status).not.toHaveBeenCalledWith('closed');
+    owner.abort(); await watch; await flush();
+    expect(opens).toBe(2); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps a real idle close on the ordinary reconnect backoff', async () => {
+    const api = await connected(); vi.useFakeTimers();
+    const metadata: PresentationSnapshot = { presentation: { project_id: project.id, revision: 0, name: project.name, brand_name: 'FireController', tagline: 'Project workspace', headings: {}, theme: {}, updated_at: '' }, event_cursor: 'idle_cursor' };
+    let opens = 0;
+    const cursors: string[] = [], snapshots = vi.fn(), events = vi.fn(), status = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith('/stream')) throw new Error(`unexpected API path ${url.pathname}`);
+      opens++; cursors.push(url.searchParams.get('cursor')!);
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        init.signal!.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true });
+      } });
+      return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+    }));
+    const owner = new AbortController();
+    const watch = api.watchProjectMetadata(metadata, { snapshot: snapshots, events, status }, owner.signal);
+    await flush(); expect(opens).toBe(1); expect(status).toHaveBeenLastCalledWith('live');
+    await vi.advanceTimersByTimeAsync(45_000); await flush();
+    expect(status).toHaveBeenLastCalledWith('reconnecting'); expect(opens).toBe(1);
+    await vi.advanceTimersByTimeAsync(999); await flush(); expect(opens).toBe(1);
+    await vi.advanceTimersByTimeAsync(1); await flush();
+    expect(opens).toBe(2); expect(cursors).toEqual(['idle_cursor', 'idle_cursor']); expect(snapshots).toHaveBeenCalledTimes(1);
+    owner.abort(); await watch; expect(events).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
   });
 
   it.each(['headers401', 'headers403', 'failurebody', 'errorframe'])('ignores retired %s but still rejects a current stream revocation', async mode => {
@@ -98,6 +159,7 @@ describe('finite existing-cookie renewal', () => {
     const metadata: PresentationSnapshot = { presentation: { project_id: project.id, revision: 0, name: project.name, brand_name: 'FireController', tagline: 'Project workspace', headings: {}, theme: {}, updated_at: '' }, event_cursor: 'retained_cursor' };
     let releaseHeaders: ((value: Response) => void) | undefined;
     let held: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let currentStream: ReadableStreamDefaultController<Uint8Array> | undefined;
     let opens = 0;
     const cursors: string[] = [], snapshots = vi.fn(), events = vi.fn(), status = vi.fn();
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
@@ -105,22 +167,25 @@ describe('finite existing-cookie renewal', () => {
       if (url.pathname.endsWith('/browser-session/renew')) return json(session());
       if (!url.pathname.endsWith('/stream')) throw new Error('unexpected snapshot/archive/action');
       opens++; cursors.push(url.searchParams.get('cursor')!);
-      if (opens > 1) return mode === 'errorframe' ? new Response('event: error\ndata: {"error":{"code":"unauthorized"}}\n\n', { headers: { 'content-type': 'text/event-stream' } }) : json({ error: { code: 'unauthorized', message: 'private revoked' } }, 401);
-      if (mode.startsWith('headers')) return new Promise<Response>(resolve => { releaseHeaders = resolve; });
+      if (opens === 3) return mode === 'errorframe' ? new Response('event: error\ndata: {"error":{"code":"unauthorized"}}\n\n', { headers: { 'content-type': 'text/event-stream' } }) : json({ error: { code: 'unauthorized', message: 'private revoked' } }, 401);
+      if (opens === 2) return new Response(new ReadableStream<Uint8Array>({ start(controller) { currentStream = controller; } }), { headers: { 'content-type': 'text/event-stream' } });
+      if (mode.startsWith('headers') || mode === 'errorframe') return new Promise<Response>(resolve => { releaseHeaders = resolve; });
       const body = new ReadableStream<Uint8Array>({ start(controller) { held = controller; } });
-      return new Response(body, { status: mode === 'failurebody' ? 401 : 200, headers: { 'content-type': mode === 'failurebody' ? 'application/json' : 'text/event-stream' } });
+      return new Response(body, { status: 401, headers: { 'content-type': 'application/json' } });
     }));
     const owner = new AbortController();
     const outcome = api.watchProjectMetadata(metadata, { snapshot: snapshots, events, status }, owner.signal).then(() => undefined, error => error);
     await flush(); expect(opens).toBe(1);
     await api.renewBrowserSession();
-    if (releaseHeaders) releaseHeaders(json({ error: { code: mode === 'headers403' ? 'forbidden' : 'unauthorized' } }, mode === 'headers403' ? 403 : 401));
+    if (releaseHeaders) releaseHeaders(mode === 'errorframe'
+      ? new Response('event: error\ndata: {"error":{"code":"unauthorized"}}\n\n', { headers: { 'content-type': 'text/event-stream' } })
+      : json({ error: { code: mode === 'headers403' ? 'forbidden' : 'unauthorized' } }, mode === 'headers403' ? 403 : 401));
     if (mode === 'failurebody') { held!.enqueue(new TextEncoder().encode(JSON.stringify({ error: { code: 'unauthorized' } }))); held!.close(); }
-    if (mode === 'errorframe') held!.enqueue(new TextEncoder().encode('event: error\ndata: {"error":{"code":"unauthorized"}}\n\n'));
-    await flush(); expect(status).not.toHaveBeenCalledWith('closed'); expect(events).not.toHaveBeenCalled(); expect(opens).toBe(1);
-    await vi.advanceTimersByTimeAsync(1000); await flush();
+    await flush(); expect(status).not.toHaveBeenCalledWith('closed'); expect(events).not.toHaveBeenCalled(); expect(opens).toBe(2);
+    expect(cursors).toEqual(['retained_cursor', 'retained_cursor']);
+    currentStream!.close(); await flush(); await vi.advanceTimersByTimeAsync(1000); await flush();
     expect(await outcome).toMatchObject({ code: 'unauthorized', status: mode === 'errorframe' ? 0 : 401 });
-    expect(cursors).toEqual(['retained_cursor', 'retained_cursor']); expect(snapshots).toHaveBeenCalledTimes(1); expect(status).toHaveBeenLastCalledWith('closed'); owner.abort();
+    expect(cursors).toEqual(['retained_cursor', 'retained_cursor', 'retained_cursor']); expect(snapshots).toHaveBeenCalledTimes(1); expect(status).toHaveBeenLastCalledWith('closed'); owner.abort();
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -189,9 +254,8 @@ describe('finite existing-cookie renewal', () => {
     const cancelled = new AbortController(); cancelled.abort(); await expect(api.renewBrowserSession(cancelled.signal)).rejects.toMatchObject({ code: 'cancelled' });
     expect(renewals).toBe(0); expect(oldSignal?.aborted).toBe(false);
     await expect(api.renewBrowserSession()).rejects.toMatchObject({ code: 'connection_failed' }); expect(oldSignal?.aborted).toBe(true);
-    release(json({ error: { code: 'unauthorized' } }, 401)); await flush(); expect(status).not.toHaveBeenCalledWith('closed');
-    await vi.advanceTimersByTimeAsync(1000); await flush(); expect(cursors).toEqual(['preserved_cursor', 'preserved_cursor']); expect(snapshots).toHaveBeenCalledTimes(1); expect(renewals).toBe(1);
-    if (committed) { expect(status).toHaveBeenLastCalledWith('live'); expect(events).toHaveBeenCalledTimes(1); owner.abort(); expect(await outcome).toBeUndefined(); }
+    release(json({ error: { code: 'unauthorized' } }, 401)); await flush(); expect(cursors).toEqual(['preserved_cursor', 'preserved_cursor']); expect(snapshots).toHaveBeenCalledTimes(1); expect(renewals).toBe(1);
+    if (committed) { expect(status).not.toHaveBeenCalledWith('closed'); expect(status).toHaveBeenLastCalledWith('live'); expect(events).toHaveBeenCalledTimes(1); owner.abort(); expect(await outcome).toBeUndefined(); }
     else { expect(await outcome).toMatchObject({ code: 'unauthorized', status: 401 }); expect(events).not.toHaveBeenCalled(); expect(status).toHaveBeenLastCalledWith('closed'); owner.abort(); }
     expect(vi.getTimerCount()).toBe(0);
   });
