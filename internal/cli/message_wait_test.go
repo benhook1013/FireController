@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -189,5 +191,84 @@ func TestMessageWaitCommandExtendsOnlyExplicitWaitBudget(t *testing.T) {
 	var page client.MessageEventPage
 	if code != cli.ExitSuccess || diag != "" || json.Unmarshal([]byte(out), &page) != nil || !page.TimedOut || time.Since(started) < 6*time.Second || time.Since(started) > 8*time.Second {
 		t.Fatal("extended wait", code, diag, time.Since(started))
+	}
+}
+
+func TestMessageWaitCommandStreamResyncIsConflictWithoutEffects(t *testing.T) {
+	f := setupServiceFixture(t)
+	project := f.project(t, "resync-wait")
+	sender := f.worker(t, project, "Sender")
+	recipient := f.worker(t, project, "Recipient")
+	snapshotPath := "/api/v1/projects/" + project + "/inbox/" + recipient + "/snapshot"
+	original := f.call(t, "GET", snapshotPath, f.admin, recipient, nil)["event_cursor"].(string)
+	message, _ := f.sendMessage(t, project, sender, recipient, "PRIVATE_PENDING_MESSAGE")
+	advanced := f.call(t, "GET", snapshotPath, f.admin, recipient, nil)["event_cursor"].(string)
+	if original == advanced {
+		t.Fatal("fixture did not advance its event cursor")
+	}
+	var streams, writes atomic.Int64
+	released := make(chan struct{}, 2)
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writes.Add(1)
+		}
+		if strings.HasSuffix(r.URL.Path, "/stream") {
+			streams.Add(1)
+			defer func() { released <- struct{}{} }()
+			if r.URL.Path != "/api/v1/projects/"+project+"/message-events/stream" || r.URL.Query().Get("cursor") != original || r.URL.Query().Get("limit") != "20" || len(r.URL.Query()) != 2 || r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("X-FC-Worker") != recipient || r.Header.Get("Authorization") != "Bearer "+f.admin {
+				t.Error("stream changed its original cursor or scoped binding")
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			page, _ := json.Marshal(client.MessageEventPage{Items: []client.MessageEvent{}, Cursor: advanced})
+			_, _ = fmt.Fprintf(w, "event: message-events\nid: %s\ndata: %s\n\nevent: error\ndata: {\"error\":{\"code\":\"resync_required\",\"message\":\"UNTRUSTED_RESYNC_TEXT\"},\"request_id\":\"request-resync\"}\n\n", advanced, page)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		f.handler.ServeHTTP(w, r)
+	}))
+	defer service.Close()
+	path := mutationProfiles(t, f, service.URL, map[string][2]string{"recipient": {project, recipient}})
+	profilesBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Capture actual retained message/handling bytes and all receipt/event counts.
+	retained := func() string {
+		t.Helper()
+		var value string
+		err := f.store.DB().QueryRow(`SELECT json_array(m.body,m.created_at,s.seen,s.acknowledged,s.revision,
+		 (SELECT count(*) FROM inbox_messages),(SELECT count(*) FROM inbox_recipient_state),
+		 (SELECT count(*) FROM receipts),(SELECT count(*) FROM events))
+		 FROM inbox_messages m JOIN inbox_recipient_state s ON s.project_id=m.project_id AND s.message_id=m.id
+		 WHERE m.project_id=? AND m.id=?`, project, message).Scan(&value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	before := retained()
+	for range 2 { // Explicit replay still sends the caller's original cursor.
+		code, out, diag := mutationInvoke(t, path, "recipient", "inbox", "wait", "--cursor", original)
+		var result struct {
+			Error client.Error `json:"error"`
+		}
+		if code != cli.ExitConflict || out != "" || json.Unmarshal([]byte(diag), &result) != nil || result.Error.Code != "resync_required" || result.Error.RequestID != "request-resync" || result.Error.Action != "Read a fresh bound-worker inbox snapshot, then continue from its event cursor; pending messages remain unacknowledged." || result.Error.OutcomeUnknown || strings.Count(diag, "\n") != 1 {
+			t.Fatalf("stream resync must be one safe conflict diagnostic: exit=%d stdout=%q stderr=%q", code, out, diag)
+		}
+		for _, private := range []string{original, advanced, "UNTRUSTED_RESYNC_TEXT", "PRIVATE_PENDING_MESSAGE", f.admin} {
+			if strings.Contains(diag, private) {
+				t.Fatal("resync diagnostic exposed cursor, body or credential")
+			}
+		}
+		select {
+		case <-released:
+		case <-time.After(time.Second):
+			t.Fatal("resync left its stream open")
+		}
+	}
+	profilesAfter, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(profilesBefore, profilesAfter) || retained() != before || streams.Load() != 2 || writes.Load() != 0 || f.resolverHit.Load() != 1 {
+		t.Fatal("resync/replay changed retained state, profiles, or performed hidden work", err)
 	}
 }
