@@ -9,7 +9,7 @@ import type {
 import { runMessageWatch, runEventWatch, type MessageWatchSource, type EventWatchCallbacks } from './events';
 import { validPresentationSnapshot, validPresentation, validMetadataPage, validPresentationConfig, type PresentationConfig } from './presentation';
 import type { PresentationSnapshot, PresentationRevision, ProjectMetadataPage } from './types';
-import { newSessionID, boundedSessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
+import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
 
 const maxBytes = 1 << 20;
 const maxItems = 100;
@@ -45,7 +45,7 @@ export type BrowserPresentationConfig = PresentationConfig;
 export interface BrowserMessageReceipt { id: string; conversation_id: string; outcome: 'sent' | 'seen' | 'acknowledged' | 'unchanged' }
 export interface BrowserPresentationReceipt { project_id: string; revision: number; outcome: 'updated' | 'unchanged' }
 function browserSessionView(value: unknown, selector: string, instance: string, project: string): value is BrowserSessionView {
-  return record(value) && keys(value, ['session_id', 'instance_id', 'project_id', 'expires_at', 'allow_writes', 'can_edit_presentation']) && value.session_id === selector && value.instance_id === instance && value.project_id === project && boundedSessionExpiry(value.expires_at) && typeof value.allow_writes === 'boolean' && typeof value.can_edit_presentation === 'boolean' && (!value.can_edit_presentation || value.allow_writes);
+  return record(value) && keys(value, ['session_id', 'instance_id', 'project_id', 'expires_at', 'allow_writes', 'can_edit_presentation']) && value.session_id === selector && value.instance_id === instance && value.project_id === project && sessionExpiry(value.expires_at) && typeof value.allow_writes === 'boolean' && typeof value.can_edit_presentation === 'boolean' && (!value.can_edit_presentation || value.allow_writes);
 }
 function mutationKey(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length <= 128 && value.trim() === value && !/[^\x20-\x7e]/u.test(value); }
 
