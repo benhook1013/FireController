@@ -159,8 +159,17 @@ func planTransferPull(ctx context.Context, tx HistoryQuery, project, snapshot st
 		position = next
 	} else if err != nil {
 		return nil, err
-	} else if !reflect.DeepEqual(body[:7], metadata) {
-		return nil, transferConflict("Selected PR metadata differs from the current workspace; prepare the batch with current metadata.")
+	} else {
+		var retired int
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_current_retired WHERE project_id=? AND number=?)`, project, pull.Number).Scan(&retired); err != nil {
+			return nil, err
+		}
+		if retired != 0 {
+			return nil, transferConflict("A retired PR requires explicit queue reactivation before historical transfer.")
+		}
+		if !reflect.DeepEqual(body[:7], metadata) {
+			return nil, transferConflict("Selected PR metadata differs from the current workspace; prepare the batch with current metadata.")
+		}
 	}
 	body[7] = int64(0)
 	selected := &transferPullPlan{body: body, position: position, runs: map[string]int{}, attempts: map[transferKey]int{}}
