@@ -33,7 +33,7 @@ fc jobs assigned
 fc inbox list
 ```
 
-The current CLI supports these compact reads plus verified `doctor`, workers, explicit job detail/history and conversation pages. `version` and `context` remain local. Explicit-key job/message mutations return compact completed outcomes with safe retry guidance. The [stdio MCP adapter](docs/mcp.md) exposes bound read tools and explicit-key mutations through the official Go SDK, including local evidence routing and explicit source/CI collection. Persistent CLI/MCP subscriptions remain to be implemented; the [HTTP message feed](docs/message-events.md) already supports snapshot, replay and SSE. Profiles belong to the individual client process or connection, without a shared workspace-wide active identity.
+The current CLI supports these compact reads plus verified `doctor`, workers, explicit job detail/history and conversation pages. `version` and `context` remain local. Explicit-key job/message mutations return compact completed outcomes with safe retry guidance. The [stdio MCP adapter](docs/mcp.md) exposes bound read tools and explicit-key mutations through the official Go SDK, including local evidence routing and explicit source/CI collection. A bounded [quiet message wait](docs/message-wait.md) is available through `fc inbox wait` and MCP `wait_for_messages`; the [HTTP message feed](docs/message-events.md) supports snapshot, replay and SSE. Automatic idle-agent wakeups remain unestablished. Profiles belong to the individual client process or connection, without a shared workspace-wide active identity.
 
 The CLI and MCP adapter use the same API as the browser. Results are structured and bounded, errors give a useful next action, and full context or archives are explicit reads. Fast operations return useful results directly. Variable-duration [source refresh](docs/review-source.md) uses a short bounded wait, returning a pending receipt only if needed; explicit immediate or longer waits are available. Long operations retain durable identity internally; capable adapters can deliver completion while the agent continues other work. Host support for concurrent tools and result delivery is verified rather than assumed.
 
@@ -71,7 +71,7 @@ AI-guided onboarding connects to an instance or sets up a local one, creates the
 
 A packaged onboarding skill teaches those supported operations while preserving the project's existing instructions. Project appearance is configurable, and the browser includes a small repository link so other users can discover FireController.
 
-The [onboarding guide](docs/onboarding.md) defines this flow and documents the implemented local profile/launcher setup. The bundled [onboarding skill](skills/firecontroller-onboard/SKILL.md) guides the supported API and client setup. A dedicated onboarding wizard and historical importer remain to be implemented.
+The [onboarding guide](docs/onboarding.md) defines this flow and documents the implemented local profile/launcher setup. The bundled [onboarding skill](skills/firecontroller-onboard/SKILL.md) guides the supported API and client setup. [Prepared review import](docs/review-import.md) is available; a dedicated onboarding wizard and broader historical collection remain to be implemented.
 
 ## Development and contribution
 
