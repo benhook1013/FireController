@@ -64,6 +64,57 @@ describe('project appearance and metadata boundary', () => {
     for (const value of [{ ...page, cursor: 'message_cursor' }, { ...page, event_cursor: null }, { ...page, items: null }, { ...page, has_more: true, items: [] }, { ...page, event_cursor: 'wrong_last' }, { ...page, items: [...page.items, ...page.items] }, { ...page, items: [{ ...page.items[0], event_type: 'message.sent' }] }, { ...page, items: [{ ...page.items[0], revision: Number.MAX_SAFE_INTEGER + 1 }] }, { ...page, items: [{ ...page.items[0], body: 'not metadata' }] }]) expect(validMetadataPage(value, 25)).toBe(false);
   });
 
+  it('preserves bounded well-formed retained names only at implicit revision zero', () => {
+    const retainedNames = ['  Retained\tname\n\u0000\u0085  ', ' \t\n ', ' \t' + '🔥'.repeat(49) + '\n '];
+    expect(new TextEncoder().encode(retainedNames[2]).length).toBe(200);
+    for (const name of retainedNames) {
+      expect(validPresentationSnapshot({ presentation: { ...presentation, name }, event_cursor: 'retained_cursor' }, project.id)).toBe(true);
+      expect(validPresentationSnapshot({ presentation: { ...presentation, name, revision: 1, updated_at: '2026-10-16T01:00:00Z' }, event_cursor: 'configured_cursor' }, project.id)).toBe(false);
+    }
+    // A canonical astral name is valid at both revisions; the limit is UTF-8
+    // bytes, and valid pairs must not be mistaken for lone surrogates.
+    for (const revision of [0, 1]) {
+      const state = { ...presentation, revision, updated_at: revision ? '2026-10-16T01:00:00Z' : '' };
+      expect(validPresentationSnapshot({ presentation: { ...state, name: '🔥'.repeat(50) }, event_cursor: 'cursor' }, project.id)).toBe(true);
+      for (const name of ['', null, '🔥'.repeat(50) + 'a', '\ud800', '\udfff', 'retained\ud800name']) {
+        expect(validPresentationSnapshot({ presentation: { ...state, name }, event_cursor: 'cursor' }, project.id)).toBe(false);
+      }
+    }
+    for (const change of [
+      { project_id: 'foreign' }, { brand_name: 'Different' }, { tagline: 'Different' }, { headings: null }, { theme: null },
+      { headings: { jobs: 'Different' } }, { theme: { surface_text: '#000000' } }, { updated_at: '2026-10-16T01:00:00Z' },
+    ]) expect(validPresentationSnapshot({ presentation: { ...presentation, name: retainedNames[0], ...change }, event_cursor: 'cursor' }, project.id)).toBe(false);
+  });
+
+  it('reads an exact retained snapshot through Api.presentation without rewriting text or issuing mutations', async () => {
+    vi.stubGlobal('location', { origin: 'https://service.example' });
+    const name = ' \tRetained\n<img src=x>\u0000 ';
+    const retained = { presentation: { ...presentation, name }, event_cursor: 'retained_cursor' };
+    const requests: { method: string; url: string }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); requests.push({ method: init?.method ?? 'GET', url });
+      if (url.endsWith('/instance')) return json({ instance_id: 'instance_one' });
+      if (url.endsWith('/project_one')) return json(project);
+      return json(retained);
+    }));
+    const api = new Api('private-test-token', project.id);
+    try {
+      await api.connect();
+      const result = await api.presentation();
+      expect(result).toEqual(retained); expect(result.presentation.name).toBe(name);
+      expect(requests).toEqual([
+        { method: 'GET', url: 'https://service.example/api/v1/instance' },
+        { method: 'GET', url: 'https://service.example/api/v1/projects/project_one' },
+        { method: 'GET', url: 'https://service.example/api/v1/projects/project_one/presentation' },
+      ]);
+      const doc = { title: '' };
+      applyPresentationRoot({ style: { removeProperty: () => '', setProperty: () => {} } } as unknown as HTMLElement, doc, result.presentation);
+      expect(doc.title).toBe(name + ' · FireController');
+      const html = renderToStaticMarkup(<h1>{result.presentation.name}</h1>);
+      expect(html).toContain('&lt;img src=x&gt;'); expect(html).not.toContain('<img');
+    } finally { api.close(); }
+  });
+
   it('pairs every review-card label and count with its status background while preserving default colors', async () => {
     const fs = await vi.importActual<{ readFileSync(path: URL, encoding: 'utf8'): string }>('node:fs');
     const styles = fs.readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
