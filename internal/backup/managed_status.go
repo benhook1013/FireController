@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -259,7 +260,7 @@ func ReadStatus(ctx context.Context, dataDir string) (Status, error) {
 		return Status{}, err
 	}
 	if recovery.State == "inactive" {
-		return Status{}, invalid()
+		return Status{}, core.Fail("restore_inactive", "The restored installation is inactive; use restore-activate after fencing its predecessor before reading managed backup status.", 409)
 	}
 	present, err := managedStatusSchema(ctx, tx)
 	if err != nil {
