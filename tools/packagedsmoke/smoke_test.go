@@ -227,6 +227,11 @@ func TestPackagedSmoke(t *testing.T) {
 			}
 		case <-time.After(stepTimeout):
 			_ = mcpCommand.Process.Kill()
+			select {
+			case <-closeDone:
+			case <-time.After(time.Second):
+				t.Error("owned fcmcp did not join after kill")
+			}
 			t.Error("actual fcmcp shutdown exceeded five seconds")
 		}
 	}
