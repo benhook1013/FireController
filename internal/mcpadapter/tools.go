@@ -14,6 +14,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// Keep model-facing waits plus establishment within 55 seconds, leaving
+// transport/serialization margin under a 60-second host tool deadline.
+const maxToolWaitSeconds = 50
+
 type arguments struct {
 	reviewRun                  client.ReviewRunRequest
 	roundChannel               string
