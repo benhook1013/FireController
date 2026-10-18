@@ -139,7 +139,7 @@ func TestReviewCheckpointMCPDiscoveryAndInvalidBeforeCredentials(t *testing.T) {
 			bad(copy)
 		}
 		if name != "review_checkpoint_read" {
-			for _, v := range []any{nil, -1, 61, 1.5, "2"} {
+			for _, v := range []any{nil, -1, 51, 60, 61, 1.5, "2"} {
 				copy := map[string]any{}
 				for k, x := range args {
 					copy[k] = x
