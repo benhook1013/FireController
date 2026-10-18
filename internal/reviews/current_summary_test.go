@@ -212,12 +212,12 @@ func TestCurrentSummaryVersionFourBackfillPreservesHistoricalWireAndCursors(t *t
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "5" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "6" {
 		t.Fatal("current-summary schema not installed", version, err)
 	}
 	for i, route := range routes {
 		if got := historyMigrationRead(t, f, route); !reflect.DeepEqual(got, before[i]) {
-			t.Fatal("v5 backfill changed stored historical JSON/cursor/header", route)
+			t.Fatal("current-index backfill changed stored historical JSON/cursor/header", route)
 		}
 	}
 	assertCurrentSummaryReduction(t, f, 7)

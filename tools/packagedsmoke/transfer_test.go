@@ -322,7 +322,7 @@ func TestPackagedTransferSmoke(t *testing.T) {
 	// events/receipts. In particular, executor/capture/coverage authority stays
 	// byte-identical, as do credentials, jobs, messages and public publication.
 	changed := map[string]bool{}
-	for _, name := range []string{"review_snapshots", "review_workspace", "review_pull_versions", "review_pull_memberships", "review_run_versions", "review_run_memberships", "review_attempt_versions", "review_attempt_memberships", "review_current_pulls", "review_current_runs", "review_current_attempts", "review_current_totals", "review_current_attempt_order", "events", "receipts", "sqlite_sequence"} {
+	for _, name := range []string{"review_snapshots", "review_workspace", "review_pull_versions", "review_pull_memberships", "review_run_versions", "review_run_memberships", "review_attempt_versions", "review_attempt_memberships", "review_current_pulls", "review_current_runs", "review_current_attempts", "review_current_totals", "review_current_attempt_order", "review_current_run_order", "events", "receipts", "sqlite_sequence"} {
 		changed[name] = true
 	}
 	if initial.version != retained.version || !reflect.DeepEqual(initial.metadata, retained.metadata) || len(initial.tables) != len(retained.tables) {
