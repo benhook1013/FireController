@@ -221,7 +221,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 5, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 2, "jobs": 6, "inbox": 1, "reviews": 6, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"history_collections":               {"history_collection", 1, "id project_id repository_id actor_id worker_id reader_fingerprint selection_json state revision reason position_json pass_number page_count record_count created_at updated_at"},
 	"history_collection_pages":          {"history_collection", 1, "id project_id collection_id sequence pass_number reader_fingerprint pull_number resource page_number record_count body_sha256 body_json created_at"},
@@ -273,6 +273,7 @@ var tables = map[string]tableVersion{
 	"review_current_retired":       {"reviews", 4, "project_id number start_revision position"},
 	"review_current_totals":        {"reviews", 5, "project_id pull_number run_count attempt_count incomplete_run_count"},
 	"review_current_attempt_order": {"reviews", 5, "project_id source source_attempt_id pull_number channel sort_key position"},
+	"review_current_run_order":     {"reviews", 6, "project_id id pull_number channel outcome finalized run_order"},
 	"review_policy_config":         {"review_policy", 1, "project_id revision body_json actor_id created_at"},
 	"review_execution_config":      {"review_execution", 1, "project_id revision body_json"}, "review_operations": {"review_execution", 1, "id project_id actor_id worker_id configuration_revision pull_number channel head_sha state revision reason attempt_id created_at updated_at"}, "review_execution_attempts": {"review_execution", 1, "id operation_id project_id provider account state revision anchor_json intent external_id"}, "review_execution_reservations": {"review_execution", 1, "provider repository_id pull_number action_class account attempt_id"}, "review_execution_transitions": {"review_execution", 1, "attempt_id revision state reason external_id created_at"}, "review_cli_preflight": {"review_execution", 4, "attempt_id project_id body_json"}, "review_hosted_preflight": {"review_execution", 6, "attempt_id project_id body_json"}, "review_hosted_allowance_queries": {"review_execution", 6, "id project_id attempt_id operation_id capability_fingerprint revision body_json"},
 	"review_execution_evidence": {"review_evidence", 1, "id project_id attempt_id operation_id body_json fingerprint"}, "review_hosted_observations": {"review_evidence", 3, "id project_id attempt_id operation_id position capture_sha256 capture_bytes body_json"},
@@ -846,6 +847,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	if versions["reviews"] >= 6 {
+		if err = reviews.ValidateCurrentRunOrder(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
 	if versions["jobs"] >= 6 {
 		if err = jobs.ValidateNotesSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
@@ -1056,6 +1065,10 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version in
 	if version >= 5 {
 		definitions = append(definitions, reviews.CurrentSummarySchemaSQL()...)
 		expectedTables, expectedObjects = 15, 25
+	}
+	if version >= 6 {
+		definitions = append(definitions, reviews.CurrentRunOrderSchemaSQL()...)
+		expectedTables, expectedObjects = 16, 27
 	}
 	for _, definition := range definitions {
 		fields := strings.Fields(definition)
@@ -1325,6 +1338,7 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"review_current_retired":          {canonicalFK("review_retired_memberships", "project_id,number,start_revision,position", "project_id,number,start_revision,position", "NO ACTION")},
 	"review_current_totals":           {canonicalFK("review_current_pulls", "project_id,pull_number", "project_id,number", "CASCADE")},
 	"review_current_attempt_order":    {canonicalFK("review_current_attempts", "project_id,source,source_attempt_id", "project_id,source,source_attempt_id", "CASCADE")},
+	"review_current_run_order":        {canonicalFK("review_current_runs", "project_id,id", "project_id,id", "CASCADE")},
 	"review_policy_config":            {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_execution_config":         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_operations":               {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
