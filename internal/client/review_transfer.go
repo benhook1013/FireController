@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"slices"
 
@@ -155,21 +156,22 @@ func marshalReviewTransferWrapper(previewSHA string, document json.RawMessage) (
 		Batch         json.RawMessage `json:"batch"`
 	}{previewSHA, document})
 }
-func reviewTransferApplyBody(key, previewSHA string, document json.RawMessage) ([]byte, error) {
+func reviewTransferApplyBody(key, previewSHA string, document json.RawMessage) ([]byte, int64, error) {
 	if !validMutationKey(key) || !controlHex(previewSHA, 64) {
-		return nil, mutationValidation()
+		return nil, 0, mutationValidation()
 	}
-	if err := ValidateReviewTransferDocument(document); err != nil {
-		return nil, err
+	expected, _, err := reviewTransferDocument(document)
+	if err != nil {
+		return nil, 0, err
 	}
 	body, err := marshalReviewTransferWrapper(previewSHA, document)
 	if err != nil || len(body) > maxReviewImportDocument {
-		return nil, importWireBudgetValidation()
+		return nil, 0, importWireBudgetValidation()
 	}
-	return body, nil
+	return body, *expected.ExpectedRevision, nil
 }
 func ValidateReviewTransferApply(key, previewSHA string, document json.RawMessage) error {
-	_, err := reviewTransferApplyBody(key, previewSHA, document)
+	_, _, err := reviewTransferApplyBody(key, previewSHA, document)
 	return err
 }
 func (c *Client) PreviewReviewTransfer(ctx context.Context, document json.RawMessage) (ReviewTransferPreview, error) {
@@ -187,7 +189,7 @@ func (c *Client) PreviewReviewTransfer(ctx context.Context, document json.RawMes
 	return result, nil
 }
 func (c *Client) ApplyReviewTransfer(ctx context.Context, key, previewSHA string, document json.RawMessage) (ReviewTransferReceipt, error) {
-	body, err := reviewTransferApplyBody(key, previewSHA, document)
+	body, expectedRevision, err := reviewTransferApplyBody(key, previewSHA, document)
 	if err != nil {
 		return ReviewTransferReceipt{}, err
 	}
@@ -201,7 +203,7 @@ func (c *Client) ApplyReviewTransfer(ctx context.Context, key, previewSHA string
 		}
 		return ReviewTransferReceipt{}, err
 	}
-	if !validReviewSnapshot(result.ID) || result.Revision < 1 || result.Outcome != "transferred" {
+	if !validReviewSnapshot(result.ID) || result.Revision < 1 || expectedRevision == math.MaxInt64 || result.Revision != expectedRevision+1 || result.Outcome != "transferred" {
 		return ReviewTransferReceipt{}, unknownMutation("invalid_response", "The service returned an invalid transfer receipt; its outcome is unknown.", http.StatusCreated)
 	}
 	return result, nil

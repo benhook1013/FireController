@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,10 +65,15 @@ func TestReviewTransferClientRealPreviewApplyAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.client.ApplyReviewTransfer(t.Context(), "transfer-next", second.PreviewSHA256, raw); err != nil {
-		t.Fatal(err)
+	secondReceipt, err := f.client.ApplyReviewTransfer(t.Context(), "transfer-next", second.PreviewSHA256, raw)
+	if err != nil || secondReceipt.Revision != 2 || secondReceipt.Outcome != "transferred" {
+		t.Fatal("nonzero expected revision did not advance once", secondReceipt, err)
 	}
 	saved := count()
+	secondReplay, err := f.client.ApplyReviewTransfer(t.Context(), "transfer-next", second.PreviewSHA256, raw)
+	if err != nil || secondReplay != secondReceipt || count() != saved {
+		t.Fatal("nonzero-revision exact retry changed receipt or state", secondReplay, err)
+	}
 	replay, err := f.client.ApplyReviewTransfer(t.Context(), "transfer-once", preview.PreviewSHA256, transferDocument())
 	if err != nil || replay != receipt || count() != saved {
 		t.Fatal("old exact retry changed state", replay, err)
@@ -77,6 +83,68 @@ func TestReviewTransferClientRealPreviewApplyAndReplay(t *testing.T) {
 	var failure *client.Error
 	if !errors.As(err, &failure) || failure.OutcomeUnknown || failure.Action != "Preview the selected batch again and inspect the new preview before applying." {
 		t.Fatal("known mismatch not actionable", err)
+	}
+}
+
+func TestReviewTransferClientBindsReceiptRevision(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		expected, reply int64
+		valid           bool
+	}{
+		{"wrong-positive-at-zero", 0, 2, false},
+		{"wrong-positive-at-nonzero", 7, 1, false},
+		{"valid-nonzero", 7, 8, true},
+		{"last-representable-revision", math.MaxInt64 - 1, math.MaxInt64, true},
+		{"overflow-cannot-succeed", math.MaxInt64, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var batch domain.TransferRequest
+			if err := json.Unmarshal(transferDocument(), &batch); err != nil {
+				t.Fatal(err)
+			}
+			batch.ExpectedRevision = &tc.expected
+			document, err := json.Marshal(batch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				calls.Add(1)
+				var wrapper struct {
+					Preview string          `json:"preview_sha256"`
+					Batch   json.RawMessage `json:"batch"`
+				}
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/projects/project-one/reviews/transfer/apply" || r.URL.RawQuery != "" ||
+					r.Header.Get("X-FC-Instance") != "instance-one" || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("Idempotency-Key") != "original-transfer-key" ||
+					json.NewDecoder(r.Body).Decode(&wrapper) != nil || wrapper.Preview != strings.Repeat("b", 64) || string(wrapper.Batch) != string(document) {
+					t.Error("apply changed selected binding, key, preview or batch")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(client.ReviewTransferReceipt{ID: "review_snapshot_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Revision: tc.reply, Outcome: "transferred"})
+			}))
+			defer server.Close()
+			c := newClient(t, server)
+			receipt, err := c.ApplyReviewTransfer(t.Context(), "original-transfer-key", strings.Repeat("b", 64), document)
+			if calls.Load() != 1 {
+				t.Fatal("apply was not a single dispatched request", calls.Load())
+			}
+			if tc.valid {
+				if err != nil || receipt.Revision != tc.reply {
+					t.Fatal("valid bound receipt refused", receipt, err)
+				}
+				return
+			}
+			var failure *client.Error
+			if !errors.As(err, &failure) || failure.Code != "invalid_response" || !failure.OutcomeUnknown || failure.Status != http.StatusCreated || receipt != (client.ReviewTransferReceipt{}) {
+				t.Fatal("unbound successful response lost uncertain-outcome recovery", receipt, err)
+			}
+		})
 	}
 }
 
