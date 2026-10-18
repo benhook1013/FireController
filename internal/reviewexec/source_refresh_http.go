@@ -76,6 +76,12 @@ func (e *Engine) enqueueSourceRefreshHTTP(w http.ResponseWriter, r *http.Request
 		}
 		current, err := e.WaitSourceRefresh(r.Context(), scope, queued.ID, wait)
 		if err != nil {
+			if detached, detachErr := e.acceptedWaitDetached(r.Context(), scope, err); detached {
+				core.WriteJSON(w, http.StatusAccepted, receipt)
+				return
+			} else {
+				err = detachErr
+			}
 			var failure *core.Error
 			capacity := false
 			if errors.As(err, &failure) && failure.Code == "overloaded" {

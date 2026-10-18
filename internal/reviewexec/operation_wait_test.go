@@ -433,13 +433,16 @@ func TestOperationHTTPLifecycleCancellationDetachesPostAndGetWaits(t *testing.T)
 		go func() { done <- request(t, httpServer, f, http.MethodPost, path, "lifecycle-post", body, long) }()
 		operationWaitRegistered(t, engine, 1)
 		cancelLifetime()
+		var original []byte
 		select {
 		case response := <-done:
 			defer response.Body.Close()
 			data, _ := io.ReadAll(response.Body)
-			if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(data), `"outcome_unknown":true`) {
-				t.Fatal("lifecycle POST lost safe accepted-outcome response", response.StatusCode, string(data))
+			var accepted Receipt
+			if response.StatusCode != http.StatusAccepted || json.Unmarshal(data, &accepted) != nil || accepted.State != "queued" || accepted.Revision != 1 || !strings.HasPrefix(accepted.ID, "review_operation_") || strings.Contains(string(data), "outcome_unknown") {
+				t.Fatal("lifecycle POST lost its known committed receipt", response.StatusCode, string(data))
 			}
+			original = data
 		case <-time.After(time.Second):
 			t.Fatal("lifecycle cancellation did not detach POST wait")
 		}
@@ -459,7 +462,7 @@ func TestOperationHTTPLifecycleCancellationDetachesPostAndGetWaits(t *testing.T)
 		response := request(t, recovery, f, http.MethodPost, path, "lifecycle-post", body, "wait=0")
 		defer response.Body.Close()
 		data, _ := io.ReadAll(response.Body)
-		if response.StatusCode != http.StatusAccepted || !strings.Contains(string(data), `"state":"queued"`) || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
+		if response.StatusCode != http.StatusAccepted || string(data) != string(original) || !strings.Contains(string(data), `"state":"queued"`) || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
 			t.Fatal("original request receipt did not survive lifecycle wait", response.StatusCode, string(data))
 		}
 	})

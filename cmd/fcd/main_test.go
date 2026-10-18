@@ -458,9 +458,10 @@ func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
 	}{postDone, getDone} {
 		select {
 		case result := <-done:
-			postUnknown := index == 0 && strings.Contains(result.body, `"outcome_unknown":true`)
-			getCanceled := index == 1 && strings.Contains(result.body, `"code":"overloaded"`)
-			if result.status != http.StatusServiceUnavailable || !postUnknown && !getCanceled {
+			var accepted reviewexec.Receipt
+			postAccepted := index == 0 && result.status == http.StatusAccepted && json.Unmarshal([]byte(result.body), &accepted) == nil && accepted.State == "queued" && accepted.Revision == 1 && strings.HasPrefix(accepted.ID, "review_operation_") && !strings.Contains(result.body, "outcome_unknown")
+			getCanceled := index == 1 && result.status == http.StatusServiceUnavailable && strings.Contains(result.body, `"code":"overloaded"`) && !strings.Contains(result.body, `"state":"completed"`)
+			if !postAccepted && !getCanceled {
 				t.Fatal("accepted wait returned unsafe shutdown response", result.status, result.body)
 			}
 		case <-time.After(time.Second):
