@@ -100,7 +100,7 @@ async function readWithIdle(reader: ReadableStreamDefaultReader<Uint8Array>, sig
     signal.addEventListener('abort', cancel, { once: true });
   });
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => { close(); reject(new ApiError('stream_idle', 'The event stream was idle.')); }, idleMilliseconds);
+    timer = setTimeout(() => { reject(new ApiError('stream_idle', 'The event stream was idle.')); close(); }, idleMilliseconds);
   });
   try { return await Promise.race([reader.read(), timeout, cancelled]); }
   finally { if (timer !== undefined) clearTimeout(timer); if (cancel) signal.removeEventListener('abort', cancel); }
