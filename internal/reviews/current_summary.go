@@ -509,17 +509,6 @@ type currentRunOrderExecutor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
-func insertCurrentRunOrder(ctx context.Context, q currentRunOrderExecutor, project, id string) error {
-	result, err := q.ExecContext(ctx, insertCurrentRunOrderSQL, project, id)
-	if err != nil {
-		return err
-	}
-	if count, err := result.RowsAffected(); err != nil || count != 1 {
-		return historyInconsistent()
-	}
-	return nil
-}
-
 // backfillCurrentRunOrder runs only inside the exclusive schema migration. It
 // finishes each bounded keyset page before inserting rows on the same conn.
 func backfillCurrentRunOrder(ctx context.Context, q currentRunOrderExecutor) error {
