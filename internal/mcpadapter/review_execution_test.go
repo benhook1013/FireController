@@ -102,7 +102,7 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 				{"expected_configuration_revision", []any{0, -1, "1", 1.5, json.Number("9223372036854775808")}},
 				{"pull_number", []any{0, -1, 2147483648, "2", 2.5}},
 				{"channel", []any{"", "CLI", "manual", 3}},
-				{"wait_seconds", []any{-1, 901, "1", 1.5, true}},
+				{"wait_seconds", []any{-1, 51, 60, 900, 901, "1", 1.5, true}},
 				{"head_sha", []any{"", strings.Repeat("A", 40), strings.Repeat("a", 39), "../other", 4}},
 			} {
 				if _, exists := valid[bad.field]; !exists {
