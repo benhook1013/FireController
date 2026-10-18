@@ -52,6 +52,24 @@ func TestRestoredProviderWorkIssuedPublicationAndUnpostedRefusal(t *testing.T) {
 				_, err = f.e.RecoverCheckpointPublication(t.Context(), f.scope(t, attemptProject, f.writer, false), map[bool]string{false: "observe", true: "retry"}[retry], r.ID, CheckpointPublicationRecovery{ExpectedRevision: &after.View.Revision, RetryUnposted: retry})
 				attemptCode(t, err, "review_publication_held")
 			}
+			// A new transport key must reconcile the original semantic resource,
+			// not authorize another publication of its unchanged frozen evidence.
+			retained := map[string]string{}
+			for _, table := range []string{"review_checkpoint_publications", "review_checkpoint_revisions", "review_checkpoint_intents"} {
+				retained[table] = restoredSQL(t, f, `SELECT count(*)||':'||coalesce(group_concat(body_json,''),'') FROM `+table)
+			}
+			fresh, _ := checkpointRequest(t, f, evidence, "fresh-key-after-restore")
+			if fresh.ID != r.ID || fresh.Revision != after.View.Revision || encoded(checkpointRead(t, f, fresh.ID)) != encoded(after.View) {
+				t.Fatal("fresh key replaced or requeued the cancelled publication", fresh)
+			}
+			for table, before := range retained {
+				if got := restoredSQL(t, f, `SELECT count(*)||':'||coalesce(group_concat(body_json,''),'') FROM `+table); got != before {
+					t.Fatal("fresh key changed cancelled publication or history", table)
+				}
+			}
+			if newPosts, newReads := p.counts(); newPosts != posts || newReads != reads {
+				t.Fatal("fresh key performed provider work")
+			}
 			restarted, err := New(f.store, attemptCapabilities)
 			if err != nil {
 				t.Fatal(err)
