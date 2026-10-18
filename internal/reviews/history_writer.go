@@ -310,6 +310,15 @@ func (w *historySnapshotWrite) applyCurrent(ctx context.Context, tx *sql.Tx, sna
 		if err := w.insert(ctx, tx, change.spec.current, columns, values); err != nil {
 			return err
 		}
+		if change.spec.current == historyRunRecord.current {
+			runID, ok := change.keys[0].(string)
+			if !ok || runID == "" {
+				return historyInconsistent()
+			}
+			if err := insertCurrentRunOrder(ctx, tx, w.project, runID); err != nil {
+				return err
+			}
+		}
 	}
 	var result sql.Result
 	if previousRevision == 0 {
