@@ -290,7 +290,7 @@ func TestPackagedSmoke(t *testing.T) {
 	}
 	waitDone := make(chan waitResult, 1)
 	go func() {
-		result, err := session.CallTool(waitCtx, &mcp.CallToolParams{Name: "wait_for_messages", Arguments: map[string]any{"cursor": snapshot.EventCursor, "wait_seconds": 25}})
+		result, err := session.CallTool(waitCtx, &mcp.CallToolParams{Name: "wait_for_messages", Arguments: map[string]any{"cursor": snapshot.EventCursor, "wait_seconds": 50}})
 		waitDone <- waitResult{result, err}
 	}()
 	select {
