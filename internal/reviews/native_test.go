@@ -417,6 +417,75 @@ func TestNativeAttemptLifecycleKeepsSourceIdentity(t *testing.T) {
 	}
 }
 
+func TestNativeAttemptPositionsRemainStableAcrossPublication(t *testing.T) {
+	t.Run("first attempt starts at zero", func(t *testing.T) {
+		f := newAPIFixture(t)
+		a := nativeAttempt("first-native", "prepared")
+		first := mustNativePublish(t, f, NativePublication{Pull: nativePull(1), Attempt: &a})
+		if got := nativeAttemptPosition(t, f, first.ID, nativeSource, "first-native"); got != 0 {
+			t.Fatalf("first native attempt position = %d, want 0", got)
+		}
+	})
+
+	t.Run("preserve update and append after all producers", func(t *testing.T) {
+		f := newAPIFixture(t)
+		pull := nativePull(1)
+		firstImported := Attempt{SourceAttemptID: "imported-first", Channel: "manual", HeadSHA: pull.HeadSHA, State: "active", StartedAt: "2026-01-01T00:00:00Z"}
+		secondImported := Attempt{SourceAttemptID: "imported-second", Channel: "subagent", HeadSHA: pull.HeadSHA, State: "active", StartedAt: "2026-01-01T00:01:00Z"}
+		seed := pull
+		seed.Attempts = []Attempt{firstImported, secondImported}
+		initial := f.observe(t, reviewRequest(0, []PullInput{seed}), "attempt-position-import")
+		initialID := initial["id"].(string)
+		initialBytes := nativeSnapshotBytes(t, f, initialID)
+
+		a := nativeAttempt("native-positioned", "prepared")
+		firstNative := mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &a})
+		if got := nativeAttemptPosition(t, f, firstNative.ID, nativeSource, a.SourceAttemptID); got != 2 {
+			t.Fatalf("new native attempt position = %d, want after both producer positions 0 and 1", got)
+		}
+		if nativeSnapshotBytes(t, f, initialID) != initialBytes {
+			t.Fatal("first imported snapshot changed during native append")
+		}
+
+		run := nativeRun("same-publication-position-run")
+		a.State, a.FinishedAt, a.SourceRunID = "completed", run.FinishedAt, run.SourceRunID
+		firstNativeBytes := nativeSnapshotBytes(t, f, firstNative.ID)
+		updated := mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &a, Run: &run})
+		if got := nativeAttemptPosition(t, f, updated.ID, nativeSource, a.SourceAttemptID); got != 2 {
+			t.Fatalf("updated native attempt moved to position %d, want retained position 2", got)
+		}
+		var linked int
+		if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=1 AND source=? AND source_run_id=?`, f.project, updated.ID, nativeSource, run.SourceRunID).Scan(&linked); err != nil || linked != 1 {
+			t.Fatalf("attempt's same-publication run missing: count=%d err=%v", linked, err)
+		}
+		var linkedAttempt int
+		if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_attempts WHERE project_id=? AND snapshot_id=? AND pull_number=1 AND source=? AND source_attempt_id=? AND source_run_id=?`, f.project, updated.ID, nativeSource, a.SourceAttemptID, run.SourceRunID).Scan(&linkedAttempt); err != nil || linkedAttempt != 1 {
+			t.Fatalf("updated attempt did not retain its own run link: count=%d err=%v", linkedAttempt, err)
+		}
+		if nativeSnapshotBytes(t, f, firstNative.ID) != firstNativeBytes {
+			t.Fatal("native lifecycle update changed its predecessor snapshot")
+		}
+
+		next := nativeAttempt("native-position-next", "prepared")
+		appended := mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &next})
+		if got := nativeAttemptPosition(t, f, appended.ID, nativeSource, next.SourceAttemptID); got != 3 {
+			t.Fatalf("next native attempt position = %d, want next after positions 0, 1, and 2", got)
+		}
+		if got := nativeAttemptPosition(t, f, appended.ID, nativeSource, a.SourceAttemptID); got != 2 {
+			t.Fatalf("linked native attempt moved after append: position=%d want 2", got)
+		}
+	})
+}
+
+func nativeAttemptPosition(t *testing.T, f *apiFixture, snapshot, source, id string) int64 {
+	t.Helper()
+	var position int64
+	if err := f.store.DB().QueryRow(`SELECT position FROM review_attempts WHERE project_id=? AND snapshot_id=? AND source=? AND source_attempt_id=?`, f.project, snapshot, source, id).Scan(&position); err != nil {
+		t.Fatal(err)
+	}
+	return position
+}
+
 func TestNativeAttemptsOnlyLinkOwnRunOnExactTarget(t *testing.T) {
 	for _, mode := range []string{"foreign_producer", "other_pull", "channel", "head", "valid"} {
 		t.Run(mode, func(t *testing.T) {
