@@ -1,6 +1,6 @@
 # Legacy controller migration utility
 
-These optional tools keep source-specific SQLite and policy knowledge outside the daemon. It accepts an explicitly supplied, completed standalone export; it does not discover installed controllers, open live state, read profiles, contact providers or modify another installation.
+These optional tools keep source-specific SQLite and policy knowledge outside the daemon. The inspection and conversion commands accept explicitly supplied sealed exports without provider access. The separate source-owner acquisition command deliberately queries GitHub and allows Git proof writes only in an independently owned scratch clone; it never discovers an installation or opens live source state.
 
 ## Current implementation
 
@@ -36,6 +36,24 @@ fc import apply --file /private/import/messages.json --preview SHA256 --key sele
 ```
 
 The command preserves selected body, creation/handling times, reply identities and known pending/handled state, with at most one hundred messages and the native 16 KiB body limit. Unsupported source job/PR message annotations remain in the sealed private archive; the required archive policy and compact count make that omission explicit. Retained-parent traversal stops at an explicitly named source boundary; native application checks its existing destination mapping and conversation graph. Missing mappings, unsupported timing/content, cyclic or unselected dependencies refuse preparation. No historical send or acknowledgement is replayed.
+
+## Acquire a source-owner history frame
+
+`acquire_source_history.py` composes the explicitly selected trusted source controller's canonical reconciliation, history readers and obligation audit. Run it as a dedicated POSIX Python process. This optional migration tool is separate from normal agent commands and the service build. Loading source helpers executes trusted source code; select that code deliberately.
+
+The source owner pauses writers and review requests, settles accepted findings and both incoming/outgoing routes, and supplies a completed standalone SQLite export with its original capture associations. Preserve the canonical handoff layout: `COMMON/firemud/pr-review-stack.sqlite3`, the logical `COMMON/firemud/pr-review-stack.json/` directory, and captures under `COMMON/firemud/` and optional `COMMON/coderabbit-review-logs/`. All handoff roots and selected files are private and physically contained; symlinks, special files and SQLite sidecars refuse. Do not copy a live main database and assume committed WAL contents are included. The pause is an explicit owner assertion; the tool observes locks, requests and conservation but cannot establish a durable writer fence.
+
+The Git proof root must be an exclusively owned private clone of the exact repository, outside the handoff and source package. Shared worktrees, alternates, redirected Git metadata, multiply linked mutable metadata and repository/config environment overrides refuse. The source adapter may fetch and construct Git proof objects there. No source checkout writes are permitted. GitHub numeric repository identity and the default branch are verified explicitly.
+
+Supply a private strict JSON plan with `version: 1`, `repository`, numeric `repository_id`, `default_base_ref`, `paused: true`, `scratch_git_writes: true`, and `prs: [{"pull_number": 7, "channels": ["cli", "hosted"]}]`. Select only the PRs and channels whose settled source state is needed. Missing, uncertain, unassociated or unsupported evidence refuses; exhausted round limits alone do not prove findings are resolved.
+
+```sh
+python3 tools/legacyimport/acquire_source_history.py --source-root /private/source-controller --common /private/handoff/common --snapshot /private/handoff/common/firemud/pr-review-stack.sqlite3 --git-root /private/proof-clone --plan /private/import/acquisition.json --output /private/import/effective-history.json --provenance /private/import/acquisition-provenance.json
+```
+
+The output and provenance must be separate files outside the source and handoff roots, in existing private directories. Canonical source audit, transfer validation, snapshot identity and bounded capture conservation finish before publication. Provenance retains the exact acquired frame before its separate output is published. After interrupted publication, the same request and unchanged selected inputs recover that original frame without new provider/Git work; `replayed: true` means recovery rather than a fresh external audit. Different existing files are never replaced. Preserve the exact source package, plan, handoff and outputs; a fresh acquisition uses a deliberate new output/provenance pair. Native preparation/application remains separate.
+
+Bounds are 32 MiB snapshot, 16 KiB plan, 1 MiB frame, and 128 MiB/20,000 capture entries/depth 64 per fifteen-second inventory pass. Scratch metadata admission has 200,000 entries/ten seconds; provider/Git work uses the source helper's 120-second budget. Refusal prints a compact fixed diagnostic without captured provider text. Successful stdout reports only scope counts, digest, publication outcome and replay state. Conservation proves observed equality, not protection against a hostile same-user replacement. Live provider/Git qualification and real-project acquisition remain separate from synthetic proof.
 
 ## Prepare effective review controls
 
