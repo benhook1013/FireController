@@ -82,16 +82,24 @@ func TestReviewImportCLIPublicPreviewLostResultAndExactRecovery(t *testing.T) {
 	file := importCLIFile(t, document)
 	provider := f.resolverHit.Load()
 	var beforeReceipts, beforeEvents int
-	f.store.DB().QueryRow(`SELECT count(*) FROM receipts`).Scan(&beforeReceipts)
-	f.store.DB().QueryRow(`SELECT count(*) FROM events`).Scan(&beforeEvents)
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM receipts`).Scan(&beforeReceipts); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM events`).Scan(&beforeEvents); err != nil {
+		t.Fatal(err)
+	}
 	code, out, stderr := mutationInvoke(t, profiles, "admin", "reviews", "import-preview", "--file", file)
 	var preview client.ReviewImportPreview
 	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &preview) != nil || preview.ProjectID != project || preview.Counts != (client.ReviewImportCounts{Pulls: 6, Runs: 6, Attempts: 1, Findings: 1}) || !preview.ImportedHistory || preview.NativeCoverage || strings.Contains(out, "PRIVATE_FINDING_DETAIL") || requests.Load() != 2 {
 		t.Fatal(code, out, stderr)
 	}
 	var receipts, events int
-	f.store.DB().QueryRow(`SELECT count(*) FROM receipts`).Scan(&receipts)
-	f.store.DB().QueryRow(`SELECT count(*) FROM events`).Scan(&events)
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM receipts`).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
 	if receipts != beforeReceipts || events != beforeEvents {
 		t.Fatal("preview wrote durable state")
 	}
@@ -101,7 +109,9 @@ func TestReviewImportCLIPublicPreviewLostResultAndExactRecovery(t *testing.T) {
 		t.Fatal("lost committed result not unknown", code, out, stderr)
 	}
 	var snapshotCount int
-	f.store.DB().QueryRow(`SELECT count(*) FROM review_snapshots`).Scan(&snapshotCount)
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_snapshots`).Scan(&snapshotCount); err != nil {
+		t.Fatal(err)
+	}
 	if snapshotCount != 1 {
 		t.Fatal("apply was not actually committed", snapshotCount)
 	}
@@ -109,7 +119,9 @@ func TestReviewImportCLIPublicPreviewLostResultAndExactRecovery(t *testing.T) {
 	if receipt["revision"] != float64(1) || receipt["outcome"] != "observed" || applies.Load() != 2 {
 		t.Fatal(receipt)
 	}
-	f.store.DB().QueryRow(`SELECT count(*) FROM review_snapshots`).Scan(&snapshotCount)
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_snapshots`).Scan(&snapshotCount); err != nil {
+		t.Fatal(err)
+	}
 	if snapshotCount != 1 {
 		t.Fatal("recovery duplicated snapshot")
 	}
