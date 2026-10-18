@@ -2,12 +2,9 @@ package publicsite
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -83,12 +80,9 @@ func (s *Service) eventsHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	host, _, e := net.SplitHostPort(r.RemoteAddr)
-	if e != nil {
-		host = r.RemoteAddr
-	}
-	sum := sha256.Sum256([]byte(host))
-	client := hex.EncodeToString(sum[:])
+	// Remote viewers share the loopback reverse proxy's address. Account each
+	// attachment separately; service and store aggregate bounds still apply.
+	client := core.NewID("public_stream")
 	hints, release, err := s.store.SubscribePublicProjection(project, client)
 	if err != nil {
 		core.WriteError(w, err)
