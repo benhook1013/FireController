@@ -1,6 +1,5 @@
 import { chromium, expect } from '../../webapp/node_modules/@playwright/test/index.mjs';
 import fs from 'node:fs/promises';
-import { createHash, randomBytes } from 'node:crypto';
 
 // All inputs are synthetic, private files produced by browser_test.go. Neither
 // Playwright diagnostics nor request/credential bytes are printed on failure.
@@ -10,6 +9,9 @@ let checkpoint = '';
 let counters = () => ({});
 let failureClass = '';
 let sendStatus = 0, replyStatus = 0, conversationMatch = false;
+let lastHTTPStatus = 0;
+let lastAllowWrites = false, lastCanEditPresentation = false;
+let renewalProof = { response_received:false, response_ok:false, response_object:false, response_has_session:false, response_has_project:false, response_has_instance:false, response_expiry_string:false, response_expiry_valid:false, response_shape_valid:false, response_session_matches:false, response_project_matches:false, response_instance_matches:false, response_identity_matches:false, response_expiry_changed:false, storage_matches_response:false, storage_expiry_changed:false };
 let failureSnapshot = async () => ({});
 let diagnostics = () => ({});
 const need = (value) => { if (!value) throw new Error('assertion'); };
@@ -28,6 +30,55 @@ try {
   const prefix = '/api/v1/projects/' + config.project;
   const home = '/projects/' + config.project;
   failureSnapshot = async () => {
+    if (phase === 'live-reviews') {
+      const snapshot = {
+        updated_pull: await page.getByRole('link',{name:'Live review updated',exact:true}).count(),
+        hosted_run_link: await page.getByRole('link',{name:'Open hosted run live-hosted-round',exact:true}).count(),
+        history_sections: await page.locator('.review-history').count(),
+        hosted_sections: await page.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).count(),
+        review_alerts: await page.getByRole('alert').count(),
+        run_fetches: reviewRunReads,
+      };
+      if (config.diagnostic_directory) {
+        await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});
+        await page.screenshot({path:config.diagnostic_directory+'/review-failure.png',mask:[page.locator('input,textarea,code,.full-text,.message-preview')],timeout:2000});
+        await fs.writeFile(config.diagnostic_directory+'/review-failure.json',JSON.stringify({phase,checkpoint,...snapshot}),{mode:0o600});
+      }
+      return snapshot;
+    }
+    if (phase === 'delivery-overview') {
+      const snapshot = {
+        delivery_heading: await page.getByRole('heading',{name:'Delivery',exact:true}).count(),
+        inspector_lane: await page.locator('.delivery-lane[aria-label="Inspector jobs"]').count(),
+        active_job: await page.getByText('Inspector active work',{exact:true}).count(),
+        latest_done: await page.locator('.delivery-checkpoint p').filter({hasText:'Latest checkpoint is visible.'}).count(),
+        latest_next: await page.locator('.delivery-checkpoint p').filter({hasText:'Continue from the latest checkpoint.'}).count(),
+        earlier_done: await page.locator('.delivery-checkpoint p').filter({hasText:'Earlier checkpoint only.'}).count(),
+        inbox_sidebar: await page.locator('.sidebar').count(),
+        inbox_heading: await page.getByRole('heading',{name:'Builder inbox',exact:true}).count(),
+        readonly_new_message: await page.getByRole('button',{name:'New message',exact:true}).count(),
+        indicators: await indicatorColors(),
+        fixture_writes: fixtureWrites,
+        action_writes: actionWrites,
+        forbidden_writes: forbiddenWrites,
+        delivery_reads: deliveryReads,
+        job_brief_reads: jobBriefReads,
+        job_archive_reads: jobArchiveReads,
+      };
+      if (config.diagnostic_directory) {
+        await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});
+        await page.screenshot({path:config.diagnostic_directory+'/delivery-failure.png',mask:[page.locator('input,textarea,code,.full-text,.message-preview')],timeout:2000});
+        await fs.writeFile(config.diagnostic_directory+'/delivery-failure.json',JSON.stringify({phase,checkpoint,...snapshot}),{mode:0o600});
+      }
+      return snapshot;
+    }
+    if (phase === 'reload') {
+      if (config.diagnostic_directory) {
+        await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});
+        await fs.writeFile(config.diagnostic_directory+'/reload-failure.json',JSON.stringify({phase,checkpoint,...renewalProof}),{mode:0o600});
+      }
+      return renewalProof;
+    }
     if (phase !== 'explicit-actions-uncertain') return {};
     const snapshot = {
       sent_links: await page.getByRole('link',{name:'Open sent conversation',exact:true}).count(),
@@ -87,18 +138,10 @@ try {
  let explicitActions = false;
  let controlledMessageFailure = false;
  let controlledAccessFailure = false;
- let failNextMetadataStream = false;
- let holdNextPresentation = false;
- let heldPresentationReady, signalHeldPresentation, heldPresentationGate, heldPresentationRelease, heldPresentationDone, finishHeldPresentation;
- const armHeldPresentation = () => {
-   heldPresentationReady = new Promise(resolve => { signalHeldPresentation = resolve; });
-   heldPresentationGate = new Promise(resolve => { heldPresentationRelease = resolve; });
-   heldPresentationDone = new Promise(resolve => { finishHeldPresentation = resolve; });
- };
  const expectedMissingSessionRoute = url => { if (!controlledAccessFailure || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname); } catch { return false; } };
   counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
   let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0, noteArchiveReads = 0;
-  let deliveryReads = 0, jobBriefReads = 0, jobArchiveReads = 0;
+  let deliveryReads = 0, jobBriefReads = 0, jobArchiveReads = 0, reviewRunReads = 0;
   let injectedRequest;
   diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external });
   page.on('pageerror', () => errors++);
@@ -115,6 +158,7 @@ try {
       if (url.pathname === prefix + '/presentation') presentationReads++;
       if (url.pathname === prefix + '/notes' && url.searchParams.get('status') === 'all') noteArchiveReads++;
       if (url.pathname === prefix + '/delivery') deliveryReads++;
+      if (url.pathname === prefix + '/reviews/pulls/32/runs') reviewRunReads++;
       if (url.pathname === prefix + '/jobs' && url.searchParams.get('status') === 'all') jobArchiveReads++;
       if (/\/jobs\/[^/]+$/u.test(url.pathname.slice(prefix.length))) jobBriefReads++;
       if (url.pathname === prefix + '/project-events/stream') metadataStreams++;
@@ -139,25 +183,6 @@ try {
       await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: { code: 'invalid_response' } }) });
       return;
     }
-    if (failNextMetadataStream && route.request().method() === 'GET' && url.pathname === prefix + '/project-events/stream') {
-      failNextMetadataStream = false;
-      await route.fulfill({ status:400, contentType:'application/json', body:JSON.stringify({error:{code:'invalid_response'}}) });
-      return;
-    }
-    if (holdNextPresentation && route.request().method() === 'GET' && url.pathname === prefix + '/presentation') {
-      holdNextPresentation = false;
-      try {
-        const response = await route.fetch();
-        const body = await response.text();
-        signalHeldPresentation();
-        await heldPresentationGate;
-        try { await route.fulfill({response, body}); finishHeldPresentation('delivered'); }
-        catch { finishHeldPresentation('cancelled'); }
-      } catch {
-        signalHeldPresentation(); finishHeldPresentation('cancelled');
-      }
-      return;
-    }
     await route.continue();
   });
   const appearance = () => page.evaluate(() => ({
@@ -168,6 +193,8 @@ try {
   }));
   const indicatorColors = () => page.evaluate(() => ({
     connection: getComputedStyle(document.querySelector('.mast .header-utilities .connection-note'), '::before').backgroundColor,
+    connectionBorder: getComputedStyle(document.querySelector('.mast .header-utilities .connection-note'), '::before').borderColor,
+    connectionText: getComputedStyle(document.querySelector('.mast .header-utilities .connection-note')).color,
     canvas: getComputedStyle(document.documentElement).backgroundColor,
     header: getComputedStyle(document.querySelector('.mast')).backgroundColor,
     connectionSurface: getComputedStyle(document.querySelector('.mast')).backgroundColor,
@@ -184,6 +211,8 @@ try {
       need(await page.locator('.connection-card .connection-note').count() === 0);
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
       need(await page.locator('.mast').evaluate(element => Math.abs(element.getBoundingClientRect().top) <= 1));
+      await page.evaluate(() => window.scrollTo(0, 0));
+      need(await page.locator('.mast').evaluate(element => Math.abs(element.getBoundingClientRect().top) <= 1));
       await expect(page.getByRole('button', {name:'Refresh visible data', exact:true})).toBeVisible();
       if (config.diagnostic_directory) {
         await fs.mkdir(config.diagnostic_directory, {recursive:true, mode:0o700});
@@ -197,14 +226,28 @@ try {
     need(value.brand === 'FireController' && value.background === 'rgb(232, 231, 228)' && value.overrides.length === 0);
   };
   phase = 'connect';
+  checkpoint = 'root';
   await page.goto(config.origin);
+  checkpoint = 'project-input';
   await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+  checkpoint = 'credential-input';
   await page.getByLabel('Project credential', {exact:true}).fill(token);
   need(await page.getByRole('checkbox').count() === 0);
+  checkpoint = 'submit';
   const readOnlyLogin=page.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname===prefix+'/browser-session');
   await page.getByRole('button', {name:'Connect to project', exact:true}).click();
-  const readOnlyResponse=await readOnlyLogin; need(readOnlyResponse.status()===200);
-  const readOnlyCapabilities=await readOnlyResponse.json(); need(readOnlyCapabilities.allow_writes===false && readOnlyCapabilities.can_edit_presentation===false);
+  checkpoint = 'session-response';
+  const readOnlyResponse=await readOnlyLogin; lastHTTPStatus=readOnlyResponse.status();
+  checkpoint = 'session-status';
+  need(lastHTTPStatus===200);
+  checkpoint = 'capabilities-finished';
+  await readOnlyResponse.finished();
+  checkpoint = 'capabilities-read';
+  const readOnlyCapabilities=await readOnlyResponse.json();
+  lastAllowWrites=readOnlyCapabilities.allow_writes===true; lastCanEditPresentation=readOnlyCapabilities.can_edit_presentation===true;
+  checkpoint = 'capabilities-check';
+  need(readOnlyCapabilities.allow_writes===false && readOnlyCapabilities.can_edit_presentation===false);
+  checkpoint = 'heading';
   await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
   need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).count()===0);
   need(await page.locator('.sidebar').count() === 0);
@@ -214,35 +257,65 @@ try {
   await expect(page.locator('.page-skeleton')).toHaveCount(0);
   phase = 'delivery-overview'; checkpoint = 'initial-snapshot';
   await page.getByRole('heading', {name:'Delivery', exact:true}).waitFor();
+  checkpoint = 'delivery-heading';
   const builderLane = page.locator('.delivery-lane[aria-label="Builder jobs"]');
   const inspectorLane = page.locator('.delivery-lane[aria-label="Inspector jobs"]');
   const unassignedLane = page.locator('.delivery-lane[aria-label="Unassigned jobs"]');
   await expect(builderLane.getByText('Builder primary delivery', {exact:true})).toBeVisible();
+  checkpoint = 'builder-job';
   await expect(builderLane.getByText('Primary focus', {exact:true})).toBeVisible();
+  checkpoint = 'builder-primary';
   await expect(inspectorLane.getByText('Paused', {exact:true})).toBeVisible();
+  checkpoint = 'inspector-paused';
   await expect(inspectorLane.getByText('Paused for synthetic dependency review.', {exact:true})).toBeVisible();
+  checkpoint = 'inspector-pause-reason';
   await expect(unassignedLane.getByText('Unassigned parked work', {exact:true})).toBeVisible();
+  checkpoint = 'unassigned-job';
   const inspectorStatuses = await inspectorLane.locator('.delivery-job-state .badge').allTextContents();
   need(inspectorStatuses.join('|') === 'active|blocked|parked');
-  await expect(inspectorLane.getByText('Latest checkpoint is visible.', {exact:true})).toBeVisible();
-  await expect(inspectorLane.getByText('Continue from the latest checkpoint.', {exact:true})).toBeVisible();
-  need(await page.getByText('Earlier checkpoint only.', {exact:true}).count() === 0);
+  checkpoint = 'status-order';
+  checkpoint = 'latest-checkpoint-done';
+  const latestDone = inspectorLane.locator('.delivery-checkpoint p').filter({hasText:'Latest checkpoint is visible.'});
+  await expect(latestDone).toHaveCount(1);
+  await expect(latestDone).toContainText('Latest checkpoint is visible.');
+  checkpoint = 'latest-checkpoint-next';
+  const latestNext = inspectorLane.locator('.delivery-checkpoint p').filter({hasText:'Continue from the latest checkpoint.'});
+  await expect(latestNext).toHaveCount(1);
+  await expect(latestNext).toContainText('Continue from the latest checkpoint.');
+  checkpoint = 'latest-checkpoint';
+  need(await inspectorLane.locator('.delivery-checkpoint p').filter({hasText:'Earlier checkpoint only.'}).count() === 0);
+  checkpoint = 'old-checkpoint-absent';
   need(deliveryReads === 1 && jobBriefReads === 0 && jobArchiveReads === 0);
+  checkpoint = 'overview-request-budget';
   need(await page.locator('.delivery-lane').count() === 3);
+  checkpoint = 'lane-count';
   const deliveryBodyText = await page.locator('body').innerText();
   need(![config.project, config.worker, config.other_worker, ...Object.values(deliveryFixture.jobs)].some(id => deliveryBodyText.includes(id)));
+  checkpoint = 'private-identifiers-absent';
   await captureLayouts('delivery', [1440, 390, 320]);
+  checkpoint = 'layout-capture';
   need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Notes',exact:true}).count() === 0);
+  checkpoint = 'notes-nav-absent';
+  checkpoint = 'inbox-nav-click';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
   await page.getByRole('button',{name:'Select worker Builder',exact:true}).click();
+  checkpoint = 'inbox-worker-selected';
   await page.getByRole('heading',{name:'Builder inbox',exact:true}).waitFor();
+  checkpoint = 'inbox-heading';
   need(await page.locator('.sidebar').count() === 1);
+  checkpoint = 'inbox-sidebar';
   need(await page.getByRole('button',{name:'New message',exact:true}).count()===0);
+  checkpoint = 'inbox-readonly-composer';
   need(actionWrites===0 && fixtureWrites===0 && forbiddenWrites===0);
+  checkpoint = 'inbox-readonly-writes';
+  checkpoint = 'default-appearance';
   await defaults();
+  checkpoint = 'default-title';
   need((await appearance()).title === 'Packaged smoke · FireController');
+  checkpoint = 'default-indicator-colors';
   const defaultIndicators = await indicatorColors();
-  need(defaultIndicators.connection === 'rgb(243, 203, 200)' && defaultIndicators.connection !== defaultIndicators.connectionSurface && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
+  checkpoint = 'default-indicator-contrast';
+  need(defaultIndicators.connection === 'rgba(0, 0, 0, 0)' && defaultIndicators.connectionBorder === 'rgb(243, 203, 200)' && defaultIndicators.connectionText === 'rgb(243, 203, 200)' && defaultIndicators.connectionText !== defaultIndicators.connectionSurface && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
   phase = 'metadata-failure';
   checkpoint = 'metadata-notice';
   const reconnect = page.getByRole('button', {name:'Reconnect project updates', exact:true});
@@ -381,19 +454,33 @@ try {
   await page.getByText('Live brief <literal> updated', {exact:true}).waitFor();
 
   phase = 'live-workers';
+  checkpoint = 'selected-builder-before-workers';
   need(await selectedWorker() === config.worker);
+  checkpoint = 'workers-nav';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Workers', exact:true}).click();
+  checkpoint = 'builder-inbox-link';
   await page.getByRole('button', {name:'Open Builder inbox', exact:true}).waitFor();
+  checkpoint = 'create-worker';
   await write('POST', '/workers', {name:'Live newcomer'});
+  checkpoint = 'newcomer-visible';
   await page.getByRole('button', {name:'Open Live newcomer inbox', exact:true}).waitFor();
+  checkpoint = 'selection-preserved';
   need(await selectedWorker() === config.worker);
+  checkpoint = 'builder-details';
   await page.getByRole('link', {name:'Read Builder details', exact:true}).click();
+  checkpoint = 'pause-default';
   await page.getByText('No pause reason recorded.', {exact:true}).waitFor();
-  await page.getByText('No primary job selected.', {exact:true}).waitFor();
+  checkpoint = 'primary-existing';
+  await page.getByRole('link', {name:'Open primary job ' + deliveryFixture.jobs.builderActive, exact:true}).waitFor();
+  checkpoint = 'pause-update';
   await write('PUT', '/workers/' + config.worker + '/pause', {expected_revision:0, paused:true, reason:'Live pause <literal>'});
+  checkpoint = 'pause-visible';
   await page.getByText('Live pause <literal>', {exact:true}).waitFor();
-  await write('PUT', '/workers/' + config.worker + '/primary-job', {expected_revision:0, job_id:job.id});
+  checkpoint = 'primary-update';
+  await write('PUT', '/workers/' + config.worker + '/primary-job', {expected_revision:1, job_id:job.id});
+  checkpoint = 'primary-link';
   await page.getByRole('link', {name:'Open primary job ' + job.id, exact:true}).waitFor();
+  checkpoint = 'selected-builder-after-update';
   need(await selectedWorker() === config.worker);
 
   phase = 'live-notes';
@@ -506,49 +593,116 @@ try {
   await page.getByText('source · pending', {exact:true}).waitFor();
 
   phase = 'live-reviews';
+  checkpoint = 'reviews-open';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
+  checkpoint = 'unconfigured';
   await page.getByRole('heading', {name:'Review workspace unconfigured', exact:true}).waitFor();
   const pull = (number, state, title) => ({number, title, state, head_sha:'a'.repeat(40), base_ref:'main', base_sha:'b'.repeat(40), ci_state:'unknown', mergeability:'unknown', complete:true, runs:[], attempts:[]});
   const merged = pull(31, 'merged', 'Retained merged smoke PR');
   const open = pull(32, 'open', 'Live review before');
   const observation = (revision, queue) => ({expected_revision:revision, repository_id:991, source:'packaged-browser', observed_at:new Date().toISOString(), queue, retired:[]});
+  checkpoint = 'seed-observation';
   await write('POST', '/reviews/observations', observation(0, [merged, open]), 201);
+  checkpoint = 'initial-open-pull';
   await page.getByRole('link', {name:'Live review before', exact:true}).waitFor();
+  checkpoint = 'initial-merged-pull';
   await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
   const finished = new Date().toISOString();
   const run = {source_run_id:'live-hosted-round', channel:'hosted', head_sha:open.head_sha, reviewer:'Synthetic reviewer', scope:'Synthetic comparison', outcome:'completed', attributable:true, complete:true, started_at:finished, finished_at:finished, found:0, accepted:0, routed:0, finalized:true, coverage_limits:[], findings:[]};
+  checkpoint = 'updated-observation';
   await write('POST', '/reviews/observations', observation(1, [merged, {...open, title:'Live review updated', runs:[run]}]), 201);
+  checkpoint = 'updated-open-pull';
   await page.getByRole('link', {name:'Live review updated', exact:true}).waitFor();
+  checkpoint = 'updated-merged-pull';
   await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
-  await page.getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
+  checkpoint = 'hosted-run';
+  await page.getByRole('region', {name:'Hosted CodeRabbit', exact:true}).getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
+  checkpoint = 'merged-retention';
   need(await page.getByText('merged · retained history', {exact:true}).count() === 1);
+  checkpoint = 'delivery-queue';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
+  checkpoint = 'queue-heading';
   await page.getByRole('heading', {name:'Review queue', exact:true}).waitFor();
+  checkpoint = 'queue-pull';
   await expect(page.getByRole('link', {name:'#32 · Live review updated', exact:true}).first()).toBeVisible();
+  checkpoint = 'merge-head';
   await expect(page.getByRole('region', {name:'Merge train head'}).getByRole('link', {name:'#32 · Live review updated', exact:true})).toBeVisible();
+  checkpoint = 'hosted-summary';
   await expect(page.getByRole('region', {name:'PR #32 Hosted summary'}).getByRole('link', {name:/Open hosted run live-hosted-round/})).toBeVisible();
+  checkpoint = 'reviews-return';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
-  await page.getByRole('heading', {name:'Review workspace', exact:false}).waitFor();
+  checkpoint = 'reviews-heading';
+  await page.getByRole('heading', {name:'Reviews', exact:true}).waitFor();
+  checkpoint = 'selected-worker';
   need(await selectedWorker() === config.worker);
+  checkpoint = 'sanitized-literal';
   need(await page.locator('literal').count() === 0);
+  checkpoint = 'reviews-url';
   need(new URL(page.url()).pathname === home + '/reviews');
 
   phase = 'reload';
-  checkpoint = 'reload-metadata-ready';
+  checkpoint = 'reload-before';
+  const renewalResponsePromise = page.waitForResponse(value => value.request().method() === 'POST' && new URL(value.url()).pathname === prefix + '/browser-session/renew');
   await page.reload();
+  checkpoint = 'reload-after-navigation';
   await page.getByRole('heading', {name:title, exact:true}).waitFor();
+  checkpoint = 'reload-heading-visible';
   await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(1);
-  await expect.poll(async () => JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey)).expiresAt, {timeout:5000}).not.toBe(JSON.parse(selectedBinding).expiresAt);
+  checkpoint = 'reload-session-renewed';
+  const renewalResponse = await renewalResponsePromise;
+  let renewalView;
+  try { renewalView = await renewalResponse.json(); } catch { renewalView = undefined; }
+  const originalBinding = JSON.parse(selectedBinding);
+  const responseObject = !!renewalView && typeof renewalView === 'object' && !Array.isArray(renewalView);
+  const responseExpiryString = typeof renewalView?.expires_at === 'string';
+  const responseExpiry = responseExpiryString && Number.isFinite(Date.parse(renewalView.expires_at));
+  const responseSessionMatches = renewalView?.session_id === sessionID;
+  const responseProjectMatches = renewalView?.project_id === config.project;
+  const responseInstanceMatches = renewalView?.instance_id === config.instance;
+  renewalProof = {
+    response_received:true,
+    response_ok:renewalResponse.status() === 200,
+    response_object:responseObject,
+    response_has_session:!!renewalView && Object.hasOwn(renewalView, 'session_id'),
+    response_has_project:!!renewalView && Object.hasOwn(renewalView, 'project_id'),
+    response_has_instance:!!renewalView && Object.hasOwn(renewalView, 'instance_id'),
+    response_expiry_string:responseExpiryString,
+    response_expiry_valid:responseExpiry,
+    response_shape_valid:responseObject && responseExpiry,
+    response_session_matches:responseSessionMatches,
+    response_project_matches:responseProjectMatches,
+    response_instance_matches:responseInstanceMatches,
+    response_identity_matches:responseObject && responseSessionMatches && responseProjectMatches && responseInstanceMatches,
+    response_expiry_changed:responseExpiry && renewalView.expires_at !== originalBinding.expiresAt,
+    storage_matches_response:false,
+    storage_expiry_changed:false,
+  };
+  checkpoint = 'reload-expiry-transition';
+  let storageChanged = false;
+  try { await expect.poll(async () => JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey)).expiresAt, {timeout:5000}).not.toBe(originalBinding.expiresAt); storageChanged = true; } catch { /* retain bounded diagnostics for the refused assertion */ }
+  const renewedBinding = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey));
+  renewalProof.storage_matches_response = typeof renewalView?.expires_at === 'string' && renewedBinding.expiresAt === renewalView.expires_at;
+  renewalProof.storage_expiry_changed = renewedBinding.expiresAt !== originalBinding.expiresAt;
+  checkpoint = 'reload-expiry-evidence';
+  need(renewalProof.response_received && renewalProof.response_ok && renewalProof.response_shape_valid && renewalProof.response_identity_matches && renewalProof.response_expiry_changed && storageChanged && renewalProof.storage_matches_response && renewalProof.storage_expiry_changed);
+  checkpoint = 'reload-binding-retained';
   const retained = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey));
   need(retained.projectID === config.project && retained.instanceID === config.instance && retained.sessionID === sessionID && retained.selectedworkerID === config.worker);
+  checkpoint = 'reload-expiry-window';
   need(Date.parse(retained.expiresAt) > Date.now() && Date.parse(retained.expiresAt) <= Date.now() + 86400000 + 300000);
+  checkpoint = 'reload-cookie-rotated';
   const resumed = (await context.cookies()).find(value => value.name === cookieName);
   need(resumed?.value !== cookie.value && resumed?.httpOnly && resumed?.sameSite === 'Strict' && sessionPosts === 1);
+  checkpoint = 'reload-presentation-restored';
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
+  checkpoint = 'reload-sidebar-absent';
   need(await page.locator('.sidebar').count() === 0);
-  await page.locator('.connection-card .connection-live').waitFor();
+  checkpoint = 'reload-connection-live';
+  await page.locator('.mast .connection-live').waitFor();
 
+  checkpoint = 'reload-metadata-live';
   await expect(page.getByRole('status').filter({hasText:/^Project updates disconnected/})).toHaveCount(0);
+  checkpoint = 'reload-reader-counts';
   need((await appearance()).brand === 'Smoke live <literal>' && metadataStreams >= 3 && metadataStreams <= 4 && presentationReads === 4 && inboxStreams >= 2 && inboxStreams <= 3);
 
   // Renewal replaces streams that opened before its cookie response. Capture
@@ -587,16 +741,33 @@ try {
   need(sessionPosts === 1 && sessionDeletes === 1 && forbiddenWrites === 0 && errors === 0 && external === 0);
 
   phase = 'explicit-actions-connect';
+ checkpoint='root-url';
+ await page.waitForURL(config.origin + '/');
+ checkpoint='root-form';
+ await expect(page.getByLabel('Project ID', {exact:true})).toHaveValue('');
  const actionRootHistoryIndex=await page.evaluate(()=>history.state.idx);
   explicitActions = true;
+ checkpoint='project-input';
   await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+ checkpoint='credential-input';
   await page.getByLabel('Project credential', {exact:true}).fill(admin);
   need(await page.getByRole('checkbox').count()===0);
+ checkpoint='submit';
   const adminLogin=page.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname===prefix+'/browser-session');
   await page.getByRole('button', {name:'Connect to project',exact:true}).click();
-  const adminResponse=await adminLogin;need(adminResponse.status()===200);
-  const adminCapabilities=await adminResponse.json();need(adminCapabilities.allow_writes===true && adminCapabilities.can_edit_presentation===true);
+  checkpoint='session-response';
+  const adminResponse=await adminLogin;lastHTTPStatus=adminResponse.status();
+  checkpoint='session-status';
+  need(lastHTTPStatus===200);
+  checkpoint='capabilities-finished';
+  await adminResponse.finished();
+  checkpoint='capabilities-read';
+  const adminCapabilities=await adminResponse.json();
+  lastAllowWrites=adminCapabilities.allow_writes===true; lastCanEditPresentation=adminCapabilities.can_edit_presentation===true;
+  checkpoint='capabilities-check';
+  need(adminCapabilities.allow_writes===true && adminCapabilities.can_edit_presentation===true);
   need(actionWrites===0 && forbiddenWrites===0);
+ checkpoint='heading';
   await page.getByRole('heading', {name:title,exact:true}).waitFor();
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox',exact:true}).click();
   await page.getByRole('button', {name:'Select worker Builder',exact:true}).click();
@@ -750,101 +921,15 @@ try {
   checkpoint = 'counters';
   need(terminalResponses > 0 && sessionRenewals === 3 && actionWrites === 7 && forbiddenWrites === 0 && errors === 0 && external === 0);
 
-  phase = 'manual-refresh-closed-feed'; checkpoint = 'connect-second-view';
-  const refreshPage = await context.newPage();
-  refreshPage.setDefaultTimeout(5000); refreshPage.setDefaultNavigationTimeout(5000);
-  let refreshPresentationReads = 0, refreshDeliveryReads = 0, refreshMetadataStreams = 0, refreshPageErrors = 0;
-  refreshPage.on('pageerror', () => refreshPageErrors++);
-  refreshPage.on('request', request => {
-    if (request.method() !== 'GET') return;
-    const url = new URL(request.url());
-    if (url.pathname === prefix + '/presentation') refreshPresentationReads++;
-    if (url.pathname === prefix + '/delivery') refreshDeliveryReads++;
-    if (url.pathname === prefix + '/project-events/stream') refreshMetadataStreams++;
-  });
-  failNextMetadataStream = true;
-  await refreshPage.goto(config.origin);
-  await refreshPage.getByLabel('Project ID',{exact:true}).fill(config.project);
-  await refreshPage.getByLabel('Project credential',{exact:true}).fill(token);
-  const refreshLogin = refreshPage.waitForResponse(value => value.request().method() === 'POST' && new URL(value.url()).pathname === prefix + '/browser-session');
-  await refreshPage.getByRole('button',{name:'Connect to project',exact:true}).click();
-  need((await refreshLogin).status() === 200);
-  await refreshPage.getByRole('heading',{name:'Packaged smoke',exact:true}).waitFor();
-  await refreshPage.getByRole('heading',{name:'Delivery',exact:true}).waitFor();
-  await expect.poll(() => refreshDeliveryReads,{timeout:5000}).toBeGreaterThan(0);
-  await refreshPage.getByText('Smoke live <literal>',{exact:true}).waitFor();
-  await refreshPage.getByText('Project updates disconnected.',{exact:false}).waitFor();
-  need(refreshMetadataStreams === 1);
-  const refreshTheme = {...theme, header_background:'#183451', header_text:'#fff1b8', accent_background:'#143a66', accent_text:'#ffffff'};
-  await seedDelivery('PUT','/presentation',{expected_revision:2,presentation:{name:'Refresh board view A',brand_name:'Refresh brand A',theme:refreshTheme}});
-  const recoveredJob = await seedDelivery('POST','/jobs',{title:'Refresh board row after missed event',brief:'Synthetic refresh proof only.',worker_id:config.worker},201);
-  need(await refreshPage.getByText('Refresh board row after missed event',{exact:true}).count() === 0);
-  const presentationReadsBeforeRefresh = refreshPresentationReads;
-  const deliveryReadsBeforeRefresh = refreshDeliveryReads;
-  const refreshButton = refreshPage.getByRole('button',{name:'Refresh visible data',exact:true});
-  await refreshButton.click();
-  await expect(refreshButton).toHaveAttribute('aria-busy','true');
-  await expect(refreshButton).toBeEnabled({timeout:5000});
-  await expect.poll(() => refreshPresentationReads,{timeout:5000}).toBe(presentationReadsBeforeRefresh + 1);
-  await expect.poll(() => refreshDeliveryReads,{timeout:5000}).toBeGreaterThan(deliveryReadsBeforeRefresh);
-  await refreshPage.getByRole('heading',{name:'Refresh board view A',exact:true}).waitFor();
-  await expect(refreshPage.locator('.brand')).toContainText('Refresh brand A');
-  await expect(refreshPage.getByRole('link',{name:'Refresh board row after missed event',exact:true})).toBeVisible();
-  need(await refreshPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--fc-header_background').trim()) === '#183451');
-  need(refreshMetadataStreams === 1 && await refreshPage.getByText('Project updates disconnected.',{exact:false}).count() > 0);
-
-  phase = 'cross-project-late-refresh'; checkpoint = 'prepare-target-project';
-  const adminHeader = {'Authorization':'Bearer '+admin,'X-FC-Instance':config.instance,'Content-Type':'application/json'};
-  const createTarget = async (path, body, key, status) => {
-    const response = await fetch(config.origin + path,{method:'POST',headers:{...adminHeader,'Idempotency-Key':key},body:JSON.stringify(body),signal:AbortSignal.timeout(5000)});
-    need(response.status === status); return response.json();
-  };
-  const target = await createTarget('/api/v1/projects',{name:'Refresh target B',repository:'synthetic/refresh-target-b'},'packaged-refresh-project-b',200);
-  const targetProject = target.id;
-  const targetToken = randomBytes(32).toString('hex');
-  const targetDigest = createHash('sha256').update(targetToken).digest('hex');
-  await createTarget('/api/v1/projects/'+targetProject+'/credentials',{token_sha256:targetDigest,permissions:['read']},'packaged-refresh-credential-b',200);
-  const targetPrefix = '/api/v1/projects/'+targetProject;
-  const targetWorker = (await createTarget(targetPrefix+'/workers',{name:'Target worker'},'packaged-refresh-worker-b',200)).id;
-  const targetTheme = {...theme,header_background:'#27452d',header_text:'#f5ffd8',accent_background:'#345a35',accent_text:'#ffffff'};
-  const targetPut = await fetch(config.origin+targetPrefix+'/presentation',{method:'PUT',headers:{...adminHeader,'X-FC-Worker':targetWorker,'Idempotency-Key':'packaged-refresh-presentation-b'},body:JSON.stringify({expected_revision:0,presentation:{name:'Refresh board view B',brand_name:'Refresh brand B',theme:targetTheme}}),signal:AbortSignal.timeout(5000)});
-  need(targetPut.status === 200);
-  const targetJobResponse = await fetch(config.origin+targetPrefix+'/jobs',{method:'POST',headers:{...adminHeader,'X-FC-Worker':targetWorker,'Idempotency-Key':'packaged-refresh-job-b'},body:JSON.stringify({title:'Target B only job',brief:'Synthetic isolated project.',worker_id:targetWorker}),signal:AbortSignal.timeout(5000)});
-  need(targetJobResponse.status === 201);
-  const targetJobReceipt = await targetJobResponse.json();
-  armHeldPresentation(); holdNextPresentation = true;
-  await refreshPage.getByRole('button',{name:'Refresh visible data',exact:true}).click();
-  await heldPresentationReady;
-  await refreshPage.getByRole('button',{name:'Disconnect',exact:true}).click();
-  await refreshPage.getByRole('button',{name:'Connect to project',exact:true}).waitFor();
-  await refreshPage.waitForURL(config.origin + '/');
-  await refreshPage.getByLabel('Project ID',{exact:true}).fill(targetProject);
-  await refreshPage.getByLabel('Project credential',{exact:true}).fill(targetToken);
-  const targetLogin = refreshPage.waitForResponse(value => value.request().method() === 'POST' && new URL(value.url()).pathname === targetPrefix + '/browser-session');
-  await refreshPage.getByRole('button',{name:'Connect to project',exact:true}).click();
-  need((await targetLogin).status() === 200);
-  await refreshPage.getByRole('heading',{name:'Refresh board view B',exact:true}).waitFor();
-  await refreshPage.getByRole('heading',{name:'Delivery',exact:true}).waitFor();
-  await refreshPage.getByRole('link',{name:'Target B only job',exact:true}).waitFor();
-  releaseHeldPresentation();
-  const lateResult = await heldPresentationDone;
-  await refreshPage.getByRole('heading',{name:'Refresh board view B',exact:true}).waitFor();
-  await expect(refreshPage.locator('.brand')).toContainText('Refresh brand B');
-  await expect(refreshPage.getByRole('link',{name:'Target B only job',exact:true})).toBeVisible();
-  need(await refreshPage.getByText('Refresh board row after missed event',{exact:true}).count() === 0);
-  need(await refreshPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--fc-header_background').trim()) === '#27452d');
-  const targetBodyText = await refreshPage.locator('body').innerText();
-  need(![config.project,config.worker,config.other_worker,recoveredJob.id,targetJobReceipt.id].some(id => targetBodyText.includes(id)));
-  need((lateResult === 'delivered' || lateResult === 'cancelled') && refreshPageErrors === 0);
-  await refreshPage.close();
   await context.close();
   await browser.close(); browser = undefined;
   await server.close(); server = undefined;
-  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, manual_refresh_closed_feed:true, refresh_presentation_reads:refreshPresentationReads, refresh_delivery_reads:refreshDeliveryReads, late_presentation_result:lateResult, late_page_errors:refreshPageErrors, ...metadataCounts}));
+  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
 } catch (error) {
-  failureClass = error?.name === 'TimeoutError' ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
+  failureClass = error?.name === 'TimeoutError' || /timeout|timed out|exceeded.*limit/i.test(error?.message || '') ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
+  const failureName = ['TimeoutError','Error','AssertionError','TypeError','ReferenceError','RangeError'].includes(error?.name) ? error.name : 'Other';
   const snapshot = await failureSnapshot().catch(()=>({diagnostic_failed:true}));
-  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, send_status:sendStatus, reply_status:replyStatus, conversation_match:conversationMatch, ...counters(), ...diagnostics(), ...snapshot}));
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, failure_name:failureName, http_status:lastHTTPStatus, allow_writes:lastAllowWrites, can_edit_presentation:lastCanEditPresentation, send_status:sendStatus, reply_status:replyStatus, conversation_match:conversationMatch, ...counters(), ...diagnostics(), ...snapshot}));
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});

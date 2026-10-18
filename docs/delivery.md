@@ -10,7 +10,7 @@ The [native review workspace](review-workspace.md) implements stored queue, PR/r
 
 ## Remaining product work
 
-The [Delivery and Project website redesign](browser-experience.md) is active product work: restore the default worker/job lanes, Unassigned lane, review queue and merge-head hero, and replace the map catalogue with a flexible Markdown editorial website. Existing filters/detail views stay available. This work requires implementation and browser proof; prior UI acceptance does not establish the redesigned experience.
+The [Delivery and Project website redesign](browser-experience.md) restores the default worker/job lanes, Unassigned lane, review queue and merge-head hero in source. Focused Delivery API checks and actual packaged desktop/narrow browser proof pass, including compact sticky utilities, retained archives and renewal. A separate actual browser fixture proves missed presentation/job updates after a closed feed, pending Refresh behavior and a delivered late response remaining isolated after a project switch. Release qualification remains active. The next editorial Project slice replaces the map catalogue with a flexible Markdown website; existing filters/detail views stay available. Prior UI acceptance does not establish human acceptance of the redesigned experience.
 
 Core coordination, review execution and browser feature slices are implemented in the current stack, with their focused and controlled executable proof recorded below.
 

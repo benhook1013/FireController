@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The Delivery homepage, merge-head hero, compact sticky header and editorial Project page are implemented in source. Focused API/client checks and private/public editorial browser proof pass; broader browser and release qualification remain in progress. These changes are not yet installed. Existing service isolation, live updates, private profiles, authenticated coordination and publication allowlists remain the foundation. Executed proof and remaining adoption work are recorded in [delivery](delivery.md).
+The Delivery homepage, merge-head hero, compact sticky header and editorial Project page are implemented in source. Focused API/client checks, the packaged Delivery/header flow and private/public editorial browser proof pass. An independent two-project fixture proves missed-update Refresh and delivered late-response isolation. Release qualification remains in progress; these changes are not yet installed. Existing service isolation, live updates, private profiles, authenticated coordination and publication allowlists remain the foundation. Executed proof and remaining adoption work are recorded in [delivery](delivery.md).
 
 ## Default Delivery homepage
 
