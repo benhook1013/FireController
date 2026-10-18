@@ -4,15 +4,24 @@ import (
 	"context"
 	"database/sql"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const projectFeed = "events:project-metadata"
 
+var projectEventKinds = [...]string{
+	"project.presentation_changed",
+	"map.entry_created",
+	"map.entry_updated",
+	"job.workstream_changed",
+}
+
 func projectEventType(kind string) bool {
-	switch kind {
-	case "project.presentation_changed", "map.entry_created", "map.entry_updated", "job.workstream_changed":
-		return true
+	for _, registered := range projectEventKinds {
+		if kind == registered {
+			return true
+		}
 	}
 	return false
 }
@@ -57,7 +66,14 @@ func (s *Store) readProjectEvents(ctx context.Context, scope Scope, after int64,
 		if expired {
 			return Fail("resync_required", "The event replay window expired; obtain a new scoped snapshot.", 409)
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT sequence,event_type,resource_id,revision FROM events WHERE project_id=? AND sequence>? AND event_type IN ('project.presentation_changed','map.entry_created','map.entry_updated','job.workstream_changed') ORDER BY sequence LIMIT ?`, scope.ProjectID, after, limit+1)
+		placeholders := make([]string, len(projectEventKinds))
+		args := []any{scope.ProjectID, after}
+		for i, kind := range projectEventKinds {
+			placeholders[i] = "?"
+			args = append(args, kind)
+		}
+		args = append(args, limit+1)
+		rows, err := tx.QueryContext(ctx, `SELECT sequence,event_type,resource_id,revision FROM events WHERE project_id=? AND sequence>? AND event_type IN (`+strings.Join(placeholders, ",")+`) ORDER BY sequence LIMIT ?`, args...)
 		if err != nil {
 			return err
 		}

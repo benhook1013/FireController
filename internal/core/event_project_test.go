@@ -126,6 +126,50 @@ func TestProjectEventsRegistrationAndCallbacksOutsideTransaction(t *testing.T) {
 	}
 }
 
+func TestProjectEventsRegisteredKindsWakeAndReplay(t *testing.T) {
+	s, scope, _ := streamFixture(t)
+	cursor := projectCursor(t, s, scope)
+	waiter, release, err := s.addEventWaiter(scope, messageTopic{project: scope.ProjectID, feed: projectFeed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	after, err := s.eventPosition(scope, projectFeed, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Subscribe first: commits must use the same kind set for wake hints and
+	// durable replay, while an unrelated committed event only advances the head.
+	commitProjectEvent(t, s, scope, "project.unknown", "unknown-before")
+	if len(waiter.ready) != 0 {
+		t.Fatal("unknown event woke project metadata")
+	}
+	for i, kind := range projectEventKinds {
+		id := fmt.Sprintf("registered-%d", i)
+		commitProjectEvent(t, s, scope, kind, id)
+		if len(waiter.ready) != 1 {
+			t.Fatalf("registered kind did not wake: %s", kind)
+		}
+		<-waiter.ready
+		page, err := s.readProjectEvents(context.Background(), scope, after, 1)
+		if err != nil || len(page.Items) != 1 || page.HasMore || page.Items[0].EventType != kind || page.Items[0].ResourceID != id || page.Items[0].Revision != 2 {
+			t.Fatalf("registered kind replay: %s %+v %v", kind, page, err)
+		}
+		after, err = s.eventPosition(scope, projectFeed, page.EventCursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	commitProjectEvent(t, s, scope, "project.unknown", "unknown-after")
+	if len(waiter.ready) != 0 {
+		t.Fatal("unknown event woke project metadata")
+	}
+	page, err := s.readProjectEvents(context.Background(), scope, after, 1)
+	if err != nil || len(page.Items) != 0 || page.HasMore || page.EventCursor != projectCursor(t, s, scope) {
+		t.Fatalf("unknown event leaked into replay or lost its watermark: %+v %v", page, err)
+	}
+}
+
 func TestProjectEventsCursorScopeWorkerIndependenceExpiry(t *testing.T) {
 	s, scope, messageCursor := streamFixture(t)
 	if _, err := s.DB().Exec("INSERT INTO workers VALUES('project','other','Other')"); err != nil {
