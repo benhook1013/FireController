@@ -29,6 +29,27 @@ try {
   page.setDefaultNavigationTimeout(5000);
   const prefix = '/api/v1/projects/' + config.project;
   const home = '/projects/' + config.project;
+  const bindingKey = 'firecontroller.browser-session.v1';
+  const loginAuthority = async (loginResponse, allowWrites, canEditPresentation) => {
+    const posted = loginResponse.request().postDataJSON();
+    need(posted && Object.keys(posted).length === 1 && typeof posted.session_id === 'string' && /^[a-f0-9]{32}$/u.test(posted.session_id));
+    // The page has accepted this login; inspect actual cookie authority rather
+    // than an unbounded CDP response-finished/body observer.
+    const current = await page.evaluate(async ({prefix, bindingKey, sessionID, project, instance}) => {
+      const binding = JSON.parse(sessionStorage.getItem(bindingKey));
+      if (binding?.sessionID !== sessionID || binding.projectID !== project || binding.instanceID !== instance) throw new Error('login session binding differs');
+      const response = await fetch(prefix + '/browser-session', {headers:{'X-FC-Browser-Session':sessionID, 'X-FC-Instance':instance}, credentials:'same-origin', cache:'no-store', redirect:'error', signal:AbortSignal.timeout(5000)});
+      return {status:response.status, view:response.status === 200 ? await response.json() : null, binding};
+    }, {prefix, bindingKey, sessionID:posted.session_id, project:config.project, instance:config.instance});
+    const view = current.view, binding = current.binding;
+    const fields = ['session_id', 'instance_id', 'project_id', 'expires_at', 'allow_writes', 'can_edit_presentation'];
+    const bindingFields = ['version', 'projectID', 'instanceID', 'sessionID', 'expiresAt', 'selectedworkerID'];
+    need(current.status === 200 && view && typeof view === 'object' && !Array.isArray(view) && Object.keys(view).length === fields.length && fields.every(field => Object.hasOwn(view, field)));
+    need(view.session_id === posted.session_id && view.project_id === config.project && view.instance_id === config.instance && view.allow_writes === allowWrites && view.can_edit_presentation === canEditPresentation);
+    need(typeof view.expires_at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(view.expires_at) && Number.isFinite(Date.parse(view.expires_at)) && Date.parse(view.expires_at) > Date.now() && Date.parse(view.expires_at) <= Date.now() + 86400000 + 300000);
+    need(binding.version === 1 && Object.keys(binding).length === bindingFields.length && bindingFields.every(field => Object.hasOwn(binding, field)) && binding.expiresAt === view.expires_at && typeof binding.selectedworkerID === 'string' && (binding.selectedworkerID === '' || /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(binding.selectedworkerID)));
+    return view;
+  };
   failureSnapshot = async () => {
     if (phase === 'live-reviews') {
       const snapshot = {
@@ -240,15 +261,14 @@ try {
   const readOnlyResponse=await readOnlyLogin; lastHTTPStatus=readOnlyResponse.status();
   checkpoint = 'session-status';
   need(lastHTTPStatus===200);
-  checkpoint = 'capabilities-finished';
-  await readOnlyResponse.finished();
+  checkpoint = 'heading';
+  await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
   checkpoint = 'capabilities-read';
-  const readOnlyCapabilities=await readOnlyResponse.json();
+  const readOnlyCapabilities=await loginAuthority(readOnlyResponse, false, false);
   lastAllowWrites=readOnlyCapabilities.allow_writes===true; lastCanEditPresentation=readOnlyCapabilities.can_edit_presentation===true;
   checkpoint = 'capabilities-check';
   need(readOnlyCapabilities.allow_writes===false && readOnlyCapabilities.can_edit_presentation===false);
-  checkpoint = 'heading';
-  await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
+
   need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).count()===0);
   need(await page.locator('.sidebar').count() === 0);
   need(await page.locator('.mast .header-utilities .connection-note').count() === 1);
@@ -327,7 +347,6 @@ try {
   await page.getByText('Live inbox connected', {exact:true}).waitFor();
   need(metadataStreams === 1 && inboxStreams === 1);
   checkpoint = 'none';
-  const bindingKey = 'firecontroller.browser-session.v1';
   const binding = await page.evaluate(key => sessionStorage.getItem(key), bindingKey);
   need(binding && !binding.includes(token) && JSON.parse(binding).selectedworkerID === config.worker);
   const sessionID = JSON.parse(binding).sessionID;
@@ -759,16 +778,15 @@ try {
   const adminResponse=await adminLogin;lastHTTPStatus=adminResponse.status();
   checkpoint='session-status';
   need(lastHTTPStatus===200);
-  checkpoint='capabilities-finished';
-  await adminResponse.finished();
+  checkpoint='heading';
+  await page.getByRole('heading', {name:title,exact:true}).waitFor();
   checkpoint='capabilities-read';
-  const adminCapabilities=await adminResponse.json();
+  const adminCapabilities=await loginAuthority(adminResponse, true, true);
   lastAllowWrites=adminCapabilities.allow_writes===true; lastCanEditPresentation=adminCapabilities.can_edit_presentation===true;
   checkpoint='capabilities-check';
   need(adminCapabilities.allow_writes===true && adminCapabilities.can_edit_presentation===true);
   need(actionWrites===0 && forbiddenWrites===0);
- checkpoint='heading';
-  await page.getByRole('heading', {name:title,exact:true}).waitFor();
+
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox',exact:true}).click();
   await page.getByRole('button', {name:'Select worker Builder',exact:true}).click();
   const incoming = await write('POST','/messages',{recipient_worker_id:config.worker,body:'Action incoming <literal>',reply_to_message_id:''},201,config.other_worker);
