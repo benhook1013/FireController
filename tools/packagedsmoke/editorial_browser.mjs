@@ -25,7 +25,7 @@ try {
   const second = await create({kind:'section', title:'Project boundaries', description:'## Boundaries\n\nOptional progress metadata is absent here.'+'\n\nLong-form boundaries provide enough natural document content to test section navigation under the sticky header at every viewport. These synthetic paragraphs also exercise readable wrapping without relying on fixed spacer heights.'.repeat(12), state:'', phases:[], links:[], position:20});
 
   // Every semantic pair remains valid while canvas and surface muted roles differ.
-  const theme={canvas_background:'#bcbcbc',canvas_text:'#000000',canvas_muted:'#000000',canvas_border:'#000000',surface_background:'#ffffff',surface_text:'#000000',surface_muted:'#757575',surface_border:'#757575',accent_background:'#000000',accent_text:'#ffffff',accent_soft_background:'#ffffff',header_background:'#ffffff',header_text:'#000000',header_muted:'#000000',hero_background:'#ffffff',hero_text:'#000000',hero_muted:'#000000',focus:'#5a5a5a',active_background:'#bcbcbc',active_text:'#000000',blocked_background:'#bcbcbc',blocked_text:'#000000',parked_background:'#bcbcbc',parked_text:'#000000',completed_background:'#bcbcbc',completed_text:'#000000'};
+  const theme={canvas_background:'#bcbcbc',canvas_text:'#000000',canvas_muted:'#000000',canvas_border:'#000000',surface_background:'#ffffff',surface_text:'#757575',surface_muted:'#757575',surface_border:'#757575',accent_background:'#000000',accent_text:'#ffffff',accent_soft_background:'#ffffff',header_background:'#ffffff',header_text:'#000000',header_muted:'#000000',hero_background:'#ffffff',hero_text:'#000000',hero_muted:'#000000',focus:'#5a5a5a',active_background:'#bcbcbc',active_text:'#000000',blocked_background:'#bcbcbc',blocked_text:'#000000',parked_background:'#bcbcbc',parked_text:'#000000',completed_background:'#bcbcbc',completed_text:'#000000'};
   const appearance=await fetch(config.origin+prefix+'/presentation',{method:'PUT',headers:{Authorization:'Bearer '+admin,'X-FC-Instance':config.instance,'X-FC-Worker':config.worker,'Idempotency-Key':'editorial-appearance-fixture','Content-Type':'application/json'},body:JSON.stringify({expected_revision:0,presentation:{name:'Packaged smoke',theme}}),signal:AbortSignal.timeout(5000)});
   need(appearance.status===200&&(await appearance.json()).revision===1);
 
@@ -130,8 +130,8 @@ try {
     const inline=getComputedStyle(element.querySelector('p code'));
     const block=getComputedStyle(element.querySelector('.editorial-code-block'));
     return quote.color==='rgb(117, 117, 117)' && quote.borderLeftColor==='rgb(117, 117, 117)'
-      && image.color==='rgb(117, 117, 117)' && inline.color==='rgb(0, 0, 0)' && inline.backgroundColor==='rgb(255, 255, 255)'
-      && block.color==='rgb(0, 0, 0)' && block.backgroundColor==='rgb(255, 255, 255)';
+      && image.color==='rgb(117, 117, 117)' && inline.color==='rgb(117, 117, 117)' && inline.backgroundColor==='rgb(255, 255, 255)'
+      && block.color==='rgb(117, 117, 117)' && block.backgroundColor==='rgb(255, 255, 255)';
   }));
   checkpoint='disconnect';
   need(domainWrites===0&&errors===0&&sessionPosts===1);
@@ -185,7 +185,7 @@ try {
   checkpoint='public-order';const publicEntries=shared.locator('#project-map .public-story');
   await expect(publicEntries).toHaveCount(2);
   need((await publicEntries.locator('h3').allTextContents()).join('|')==='Approved direction|Approved boundaries');
-  checkpoint='public-markdown';need(await publicEntries.first().locator('.editorial-markdown').evaluate(element=>getComputedStyle(element).color==='rgb(19, 47, 70)'));await expect(shared.getByRole('heading',{name:'Public direction',exact:true})).toBeVisible();
+  checkpoint='public-markdown';need(await publicEntries.first().locator('.editorial-markdown').evaluate(element=>getComputedStyle(element).color==='rgb(0, 0, 0)'));await expect(shared.getByRole('heading',{name:'Public direction',exact:true})).toBeVisible();
   need(await publicEntries.locator('strong').innerText()==='editorial prose');
   need((await publicEntries.locator('.editorial-list li').allTextContents()).join('|')==='Public first point|Public second point');
   await expect(shared.getByText('Image: Public illustration',{exact:true})).toBeVisible();

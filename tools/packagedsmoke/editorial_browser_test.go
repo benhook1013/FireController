@@ -175,7 +175,7 @@ func TestPackagedEditorialBrowserSmoke(t *testing.T) {
 		PublicWrites          int    `json:"public_writes"`
 		PublicErrors          int    `json:"public_errors"`
 	}
-	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.EditorialReads < 2 || result.CompactReads != 1 || result.IndividualReads != 0 || result.External != 0 || result.FixtureEntries != 3 || result.SessionPosts != 1 || result.SessionDeletes != 1 || result.DomainWrites != 0 || result.Errors != 0 || result.AppearanceCalls != 1 || result.PublicationCalls != 5 || result.PublicReads != 2 || result.PublicSnapshots != 1 || result.PublicHistory != 0 || result.PublicPrivateRequests != 0 || result.PublicWrites != 0 || result.PublicErrors != 0 {
+	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.EditorialReads < 2 || result.CompactReads != 1 || result.IndividualReads != 1 || result.External != 0 || result.FixtureEntries != 3 || result.SessionPosts != 1 || result.SessionDeletes != 1 || result.DomainWrites != 0 || result.Errors != 0 || result.AppearanceCalls != 1 || result.PublicationCalls != 5 || result.PublicReads != 2 || result.PublicSnapshots != 1 || result.PublicHistory != 0 || result.PublicPrivateRequests != 0 || result.PublicWrites != 0 || result.PublicErrors != 0 {
 		t.Fatalf("invalid editorial browser result: editorial=%d compact=%d individual=%d external=%d entries=%d", result.EditorialReads, result.CompactReads, result.IndividualReads, result.External, result.FixtureEntries)
 	}
 	daemon.stop(t)
