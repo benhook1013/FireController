@@ -25,7 +25,7 @@ func TestReviewResultStdioWaitDoesNotBlockOtherToolsOrRetry(t *testing.T) {
 			posts.Add(1)
 			preferences <- r.Header.Get("Prefer")
 		}
-		waiting := strings.Contains(r.URL.Path, "/reviews/operations/") && r.Header.Get("Prefer") == "wait=900"
+		waiting := strings.Contains(r.URL.Path, "/reviews/operations/") && r.Header.Get("Prefer") == "wait=50"
 		if waiting {
 			readStarted <- struct{}{}
 		}
@@ -52,7 +52,7 @@ func TestReviewResultStdioWaitDoesNotBlockOtherToolsOrRetry(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "review_operation_read", Arguments: map[string]any{"operation_id": first.ID, "wait_seconds": 900}})
+		_, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "review_operation_read", Arguments: map[string]any{"operation_id": first.ID, "wait_seconds": 50}})
 		done <- err
 	}()
 	select {
