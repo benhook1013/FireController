@@ -96,6 +96,10 @@ These checks do not establish full-suite success, physical-phone behavior, fleet
 
 Clean checkpoint `a61c5fba16b98cd12737ac950bf9546211ead306` subsequently passed canonical `make check build`: TypeScript/198 browser tests, all Go race tests, vet, documentation checks, regenerated assets and three CGO-free binaries. The review-engine package completed in 334.388 seconds without a failure; this does not establish why its earlier setup deadlines failed. The canonical packaged daemon/CLI/MCP smoke then passed in 0.444 seconds. Later source changes require their own relevant validation rather than inheriting an exact-head full-run claim.
 
+## Oversized retained-state reads
+
+Current and historical entry reads return the safe `storage_unavailable` response when stored JSON exceeds the byte bound. The SQL size guard does not expose a driver scan error or load the oversized body. A multibyte regression reproduced both HTTP 500 responses before the fix; authenticated SQLite/HTTP checks now prove HTTP 503, unchanged retained bodies, receipts and events, and continued valid and not-found reads. The complete project-map race suite passed in 6.680 seconds at this change. This is local synthetic proof, not deployed-data validation.
+
 ## Retained link readability
 
 Stored HTTP link text is validated separately from browser navigation. If browser URL parsing rejects a retained link, the entry and its historical revisions still load; the link label displays as unavailable without an anchor. Safe HTTP/HTTPS links remain clickable, and text is rendered literally. This avoids making a browser-parser difference invalidate the whole stored entry.
