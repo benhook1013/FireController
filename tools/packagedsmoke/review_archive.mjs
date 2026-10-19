@@ -44,7 +44,7 @@ try {
     await page.getByLabel('Project ID',{exact:true}).fill(config.project);
     await page.getByLabel('Project credential',{exact:true}).fill(token);
     await page.getByRole('button',{name:'Connect to project',exact:true}).click();
-    const rounds = page.getByRole('region',{name:`PR #${number} review rounds`,exact:true});
+    const rounds = page.locator('.main-content').getByRole('region',{name:`PR #${number} review rounds`,exact:true});
     const attempts = page.getByRole('region',{name:`PR #${number} attempts`,exact:true});
     await rounds.waitFor(); await attempts.waitFor();
     await attempts.locator('summary').click();
@@ -52,18 +52,21 @@ try {
     await expect.poll(() => attempts.locator('li').count()).toBe(20);
     need(await rounds.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).count() === 1);
     need(await rounds.getByRole('region',{name:'CLI CodeRabbit',exact:true}).count() === 1);
-    need(await page.locator('.review-pull-summary').getByText(`${count} runs · ${count} attempts`,{exact:true}).count() === 1);
+    need(await page.locator('.review-pull-summary').getByText(`${count} runs · ${count} attempts`,{exact:true}).count() === 0);
+    await expect(rounds.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText('20 runs shown');
+    await expect(rounds.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText('0 runs shown');
     const stored = await page.evaluate(() => JSON.stringify({session:{...sessionStorage},local:{...localStorage}}));
     need(!stored.includes(token) && !stored.includes(admin));
-    return {page,rounds,attempts,name};
+    return {page,rounds,attempts,name,snapshot};
   };
-  const requests = (view,feed) => archives.filter(item => item.name === view.name && item.feed === feed);
+  const requests = (view,feed) => archives.filter(item => item.name === view.name && item.feed === feed && (!view.snapshot || item.snapshot === view.snapshot));
   const more = async (view,feed,shown) => {
     const section = feed === 'runs' ? view.rounds : view.attempts;
     const before = requests(view,feed).length;
     await section.getByRole('button',{name:feed === 'runs' ? 'Load more review rounds' : 'Load more attempts',exact:true}).click();
     await expect.poll(() => section.locator(feed === 'runs' ? '.review-round-pill' : 'li').count()).toBe(shown);
     need(requests(view,feed).length === before+1);
+    if (feed === 'runs') await expect(section.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText(`${shown} runs${shown < count ? ' shown' : ''}`);
   };
   // The real head summary shares the archive fixture. Check rendered geometry,
   // not CSS declarations: a no-overflow page can still crush one round into
@@ -82,16 +85,23 @@ try {
           const rect = node => { const box=node.getBoundingClientRect();return {left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width}; };
           const lineCount = node => { const range=document.createRange();range.selectNodeContents(node);return new Set([...range.getClientRects()].filter(box=>box.width>0&&box.height>0).map(box=>Math.round(box.top))).size; };
           const identity=document.querySelector('.project-identity');
-          return {head:rect(element),identity:rect(identity),groups:[...element.querySelectorAll('.delivery-review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
+          const project=identity.querySelector('.hero-project');
+          const container=element.closest('.delivery-hero');
+          const arrow=element.querySelector('.delivery-link-arrow');
+          return {head:rect(element),identity:rect(identity),project:rect(project),container:rect(container),arrow:rect(arrow),joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
         });
         need(geometry.groups.length === 2);
-        if (width === 1440) need(Math.abs(geometry.head.top-geometry.identity.top) <= 1 && geometry.head.left >= geometry.identity.right);
+        need(geometry.joined && geometry.twoTone);
+        need(Math.abs((geometry.project.top+geometry.project.bottom)-(geometry.identity.top+geometry.identity.bottom)) <= 2);
+        need(Math.abs(geometry.arrow.width-(geometry.arrow.bottom-geometry.arrow.top)) <= 1 && geometry.arrow.width >= 28);
+        need(geometry.arrow.right <= geometry.head.right && geometry.head.right-geometry.arrow.right <= 32 && geometry.arrow.bottom <= geometry.head.bottom && geometry.head.bottom-geometry.arrow.bottom <= 32);
+        if (width === 1440) need(Math.abs(geometry.head.top-geometry.identity.top) <= 1 && Math.abs(geometry.head.left-geometry.identity.right) <= 1);
         else {
           need(Math.abs(geometry.head.left-geometry.identity.left) <= 1 && Math.abs(geometry.head.right-geometry.identity.right) <= 1 && geometry.head.top >= geometry.identity.bottom);
           need(geometry.groups[1].top >= geometry.groups[0].bottom && Math.abs(geometry.groups[0].left-geometry.groups[1].left) <= 1 && Math.abs(geometry.groups[0].right-geometry.groups[1].right) <= 1);
         }
         for (const item of geometry.pills) {
-          need(item.text === '0/0/0' && Boolean(item.dateText));
+          need(item.text === '0/0/0' && /^(?:Just now|Future date|\d+m ago|\d+h \d+m ago|\d+d \d+h ago)$/u.test(item.dateText));
           need(item.pill.width >= 60 && item.statsLines === 1 && item.dateLines === 1);
           need(item.stats.left >= item.pill.left && item.stats.right <= item.pill.right && item.date.left >= item.pill.left && item.date.right <= item.pill.right);
         }
@@ -137,7 +147,11 @@ try {
   need(await pinned.rounds.getByRole('button',{name:'Load more review rounds',exact:true}).count() === 0);
   need(await pinned.attempts.getByRole('button',{name:'Load more attempts',exact:true}).count() === 0);
   for (const view of [current,pinned]) need(await view.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && archives.length === 20);
+  // The pinned detail retains its original snapshot while its current hero
+  // reads one bounded page for the new comparison. Neither walks that archive.
+  const pinnedCurrentHero = archives.filter(item => item.name === pinned.name && item.feed === 'runs' && item.snapshot !== config.snapshot);
+  need(pinnedCurrentHero.length === 1 && pinnedCurrentHero[0].cursor === null && pinnedCurrentHero[0].limit === 20);
+  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && archives.length === 21);
   await context.close(); await browser.close(); browser=undefined; await server.close(); server=undefined;
   console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,max_limit:20,source_collisions:true,pinned_tail:true,current_reset:true,fixture_writes:1}));
 } catch {

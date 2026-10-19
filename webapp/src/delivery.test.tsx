@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Delivery, DeliveryHero, DeliveryLanes, DeliveryReviewSummaries, MergeHeadContent, deliveryQuery, deliveryReviewQuery, groupDeliveryLanes, selectMergeHead } from './delivery';
+import { Delivery, DeliveryHero, DeliveryLanes, MergeHeadContent, deliveryQuery, deliveryReviewQuery, groupDeliveryLanes, selectMergeHead } from './delivery';
 import { WorkspaceContext, type Session } from './workspace';
 import type { DeliveryJob, DeliverySnapshot, DeliveryWorker, ReviewPullSummary, ReviewQueue, ReviewRunSummary } from './types';
 
@@ -14,16 +14,21 @@ const board: DeliverySnapshot = { workers: { items: [worker, { ...worker, id: 'e
 const run = (channel: 'hosted' | 'cli'): ReviewRunSummary => ({ source: 'fixture', id: 'run_' + channel, pull_number: 2, source_run_id: 'source_' + channel, channel, head_sha: 'head', reviewer: 'Reviewer', scope: 'full', coverage_limits: [], outcome: 'completed', attributable: true, complete: true, started_at: '', finished_at: '2026-10-18T00:00:00Z', found: 5, accepted: 2, routed: 1, finalized: true, fixed: 1 });
 const pull = (number: number, state: ReviewPullSummary['state']): ReviewPullSummary => ({ number, state, title: `Change ${number}`, head_sha: 'head', base_ref: 'main', base_sha: 'base', ci_state: 'success', mergeability: 'mergeable', complete: true, run_count: 2, attempt_count: 0, recent_runs: [run('hosted'), run('cli')], latest_attempts: [] });
 const queue = (items: ReviewPullSummary[], has_more = false): ReviewQueue => ({ items, has_more, ...(has_more ? { cursor: 'next_queue' } : {}), configured: true, project_id: 'project_one', revision: 1, snapshot_id: 'snapshot_one', source: 'retained', observed_at: '2026-10-18T00:00:00Z', recorded_at: '2026-10-18T00:00:00Z' });
-function markup(node: React.ReactNode) { return renderToStaticMarkup(<MemoryRouter>{node}</MemoryRouter>); }
+function markup(node: React.ReactNode) {
+  const session = { controller: new AbortController(), api: {} } as Session;
+  const client = new QueryClient();
+  try { return renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key, home, selectWorker: () => {}, fail: () => {}, ready: false }}>{node}</WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>); }
+  finally { client.clear(); }
+}
 
 describe('bounded Delivery board', () => {
   it('keeps empty workers, real owners outside the worker page, and genuinely unassigned jobs distinct', () => {
     const lanes = groupDeliveryLanes(board);
-    expect(lanes.map(lane => lane.id)).toEqual(['worker_one', 'empty_worker', 'outside_owner', '']);
+    expect(lanes.map(lane => lane.id)).toEqual(['worker_one', 'outside_owner', 'empty_worker', '']);
     expect(lanes[0].jobs.map(item => item.status)).toEqual(['active', 'blocked', 'parked']);
-    expect(lanes[1].jobs).toEqual([]);
-    expect(lanes[2].name).toBe('Elsewhere');
-    expect(lanes[2].worker).toBeUndefined();
+    expect(lanes[2].jobs).toEqual([]);
+    expect(lanes[1].name).toBe('Elsewhere');
+    expect(lanes[1].worker).toBeUndefined();
     expect(lanes[3].jobs.map(item => item.id)).toEqual(['unassigned_job']);
     expect(board.jobs.items[0].status).toBe('parked');
   });
@@ -78,31 +83,20 @@ describe('stored merge head and review summaries', () => {
     expect(partial).not.toContain('No open pull requests');
     const head = markup(<MergeHeadContent queue={queue([pull(2, 'open')])} home={home} />);
     expect(head).toContain('snapshot=snapshot_one');
-    expect(head).toContain('Observed CI: success');
+    expect(head).toContain('CI: success');
+    expect(head).not.toContain('Observed CI');
+    expect(head).not.toContain('First open PR');
+    expect(head).not.toContain('runs ·');
+    expect(head).toContain('#review-queue');
     expect(head).not.toMatch(/Ready to merge|Taper|Closed review/u);
   });
-  it('shows separate latest Hosted and CLI counts on the actual merge head and contracts absent heads', () => {
-    const selected = pull(2, 'open');
-    selected.recent_runs.push({ ...run('hosted'), id: 'older_hosted', source_run_id: 'older_source', found: 99 });
-    const html = markup(<MergeHeadContent queue={queue([selected])} home={home} />);
-    expect(html).toContain('PR #2 Hosted merge head');
-    expect(html).toContain('PR #2 CLI merge head');
-    expect(html).toContain('Latest shown round:');
-    expect(html).toContain('5/2/1');
-    expect(html).not.toContain('older_hosted');
+  it('uses shared separate Hosted and CLI history on the actual merge head', () => {
+    const html = markup(<MergeHeadContent queue={queue([pull(2, 'open')])} home={home} />);
+    expect(html).toContain('Hosted CodeRabbit');
+    expect(html).toContain('CLI CodeRabbit');
+    expect(html).toContain('delivery-head-history');
     expect(markup(<MergeHeadContent queue={queue([pull(1, 'merged')])} home={home} />)).toBe('');
     expect(markup(<MergeHeadContent queue={{ ...queue([]), configured: false }} home={home} />)).toBe('');
-  });
-  it('retains merged entries and groups actual summary counts with immutable snapshot links', () => {
-    const html = markup(<DeliveryReviewSummaries queue={queue([pull(1, 'merged'), pull(2, 'open')], true)} home={home} />);
-    expect(html).toContain('merged · retained');
-    expect(html).toContain('PR #2 Hosted summary');
-    expect(html).toContain('PR #2 CLI summary');
-    expect(html).toContain('5/2/1');
-    expect(html).toContain('/reviews/runs/run_hosted?snapshot=snapshot_one');
-    expect(html).toContain('/reviews/pulls/2?snapshot=snapshot_one');
-    expect(html).toContain('More queue entries are available');
-    expect(html).not.toMatch(/Taper|review closed|Load more review rounds/u);
   });
   it('shares one bounded queue read between hero and overview without run/archive fanout', async () => {
     const read = vi.fn().mockResolvedValue(queue([pull(2, 'open')]));
@@ -138,9 +132,10 @@ describe('stored merge head and review summaries', () => {
     client.setQueryData(deliveryReviewQuery(session, key).queryKey, queue([pull(2, 'open')]));
     try {
       const html = markup(<QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key, home, selectWorker: () => {}, fail: () => {}, ready: false }}><DeliveryHero><h1>Project name</h1></DeliveryHero><Delivery /></WorkspaceContext.Provider></QueryClientProvider>);
-      expect(html).toContain('Next delivery workers');
-      expect(html).toContain('Next delivery jobs');
-      expect(html).toContain('Lanes show the selected job page. More pages are available.');
+      expect(html).not.toContain('Next delivery workers');
+      expect(html).not.toContain('Next delivery jobs');
+      expect(html).toContain('Load more work');
+      expect(html).toContain('review-queue-title');
       expect(html).toContain('Owner outside this worker page');
       expect(html).toContain('Manage jobs');
       expect(html).toContain('href="/projects/project_one/jobs"');

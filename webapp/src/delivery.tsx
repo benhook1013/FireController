@@ -1,8 +1,10 @@
-import type { ReactNode } from 'react';
-import { Link } from 'react-router';
+import { useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
+import { Link, useLocation } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Pager, ReadState, signalFor, usePaging, useWorkspace, type Session } from './workspace';
-import type { DeliverySnapshot, ReviewPullSummary, ReviewQueue, ReviewRunSummary } from './types';
+import { ReadState, signalFor, useWorkspace, type Session } from './workspace';
+import type { DeliverySnapshot, ReviewPullSummary, ReviewQueue } from './types';
+import { ReviewQueueView, ReviewRunsView } from './review-workspace';
+import { DeliveryBoardArchive } from './delivery-board';
 import './delivery.css';
 
 type DeliveryWorker = DeliverySnapshot['workers']['items'][number];
@@ -17,7 +19,10 @@ export function groupDeliveryLanes(value: DeliverySnapshot): DeliveryLane[] {
     lanes.get(job.worker_id)!.jobs.push(job);
   }
   if (!lanes.has('')) lanes.set('', { id: '', name: 'Unassigned', jobs: [] });
-  return [...lanes.values()].map(lane => ({ ...lane, jobs: [...lane.jobs].sort((a, b) => statusOrder[a.status] - statusOrder[b.status]) }));
+  return [...lanes.values()].map(lane => ({ ...lane, jobs: [...lane.jobs].sort((a, b) => statusOrder[a.status] - statusOrder[b.status]) })).sort((a, b) => {
+    if (!a.id) return 1; if (!b.id) return -1;
+    return (a.jobs.length ? statusOrder[a.jobs[0].status] : 3) - (b.jobs.length ? statusOrder[b.jobs[0].status] : 3);
+  });
 }
 export function deliveryQuery(session: Session, key: readonly string[], workerCursor = '', jobCursor = '') {
   return { queryKey: [...key, 'delivery', workerCursor, jobCursor], queryFn: ({ signal }: { signal: AbortSignal }) => session.api.delivery({ worker_limit: 20, job_limit: 50, ...(workerCursor ? { worker_cursor: workerCursor } : {}), ...(jobCursor ? { job_cursor: jobCursor } : {}) }, signalFor(session, signal)), staleTime: Infinity };
@@ -48,13 +53,13 @@ export function selectMergeHead(queue: ReviewQueue): MergeHead {
   }
   return queue.has_more ? { state: 'unknown', reason: 'next-page' } : { state: 'none' };
 }
-function ObservedPullFacts({ pull }: { pull: ReviewPullSummary }) {
-  return <div className="delivery-pull-facts"><span className={`badge ${pull.state === 'merged' || pull.state === 'closed' ? 'neutral' : 'status-active'}`}>{pull.state}{pull.state === 'merged' ? ' · retained' : ''}</span><span>Observed CI: {pull.ci_state}</span><span>Observed mergeability: {pull.mergeability}</span><span>{pull.run_count} runs · {pull.attempt_count} attempts</span>{!pull.complete && <span>Incomplete PR observation</span>}</div>;
+function PullFacts({ pull }: { pull: ReviewPullSummary }) {
+  return <div className="delivery-pull-facts"><span className={`badge ${pull.state === 'merged' || pull.state === 'closed' ? 'neutral' : 'status-active'}`}>{pull.state}{pull.state === 'merged' ? ' · retained' : ''}</span><span>CI: {pull.ci_state}</span><span>Mergeability: {pull.mergeability}</span>{!pull.complete && <span>Incomplete PR observation</span>}</div>;
 }
 export function MergeHeadContent({ queue, home }: { queue: ReviewQueue; home: string }) {
   const head = selectMergeHead(queue);
   if (head.state === 'none' || head.state === 'unknown' && head.reason === 'unconfigured') return null;
-  return <><p className="eyebrow">Merge train</p>{head.state === 'head' ? <><h2><Link to={snapshotLink(home, 'pulls', head.pull.number, queue.snapshot_id)}>#{head.pull.number} · {head.pull.title}</Link></h2><p className="delivery-head-context">First open PR in the stored queue</p><ObservedPullFacts pull={head.pull} /><SummaryChannels pull={head.pull} snapshot={queue.snapshot_id} home={home} compact /></> : <><h2>Merge head not determined</h2><p>{head.reason === 'preceding' ? 'An earlier queue entry has unknown state.' : 'No open PR is loaded yet; more queue entries remain.'}</p></>}<Link className="delivery-head-link" to={`${home}/reviews`}>Open review queue →</Link></>;
+  return <><p className="eyebrow">Merge train</p>{head.state === 'head' ? <><h2><Link to={snapshotLink(home, 'pulls', head.pull.number, queue.snapshot_id)}>#{head.pull.number} · {head.pull.title}</Link></h2><PullFacts pull={head.pull} /><ReviewRunsView number={head.pull.number} snapshot={queue.snapshot_id} head={head.pull.head_sha} attempts={head.pull.latest_attempts} expected={head.pull.run_count} compact /></> : <><h2>Merge head not determined</h2><p>{head.reason === 'preceding' ? 'An earlier queue entry has unknown state.' : 'No open PR is loaded yet; more queue entries remain.'}</p></>}<Link className="delivery-head-link" to={`${home}#review-queue`} aria-label="Jump to review queue"><span>Review queue</span><span className="delivery-link-arrow" aria-hidden="true">↗</span></Link></>;
 }
 export function DeliveryHero({ children }: { children: ReactNode }) {
   const { session, key, home } = useWorkspace();
@@ -63,34 +68,16 @@ export function DeliveryHero({ children }: { children: ReactNode }) {
   const showHead = Boolean(query.isPending || query.error || head?.state === 'head' || head?.state === 'unknown' && head.reason !== 'unconfigured');
   return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Merge train head"><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <MergeHeadContent queue={query.data} home={home} />}</ReadState></section>}</div>;
 }
-function SummaryRun({ run, pull, snapshot, home }: { run: ReviewRunSummary; pull: ReviewPullSummary; snapshot: string; home: string }) {
-  const date = run.finished_at || run.started_at;
-  const warnings = [!run.complete && 'Incomplete record', !run.finalized && 'Counts not finalized', !run.attributable && 'Attribution unconfirmed', !run.head_sha || !pull.head_sha ? 'Head association unknown' : run.head_sha !== pull.head_sha && 'Different observed head'].filter(Boolean).join('. ');
-  return <Link className={`review-round-pill review-pill-${run.outcome}${run.outcome === 'completed' && run.accepted === 0 ? ' review-pill-zero' : ''}`} to={snapshotLink(home, 'runs', run.id, snapshot)} title={`${run.found}/${run.accepted}/${run.routed} found / accepted / routed. ${run.outcome.replaceAll('_', ' ')}. ${warnings}`} aria-label={`Open ${run.channel} run ${run.source_run_id}: ${run.found}/${run.accepted}/${run.routed} found / accepted / routed. ${run.outcome.replaceAll('_', ' ')}. ${warnings}`}><strong>{run.found}/{run.accepted}/{run.routed}</strong>{run.outcome !== 'completed' && <span className="review-pill-state">{run.outcome.replaceAll('_', ' ')}</span>}{date ? <time dateTime={date}>{new Date(date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}</time> : <span className="review-pill-age">Date unknown</span>}</Link>;
-}
-function SummaryChannels({ pull, snapshot, home, compact = false }: { pull: ReviewPullSummary; snapshot: string; home: string; compact?: boolean }) {
-  return <div className={`delivery-review-lanes${compact ? ' delivery-head-lanes' : ''}`}>{(['hosted', 'cli'] as const).map(channel => {
-    // Recent summaries preserve newest-first retained order. The head needs
-    // only its latest shown run; the overview reads left-to-right by age.
-    const runs = pull.recent_runs.filter(run => run.channel === channel);
-    const shown = compact ? runs.slice(0, 1) : [...runs].reverse();
-    const attempt = [...pull.latest_attempts].reverse().find(item => item.channel === channel);
-    return <section className="delivery-review-lane" key={channel} aria-label={`PR #${pull.number} ${channel === 'hosted' ? 'Hosted' : 'CLI'} ${compact ? 'merge head' : 'summary'}`}><h4>{channel === 'hosted' ? 'Hosted' : 'CLI'}</h4>{attempt && <p>Latest attempt: <strong>{attempt.state.replaceAll('_', ' ')}</strong></p>}{compact && !attempt && runs[0] && <p>Latest shown round: <strong>{runs[0].outcome.replaceAll('_', ' ')}</strong></p>}{shown.length ? <div className="review-round-pills">{shown.map(run => <SummaryRun key={run.id} run={run} pull={pull} snapshot={snapshot} home={home} />)}</div> : <p>No recent rounds in this summary.</p>}</section>;
-  })}</div>;
-}
-export function DeliveryReviewSummaries({ queue, home }: { queue: ReviewQueue; home: string }) {
-  if (!queue.configured) return <p className="delivery-empty">No stored review queue has been recorded.</p>;
-  return <>{queue.observed_at && <p className="delivery-observation">Stored observation · <time dateTime={queue.observed_at}>{new Date(queue.observed_at).toLocaleString()}</time> · recent rounds only</p>}<div className="delivery-review-list">{queue.items.map(pull => <article className="panel delivery-review-card" key={pull.number}><h3><Link to={snapshotLink(home, 'pulls', pull.number, queue.snapshot_id)}>#{pull.number} · {pull.title}</Link></h3><ObservedPullFacts pull={pull} /><SummaryChannels pull={pull} snapshot={queue.snapshot_id} home={home} /><Link className="delivery-job-link" to={snapshotLink(home, 'pulls', pull.number, queue.snapshot_id)}>Full PR #{pull.number} history →</Link></article>)}</div>{queue.items.length === 0 && <p className="delivery-empty">No pull requests in this stored queue.</p>}{queue.has_more && <p className="delivery-page-note">More queue entries are available in the review workspace.</p>}</>;
-}
-function DeliveryOverviewReviews() {
-  const { session, key, home } = useWorkspace();
-  const query = useQuery(deliveryReviewQuery(session, key));
-  return <section className="delivery-reviews" aria-labelledby="delivery-reviews-title"><div className="delivery-section-heading"><h2 id="delivery-reviews-title">Review queue</h2><Link to={`${home}/reviews`}>All review history →</Link></div><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <DeliveryReviewSummaries queue={query.data} home={home} />}</ReadState></section>;
-}
 export function Delivery() {
   const { session, key, home } = useWorkspace();
-  const workers = usePaging(), jobs = usePaging();
-  const query = useQuery(deliveryQuery(session, key, workers.cursor, jobs.cursor));
-  const value = query.data;
-  return <><section aria-labelledby="delivery-title"><div className="delivery-section-heading"><h2 id="delivery-title">Delivery</h2><Link to={`${home}/jobs`}>Manage jobs →</Link></div><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><p className="delivery-coverage">{value.workers.items.length} workers and {value.jobs.items.length} open jobs loaded. Lanes show the selected job page.{(value.workers.has_more || value.jobs.has_more) && ' More pages are available.'}</p><DeliveryLanes value={value} home={home} partialJobs={jobs.number > 1 || value.jobs.has_more} /><div className="delivery-pages"><section aria-label="Worker pages"><h3>Workers</h3><Pager paging={workers} page={value.workers} label="delivery workers" busy={query.isFetching} /></section><section aria-label="Job pages"><h3>Open jobs</h3><Pager paging={jobs} page={value.jobs} label="delivery jobs" busy={query.isFetching} /></section></div></>}</ReadState></section><DeliveryOverviewReviews /></>;
+  const location = useLocation();
+  const query = useQuery(deliveryQuery(session, key));
+  const archive = useMemo(() => new DeliveryBoardArchive((workers, jobs, signal) => deliveryQuery(session, key, workers, jobs).queryFn({ signal })), [session, key]);
+  const board = useSyncExternalStore(archive.subscribe, archive.snapshot, archive.snapshot);
+  useLayoutEffect(() => { archive.reset(query.data); }, [archive, query.data, query.dataUpdatedAt]);
+  useEffect(() => { const cancel = () => archive.cancel(); session.controller.signal.addEventListener('abort', cancel, { once: true }); return () => { session.controller.signal.removeEventListener('abort', cancel); cancel(); }; }, [archive, session.controller]);
+  useEffect(() => { if (location.hash === '#review-queue') { const frame = requestAnimationFrame(() => document.getElementById('review-queue')?.scrollIntoView()); return () => cancelAnimationFrame(frame); } }, [location.hash]);
+  const value = board.value ?? query.data;
+  const more = Boolean(value && (value.workers.has_more || value.jobs.has_more));
+  return <><section aria-labelledby="delivery-title"><div className="delivery-section-heading"><h2 id="delivery-title">Delivery</h2><Link to={`${home}/jobs`}>Manage jobs →</Link></div><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><DeliveryLanes value={value} home={home} />{board.error && <ReadState error={board.error} loading={false} empty={false}>{null}</ReadState>}{more && <div className="delivery-more"><p className="delivery-page-note">More open work is available. Lanes show the work loaded so far.</p><button type="button" onClick={() => { if (!query.isFetching) void archive.more(); }} disabled={query.isFetching || board.busy}>{board.busy ? 'Loading more work…' : 'Load more work'}</button></div>}</>}</ReadState></section><ReviewQueueView embedded /></>;
 }

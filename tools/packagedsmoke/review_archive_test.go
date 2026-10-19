@@ -321,7 +321,9 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	if len(lines) == 2 {
 		_ = json.Unmarshal(lines[1], &result)
 	}
-	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 20 || result.ArchiveRequests != 20 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || result.FixtureWrites != 1 {
+	// Twenty explicit archive reads plus one bounded current-hero read on
+	// the pinned tab after metadata changes; no automatic archive walking.
+	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 20 || result.ArchiveRequests != 21 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || result.FixtureWrites != 1 {
 		phase := "unavailable"
 		switch result.Phase {
 		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "pinned-continuation":
