@@ -87,14 +87,15 @@ try {
           const identity=document.querySelector('.project-identity');
           const project=identity.querySelector('.hero-project');
           const container=element.closest('.delivery-hero');
-          const arrow=element.querySelector('.delivery-link-arrow');
-          return {head:rect(element),identity:rect(identity),project:rect(project),container:rect(container),arrow:rect(arrow),joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
+          const link=element.querySelector('.delivery-head-link');
+          const linkStyle=getComputedStyle(link);
+          return {head:rect(element),identity:rect(identity),project:rect(project),container:rect(container),link:rect(link),linkText:link.textContent,linkChildren:link.childElementCount,linkWeight:linkStyle.fontWeight,linkDecoration:linkStyle.textDecorationLine,joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
         });
         need(geometry.groups.length === 2);
         need(geometry.joined && geometry.twoTone);
         need(Math.abs((geometry.project.top+geometry.project.bottom)-(geometry.identity.top+geometry.identity.bottom)) <= 2);
-        need(Math.abs(geometry.arrow.width-(geometry.arrow.bottom-geometry.arrow.top)) <= 1 && geometry.arrow.width >= 28);
-        need(geometry.arrow.right <= geometry.head.right && geometry.head.right-geometry.arrow.right <= 32 && geometry.arrow.bottom <= geometry.head.bottom && geometry.head.bottom-geometry.arrow.bottom <= 32);
+        need(geometry.linkText === 'Review queue ↗' && geometry.linkChildren === 0 && geometry.linkWeight === '750' && geometry.linkDecoration.includes('underline'));
+        need(geometry.link.right <= geometry.head.right && geometry.head.right-geometry.link.right <= 32 && geometry.link.bottom <= geometry.head.bottom && geometry.head.bottom-geometry.link.bottom <= 32);
         if (width === 1440) need(Math.abs(geometry.head.top-geometry.identity.top) <= 1 && Math.abs(geometry.head.left-geometry.identity.right) <= 1);
         else {
           // A phone must not retain the desktop panel's empty vertical space.
