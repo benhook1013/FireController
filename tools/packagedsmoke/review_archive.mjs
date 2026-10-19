@@ -92,14 +92,15 @@ try {
           const identity=document.querySelector('.project-identity');
           const project=identity.querySelector('.hero-project');
           const container=element.closest('.delivery-hero');
-          const arrow=element.querySelector('.delivery-head-link');
-          return {head:rect(element),identity:rect(identity),project:rect(project),container:rect(container),arrow:{...rect(arrow),text:arrow.textContent,children:arrow.children.length,color:getComputedStyle(arrow).color,weight:getComputedStyle(arrow).fontWeight,decoration:getComputedStyle(arrow).textDecorationLine},joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
+          const link=element.querySelector('.delivery-head-link');
+          const linkStyle=getComputedStyle(link);
+          return {head:rect(element),identity:rect(identity),project:rect(project),container:rect(container),link:rect(link),linkText:link.textContent,linkChildren:link.childElementCount,linkWeight:linkStyle.fontWeight,linkDecoration:linkStyle.textDecorationLine,joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
         });
         need(geometry.groups.length === 2);
         need(geometry.joined && geometry.twoTone);
         need(Math.abs((geometry.project.top+geometry.project.bottom)-(geometry.identity.top+geometry.identity.bottom)) <= 2);
-        need(geometry.arrow.text === 'Review queue ↗' && geometry.arrow.children === 0 && geometry.arrow.color === 'rgb(36, 40, 50)' && geometry.arrow.weight === '750' && geometry.arrow.decoration.includes('underline'));
-        need(geometry.arrow.right <= geometry.head.right && geometry.head.right-geometry.arrow.right <= 32 && geometry.arrow.bottom <= geometry.head.bottom && geometry.head.bottom-geometry.arrow.bottom <= 32);
+        need(geometry.linkText === 'Review queue ↗' && geometry.linkChildren === 0 && geometry.linkWeight === '750' && geometry.linkDecoration.includes('underline'));
+        need(geometry.link.right <= geometry.head.right && geometry.head.right-geometry.link.right <= 32 && geometry.link.bottom <= geometry.head.bottom && geometry.head.bottom-geometry.link.bottom <= 32);
         if (width === 1440) need(Math.abs(geometry.head.top-geometry.identity.top) <= 1 && Math.abs(geometry.head.left-geometry.identity.right) <= 1);
         else {
           // A phone must not retain the desktop panel's empty vertical space.

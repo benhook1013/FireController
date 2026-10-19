@@ -97,7 +97,10 @@ describe('stored merge head and review summaries', () => {
     expect(head).not.toContain('Observed CI');
     expect(head).not.toContain('First open PR');
     expect(head).not.toContain('runs ·');
-    expect(head).toContain('#review-queue');
+    expect(partial).toContain(`href="${home}#review-queue"`);
+    expect(head).toContain(`href="${home}#review-pr-2"`);
+    expect(head).toContain('>Review queue ↗</a>');
+    expect(head).not.toContain('delivery-link-arrow');
     expect(head).not.toMatch(/Ready to merge|Taper|Closed review/u);
   });
   it('uses shared separate Hosted and CLI history on the actual merge head', () => {

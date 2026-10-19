@@ -754,7 +754,28 @@ try {
   await expect(queueHosted.locator('.review-lane-heading')).toContainText('1 run');
   const hero = page.getByRole('region', {name:'Merge train head', exact:true});
   const jump = hero.getByRole('link', {name:'Jump to review queue', exact:true});
-  await expect(jump).toHaveAttribute('href', `/projects/${config.project}#review-queue`);
+  await expect(jump).toHaveAttribute('href', `/projects/${config.project}#review-pr-32`);
+  await expect(jump).toHaveText('Review queue ↗');
+  need(await jump.locator('*').count() === 0);
+  const jumpStyle = await jump.evaluate(element => { const style = getComputedStyle(element); return {color:style.color, weight:style.fontWeight, decoration:style.textDecorationLine}; });
+  const configuredInk = [1, 3, 5].map(offset => Number.parseInt(theme.surface_text.slice(offset, offset + 2), 16)).join(', ');
+  need(jumpStyle.color === `rgb(${configuredInk})` && jumpStyle.weight === '750' && jumpStyle.decoration.includes('underline'));
+  const mergedFacts = deliveryQueue.locator('#review-pr-31 .review-pull-facts');
+  const openFacts = deliveryQueue.locator('#review-pr-32 .review-pull-facts');
+  await expect(mergedFacts).not.toContainText('Mergeability');
+  await expect(mergedFacts).toContainText('CI: Unknown');
+  await expect(mergedFacts).toContainText('CI status is unknown.');
+  await expect(openFacts).toContainText('Mergeability: Unknown');
+  await expect(openFacts).toContainText('Mergeability is unknown.');
+  const headRow = page.locator('#review-pr-32');
+  const headJumpPosition = () => headRow.evaluate(element => {
+    const box = element.getBoundingClientRect(), mast = document.querySelector('.mast').getBoundingClientRect();
+    const margin = getComputedStyle(element).scrollMarginTop;
+    const maximum = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+    const target = Math.max(0, Math.min(maximum, scrollY + box.top - parseFloat(margin)));
+    return {belowHeader:box.top >= mast.bottom - 1, inViewport:box.top < innerHeight && box.bottom > mast.bottom, atRowTarget:Math.abs(scrollY - target) <= 2, margin};
+  });
+  const expectedHeadPosition = {belowHeader:true, inViewport:true, atRowTarget:true, margin:'130px'};
   await expect(hero.getByRole('region', {name:'Hosted CodeRabbit', exact:true}).locator('.review-lane-heading')).toContainText('1 run');
   checkpoint = 'current-round-limits-shared';
   await expect(hero.locator('[aria-label="Current hosted round limits"]')).toContainText('0 of 5 used');
@@ -770,9 +791,13 @@ try {
   await expect(age).toHaveAttribute('datetime', finished);
   await captureLayouts('delivery-populated', [1440, 390, 320]);
   await jump.click();
-  await expect.poll(() => new URL(page.url()).hash).toBe('#review-queue');
+  await expect.poll(() => new URL(page.url()).hash).toBe('#review-pr-32');
   checkpoint = 'queue-jump-visible';
-  await expect.poll(() => deliveryQueue.evaluate(element => {const box=element.getBoundingClientRect();return box.top >= 0 && box.top < innerHeight;})).toBe(true);
+  await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
+  if (config.diagnostic_directory) {
+    await fs.mkdir(config.diagnostic_directory, {recursive:true, mode:0o700});
+    await page.screenshot({path:config.diagnostic_directory + '/delivery-head-jump-390.png', timeout:2000});
+  }
   checkpoint = 'reviews-return';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
   checkpoint = 'reviews-heading';
@@ -783,13 +808,34 @@ try {
   need(await page.locator('literal').count() === 0);
   checkpoint = 'reviews-url';
   need(new URL(page.url()).pathname === home + '/reviews');
+  checkpoint = 'reload-head-spa';
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
+  await jump.click();
+  await expect.poll(() => new URL(page.url()).hash).toBe('#review-pr-32');
+  await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
 
   phase = 'reload';
   checkpoint = 'reload-before';
   const renewalResponsePromise = page.waitForResponse(value => value.request().method() === 'POST' && new URL(value.url()).pathname === prefix + '/browser-session/renew');
-  await page.reload();
-  checkpoint = 'reload-after-navigation';
-  await page.getByRole('heading', {name:title, exact:true}).waitFor();
+  // Hold only the existing reload queue request: the hash must survive before
+  // any target row exists, then scroll after its ordinary async response.
+  let releaseReloadQueue, reloadQueueHeld = false;
+  const reloadQueueGate = new Promise(resolve => { releaseReloadQueue = resolve; });
+  const queuePattern = config.origin + prefix + '/reviews/queue?*';
+  const holdReloadQueue = async route => { if (route.request().method() === 'GET') { reloadQueueHeld = true; await reloadQueueGate; } await route.fallback(); };
+  await page.route(queuePattern, holdReloadQueue);
+  const reloadQueueResponsePromise = page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/reviews/queue');
+  try {
+    await page.reload();
+    checkpoint = 'reload-after-navigation';
+    await page.getByRole('heading', {name:title, exact:true}).waitFor();
+    await expect.poll(() => reloadQueueHeld).toBe(true);
+    need(new URL(page.url()).hash === '#review-pr-32');
+    await expect(headRow).toHaveCount(0);
+  } finally { releaseReloadQueue(); }
+  need((await reloadQueueResponsePromise).status() === 200);
+  await page.unroute(queuePattern, holdReloadQueue);
+  await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
   checkpoint = 'reload-heading-visible';
   await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(1);
   checkpoint = 'reload-session-renewed';

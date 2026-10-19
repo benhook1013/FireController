@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 
-from source_acquisition_frame import acquire_frame
+from source_acquisition_frame import FrameRefusal, acquire_frame
 from source_acquisition_conservation import conserved_roots
 from source_acquisition_bindings import bind_source, exact_path
 
@@ -29,6 +29,22 @@ spec.loader.exec_module(transfer)
 
 class AcquisitionRefusal(Exception):
     pass
+
+
+FRAME_REFUSAL_ACTIONS = {
+    'source_writers_not_paused': 'Pause source writers before acquiring a fresh sealed handoff.',
+    'source_binding_invalid': 'Verify the repository identity and sealed snapshot digest.',
+    'source_selection_invalid': 'Select valid distinct PRs and channels in the acquisition plan.',
+    'fixture_clearance_forbidden': 'Select the actual trusted source controller, not a fixture.',
+    'source_selection_not_configured': 'Select PRs present in the source review queue.',
+    'source_cli_lock_uncertain': 'Verify the source CLI lock is clear before a fresh acquisition.',
+    'source_requests_not_clear': 'Resolve retained source requests and verify they are clear before a fresh acquisition.',
+    'source_routes_not_clear': 'Resolve source finding routes before a fresh acquisition.',
+    'source_anchor_unavailable': 'Reconcile the source comparison before a fresh acquisition.',
+    'source_state_changed': 'Pause source writers and acquire a fresh sealed handoff.',
+    'source_frame_not_serializable': 'Inspect the trusted source adapter for unsupported frame values.',
+    'source_frame_too_large': 'Select fewer PRs or channels for this acquisition.',
+}
 
 
 def physical_git_metadata(root):
@@ -220,9 +236,15 @@ def main(argv=None):
     args=parser.parse_args(argv)
     try:
         result=acquire(args)
-    except Exception:
-        # Provider/helper errors can include private source text.
-        print('{"error":"source_acquisition_refused"}',file=sys.stderr)
+    except Exception as error:
+        # Only exact local refusal codes may leave this boundary. Provider/helper
+        # exceptions and unknown codes can contain private paths or source text.
+        report = {'error': 'source_acquisition_refused'}
+        if type(error) is FrameRefusal and len(error.args) == 1:
+            reason = error.args[0]
+            if type(reason) is str and reason in FRAME_REFUSAL_ACTIONS:
+                report.update(reason=reason, next_action=FRAME_REFUSAL_ACTIONS[reason])
+        print(json.dumps(report, separators=(',', ':')), file=sys.stderr)
         return 3
     try:
         print(json.dumps(result,sort_keys=True))

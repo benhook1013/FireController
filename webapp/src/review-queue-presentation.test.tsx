@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WorkspaceContext, type Session } from './workspace';
 import { PresentationContext } from './presentation-context';
-import { ReviewFindingView, ReviewPullFacts, ReviewQueueView, ReviewRunsView, formatQueueDistance, groupReviewQueue, missingPullFacts, reviewQueueDistances } from './review-workspace';
+import { ReviewFindingView, ReviewPullFacts, ReviewQueueView, ReviewRunsView, formatQueueDistance, groupReviewQueue, missingPullFacts, reviewQueueDistances, reviewQueueHashTarget } from './review-workspace';
 import type { Presentation, ReviewAttemptSummary, ReviewFinding, ReviewPullSummary, ReviewQueue } from './types';
 
 const key = ['fc', 'connection', 'instance', 'project', 'actor'];
@@ -31,6 +31,16 @@ describe('truthful stored review presentation', () => {
     expect(reviewQueueDistances([pull(1, 'merged')], true)).toEqual([undefined]);
     expect(formatQueueDistance(-1)).toBe('−01'); expect(formatQueueDistance(1)).toBe('+01');
   });
+  it('resolves only exact row anchors already present in the loaded queue', () => {
+    const items = [pull(1, 'merged'), pull(2)];
+    expect(reviewQueueHashTarget(undefined, '#review-pr-2')).toBeUndefined();
+    expect(reviewQueueHashTarget([], '#review-pr-2')).toBeUndefined();
+    expect(reviewQueueHashTarget(items, '#review-pr-2')).toBe('review-pr-2');
+    expect(reviewQueueHashTarget(items, '#review-pr-1')).toBe('review-pr-1');
+    for (const hash of ['#review-pr-3', '#review-pr-02', '#review-pr-2%20', '#review-pr-2 div', '#review-queue', '#other']) {
+      expect(reviewQueueHashTarget(items, hash)).toBeUndefined();
+    }
+  });
   it('preserves order and repeats explicit noncontiguous headings without inventing unlabelled groups', () => {
     const items = [pull(4), pull(1), pull(3), pull(2)];
     const groups = [{ title: 'Foundation', pull_numbers: [1, 4, 2] }];
@@ -49,9 +59,30 @@ describe('truthful stored review presentation', () => {
     expect(markup(<ReviewPullFacts pull={pull(1, 'merged')} />)).toContain('review-state-merged');
     expect(markup(<ReviewPullFacts pull={pull(1, 'merged')} />)).not.toContain('retained history');
   });
+  it.each(['unknown', 'mergeable'] as const)('omits %s mergeability for merged PRs while retaining other facts', mergeability => {
+    const merged = { ...pull(1, 'merged'), mergeability };
+    const html = markup(<ReviewPullFacts pull={merged} />);
+    expect(html).toContain('review-state-merged'); expect(html).toContain('Merged');
+    expect(html).toContain('CI: Success'); expect(html).not.toContain('Mergeability:');
+    expect(html).not.toContain('Mergeability is unknown.'); expect(missingPullFacts(merged)).toEqual([]);
+    const incomplete = { ...merged, complete: false, base_sha: '', ci_state: 'unknown' as const };
+    expect(missingPullFacts(incomplete)).toEqual(['Base commit was not captured.', 'CI status is unknown.']);
+    const incompleteHTML = markup(<ReviewPullFacts pull={incomplete} />);
+    expect(incompleteHTML).toContain('Missing PR details'); expect(incompleteHTML).toContain('Base commit was not captured.');
+    expect(incompleteHTML).toContain('CI status is unknown.'); expect(incompleteHTML).not.toContain('Mergeability');
+  });
+  it.each(['open', 'closed', 'unknown'] as const)('retains unknown mergeability for %s PRs', state => {
+    const value = { ...pull(1, state), mergeability: 'unknown' as const };
+    expect(missingPullFacts(value)).toContain('Mergeability is unknown.');
+    const html = markup(<ReviewPullFacts pull={value} />);
+    expect(html).toContain('Mergeability: Unknown'); expect(html).toContain('Mergeability is unknown.');
+  });
   it('renders retained merged rails, explicit groups and history arrows without automatic requests', () => {
     const presentation: Presentation = { project_id: 'project', revision: 1, name: 'Project', brand_name: 'FireController', tagline: '', headings: {}, theme: {}, updated_at: '', review_groups: [{ title: 'Foundation <literal>', pull_numbers: [1, 3] }] };
     const html = markup(<ReviewQueueView embedded />, queue([pull(1, 'merged'), pull(2), pull(3)]), presentation);
+    expect(html).toContain('id="review-pr-1"'); expect(html).toContain('id="review-pr-2"'); expect(html).toContain('id="review-pr-3"');
+    expect(html.indexOf('id="review-pr-1"')).toBeLessThan(html.indexOf('id="review-pr-2"'));
+    expect(html.indexOf('id="review-pr-2"')).toBeLessThan(html.indexOf('id="review-pr-3"'));
     expect(html).toContain('review-row-merged'); expect(html).toContain('Queue distance −01'); expect(html).toContain('Queue distance +01: first open PR');
     expect(html.match(/Foundation &lt;literal&gt;/gu)).toHaveLength(2);
     expect(html).toContain('href="https://github.com/example/project/pull/2"');
