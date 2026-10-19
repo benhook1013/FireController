@@ -295,7 +295,7 @@ class PopulatedAcquisitionTests(unittest.TestCase):
         self.assertFalse(Path(self.args.output).exists())
         self.assertFalse(Path(self.args.provenance).exists())
 
-    def _subprocess_bootstrap(self, payload, *, fail_provider=False, stdout_failure=False):
+    def _subprocess_bootstrap(self, payload, *, fail_provider=False, stdout_failure=False, close_stdout_fd=False):
         """Write an owned child bootstrap that patches only external boundaries."""
         fixture_path = self.root / "provider-fixture.json"
         fixture_path.write_text(json.dumps(payload))
@@ -343,6 +343,7 @@ class PopulatedAcquisitionTests(unittest.TestCase):
             "with ExitStack() as stack:\n"
             "  [stack.enter_context(p) for p in patches]\n"
             "  if stdout_failure: sys.stdout=BrokenStdout()\n"
+            f"  if {bool(close_stdout_fd)!r}: os.close(sys.stdout.fileno())\n"
             "  status=module.main()\n"
             "  raise SystemExit(status)\n"
         )
@@ -398,6 +399,44 @@ class PopulatedAcquisitionTests(unittest.TestCase):
         self.assertEqual(completed.stderr, '{"error":"output_report_failed"}\n')
         self.assertTrue(Path(self.args.provenance).exists())
         self.assertTrue(Path(self.args.output).exists())
+
+    def test_buffered_closed_pipe_preserves_outputs_and_exact_replay(self):
+        self._assert_buffered_stdout_failure()
+
+    def test_closed_stdout_descriptor_preserves_outputs_and_exact_replay(self):
+        self._assert_buffered_stdout_failure(close_stdout_fd=True)
+
+    def _assert_buffered_stdout_failure(self, *, close_stdout_fd=False):
+        body = self._populate_cli_capture()
+        payload = pull_payload([checkpoint(101, body, NOW)])
+        bootstrap = self._subprocess_bootstrap(payload, close_stdout_fd=close_stdout_fd)
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1",
+                   FIRECONTROLLER_SOURCE_ROOT=self.args.source_root)
+        env.pop("PYTHONUNBUFFERED", None)
+        argv = [value for name, value in vars(self.args).items()
+                for value in ("--" + name.replace("_", "-"), str(value))]
+        before = self.database.read_bytes()
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)  # No reader exists even before the child starts.
+        try:
+            completed = subprocess.run([sys.executable, str(bootstrap), *argv],
+                                       env=env, stdout=write_fd, stderr=subprocess.PIPE,
+                                       check=False, text=True, timeout=30)
+        finally:
+            os.close(write_fd)
+        retained = [Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()]
+        self.assertEqual(completed.returncode, 3, completed.stderr)
+        self.assertEqual(completed.stderr, '{"error":"output_report_failed"}\n')
+        self.assertEqual(self.database.read_bytes(), before)
+        bootstrap = self._subprocess_bootstrap(payload, fail_provider=True)
+        replay = subprocess.run([sys.executable, str(bootstrap), *argv], env=env,
+                                capture_output=True, check=False, text=True, timeout=30)
+        self.assertEqual(replay.returncode, 0, replay.stderr)
+        self.assertEqual(replay.stderr, "")
+        self.assertEqual(json.loads(replay.stdout)["outcome"], "unchanged")
+        self.assertTrue(json.loads(replay.stdout)["replayed"])
+        self.assertEqual([Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()], retained)
+        self.assertEqual(self.database.read_bytes(), before)
 
 
 if __name__ == "__main__":

@@ -231,12 +231,7 @@ def main(argv=None):
                 code=value
         print(json.dumps(dict(error=code),sort_keys=True),file=sys.stderr)
         return 3
-    try:
-        print(json.dumps(result,sort_keys=True))
-    except OSError:
-        print('{"error":"output_report_failed"}',file=sys.stderr)
-        return 3
-    return 0
+    return transfer.report_result(result)
 
 
 if __name__=='__main__':
