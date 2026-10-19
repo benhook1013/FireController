@@ -710,6 +710,9 @@ try {
   await page.locator('#review-queue').getByRole('heading', {name:'No review queue yet', exact:true}).waitFor();
   const pull = (number, state, title) => ({number, title, state, head_sha:'a'.repeat(40), base_ref:'main', base_sha:'b'.repeat(40), ci_state:'unknown', mergeability:'unknown', complete:true, runs:[], attempts:[]});
   const merged = pull(31, 'merged', 'Retained merged smoke PR');
+  merged.diff = {files:73, additions:6160, deletions:136};
+  merged.is_draft = false;
+  merged.merged_at = new Date(Date.now() - (2*60+22)*60000).toISOString();
   const open = pull(32, 'open', 'Live review before');
   const observation = (revision, queue) => ({expected_revision:revision, repository_id:991, source:'packaged-browser', observed_at:new Date().toISOString(), queue, retired:[]});
   checkpoint = 'seed-observation';
@@ -764,6 +767,9 @@ try {
   const openFacts = deliveryQueue.locator('#review-pr-32 .review-pull-facts');
   await expect(mergedFacts).not.toContainText('Mergeability');
   await expect(mergedFacts).toContainText('CI: Unknown');
+  await expect(mergedFacts.locator('.review-diff')).toHaveText('73 files · +6,160 / −136 lines');
+  await expect(mergedFacts.locator('.review-merged-age time')).toHaveAttribute('datetime', merged.merged_at);
+  await expect(mergedFacts).not.toContainText('Draft');
   await expect(mergedFacts).toContainText('CI status is unknown.');
   await expect(openFacts).toContainText('Mergeability: Unknown');
   await expect(openFacts).toContainText('Mergeability is unknown.');

@@ -12,3 +12,5 @@
 .review-row-merged .review-pill-completed.review-pill-zero,.review-row-merged .review-pill-completed.review-pill-zero:hover{background:var(--fc-merged_rail,#7042a0);border-color:var(--fc-merged_rail,#7042a0);color:var(--fc-merged_rail_text,#fff)}.review-row-merged .review-pill-zero time,.review-row-merged .review-pill-zero .review-pill-age{color:var(--fc-merged_rail_text,#fff)}
 
 .review-current-progress{display:flex;flex-wrap:wrap;gap:.25rem .65rem;padding:.45rem .6rem;margin:.35rem 0 .5rem;border:1px solid currentColor;border-radius:.5rem;font-size:.8rem}.review-progress-state{font-weight:700}.review-current-progress>span{white-space:normal}
+
+.review-diff{font-variant-numeric:tabular-nums}.review-diff strong,.review-merged-age{font-weight:750}.review-pull-facts .review-state-draft{background:var(--fc-parked_background,#e5e0d4);color:var(--fc-parked_text,#82704c)}

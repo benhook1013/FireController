@@ -23,6 +23,19 @@ function markup(node: React.ReactNode, queue?: ReviewQueue, presentation?: Prese
 const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: false, configured: true, project_id: 'project', snapshot_id: 'snapshot', revision: 1, source: 'stored', observed_at: '2026-10-19T00:00:00Z', recorded_at: '2026-10-19T00:00:00Z' });
 
 describe('truthful stored review presentation', () => {
+  it('renders observed diff size and actual merge time without inventing values for old snapshots', () => {
+    const merged = { ...pull(1, 'merged'), diff: { files: 73, additions: 6160, deletions: 136 }, merged_at: '2026-10-19T11:00:00Z' };
+    const html = markup(<ReviewPullFacts pull={merged} />);
+    expect(html).toContain('73 files'); expect(html).toContain('+6,160'); expect(html).toContain('−136');
+    expect(html).toContain('dateTime="2026-10-19T11:00:00Z"'); expect(html).toContain('review-merged-age');
+    const unknown = markup(<ReviewPullFacts pull={pull(1, 'merged')} />);
+    expect(unknown).not.toContain(' files'); expect(unknown).not.toContain('review-merged-age');
+    const zero = markup(<ReviewPullFacts pull={{ ...pull(1), diff: { files: 0, additions: 0, deletions: 0 }, is_draft: false }} />);
+    expect(zero).toContain('0 files'); expect(zero).toContain('+0'); expect(zero).toContain('−0'); expect(zero).not.toContain('>Draft<');
+    expect(markup(<ReviewPullFacts pull={{ ...pull(1), is_draft: true }} />)).toContain('>Draft<');
+    expect(markup(<ReviewPullFacts pull={{ ...merged, is_draft: true }} />)).not.toContain('>Draft<');
+  });
+
   it('computes signed distance only when the first page establishes the actual head', () => {
     const items = [pull(1, 'merged'), pull(2, 'closed'), pull(3), pull(4)];
     expect(reviewQueueDistances(items, true)).toEqual([-2, -1, 1, 2]);

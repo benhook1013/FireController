@@ -213,6 +213,33 @@ describe('read-only browser cookie session transport', () => {
 });
 
 describe('Api stored review workspace', () => {
+  it('preserves optional PR display facts, including known zero and false, in queue and pinned detail', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    for (const metadata of [{}, { diff: { files: 0, additions: 0, deletions: 0 }, is_draft: false }, { diff: { files: 73, additions: 6160, deletions: 136 }, merged_at: '2026-10-15T12:00:00.123456789Z' }]) {
+      const pull = { ...reviewPull, ...metadata };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] })).mockResolvedValueOnce(json({ ...reviewSnapshot, pull })));
+      expect((await client.reviewQueue()).items[0]).toEqual(pull);
+      expect((await client.reviewPull(1, reviewSnapshot.snapshot_id)).pull).toEqual(pull);
+    }
+    client.close();
+  });
+  it('refuses malformed optional PR display facts instead of treating them as known values', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    const invalid = [
+      { diff: null }, { diff: { files: 1, additions: 2 } }, { diff: { files: 1, additions: 2, deletions: 3, extra: 0 } },
+      ...[-1, 0.5, 2147483648, '3', null].map(files => ({ diff: { files, additions: 0, deletions: 0 } })),
+      { is_draft: null }, { is_draft: 'false' }, { merged_at: null }, { merged_at: '' }, { merged_at: 'yesterday' },
+      { state: 'open', merged_at: '2026-10-15T12:00:00Z' },
+    ];
+    for (const metadata of invalid) {
+      const pull = { ...reviewPull, ...metadata };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] })).mockResolvedValueOnce(json({ ...reviewSnapshot, pull })));
+      await expect(client.reviewQueue()).rejects.toMatchObject({ code: 'invalid_response' });
+      await expect(client.reviewPull(1)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    client.close();
+  });
+
   it('requires a bounded original run source in compact and full reads independently of the publisher', async () => {
     setupLocation();
     const client = api();

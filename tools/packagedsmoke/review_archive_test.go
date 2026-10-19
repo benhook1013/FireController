@@ -271,6 +271,12 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		t.Fatal("absolute browser executable required")
 	}
 	config := map[string]string{"origin": gateway.URL, "project": project, "worker": worker, "other_worker": other, "instance": daemon.instance, "admin_file": adminFile, "credential_file": credential, "executable": executable, "proxy": browserDeny.URL, "snapshot": snapshot, "pull_number": "123", "count": "123", "first_attempt_id": "archive-attempt-122", "tail_attempt_id": "shared-attempt", "first_run_id": firstRun, "tail_run_id": tailRun, "source_a": "producer-a", "source_b": "producer-b", "new_observation_file": newObservationFile}
+	if proof := os.Getenv("FC_BROWSER_PROOF_DIR"); proof != "" {
+		if !filepath.IsAbs(proof) {
+			t.Fatal("absolute browser proof directory required")
+		}
+		config["proof_directory"] = proof
+	}
 	raw, _ := json.Marshal(config)
 	configFile := filepath.Join(private, "archive-browser.json")
 	if os.WriteFile(configFile, raw, 0600) != nil {
@@ -373,7 +379,8 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 	defer store.Close()
 	zero := int64(0)
 	at := time.Now().UTC().Add(-time.Hour)
-	pull := reviews.PullInput{Number: 123, Title: "Retained archive metadata", State: "open", HeadSHA: strings.Repeat("a", 40), BaseRef: "main", BaseSHA: strings.Repeat("b", 40), CIState: "unknown", Mergeability: "unknown", Complete: true}
+	draft := true
+	pull := reviews.PullInput{Diff: &reviews.PullDiff{}, IsDraft: &draft, Number: 123, Title: "Retained archive metadata", State: "open", HeadSHA: strings.Repeat("a", 40), BaseRef: "main", BaseSHA: strings.Repeat("b", 40), CIState: "unknown", Mergeability: "unknown", Complete: true}
 	observation := reviews.ObservationRequest{ExpectedRevision: &zero, RepositoryID: 991, Source: "archive-publisher", ObservedAt: at.Format(time.RFC3339Nano), Queue: []reviews.PullInput{}, Retired: []reviews.RetiredPull{}}
 	raw, _ := json.Marshal(observation)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+project+"/reviews/observations", bytes.NewReader(raw)).WithContext(ctx)
@@ -474,6 +481,8 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 	}
 	one := int64(1)
 	pull.Title = "Current archive metadata"
+	draft = false
+	pull.Diff = &reviews.PullDiff{Files: 73, Additions: 6160, Deletions: 136}
 	pull.Runs = []reviews.RunInput{{SourceRunID: "current-only-run", Channel: "cli", HeadSHA: pull.HeadSHA, Reviewer: "Synthetic reviewer", Scope: "full", Outcome: "completed", Attributable: true, Complete: true, StartedAt: at.Add(3 * time.Minute).Format(time.RFC3339Nano), FinishedAt: at.Add(4 * time.Minute).Format(time.RFC3339Nano), Finalized: true, CoverageLimits: []string{}, Findings: []reviews.Finding{}}}
 	pull.Runs[0].Found = 1
 	pull.Runs[0].Findings = []reviews.Finding{{SourceFindingID: "inline-finding", Title: "Inline retained finding", Detail: "Useful **inline detail**\n\n- Kept in this PR\n\n[unsafe](javascript:alert(1)) ![remote](https://outside.invalid/pixel)", Severity: "low", Disposition: "rejected", DecisionReason: "Reviewed *source proof*.", Actor: "Fixture reviewer", DecidedAt: at.Add(4 * time.Minute).Format(time.RFC3339Nano)}}

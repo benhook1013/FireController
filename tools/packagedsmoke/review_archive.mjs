@@ -52,6 +52,8 @@ try {
     const rounds = page.locator('.main-content').getByRole('region',{name:`PR #${number} review rounds`,exact:true});
     const attempts = page.getByRole('region',{name:`PR #${number} attempts`,exact:true});
     await rounds.waitFor(); await attempts.waitFor();
+    await expect(page.locator('.review-pull-summary .review-diff')).toHaveText('0 files · +0 / −0 lines');
+    await expect(page.locator('.review-pull-summary .review-state-draft')).toHaveText('Draft');
     await attempts.locator('summary').click();
     await expect.poll(() => rounds.locator('.review-history-row').count()).toBe(20);
     await expect.poll(() => attempts.locator('li').count()).toBe(20);
@@ -161,6 +163,20 @@ try {
   await expect(currentRow.locator('.review-history-findings li').filter({hasText:'Kept in this PR'}).last()).toHaveText('Kept in this PR');
   need(await currentRow.locator('.review-history-findings img').count() === 0 && await currentRow.locator('.review-history-findings a[href^="javascript:"]').count() === 0);
   need(details.length === 2 && details[1].name === 'current' && details[1].snapshot !== config.snapshot && new URL(current.page.url()).pathname === path);
+  await expect(current.page.locator('.review-pull-summary .review-diff')).toHaveText('73 files · +6,160 / −136 lines');
+  need(await current.page.locator('.review-pull-summary .review-state-draft').count() === 0);
+  await expect(pinned.page.locator('.review-pull-summary .review-diff')).toHaveText('0 files · +0 / −0 lines');
+  await expect(pinned.page.locator('.review-pull-summary .review-state-draft')).toHaveText('Draft');
+  if (config.proof_directory) {
+    await fs.mkdir(config.proof_directory, {recursive:true});
+    for (const width of [1440,390,320]) {
+      await current.page.setViewportSize({width,height:900});
+      need(await current.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      await current.page.screenshot({path:`${config.proof_directory}/expanded-history-${width}.png`,fullPage:true});
+    }
+    await current.page.setViewportSize({width:390,height:900});
+  }
+
   await currentRow.getByRole('button', {name:'Hide findings for cli run current-only-run', exact:true}).click();
   need(await currentRow.locator('.review-history-findings').count() === 0 && details.length === 2);
 

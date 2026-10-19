@@ -63,7 +63,7 @@ export function runDisplayFingerprint(run: ReviewRunSummary, head: string): stri
 }
 export function pullDisplayFingerprint(pull: ReviewPullSummary): string {
   return JSON.stringify([pull.number, pull.title, pull.state, pull.ci_state, pull.mergeability,
-    pull.complete, pull.head_sha, pull.run_count, pull.attempt_count,
+    pull.diff, pull.is_draft, pull.merged_at, pull.complete, pull.head_sha, pull.run_count, pull.attempt_count,
     pull.latest_attempts.map(attempt => [attempt.channel, attempt.state, attempt.finished_at || attempt.started_at]),
     pull.recent_runs.map(run => runDisplayFingerprint(run, pull.head_sha))]);
 }
@@ -93,7 +93,7 @@ export function missingPullFacts(pull: ReviewPullSummary): string[] {
 }
 export function ReviewPullFacts({ pull }: { pull: ReviewPullSummary }) {
   const missing = missingPullFacts(pull);
-  return <div className="review-pull-facts"><span className={`badge review-state-${pull.state}`}>{reviewLabel(pull.state)}</span><span>CI: {reviewLabel(pull.ci_state)}</span>{pull.state !== 'merged' && <span>Mergeability: {reviewLabel(pull.mergeability)}</span>}{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
+  return <div className="review-pull-facts"><span className={`badge review-state-${pull.state}`}>{reviewLabel(pull.state)}</span>{pull.is_draft === true && pull.state === 'open' && <span className="badge review-state-draft">Draft</span>}{pull.state === 'merged' && pull.merged_at && <strong className="review-merged-age"><RelativeTime value={pull.merged_at} /></strong>}{pull.diff && <span className="review-diff">{pull.diff.files.toLocaleString('en-US')} files · <strong>+{pull.diff.additions.toLocaleString('en-US')}</strong> / <strong>−{pull.diff.deletions.toLocaleString('en-US')}</strong> lines</span>}<span>CI: {reviewLabel(pull.ci_state)}</span>{pull.state !== 'merged' && <span>Mergeability: {reviewLabel(pull.mergeability)}</span>}{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
 }
 // Only a first bounded page can establish the head from its known predecessors.
 export function reviewQueueDistances(items: ReviewPullSummary[], firstPage: boolean): (number | undefined)[] {
