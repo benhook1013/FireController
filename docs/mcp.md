@@ -45,6 +45,15 @@ Startup validates configuration without opening the credential or contacting the
 | `job_update_history` | Required job_id and optional limit/cursor; one newest-first narrative-update page. |
 | `job_checklist_read` | Required job_id; current ordered checklist, its independent checklist revision and current job revision. |
 | `job_checklist_history` | Required job_id and optional limit/cursor; one newest-first full checklist revision page. |
+| `map_entry_list` | Optional kind/archived/limit/cursor; one compact map page, no phases or descriptions. |
+| `map_entry_read` | Required entry_id; one complete current workstream or return point. |
+| `map_entry_history` | Required entry_id and optional limit/cursor; compact newest-first revision summaries. |
+| `map_entry_revision_read` | Required entry_id/revision; one complete immutable editorial snapshot. |
+| `map_entry_create` | Required idempotency_key/entry; create one bounded workstream or return point. |
+| `map_entry_replace` | Required idempotency_key/entry_id/expected_revision/entry; full guarded replacement, preserving retained phase IDs. |
+| `job_workstream_read` | Required job_id; independent association revision and captured-at-association title. |
+| `job_workstream_replace` | Required idempotency_key/job_id/expected_revision/workstream_id; select a scoped active workstream or explicitly clear with empty text. |
+| `job_workstream_history` | Required job_id and optional limit/cursor; one compact captured-association history page. |
 | `note_read` | Required note_id; one full current note. |
 | `note_list` | Optional worker_id/all_workers/direct_only/job_id/phase/kind/status/limit/cursor; compact notes for the bound worker and its currently assigned jobs by default. |
 | `note_history` | Required note_id and optional limit/cursor; one compact revision page. |
@@ -122,3 +131,9 @@ The [native evidence controls](review-controls.md#bound-cli-and-mcp) add explici
 The three [public review checkpoint tools](review-publication.md#bound-controls) distinguish explicit GitHub publication from local source finalization. Their bounded wait returns useful terminal facts when available and a compact pending receipt otherwise. A lost response preserves the same source, request and key; observation-only recovery does not authorize a repost.
 
 The [worker primary-job contract](worker-focus.md) owns focus semantics and proof. Current primary reads are compact selectors; they do not imply that the job brief, checkpoint or messages have been loaded. Zero revision is valid for an initial focus, checklist or worker-pause conflict and remains visible in safe error details.
+
+## Discovery page boundary
+
+The bounded current catalog fits on the first `tools/list` page (configured page size 128), including messaging, worker listing and pause tools. Cursor-aware clients still follow `nextCursor` for a larger catalog. Default discovery checks compare the complete expected tool set; a synthetic 129-tool server exercises actual 128-plus-one SDK pagination without changing production tools.
+
+Clean source `e65315f3141fcba180499110cb0a5ad6f4948d6c` passed the actual packaged daemon/CLI/MCP stdio workload on its first run in 0.208 seconds, including first-page critical-tool assertions. All 567 tracked source/asset hashes and three clean CGO-free executable hashes stayed unchanged. The tested `fcmcp` SHA-256 was `36f9954648d3c12cbc45fd26212d22bf3cb8a234a90e603f258971c73ad2cf75`. Focused discovery/map and documentation-inventory checks, race and vet passed separately. This establishes the supplied server and official SDK behavior; it makes no claim about a particular installed agent host's pagination.

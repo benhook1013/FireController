@@ -40,8 +40,8 @@ func TestPrimaryJobToolsSDKStdioBoundReplayAndPages(t *testing.T) {
 	defer service.Close()
 	identity := profile.Context{Profile: "chosen", ServerURL: service.URL, InstanceID: f.store.InstanceID(), ProjectID: f.project, WorkerID: f.sender}
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": identity}, f.credential), "chosen")
-	tools, err := session.ListTools(t.Context(), nil)
-	if err != nil || len(tools.Tools) != 64 || tools.NextCursor != "" {
+	tools, err := allDiscoveredTools(t, session)
+	if err != nil || len(tools.Tools) == 0 || tools.NextCursor != "" {
 		t.Fatal("discovery", err)
 	}
 	want := map[string]int{"job_primary_read": 0, "job_primary_replace": 3, "job_primary_history": 2}

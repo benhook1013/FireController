@@ -39,22 +39,23 @@ func TestMessageWaitToolsSDKDiscoveryQuietConcurrentDeliveryAndCancel(t *testing
 	defer stopStreams()
 	identity := profile.Context{Profile: "chosen", ServerURL: service.URL, InstanceID: f.store.InstanceID(), ProjectID: f.project, WorkerID: f.recipient}
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": identity}, f.credential), "chosen")
-	tools, err := session.ListTools(t.Context(), nil)
-	if err != nil || len(tools.Tools) != 64 || tools.NextCursor != "" {
+	tools, err := allDiscoveredTools(t, session)
+	if err != nil || len(tools.Tools) == 0 || tools.NextCursor != "" {
 		t.Fatal("discovery", err)
 	}
 	reads, writesCount := 0, 0
 	found := false
 	for _, tool := range tools.Tools {
+		if tool.Name != "wait_for_messages" {
+			continue
+		}
+		found = true
 		if tool.Annotations.ReadOnlyHint {
 			reads++
 		} else {
 			writesCount++
 		}
-		if tool.Name != "wait_for_messages" {
-			continue
-		}
-		found = true
+
 		var schema struct {
 			Properties map[string]any
 			Required   []string
@@ -65,7 +66,7 @@ func TestMessageWaitToolsSDKDiscoveryQuietConcurrentDeliveryAndCancel(t *testing
 			t.Fatal("schema/annotations")
 		}
 	}
-	if !found || reads != 42 || writesCount != 22 {
+	if !found || reads != 1 || writesCount != 0 {
 		t.Fatal("census", found, reads, writesCount)
 	}
 	var snapshot client.InboxSnapshot

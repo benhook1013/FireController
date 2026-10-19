@@ -10,6 +10,16 @@ export interface JobUpdate {id: string; project_id: string; job_id: string; job_
 export interface ChecklistItem {id: string; text: string; done: boolean}
 export interface JobChecklist {job_id: string; job_revision: number; revision: number; items: ChecklistItem[]}
 export interface ChecklistHistoryEntry {revision: number; job_revision: number; actor_id: string; worker_id: string; items: ChecklistItem[]; created_at: string}
+export type ProjectMapKind = 'workstream'|'return_point';
+export interface ProjectMapPhase {id: string; name: string; state: string; archived: boolean}
+export interface ProjectMapLink {label: string; url: string}
+export interface ProjectMapSummary {id: string; kind: ProjectMapKind; title: string; state: string; archived: boolean; revision: number}
+export interface ProjectMapEntry extends ProjectMapSummary {project_id: string; description: string; where: string; next: string; trigger: string; phases: ProjectMapPhase[]; links: ProjectMapLink[]; created_at: string; updated_at: string}
+export interface ProjectMapHistorySummary {revision: number; actor_id: string; created_at: string}
+export interface ProjectMapRevision extends ProjectMapHistorySummary {state: ProjectMapEntry}
+export interface ProjectMapOptions extends PageOptions {kind?: ProjectMapKind; archived?: boolean}
+export interface JobWorkstream {job_id: string; workstream_id: string; workstream_title: string; revision: number}
+export interface JobWorkstreamHistoryEntry {revision: number; workstream_id: string; workstream_title: string; job_revision: number; actor_id: string; created_at: string}
 export interface JobOptions extends PageOptions {worker_id?: string; status?: JobSummary['status']}
 export interface InboxOptions extends PageOptions {unread?: boolean; unacknowledged?: boolean}
 export interface InboxItem {id: string; conversation_id: string; sender_worker_id: string; recipient_worker_id: string; preview: string; preview_truncated: boolean; seen: boolean; acknowledged: boolean; created_at: string}

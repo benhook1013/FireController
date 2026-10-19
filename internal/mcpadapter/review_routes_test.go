@@ -109,7 +109,7 @@ func TestReviewRoutesMCPDiscoveryAndInvalidBeforeCredentials(t *testing.T) {
 	binding := localContext()
 	binding.ServerURL = server.URL
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": binding}, "missing-route-credential"), "chosen")
-	listed, err := session.ListTools(t.Context(), nil)
+	listed, err := allDiscoveredTools(t, session)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,6 +20,7 @@ const maxToolWaitSeconds = 50
 
 type arguments struct {
 	notes                      *noteToolCall
+	projectMap                 *projectMapToolCall
 	reviewCheckpoint           client.ReviewCheckpointRequest
 	reviewCheckpointRecovery   client.ReviewCheckpointRecovery
 	limit                      int
@@ -54,23 +55,26 @@ type definition struct {
 }
 
 func boundServer(binding profile.Binding) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 64})
+	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128})
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
 	definitions = append(definitions, jobProgressDefinitions()...)
 	definitions = append(definitions, primaryJobDefinitions()...)
 	definitions = append(definitions, workerPauseDefinitions()...)
 	definitions = append(definitions, noteDefinitions()...)
+	definitions = append(definitions, projectMapDefinitions()...)
 	definitions = append(definitions, jobContextDefinition(), messageWaitDefinition())
 	known := make(map[string]bool)
 	for _, tool := range definitions {
 		known[tool.name] = true
-		write := noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
+		write := projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		openWorld := checkpointWrite(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		destructive := tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
+		destructive := tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
 			var err error
-			if tool.name == "wait_for_messages" {
+			if projectMapTool(tool.name) {
+				args, err = projectMapArguments(tool.name, request.Params.Arguments)
+			} else if tool.name == "wait_for_messages" {
 				args, err = messageWaitArguments(request.Params.Arguments)
 			} else if tool.name == "job_context" {
 				args, err = jobContextArguments(request.Params.Arguments)
@@ -104,6 +108,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			options := client.PageOptions{Limit: args.limit, Cursor: args.cursor}
 			var value any
 			switch tool.name {
+			case "map_entry_create", "map_entry_replace", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history":
+				value, err = executeProjectMapTool(ctx, service, args.projectMap)
 			case "wait_for_messages":
 				value, err = service.WaitForMessages(ctx, args.cursor, args.limit, args.messageWaitSeconds)
 			case "job_context":
