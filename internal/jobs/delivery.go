@@ -163,7 +163,9 @@ func readDeliveryWorkers(ctx context.Context, tx *sql.Tx, project, after string,
 			page.HasMore = true
 			break
 		}
-		if item.ProjectID != project || !validPrimaryID(item.ID) || !validCheckpointText(item.Name, 240, true) || item.PrimaryJobID != "" && !validPrimaryID(item.PrimaryJobID) || paused != 0 && paused != 1 || !validPauseReason(paused == 1, item.PauseReason) {
+		// Worker names use their admission bounds, not checkpoint control rules.
+		validName := item.Name != "" && item.Name == strings.TrimSpace(item.Name) && len(item.Name) <= 200 && utf8.ValidString(item.Name)
+		if item.ProjectID != project || !validPrimaryID(item.ID) || !validName || item.PrimaryJobID != "" && !validPrimaryID(item.PrimaryJobID) || paused != 0 && paused != 1 || !validPauseReason(paused == 1, item.PauseReason) {
 			return core.Fail("storage_unavailable", "Stored delivery worker state is unavailable.", http.StatusInternalServerError)
 		}
 		item.Paused = paused == 1
@@ -227,7 +229,10 @@ func readDeliveryJobs(ctx context.Context, tx *sql.Tx, project, afterStatus, aft
 			page.HasMore = true
 			break
 		}
-		if !validPrimaryID(item.ID) || !validCheckpointText(item.Title, maxTitle, true) || item.WorkerID != "" && !validPrimaryID(item.WorkerID) || !validStatuses[item.Status] || item.Status == "completed" || item.Revision < 1 || item.WorkerID == "" && item.WorkerName != "" || item.WorkerID != "" && item.WorkerName == "" {
+		// Keep titles and joined names exact under their existing write contracts.
+		validTitle := item.Title != "" && item.Title == strings.TrimSpace(item.Title) && len(item.Title) <= maxTitle && utf8.ValidString(item.Title)
+		validWorkerName := item.WorkerName == "" || item.WorkerName == strings.TrimSpace(item.WorkerName) && len(item.WorkerName) <= 200 && utf8.ValidString(item.WorkerName)
+		if !validPrimaryID(item.ID) || !validTitle || !validWorkerName || item.WorkerID != "" && !validPrimaryID(item.WorkerID) || !validStatuses[item.Status] || item.Status == "completed" || item.Revision < 1 || item.WorkerID == "" && item.WorkerName != "" || item.WorkerID != "" && item.WorkerName == "" {
 			return core.Fail("storage_unavailable", "Stored delivery job state is unavailable.", http.StatusInternalServerError)
 		}
 		if sequence.Valid || jobRevision.Valid || done.Valid || next.Valid || blocker.Valid {
