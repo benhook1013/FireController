@@ -55,6 +55,33 @@ Paragraph with **emphasis**, \`inline code\`, and https://example.com.
     expect(html).toContain('after');
   });
 
+  it('keeps compact headings below card titles while sharing the same link and image safety', () => {
+    const body = '# Goal\n\n## Plan\n\n### Detail\n\n#### Small\n\n**Keep bold inline** and [safe](https://example.com) [unsafe](javascript:alert%281%29).\n\n![private image](https://example.com/private.png)\n\n<img src="https://example.com/private.png">';
+    const compact = renderToStaticMarkup(<EditorialMarkdown compact>{body}</EditorialMarkdown>);
+    expect(compact).toContain('<h5>Goal</h5>');
+    expect(compact).toContain('<h5>Plan</h5>');
+    expect(compact).toContain('<h6>Detail</h6>');
+    expect(compact).toContain('<h6>Small</h6>');
+    expect(compact).toContain('<strong>Keep bold inline</strong>');
+    expect(compact).toContain('href="https://example.com" target="_blank" rel="noreferrer noopener"');
+    expect(compact).toContain('editorial-unsafe-link');
+    expect(compact).toContain('Image: private image');
+    expect(compact).toContain('&lt;img');
+    expect(compact).not.toMatch(/<h[1-4]|<img|href="javascript:|<script/u);
+    expect(renderToStaticMarkup(<EditorialMarkdown>{body}</EditorialMarkdown>)).toContain('<h4>Goal</h4>');
+  });
+
+  it.each([
+    '![private](https://example.com/private.png',
+    '[unsafe](javascript:alert%281%29',
+    '```html\n<script>alert(1)</script>\n<img src="https://example.com/private.png">',
+    '**unfinished <img src="https://example.com/private.png">',
+  ])('leaves truncated compact Markdown inert: %s', body => {
+    const html = renderToStaticMarkup(<EditorialMarkdown compact>{body + '…'}</EditorialMarkdown>);
+    expect(html).toContain('…');
+    expect(html).not.toMatch(/<img|<script|href="javascript:|src="https:/u);
+  });
+
   it('composes new sections and existing workstreams without empty taxonomy labels', () => {
     const section = renderToStaticMarkup(<ProjectEditorialEntry entry={{ ...base, description: '## A useful section\n\nLong-form **context**.' , state: 'In progress', links: [{ label: 'Design notes', url: 'https://example.com/design' }] }} />);
     expect(section).toContain('class="project-editorial-entry section"');

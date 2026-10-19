@@ -26,6 +26,13 @@ const components: Components = {
   code: ({ children, className }) => <code className={className}>{children}</code>,
 };
 
-export function EditorialMarkdown({ children, className = '' }: { children: string; className?: string }) {
-  return <div className={`editorial-markdown ${className}`.trim()}><ReactMarkdown components={components}>{children}</ReactMarkdown></div>;
+const compactComponents: Components = {
+  ...components,
+  h1: ({ children }) => <h5>{children}</h5>,
+  h2: ({ children }) => <h5>{children}</h5>,
+  h3: ({ children }) => <h6>{children}</h6>,
+};
+
+export function EditorialMarkdown({ children, className = '', compact = false }: { children: string; className?: string; compact?: boolean }) {
+  return <div className={`editorial-markdown ${className}`.trim()}><ReactMarkdown components={compact ? compactComponents : components}>{children}</ReactMarkdown></div>;
 }
