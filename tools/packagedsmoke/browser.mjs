@@ -758,7 +758,8 @@ try {
   await expect(jump).toHaveText('Review queue ↗');
   need(await jump.locator('*').count() === 0);
   const jumpStyle = await jump.evaluate(element => { const style = getComputedStyle(element); return {color:style.color, weight:style.fontWeight, decoration:style.textDecorationLine}; });
-  need(jumpStyle.color === 'rgb(37, 40, 51)' && jumpStyle.weight === '750' && jumpStyle.decoration.includes('underline'));
+  const configuredInk = [1, 3, 5].map(offset => Number.parseInt(theme.surface_text.slice(offset, offset + 2), 16)).join(', ');
+  need(jumpStyle.color === `rgb(${configuredInk})` && jumpStyle.weight === '750' && jumpStyle.decoration.includes('underline'));
   const mergedFacts = deliveryQueue.locator('#review-pr-31 .review-pull-facts');
   const openFacts = deliveryQueue.locator('#review-pr-32 .review-pull-facts');
   await expect(mergedFacts).not.toContainText('Mergeability');
