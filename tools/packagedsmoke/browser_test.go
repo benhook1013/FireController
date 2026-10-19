@@ -121,7 +121,11 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 		if !filepath.IsAbs(directory) {
 			t.Fatal("FC_BROWSER_PROOF_DIR must be absolute")
 		}
+		if err := os.MkdirAll(directory, 0700); err != nil {
+			t.Fatal("private browser diagnostic directory unavailable")
+		}
 		config["diagnostic_directory"] = directory
+		config["progress_file"] = filepath.Join(directory, "browser-progress.json")
 	}
 	raw, err := json.Marshal(config)
 	if err != nil {
@@ -258,6 +262,13 @@ func (o *browserOutput) safePhase() string {
 			InjectedMetadataFailures int    `json:"injected_metadata_failures"`
 			InjectedConsoleErrors    int    `json:"injected_console_errors"`
 			ReviewRunReads           int    `json:"run_fetches"`
+			PresenceReads            int    `json:"presence_reads"`
+			PresenceFinished         int    `json:"presence_finished"`
+			PresenceHeaderErrors     int    `json:"presence_header_errors"`
+			DeliveryReads            int    `json:"delivery_reads"`
+			JobBriefReads            int    `json:"job_brief_reads"`
+			JobArchiveReads          int    `json:"job_archive_reads"`
+			ContactHistoryReads      int    `json:"contact_history_reads"`
 		}
 		if json.Unmarshal(line, &record) != nil || record.State != "FAIL" {
 			continue
@@ -333,11 +344,11 @@ func (o *browserOutput) safePhase() string {
 			if record.Phase == "delivery-overview" {
 				allowed := false
 				switch record.Checkpoint {
-				case "initial-snapshot", "delivery-heading", "builder-job", "builder-primary", "inspector-paused", "inspector-pause-reason", "unassigned-job", "status-order", "latest-checkpoint-done", "latest-checkpoint-next", "latest-checkpoint", "old-checkpoint-absent", "overview-request-budget", "lane-count", "private-identifiers-absent", "layout-capture", "notes-nav-absent", "inbox-nav-click", "inbox-worker-selected", "inbox-heading", "inbox-sidebar", "inbox-readonly-composer", "inbox-readonly-writes", "default-appearance", "default-title", "default-indicator-colors", "default-indicator-contrast":
+				case "initial-snapshot", "delivery-heading", "builder-job", "builder-primary", "inspector-paused", "inspector-pause-reason", "unassigned-job", "status-order", "latest-checkpoint-done", "latest-checkpoint-next", "latest-checkpoint", "old-checkpoint-absent", "overview-request-budget", "lane-count", "private-identifiers-absent", "presence-initial", "presence-hidden", "presence-visible", "layout-capture", "notes-nav-absent", "inbox-nav-click", "inbox-worker-selected", "inbox-heading", "inbox-sidebar", "inbox-readonly-composer", "inbox-readonly-writes", "default-appearance", "default-title", "default-indicator-colors", "default-indicator-contrast":
 					allowed = true
 				}
 				valid := allowed
-				for _, n := range []int{record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Errors, record.External, record.Writes, record.ActionWrites} {
+				for _, n := range []int{record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Errors, record.External, record.Writes, record.ActionWrites, record.PresenceReads, record.PresenceFinished, record.PresenceHeaderErrors, record.DeliveryReads, record.JobBriefReads, record.JobArchiveReads, record.ContactHistoryReads} {
 					valid = valid && n >= 0 && n <= 1000
 				}
 				if valid {
@@ -351,7 +362,11 @@ func (o *browserOutput) safePhase() string {
 					default:
 						name = "Other"
 					}
-					return fmt.Sprintf("delivery-overview/%s class=%s error=%s presentation_reads=%d metadata_streams=%d inbox_streams=%d forbidden_writes=%d action_writes=%d errors=%d external=%d", record.Checkpoint, class, name, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Writes, record.ActionWrites, record.Errors, record.External)
+					result := fmt.Sprintf("delivery-overview/%s class=%s error=%s presentation_reads=%d metadata_streams=%d inbox_streams=%d forbidden_writes=%d action_writes=%d errors=%d external=%d", record.Checkpoint, class, name, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Writes, record.ActionWrites, record.Errors, record.External)
+					if record.Checkpoint == "presence-initial" || record.Checkpoint == "presence-hidden" || record.Checkpoint == "presence-visible" {
+						result += fmt.Sprintf(" presence_reads=%d presence_finished=%d presence_header_errors=%d delivery_reads=%d job_brief_reads=%d job_archive_reads=%d contact_history_reads=%d", record.PresenceReads, record.PresenceFinished, record.PresenceHeaderErrors, record.DeliveryReads, record.JobBriefReads, record.JobArchiveReads, record.ContactHistoryReads)
+					}
+					return result
 				}
 			}
 			if record.Phase == "metadata-failure" {
@@ -505,7 +520,7 @@ func safeBrowserProgress(path string, now time.Time) string {
 				return "unavailable"
 			}
 			record[name] = value
-		case "session_posts", "session_deletes", "session_renewals", "terminal_responses", "errors", "forbidden_writes", "action_writes", "external", "presentation_reads", "metadata_streams", "inbox_streams", "injected_metadata_failures", "injected_console_errors", "http_status":
+		case "session_posts", "session_deletes", "session_renewals", "terminal_responses", "errors", "forbidden_writes", "action_writes", "external", "presentation_reads", "metadata_streams", "inbox_streams", "injected_metadata_failures", "injected_console_errors", "http_status", "presence_reads", "presence_finished", "presence_header_errors", "delivery_reads", "job_brief_reads", "job_archive_reads", "contact_history_reads":
 			var value int
 			if json.Unmarshal(raw, &value) != nil || value < 0 || value > 1000 {
 				return "unavailable"
@@ -622,4 +637,46 @@ func seedBrowserReadOnlyCredential(t *testing.T, ctx context.Context, data, inst
 		t.Fatal("private read-only browser credential unavailable")
 	}
 	return filename
+}
+
+func TestBrowserPresenceDiagnosticsAllowlist(t *testing.T) {
+	for _, checkpoint := range []string{"presence-initial", "presence-hidden", "presence-visible"} {
+		for _, tc := range []struct {
+			name       string
+			counter    any
+			wantDetail bool
+		}{
+			{"bounded", 2, true}, {"negative", -1, false}, {"too-large", 1001, false}, {"private", "PRIVATE_SENTINEL", false},
+		} {
+			t.Run(checkpoint+"/"+tc.name, func(t *testing.T) {
+				body, err := json.Marshal(map[string]any{"state": "FAIL", "phase": "delivery-overview", "checkpoint": checkpoint, "failure_class": "assertion", "failure_name": "Error", "presence_reads": tc.counter, "presence_finished": 1, "presence_header_errors": 0, "delivery_reads": 1, "job_brief_reads": 0, "job_archive_reads": 0, "contact_history_reads": 0, "url": "PRIVATE_SENTINEL", "headers": "PRIVATE_SENTINEL"})
+				if err != nil {
+					t.Fatal("diagnostic fixture")
+				}
+				output := &browserOutput{}
+				_, _ = output.Write(append(body, '\n'))
+				got := output.safePhase()
+				if strings.Contains(got, "PRIVATE_SENTINEL") {
+					t.Fatal("private diagnostic value escaped")
+				}
+				if tc.wantDetail {
+					want := "delivery-overview/" + checkpoint + " class=assertion error=Error presentation_reads=0 metadata_streams=0 inbox_streams=0 forbidden_writes=0 action_writes=0 errors=0 external=0 presence_reads=2 presence_finished=1 presence_header_errors=0 delivery_reads=1 job_brief_reads=0 job_archive_reads=0 contact_history_reads=0"
+					if got != want {
+						t.Fatalf("bounded presence diagnostic differs: %q", got)
+					}
+				} else if got != "delivery-overview" && got != "driver-start-or-cleanup" {
+					t.Fatal("invalid counters exposed detail")
+				}
+			})
+		}
+	}
+	progress := `{"phase":"delivery-overview","checkpoint":"presence-visible","operation":"failure-snapshot","observed_unix_ms":999750,"counters":{"presence_reads":2,"presence_finished":1,"presence_header_errors":0,"delivery_reads":1,"job_brief_reads":0,"job_archive_reads":0,"contact_history_reads":0}}`
+	path := filepath.Join(t.TempDir(), "presence-progress.json")
+	if os.WriteFile(path, []byte(progress), 0600) != nil {
+		t.Fatal("presence progress fixture")
+	}
+	got := safeBrowserProgress(path, time.UnixMilli(1000000))
+	if !strings.HasPrefix(got, "delivery-overview/presence-visible ") || !strings.Contains(got, " presence_reads=2 presence_finished=1 presence_header_errors=0 delivery_reads=1 job_brief_reads=0 job_archive_reads=0 contact_history_reads=0 operation=failure-snapshot age_ms=250") {
+		t.Fatal("fixed presence progress was not retained")
+	}
 }

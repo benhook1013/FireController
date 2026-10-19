@@ -90,29 +90,37 @@ try {
       return snapshot;
     }
     if (phase === 'delivery-overview') {
+      // Persist local fixed counters first: optional DOM/indicator/screenshot
+      // failures must not erase the checkpoint that explains the real failure.
       const snapshot = {
-        delivery_heading: await page.getByRole('heading',{name:'Delivery',exact:true}).count(),
-        inspector_lane: await page.locator('.delivery-lane[aria-label="Inspector jobs"]').count(),
-        active_job: await page.getByText('Inspector active work',{exact:true}).count(),
-        latest_done: await page.locator('.delivery-checkpoint p').filter({hasText:'Latest checkpoint is visible.'}).count(),
-        latest_next: await page.locator('.delivery-checkpoint p').filter({hasText:'Continue from the latest checkpoint.'}).count(),
-        earlier_done: await page.locator('.delivery-checkpoint p').filter({hasText:'Earlier checkpoint only.'}).count(),
-        inbox_sidebar: await page.locator('.sidebar').count(),
-        inbox_heading: await page.getByRole('heading',{name:'Builder inbox',exact:true}).count(),
-        readonly_new_message: await page.getByRole('button',{name:'New message',exact:true}).count(),
-        indicators: await indicatorColors(),
-        fixture_writes: fixtureWrites,
-        action_writes: actionWrites,
-        forbidden_writes: forbiddenWrites,
-        delivery_reads: deliveryReads,
-        job_brief_reads: jobBriefReads,
-        job_archive_reads: jobArchiveReads,
+        fixture_writes:fixtureWrites, action_writes:actionWrites, forbidden_writes:forbiddenWrites,
+        delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads,
+        presence_reads:presenceReads, presence_finished:presenceFinished, presence_header_errors:presenceHeaderErrors,
+        contact_history_reads:contactHistoryReads, node_clock_ms:Date.now(),
       };
-      if (config.diagnostic_directory) {
+      const persist = async () => {
+        if (!config.diagnostic_directory) return;
         await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});
-        await page.screenshot({path:config.diagnostic_directory+'/delivery-failure.png',mask:[page.locator('input,textarea,code,.full-text,.message-preview')],timeout:2000});
         await fs.writeFile(config.diagnostic_directory+'/delivery-failure.json',JSON.stringify({phase,checkpoint,...snapshot}),{mode:0o600});
-      }
+      };
+      await persist();
+      try {
+        snapshot.browser_clock_ms=await page.evaluate(()=>Date.now());
+        snapshot.browser_hidden=await page.evaluate(()=>document.visibilityState==='hidden');
+        snapshot.delivery_heading=await page.getByRole('heading',{name:'Delivery',exact:true}).count();
+        snapshot.inspector_lane=await page.locator('.delivery-lane[aria-label="Inspector jobs"]').count();
+        snapshot.active_job=await page.getByText('Inspector active work',{exact:true}).count();
+        snapshot.latest_done=await page.locator('.delivery-checkpoint p').filter({hasText:'Latest checkpoint is visible.'}).count();
+        snapshot.latest_next=await page.locator('.delivery-checkpoint p').filter({hasText:'Continue from the latest checkpoint.'}).count();
+        snapshot.earlier_done=await page.locator('.delivery-checkpoint p').filter({hasText:'Earlier checkpoint only.'}).count();
+        snapshot.inbox_sidebar=await page.locator('.sidebar').count();
+        snapshot.inbox_heading=await page.getByRole('heading',{name:'Builder inbox',exact:true}).count();
+        snapshot.readonly_new_message=await page.getByRole('button',{name:'New message',exact:true}).count();
+        snapshot.contact_labels=await page.locator('.worker-contact').count();
+        if (await page.locator('.feed-card .status-dot').count()) snapshot.indicators=await indicatorColors();
+      } catch { snapshot.dom_diagnostics_unavailable=true; }
+      await persist();
+      if (config.diagnostic_directory) await page.screenshot({path:config.diagnostic_directory+'/delivery-failure.png',mask:[page.locator('input,textarea,code,.full-text,.message-preview')],timeout:2000}).catch(()=>{});
       return snapshot;
     }
     if (phase === 'reload') {
@@ -188,7 +196,7 @@ try {
   let deliveryReads = 0, jobBriefReads = 0, jobArchiveReads = 0, reviewRunReads = 0;
   let presenceReads = 0, presenceFinished = 0, presenceHeaderErrors = 0, contactHistoryReads = 0;
   let injectedRequest;
-  diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external });
+  diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external, presence_reads:presenceReads, presence_finished:presenceFinished, presence_header_errors:presenceHeaderErrors, delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads, contact_history_reads:contactHistoryReads });
   page.on('pageerror', () => errors++);
   page.on('console', value => {
     if (value.type() !== 'error' || expectedMissingSessionRoute(value.location().url) || (controlledMessageFailure && value.location().url === config.origin + prefix + '/messages')) return;
@@ -370,7 +378,7 @@ try {
   try {
     checkpoint = 'presence-hidden';
     need(await page.evaluate(()=>document.visibilityState==='hidden'));
-    const hiddenAt=Date.now();
+    const hiddenAt=performance.now();
     // This native client contact stays in Node; no credential or connection ID
     // enters page execution. It performs a GET, not a new fixture/domain write.
     const contact=await fetch(config.origin+prefix+'/workers/'+config.worker,{
@@ -378,8 +386,11 @@ try {
       signal:AbortSignal.timeout(5000),
     });
     need(contact.status===200 && (await contact.json()).id===config.worker);
-    await new Promise(resolve=>setTimeout(resolve,15500));
-    need(Date.now()-hiddenAt>=15500 && presenceReads===1 && presenceFinished===1 && presenceHeaderErrors===0 && sameContactReadBoundary());
+    // Timer callbacks need not fire at their exact requested delay. Prove the
+    // full interval with monotonic elapsed time, including early wakeups.
+    const hiddenUntil=hiddenAt+15500;
+    while (performance.now()<hiddenUntil) await new Promise(resolve=>setTimeout(resolve,Math.max(1,Math.ceil(hiddenUntil-performance.now()))));
+    need(performance.now()-hiddenAt>=15500 && presenceReads===1 && presenceFinished===1 && presenceHeaderErrors===0 && sameContactReadBoundary());
     await expect(page.locator('.worker-contact')).toHaveCount(0);
     checkpoint = 'presence-visible';
     await restoreContactVisibility();
