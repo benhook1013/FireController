@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
-import { NoteContent, NoteHistoryRows, NoteRevisionContent, NoteSummaryRows, PauseContent, PrimaryContent, notesPath } from './coordination';
+import { NoteContent, NoteHistoryRows, NoteRevisionContent, NoteSummaryRows, PauseContent, PrimaryContent, notesPath, parseNoteFilters } from './coordination';
 import type { Note, NoteRevision } from './types';
 
 const home = '/projects/project_one';
@@ -84,5 +84,21 @@ describe('read-only coordination rendering', () => {
     expect([...url.searchParams]).toEqual([['worker_id', 'literal&worker'], ['job_id', 'literal?job']]);
     expect(url.searchParams.has('include_assigned_jobs')).toBe(false);
     expect(url.searchParams.has('cursor')).toBe(false);
+  });
+});
+
+
+describe('note URL filter admission', () => {
+  it('rejects invalid scopes, enums, dependency flags and phase byte/control bounds locally', () => {
+    const invalid = ['worker_id=', 'worker_id=a+b', 'worker_id=_worker', 'job_id=-job', 'status=', 'status=bogus', 'kind=', 'kind=bogus', 'include_assigned_jobs=true', 'include_assigned_jobs=1', 'phase=', 'phase=+++', 'worker_id=one&worker_id=two', 'status=all&status=pending', 'include_assigned_jobs=false&include_assigned_jobs=true'];
+    for (const query of invalid) expect(parseNoteFilters(new URLSearchParams(query)), query).toBeUndefined();
+    for (const phase of ['a'.repeat(201), '長'.repeat(67), '😀'.repeat(51), 'a\nb', 'a\u0085b']) expect(parseNoteFilters(new URLSearchParams({phase}))).toBeUndefined();
+  });
+  it('preserves valid exact API filters and accepts the 200-byte unicode boundary', () => {
+    expect(parseNoteFilters(new URLSearchParams())).toEqual({});
+    const values = {worker_id:'worker_one',job_id:'job_two',phase:' phase & examine ',kind:'source',status:'all',include_assigned_jobs:'true'};
+    expect(parseNoteFilters(new URLSearchParams(values))).toEqual({...values,include_assigned_jobs:true});
+    expect(parseNoteFilters(new URLSearchParams({include_assigned_jobs:'false'}))).toEqual({include_assigned_jobs:false});
+    for (const phase of ['a'.repeat(200), '長'.repeat(66), '😀'.repeat(50), 'a\u2028b']) expect(parseNoteFilters(new URLSearchParams({phase}))).toEqual({phase});
   });
 });

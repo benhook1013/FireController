@@ -88,8 +88,8 @@ func current(store *core.Store) http.HandlerFunc {
 }
 
 type replaceBody struct {
-	ExpectedRevision *int64 `json:"expected_revision"`
-	Presentation     any    `json:"presentation"`
+	ExpectedRevision *int64          `json:"expected_revision"`
+	Presentation     json.RawMessage `json:"presentation"`
 }
 type replacement struct {
 	ExpectedRevision int64  `json:"expected_revision"`
@@ -118,12 +118,11 @@ func replace(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, invalid())
 			return
 		}
-		rawConfig, err := json.Marshal(body.Presentation)
-		if err != nil {
+		if len(body.Presentation) == 0 {
 			core.WriteError(w, invalid())
 			return
 		}
-		c, err := presentationmodel.Decode(rawConfig)
+		c, err := presentationmodel.Decode(body.Presentation)
 		if err != nil {
 			core.WriteError(w, invalid())
 			return
