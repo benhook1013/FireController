@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -116,7 +117,7 @@ func (e *Engine) ApplyRoundAdoption(ctx context.Context, scope core.Scope, key s
 		if _, err := tx.ExecContext(ctx, `INSERT INTO review_round_adoptions(project_id,pull_number,channel,grant_revision,epoch,source,source_key,source_sha256,prepared_json) VALUES(?,?,?,1,1,?,?,?,?)`, scope.ProjectID, p.PullNumber, p.Channel, p.Source, p.SourceKey, p.SourceSHA256, string(body)); err != nil {
 			return nil, err
 		}
-		if err := core.AppendEvent(ctx, tx, scope, "reviews.rounds_configured", scope.ProjectID, 1, map[string]any{"pull_number": p.PullNumber, "channel": p.Channel, "revision": 1}); err != nil {
+		if err := core.AppendEvent(ctx, tx, scope, "reviews.rounds_configured", fmt.Sprintf("%d/%s", p.PullNumber, p.Channel), 1, map[string]any{"pull_number": p.PullNumber, "channel": p.Channel, "revision": 1}); err != nil {
 			return nil, err
 		}
 		return RoundControlReceipt{PullNumber: p.PullNumber, Channel: p.Channel, Revision: 1, Epoch: 1, Outcome: "adopted"}, nil
