@@ -38,7 +38,7 @@ describe('contextual pending notes', () => {
     expect(settled).not.toContain('Pending notes');
     const loading = renderPanel();
     expect(loading).toContain('Pending notes');
-    expect(loading).toContain('aria-label="Loading pending notes"');
+    expect(loading).toContain('role="status"><span class="visually-hidden">Loading pending notes</span>');
     expect(loading).not.toContain('Loading…');
     const failed = renderPanel(undefined, new Error('PRIVATE_RAW_ERROR'));
     expect(failed).toContain('Pending notes');
