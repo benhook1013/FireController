@@ -1,5 +1,7 @@
 # Copyright 2026 FireController contributors. SPDX-License-Identifier: Apache-2.0
 """Owned synthetic assembled acquisition proof; all provider facts are fixtures."""
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -12,21 +14,66 @@ from unittest.mock import patch
 
 import acquire_source_history as acquire
 from source_acquisition_conservation import ConservationRefusal
-import test_source_acquisition_frame as frame_fixture
-from test_source_acquisition_bindings import HELPERS
+from source_acquisition_bindings import BindingRefusal
+from source_acquisition_frame import FrameRefusal
+
+
+class AcquisitionMainTests(unittest.TestCase):
+    arguments=[value for name in ('source-root','common','snapshot','git-root','plan','output','provenance')
+               for value in ('--'+name,'/explicit-fixture/'+name)]
+
+    def refused(self, failure):
+        stdout,stderr=io.StringIO(),io.StringIO()
+        with patch.object(acquire,'acquire',side_effect=failure), \
+                redirect_stdout(stdout),redirect_stderr(stderr):
+            result=acquire.main(self.arguments)
+        self.assertEqual(result,3)
+        self.assertEqual(stdout.getvalue(),'')
+        self.assertEqual(len(stderr.getvalue().splitlines()),1)
+        return json.loads(stderr.getvalue())
+
+    def test_known_local_refusal_families_preserve_only_stable_code(self):
+        for failure,code in (
+                (acquire.AcquisitionRefusal('source_repository_mismatch'),'source_repository_mismatch'),
+                (acquire.transfer.Refusal('controls_unsettled',private='/private/helper/body secret=fixture'),'controls_unsettled'),
+                (BindingRefusal('source_database_not_sealed'),'source_database_not_sealed'),
+                (FrameRefusal('source_requests_not_clear'),'source_requests_not_clear'),
+                (ConservationRefusal('capture_changed'),'capture_changed')):
+            with self.subTest(family=type(failure).__name__):
+                self.assertEqual(self.refused(failure),{'error':code})
+
+    def test_unexpected_and_malformed_refusals_do_not_disclose_private_text(self):
+        class HelperRefusal(Exception):
+            def __str__(self):
+                raise AssertionError('unexpected helper exception must not be formatted')
+
+        class ForeignAcquisitionRefusal(acquire.AcquisitionRefusal):
+            pass
+
+        private='/private/source/helper.py secret=fixture\nprivate record body'
+        for failure in (RuntimeError(private),OSError(private),HelperRefusal(private),
+                ForeignAcquisitionRefusal('private_helper_token'),
+                acquire.AcquisitionRefusal(private),BindingRefusal('source_code',private),
+                FrameRefusal(''),ConservationRefusal('x'*65),
+                acquire.transfer.Refusal(private,body=private)):
+            with self.subTest(family=type(failure).__name__):
+                self.assertEqual(self.refused(failure),{'error':'source_acquisition_refused'})
 
 
 class AcquisitionTests(unittest.TestCase):
     def setUp(self):
+        import test_source_acquisition_frame as frame_fixture
+        from test_source_acquisition_bindings import HELPERS
+        self.frame_fixture,self.helpers=frame_fixture,HELPERS
         self.owned=tempfile.TemporaryDirectory()
         self.addCleanup(self.owned.cleanup)
         self.root=Path(self.owned.name)
         self.common=self.root/'handoff';self.common.mkdir(mode=0o700)
         logical=self.common/'firemud/pr-review-stack.json';logical.mkdir(parents=True,mode=0o700)
         self.database=logical.with_suffix('.sqlite3')
-        HELPERS['sqlite_store'].SqliteStateStore(self.database).update(
-            lambda _: HELPERS['state'].ReviewState(ordered_prs=(7,)))
-        HELPERS['sqlite_review_records'].SqliteReviewRecords(self.database).bootstrap()
+        self.helpers['sqlite_store'].SqliteStateStore(self.database).update(
+            lambda _: self.helpers['state'].ReviewState(ordered_prs=(7,)))
+        self.helpers['sqlite_review_records'].SqliteReviewRecords(self.database).bootstrap()
         self.database.chmod(0o600)
         self.capture=self.common/'firemud/capture-body';self.capture.write_bytes(b'owned original capture')
         self.gitroot=self.root/'proof';self.gitroot.mkdir(mode=0o700)
@@ -44,7 +91,7 @@ class AcquisitionTests(unittest.TestCase):
         self.before=self.database.read_bytes()
 
     def construct(self, helpers, plan, store, records, gitroot):
-        return frame_fixture.FrameTests().fixture(store,records)[0]
+        return self.frame_fixture.FrameTests().fixture(store,records)[0]
 
     def run_acquire(self, construct=None):
         github=__import__('pr_review.github',fromlist=['run_gh_query'])
