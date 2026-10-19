@@ -28,3 +28,5 @@
 .repository a{color:inherit}
 .delivery-lane-heading h3 { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .35rem .65rem; }
 .worker-contact { display: inline-block; color: inherit; font-size: .72rem; font-weight: 500; }
+
+.delivery-job-context{font-size:.78rem;line-height:1.5;color:var(--fc-surface_muted,#666874)}.delivery-job-context p{overflow-wrap:anywhere}.delivery-brief,.delivery-update-body{white-space:pre-line;margin:0 0 8px}.delivery-brief{color:var(--fc-surface_text,#252833)}.delivery-job-context .delivery-context-meta{font-size:.69rem;margin:0 0 8px}.delivery-update,.delivery-checklist{margin:12px 0}.delivery-checklist p{margin:0 0 6px}.delivery-checklist strong{font-size:.74rem;color:var(--fc-surface_text,#252833)}

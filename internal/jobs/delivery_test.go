@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -30,16 +31,36 @@ type deliveryCheckpointValue struct {
 	DoneTruncated    bool   `json:"done_truncated"`
 	NextTruncated    bool   `json:"next_truncated"`
 	BlockerTruncated bool   `json:"blocker_truncated"`
+	CreatedAt        string `json:"created_at"`
 }
 
+type deliveryUpdateValue struct {
+	Sequence      int64  `json:"sequence"`
+	JobRevision   int64  `json:"job_revision"`
+	Body          string `json:"body"`
+	BodyTruncated bool   `json:"body_truncated"`
+	CreatedAt     string `json:"created_at"`
+}
+type deliveryChecklistValue struct {
+	Revision    int64  `json:"revision"`
+	JobRevision int64  `json:"job_revision"`
+	Total       int    `json:"total"`
+	Done        int    `json:"done"`
+	CreatedAt   string `json:"created_at"`
+}
 type deliveryJobValue struct {
-	ID         string                   `json:"id"`
-	Title      string                   `json:"title"`
-	WorkerID   string                   `json:"worker_id"`
-	WorkerName string                   `json:"worker_name"`
-	Status     string                   `json:"status"`
-	Revision   int64                    `json:"revision"`
-	Checkpoint *deliveryCheckpointValue `json:"checkpoint"`
+	BriefPreview          string                   `json:"brief_preview"`
+	BriefPreviewTruncated bool                     `json:"brief_preview_truncated"`
+	UpdatedAt             string                   `json:"updated_at"`
+	Update                *deliveryUpdateValue     `json:"update"`
+	Checklist             *deliveryChecklistValue  `json:"checklist"`
+	ID                    string                   `json:"id"`
+	Title                 string                   `json:"title"`
+	WorkerID              string                   `json:"worker_id"`
+	WorkerName            string                   `json:"worker_name"`
+	Status                string                   `json:"status"`
+	Revision              int64                    `json:"revision"`
+	Checkpoint            *deliveryCheckpointValue `json:"checkpoint"`
 }
 
 type deliveryPageValue[T any] struct {
@@ -116,8 +137,8 @@ func TestDeliveryReadIsBoundedPrivateAndIncludesLatestCheckpointSummary(t *testi
 	if len(value.Workers.Items) != 2 || !value.Workers.HasMore && value.Workers.Cursor != "" || len(value.Jobs.Items) != 4 {
 		t.Fatalf("unexpected default page: %+v", value)
 	}
-	if strings.Contains(response.Body.String(), "PRIVATE_BRIEF") || strings.Contains(response.Body.String(), "PRIVATE_EVIDENCE") || strings.Contains(response.Body.String(), "evidence_json") {
-		t.Fatal("delivery response leaked job brief or checkpoint evidence")
+	if strings.Contains(response.Body.String(), `"brief":`) || strings.Contains(response.Body.String(), "PRIVATE_EVIDENCE") || strings.Contains(response.Body.String(), "evidence_json") {
+		t.Fatal("delivery response expanded full job brief or checkpoint evidence")
 	}
 	var selectedWorker *deliveryWorkerValue
 	for i := range value.Workers.Items {
@@ -240,26 +261,33 @@ func TestDeliveryReadIsBoundedPrivateAndIncludesLatestCheckpointSummary(t *testi
 func TestDeliveryReadUsesLatestCheckpointIndex(t *testing.T) {
 	a := setupAPI(t)
 	project := a.createProject("delivery-index", "synthetic/delivery-index")
-	planRows, err := a.store.DB().Query(`EXPLAIN QUERY PLAN SELECT sequence FROM job_checkpoints WHERE project_id=? AND job_id=? ORDER BY sequence DESC LIMIT 1`, project, "job_sample")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer planRows.Close()
-	var plan strings.Builder
-	for planRows.Next() {
-		var id, parent, notused int
-		var detail string
-		if err := planRows.Scan(&id, &parent, &notused, &detail); err != nil {
+	for _, lookup := range []struct{ query, index string }{
+		{`SELECT sequence FROM job_checkpoints WHERE project_id=? AND job_id=? ORDER BY sequence DESC LIMIT 1`, "job_checkpoints_project_job_sequence"},
+		{`SELECT sequence FROM job_updates WHERE project_id=? AND job_id=? ORDER BY sequence DESC LIMIT 1`, "job_updates_project_job_sequence"},
+		{`SELECT items_json FROM job_checklists WHERE project_id=? AND job_id=?`, "sqlite_autoindex_job_checklists_1"},
+	} {
+		planRows, err := a.store.DB().Query("EXPLAIN QUERY PLAN "+lookup.query, project, "job_sample")
+		if err != nil {
 			t.Fatal(err)
 		}
-		plan.WriteString(detail)
-		plan.WriteByte('\n')
-	}
-	if err := planRows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(plan.String(), "job_checkpoints_project_job_sequence") {
-		t.Fatalf("latest checkpoint lookup is not index-backed: %s", plan.String())
+		var plan strings.Builder
+		for planRows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := planRows.Scan(&id, &parent, &notused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			plan.WriteString(detail)
+			plan.WriteByte('\n')
+		}
+		err = planRows.Err()
+		planRows.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plan.String(), lookup.index) || strings.Contains(plan.String(), "SCAN ") || strings.Contains(plan.String(), "TEMP B-TREE") {
+			t.Fatalf("delivery lookup not bounded/index-backed: %s", plan.String())
+		}
 	}
 }
 
@@ -309,5 +337,139 @@ func TestDeliveryQueryCursorFilterBinding(t *testing.T) {
 	wrongPrincipal := a.call(http.MethodGet, "/api/v1/projects/"+project+"/delivery?worker_cursor="+url.QueryEscape(page.Workers.Cursor), otherPrincipal, "", nil)
 	if wrongPrincipal.Code != http.StatusBadRequest {
 		t.Fatalf("cross-principal cursor status=%d body=%s", wrongPrincipal.Code, wrongPrincipal.Body.String())
+	}
+}
+
+func TestDeliveryCurrentContextPreviewsAndRecordedTimes(t *testing.T) {
+	a := setupAPI(t)
+	project := a.createProject("delivery-context", "synthetic/delivery-context")
+	token := a.grant(project, "delivery-context-client", "read", "write")
+	path := "/api/v1/projects/" + project
+	brief := strings.Repeat("b", 239) + "雪PRIVATE_FULL_BRIEF_TAIL"
+	create := func(key, brief string) string {
+		t.Helper()
+		r := a.call(http.MethodPost, path+"/jobs", token, key, map[string]any{"title": key, "brief": brief})
+		progressOK(t, r, 201)
+		var receipt struct {
+			ID string `json:"id"`
+		}
+		decodeResponse(t, r, &receipt)
+		return receipt.ID
+	}
+	rich := create("rich", brief)
+	missing := create("missing", "")
+	cleared := create("cleared", "")
+	jobPath := path + "/jobs/" + rich
+	// Only the sequence-latest update is exposed, even after wall-clock rollback.
+	for i, body := range []string{"PRIVATE_OLDER_UPDATE", strings.Repeat("u", 238) + "雪PRIVATE_UPDATE_TAIL"} {
+		progressOK(t, a.call(http.MethodPost, jobPath+"/updates", token, fmt.Sprint("update", i), map[string]any{"expected_job_revision": 1, "body": body, "evidence": []string{"PRIVATE_UPDATE_EVIDENCE"}}), 201)
+	}
+	progressOK(t, a.call(http.MethodPost, jobPath+"/checkpoints", token, "context-checkpoint", map[string]any{"expected_job_revision": 1, "done": "done", "next": "next"}), 201)
+	progressOK(t, a.call(http.MethodPut, jobPath+"/checklist", token, "context-checklist", map[string]any{"expected_job_revision": 1, "expected_revision": 0, "items": []map[string]any{{"id": "one", "text": "PRIVATE_CHECKLIST_TEXT", "done": true}, {"id": "two", "text": "other", "done": false}}}), 200)
+	for revision, items := range [][]map[string]any{{{"id": "one", "text": "temporary", "done": false}}, {}} {
+		progressOK(t, a.call(http.MethodPut, path+"/jobs/"+cleared+"/checklist", token, fmt.Sprint("clear", revision), map[string]any{"expected_job_revision": 1, "expected_revision": revision, "items": items}), 200)
+	}
+	progressOK(t, a.call(http.MethodPatch, jobPath, token, "context-edit", map[string]any{"expected_revision": 1, "title": "rich edited"}), 200)
+	const editedAt = "2024-02-03T04:05:06+13:00"
+	const latestAt = "2020-01-01T00:00:00Z"
+	const checkpointAt = "2021-01-01T00:00:00Z"
+	const checklistAt = "2099-01-01T00:00:00Z"
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{`UPDATE jobs SET updated_at=? WHERE project_id=? AND id=?`, []any{editedAt, project, rich}},
+		{`UPDATE job_updates SET created_at='2030-01-01T00:00:00Z' WHERE project_id=? AND job_id=?`, []any{project, rich}},
+		{`UPDATE job_updates SET created_at=? WHERE project_id=? AND job_id=? AND sequence=(SELECT max(sequence) FROM job_updates WHERE project_id=? AND job_id=?)`, []any{latestAt, project, rich, project, rich}},
+		{`UPDATE job_checkpoints SET created_at=? WHERE project_id=? AND job_id=?`, []any{checkpointAt, project, rich}},
+		{`UPDATE job_checklists SET created_at=? WHERE project_id=? AND job_id=?`, []any{checklistAt, project, rich}},
+	} {
+		if _, err := a.store.DB().Exec(statement.sql, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() (*httptest.ResponseRecorder, deliveryValue) {
+		r := a.call(http.MethodGet, path+"/delivery?job_limit=100", token, "", nil)
+		progressOK(t, r, 200)
+		var value deliveryValue
+		decodeResponse(t, r, &value)
+		return r, value
+	}
+	response, value := read()
+	var richValue, missingValue, clearedValue deliveryJobValue
+	for _, item := range value.Jobs.Items {
+		switch item.ID {
+		case rich:
+			richValue = item
+		case missing:
+			missingValue = item
+		case cleared:
+			clearedValue = item
+		}
+	}
+	if richValue.BriefPreview != strings.Repeat("b", 239) || !richValue.BriefPreviewTruncated || richValue.UpdatedAt != editedAt || richValue.Revision != 2 {
+		t.Fatalf("brief/edit facts changed: %+v", richValue)
+	}
+	if richValue.Update == nil || richValue.Update.Sequence < 2 || richValue.Update.JobRevision != 1 || richValue.Update.Body != strings.Repeat("u", 238) || !richValue.Update.BodyTruncated || richValue.Update.CreatedAt != latestAt {
+		t.Fatalf("sequence-latest update facts: %+v", richValue.Update)
+	}
+	if richValue.Checklist == nil || !reflect.DeepEqual(*richValue.Checklist, deliveryChecklistValue{Revision: 1, JobRevision: 1, Total: 2, Done: 1, CreatedAt: checklistAt}) {
+		t.Fatalf("checklist facts: %+v", richValue.Checklist)
+	}
+	if richValue.Checkpoint == nil || richValue.Checkpoint.CreatedAt != checkpointAt || richValue.Checkpoint.JobRevision != 1 {
+		t.Fatalf("checkpoint time/revision: %+v", richValue.Checkpoint)
+	}
+	if missingValue.Update != nil || missingValue.Checklist != nil || missingValue.Checkpoint != nil || missingValue.BriefPreview != "" || missingValue.BriefPreviewTruncated {
+		t.Fatalf("invented missing context: %+v", missingValue)
+	}
+	if clearedValue.Checklist == nil || clearedValue.Checklist.Total != 0 || clearedValue.Checklist.Done != 0 || clearedValue.Checklist.Revision != 2 {
+		t.Fatalf("known zero lost: %+v", clearedValue.Checklist)
+	}
+	for _, secret := range []string{"PRIVATE_FULL_BRIEF_TAIL", "PRIVATE_UPDATE_TAIL", "PRIVATE_OLDER_UPDATE", "PRIVATE_CHECKLIST_TEXT", "PRIVATE_UPDATE_EVIDENCE", `"brief":`, `"evidence":`, `"items_json":`, `"last_activity_at":`} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("expanded private content: %s", secret)
+		}
+	}
+	// Repeating a read cannot rewrite imported/clock-rollback facts.
+	_, repeated := read()
+	if !reflect.DeepEqual(value, repeated) {
+		t.Fatal("delivery read mutated context")
+	}
+}
+
+func TestDeliveryRefusesMalformedCurrentContext(t *testing.T) {
+	for name, change := range map[string]struct {
+		query string
+		value any
+	}{
+		"brief bound":            {`UPDATE jobs SET brief=? WHERE project_id=? AND id=?`, strings.Repeat("x", 32769)},
+		"edit time":              {`UPDATE jobs SET updated_at=? WHERE project_id=? AND id=?`, "PRIVATE_INVALID_TIME"},
+		"update time":            {`UPDATE job_updates SET created_at=? WHERE project_id=? AND job_id=?`, "PRIVATE_INVALID_TIME"},
+		"update future revision": {`UPDATE job_updates SET job_revision=? WHERE project_id=? AND job_id=?`, 2},
+		"checklist content":      {`UPDATE job_checklists SET items_json=? WHERE project_id=? AND job_id=?`, `[{"id":"one","text":"PRIVATE_BAD_CHECKLIST","done":"yes"}]`},
+		"checklist time":         {`UPDATE job_checklists SET created_at=? WHERE project_id=? AND job_id=?`, "PRIVATE_INVALID_TIME"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := setupAPI(t)
+			project := a.createProject("delivery-corrupt", "synthetic/delivery-corrupt")
+			token := a.grant(project, "delivery-corrupt-client", "read", "write")
+			base := "/api/v1/projects/" + project
+			r := a.call(http.MethodPost, base+"/jobs", token, "create", map[string]any{"title": "Current", "brief": "brief"})
+			progressOK(t, r, 201)
+			var job struct {
+				ID string `json:"id"`
+			}
+			decodeResponse(t, r, &job)
+			path := base + "/jobs/" + job.ID
+			progressOK(t, a.call(http.MethodPost, path+"/updates", token, "update", map[string]any{"expected_job_revision": 1, "body": "progress"}), 201)
+			progressOK(t, a.call(http.MethodPut, path+"/checklist", token, "checklist", map[string]any{"expected_job_revision": 1, "expected_revision": 0, "items": []map[string]any{{"id": "one", "text": "task", "done": false}}}), 200)
+			if _, err := a.store.DB().Exec(change.query, change.value, project, job.ID); err != nil {
+				t.Fatal(err)
+			}
+			response := a.call(http.MethodGet, base+"/delivery", token, "", nil)
+			if response.Code != 500 || !strings.Contains(response.Body.String(), "storage_unavailable") || strings.Contains(response.Body.String(), "PRIVATE_") {
+				t.Fatalf("malformed summary admitted or exposed: %d %s", response.Code, response.Body.String())
+			}
+		})
 	}
 }

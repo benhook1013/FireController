@@ -7,6 +7,7 @@ import { ReadState, signalFor, useWorkspace, type Session } from './workspace';
 import type { DeliverySnapshot, ReviewPullSummary, ReviewQueue } from './types';
 import { ReviewQueueView, ReviewRunsView, ReviewPullFacts } from './review-workspace';
 import { DeliveryBoardArchive } from './delivery-board';
+import { RelativeTime } from './relative-time';
 import './delivery.css';
 import { useReviewProgress } from './review-progress-view';
 import type { ReviewProgressItem } from './review-progress';
@@ -40,8 +41,17 @@ function snapshotLink(home: string, kind: 'pulls' | 'runs', id: number | string,
 }
 function CheckpointPreview({ job }: { job: DeliveryJob }) {
   const checkpoint = job.checkpoint;
-  if (!checkpoint) return <p className="delivery-empty">No checkpoint recorded.</p>;
-  return <div className="delivery-checkpoint">{checkpoint.job_revision !== job.revision && <p className="delivery-checkpoint-stale">Checkpoint from job revision {checkpoint.job_revision}; current revision {job.revision}.</p>}{checkpoint.next && <p><strong>Next</strong>{preview(checkpoint.next, checkpoint.next_truncated)}</p>}{checkpoint.blocker && <p className="delivery-blocker"><strong>Blocker</strong>{preview(checkpoint.blocker, checkpoint.blocker_truncated)}</p>}{checkpoint.done && <p><strong>Done</strong>{preview(checkpoint.done, checkpoint.done_truncated)}</p>}</div>;
+  if (!checkpoint) return job.brief_preview || job.update || job.checklist ? null : <p className="delivery-empty">No checkpoint recorded.</p>;
+  return <div className="delivery-checkpoint"><p className="delivery-context-meta">Checkpoint · <RelativeTime value={checkpoint.created_at} /></p>{checkpoint.job_revision !== job.revision && <p className="delivery-checkpoint-stale">Checkpoint from job revision {checkpoint.job_revision}; current revision {job.revision}.</p>}{checkpoint.next && <p><strong>Next</strong>{preview(checkpoint.next, checkpoint.next_truncated)}</p>}{checkpoint.blocker && <p className="delivery-blocker"><strong>Blocker</strong>{preview(checkpoint.blocker, checkpoint.blocker_truncated)}</p>}{checkpoint.done && <p><strong>Done</strong>{preview(checkpoint.done, checkpoint.done_truncated)}</p>}</div>;
+}
+function JobContextPreview({ job }: { job: DeliveryJob }) {
+  return <div className="delivery-job-context">
+    {job.brief_preview && <p className="delivery-brief">{preview(job.brief_preview, job.brief_preview_truncated)}</p>}
+    <p className="delivery-context-meta">Edited <RelativeTime value={job.updated_at} /></p>
+    {job.update && <div className="delivery-update"><p className="delivery-context-meta">Progress · <RelativeTime value={job.update.created_at} /></p><p className="delivery-update-body">{preview(job.update.body, job.update.body_truncated)}</p>{job.update.job_revision !== job.revision && <p className="delivery-checkpoint-stale">Progress from job revision {job.update.job_revision}; current revision {job.revision}.</p>}</div>}
+    {job.checklist && <div className="delivery-checklist"><p><strong>Checklist {job.checklist.done}/{job.checklist.total} done</strong> · <RelativeTime value={job.checklist.created_at} /></p>{job.checklist.job_revision !== job.revision && <p className="delivery-checkpoint-stale">Checklist from job revision {job.checklist.job_revision}; current revision {job.revision}.</p>}</div>}
+    <CheckpointPreview job={job} />
+  </div>;
 }
 function LaneInboxLink({ lane, home }: { lane: DeliveryLane; home: string }) {
   const { session, selectWorker } = useWorkspace();
@@ -60,7 +70,7 @@ export function DeliveryLanes({ value, home, partialJobs = value.jobs.has_more, 
     </header>
     {lane.jobs.length ? <ul className="delivery-job-list">{lane.jobs.map(job => <li key={job.id}>
       <div className="delivery-job-heading"><h4><Link to={`${home}/jobs/${encodeURIComponent(job.id)}`}>{job.title}</Link></h4><div className="delivery-job-state"><span className={`badge status-${job.status}`}>{job.status[0].toUpperCase()+job.status.slice(1)}</span>{lane.worker?.primary_job_id === job.id && <span className="badge delivery-primary">Primary focus</span>}</div></div>
-      <CheckpointPreview job={job} /><Link className="delivery-job-link" to={`${home}/jobs/${encodeURIComponent(job.id)}`} aria-label={`Read job ${job.title}`}>Read job →</Link>
+      <JobContextPreview job={job} /><Link className="delivery-job-link" to={`${home}/jobs/${encodeURIComponent(job.id)}`} aria-label={`Read job ${job.title}`}>Read job →</Link>
     </li>)}</ul> : <p className="delivery-empty">{partialJobs ? 'No jobs in loaded slice.' : 'No open jobs.'}</p>}
   </section>)}</div>;
 }

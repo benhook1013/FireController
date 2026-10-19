@@ -177,15 +177,20 @@ function validDelivery(value: unknown, project: string, options: DeliveryOptions
   const ranks: Record<string, number> = { active: 0, blocked: 1, parked: 2 };
   let previousRank = -1, previousJob = '';
   for (const job of value.jobs.items) {
-    if (!record(job) || !keys(job, ['id', 'title', 'worker_id', 'status', 'revision', 'worker_name', 'checkpoint']) || !id(job.id) || !contentText(job.title, 240) || job.worker_id !== '' && !id(job.worker_id) || typeof job.status !== 'string' || !Object.hasOwn(ranks, job.status) || !positive(job.revision) || (job.worker_id === '' ? job.worker_name !== '' : !displayName(job.worker_name))) return false;
+    if (!record(job) || !keys(job, ['id', 'title', 'worker_id', 'status', 'revision', 'worker_name', 'brief_preview', 'brief_preview_truncated', 'updated_at', 'update', 'checklist', 'checkpoint']) || !id(job.id) || !contentText(job.title, 240) || job.worker_id !== '' && !id(job.worker_id) || typeof job.status !== 'string' || !Object.hasOwn(ranks, job.status) || !positive(job.revision) || (job.worker_id === '' ? job.worker_name !== '' : !displayName(job.worker_name))) return false;
     const rank = ranks[job.status];
     if (rank < previousRank || rank === previousRank && job.id <= previousJob) return false;
     previousRank = rank; previousJob = job.id;
+    if (!contentText(job.brief_preview, 240, true) || typeof job.brief_preview_truncated !== 'boolean' || job.brief_preview_truncated && !job.brief_preview || !assessmentTime(job.updated_at)) return false;
+    const update = job.update;
+    if (update !== null && (!record(update) || !keys(update, ['sequence', 'job_revision', 'body', 'body_truncated', 'created_at']) || !positive(update.sequence) || !positive(update.job_revision) || Number(update.job_revision) > Number(job.revision) || typeof update.body_truncated !== 'boolean' || !contentText(update.body, 240) || !checkpointText(update.body, 240, !update.body_truncated) || !assessmentTime(update.created_at))) return false;
+    const checklist = job.checklist;
+    if (checklist !== null && (!record(checklist) || !keys(checklist, ['revision', 'job_revision', 'total', 'done', 'created_at']) || !positive(checklist.revision) || !positive(checklist.job_revision) || Number(checklist.job_revision) > Number(job.revision) || !nonnegative(checklist.total) || Number(checklist.total) > 100 || !nonnegative(checklist.done) || Number(checklist.done) > Number(checklist.total) || !assessmentTime(checklist.created_at))) return false;
     const checkpoint = job.checkpoint;
     if (checkpoint !== null) {
-      if (!record(checkpoint) || !keys(checkpoint, ['sequence', 'job_revision', 'done', 'next', 'blocker', 'done_truncated', 'next_truncated', 'blocker_truncated']) || !positive(checkpoint.sequence) || !positive(checkpoint.job_revision) || Number(checkpoint.job_revision) > Number(job.revision)) return false;
+      if (!record(checkpoint) || !keys(checkpoint, ['sequence', 'job_revision', 'done', 'next', 'blocker', 'done_truncated', 'next_truncated', 'blocker_truncated', 'created_at']) || !positive(checkpoint.sequence) || !positive(checkpoint.job_revision) || Number(checkpoint.job_revision) > Number(job.revision) || !assessmentTime(checkpoint.created_at)) return false;
       for (const field of ['done', 'next', 'blocker'] as const) {
-        if (!checkpointText(checkpoint[field], 240, field !== 'blocker') || typeof checkpoint[`${field}_truncated`] !== 'boolean') return false;
+        if (!checkpointText(checkpoint[field], 240, field !== 'blocker' && !checkpoint[`${field}_truncated`]) || typeof checkpoint[`${field}_truncated`] !== 'boolean') return false;
       }
     }
   }

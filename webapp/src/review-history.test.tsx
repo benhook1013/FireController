@@ -10,7 +10,7 @@ import type { ReviewRunDetail, ReviewRunSummary } from './types';
 const key = ['fc', 'connection', 'instance', 'project', 'actor'];
 const snapshot = 'snapshot-one';
 const run = (id: string, channel: ReviewRunSummary['channel'] = 'cli'): ReviewRunSummary => ({ id, channel, source: 'producer-a', pull_number: 27, source_run_id: `original-${id}`, head_sha: 'head', reviewer: 'Reviewer', scope: 'Selected comparison', outcome: 'completed', complete: true, attributable: true, finalized: true, found: 2, accepted: 1, routed: 1, fixed: 0, started_at: '2026-10-18T00:00:00Z', finished_at: '2026-10-18T00:01:00Z', coverage_limits: [] });
-const detail = (value: ReviewRunSummary): ReviewRunDetail => ({ project_id: 'project', revision: 1, snapshot_id: snapshot, source: 'publisher', observed_at: '2026-10-18T00:02:00Z', recorded_at: '2026-10-18T00:02:01Z', pull_number: 27, run: value, findings: [{ source_finding_id: 'finding', title: '**Literal title**', detail: 'Private **finding**\n\n- Useful step\n\n[unsafe](javascript:alert(1)) ![remote](https://outside.invalid/pixel)', severity: 'low', disposition: 'accepted', decision_reason: 'Verified *reason*.', actor: 'Builder', decided_at: '', fix_sha: '', proof_note: '`proof`', resolved_at: '' }] });
+const detail = (value: ReviewRunSummary): ReviewRunDetail => ({ project_id: 'project', revision: 1, snapshot_id: snapshot, source: 'publisher', observed_at: '2026-10-18T00:02:00Z', recorded_at: '2026-10-18T00:02:01Z', pull_number: 27, run: value, findings: [{ source_finding_id: 'finding', title: '**Literal title**', detail: 'Private **finding**\n\n- Useful step\n\n[unsafe](javascript:alert(1)) ![remote](https://outside.invalid/pixel)', severity: 'low', disposition: 'accepted', decision_reason: 'Verified *reason*.', actor: 'Builder', decided_at: '2026-10-18T00:03:00Z', fix_sha: '', proof_note: '`proof`', resolved_at: '2026-10-18T00:04:00Z' }] });
 function markup(node: React.ReactNode, seed?: { value: ReviewRunDetail; error?: ApiError; selectedKey?: readonly string[] }) {
   const read = vi.fn();
   const session = { project: { id: 'project', repository: 'example/project' }, controller: new AbortController(), api: { reviewRun: read } } as unknown as Session;
@@ -28,6 +28,14 @@ function markup(node: React.ReactNode, seed?: { value: ReviewRunDetail; error?: 
 }
 
 describe('per-PR inline retained review history', () => {
+  it('renders decision and fix times as relative time elements with their exact recorded instants', () => {
+    const value = run('dated');
+    const html = markup(<InlineReviewFindings number={27} run={value} snapshot={snapshot} />, { value: detail(value) });
+    expect(html).toContain('dateTime="2026-10-18T00:03:00Z"');
+    expect(html).toContain('dateTime="2026-10-18T00:04:00Z"');
+    expect(html).toContain('Resolved: <time');
+  });
+
   it('shows typed compact summaries, finish age and pinned secondary links without exposing cached findings before expansion', () => {
     const value = run('second');
     const html = markup(<ReviewHistoryRow number={27} run={value} snapshot={snapshot} head="head" />, { value: detail(value) });

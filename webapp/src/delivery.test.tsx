@@ -9,7 +9,7 @@ import type { DeliveryJob, DeliverySnapshot, DeliveryWorker, ReviewPullSummary, 
 const home = '/projects/project_one';
 const key = ['fc', 'connection_one', 'instance_one', 'project_one', 'actor_one'] as const;
 const worker: DeliveryWorker = { id: 'worker_one', project_id: 'project_one', name: 'Builder', primary_job_id: 'job_active', paused: true, pause_reason: 'Waiting <literal>', pause_reason_truncated: true };
-const job = (id: string, status: DeliveryJob['status'], worker_id = worker.id, worker_name = worker.name): DeliveryJob => ({ id, title: id, worker_id, worker_name, status, revision: 3, checkpoint: null });
+const job = (id: string, status: DeliveryJob['status'], worker_id = worker.id, worker_name = worker.name): DeliveryJob => ({ id, title: id, worker_id, worker_name, status, revision: 3, brief_preview: '', brief_preview_truncated: false, updated_at: '2026-10-19T08:00:00Z', update: null, checklist: null, checkpoint: null });
 const board: DeliverySnapshot = { workers: { items: [worker, { ...worker, id: 'empty_worker', name: 'Empty worker', primary_job_id: 'outside_job', paused: false }], has_more: true, cursor: 'next_workers' }, jobs: { items: [job('job_parked', 'parked'), job('job_blocked', 'blocked'), job('job_active', 'active'), job('outside_owner_job', 'active', 'outside_owner', 'Elsewhere'), job('unassigned_job', 'active', '', '')], has_more: true, cursor: 'next_jobs' } };
 const run = (channel: 'hosted' | 'cli'): ReviewRunSummary => ({ source: 'fixture', id: 'run_' + channel, pull_number: 2, source_run_id: 'source_' + channel, channel, head_sha: 'head', reviewer: 'Reviewer', scope: 'full', coverage_limits: [], outcome: 'completed', attributable: true, complete: true, started_at: '', finished_at: '2026-10-18T00:00:00Z', found: 5, accepted: 2, routed: 1, finalized: true, fixed: 1 });
 const pull = (number: number, state: ReviewPullSummary['state']): ReviewPullSummary => ({ number, state, title: `Change ${number}`, head_sha: 'head', base_ref: 'main', base_sha: 'base', ci_state: 'success', mergeability: 'mergeable', complete: true, run_count: 2, attempt_count: 0, recent_runs: [run('hosted'), run('cli')], latest_attempts: [] });
@@ -34,7 +34,7 @@ describe('bounded Delivery board', () => {
   });
   it('shows explicit pause/focus and safe checkpoint previews without implying an empty lane is idle', () => {
     const current = job('job_active', 'active');
-    current.checkpoint = { sequence: 4, job_revision: 1, done: '<script>done</script>', next: 'Next <literal>', blocker: 'Waiting', done_truncated: true, next_truncated: false, blocker_truncated: false };
+    current.checkpoint = { sequence: 4, job_revision: 1, done: '<script>done</script>', next: 'Next <literal>', blocker: 'Waiting', done_truncated: true, next_truncated: false, blocker_truncated: false, created_at: '2026-10-19T08:00:00Z' };
     const value = { ...board, jobs: { ...board.jobs, items: [current] } };
     const html = markup(<DeliveryLanes value={value} home={home} />);
     expect(html).toContain('Primary focus');
@@ -46,6 +46,21 @@ describe('bounded Delivery board', () => {
     expect(html).not.toContain('outside this job page');
     expect(html).toContain('No jobs in loaded slice.');
     expect(html).not.toMatch(/<script|Idle|<button/u);
+  });
+  it('shows literal current context, captured revision labels, known-zero counts and actual contextual ages', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-19T09:00:00Z'));
+    try {
+      const current = {...job('job_active','active'),brief_preview:'**literal brief** <script>bad</script>',brief_preview_truncated:true,
+        update:{sequence:9,job_revision:1,body:'**literal update** <script>bad</script>',body_truncated:true,created_at:'2026-10-19T08:30:00Z'},
+        checklist:{revision:2,job_revision:1,total:0,done:0,created_at:'2099-01-01T00:00:00Z'}};
+      const html=markup(<DeliveryLanes value={{...board,jobs:{items:[current],has_more:false}}} home={home}/>);
+      expect(html).toContain('**literal brief** &lt;script&gt;bad&lt;/script&gt;…');
+      expect(html).toContain('**literal update** &lt;script&gt;bad&lt;/script&gt;…');
+      expect(html).not.toContain('>Job revision 3'); expect(html).toContain('Edited'); expect(html).toContain('1h 0m ago'); expect(html).toContain('30m ago');
+      expect(html).toContain('Progress from job revision 1; current revision 3.'); expect(html).toContain('Checklist from job revision 1; current revision 3.');
+      expect(html).toContain('Checklist 0/0 done'); expect(html).toContain('Future date'); expect(html).toContain('2099-01-01T00:00:00Z');
+      expect(html).not.toContain('No checkpoint recorded.'); expect(html).not.toMatch(/<script>|<em>|Last activity/u);
+    } finally {vi.useRealTimers();}
   });
   it('distinguishes a complete empty lane from a later or incomplete job slice', () => {
     const complete = { ...board, jobs: { items: [], has_more: false } };

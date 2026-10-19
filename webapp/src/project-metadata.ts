@@ -40,9 +40,9 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
       // this domain's active views; do not expand every job's private context.
       add('delivery'); add('checkpoint-latest'); add('checkpoints');
     } else if (type === 'job.update_appended') {
-      add('job-updates');
+      add('delivery'); add('job-updates');
     } else if (type === 'job.checklist_replaced') {
-      add('checklist-current', id); add('checklist-history', id);
+      add('delivery'); add('checklist-current', id); add('checklist-history', id);
     } else if (type === 'workers.created') {
       add('delivery'); add('workers'); add('worker', id);
     } else if (type === 'worker.pause_changed') {

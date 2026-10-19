@@ -75,6 +75,14 @@ describe('live private project views', () => {
     } finally { f.close(); }
   });
 
+  it.each(['job.update_appended','job.checklist_replaced'] as const)('refreshes Delivery on %s without detail or archive fanout',async event_type=>{
+    const f=fixture(), delivery=f.add(['delivery','','']), job=f.add(['job','job_one']), archive=f.add(['checkpoints','job_one',''],false);
+    try {
+      await refreshProjectMetadata(f.client,key,page([{event_type,resource_id:'record_one'}]),new AbortController().signal);
+      expect(delivery.reads()).toBe(1); expect(job.reads()).toBe(0); expect(archive.reads()).toBe(0); expect(archive.state()?.isInvalidated).toBe(false);
+    } finally {f.close();}
+  });
+
   it('updates worker, note and current review views while preserving captured history and private inbox scope', async () => {
     const f = fixture();
     const workers = f.add(['workers', '']);

@@ -3,8 +3,8 @@ import { Api } from './api';
 import type { DeliverySnapshot } from './types';
 
 const project = { id: 'project_one', name: 'Delivery project', github_repository_id: 42, repository: 'synthetic/delivery' };
-const checkpoint = { sequence: 3, job_revision: 1, done: 'API proof passed', next: 'Read the latest brief', blocker: '', done_truncated: false, next_truncated: false, blocker_truncated: false };
-function snapshot(): DeliverySnapshot { return { workers: { items: [{ id: 'worker_one', project_id: project.id, name: 'Builder', primary_job_id: 'job_one', paused: false, pause_reason: '', pause_reason_truncated: false }], has_more: false }, jobs: { items: [{ id: 'job_one', title: 'Delivery board', worker_id: 'worker_one', worker_name: 'Builder', status: 'active', revision: 2, checkpoint }], has_more: false } }; }
+const checkpoint = { sequence: 3, job_revision: 1, done: 'API proof passed', next: 'Read the latest brief', blocker: '', done_truncated: false, next_truncated: false, blocker_truncated: false, created_at: '2026-10-19T08:00:00Z' };
+function snapshot(): DeliverySnapshot { return { workers: { items: [{ id: 'worker_one', project_id: project.id, name: 'Builder', primary_job_id: 'job_one', paused: false, pause_reason: '', pause_reason_truncated: false }], has_more: false }, jobs: { items: [{ id: 'job_one', title: 'Delivery board', worker_id: 'worker_one', worker_name: 'Builder', status: 'active', revision: 2, brief_preview: 'Current brief', brief_preview_truncated: false, updated_at: '2026-10-19T09:00:00Z', update: null, checklist: null, checkpoint }], has_more: false } }; }
 function json(value: unknown) { return new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } }); }
 async function client() {
   vi.stubGlobal('location', { origin: 'https://service.example' });
@@ -48,6 +48,30 @@ describe('bounded stored Delivery API', () => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(value)));
       await expect(api.delivery()).rejects.toMatchObject({ code: 'invalid_response' });
     } api.close();
+  });
+  it('accepts compact progress, known-zero checklists and independent recorded times in one read', async () => {
+    const api = await client(), value = snapshot();
+    value.jobs.items[0] = {...value.jobs.items[0], brief_preview:'b'.repeat(239), brief_preview_truncated:true,updated_at:'2024-02-03T04:05:06+13:00',
+      update:{sequence:9,job_revision:1,body:' '.repeat(240),body_truncated:true,created_at:'2020-01-01T00:00:00Z'},
+      checklist:{revision:2,job_revision:1,total:0,done:0,created_at:'2099-01-01T00:00:00Z'}};
+    const fetch = vi.fn().mockResolvedValue(json(value)); vi.stubGlobal('fetch',fetch);
+    expect(await api.delivery()).toEqual(value); expect(fetch).toHaveBeenCalledTimes(1); api.close();
+  });
+  it('rejects malformed preview, attribution, count and timestamp facts without fetching details', async () => {
+    const api = await client(), original = snapshot(), job = original.jobs.items[0];
+    const update = {sequence:9,job_revision:1,body:'Progress',body_truncated:false,created_at:'2020-01-01T00:00:00Z'};
+    const checklist = {revision:2,job_revision:1,total:2,done:1,created_at:'2021-01-01T00:00:00Z'};
+    const variants = [
+      {brief_preview:'🔥'.repeat(61)}, {brief_preview:null}, {brief_preview_truncated:null}, {brief_preview:'',brief_preview_truncated:true}, {updated_at:'not-a-date'},
+      {update:undefined}, ...[{sequence:0},{job_revision:3},{body:''},{body:'a'.repeat(241)},{body:'\ud800'},{body:'bad\u0000'},{body_truncated:null},{created_at:''},{evidence:['private']}].map(change=>({update:{...update,...change}})),
+      {checklist:undefined}, ...[{revision:0},{job_revision:3},{total:101},{done:3},{done:-1},{done:0.5},{total:null},{created_at:'invalid'},{items:[]}].map(change=>({checklist:{...checklist,...change}})),
+      {checkpoint:{...checkpoint,created_at:null}}, {checkpoint:{...checkpoint,created_at:'invalid'}},
+    ];
+    for(const change of variants) {
+      const fetch=vi.fn().mockResolvedValue(json({...original,jobs:{items:[{...job,...change}],has_more:false}})); vi.stubGlobal('fetch',fetch);
+      await expect(api.delivery()).rejects.toMatchObject({code:'invalid_response'}); expect(fetch).toHaveBeenCalledTimes(1);
+    }
+    api.close();
   });
   it('rejects invalid selectors before network and accepts unassigned checkpoint-free jobs', async () => {
     const api = await client(); const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
