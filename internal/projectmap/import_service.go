@@ -48,7 +48,7 @@ func decodeImportRecord(raw string) (ImportRecord, error) {
 	return record, nil
 }
 func readImportRecord(ctx context.Context, tx *sql.Tx, project, source string, revision int64) (ImportRecord, error) {
-	var raw string
+	var raw sql.NullString
 	var rowRevision int64
 	var actor, worker, at string
 	var err error
@@ -65,7 +65,10 @@ func readImportRecord(ctx context.Context, tx *sql.Tx, project, source string, r
 	if err != nil {
 		return ImportRecord{}, err
 	}
-	record, err := decodeImportRecord(raw)
+	if !raw.Valid {
+		return ImportRecord{}, unavailable()
+	}
+	record, err := decodeImportRecord(raw.String)
 	if err != nil {
 		return ImportRecord{}, err
 	}
