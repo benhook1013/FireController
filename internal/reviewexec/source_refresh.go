@@ -11,6 +11,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -472,6 +473,7 @@ func (e *Engine) refreshNext(ctx context.Context, readers map[string]TargetReade
 func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]TargetReader, schedule *sourceRefreshSchedule) (bool, error) {
 	var selected *sourceRefresh
 	var configuration Configuration
+	var metadataPins map[int64]reviews.SourceMetadataPin
 	var changed string
 
 	var project, id string
@@ -518,6 +520,12 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			if reason != "" {
 				changed = r.ID
 				return e.updateSourceRefresh(ctx, tx, r, "held", reason, nil, "null", "null")
+			}
+			if e.publishAttempt != nil {
+				metadataPins, err = reviews.PinSourceMetadata(ctx, tx, r.ProjectID, []int64{r.PullNumber})
+				if err != nil {
+					return err
+				}
 			}
 			if err = e.updateSourceRefresh(ctx, tx, r, "running", "", nil, "null", "null"); err != nil {
 				return err
@@ -593,6 +601,9 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			retainedCI, retainedReview := "null", "null"
 			if state == "completed" {
 				retainedCI, retainedReview = ciBody, reviewBody
+				if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: r.ProjectID, PrincipalID: r.actor, WorkerID: r.worker}, r.repositoryID, metadataPins, []SourcePlan{plan}); err != nil {
+					return err
+				}
 			}
 			return e.updateSourceRefresh(ctx, tx, r, state, reason, retained, retainedCI, retainedReview)
 		})

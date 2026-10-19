@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"reflect"
 	"slices"
 	"sync"
@@ -243,6 +244,7 @@ func (e *Engine) StartReviewRuns(ctx context.Context, readers map[string]TargetR
 func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (bool, error) {
 	var selected *Run
 	var configuration Configuration
+	var metadataPins map[int64]reviews.SourceMetadataPin
 	var repo int64
 	var changed string
 	var project, id string
@@ -276,6 +278,12 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 		changed = r.ID
 		if reason != "" {
 			return updateRun(ctx, tx, r, "held", reason, "")
+		}
+		if e.publishAttempt != nil {
+			metadataPins, err = reviews.PinSourceMetadata(ctx, tx, r.ProjectID, configuration.Queue)
+			if err != nil {
+				return err
+			}
 		}
 		if err = updateRun(ctx, tx, r, "selecting", "", ""); err != nil {
 			return err
@@ -322,6 +330,9 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 		}
 		if reason != "" {
 			return updateRun(ctx, tx, current, "held", reason, "")
+		}
+		if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}, repo, metadataPins, choice.prefix); err != nil {
+			return err
 		}
 		if choice.state == "held" {
 			return updateRun(ctx, tx, current, "held", choice.reason, "")

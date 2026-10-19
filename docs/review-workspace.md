@@ -4,7 +4,7 @@
 
 The service stores project-scoped review observations and serves queue, PR history, run, finding, decision and fix-proof views from its own indexed database. Importing an observation is an explicit administrator action. Ordinary reads and browser refresh make no provider calls and do not construct another controller or renderer. Jobs and messaging do not depend on the reviews domain.
 
-This slice provides the read model for the [review engine](reviews.md). Optional native execution and revision-bound policy admission are described in the [execution boundary](review-execution.md); automatic provider refresh, fresh-source aggregate policy and merge-readiness assessment remain unimplemented. Explicit [captured-comparison policy assessment](review-controls.md#captured-comparison-assessment) is a separate provider-free read. Historical counts, a completed attempt, CI success and a matching head are separate facts. This API never returns a merge-ready verdict or authorizes a merge. Projects without observations return an explicitly unconfigured workspace.
+This slice provides the read model for the [review engine](reviews.md). Optional native execution and revision-bound policy admission are described in the [execution boundary](review-execution.md). Native queue selection and explicit source refresh publish selected current display facts through the guarded path below; browser reads never trigger that provider work. Explicit [captured-comparison policy assessment](review-controls.md#captured-comparison-assessment) is a separate provider-free read. Historical counts, a completed attempt, CI success and a matching head are separate facts. This API never returns a merge-ready verdict or authorizes a merge. Projects without observations return an explicitly unconfigured workspace.
 
 ## Optional PR display facts
 
@@ -57,6 +57,14 @@ Finalized source counts and source run/finding identity are immutable across obs
 Attempts retain source IDs, channel, head, state, timing, nullable duration and optional source-run/provider references, bounded to 100 per PR and 200 per observation. Failed, rate-limited, uncertain and unknown attempts remain visible. An unknown duration is null and displays as “Unknown”; measured zero remains zero. A process exit code alone does not establish completed coverage. Queue summaries contain only the three most recent runs and latest attempt per channel; full findings load explicitly on a run page.
 
 ## Retention and browser behavior
+
+### Source metadata publication
+
+Normal native queue selection and explicit source refresh reuse the verified PR facts they already read to update existing visible queue entries. Publishing these display facts does not spend a review, change round policy or grant dispatch permission. Browser reads and Refresh remain local stored reads; this publication path adds no GitHub calls, recurring crawl or background history import.
+
+Before provider I/O, pin each selected current entry's display facts. At publication, update only entries whose facts still match that baseline. Preserve concurrent attempts, findings, decisions, queue order and all historical snapshots. A concurrent display edit wins over an older in-flight provider response; a retired or missing entry is never reactivated by this path. Unchanged facts produce no snapshot or event. A changed head clears inherited completeness. Changing the head or base makes previously stored CI and mergeability unknown until separately observed. Optional display facts preserve known same-head values when the provider did not supply a replacement.
+
+Partial source publication does not advance the whole queue's observation timestamp. It is distinct from review history acquisition, explicit administrator queue edits and the initial missing-projection fallback. Review-front badges additionally require an authoritative per-channel selection projection; merge-head order and retained review counts cannot establish that permission.
 
 Merged PRs remain in the queue as completed history. Removing any previous queue entry requires an explicit `superseded` or `defunct` retirement, through a complete observation or the selected queue edits below. Lifecycle changes never remove entries implicitly. Snapshots and retirement provenance remain retained; this slice does not introduce a pruning or project-deletion API.
 
