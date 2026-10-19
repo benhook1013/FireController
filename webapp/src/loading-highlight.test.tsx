@@ -22,21 +22,22 @@ function jobsMarkup(inboxWorker: Worker | null) {
 describe('neutral stable loading', () => {
   it('exposes one accessible loading label and only decorative placeholders', () => {
     const html = renderToStaticMarkup(<PageSkeleton />);
-    expect(html).toContain('role="status" aria-label="Loading content"');
+    expect(html).toContain('role="status"><span class="visually-hidden">Loading content</span>');
     expect(html).toContain('aria-hidden="true"');
     expect(html).not.toContain('Loading…');
     expect(html).not.toContain('<button');
-    expect(html.replace(/<[^>]*>/gu, '')).toBe('');
+    expect(html.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '')).toBe('');
   });
   it('matches the page layout without exposing a previous project or forcing a sidebar', () => {
     const full = renderToStaticMarkup(<WorkspaceSkeleton />);
     expect(full).toContain('skeleton-hero');
+    expect(full).toContain('role="status"><span class="visually-hidden">Opening project</span>');
     expect(full).toContain('project-main');
     expect(full).not.toContain('<aside');
     const inbox = renderToStaticMarkup(<WorkspaceSkeleton sidebar />);
     expect(inbox).toContain('workspace-grid');
     expect(inbox).toContain('<aside');
-    expect(inbox.replace(/<[^>]*>/gu, '')).toBe('');
+    expect(inbox.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '')).toBe('');
   });
 });
 
