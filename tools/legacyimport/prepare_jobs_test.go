@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -304,5 +305,108 @@ func TestPrepareJobsCLICancellationAndDeadlineDoNotPublish(t *testing.T) {
 		t.Fatal("interrupted preparation published output")
 	}
 	assertPrepareSafe(t, diagnostic.Bytes(), snapshot, selection, output)
+	assertPrepareSourceConserved(t, snapshot, before)
+}
+
+func TestPrepareJobsCLIInspectionLimitsRejectInvalidExplicitValues(t *testing.T) {
+	snapshot, selection, _ := prepareCLIFixture(t, prepareFixtureBrief)
+	before, err := os.ReadFile(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(filepath.Dir(snapshot), "never-published.json")
+	base := prepareCLIArgs(snapshot, selection, output)
+	var help bytes.Buffer
+	if code := run(t.Context(), []string{"prepare-jobs", "--help"}, &help, &bytes.Buffer{}); code != 0 {
+		t.Fatal("help failed", code)
+	}
+	for _, name := range []string{"max-database-bytes", "max-rows-per-table", "max-total-rows", "max-cell-bytes", "max-total-cell-bytes"} {
+		if !strings.Contains(help.String(), "--"+name+" N") {
+			t.Fatalf("help omits %s", name)
+		}
+		for _, value := range []string{"0", "-1", "not-a-number", "9223372036854775808"} {
+			t.Run(name+"/"+value, func(t *testing.T) {
+				args := append(append([]string{}, base...), "--"+name, value)
+				var out, diagnostic bytes.Buffer
+				if code := run(t.Context(), args, &out, &diagnostic); code != 2 || out.Len() != 0 || readDiagnostic(t, diagnostic.Bytes()) != "arguments_invalid" {
+					t.Fatal("invalid limit admitted", code)
+				}
+				assertPrepareSafe(t, diagnostic.Bytes(), snapshot, selection, output, value)
+			})
+		}
+		t.Run(name+"/duplicate", func(t *testing.T) {
+			args := append(append([]string{}, base...), "--"+name, "100", "--"+name+"=200")
+			var out, diagnostic bytes.Buffer
+			if code := run(t.Context(), args, &out, &diagnostic); code != 2 || out.Len() != 0 || readDiagnostic(t, diagnostic.Bytes()) != "arguments_invalid" {
+				t.Fatal("duplicate limit admitted", code)
+			}
+			assertPrepareSafe(t, diagnostic.Bytes(), snapshot, selection, output)
+		})
+	}
+	if _, err := os.Lstat(output); !os.IsNotExist(err) {
+		t.Fatal("invalid limits published output")
+	}
+	assertPrepareSourceConserved(t, snapshot, before)
+}
+
+func TestPrepareJobsCLIInspectionLimitsReachSourceInspection(t *testing.T) {
+	snapshot, selection, _ := prepareCLIFixture(t, prepareFixtureBrief)
+	// An unselected historical update exceeds inspection's default cell bound.
+	// Raising that bound admits inspection without widening the selected batch.
+	largeCell := legacy.DefaultLimits().MaxCellBytes + 1
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(snapshot)}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(t.Context(), `INSERT INTO job_updates(job_id,created_at,kind,body) VALUES('PRIVATE_SOURCE_JOB','2024-02-03T04:05:06Z','progress',?)`, strings.Repeat("x", int(largeCell)))
+	closeErr := db.Close()
+	if err != nil || closeErr != nil {
+		t.Fatal("synthetic oversized update", err, closeErr)
+	}
+	before, err := os.ReadFile(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refuse := func(args []string, output string) {
+		t.Helper()
+		var out, diagnostic bytes.Buffer
+		if code := run(t.Context(), args, &out, &diagnostic); code != 3 || out.Len() != 0 || readDiagnostic(t, diagnostic.Bytes()) != "snapshot_too_large" {
+			t.Fatal("inspection bound not enforced", code, diagnostic.String())
+		}
+		assertPrepareSafe(t, diagnostic.Bytes(), snapshot, selection, output)
+		if _, err := os.Lstat(output); !os.IsNotExist(err) {
+			t.Fatal("limit refusal published output")
+		}
+	}
+	defaultOutput := filepath.Join(filepath.Dir(snapshot), "default-refused.json")
+	refuse(prepareCLIArgs(snapshot, selection, defaultOutput), defaultOutput)
+	for name, raised := range map[string]int64{
+		"max-database-bytes":   int64(len(before)),
+		"max-rows-per-table":   100,
+		"max-total-rows":       1000,
+		"max-cell-bytes":       largeCell,
+		"max-total-cell-bytes": largeCell + (1 << 20),
+	} {
+		t.Run(name, func(t *testing.T) {
+			output := filepath.Join(filepath.Dir(snapshot), name+".json")
+			base := prepareCLIArgs(snapshot, selection, output)
+			if name != "max-cell-bytes" {
+				base = append(base, "--max-cell-bytes", strconv.FormatInt(largeCell, 10))
+			}
+			refuse(append(append([]string{}, base...), "--"+name, "1"), output)
+			args := append(append([]string{}, base...), "--"+name+"="+strconv.FormatInt(raised, 10))
+			var out, diagnostic bytes.Buffer
+			if code := run(t.Context(), args, &out, &diagnostic); code != 0 || diagnostic.Len() != 0 {
+				t.Fatal("explicit raised limit failed", code, diagnostic.String())
+			}
+			assertPrepareSafe(t, out.Bytes(), snapshot, selection, output)
+			data, err := os.ReadFile(output)
+			var batch coordimportmodel.Batch
+			if err != nil || json.Unmarshal(data, &batch) != nil || len(batch.Jobs) != 1 || batch.Jobs[0].Brief != prepareFixtureBrief || len(batch.Jobs[0].Checkpoints) != 1 {
+				t.Fatal("raised limit changed selected native content", err)
+			}
+		})
+	}
 	assertPrepareSourceConserved(t, snapshot, before)
 }
