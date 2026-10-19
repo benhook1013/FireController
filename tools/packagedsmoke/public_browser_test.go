@@ -178,7 +178,7 @@ func TestPackagedPublicBrowserSmoke(t *testing.T) {
 		joined = true
 	case <-ctx.Done():
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
-		t.Fatal("public browser workload exceeded45 seconds")
+		t.Fatal("public browser workload exceeded 45 seconds")
 	}
 	if err != nil || stderr.len() != 0 || output.len() > 64<<10 {
 		phase := "driver-start-or-cleanup"
