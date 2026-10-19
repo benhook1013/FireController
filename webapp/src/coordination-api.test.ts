@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Api } from './api';
+import { parseNoteFilters } from './coordination';
 import type { Note, NoteSummary, NoteRevision, WorkerPrimaryHistoryEntry, WorkerPauseHistoryEntry } from './types';
 
 const project = { id: 'project_one', name: 'One', github_repository_id: 1, repository: 'owner/repo' };
@@ -123,4 +124,14 @@ describe('explicit coordination API reads', () => {
     f.raw(JSON.stringify({ worker_id: worker, revision: 1, paused: true, reason: '<'.repeat(1024) }).replaceAll('<', '\\u003c')); await expect(f.api.workerPause(worker)).resolves.toMatchObject({ paused: true });
     f.api.close();
   });
+});
+
+
+it('keeps locally admitted URL filters within the real notes client contract', async () => {
+  const f = fixture(); await f.api.connect(); f.set(page([]));
+  const cases: Record<string, string>[] = [{}, {worker_id:'worker_one'}, {job_id:'job_two'}, {phase:'😀'.repeat(50)}, {phase:'a\u2028b'}, {kind:'source',status:'all'}, {include_assigned_jobs:'false'}, {worker_id:'worker_one',include_assigned_jobs:'true'}];
+  for (const values of cases) {
+    const options = parseNoteFilters(new URLSearchParams(values)); expect(options).toBeDefined(); await expect(f.api.notes(options)).resolves.toMatchObject({items:[]});
+  }
+  f.api.close();
 });
