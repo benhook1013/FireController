@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -532,6 +533,196 @@ func TestCollectionWorkerWriterContentionRetainsCapturedPageWithoutRefetch(t *te
 	pages, seen, events := collectionCounts(t, f.store, r.ID)
 	if pages != 1 || seen != 1 || events != 3 {
 		t.Fatalf("contended page partially/duplicately committed: %d/%d/%d", pages, seen, events)
+	}
+}
+
+func TestCollectionWorkerRunRetriesTransientClaimContention(t *testing.T) {
+	f, e, scope, r := collectionWorkerSetup(t, Selection{[]int64{47}})
+	completed := collectionDrain(t, e, scope, r.ID)
+	if completed.State != "completed" {
+		t.Fatal("fixture did not complete its initial pass")
+	}
+	firstPassCalls := len(f.provider.calls)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done, err := e.Run(ctx)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	defer func() {
+		cancel()
+		collectionJoin(t, done)
+	}()
+
+	// Requeue the retained operation in a real SQLite transaction while holding
+	// the writer lock. The worker is already running and idle; signal it before
+	// commit so its claim sees actual SQLITE_BUSY rather than an injected error.
+	var lock *sql.Tx
+	lockDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(lockDeadline) {
+		lock, err = f.store.DB().BeginTx(ctx, nil)
+		if err == nil {
+			var result sql.Result
+			result, err = lock.ExecContext(ctx, `UPDATE history_collections SET state='queued',revision=revision+1,reason='',position_json='{"pull_index":0,"resource":"pull","page":1}',pass_number=pass_number+1,updated_at=? WHERE project_id=? AND id=? AND state='completed' AND revision=?`, stamp(), scope.ProjectID, r.ID, completed.Revision)
+			if err == nil {
+				if changed, rowsErr := result.RowsAffected(); rowsErr != nil || changed != 1 {
+					_ = lock.Rollback()
+					t.Fatalf("fixture requeue changed %d rows: %v", changed, rowsErr)
+				}
+				break
+			}
+			_ = lock.Rollback()
+			lock = nil
+		}
+		var coded interface{ Code() int }
+		if !errors.As(err, &coded) || coded.Code()&255 != 5 && coded.Code()&255 != 6 {
+			t.Fatalf("could not acquire a real SQLite writer lock for claim proof: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if lock == nil {
+		t.Fatal("could not acquire a real SQLite writer lock for claim proof")
+	}
+	defer lock.Rollback()
+	if err := core.AppendEvent(ctx, lock, scope, "history.collection_changed", r.ID, completed.Revision+1, struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	e.signal()
+	select {
+	case workerErr := <-done:
+		t.Fatalf("worker exited on transient claim contention: %v", workerErr)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := lock.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.After(3 * time.Second)
+	for {
+		current := collectionWorkerRead(t, e, scope, r.ID)
+		if current.State == "completed" && current.PageCount == completed.PageCount*2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("worker did not retry the contended claim: %+v", current)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	current := collectionWorkerRead(t, e, scope, r.ID)
+	if current.PageCount != completed.PageCount*2 || current.PassNumber <= completed.PassNumber {
+		t.Fatalf("retried pass did not preserve and extend captured pages: %+v", current)
+	}
+	cancel()
+	collectionJoin(t, done)
+	if len(f.provider.calls) != firstPassCalls*2 {
+		t.Fatalf("retried claim changed provider-call count: first=%d total=%d", firstPassCalls, len(f.provider.calls))
+	}
+}
+
+func TestCollectionWorkerRunRetainsCapturedPageBeyondCommitRetryWindow(t *testing.T) {
+	f, e, scope, r := collectionWorkerSetup(t, Selection{[]int64{47}})
+	firstProviderEntered, releaseFirstProvider := make(chan struct{}), make(chan struct{})
+	nextProviderEntered, releaseNextProvider := make(chan struct{}), make(chan struct{})
+	var firstEnteredOnce, firstReleaseOnce, nextEnteredOnce, nextReleaseOnce sync.Once
+	releaseProviders := func() {
+		firstReleaseOnce.Do(func() { close(releaseFirstProvider) })
+		nextReleaseOnce.Do(func() { close(releaseNextProvider) })
+	}
+	f.provider.after = func(call stepCall) error {
+		switch call.resource {
+		case "pull":
+			firstEnteredOnce.Do(func() { close(firstProviderEntered) })
+			<-releaseFirstProvider
+		case "reviews":
+			nextEnteredOnce.Do(func() { close(nextProviderEntered) })
+			<-releaseNextProvider
+		}
+		return nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done, err := e.Run(ctx)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	defer func() {
+		cancel()
+		releaseProviders()
+		collectionJoin(t, done)
+	}()
+	select {
+	case <-firstProviderEntered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not enter its first provider read")
+	}
+
+	// Hold a genuine SQLite writer lock only after the provider has produced its
+	// response. Its page must remain in memory while each bounded SQL attempt
+	// contends, even past the former 15-second overall retry deadline.
+	lock, err := f.store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback()
+	if _, err := lock.ExecContext(ctx, `UPDATE workers SET name=name WHERE project_id=? AND id=?`, scope.ProjectID, scope.WorkerID); err != nil {
+		_ = lock.Rollback()
+		t.Fatal(err)
+	}
+	firstReleaseOnce.Do(func() { close(releaseFirstProvider) })
+	select {
+	case workerErr := <-done:
+		_ = lock.Rollback()
+		t.Fatalf("worker abandoned a captured page during prolonged writer contention: %v", workerErr)
+	case <-time.After(15500 * time.Millisecond):
+	}
+	if err := lock.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-nextProviderEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker did not commit the retained response and advance")
+	}
+	current := collectionWorkerRead(t, e, scope, r.ID)
+	if current.PageCount != 1 || current.State != "running" {
+		t.Fatalf("captured page was not durably committed before the next read: %+v", current)
+	}
+	pullCalls := 0
+	for _, call := range f.provider.calls {
+		if call.resource == "pull" {
+			pullCalls++
+		}
+	}
+	if pullCalls != 1 {
+		t.Fatalf("writer contention refetched the captured pull page: %d provider calls", pullCalls)
+	}
+	shutdownLock, err := f.store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdownLock.Rollback()
+	if _, err := shutdownLock.ExecContext(ctx, `UPDATE workers SET name=name WHERE project_id=? AND id=?`, scope.ProjectID, scope.WorkerID); err != nil {
+		t.Fatal(err)
+	}
+	nextReleaseOnce.Do(func() { close(releaseNextProvider) })
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	releaseProviders()
+	select {
+	case workerErr := <-done:
+		if workerErr != nil {
+			t.Fatalf("worker shutdown returned a retryable commit error: %v", workerErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not stop promptly when shutdown canceled the contended commit")
+	}
+	_ = shutdownLock.Rollback() // Canceling ctx may already have rolled it back.
+	collectionJoin(t, done)
+	current = collectionWorkerRead(t, e, scope, r.ID)
+	if current.PageCount != 1 || current.State != "running" {
+		t.Fatalf("shutdown changed or lost the committed page: %+v", current)
 	}
 }
 
