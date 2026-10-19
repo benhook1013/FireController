@@ -405,8 +405,12 @@ func (o *browserOutput) safePhase() string {
 			}
 			if record.Phase == "reload" {
 				switch record.Checkpoint {
-				case "reload-before", "reload-after-navigation", "reload-heading-visible", "reload-session-renewed", "reload-current-authority", "reload-expiry-persistence", "reload-expiry-evidence", "reload-binding-retained", "reload-expiry-window", "reload-cookie-rotated", "reload-presentation-restored", "reload-sidebar-absent", "reload-connection-live", "reload-metadata-live", "reload-reader-counts":
-					return fmt.Sprintf("reload/%s presentation_reads=%d metadata_streams=%d inbox_streams=%d injected_metadata_failures=%d injected_console_errors=%d errors=%d external=%d", record.Checkpoint, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.InjectedMetadataFailures, record.InjectedConsoleErrors, record.Errors, record.External)
+				case "reload-before", "reload-after-navigation", "reload-project-heading", "reload-queue-held", "reload-hash-retained", "reload-target-absent", "reload-heading-visible", "reload-session-renewed", "reload-current-authority", "reload-expiry-persistence", "reload-expiry-evidence", "reload-binding-retained", "reload-expiry-window", "reload-cookie-rotated", "reload-presentation-restored", "reload-sidebar-absent", "reload-connection-live", "reload-metadata-live", "reload-reader-counts":
+					class := "driver"
+					if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
+						class = record.FailureClass
+					}
+					return fmt.Sprintf("reload/%s class=%s presentation_reads=%d metadata_streams=%d inbox_streams=%d injected_metadata_failures=%d injected_console_errors=%d errors=%d external=%d", record.Checkpoint, class, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.InjectedMetadataFailures, record.InjectedConsoleErrors, record.Errors, record.External)
 				}
 			}
 
@@ -554,7 +558,11 @@ func TestBrowserProgressDiagnosticsAllowlist(t *testing.T) {
 		{"private-checkpoint", strings.Replace(valid, `"capabilities-read"`, `"PRIVATE_SENTINEL"`, 1), "connect operation=workload age_ms=250"},
 		{"head-click", `{"phase":"live-reviews","checkpoint":"queue-jump-visible","operation":"workload","observed_unix_ms":999750,"counters":{}}`, "live-reviews/queue-jump-visible class=driver run_fetches=0 presentation_reads=0 metadata_streams=0 inbox_streams=0 forbidden_writes=0 action_writes=0 errors=0 external=0 operation=workload age_ms=250"},
 		{"head-reload", `{"phase":"live-reviews","checkpoint":"reload-head-spa","operation":"workload","observed_unix_ms":999750,"counters":{}}`, "live-reviews/reload-head-spa class=driver run_fetches=0 presentation_reads=0 metadata_streams=0 inbox_streams=0 forbidden_writes=0 action_writes=0 errors=0 external=0 operation=workload age_ms=250"},
-		{"reload-checkpoint", strings.Replace(strings.Replace(valid, `"connect"`, `"reload"`, 1), `"capabilities-read"`, `"reload-current-authority"`, 1), "reload/reload-current-authority presentation_reads=0 metadata_streams=0 inbox_streams=0 injected_metadata_failures=0 injected_console_errors=0 errors=0 external=0 operation=workload age_ms=250"},
+		{"reload-checkpoint", strings.Replace(strings.Replace(valid, `"connect"`, `"reload"`, 1), `"capabilities-read"`, `"reload-current-authority"`, 1), "reload/reload-current-authority class=driver presentation_reads=0 metadata_streams=0 inbox_streams=0 injected_metadata_failures=0 injected_console_errors=0 errors=0 external=0 operation=workload age_ms=250"},
+		{"reload-project-heading", `{"phase":"reload","checkpoint":"reload-project-heading","operation":"workload","observed_unix_ms":999750,"counters":{}}`, "reload/reload-project-heading class=driver presentation_reads=0 metadata_streams=0 inbox_streams=0 injected_metadata_failures=0 injected_console_errors=0 errors=0 external=0 operation=workload age_ms=250"},
+		{"reload-queue-held", `{"phase":"reload","checkpoint":"reload-queue-held","operation":"workload","observed_unix_ms":999750,"counters":{}}`, "reload/reload-queue-held class=driver presentation_reads=0 metadata_streams=0 inbox_streams=0 injected_metadata_failures=0 injected_console_errors=0 errors=0 external=0 operation=workload age_ms=250"},
+		{"reload-hash-retained", `{"phase":"reload","checkpoint":"reload-hash-retained","operation":"workload","observed_unix_ms":999750,"counters":{}}`, "reload/reload-hash-retained class=driver presentation_reads=0 metadata_streams=0 inbox_streams=0 injected_metadata_failures=0 injected_console_errors=0 errors=0 external=0 operation=workload age_ms=250"},
+		{"reload-target-absent", `{"phase":"reload","checkpoint":"reload-target-absent","operation":"workload","observed_unix_ms":999750,"counters":{}}`, "reload/reload-target-absent class=driver presentation_reads=0 metadata_streams=0 inbox_streams=0 injected_metadata_failures=0 injected_console_errors=0 errors=0 external=0 operation=workload age_ms=250"},
 		{"reload-private-checkpoint", strings.Replace(strings.Replace(valid, `"connect"`, `"reload"`, 1), `"capabilities-read"`, `"PRIVATE_SENTINEL"`, 1), "reload operation=workload age_ms=250"},
 		{"private-operation", strings.Replace(valid, `"workload"`, `"PRIVATE_SENTINEL"`, 1), "unavailable"},
 		{"private-counter", strings.Replace(valid, `"errors":0`, `"errors":"PRIVATE_SENTINEL"`, 1), "unavailable"},
@@ -574,6 +582,29 @@ func TestBrowserProgressDiagnosticsAllowlist(t *testing.T) {
 				t.Fatalf("unsafe progress diagnostic: %q", got)
 			}
 		})
+	}
+}
+
+func TestBrowserReloadDiagnosticsAllowlist(t *testing.T) {
+	for _, checkpoint := range []string{"reload-project-heading", "reload-queue-held", "reload-hash-retained", "reload-target-absent"} {
+		for _, class := range []string{"timeout", "assertion", "driver", "PRIVATE_SENTINEL"} {
+			t.Run(checkpoint+"/"+class, func(t *testing.T) {
+				body, err := json.Marshal(map[string]any{"state": "FAIL", "phase": "reload", "checkpoint": checkpoint, "failure_class": class, "body": "PRIVATE_SENTINEL", "url": "PRIVATE_SENTINEL", "credential": "PRIVATE_SENTINEL", "error": "PRIVATE_SENTINEL"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				output := &browserOutput{}
+				_, _ = output.Write(append(body, '\n'))
+				wantClass := class
+				if class == "PRIVATE_SENTINEL" {
+					wantClass = "driver"
+				}
+				want := fmt.Sprintf("reload/%s class=%s presentation_reads=0 metadata_streams=0 inbox_streams=0 injected_metadata_failures=0 injected_console_errors=0 errors=0 external=0", checkpoint, wantClass)
+				if got := output.safePhase(); got != want || strings.Contains(got, "PRIVATE_SENTINEL") {
+					t.Fatalf("unsafe reload diagnostic: %q", got)
+				}
+			})
+		}
 	}
 }
 

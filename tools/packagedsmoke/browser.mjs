@@ -854,10 +854,13 @@ try {
   const reloadQueueResponsePromise = page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/reviews/queue');
   try {
     await page.reload();
-    checkpoint = 'reload-after-navigation';
+    checkpoint = 'reload-project-heading';
     await page.getByRole('heading', {name:title, exact:true}).waitFor();
+    checkpoint = 'reload-queue-held';
     await expect.poll(() => reloadQueueHeld).toBe(true);
+    checkpoint = 'reload-hash-retained';
     need(new URL(page.url()).hash === '#review-pr-32');
+    checkpoint = 'reload-target-absent';
     await expect(headRow).toHaveCount(0);
   } finally { releaseReloadQueue(); }
   need((await reloadQueueResponsePromise).status() === 200);
