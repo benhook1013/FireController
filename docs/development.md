@@ -6,7 +6,7 @@
 
 ## Build and checks
 
-Use Go 1.27, Node.js 22.22 or newer, Make and a C compiler such as `gcc` on Linux/WSL. The race-enabled `make check` requires cgo enabled; CGO-free `make build` needs no C compiler:
+Use Go 1.27, Node.js 22.22 or newer, Make and a C compiler such as `gcc` on Linux/WSL. `make check` also requires Python 3.9 or newer for source-converter tests and cgo enabled for race tests; CGO-free `make build` needs no C compiler:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
