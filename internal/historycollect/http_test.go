@@ -246,3 +246,81 @@ func TestCollectionHTTPCurrentAuthorityCookieAndProjectIsolation(t *testing.T) {
 		t.Fatal("rejected authority altered acquisition rows or invoked providers")
 	}
 }
+
+func TestCollectionHTTPLifetimePOSTPreservesReceiptOnlyWithCurrentAuthority(t *testing.T) {
+	for _, kind := range []string{"authorized", "revoked", "read-failed"} {
+		t.Run(kind, func(t *testing.T) {
+			h := newCollectionHTTPFixture(t)
+			lifetime, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			h.e.waitLifetime = lifetime
+			request := h.request(t, "POST", h.path(), "shutdown-receipt", `{"pull_numbers":[47]}`, "wait=900")
+			type result struct {
+				response *http.Response
+				err      error
+			}
+			done := make(chan result, 1)
+			go func() {
+				response, err := (&http.Client{Timeout: 4 * time.Second}).Do(request)
+				done <- result{response, err}
+			}()
+			collectionWaitCount(t, h.e, 1)
+			var original string
+			if err := h.f.store.DB().QueryRow(`SELECT response_json FROM receipts WHERE operation='history.collect' AND key='shutdown-receipt'`).Scan(&original); err != nil {
+				t.Fatal(err)
+			}
+			before := collectionStoreRows(t, h.f)
+			switch kind {
+			case "revoked":
+				if _, err := h.f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE is_admin=1`); err != nil {
+					t.Fatal(err)
+				}
+			case "read-failed":
+				if err := h.f.store.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cancel()
+			select {
+			case got := <-done:
+				if got.err != nil {
+					t.Fatal("lifetime POST transport failed", got.err)
+				}
+				defer got.response.Body.Close()
+				data, err := io.ReadAll(io.LimitReader(got.response.Body, 64<<10))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if kind == "authorized" {
+					receipt := collectionHTTPReceipt(t, data)
+					if got.response.StatusCode != 202 || strings.TrimSpace(string(data)) != original || receipt.State != "queued" || strings.Contains(string(data), "outcome_unknown") {
+						t.Fatal("shutdown did not return exact known accepted receipt")
+					}
+					// Losing that response is recoverable under the same key even while the
+					// observer lifetime is ended. No provider work or new receipt is needed.
+					replay, _ := collectionHTTPDo(t, h.request(t, "POST", h.path(), "shutdown-receipt", `{"pull_numbers":[47]}`, "wait=0"), 202)
+					if strings.TrimSpace(string(replay)) != original {
+						t.Fatal("lost-output retry changed original receipt")
+					}
+				} else {
+					want := 401
+					if kind == "read-failed" {
+						want = 500
+					}
+					if got.response.StatusCode != want || !strings.Contains(string(data), `"outcome_unknown":true`) {
+						t.Fatal("shutdown masked failed current authorization/read", got.response.StatusCode)
+					}
+				}
+			case <-time.After(time.Second):
+				t.Fatal("lifetime failed to detach committed HTTP POST")
+			}
+			collectionWaitCount(t, h.e, 0)
+			if kind == "read-failed" {
+				h.f.open(t)
+			}
+			if before != collectionStoreRows(t, h.f) || len(h.f.provider.calls) != 0 {
+				t.Fatal("observer shutdown changed accepted work, captures, receipts or events")
+			}
+		})
+	}
+}
