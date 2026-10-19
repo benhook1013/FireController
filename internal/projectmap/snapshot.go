@@ -92,11 +92,15 @@ func validateEntryHistory(ctx context.Context, tx *sql.Tx, current Entry) error 
 	var count int64
 	for rows.Next() {
 		var rev int64
-		var actor, raw, at string
+		var actor, at string
+		var raw sql.NullString
 		if err = rows.Scan(&rev, &actor, &raw, &at); err != nil {
 			return err
 		}
-		value, err := decodeEntry(raw)
+		if !raw.Valid {
+			return unavailable()
+		}
+		value, err := decodeEntry(raw.String)
 		if err != nil {
 			return err
 		}

@@ -85,11 +85,15 @@ func validateImportHistory(ctx context.Context, tx *sql.Tx, project, source stri
 			return err
 		}
 		var rev int64
-		var actor, worker, at, raw string
+		var actor, worker, at string
+		var raw sql.NullString
 		if err = rows.Scan(&rev, &actor, &worker, &at, &raw); err != nil {
 			return err
 		}
-		record, err := decodeImportRecord(raw)
+		if !raw.Valid {
+			return unavailable()
+		}
+		record, err := decodeImportRecord(raw.String)
 		if err != nil {
 			return err
 		}
