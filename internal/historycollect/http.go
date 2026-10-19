@@ -116,6 +116,14 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if seconds > 0 {
 		operation, err := e.Wait(r.Context(), scope, accepted.ID, time.Duration(seconds)*time.Second)
+		if err != nil {
+			if detached, detachErr := e.acceptedWaitDetached(r.Context(), scope, accepted.ID, err); detached {
+				core.WriteJSON(w, http.StatusAccepted, receipt)
+				return
+			} else {
+				err = detachErr
+			}
+		}
 		var failure *core.Error
 		if errors.As(err, &failure) && failure.Code == "overloaded" {
 			if details, ok := failure.Details.(map[string]string); ok && details["reason"] == "collection_wait_capacity" {
