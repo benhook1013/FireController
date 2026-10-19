@@ -100,7 +100,6 @@ try {
         inbox_sidebar: await page.locator('.sidebar').count(),
         inbox_heading: await page.getByRole('heading',{name:'Builder inbox',exact:true}).count(),
         readonly_new_message: await page.getByRole('button',{name:'New message',exact:true}).count(),
-        indicators: await indicatorColors(),
         fixture_writes: fixtureWrites,
         action_writes: actionWrites,
         forbidden_writes: forbiddenWrites,
