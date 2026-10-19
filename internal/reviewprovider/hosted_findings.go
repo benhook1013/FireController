@@ -27,7 +27,7 @@ var findingMarker = regexp.MustCompile(`^<!-- cr-comment:v1:([a-f0-9]{24}) -->$`
 var findingOutsideHeader = regexp.MustCompile(`^\*\*⚠️ Outside diff range comments \((0|[1-9][0-9]*)\)\*\*$`)
 var findingDuplicateHeader = regexp.MustCompile(`^<summary>♻️ Duplicate comments \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
 var findingGroupHeader = regexp.MustCompile(`^<summary>([^<>]+) \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
-var findingOutsideSummary = regexp.MustCompile(`^<summary><em>([^<>]+)</em> · .+ · <code>[^<>]+</code></summary><blockquote>$`)
+var findingOutsideSummary = regexp.MustCompile(`^<summary>(?:<em>([^<>]+)</em>|<strong>([^<>]+)</strong>) · .+ · <code>[^<>]+</code></summary><blockquote>$`)
 var findingPathLocation = regexp.MustCompile("^`([^`]+):([0-9]+)(?:-([0-9]+))?`$")
 var findingRange = regexp.MustCompile("^`([0-9]+)-([0-9]+)`: (.+)$")
 var findingTitle = regexp.MustCompile(`^\*\*([^*]+)\*\*$`)
@@ -460,7 +460,8 @@ func (d *findingDecoder) outsideItem(body string, lines []findingLine, start, en
 		}
 		if depth == 1 && quotes == 0 && findingOutsideSummary.MatchString(l.text) {
 			summary = true
-			fields.severityValue(findingSeverity(findingOutsideSummary.FindStringSubmatch(l.text)[1]))
+			match := findingOutsideSummary.FindStringSubmatch(l.text)
+			fields.severityValue(findingSeverity(match[1] + match[2]))
 		}
 		if depth > 1 && strings.HasPrefix(l.text, "<summary>") {
 			knownNested = findingKnownNested(l.text)
@@ -718,6 +719,41 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 		}
 		d.fail("summary_format_unsupported")
 	}
+}
+
+// publicationOutsideOnly recognizes the narrow omitted-inline-count variant
+// through the same strict decoder used for final extraction. It is nonrecursive
+// and does not rewrite the original provider body or infer an empty inventory.
+func publicationOutsideOnly(publication HostedPublication) bool {
+	if len(publication.Batches) != 1 {
+		return false
+	}
+	primary := publication.Batches[0]
+	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
+	decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}
+	decoder.summary(primary, true)
+	if !inventory.Complete || len(inventory.Findings) == 0 {
+		return false
+	}
+	for _, review := range publication.EligibleReviews {
+		for _, line := range publicationVisibleLines(review.Body) {
+			if strings.Contains(strings.ToLower(line), "actionable comments posted") {
+				return false
+			}
+		}
+		if review.ID != primary.ID {
+			decoder.summary(review, false)
+		}
+	}
+	if !inventory.Complete || len(inventory.Findings) == 0 {
+		return false
+	}
+	for _, finding := range inventory.Findings {
+		if finding.Kind != "outside_diff" {
+			return false
+		}
+	}
+	return true
 }
 
 // ExtractHostedFindings re-establishes attribution before decoding. Unsupported
