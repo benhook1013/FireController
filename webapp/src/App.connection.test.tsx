@@ -35,7 +35,7 @@ describe('private connection first paint', () => {
     expect(html).toContain('skeleton-hero');
     expect(html).toContain('page-skeleton');
     expect(html).not.toContain('Loading…');
-    expect(html).toContain('role="status" aria-label="Opening project"');
+    expect(html).toContain('role="status"><span class="visually-hidden">Opening project</span>');
     expect(html).not.toContain('Opening project…');
     expect(html).not.toContain('Verifying this tab’s saved connection.');
     expect(html).not.toContain('<h1');
@@ -59,7 +59,7 @@ describe('private connection first paint', () => {
   it('does not infer terminal expiry from an informational saved timestamp', () => {
     storage(JSON.stringify({ ...binding, expiresAt: '2025-01-01T00:00:00Z' }));
     const html = firstPaint();
-    expect(html).toContain('aria-label="Opening project"');
+    expect(html).toContain('<span class="visually-hidden">Opening project</span>');
     expect(html).not.toContain('Project credential');
   });
   it('shows the login form immediately for a fresh tab without saved metadata', () => {
@@ -68,7 +68,7 @@ describe('private connection first paint', () => {
     expect(html).toContain('Connect to a project');
     expect(html).toContain('Project credential');
     expect(html).toContain('<form');
-    expect(html).not.toContain('aria-label="Opening project"');
+    expect(html).not.toContain('<span class="visually-hidden">Opening project</span>');
     expect(html).not.toContain('CACHED_PRIVATE_JOB');
   });
   it('keeps fresh login available if browser storage cannot be inspected', () => {
