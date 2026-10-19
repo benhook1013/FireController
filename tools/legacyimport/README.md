@@ -27,6 +27,6 @@ Preparation shares inspection's admitted read-only handle, limits and final iden
 
 ## Verification
 
-Run `go test -race ./tools/legacyimport/...` and `go vet ./tools/legacyimport/...`. Tests use synthetic SQLite exports and cover recognized versions and optional domains, byte boundaries, message diagnostics, unsupported note history, strict bounds, private file admission, punctuation in paths, cancellation, source conservation and absence of sidecars. This is Linux proof of the inspector, not a historical import rehearsal or live cutover.
+Run `go test -race ./tools/legacyimport/...` and `go vet ./tools/legacyimport/...`. Tests use synthetic SQLite exports and cover recognized versions and optional domains, byte boundaries, message diagnostics, unsupported note history, strict bounds, private file admission, punctuation in paths, cancellation, source conservation and absence of sidecars. `prepare-jobs` coverage also includes the `none`, `latest` and `all` checkpoint modes, explicit worker mappings and missing-mapping refusals, ambiguous or coerced source facts, private output publication, exact repeats and conflicting outputs, recovery after stdout loss, and explicit limit overrides. This is Linux proof of the inspector and converter, not a historical import rehearsal or live cutover.
 
 The [migration contract](../../docs/legacy-adoption.md) owns retention, conversion and application requirements. Native application code must not import this tool's legacy schema package.
