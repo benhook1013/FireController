@@ -131,6 +131,12 @@ func TestPackagedUpgradeSmoke(t *testing.T) {
 	}
 	// No business rows/receipts are fabricated. Only later add-only empty tables
 	// are removed, matching the existing public jobs4 migration fixture pattern.
+	for _, table := range []string{"note_revisions", "notes", "worker_pause_history", "worker_pause_state"} {
+		var rows int
+		if err := store.DB().QueryRowContext(ctx, `SELECT count(*) FROM "`+table+`"`).Scan(&rows); err != nil || rows != 0 {
+			t.Fatalf("jobs4 fixture reconstruction requires empty %s", table)
+		}
+	}
 	if _, err = store.DB().ExecContext(ctx, `DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; UPDATE metadata SET value='4' WHERE key='schema:jobs'`); err != nil {
 		t.Fatal("jobs4 fixture reconstruction failed")
 	}
