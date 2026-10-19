@@ -308,7 +308,7 @@ func (o *browserOutput) safePhase() string {
 			if record.Phase == "live-reviews" {
 				allowed := false
 				switch record.Checkpoint {
-				case "reviews-open", "unconfigured", "seed-observation", "initial-open-pull", "initial-merged-pull", "updated-observation", "updated-open-pull", "updated-merged-pull", "hosted-run", "merged-retention", "delivery-queue", "queue-heading", "queue-pull", "merge-head", "hosted-summary", "current-round-grants", "current-round-limits-shared", "current-round-close-live", "reviews-return", "reviews-heading", "selected-worker", "sanitized-literal", "reviews-url":
+				case "reviews-open", "unconfigured", "seed-observation", "initial-open-pull", "initial-merged-pull", "updated-observation", "updated-open-pull", "updated-merged-pull", "hosted-run", "merged-retention", "delivery-queue", "queue-heading", "queue-pull", "merge-head", "hosted-summary", "current-round-grants", "current-round-limits-shared", "current-round-close-live", "reviews-return", "reviews-heading", "selected-worker", "sanitized-literal", "reviews-url", "queue-jump-visible", "reload-head-spa":
 					allowed = true
 				}
 				valid := allowed
@@ -552,6 +552,8 @@ func TestBrowserProgressDiagnosticsAllowlist(t *testing.T) {
 		{"extra-private-field", strings.Replace(valid, `"counters":`, `"body":"PRIVATE_SENTINEL","counters":`, 1), "unavailable"},
 		{"private-phase", strings.Replace(valid, `"connect"`, `"PRIVATE_SENTINEL"`, 1), "unavailable"},
 		{"private-checkpoint", strings.Replace(valid, `"capabilities-read"`, `"PRIVATE_SENTINEL"`, 1), "connect operation=workload age_ms=250"},
+		{"head-click", `{"phase":"live-reviews","checkpoint":"queue-jump-visible","operation":"workload","observed_unix_ms":999750,"counters":{}}`, "live-reviews/queue-jump-visible class=driver run_fetches=0 presentation_reads=0 metadata_streams=0 inbox_streams=0 forbidden_writes=0 action_writes=0 errors=0 external=0 operation=workload age_ms=250"},
+		{"head-reload", `{"phase":"live-reviews","checkpoint":"reload-head-spa","operation":"workload","observed_unix_ms":999750,"counters":{}}`, "live-reviews/reload-head-spa class=driver run_fetches=0 presentation_reads=0 metadata_streams=0 inbox_streams=0 forbidden_writes=0 action_writes=0 errors=0 external=0 operation=workload age_ms=250"},
 		{"reload-checkpoint", strings.Replace(strings.Replace(valid, `"connect"`, `"reload"`, 1), `"capabilities-read"`, `"reload-current-authority"`, 1), "reload/reload-current-authority presentation_reads=0 metadata_streams=0 inbox_streams=0 injected_metadata_failures=0 injected_console_errors=0 errors=0 external=0 operation=workload age_ms=250"},
 		{"reload-private-checkpoint", strings.Replace(strings.Replace(valid, `"connect"`, `"reload"`, 1), `"capabilities-read"`, `"PRIVATE_SENTINEL"`, 1), "reload operation=workload age_ms=250"},
 		{"private-operation", strings.Replace(valid, `"workload"`, `"PRIVATE_SENTINEL"`, 1), "unavailable"},
