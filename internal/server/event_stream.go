@@ -54,7 +54,7 @@ func (a *api) eventStream(w http.ResponseWriter, r *http.Request, project bool) 
 		return
 	}
 	authCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	scope, err := a.store.Scope(r.WithContext(authCtx), "read")
+	scope, err := a.store.ScopeWithLifetime(r.WithContext(authCtx), "read", r.Context())
 	cancel()
 	if err != nil {
 		core.WriteError(w, err)

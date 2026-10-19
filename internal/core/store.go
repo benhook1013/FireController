@@ -31,11 +31,15 @@ type Store struct {
 	eventGroups      map[messageTopic]map[*messageWaiter]struct{}
 	eventCount       int
 	principalWaiters map[string]int
+	workerContact    workerContactState
 }
 
 func (s *Store) InstanceID() string { return s.instanceID }
 func (s *Store) DB() *sql.DB        { return s.db }
-func (s *Store) Close() error       { return errors.Join(s.db.Close(), s.writer.Close()) }
+func (s *Store) Close() error {
+	s.closeWorkerContact()
+	return errors.Join(s.db.Close(), s.writer.Close())
+}
 
 func Open(ctx context.Context, dataDir string) (*Store, error) {
 	if strings.TrimSpace(dataDir) == "" {
@@ -73,7 +77,7 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		return nil, Fail("storage_unavailable", "The database could not be opened.", 500)
 	}
 	writer.SetMaxOpenConns(1)
-	s := &Store{writer: writer, admission: make(chan struct{}, 1)}
+	s := &Store{writer: writer, admission: make(chan struct{}, 1), workerContact: newWorkerContactState(time.Now())}
 	if err = s.initialize(ctx, dataDir); err != nil {
 		_ = writer.Close()
 		return nil, err

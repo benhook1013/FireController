@@ -10,11 +10,13 @@ import (
 	"github.com/benhook1013/FireController/internal/profile"
 )
 
-// TransportPool shares connections only. It retains no binding, credential or
-// authenticated client. Its owner closes it when that owner's session ends.
+// TransportPool shares transport and one random client connection label. It
+// retains no binding, credential or authenticated client. Its owner closes it
+// when that owner's session ends. The label grants no access.
 type TransportPool struct {
 	mu        sync.Mutex
 	transport *http.Transport
+	sessionID string
 	closed    bool
 }
 
@@ -38,16 +40,21 @@ func newTransport() *http.Transport {
 	return transport
 }
 
-func (p *TransportPool) borrow() (*http.Transport, error) {
+func (p *TransportPool) borrow() (*http.Transport, string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
-		return nil, contextError(context.Canceled)
+		return nil, "", contextError(context.Canceled)
 	}
 	if p.transport == nil {
+		var err error
+		p.sessionID, err = newConnectionID()
+		if err != nil {
+			return nil, "", err
+		}
 		p.transport = newTransport()
 	}
-	return p.transport, nil
+	return p.transport, p.sessionID, nil
 }
 
 func (p *TransportPool) Close() {

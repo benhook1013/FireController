@@ -86,6 +86,7 @@ func (s *Store) streamEvents(ctx context.Context, scope Scope, cursor, feed stri
 				if err = heartbeat(); err != nil {
 					return err
 				}
+				s.touchWorkerContact(scope)
 			}
 		}
 	read:

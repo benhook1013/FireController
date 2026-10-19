@@ -186,6 +186,7 @@ try {
   counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
   let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0, noteArchiveReads = 0;
   let deliveryReads = 0, jobBriefReads = 0, jobArchiveReads = 0, reviewRunReads = 0;
+  let presenceReads = 0, presenceFinished = 0, presenceHeaderErrors = 0, contactHistoryReads = 0;
   let injectedRequest;
   diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external });
   page.on('pageerror', () => errors++);
@@ -199,6 +200,12 @@ try {
     const url = new URL(request.url());
     if (url.origin !== config.origin) { external++; return; }
     if (request.method() === 'GET') {
+      if (url.pathname === prefix + '/workers/presence') {
+        presenceReads++;
+        const headers=request.headers();
+        if (Object.hasOwn(headers,'x-fc-worker') || Object.hasOwn(headers,'x-fc-session')) presenceHeaderErrors++;
+      }
+      if (/\/(?:history|runs|attempts)(?:\/|$)/u.test(url.pathname.slice(prefix.length))) contactHistoryReads++;
       if (url.pathname === prefix + '/presentation') presentationReads++;
       if (url.pathname === prefix + '/notes' && url.searchParams.get('status') === 'all') noteArchiveReads++;
       if (url.pathname === prefix + '/delivery') deliveryReads++;
@@ -218,6 +225,9 @@ try {
     else if (url.pathname === prefix + '/browser-session' && request.method() === 'DELETE') sessionDeletes++;
     else if (explicitActions && ((request.method() === 'POST' && (url.pathname === prefix + '/messages' || /^messages\/[^/]+\/(?:seen|ack)$/.test(url.pathname.slice(prefix.length + 1)))) || (request.method() === 'PUT' && url.pathname === prefix + '/presentation'))) actionWrites++;
     else forbiddenWrites++;
+  });
+  page.on('requestfinished', request => {
+    if (request.method()==='GET' && request.url().startsWith(config.origin+prefix+'/workers/presence?')) presenceFinished++;
   });
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
@@ -337,6 +347,51 @@ try {
   const deliveryBodyText = await page.locator('body').innerText();
   need(![config.project, config.worker, config.other_worker, ...Object.values(deliveryFixture.jobs)].some(id => deliveryBodyText.includes(id)));
   checkpoint = 'private-identifiers-absent';
+  // Actual mounted contact query: one shared read for all loaded lanes, no
+  // browser agent attribution, and no fleet/board/history refresh while hidden.
+  checkpoint = 'presence-initial';
+  await expect.poll(() => presenceFinished, {timeout:5000}).toBe(1);
+  need(presenceReads===1 && presenceHeaderErrors===0);
+  await expect(page.locator('.worker-contact')).toHaveCount(0);
+  const contactReadBoundary={delivery:deliveryReads,brief:jobBriefReads,archive:jobArchiveReads,history:contactHistoryReads};
+  const sameContactReadBoundary=()=>deliveryReads===contactReadBoundary.delivery && jobBriefReads===contactReadBoundary.brief && jobArchiveReads===contactReadBoundary.archive && contactHistoryReads===contactReadBoundary.history;
+  const restoreContactVisibility=()=>page.evaluate(()=>globalThis.__fcSmokeRestoreContactVisibility?.());
+  await page.evaluate(()=>{
+    if (document.visibilityState!=='visible' || Object.hasOwn(globalThis,'__fcSmokeRestoreContactVisibility')) throw new Error('visibility fixture unavailable');
+    const original=Object.getOwnPropertyDescriptor(document,'visibilityState');
+    globalThis.__fcSmokeRestoreContactVisibility=()=>{
+      if (original) Object.defineProperty(document,'visibilityState',original);else delete document.visibilityState;
+      delete globalThis.__fcSmokeRestoreContactVisibility;
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'});
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  try {
+    checkpoint = 'presence-hidden';
+    need(await page.evaluate(()=>document.visibilityState==='hidden'));
+    const hiddenAt=Date.now();
+    // This native client contact stays in Node; no credential or connection ID
+    // enters page execution. It performs a GET, not a new fixture/domain write.
+    const contact=await fetch(config.origin+prefix+'/workers/'+config.worker,{
+      headers:{Authorization:'Bearer '+admin,'X-FC-Instance':config.instance,'X-FC-Worker':config.worker,'X-FC-Session':'dddddddddddddddddddddddddddddddd'},
+      signal:AbortSignal.timeout(5000),
+    });
+    need(contact.status===200 && (await contact.json()).id===config.worker);
+    await new Promise(resolve=>setTimeout(resolve,15500));
+    need(Date.now()-hiddenAt>=15500 && presenceReads===1 && presenceFinished===1 && presenceHeaderErrors===0 && sameContactReadBoundary());
+    await expect(page.locator('.worker-contact')).toHaveCount(0);
+    checkpoint = 'presence-visible';
+    await restoreContactVisibility();
+    need(await page.evaluate(()=>document.visibilityState==='visible'));
+    await expect.poll(()=>presenceFinished,{timeout:8000}).toBe(2);
+    await expect(builderLane.locator('.worker-contact')).toContainText('Last contact');
+    need(presenceReads===2 && presenceHeaderErrors===0 && sameContactReadBoundary());
+    need(await inspectorLane.locator('.worker-contact').count()===0);
+  } finally {
+    // Restore the original property even when a contact/timing assertion fails.
+    await restoreContactVisibility().catch(()=>{});
+  }
   await captureLayouts('delivery', [1440, 390, 320]);
   checkpoint = 'layout-capture';
   need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Notes',exact:true}).count() === 0);

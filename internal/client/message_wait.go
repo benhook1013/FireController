@@ -102,6 +102,7 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 	r.Header.Set("Authorization", "Bearer "+c.token)
 	r.Header.Set("X-FC-Instance", c.identity.InstanceID)
 	r.Header.Set("X-FC-Worker", c.identity.WorkerID)
+	r.Header.Set("X-FC-Session", c.sessionID)
 	// The ordinary five-second whole-response timeout must not cut off an
 	// established stream. This call owns both overrides; concurrent finite reads
 	// retain their original client and transport settings.

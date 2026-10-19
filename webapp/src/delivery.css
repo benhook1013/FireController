@@ -26,3 +26,5 @@
 .delivery-job-heading .delivery-job-state{justify-content:flex-end;gap:6px;margin:0 0 0 auto}
 .delivery-job-state .delivery-primary{background:var(--fc-accent_soft_background,#f0e0e6);color:var(--fc-accent_background,#a51f27);border:1px solid var(--fc-surface_border,#d5d0cb)}
 .repository a{color:inherit}
+.delivery-lane-heading h3 { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .35rem .65rem; }
+.worker-contact { display: inline-block; color: inherit; font-size: .72rem; font-weight: 500; }

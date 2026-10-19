@@ -25,6 +25,15 @@ func (scope Scope) Administrative() bool { return scope.admin }
 func (s *Store) Authenticate(r *http.Request) (Scope, error) { return s.authenticate(r) }
 
 func (s *Store) Scope(r *http.Request, permission string) (Scope, error) {
+	return s.ScopeWithLifetime(r, permission, r.Context())
+}
+
+// ScopeWithLifetime separates bounded authentication from a trusted handler's
+// request lifetime, notably for quiet streams. It grants no additional authority.
+func (s *Store) ScopeWithLifetime(r *http.Request, permission string, lifetime context.Context) (Scope, error) {
+	if lifetime == nil {
+		return Scope{}, Fail("validation_failed", "A request lifetime is required.", 400)
+	}
 	if permission != "read" && permission != "write" {
 		return Scope{}, Fail("forbidden", "The requested permission is unavailable.", 403)
 	}
@@ -38,6 +47,7 @@ func (s *Store) Scope(r *http.Request, permission string) (Scope, error) {
 	if err = s.authorize(r.Context(), s.db, scope, permission); err != nil {
 		return Scope{}, err
 	}
+	s.observeWorkerContact(lifetime, scope)
 	return scope, nil
 }
 
@@ -50,12 +60,16 @@ func (s *Store) AdminScope(r *http.Request) (Scope, error) {
 		return Scope{}, err
 	}
 	scope.admin = true
+	s.observeWorkerContact(r.Context(), scope)
 	return scope, nil
 }
 
 func (s *Store) authenticate(r *http.Request) (Scope, error) {
 	selectors := r.Header.Values("X-FC-Browser-Session")
 	if len(selectors) != 0 {
+		if len(r.Header.Values("X-FC-Session")) != 0 {
+			return Scope{}, Fail("validation_failed", "Client connection attribution requires bearer authentication.", 400)
+		}
 		if len(r.Header.Values("Authorization")) != 0 {
 			return Scope{}, Fail("unauthorized", "Select one authentication method.", 401)
 		}
@@ -69,7 +83,14 @@ func (s *Store) authenticate(r *http.Request) (Scope, error) {
 	if token == "" || len(token) > 256 || strings.ContainsAny(token, " \t\r\n") {
 		return Scope{}, Fail("unauthorized", "A valid bearer credential is required.", 401)
 	}
+	clientSessions := r.Header.Values("X-FC-Session")
+	if len(clientSessions) > 1 || len(clientSessions) == 1 && !validClientSession(clientSessions[0]) {
+		return Scope{}, Fail("validation_failed", "Select at most one valid client connection identity.", 400)
+	}
 	scope := Scope{ProjectID: r.PathValue("project_id"), WorkerID: r.Header.Get("X-FC-Worker"), tokenHash: tokenHash(token), instanceID: s.instanceID}
+	if len(clientSessions) == 1 {
+		scope.clientSession = clientSessions[0]
+	}
 	var admin int
 	err := s.db.QueryRowContext(r.Context(), "SELECT principal_id,is_admin FROM credentials WHERE token_sha256=? AND revoked=0", scope.tokenHash).Scan(&scope.PrincipalID, &admin)
 	if errors.Is(err, sql.ErrNoRows) {

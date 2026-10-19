@@ -6,6 +6,8 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 
 ## Documents
 
+- [Worker contact](worker-presence.md): authenticated agent calls and quiet waits, separate from job state and model progress.
+
 - [Delivery and Project website](browser-experience.md): default worker lanes and review queue, merge-head hero and flexible editorial project presentation.
 
 - [Legacy adoption](legacy-adoption.md): optional source-specific tooling, selected retention and guarded native historical coordination imports, with explicit implementation gaps.

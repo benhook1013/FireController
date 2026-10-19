@@ -1,3 +1,4 @@
+import { presenceWorkers, validWorkerPresence, type WorkerPresence } from './worker-presence';
 import type { WorkerPrimary, WorkerPrimaryHistoryEntry, WorkerPause, WorkerPauseHistoryEntry, NoteOptions, NoteSummary, Note, NoteHistorySummary, NoteRevision } from './types';
 import type {
   Checkpoint, ConversationPage, DeliverySnapshot, DeliveryOptions, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
@@ -888,6 +889,13 @@ export class Api {
       previous = row.revision;
     }
     return value as Page<JobWorkstreamHistoryEntry>;
+  }
+  async workerPresence(workers: string[], signal?: AbortSignal): Promise<WorkerPresence> {
+    if (!presenceWorkers(workers)) throw new ApiError('invalid_request', 'Select between one and one hundred distinct worker IDs.');
+    const selected = [...workers];
+    const value = await this.finiteGet(withQuery(this.projectRoute('workers/presence'), new URLSearchParams({worker_ids:selected.join(',')})), signal, undefined, 64 * 1024, assessmentJSON);
+    if (!validWorkerPresence(value, this.projectId, selected)) throw new ApiError('invalid_response', 'The service returned invalid worker contact.');
+    return value;
   }
   async reviewProgress(pulls: number[], signal?: AbortSignal): Promise<ReviewProgress> {
     if (!progressPulls(pulls)) throw new ApiError('invalid_request', 'Select between one and one hundred distinct pull request numbers.');

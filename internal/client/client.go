@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -32,6 +34,7 @@ func SourceRefreshBudget(waitSeconds int) time.Duration {
 
 type Client struct {
 	identity              profile.Context
+	sessionID             string
 	base                  *url.URL
 	token, credentialFile string
 	http                  *http.Client
@@ -57,15 +60,20 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 		return nil, err
 	}
 	var transport *http.Transport
+	var sessionID string
 	if pool == nil {
+		sessionID, err = newConnectionID()
+		if err != nil {
+			return nil, err
+		}
 		transport = newTransport()
 	} else {
-		transport, err = pool.borrow()
+		transport, sessionID, err = pool.borrow()
 		if err != nil {
 			return nil, err
 		}
 	}
-	c := &Client{identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, borrowedTransport: pool != nil, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	c := &Client{sessionID: sessionID, identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, borrowedTransport: pool != nil, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	var instance struct {
 		InstanceID string `json:"instance_id"`
 	}
@@ -78,6 +86,14 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 		return nil, fail("instance_mismatch", "The service instance does not match the selected profile.", "Verify the service and explicitly update the private profile if its identity changed.", 409)
 	}
 	return c, nil
+}
+
+func newConnectionID() (string, error) {
+	var session [16]byte
+	if _, err := rand.Read(session[:]); err != nil {
+		return "", fail("client_unavailable", "A client connection identity could not be created.", "Retry client setup.", 0)
+	}
+	return hex.EncodeToString(session[:]), nil
 }
 
 func (c *Client) Close() {
@@ -315,6 +331,7 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	}
 	if scoped {
 		r.Header.Set("X-FC-Worker", c.identity.WorkerID)
+		r.Header.Set("X-FC-Session", c.sessionID)
 	}
 	if err := ctx.Err(); err != nil {
 		if mutation {
