@@ -12,6 +12,7 @@ import { ProjectMap, ProjectMapEntryView, ProjectMapRevisionView, JobWorkstreamP
 import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView } from './coordination';
 import { ContextualNotes } from './contextual-notes';
 import { Delivery, DeliveryHero } from './delivery';
+import { jobFilterSearch, readJobFilters, type JobFilters } from './job-navigation';
 import { refreshEventQueries } from './queries';
 import { ReviewArchive, type ReviewArchivePage } from './review-archive';
 import { PageSkeleton, WorkspaceSkeleton } from './loading';
@@ -24,7 +25,7 @@ import { startMetadataAttempt } from './metadata-recovery';
 import { createAppearanceAcceptor, refreshProjectView } from './appearance-refresh';
 import type { Presentation } from './types';
 import flameEmber from './flame-ember.svg?no-inline';
-import type { Checkpoint, ChecklistItem, JobUpdate, InboxItem, JobSummary, LiveStatus, Project, Worker, ReviewAttemptSummary, ReviewAttemptItem, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
+import type { Checkpoint, ChecklistItem, JobUpdate, InboxItem, LiveStatus, Project, Worker, ReviewAttemptSummary, ReviewAttemptItem, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
 
 const pageSize = 20;
 function nonce(): string { return Array.from(crypto.getRandomValues(new Uint32Array(4)), value => value.toString(16).padStart(8, '0')).join(''); }
@@ -401,29 +402,38 @@ function WorkerList({ compact = false }: { compact?: boolean }) {
 function Workers() { const label = useProjectHeading('workers'); return <><div className="page-heading"><p className="eyebrow">Connected project</p><h2>{label}</h2><p>View worker details or open an inbox.</p></div><WorkerList /></>; }
 export function Jobs() {
   const label = useProjectHeading('jobs');
-  const [status, setStatus] = useState('open');
-  const [worker, setWorker] = useState<Worker | null>(null);
-  return <><div className="page-heading"><h2>{label}</h2></div><div className="filters"><label>Status<select aria-label="Job status" value={status} onChange={event => setStatus(event.target.value)}><option value="open">Open jobs</option><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label><JobWorkerFilter selected={worker} select={setWorker} /></div><JobList key={`${status}/${worker?.id ?? ''}`} status={status as JobSummary['status'] | 'open' | ''} worker={worker} /></>;
+  const [search, setSearch] = useSearchParams();
+  const filters = readJobFilters(search);
+  const select = (next: JobFilters) => setSearch(jobFilterSearch(next));
+  return <><div className="page-heading"><h2>{label}</h2></div><div className="filters"><label>Status<select aria-label="Job status" value={filters.status} onChange={event => select({ ...filters, status: event.target.value as JobFilters['status'] })}><option value="open">Open jobs</option><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label><JobWorkerFilter selected={filters.workerID} select={workerID => select({ ...filters, workerID })} /></div><JobList key={`${filters.status}/${filters.workerID}`} filters={filters} /></>;
 }
-function JobList({ status, worker }: { status: JobSummary['status'] | 'open' | ''; worker: Worker | null }) {
+function JobList({ filters }: { filters: JobFilters }) {
   const { session, key, home } = useWorkspace();
+  const { status, workerID } = filters;
+  const search = jobFilterSearch(filters);
   const paging = usePaging();
-  const query = useQuery({ queryKey: [...key, 'jobs', status, worker?.id ?? '', paging.cursor], queryFn: ({ signal }) => session.api.jobs({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}), ...(status ? { status } : {}), ...(worker ? { worker_id: worker.id } : {}) }, signalFor(session, signal)), staleTime: Infinity });
-  return <section className="panel"><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul className="job-list">{query.data?.items.map(job => <li key={job.id}><div><span className={`badge status-${job.status}`}>{job.status}</span><Link className="job-title" to={`${home}/jobs/${encodeURIComponent(job.id)}`}>{job.title}</Link><p className="item-meta">{job.worker_id || 'Unassigned'}<span>Revision {job.revision}</span></p></div><Link className="detail-link" aria-label={`Read job ${job.title}`} to={`${home}/jobs/${encodeURIComponent(job.id)}`}>Read job <span aria-hidden="true">→</span></Link></li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="jobs" busy={query.isFetching} /></section>;
-}function JobWorkerFilter({ selected, select }: { selected: Worker | null; select(worker: Worker | null): void }) {
+  const query = useQuery({ queryKey: [...key, 'jobs', status, workerID, paging.cursor], queryFn: ({ signal }) => session.api.jobs({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}), ...(status ? { status } : {}), ...(workerID ? { worker_id: workerID } : {}) }, signalFor(session, signal)), staleTime: Infinity });
+  return <section className="panel"><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul className="job-list">{query.data?.items.map(job => <li key={job.id}><div><span className={`badge status-${job.status}`}>{job.status}</span><Link className="job-title" to={`${home}/jobs/${encodeURIComponent(job.id)}${search}`}>{job.title}</Link><p className="item-meta">{job.worker_id || 'Unassigned'}<span>Revision {job.revision}</span></p></div><Link className="detail-link" aria-label={`Read job ${job.title}`} to={`${home}/jobs/${encodeURIComponent(job.id)}${search}`}>Read job <span aria-hidden="true">→</span></Link></li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="jobs" busy={query.isFetching} /></section>;
+}
+function JobWorkerFilter({ selected, select }: { selected: string; select(workerID: string): void }) {
   const { session, key } = useWorkspace();
+  const client = useQueryClient();
   const paging = usePaging();
   const query = useQuery({ queryKey: [...key, 'workers', paging.cursor], queryFn: ({ signal }) => session.api.workers({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
   const workers = query.data?.items ?? [];
-  return <div className="job-worker-filter"><label>Worker<select aria-label="Job worker" value={selected?.id ?? ''} onChange={event => { if (!event.target.value) select(null); else { const worker = workers.find(item => item.id === event.target.value); if (worker) select(worker); } }}><option value="">All workers</option>{selected && !workers.some(worker => worker.id === selected.id) && <option value={selected.id}>{selected.name}</option>}{workers.map(worker => <option key={worker.id} value={worker.id}>{worker.name}</option>)}</select></label>{selected && <button className="worker-filter-clear" type="button" aria-label="Show jobs for all workers" onClick={() => select(null)}>×</button>}{(paging.number > 1 || query.data?.has_more) && <div className="worker-option-pages"><span>Workers page {paging.number}</span><button type="button" disabled={paging.number === 1 || query.isFetching} onClick={paging.previous}>Previous workers</button><button type="button" disabled={!query.data?.has_more || !query.data.cursor || query.isFetching} onClick={() => { if (query.data?.cursor) paging.next(query.data.cursor); }}>More workers</button></div>}{query.error && <span className="error-copy" role="alert">Worker choices could not be loaded.</span>}</div>;
+  // Reuse already loaded page labels; an off-page URL identity needs no new read.
+  const selectedWorker = selected ? client.getQueriesData<{ items: Worker[] }>({ queryKey: [...key, 'workers'] }).flatMap(([, page]) => page?.items ?? []).find(worker => worker.id === selected) : undefined;
+  return <div className="job-worker-filter"><label>Worker<select aria-label="Job worker" value={selected} onChange={event => select(event.target.value)}><option value="">All workers</option>{selected && !workers.some(worker => worker.id === selected) && <option value={selected}>{selectedWorker?.name ?? selected}</option>}{workers.map(worker => <option key={worker.id} value={worker.id}>{worker.name}</option>)}</select></label>{selected && <button className="worker-filter-clear" type="button" aria-label="Show jobs for all workers" onClick={() => select('')}>×</button>}{(paging.number > 1 || query.data?.has_more) && <div className="worker-option-pages"><span>Workers page {paging.number}</span><button type="button" disabled={paging.number === 1 || query.isFetching} onClick={paging.previous}>Previous workers</button><button type="button" disabled={!query.data?.has_more || !query.data.cursor || query.isFetching} onClick={() => { if (query.data?.cursor) paging.next(query.data.cursor); }}>More workers</button></div>}{query.error && <span className="error-copy" role="alert">Worker choices could not be loaded.</span>}</div>;
 }
 
-function JobDetail() {
+export function JobDetail() {
   const { jobId = '' } = useParams();
+  const [search] = useSearchParams();
+  const returnSearch = jobFilterSearch(readJobFilters(search));
   const { session, key, home } = useWorkspace();
   const query = useQuery({ queryKey: [...key, 'job', jobId], queryFn: ({ signal }) => session.api.job(jobId, signalFor(session, signal)), staleTime: Infinity });
   const job = query.data;
-  return <><Link className="back-link" to={`${home}/jobs`}>← All jobs</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{job && <><div className="page-heading"><span className={`badge status-${job.status}`}>{job.status}</span><h2>{job.title}</h2><p>{job.worker_id ? <Link to={`${home}/workers/${encodeURIComponent(job.worker_id)}`}>{job.worker_id}</Link> : 'Unassigned'} · Revision {job.revision}</p></div><ContextualNotes key={`notes-${jobId}`} jobId={jobId} /><section className="panel brief"><h3>Job brief</h3><p className="full-text">{job.brief || 'No brief supplied.'}</p><dl className="metadata"><div><dt>Job ID</dt><dd>{job.id}</dd></div><div><dt>Created</dt><dd>{time(job.created_at)}</dd></div><div><dt>Updated</dt><dd>{time(job.updated_at)}</dd></div></dl></section><JobWorkstreamPanel key={`workstream-${jobId}`} jobId={jobId} /><JobChecklistPanel key={`checklist-${jobId}`} jobId={jobId} jobRevision={job.revision} /><JobCheckpointPanel key={jobId} jobId={jobId} jobRevision={job.revision} /><JobUpdatesPanel key={`updates-${jobId}`} jobId={jobId} jobRevision={job.revision} /></>}</ReadState></>;
+  return <><Link className="back-link" to={`${home}/jobs${returnSearch}`}>← Back to jobs</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{job && <><div className="page-heading"><span className={`badge status-${job.status}`}>{job.status}</span><h2>{job.title}</h2><p>{job.worker_id ? <Link to={`${home}/workers/${encodeURIComponent(job.worker_id)}`}>{job.worker_id}</Link> : 'Unassigned'} · Revision {job.revision}</p></div><ContextualNotes key={`notes-${jobId}`} jobId={jobId} /><section className="panel brief"><h3>Job brief</h3><p className="full-text">{job.brief || 'No brief supplied.'}</p><dl className="metadata"><div><dt>Job ID</dt><dd>{job.id}</dd></div><div><dt>Created</dt><dd>{time(job.created_at)}</dd></div><div><dt>Updated</dt><dd>{time(job.updated_at)}</dd></div></dl></section><JobWorkstreamPanel key={`workstream-${jobId}`} jobId={jobId} /><JobChecklistPanel key={`checklist-${jobId}`} jobId={jobId} jobRevision={job.revision} /><JobCheckpointPanel key={jobId} jobId={jobId} jobRevision={job.revision} /><JobUpdatesPanel key={`updates-${jobId}`} jobId={jobId} jobRevision={job.revision} /></>}</ReadState></>;
 }
 function ChecklistItems({ items }: { items: ChecklistItem[] }) {
   return items.length ? <ol>{items.map(item => <li key={item.id}><span className="badge neutral">{item.done ? 'Completed' : 'To do'}</span><p className="full-text">{item.text}</p></li>)}</ol> : <p className="empty">No checklist items.</p>;
