@@ -334,7 +334,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 		t.Fatal("restart/recovery/read altered retained tables")
 	}
 	changed := map[string]bool{"review_selections": true, "review_operations": true, "review_execution_attempts": true, "review_execution_transitions": true, "review_execution_reservations": true, "events": true, "receipts": true, "sqlite_sequence": true}
-	for _, name := range []string{"review_snapshots", "review_workspace", "review_current_pulls", "review_pull_versions", "review_pull_memberships", "review_current_attempts", "review_attempt_versions", "review_attempt_memberships", "review_current_totals"} {
+	for _, name := range []string{"review_snapshots", "review_workspace", "review_current_pulls", "review_pull_versions", "review_pull_memberships", "review_current_attempts", "review_attempt_versions", "review_attempt_memberships", "review_current_totals", "review_current_attempt_order"} {
 		changed[name] = true
 	}
 	for name, h := range initial.tables {
