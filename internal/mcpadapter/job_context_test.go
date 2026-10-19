@@ -23,7 +23,7 @@ func TestJobContextToolsSDKOneSnapshotAndExplicitDisclosure(t *testing.T) {
 	identity := profile.Context{Profile: "chosen", ServerURL: service.URL, InstanceID: f.store.InstanceID(), ProjectID: f.project, WorkerID: f.sender}
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": identity}, f.credential), "chosen")
 	tools, err := session.ListTools(t.Context(), nil)
-	if err != nil || len(tools.Tools) != 63 || tools.NextCursor != "" {
+	if err != nil || len(tools.Tools) != 64 || tools.NextCursor != "" {
 		t.Fatal("discovery", err)
 	}
 	found := false
@@ -48,7 +48,7 @@ func TestJobContextToolsSDKOneSnapshotAndExplicitDisclosure(t *testing.T) {
 			t.Fatal("schema/annotations")
 		}
 	}
-	if !found || reads != 41 || writes != 22 {
+	if !found || reads != 42 || writes != 22 {
 		t.Fatal("tool census", found, reads, writes)
 	}
 	var job client.JobReceipt

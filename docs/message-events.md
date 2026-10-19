@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-The loopback API provides a selected worker's compact inbox snapshot and durable incoming-message event replay, with a bounded wait or persistent SSE stream. CLI and MCP expose finite snapshot/replay and bounded wait calls. Persistent MCP subscriptions, idle-chat wakeup and job/project event feeds remain unimplemented. The [architecture](architecture.md#events-and-subscriptions) owns the broader delivery contract.
+The loopback API provides a selected worker's compact inbox snapshot and durable incoming-message event replay, with a bounded wait or persistent SSE stream. CLI and MCP expose finite snapshot/replay and bounded waits. The [quiet agent wait](message-wait.md) consumes the persistent transport for one bounded call. Idle-chat wakeup and job/project event feeds remain unimplemented. The [architecture](architecture.md#events-and-subscriptions) owns the broader delivery contract.
 
 ## Snapshot and replay
 
@@ -43,7 +43,7 @@ Credential revocation wakes current waits and causes authorization to be checked
 
 The connection registers once and reads durable changes only on relevant commit notifications. Fifteen-second keepalive comments recheck authorization without scanning message/event history. They stay in the transport layer. A permission, retention or storage failure sends one safe `error` event and closes; cancellation closes quietly. The service shutdown signal closes persistent streams promptly without changing message state, while finite requests retain their bounded graceful drain. Clients reconnect using their last processed cursor after restart. Frames are bounded to 1 MiB, with a two-second deadline covering each write/flush. Idle connections override the normal whole-response write timeout without leaving writes unbounded. A slow consumer cannot block storage transactions or build an unbounded queue.
 
-The browser consumes this endpoint through its own TypeScript fetch client. Persistent typed Go client, CLI and MCP subscription adapters remain later work. The API does not assert that an installed host can wake an idle agent.
+The browser consumes this endpoint through its own TypeScript fetch client. The [typed client, CLI and MCP wait](message-wait.md) now consume this transport for one bounded call, suppressing readiness, handling-only pages and keepalives until a new incoming-message page or timeout. The API does not assert that an installed host can wake an idle agent.
 
 ## Proof and limits
 
@@ -53,4 +53,4 @@ An isolated SQLite probe with one million synthetic project events measured a cu
 
 Seven packaged MCP event groups passed for discovery, strict arguments, scoped snapshot/replay, filtered paging, concurrent pending wait, cancellation, shared deadline and revocation; see the [MCP proof](mcp.md#proof-and-limitations). Six packaged CLI groups also passed, including twelve invalid-flag cases with zero HTTP, scope/filter/paging/restart replay, cancellation and a measured 5.005-second shared deadline. Four actual `fcd` SSE groups passed for readiness/commit delivery, replay reconnect, revocation/error/EOF and prompt HEAD rejection. Public stream tests additionally cover shutdown cancellation, unchanged recipient state and replay after reattachment, idle write-timeout override, a non-reading native socket, frame bounds and shared capacity.
 
-The embedded browser now consumes this stream; its separate [browser proof](browser-guide.md#proof-and-limits) includes real restart and resumed delivery. These checks do not establish fleet throughput, physical event retention, persistent CLI/MCP adapters, network/TLS deployment or native agent-host wakeup. The performance acceptance scenarios remain required before those capabilities are claimed.
+The embedded browser now consumes this stream; its separate [browser proof](browser-guide.md#proof-and-limits) includes real restart and resumed delivery. The bounded CLI/MCP wait has its own [proof](message-wait.md#executed-proof). These checks do not establish fleet throughput, physical event retention, subscriptions that outlive one call, network/TLS deployment or native agent-host wakeup. The performance acceptance scenarios remain required before those capabilities are claimed.

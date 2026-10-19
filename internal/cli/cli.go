@@ -62,6 +62,10 @@ type invocation struct {
 	mutation   *mutationInvocation
 	setup      *profileSetupInvocation
 	notes      *noteInvocation
+
+	reviewImport *reviewImportInvocation
+
+	waitSeconds int
 }
 
 // Run preserves the original embedding API while RunContext adds caller
@@ -84,6 +88,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return emit(stdout, stderr, struct {
 			Version string `json:"version"`
 		}{Version})
+	}
+	if call.reviewImport != nil {
+		if err := prepareReviewImport(ctx, call.reviewImport); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
 	}
 	if call.command == "profile" && call.subcommand == "create" {
 		return createProfile(ctx, call, stdout, stderr)
@@ -120,6 +129,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return report(stderr, ExitCancelled, "cancelled", "The command was cancelled before connecting.", "No service operation was sent; retry when cancellation is no longer requested.")
 	}
 	timeout := serviceTimeout
+	if call.command == "inbox" && call.subcommand == "wait" {
+		timeout = client.MessageWaitBudget(call.waitSeconds)
+	}
 	if call.mutation != nil && (call.mutation.operation == "reviews source-refresh" || call.mutation.operation == "reviews publish" || call.mutation.operation == "reviews publication-recover") {
 		timeout = client.SourceRefreshBudget(call.mutation.reviewSourceWait)
 	}
@@ -130,6 +142,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.reviewImport != nil {
+		return executeReviewImport(requestCtx, ctx, service, call.reviewImport, stdout, stderr)
+	}
 	if call.notes != nil {
 		value, err := executeNotes(requestCtx, service, call.notes)
 		if err != nil {
@@ -200,6 +215,8 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value, err = service.Inbox(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack})
 	case call.command == "inbox" && call.subcommand == "snapshot":
 		value, err = service.InboxSnapshot(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack})
+	case call.command == "inbox" && call.subcommand == "wait":
+		value, err = service.WaitForMessages(requestCtx, call.cursor, call.limit, call.waitSeconds)
 	case call.command == "inbox" && call.subcommand == "events":
 		value, err = service.MessageEvents(requestCtx, call.cursor, call.limit, call.waitMS)
 	case call.command == "inbox" && call.subcommand == "thread":
@@ -266,6 +283,12 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if call.command == "reviews" && (call.subcommand == "import-preview" || call.subcommand == "import-apply") {
+		return parseReviewImport(call, operationArgs)
+	}
+	if call.command == "inbox" && call.subcommand == "wait" {
+		return parseMessageWait(call, operationArgs)
+	}
 	if call.command == "jobs" && call.subcommand == "context" {
 		return parseJobContext(call, operationArgs)
 	}

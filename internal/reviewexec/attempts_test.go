@@ -38,11 +38,13 @@ func newAttemptFixture(t *testing.T) *attemptFixture {
 func newAttemptFixtureWithPolicy(t *testing.T, configured bool) *attemptFixture {
 	t.Helper()
 	f := &attemptFixture{httpFixture: newHTTPFixtureWithPolicy(t, configured)}
+	phaseStarted := time.Now()
 	var err error
 	f.e, err = New(f.store, attemptCapabilities)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("fixture attempt engine construction after %s: %v", time.Since(phaseStarted), err)
 	}
+	t.Logf("fixture attempt engine construction completed in %s", time.Since(phaseStarted))
 	return f
 }
 
@@ -67,10 +69,12 @@ func (f *attemptFixture) scope(t *testing.T, project, token string, admin bool) 
 func (f *attemptFixture) configure(t *testing.T, project, capability string, previous int64, paused bool) {
 	t.Helper()
 	c := Configuration{ExpectedRevision: &previous, CapabilityID: capability, Mode: "independent", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}, Paused: paused}
+	phaseStarted := time.Now()
 	_, err := f.e.Configure(context.Background(), f.scope(t, project, f.admin, true), fmt.Sprintf("config-%s-%d", project, previous), c)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("fixture execution configuration after %s: %v", time.Since(phaseStarted), err)
 	}
+	t.Logf("fixture execution configuration completed in %s", time.Since(phaseStarted))
 }
 
 func (f *attemptFixture) enqueue(t *testing.T, project, key, channel string, number, revision int64) Receipt {

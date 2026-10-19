@@ -209,12 +209,16 @@ func (d *controlledDriver) Dispatch(ctx context.Context, o Operation, a Attempt,
 func supervisorFixture(t *testing.T) *attemptFixture {
 	t.Helper()
 	f := newAttemptFixture(t)
+	phaseStarted := time.Now()
 	if err := jobs.EnsureSchema(context.Background(), f.store); err != nil {
-		t.Fatal(err)
+		t.Fatalf("fixture jobs schema after %s: %v", time.Since(phaseStarted), err)
 	}
+	t.Logf("fixture jobs schema completed in %s", time.Since(phaseStarted))
+	phaseStarted = time.Now()
 	if err := reviews.EnsureSchema(context.Background(), f.store); err != nil {
-		t.Fatal(err)
+		t.Fatalf("fixture reviews schema after %s: %v", time.Since(phaseStarted), err)
 	}
+	t.Logf("fixture reviews schema completed in %s", time.Since(phaseStarted))
 	mux := http.NewServeMux()
 	f.e.Register(mux)
 	jobs.Register(mux, f.store)

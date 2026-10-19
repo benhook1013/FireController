@@ -11,6 +11,8 @@ import (
 // Register mounts the review observation write boundary and its provider-free
 // project-scoped read routes.
 func Register(mux *http.ServeMux, store *core.Store) {
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/import/preview", previewImport(store))
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/import/apply", applyImport(store))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/observations", func(w http.ResponseWriter, r *http.Request) {
 		appendObservation(store, w, r)
 	})

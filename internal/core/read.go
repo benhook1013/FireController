@@ -16,7 +16,11 @@ func (s *Store) Read(ctx context.Context, scope Scope, fn func(context.Context, 
 		return storageError(err)
 	}
 	defer tx.Rollback()
-	if err = s.authorize(ctx, tx, scope, "read"); err != nil {
+	permission := "read"
+	if scope.admin {
+		permission = "admin"
+	}
+	if err = s.authorize(ctx, tx, scope, permission); err != nil {
 		return err
 	}
 	err = fn(ctx, tx)

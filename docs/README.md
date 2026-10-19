@@ -9,7 +9,9 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Browser guide](browser-guide.md): embedded UI, connection privacy and build/proof limits.
 - [Development](development.md): implemented profile-bound CLI reads/mutations, build/check commands, and current proof limits.
 - [Managed backups](backups.md): verified local bundles, managed scheduling/retention and inactive restore, with activation limits.
+- [Provider resumption](provider-resumption.md): explicit operator reconciliation, retained-work abandonment and release after restore; implementation and proof status are recorded at that owner.
 - [Hosting and HTTPS](hosting.md): local/remote deployment, infrastructure-owned certificates, persistence and executed hosted proof.
+- [Quiet agent message wait](message-wait.md): selected bounded CLI/MCP subscription behavior, output and host proof limits.
 - [Incoming message events](message-events.md): scoped inbox snapshots, replay and bounded waits.
 - [Local MCP tools](mcp.md): bound read/write stdio tools and protocol/host proof limits.
 - [Local API](local-api.md): implemented coordination endpoints, bootstrap and limits.
@@ -33,6 +35,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Architecture](architecture.md) owns service boundaries, project isolation, storage, and provider observation rules.
 - [Agent and client contract](agent-client.md) owns profiles, tool calls, subscriptions, cancellation and reconnect semantics.
 - [AI usability](ai-usability.md) owns output budgets, agent interaction patterns, and attention-cost proof.
+- [Prepared review import](review-import.md): scoped administrator preview/apply of a prepared historical review export, with explicit implementation and proof status.
 - [Onboarding](onboarding.md) owns AI-guided project setup and historical import; the bundled [onboarding skill](../skills/firecontroller-onboard/SKILL.md) guides the supported setup.
 - [Review orchestration](reviews.md) owns reusable review invariants and configurable policy.
 - [Acceptance and performance](acceptance.md) defines observable proof requirements.

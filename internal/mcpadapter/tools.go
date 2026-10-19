@@ -14,12 +14,17 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// Keep model-facing waits plus establishment within 55 seconds, leaving
+// transport/serialization margin under a 60-second host tool deadline.
+const maxToolWaitSeconds = 50
+
 type arguments struct {
 	notes                      *noteToolCall
 	reviewCheckpoint           client.ReviewCheckpointRequest
 	reviewCheckpointRecovery   client.ReviewCheckpointRecovery
 	limit                      int
 	waitMS                     int
+	messageWaitSeconds         int
 	cursor, worker, status, id string
 	unread, unack              bool
 	snapshot                   string
@@ -55,7 +60,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, primaryJobDefinitions()...)
 	definitions = append(definitions, workerPauseDefinitions()...)
 	definitions = append(definitions, noteDefinitions()...)
-	definitions = append(definitions, jobContextDefinition())
+	definitions = append(definitions, jobContextDefinition(), messageWaitDefinition())
 	known := make(map[string]bool)
 	for _, tool := range definitions {
 		known[tool.name] = true
@@ -65,7 +70,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
 			var err error
-			if tool.name == "job_context" {
+			if tool.name == "wait_for_messages" {
+				args, err = messageWaitArguments(request.Params.Arguments)
+			} else if tool.name == "job_context" {
 				args, err = jobContextArguments(request.Params.Arguments)
 			} else if noteTool(tool.name) {
 				args, err = noteArguments(tool.name, request.Params.Arguments)
@@ -81,6 +88,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				return result(binding.Context, false), nil
 			}
 			timeout := 5 * time.Second
+			if tool.name == "wait_for_messages" {
+				timeout = client.MessageWaitBudget(args.messageWaitSeconds)
+			}
 			if tool.name == "review_source_refresh" || checkpointWrite(tool.name) {
 				timeout = client.SourceRefreshBudget(args.reviewSourceWait)
 			}
@@ -94,6 +104,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			options := client.PageOptions{Limit: args.limit, Cursor: args.cursor}
 			var value any
 			switch tool.name {
+			case "wait_for_messages":
+				value, err = service.WaitForMessages(ctx, args.cursor, args.limit, args.messageWaitSeconds)
 			case "job_context":
 				value, err = service.JobContext(ctx, args.id, args.limit)
 			case "note_create", "note_update", "note_read", "note_list", "note_history", "note_revision_read":
