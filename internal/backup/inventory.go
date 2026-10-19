@@ -968,11 +968,17 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["review_rounds"] > 0 {
 		if err = reviewexec.ValidateRoundSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
 			return invalid()
 		}
 	}
 	if versions["review_selection"] > 0 {
 		if err = reviewexec.ValidateSelectionSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
 			return invalid()
 		}
 	}
