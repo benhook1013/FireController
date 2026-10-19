@@ -222,7 +222,7 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 			return nil, err
 		}
 
-		if err = core.AppendEvent(ctx, tx, scope, "reviews.rounds_configured", scope.ProjectID, c.Revision, map[string]any{"pull_number": pull, "channel": channel, "revision": c.Revision}); err != nil {
+		if err = core.AppendEvent(ctx, tx, scope, "reviews.rounds_configured", target, c.Revision, map[string]any{"pull_number": pull, "channel": channel, "revision": c.Revision}); err != nil {
 			return nil, err
 		}
 		outcome := "granted"
