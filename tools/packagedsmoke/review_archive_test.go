@@ -454,6 +454,7 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 	}
 	recentJSON, _ := json.Marshal(recent)
 	latestJSON, _ := json.Marshal([]reviews.AttemptSummary{reviews.AttemptSummary(latest)})
+	metadataJSON, _ := json.Marshal(reviews.PullDisplayMetadata{Diff: pull.Diff, IsDraft: pull.IsDraft})
 	// The authenticated initial observation established revision one with no
 	// pulls. Insert its synthetic body once rather than rewriting an immutable
 	// version or writing through a logical read-only compatibility view.
@@ -461,7 +462,7 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO review_pull_versions(project_id,number,version_revision,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json) VALUES(?,123,1,?,'open',?,'main',?,'unknown','unknown',1,123,123,?,?)`, []any{project, pull.Title, pull.HeadSHA, pull.BaseSHA, string(recentJSON), string(latestJSON)}},
+		{`INSERT INTO review_pull_versions(project_id,number,version_revision,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json,metadata_json) VALUES(?,123,1,?,'open',?,'main',?,'unknown','unknown',1,123,123,?,?,?)`, []any{project, pull.Title, pull.HeadSHA, pull.BaseSHA, string(recentJSON), string(latestJSON), string(metadataJSON)}},
 		{`INSERT INTO review_pull_memberships(project_id,number,start_revision,end_revision,version_revision,position) VALUES(?,123,1,NULL,1,0)`, []any{project}},
 		{`INSERT INTO review_current_pulls(project_id,number,start_revision,position) VALUES(?,123,1,0)`, []any{project}},
 		{`INSERT INTO review_current_totals(project_id,pull_number,run_count,attempt_count,incomplete_run_count) VALUES(?,123,123,123,0)`, []any{project}},
