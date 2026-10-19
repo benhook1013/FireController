@@ -12,14 +12,15 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
 import time
 
-from source_acquisition_frame import acquire_frame
-from source_acquisition_conservation import conserved_roots
-from source_acquisition_bindings import bind_source, exact_path
+from source_acquisition_frame import acquire_frame, FrameRefusal
+from source_acquisition_conservation import conserved_roots, ConservationRefusal
+from source_acquisition_bindings import bind_source, exact_path, BindingRefusal
 
 ADAPTER = Path(__file__).with_name('prepare_source_controls.py')
 spec = importlib.util.spec_from_file_location('source_transfer_adapter', ADAPTER)
@@ -220,9 +221,15 @@ def main(argv=None):
     args=parser.parse_args(argv)
     try:
         result=acquire(args)
-    except Exception:
-        # Provider/helper errors can include private source text.
-        print('{"error":"source_acquisition_refused"}',file=sys.stderr)
+    except Exception as exc:
+        # Only exact local refusal classes carry fixed diagnostic codes. Never
+        # format provider/helper errors or publish source-dependent details.
+        code='source_acquisition_refused'
+        if type(exc) in (AcquisitionRefusal,transfer.Refusal,BindingRefusal,FrameRefusal,ConservationRefusal):
+            value=exc.code if type(exc) is transfer.Refusal else exc.args[0] if len(exc.args)==1 else None
+            if type(value) is str and re.fullmatch(r'[a-z][a-z0-9_]{0,63}',value):
+                code=value
+        print(json.dumps(dict(error=code),sort_keys=True),file=sys.stderr)
         return 3
     try:
         print(json.dumps(result,sort_keys=True))
