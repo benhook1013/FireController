@@ -25,18 +25,39 @@ function fixture() {
 }
 
 describe('live private project views', () => {
-  it('refreshes imported job views without replaying messages or fetching unopened bodies', async () => {
+  it('refreshes active job and message views once for an import without opening bodies or crossing identities', async () => {
     const f = fixture();
     const jobs = f.add(['jobs', '', false, '']);
     const checkpoint = f.add(['checkpoint-latest', 'job_one']);
     const inactive = f.add(['job', 'not_open'], false);
     const inbox = f.add(['inbox', '']);
+    const thread = f.add(['thread', 'conversation_one', '']);
+    const unopenedThread = f.add(['thread', 'not_open', ''], false);
+    const unopenedInboxPage = f.add(['inbox', 'older_cursor'], false);
     const reviews = f.add(['reviews', 'current', 'queue', '']);
+    const captured = f.add(['reviews', 'snapshot_old', 'run', 'run_one']);
+    const otherIdentities = [
+      ['fc', 'other_session', 'instance', 'project', 'worker'],
+      ['fc', 'session', 'other_instance', 'project', 'worker'],
+      ['fc', 'session', 'instance', 'other_project', 'worker'],
+      ['fc', 'session', 'instance', 'project', 'other_worker'],
+    ].flatMap(prefix => [f.add(['inbox', ''], true, prefix), f.add(['thread', 'conversation_one', ''], true, prefix)]);
     try {
-      await refreshProjectMetadata(f.client, key, page([{ event_type: 'coordination.imported', resource_id: 'project' }]), new AbortController().signal);
-      expect(jobs.reads()).toBe(1); expect(checkpoint.reads()).toBe(1);
-      expect(inactive.reads()).toBe(0); expect(inactive.state()?.isInvalidated).toBe(true);
-      expect(inbox.reads()).toBe(0); expect(reviews.reads()).toBe(0);
+      // A message-only import emits this batch hint, not historical message events.
+      await refreshProjectMetadata(f.client, key, page([
+        { event_type: 'coordination.imported', resource_id: 'project' },
+        { event_type: 'coordination.imported', resource_id: 'project' },
+      ]), new AbortController().signal);
+      for (const query of [jobs, checkpoint, inbox, thread]) {
+        expect(query.reads()).toBe(1); expect(query.state()?.data).toBe('committed');
+      }
+      for (const query of [inactive, unopenedThread, unopenedInboxPage]) {
+        expect(query.reads()).toBe(0); expect(query.state()?.isInvalidated).toBe(true); expect(query.state()?.data).toBe('old');
+      }
+      for (const query of [reviews, captured, ...otherIdentities]) {
+        expect(query.reads()).toBe(0); expect(query.state()?.isInvalidated).toBe(false); expect(query.state()?.data).toBe('old');
+      }
+      expect(f.client.getMutationCache().getAll()).toHaveLength(0);
     } finally { f.close(); }
   });
   it('coalesces job changes into affected active reads without fetching unrelated context or archives', async () => {
@@ -100,19 +121,36 @@ describe('live private project views', () => {
     const inactiveBody = f.add(['note', 'not_open'], false);
     const immutable = f.add(['map-revision', 'entry_one', 1]);
     const inbox = f.add(['inbox', '']);
+    const thread = f.add(['thread', 'conversation_one', '']);
+    const unopenedThread = f.add(['thread', 'not_open', ''], false);
+    const unopenedInboxPage = f.add(['inbox', 'older_cursor'], false);
+    const captured = f.add(['reviews', 'snapshot_old', 'run', 'run_one']);
+    const otherIdentities = [
+      ['fc', 'other_session', 'instance', 'project', 'worker'],
+      ['fc', 'session', 'other_instance', 'project', 'worker'],
+      ['fc', 'session', 'instance', 'other_project', 'worker'],
+      ['fc', 'session', 'instance', 'project', 'other_worker'],
+    ].flatMap(prefix => [f.add(['inbox', ''], true, prefix), f.add(['thread', 'conversation_one', ''], true, prefix)]);
     try {
       await refreshProjectMetadata(f.client, key, undefined, new AbortController().signal);
-      for (const query of [...active, reviews]) expect(query.reads()).toBe(1);
-      expect(inactiveBody.reads()).toBe(0); expect(inactiveBody.state()?.isInvalidated).toBe(true);
-      for (const query of [immutable, inbox]) expect(query.reads()).toBe(0);
+      for (const query of [...active, reviews, inbox, thread]) {
+        expect(query.reads()).toBe(1); expect(query.state()?.data).toBe('committed');
+      }
+      for (const query of [inactiveBody, unopenedThread, unopenedInboxPage]) {
+        expect(query.reads()).toBe(0); expect(query.state()?.isInvalidated).toBe(true); expect(query.state()?.data).toBe('old');
+      }
+      for (const query of [immutable, captured, ...otherIdentities]) {
+        expect(query.reads()).toBe(0); expect(query.state()?.isInvalidated).toBe(false); expect(query.state()?.data).toBe('old');
+      }
+      expect(f.client.getMutationCache().getAll()).toHaveLength(0);
       const canceled = new AbortController(); canceled.abort();
       await refreshProjectMetadata(f.client, key, undefined, canceled.signal);
-      for (const query of [...active, reviews]) expect(query.reads()).toBe(1);
+      for (const query of [...active, reviews, inbox, thread]) expect(query.reads()).toBe(1);
     } finally { f.close(); }
   });
 
   it('accepts only the bounded explicit change vocabulary without messages or payloads', () => {
-    const complete = page(projectEventTypes.map(event_type => ({ event_type, resource_id: 'record_one' })));
+    const complete = page(projectEventTypes.map(event_type => ({ event_type, resource_id: event_type === 'reviews.rounds_configured' ? '32/cli' : 'record_one' })));
     expect(validMetadataPage(complete, 100)).toBe(true);
     for (const kind of ['message.sent', 'credentials.revoked', 'review.cli_preflight', 'review.future_kind']) {
       expect(validMetadataPage({ ...complete, items: [{ ...complete.items[0], event_type: kind }] }, 25)).toBe(false);
