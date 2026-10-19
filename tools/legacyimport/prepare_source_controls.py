@@ -415,6 +415,30 @@ def parser():
     return out
 
 
+def report_result(result):
+    try:
+        print(json.dumps(result, sort_keys=True))
+        sys.stdout.flush()
+    except OSError:
+        # A buffered failure must not be retried at interpreter shutdown.
+        # Test/embedded streams may have no underlying file descriptor.
+        try:
+            target_fd = sys.stdout.fileno()
+            sink_fd = os.open(os.devnull, os.O_WRONLY)
+            if sink_fd != target_fd:
+                try:
+                    os.dup2(sink_fd, target_fd)
+                finally:
+                    os.close(sink_fd)
+            # If opening devnull reused the closed stdout descriptor, ownership
+            # passes directly to stdout for its remaining shutdown lifetime.
+        except (AttributeError, OSError, ValueError):
+            pass
+        print('{"error":"output_report_failed"}', file=sys.stderr)
+        return 3
+    return 0
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
@@ -427,12 +451,7 @@ def main(argv=None):
         # errors may contain private record text; never print a traceback/body.
         print('{"error":"source_projection_refused"}', file=sys.stderr)
         return 3
-    try:
-        print(json.dumps(result, sort_keys=True))
-    except OSError:
-        print('{"error":"output_report_failed"}', file=sys.stderr)
-        return 3
-    return 0
+    return report_result(result)
 
 
 if __name__ == "__main__":

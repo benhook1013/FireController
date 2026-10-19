@@ -250,12 +250,7 @@ def main(argv=None):
             report['next_action']=FRAME_REFUSAL_ACTIONS[code]
         print(json.dumps(report,sort_keys=True,separators=(',',':')),file=sys.stderr)
         return 3
-    try:
-        print(json.dumps(result,sort_keys=True))
-    except OSError:
-        print('{"error":"output_report_failed"}',file=sys.stderr)
-        return 3
-    return 0
+    return transfer.report_result(result)
 
 
 if __name__=='__main__':
