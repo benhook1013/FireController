@@ -84,7 +84,8 @@ try {
       const head = page.getByRole('region',{name:'Merge train head',exact:true});
       await head.waitFor();
       const pills = head.locator('.review-round-pill');
-      await expect(pills).toHaveCount(1); // This fixture retains a CLI summary.
+      await expect(pills).toHaveCount(3); // Three latest CLI rounds from the shared bounded page.
+      await expect(head.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText('20 runs loaded · latest 3');
       for (const width of [1440,390,320]) {
         await page.setViewportSize({width,height:900});
         need(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
