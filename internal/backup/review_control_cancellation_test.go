@@ -12,7 +12,7 @@ import (
 )
 
 func TestReviewControlValidationCancellationIsUnavailableAndReadOnly(t *testing.T) {
-	for _, phase := range []string{"ValidateRoundSnapshot", "ValidateSelectionSnapshot"} {
+	for _, phase := range []string{"ValidateRoundSnapshot", "ValidateSelectionSnapshot", "ValidateFrontSnapshot"} {
 		t.Run(phase, func(t *testing.T) {
 			var f *restoreFixture
 			if phase == "ValidateRoundSnapshot" {
@@ -67,7 +67,7 @@ func TestReviewControlValidationCancellationIsUnavailableAndReadOnly(t *testing.
 }
 
 func TestReviewControlValidationCorruptionRemainsInvalid(t *testing.T) {
-	for _, phase := range []string{"round", "selection"} {
+	for _, phase := range []string{"round", "selection", "front"} {
 		t.Run(phase, func(t *testing.T) {
 			var f *restoreFixture
 			query := `UPDATE review_round_controls SET maximum=5`
@@ -76,6 +76,9 @@ func TestReviewControlValidationCorruptionRemainsInvalid(t *testing.T) {
 			} else {
 				f, _ = selectionInventoryFixture(t, "held")
 				query = `UPDATE review_selections SET updated_at='unknown'`
+				if phase == "front" {
+					query = `UPDATE review_front_frames SET prefix_json='null'`
+				}
 			}
 			bundle := restoreBundle(t, f)
 			rows := backupRows(t, f.store.DB())
