@@ -52,6 +52,30 @@ type runChoice struct {
 	head          string
 }
 
+// retryRunSelectionLocal retains completed source reads while only retrying
+// transient local admission. Each transaction keeps its own bounded context.
+func retryRunSelectionLocal(ctx context.Context, local func() error) error {
+	delay := 100 * time.Millisecond
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := local()
+		var failure *core.Error
+		if !errors.As(err, &failure) || failure.Code != "overloaded" {
+			return err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(delay*2, time.Second)
+	}
+}
+
 func runReason(err error) string {
 	var failure *core.Error
 	if errors.As(err, &failure) {
@@ -95,10 +119,30 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 		choice.prefix = append(choice.prefix, plan)
 		var target int64
 		var reason string
-		err = e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-			var err error
-			target, reason, err = e.runFront(ctx, tx, r, repo, []SourcePlan{plan})
-			return err
+		err = retryRunSelectionLocal(ctx, func() error {
+			target, reason = 0, ""
+			return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+				current, err := readRun(ctx, tx, r.ProjectID, r.ID)
+				if err != nil {
+					return err
+				}
+				if current.State != r.State || current.Revision != r.Revision {
+					return conflict()
+				}
+				_, nowRepo, bindingReason, err := e.runBinding(ctx, tx, current)
+				if err != nil {
+					return err
+				}
+				if bindingReason == "" && nowRepo != repo {
+					bindingReason = "repository_changed"
+				}
+				if bindingReason != "" {
+					reason = bindingReason
+					return nil
+				}
+				target, reason, err = e.runFront(ctx, tx, current, repo, []SourcePlan{plan})
+				return err
+			})
 		})
 		if err != nil {
 			return runChoice{}, err
@@ -207,49 +251,56 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	var changed string
 	var project, id string
 	var expected int64
-	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, `SELECT project_id,id,revision FROM review_selections WHERE state='queued' ORDER BY created_at,id LIMIT 1`).Scan(&project, &id, &expected)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		return err
+	err := retryRunSelectionLocal(ctx, func() error {
+		project, id, expected = "", "", 0
+		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			err := tx.QueryRowContext(ctx, `SELECT project_id,id,revision FROM review_selections WHERE state='queued' ORDER BY created_at,id LIMIT 1`).Scan(&project, &id, &expected)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
+		})
 	})
 	if err != nil || id == "" {
 		return false, err
 	}
-	err = e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		r, err := readRun(ctx, tx, project, id)
-		if err != nil {
-			return err
-		}
-		if r.State != "queued" || r.Revision != expected {
-			return nil
-		}
-		var reason string
-		configuration, repo, reason, err = e.runBinding(ctx, tx, r)
-		if err != nil {
-			return err
-		}
-		if reason == "" && readers[configuration.CapabilityID] == nil {
-			reason = "source_reader_unavailable"
-		}
-		changed = r.ID
-		if reason != "" {
-			return updateRun(ctx, tx, r, "held", reason, "")
-		}
-		if e.publishAttempt != nil {
-			metadataPins, err = reviews.PinSourceMetadata(ctx, tx, r.ProjectID, configuration.Queue)
+	err = retryRunSelectionLocal(ctx, func() error {
+		// A rolled-back claim cannot retain a selected pointer or notification.
+		selected, changed = nil, ""
+		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			r, err := readRun(ctx, tx, project, id)
 			if err != nil {
 				return err
 			}
-		}
-		if err = updateRun(ctx, tx, r, "selecting", "", ""); err != nil {
-			return err
-		}
-		r.State = "selecting"
-		r.Revision++
-		selected = &r
-		return nil
+			if r.State != "queued" || r.Revision != expected {
+				return nil
+			}
+			var reason string
+			configuration, repo, reason, err = e.runBinding(ctx, tx, r)
+			if err != nil {
+				return err
+			}
+			if reason == "" && readers[configuration.CapabilityID] == nil {
+				reason = "source_reader_unavailable"
+			}
+			changed = r.ID
+			if reason != "" {
+				return updateRun(ctx, tx, r, "held", reason, "")
+			}
+			if e.publishAttempt != nil {
+				metadataPins, err = reviews.PinSourceMetadata(ctx, tx, r.ProjectID, configuration.Queue)
+				if err != nil {
+					return err
+				}
+			}
+			if err = updateRun(ctx, tx, r, "selecting", "", ""); err != nil {
+				return err
+			}
+			r.State = "selecting"
+			r.Revision++
+			selected = &r
+			return nil
+		})
 	})
 	if err == nil && changed != "" {
 		e.notifyOperation(changed)
@@ -271,72 +322,74 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	if readErr != nil {
 		return true, readErr
 	}
-	err = e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		current, err := readRun(ctx, tx, r.ProjectID, r.ID)
-		if err != nil {
-			return err
-		}
-		if current.State != r.State || current.Revision != r.Revision {
-			return conflict()
-		}
-		c, nowRepo, reason, err := e.runBinding(ctx, tx, current)
-		if err != nil {
-			return err
-		}
-		if reason == "" && nowRepo != repo {
-			reason = "repository_changed"
-		}
-		if reason != "" {
-			return updateRun(ctx, tx, current, "held", reason, "")
-		}
-		if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}, repo, metadataPins, choice.prefix); err != nil {
-			return err
-		}
-		if err = writeFrontFrame(ctx, tx, current, repo, c, choice); err != nil {
-			return err
-		}
-		if choice.state == "held" {
-			return updateRun(ctx, tx, current, "held", choice.reason, "")
-		}
-		front, reason, err := e.runFront(ctx, tx, current, repo, choice.prefix)
-		if err != nil {
-			return err
-		}
-		if reason != "" {
-			return updateRun(ctx, tx, current, "held", reason, "")
-		}
-		if front != choice.number {
-			return updateRun(ctx, tx, current, "held", "selection_changed", "")
-		}
-		if choice.state == "empty" {
-			return updateRun(ctx, tx, current, "empty", "queue_complete", "")
-		}
-		if !slices.Contains(c.Queue, choice.number) {
-			return updateRun(ctx, tx, current, "held", "configuration_changed", "")
-		}
-		// This scope is trusted attribution only, following the current checks above.
-		attribution := core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}
-		if _, err = tx.ExecContext(ctx, `SAVEPOINT review_selection_child`); err != nil {
-			return err
-		}
-		receipt, err := e.enqueueRequestTx(ctx, tx, attribution, Request{ExpectedConfigurationRevision: current.ConfigurationRevision, PullNumber: choice.number, HeadSHA: choice.head, Channel: current.Channel})
-		if err != nil {
-			var failure *core.Error
-			if !errors.As(err, &failure) || (failure.Status != 409 && failure.Code != "overloaded") {
+	err = retryRunSelectionLocal(ctx, func() error {
+		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			current, err := readRun(ctx, tx, r.ProjectID, r.ID)
+			if err != nil {
 				return err
 			}
-			if _, rollbackErr := tx.ExecContext(ctx, `ROLLBACK TO review_selection_child`); rollbackErr != nil {
-				return rollbackErr
+			if current.State != r.State || current.Revision != r.Revision {
+				return conflict()
 			}
-			if _, releaseErr := tx.ExecContext(ctx, `RELEASE review_selection_child`); releaseErr != nil {
-				return releaseErr
+			c, nowRepo, reason, err := e.runBinding(ctx, tx, current)
+			if err != nil {
+				return err
 			}
-			return updateRun(ctx, tx, current, "held", failure.Code, "")
-		}
-		if _, err = tx.ExecContext(ctx, `RELEASE review_selection_child`); err != nil {
-			return err
-		}
-		return updateRun(ctx, tx, current, "selected", "", receipt.ID)
+			if reason == "" && nowRepo != repo {
+				reason = "repository_changed"
+			}
+			if reason != "" {
+				return updateRun(ctx, tx, current, "held", reason, "")
+			}
+			if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}, repo, metadataPins, choice.prefix); err != nil {
+				return err
+			}
+			if err = writeFrontFrame(ctx, tx, current, repo, c, choice); err != nil {
+				return err
+			}
+			if choice.state == "held" {
+				return updateRun(ctx, tx, current, "held", choice.reason, "")
+			}
+			front, reason, err := e.runFront(ctx, tx, current, repo, choice.prefix)
+			if err != nil {
+				return err
+			}
+			if reason != "" {
+				return updateRun(ctx, tx, current, "held", reason, "")
+			}
+			if front != choice.number {
+				return updateRun(ctx, tx, current, "held", "selection_changed", "")
+			}
+			if choice.state == "empty" {
+				return updateRun(ctx, tx, current, "empty", "queue_complete", "")
+			}
+			if !slices.Contains(c.Queue, choice.number) {
+				return updateRun(ctx, tx, current, "held", "configuration_changed", "")
+			}
+			// This scope is trusted attribution only, following the current checks above.
+			attribution := core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}
+			if _, err = tx.ExecContext(ctx, `SAVEPOINT review_selection_child`); err != nil {
+				return err
+			}
+			receipt, err := e.enqueueRequestTx(ctx, tx, attribution, Request{ExpectedConfigurationRevision: current.ConfigurationRevision, PullNumber: choice.number, HeadSHA: choice.head, Channel: current.Channel})
+			if err != nil {
+				var failure *core.Error
+				if !errors.As(err, &failure) || (failure.Status != 409 && failure.Code != "overloaded") {
+					return err
+				}
+				if _, rollbackErr := tx.ExecContext(ctx, `ROLLBACK TO review_selection_child`); rollbackErr != nil {
+					return rollbackErr
+				}
+				if _, releaseErr := tx.ExecContext(ctx, `RELEASE review_selection_child`); releaseErr != nil {
+					return releaseErr
+				}
+				return updateRun(ctx, tx, current, "held", failure.Code, "")
+			}
+			if _, err = tx.ExecContext(ctx, `RELEASE review_selection_child`); err != nil {
+				return err
+			}
+			return updateRun(ctx, tx, current, "selected", "", receipt.ID)
+		})
 	})
 	if err == nil {
 		e.notifyOperation(r.ID)
