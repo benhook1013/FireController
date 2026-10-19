@@ -6,6 +6,8 @@ import type { DeliverySnapshot, ReviewPullSummary, ReviewQueue } from './types';
 import { ReviewQueueView, ReviewRunsView, ReviewPullFacts } from './review-workspace';
 import { DeliveryBoardArchive } from './delivery-board';
 import './delivery.css';
+import { useReviewProgress } from './review-progress-view';
+import type { ReviewProgressItem } from './review-progress';
 
 type DeliveryWorker = DeliverySnapshot['workers']['items'][number];
 type DeliveryJob = DeliverySnapshot['jobs']['items'][number];
@@ -71,17 +73,18 @@ export function selectMergeHead(queue: ReviewQueue): MergeHead {
   }
   return queue.has_more ? { state: 'unknown', reason: 'next-page' } : { state: 'none' };
 }
-export function MergeHeadContent({ queue, home }: { queue: ReviewQueue; home: string }) {
+export function MergeHeadContent({ queue, home, progress }: { queue: ReviewQueue; home: string; progress?: ReviewProgressItem }) {
   const head = selectMergeHead(queue);
   if (head.state === 'none' || head.state === 'unknown' && head.reason === 'unconfigured') return null;
-  return <><p className="eyebrow">Merge train</p>{head.state === 'head' ? <><h2><Link to={snapshotLink(home, 'pulls', head.pull.number, queue.snapshot_id)}>#{head.pull.number} · {head.pull.title}</Link></h2><ReviewPullFacts pull={head.pull} /><ReviewRunsView number={head.pull.number} snapshot={queue.snapshot_id} head={head.pull.head_sha} attempts={head.pull.latest_attempts} expected={head.pull.run_count} compact /></> : <><h2>Merge head not determined</h2><p>{head.reason === 'preceding' ? 'An earlier queue entry has unknown state.' : 'No open PR is loaded yet; more queue entries remain.'}</p></>}<Link className="delivery-head-link" to={`${home}#review-queue`} aria-label="Jump to review queue"><span>Review queue</span><span className="delivery-link-arrow" aria-hidden="true">↗</span></Link></>;
+  return <><p className="eyebrow">Merge train</p>{head.state === 'head' ? <><h2><Link to={snapshotLink(home, 'pulls', head.pull.number, queue.snapshot_id)}>#{head.pull.number} · {head.pull.title}</Link></h2><ReviewPullFacts pull={head.pull} /><ReviewRunsView number={head.pull.number} snapshot={queue.snapshot_id} head={head.pull.head_sha} attempts={head.pull.latest_attempts} expected={head.pull.run_count} compact progress={progress} /></> : <><h2>Merge head not determined</h2><p>{head.reason === 'preceding' ? 'An earlier queue entry has unknown state.' : 'No open PR is loaded yet; more queue entries remain.'}</p></>}<Link className="delivery-head-link" to={`${home}#review-queue`} aria-label="Jump to review queue"><span>Review queue</span><span className="delivery-link-arrow" aria-hidden="true">↗</span></Link></>;
 }
 export function DeliveryHero({ children }: { children: ReactNode }) {
   const { session, key, home } = useWorkspace();
   const query = useQuery(deliveryReviewQuery(session, key));
+  const progress = useReviewProgress(query.data?.items.map(pull => pull.number) ?? []);
   const head = query.data && selectMergeHead(query.data);
   const showHead = Boolean(query.isPending || query.error || head?.state === 'head' || head?.state === 'unknown' && head.reason !== 'unconfigured');
-  return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Merge train head"><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <MergeHeadContent queue={query.data} home={home} />}</ReadState></section>}</div>;
+  return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Merge train head"><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <MergeHeadContent queue={query.data} home={home} progress={progress.error || head?.state !== 'head' ? undefined : progress.data?.items.find(item => item.pull_number === head.pull.number)} />}</ReadState></section>}</div>;
 }
 export function Delivery() {
   const { session, key, home } = useWorkspace();

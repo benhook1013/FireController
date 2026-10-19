@@ -181,7 +181,8 @@ try {
  let explicitActions = false;
  let controlledMessageFailure = false;
  let controlledAccessFailure = false;
- const expectedMissingSessionRoute = url => { if (!controlledAccessFailure || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname); } catch { return false; } };
+ let controlledProgressAccessFailure = false, progressAccessFailures = 0;
+ const expectedMissingSessionRoute = url => { if ((!controlledAccessFailure && !controlledProgressAccessFailure) || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ((controlledAccessFailure && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname)) || (controlledProgressAccessFailure && value.pathname === prefix + '/reviews/rounds/progress')); } catch { return false; } };
   counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
   let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0, noteArchiveReads = 0;
   let deliveryReads = 0, jobBriefReads = 0, jobArchiveReads = 0, reviewRunReads = 0;
@@ -661,6 +662,11 @@ try {
   await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
   checkpoint = 'hosted-run';
   await page.locator('#review-queue').getByRole('region', {name:'Hosted CodeRabbit', exact:true}).getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
+  checkpoint = 'current-round-grants';
+  await write('POST', '/reviews/rounds/32/hosted', {expected_revision:0,action:'grant',minimum:0,maximum:5}, 200);
+  await write('POST', '/reviews/rounds/32/cli', {expected_revision:0,action:'grant',minimum:2,maximum:4}, 200);
+  await expect(page.locator('#review-queue [aria-label="Current hosted round limits"]')).toContainText('0 of 5 used');
+  await expect(page.locator('#review-queue [aria-label="Current cli round limits"]')).toContainText('Minimum 2 more');
   checkpoint = 'merged-retention';
   need(await page.locator('.review-state-merged').filter({hasText:'Merged'}).count() === 1);
   checkpoint = 'delivery-queue';
@@ -684,6 +690,15 @@ try {
   const jump = hero.getByRole('link', {name:'Jump to review queue', exact:true});
   await expect(jump).toHaveAttribute('href', `/projects/${config.project}#review-queue`);
   await expect(hero.getByRole('region', {name:'Hosted CodeRabbit', exact:true}).locator('.review-lane-heading')).toContainText('1 run');
+  checkpoint = 'current-round-limits-shared';
+  await expect(hero.locator('[aria-label="Current hosted round limits"]')).toContainText('0 of 5 used');
+  // Imported recorded history does not count against a new native grant.
+  await expect(queueHosted.locator('[aria-label="Current hosted round limits"]')).toContainText('0 of 5 used');
+  checkpoint = 'current-round-close-live';
+  await write('POST', '/reviews/rounds/32/hosted', {expected_revision:1,action:'close'}, 200);
+  await expect(hero.locator('[aria-label="Current hosted round limits"]')).toContainText('Review closed');
+  await expect(queueHosted.locator('[aria-label="Current hosted round limits"]')).toContainText('Review closed');
+  await expect(queueHosted.locator('.review-lane-heading')).toContainText('1 run');
   const age = queueHosted.locator('.review-round-pill time');
   await expect(age).toHaveText(/^(?:Just now|Future date|\d+m ago|\d+h \d+m ago|\d+d \d+h ago)$/u);
   await expect(age).toHaveAttribute('datetime', finished);
@@ -985,6 +1000,26 @@ try {
   checkpoint = 'counters';
   need(terminalResponses > 0 && sessionRenewals === 3 && actionWrites === 7 && forbiddenWrites === 0 && errors === 0 && external === 0);
 
+  phase = 'progress-access-ended'; checkpoint = 'isolated-progress-refusal';
+  controlledAccessFailure = false;
+  controlledProgressAccessFailure = true;
+  await page.route(config.origin + prefix + '/reviews/rounds/progress?*', async route => {
+    progressAccessFailures++;
+    await route.fulfill({status:401,contentType:'application/json',body:JSON.stringify({error:{code:'unauthorized',message:'Synthetic progress-only access refusal.'}})});
+  });
+  // Access failure preserves the selected project route for reconnect.
+  checkpoint = 'reconnect-input';
+  await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+  await page.getByLabel('Project credential', {exact:true}).fill(token);
+  await page.getByRole('button', {name:'Connect to project',exact:true}).click();
+  checkpoint = 'progress-refusal';
+  await expect.poll(() => progressAccessFailures).toBe(1);
+  checkpoint = 'session-cleanup';
+  await expect.poll(() => sessionDeletes).toBe(4);
+  await page.getByRole('button', {name:'Connect to project',exact:true}).waitFor();
+  need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === null);
+  need(sessionPosts === 4 && sessionRenewals === 3 && actionWrites === 7 && forbiddenWrites === 0 && errors === 0 && external === 0);
+
   phase = 'cleanup'; operation = 'cleanup'; checkpoint = 'context-close'; publishProgress();
   await context.close();
   checkpoint = 'browser-close'; publishProgress();
@@ -992,7 +1027,7 @@ try {
   checkpoint = 'server-close'; publishProgress();
   await server.close(); server = undefined;
   need(!progressFailed);
-  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
+  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, progress_access_refusals:progressAccessFailures, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
 } catch (error) {
   failureClass = error?.name === 'TimeoutError' || /timeout|timed out|exceeded.*limit/i.test(error?.message || '') ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
   const failureName = ['TimeoutError','Error','AssertionError','TypeError','ReferenceError','RangeError'].includes(error?.name) ? error.name : 'Other';

@@ -8,6 +8,7 @@ import type {
 } from './types';
 import { runMessageWatch, runEventWatch, type MessageWatchSource, type EventWatchCallbacks } from './events';
 import { validPresentationSnapshot, validPresentation, validMetadataPage, validPresentationConfig, type PresentationConfig } from './presentation';
+import { progressPulls, validReviewProgress, type ReviewProgress } from './review-progress';
 import type { PresentationSnapshot, PresentationRevision, ProjectMetadataPage } from './types';
 import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
 
@@ -887,6 +888,13 @@ export class Api {
       previous = row.revision;
     }
     return value as Page<JobWorkstreamHistoryEntry>;
+  }
+  async reviewProgress(pulls: number[], signal?: AbortSignal): Promise<ReviewProgress> {
+    if (!progressPulls(pulls)) throw new ApiError('invalid_request', 'Select between one and one hundred distinct pull request numbers.');
+    const selected = [...pulls];
+    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/rounds/progress'), new URLSearchParams({ pull_numbers: selected.join(',') })), signal, undefined, 128 * 1024, assessmentJSON);
+    if (!validReviewProgress(value, this.projectId, selected)) throw new ApiError('invalid_response', 'The service returned invalid current round limits.');
+    return value;
   }
   async reviewQueue(options: PageOptions = {}, signal?: AbortSignal): Promise<ReviewQueue> {
     const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), pageOptions(options)), signal);

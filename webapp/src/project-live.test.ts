@@ -25,6 +25,14 @@ function fixture() {
 }
 
 describe('live private project views', () => {
+  it('updates current round occupancy without refetching queue or pinned review history', async () => {
+    const f=fixture();const progress=f.add(['reviews','current','round-progress',[31,32]]);
+    const queue=f.add(['reviews','current','queue','']);const history=f.add(['reviews','snapshot_old','run','run_one']);const inbox=f.add(['inbox','']);
+    try { await refreshProjectMetadata(f.client,key,page([{event_type:'review.requested',resource_id:'operation_one'},{event_type:'review.operation_updated',resource_id:'operation_two'}]),new AbortController().signal);
+      expect(progress.reads()).toBe(1);for(const query of [queue,history,inbox])expect(query.reads()).toBe(0);
+    } finally {f.close();}
+  });
+
   it('refreshes imported job views without replaying messages or fetching unopened bodies', async () => {
     const f = fixture();
     const jobs = f.add(['jobs', '', false, '']);

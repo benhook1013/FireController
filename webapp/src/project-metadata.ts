@@ -51,6 +51,8 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
       add('delivery'); add('worker-primary', id); add('worker-primary-history', id);
     } else if (type === 'note.created' || type === 'note.updated') {
       add('notes'); add('note', id); add('note-history', id);
+    } else if (type === 'review.requested' || type === 'review.operation_updated') {
+      add('reviews', 'current', 'round-progress');
     } else if (type.startsWith('review.') || type.startsWith('reviews.')) {
       add('reviews', 'current'); add('reviews', 'policy-assessment');
     }

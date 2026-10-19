@@ -157,7 +157,10 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 
 func holdOperation(ctx context.Context, tx *sql.Tx, o Operation, reason, at string) error {
 	_, err := tx.ExecContext(ctx, `UPDATE review_operations SET state='held',reason=?,revision=revision+1,updated_at=? WHERE id=?`, reason, at, o.ID)
-	return err
+	if err != nil {
+		return err
+	}
+	return core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{})
 }
 
 func readAttempt(ctx context.Context, tx EvidenceQuery, project, id string) (Attempt, error) {
@@ -254,6 +257,11 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if err = e.transitionRow(ctx, tx, a, "admitted", at); err != nil {
 			return err
 		}
+		if state != "posting" && state != "active" && state != "uncertain" {
+			if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+				return err
+			}
+		}
 		result = a
 		return nil
 	})
@@ -336,6 +344,11 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 				return err
 			}
 			if err = completeRoundControl(ctx, tx, project, a.OperationID); err != nil {
+				return err
+			}
+		}
+		if state != "posting" && state != "active" && state != "uncertain" {
+			if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
 				return err
 			}
 		}
@@ -423,6 +436,11 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			}
 			if err = e.transitionRow(ctx, tx, a, "supervisor_interrupted", at); err != nil {
 				return err
+			}
+			if state == "cancelled" {
+				if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+					return err
+				}
 			}
 			changed = append(changed, a.OperationID)
 		}

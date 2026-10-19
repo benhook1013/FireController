@@ -17,10 +17,11 @@ try{
   // Begin with canonical semantic keys and use a known contrast-valid fixture.
   // Every rendered family has dark text on white; focus contrasts all surfaces.
   const theme={...JSON.parse(defaults).theme,focus:'#767676',accent_background:'#000000',accent_text:'#fffffe',accent_soft_background:'#ffffff'};
-  for(const family of ['canvas','surface','header','hero','active','blocked','parked','completed']){
+  for(const family of ['canvas','surface','header','hero','active','blocked','parked','completed','merged']){
     theme[family+'_background']='#ffffff';theme[family+'_text']='#000000';
     if(['canvas','surface','header','hero'].includes(family))theme[family+'_muted']='#000000';
   }
+  theme.merged_rail='#ffffff';theme.merged_rail_text='#000000';
   phase='fixture';
   await fixture('PUT',config.project,config.worker,'/presentation',{expected_revision:0,presentation:{name:'Refresh project A',brand_name:'Initial brand A',theme}});
   const initialJob=await fixture('POST',config.project,config.worker,'/jobs',{title:'Initial A job',brief:'Synthetic initial project work.',worker_id:config.worker},201);
