@@ -117,6 +117,9 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	project, worker, _, workerFile := seedAccess(t, ctx, data, bootstrap.instance, strings.TrimSpace(string(admin)), private)
 	originalSnapshot := seedRunSelectionConfiguration(t, ctx, data, catalogPath, project, worker, strings.TrimSpace(string(admin)), 0, []int64{2, 3}, true)
 	initial := readUpgradeState(t, ctx, data)
+	if _, ok := initial.tables["review_front_frames"]; !ok || initial.counts["review_front_frames"] != 0 {
+		t.Fatal("fresh packaged front cache is absent or already populated")
+	}
 	daemon := startDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogPath)
 	target, _ := url.Parse("http://" + daemon.address)
 	var targetMu sync.RWMutex
@@ -154,6 +157,49 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 		return out
 	}
 	call("profile", "create", "--server", gateway.URL, "--instance", bootstrap.instance, "--project", project, "--worker", worker, "--credential-file", workerFile)
+	// These are ordinary local project reads, without worker/session attribution
+	// or a provider-capable tool. The same gateway and current daemon are used.
+	workerToken, err := os.ReadFile(workerFile)
+	if err != nil {
+		t.Fatal("private front-read authority unavailable")
+	}
+	privateWorkerToken := bytes.TrimSpace(workerToken)
+	frontTransport := &http.Transport{Proxy: nil}
+	t.Cleanup(frontTransport.CloseIdleConnections)
+	frontHTTP := &http.Client{Transport: frontTransport, Timeout: stepTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	frontReads := 0
+	readFront := func() reviewexec.FrontSnapshot {
+		t.Helper()
+		readCtx, stop := context.WithTimeout(ctx, stepTimeout)
+		defer stop()
+		request, err := http.NewRequestWithContext(readCtx, http.MethodGet, gateway.URL+"/api/v1/projects/"+project+"/reviews/fronts", nil)
+		if err != nil {
+			t.Fatal("front-read request unavailable")
+		}
+		request.Header.Set("Authorization", "Bearer "+string(privateWorkerToken))
+		request.Header.Set("X-FC-Instance", bootstrap.instance)
+		response, err := frontHTTP.Do(request)
+		if err != nil {
+			t.Fatal("packaged local front read unavailable")
+		}
+		body, err := io.ReadAll(io.LimitReader(response.Body, (64<<10)+1))
+		response.Body.Close()
+		frontReads++
+		if err != nil || response.StatusCode != http.StatusOK || len(body) > 64<<10 || bytes.Contains(body, privateWorkerToken) {
+			t.Fatal("invalid/private packaged front response")
+		}
+		safe(body)
+		var value reviewexec.FrontSnapshot
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&value) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			t.Fatal("invalid packaged front JSON")
+		}
+		if value.ProjectID != project || !value.Configured || value.RepositoryID != 991 || value.PolicyRevision != 1 || len(value.Channels) != 1 || value.Channels[0].Channel != "cli" {
+			t.Fatal("packaged front scope/configuration differs")
+		}
+		return value
+	}
 	originalArgs := []string{"reviews", "start", "--channel", "cli", "--expect-pr", "3", "--expected-configuration-revision", "1", "--key", "selected-once", "--wait-seconds", "0"}
 	enqueueStarted := time.Now()
 	original := call(originalArgs...)
@@ -186,9 +232,16 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	}
 	// Actual packaged provider reads update pre-existing display facts without
 	// another provider request, while the original pinned snapshot stays intact.
+	var currentSnapshot string
 	for _, number := range []string{"2", "3"} {
 		var current client.ReviewPull
 		decode(t, call("reviews", "pull", number), &current)
+		if currentSnapshot == "" {
+			currentSnapshot = current.SnapshotID
+		}
+		if current.SnapshotID != currentSnapshot || currentSnapshot == originalSnapshot {
+			t.Fatal("current source snapshot is missing or inconsistent")
+		}
 		if current.Pull.Title != "Synthetic selection target" || current.Pull.Diff == nil || *current.Pull.Diff != (client.ReviewPullDiff{Files: 1, Additions: 3, Deletions: 2}) || current.Pull.IsDraft == nil || *current.Pull.IsDraft {
 			t.Fatal("fresh source metadata missing from actual CLI read")
 		}
@@ -200,6 +253,19 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	}
 	if !reflect.DeepEqual(provider.inventory(), expectedFirst) {
 		t.Fatal("stored metadata reads reacquired provider facts")
+	}
+	fronts := readFront()
+	if fronts.ConfigurationRevision != 1 || fronts.SnapshotID != currentSnapshot || !reflect.DeepEqual(fronts.Queue, []int64{2, 3}) {
+		t.Fatal("front response is not bound to the current stored queue")
+	}
+	front := fronts.Channels[0]
+	_, observedErr := time.Parse(time.RFC3339Nano, front.SourceObservedAt)
+	_, checkedErr := time.Parse(time.RFC3339Nano, front.CheckedAt)
+	if front.State != "ready" || front.Reason != "" || front.PullNumber != 3 || front.HeadSHA != strings.Repeat("a", 40) || front.BaseSHA != strings.Repeat("b", 40) || front.BaseRef != "main" || observedErr != nil || checkedErr != nil {
+		t.Fatal("verified selected front was not retained with its source identities/times")
+	}
+	if !reflect.DeepEqual(provider.inventory(), expectedFirst) {
+		t.Fatal("local front read acquired provider facts")
 	}
 	// Expect-PR is a genuine assertion: the closed channel front remains PR3,
 	// so another explicit invocation expecting PR2 creates no native child/Git.
@@ -315,6 +381,16 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	targetMu.Lock()
 	target = next
 	targetMu.Unlock()
+	changedFronts := readFront()
+	if changedFronts.ConfigurationRevision != 2 || changedFronts.SnapshotID != currentSnapshot || !reflect.DeepEqual(changedFronts.Queue, []int64{3, 2}) || changedFronts.Channels[0].State != "unknown" || changedFronts.Channels[0].Reason != "configuration_changed" || changedFronts.Channels[0].PullNumber != 0 || changedFronts.Channels[0].HeadSHA != "" || changedFronts.Channels[0].BaseSHA != "" || changedFronts.Channels[0].BaseRef != "" {
+		t.Fatal("old source frame invented a front after configuration changed")
+	}
+	if changedFronts.Channels[0].CheckedAt == "" || changedFronts.Channels[0].SourceObservedAt == "" || !reflect.DeepEqual(provider.inventory(), expectedProvider) {
+		t.Fatal("stale front lost retained observation times or reacquired source")
+	}
+	if beforeRestart.tables["review_front_frames"] != afterConfig.tables["review_front_frames"] || beforeRestart.counts["review_front_frames"] != afterConfig.counts["review_front_frames"] {
+		t.Fatal("configuration edit changed retained source frame")
+	}
 	replayArgs := append([]string(nil), originalArgs...)
 	replayArgs[len(replayArgs)-1] = "2"
 	var replay client.ReviewRunState
@@ -333,7 +409,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	if !reflect.DeepEqual(final, afterConfig) {
 		t.Fatal("restart/recovery/read altered retained tables")
 	}
-	changed := map[string]bool{"review_selections": true, "review_operations": true, "review_execution_attempts": true, "review_execution_transitions": true, "review_execution_reservations": true, "events": true, "receipts": true, "sqlite_sequence": true}
+	changed := map[string]bool{"review_front_frames": true, "review_selections": true, "review_operations": true, "review_execution_attempts": true, "review_execution_transitions": true, "review_execution_reservations": true, "events": true, "receipts": true, "sqlite_sequence": true}
 	for _, name := range []string{"review_snapshots", "review_workspace", "review_current_pulls", "review_pull_versions", "review_pull_memberships", "review_current_attempts", "review_attempt_versions", "review_attempt_memberships", "review_current_totals", "review_current_attempt_order"} {
 		changed[name] = true
 	}
@@ -342,7 +418,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 			t.Fatalf("selection changed unrelated table %s", name)
 		}
 	}
-	if beforeRestart.counts["review_selections"] != 2 || beforeRestart.counts["review_operations"] != 1 || beforeRestart.counts["review_execution_attempts"] != 1 || beforeRestart.counts["review_execution_reservations"] != 0 {
+	if beforeRestart.counts["review_front_frames"] != 1 || beforeRestart.counts["review_selections"] != 2 || beforeRestart.counts["review_operations"] != 1 || beforeRestart.counts["review_execution_attempts"] != 1 || beforeRestart.counts["review_execution_reservations"] != 0 {
 		t.Fatal("selection duplicated work or retained false reservation")
 	}
 	for _, name := range []string{"review_execution_evidence", "review_adjudication_state", "review_round_completions"} {
@@ -356,10 +432,10 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 			t.Fatal("private immutable fixture input changed")
 		}
 	}
-	if unexpected.Load() != 0 || provider.forbidden.Load() != 0 {
+	if frontReads != 2 || unexpected.Load() != 0 || provider.forbidden.Load() != 0 {
 		t.Fatal("fixture observed unexpected method/route/origin")
 	}
-	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d loopback_github_gets=8 git_stub_calls=1 cli_review_calls=0 native_operations=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load())
+	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d local_front_reads=2 loopback_github_gets=8 git_stub_calls=1 cli_review_calls=0 native_operations=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load())
 }
 
 func runSelectionShellQuote(value string) string {

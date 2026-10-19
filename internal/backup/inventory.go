@@ -222,8 +222,9 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 6, "inbox": 1, "reviews": 7, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "review_rounds": 2, "review_round_adoption": 1, "review_selection": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 6, "inbox": 1, "reviews": 7, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "review_rounds": 2, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"review_front_frames":               {"review_fronts", 1, "project_id channel repository_id configuration_revision checked_at source_observed_at complete source_reason prefix_json"},
 	"review_selections":                 {"review_selection", 1, "id project_id actor_id worker_id channel configuration_revision policy_revision capability_fingerprint expected_pull_number state reason revision operation_id created_at updated_at"},
 	"review_round_adoptions":            {"review_round_adoption", 1, "project_id pull_number channel grant_revision epoch source source_key source_sha256 prepared_json"},
 	"review_round_controls":             {"review_rounds", 1, "project_id pull_number channel revision epoch grant_revision closed minimum maximum taper used dry tapered actor_id created_at updated_at"},
@@ -971,6 +972,11 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	if versions["review_fronts"] > 0 {
+		if err = reviewexec.ValidateFrontSnapshot(ctx, tx); err != nil {
+			return invalid()
+		}
+	}
 	if versions["review_selection"] > 0 {
 		if err = reviewexec.ValidateSelectionSnapshot(ctx, tx); err != nil {
 			return invalid()
@@ -1336,6 +1342,7 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"review_front_frames":               {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
 	"review_selections":                 {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_policy_config", "project_id,policy_revision", "project_id,revision", "NO ACTION")},
 	"review_round_adoptions":            {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
 	"review_round_controls":             {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},

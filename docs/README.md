@@ -11,6 +11,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Delivery and Project website](browser-experience.md): default worker lanes and review queue, merge-head hero and flexible editorial project presentation.
 
 - [Legacy adoption](legacy-adoption.md): optional source-specific tooling, selected retention and guarded native historical coordination imports, with explicit implementation gaps.
+- [Stored review fronts](review-fronts.md): bounded verified source frames, current local channel assessment and honest browser front/queued/closed labels.
 - [Per-PR review rounds](review-round-controls.md): retained round limits, taper, channel closure and independent queue scheduling for adoption.
 - [Public project website](public-site.md): shareable project showcase, publication selection and the public/private field boundary.
 - [Project presentation and metadata](project-presentation.md): selected appearance records, semantic theme validation and isolated live project updates.

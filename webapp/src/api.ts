@@ -10,6 +10,7 @@ import type {
 import { runMessageWatch, runEventWatch, type MessageWatchSource, type EventWatchCallbacks } from './events';
 import { validPresentationSnapshot, validPresentation, validMetadataPage, validPresentationConfig, type PresentationConfig } from './presentation';
 import { progressPulls, validReviewProgress, type ReviewProgress } from './review-progress';
+import type { ReviewFronts } from './review-fronts';
 import type { PresentationSnapshot, PresentationRevision, ProjectMetadataPage } from './types';
 import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
 
@@ -911,6 +912,22 @@ export class Api {
     const value = await this.finiteGet(withQuery(this.projectRoute('reviews/rounds/progress'), new URLSearchParams({ pull_numbers: selected.join(',') })), signal, undefined, 128 * 1024, assessmentJSON);
     if (!validReviewProgress(value, this.projectId, selected)) throw new ApiError('invalid_response', 'The service returned invalid current round limits.');
     return value;
+  }
+  async reviewFronts(signal?: AbortSignal): Promise<ReviewFronts> {
+    const value = await this.finiteGet(this.projectRoute('reviews/fronts'), signal, undefined, 64 * 1024, assessmentJSON);
+    const bad = () => new ApiError('invalid_response', 'The service returned invalid current review fronts.');
+    if (!record(value) || !keys(value, ['project_id','configured','repository_id','configuration_revision','policy_revision','queue','channels'], ['snapshot_id']) || value.project_id !== this.projectId || typeof value.configured !== 'boolean' || !positive(value.repository_id) || !nonnegative(value.configuration_revision) || !nonnegative(value.policy_revision) || value.snapshot_id !== undefined && (!id(value.snapshot_id) || !value.snapshot_id.startsWith('review_snapshot_')) || !Array.isArray(value.queue) || value.queue.length > 100 || !value.queue.every(pullNumber) || new Set(value.queue).size !== value.queue.length || !Array.isArray(value.channels) || value.channels.length > 2) throw bad();
+    const seen = new Set<string>();
+    for (const channel of value.channels) {
+      if (!record(channel) || !keys(channel, ['channel','state'], ['reason','pull_number','head_sha','base_sha','base_ref','source_observed_at','checked_at']) || channel.channel !== 'hosted' && channel.channel !== 'cli' || seen.has(channel.channel) || typeof channel.state !== 'string' || !['ready','held','complete','unknown'].includes(channel.state) || channel.reason !== undefined && (typeof channel.reason !== 'string' || !/^[a-z][a-z0-9_]{0,127}$/u.test(channel.reason)) || channel.source_observed_at !== undefined && !assessmentTime(channel.source_observed_at) || channel.checked_at !== undefined && !assessmentTime(channel.checked_at)) throw bad();
+      seen.add(channel.channel);
+      if (channel.pull_number !== undefined) {
+        if (!pullNumber(channel.pull_number) || !value.queue.includes(channel.pull_number) || channel.state !== 'ready' && channel.state !== 'held' || ![channel.head_sha,channel.base_sha].every(item => typeof item === 'string' && /^[a-f0-9]{40}$/u.test(item)) || !checkpointText(channel.base_ref,256,true) || !assessmentTime(channel.source_observed_at) || !assessmentTime(channel.checked_at)) throw bad();
+      } else if (['head_sha','base_sha','base_ref'].some(key => Object.hasOwn(channel,key)) || channel.state === 'ready') throw bad();
+    }
+    if (value.configured ? !positive(value.configuration_revision) || value.queue.length === 0 || value.channels.length === 0 : value.configuration_revision !== 0 || value.policy_revision !== 0 || value.queue.length !== 0 || value.channels.length !== 0) throw bad();
+    if (value.channels.some(channel => record(channel) && channel.state === 'ready') && (!value.snapshot_id || !positive(value.policy_revision))) throw bad();
+    return value as unknown as ReviewFronts;
   }
   async reviewQueue(options: PageOptions = {}, signal?: AbortSignal): Promise<ReviewQueue> {
     const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), pageOptions(options)), signal);

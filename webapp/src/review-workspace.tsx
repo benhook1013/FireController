@@ -14,6 +14,8 @@ import './review-queue.css';
 import './review-history.css';
 import { useReviewProgress, ReviewProgressView } from './review-progress-view';
 import type { ReviewProgressItem, ReviewRoundProgress } from './review-progress';
+import { currentReviewFronts, reviewQueueBadges, type ReviewFronts } from './review-fronts';
+import { useReviewFronts } from './review-fronts-view';
 import type { Project, ReviewGroup, ReviewAttemptSummary, ReviewAttemptItem, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
 
 const pageSize = 20;
@@ -122,13 +124,14 @@ export function ReviewDetailsLink({ number, snapshot }: { number: number; snapsh
   const { home } = useWorkspace();
   return <Link className="review-details-link" to={reviewLink(home, 'pulls', number, snapshot)} aria-label={`Review details for PR #${number}`}><span>Review details</span><span className="review-link-arrow" aria-hidden="true">↗</span></Link>;
 }
-function ReviewQueueRow({ pull, snapshot, distance, index, progress }: { pull: ReviewPullSummary; snapshot: string; distance?: number; index: number; progress?: ReviewProgressItem }) {
+function ReviewQueueRow({ pull, snapshot, distance, index, progress, fronts }: { pull: ReviewPullSummary; snapshot: string; distance?: number; index: number; progress?: ReviewProgressItem; fronts?: ReviewFronts }) {
   const { session } = useWorkspace();
   const highlight = useSemanticHighlight(pullDisplayFingerprint(pull));
   const external = githubLink(session.project, `pull/${pull.number}`);
   const position = distance === undefined ? String(index + 1).padStart(2, '0') : formatQueueDistance(distance);
   const front = distance === 1;
-  return <li id={`review-pr-${pull.number}`} className={`review-queue-row review-row-${pull.state}${front ? ' review-row-front' : ''} ${highlight}`}><span className="review-queue-position" aria-label={distance === undefined ? `Stored order ${position} on this page` : `Queue distance ${position}${front ? ': first open PR' : ''}`}>{position}</span><div className="review-queue-content"><div className="review-pull-heading"><span className="review-number">#{pull.number}</span><h3>{external ? <a href={external} target="_blank" rel="noopener noreferrer">{pull.title}</a> : pull.title}</h3></div><ReviewPullFacts pull={pull} /><ReviewRunsView number={pull.number} snapshot={snapshot} head={pull.head_sha} attempts={pull.latest_attempts} expected={pull.run_count} progress={progress} /><ReviewDetailsLink number={pull.number} snapshot={snapshot} /></div></li>;
+  const badges = reviewQueueBadges(pull,snapshot,fronts,progress);
+  return <li id={`review-pr-${pull.number}`} className={`review-queue-row review-row-${pull.state}${front ? ' review-row-front' : ''} ${highlight}`}><span className="review-queue-position" aria-label={distance === undefined ? `Stored order ${position} on this page` : `Queue distance ${position}${front ? ': first open PR' : ''}`}>{position}</span><div className="review-queue-content"><div className="review-pull-heading"><span className="review-number">#{pull.number}</span><h3>{external ? <a href={external} target="_blank" rel="noopener noreferrer">{pull.title}</a> : pull.title}</h3>{badges.map(badge=><span key={badge.kind} className={`badge review-position-${badge.kind}`} title={badge.description}>{badge.text}</span>)}</div><ReviewPullFacts pull={pull} /><ReviewRunsView number={pull.number} snapshot={snapshot} head={pull.head_sha} attempts={pull.latest_attempts} expected={pull.run_count} progress={progress} /><ReviewDetailsLink number={pull.number} snapshot={snapshot} /></div></li>;
 }
 export function reviewQueueHashTarget(items: ReviewPullSummary[] | undefined, hash: string): string | undefined {
   const pull = items?.find(item => hash === `#review-pr-${item.number}`);
@@ -145,6 +148,8 @@ export function ReviewQueueView({ embedded = false }: { embedded?: boolean }) {
   const query = useQuery({ queryKey: [...key, 'reviews', paging.number === 1 ? 'current' : continuationSnapshot, 'queue', paging.cursor], queryFn: ({ signal }) => session.api.reviewQueue({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
   const page = query.data;
   const progress = useReviewProgress(page?.items.map(pull => pull.number) ?? []);
+  const fronts = useReviewFronts(!!page?.configured);
+  const currentFronts = page ? currentReviewFronts(page.snapshot_id, page.items, fronts.error ? undefined : fronts.data) : undefined;
   const distances = page ? reviewQueueDistances(page.items, paging.number === 1) : [];
   const sections = page ? groupReviewQueue(page.items, groups) : [];
   useEffect(() => {
@@ -159,7 +164,7 @@ export function ReviewQueueView({ embedded = false }: { embedded?: boolean }) {
     return () => cancelAnimationFrame(frame);
   }, [page, location.hash, location.key]);
   const navigation = { ...paging, next: (cursor: string) => { if (page) setContinuationSnapshot(page.snapshot_id); paging.next(cursor); } };
-  return <section id="review-queue" className={embedded ? 'delivery-reviews' : ''} aria-labelledby="review-queue-title"><div className="delivery-section-heading"><h2 id="review-queue-title">{label}</h2></div><ReadState error={query.error} loading={query.isPending} empty={false}>{page && (page.configured ? <><ReviewProvenance value={page} /><ReviewNotice />{progress.error && <p className="notice">Current round limits could not be loaded. Retained review history remains available.</p>}<section className="panel review-queue-panel">{sections.map((section, sectionIndex) => <section key={sectionIndex} className={`review-queue-group${section.title ? '' : ' review-queue-ungrouped'}`} {...(section.title ? { 'aria-labelledby': `review-group-${sectionIndex}` } : {})}>{section.title && <h3 id={`review-group-${sectionIndex}`} className="review-queue-group-title">{section.title}</h3>}<ul className="review-queue">{section.rows.map(({ pull, index }) => <ReviewQueueRow key={pull.number} pull={pull} snapshot={page.snapshot_id} distance={distances[index]} index={index} progress={progress.error ? undefined : progress.data?.items.find(item => item.pull_number === pull.number)} />)}</ul></section>)}{page.items.length === 0 && <p className="empty">No pull requests in the review queue.</p>}{(page.has_more || paging.number > 1) && <Pager paging={navigation} page={page} label="review queue" busy={query.isFetching} />}</section></> : <section className="panel empty"><h3>No review queue yet</h3></section>)}</ReadState></section>;
+  return <section id="review-queue" className={embedded ? 'delivery-reviews' : ''} aria-labelledby="review-queue-title"><div className="delivery-section-heading"><h2 id="review-queue-title">{label}</h2></div><ReadState error={query.error} loading={query.isPending} empty={false}>{page && (page.configured ? <><ReviewProvenance value={page} /><ReviewNotice />{fronts.error && <p className="notice">Review position could not be loaded.</p>}{progress.error && <p className="notice">Current round limits could not be loaded. Retained review history remains available.</p>}<section className="panel review-queue-panel">{sections.map((section, sectionIndex) => <section key={sectionIndex} className={`review-queue-group${section.title ? '' : ' review-queue-ungrouped'}`} {...(section.title ? { 'aria-labelledby': `review-group-${sectionIndex}` } : {})}>{section.title && <h3 id={`review-group-${sectionIndex}`} className="review-queue-group-title">{section.title}</h3>}<ul className="review-queue">{section.rows.map(({ pull, index }) => <ReviewQueueRow key={pull.number} pull={pull} snapshot={page.snapshot_id} distance={distances[index]} index={index} progress={progress.error ? undefined : progress.data?.items.find(item => item.pull_number === pull.number)} fronts={currentFronts} />)}</ul></section>)}{page.items.length === 0 && <p className="empty">No pull requests in the review queue.</p>}{(page.has_more || paging.number > 1) && <Pager paging={navigation} page={page} label="review queue" busy={query.isFetching} />}</section></> : <section className="panel empty"><h3>No review queue yet</h3></section>)}</ReadState></section>;
 }
 function useReviewArchive<T extends ReviewRunSummary | ReviewAttemptItem>(feed: 'runs' | 'attempts', number: number, snapshot: string, expected: number) {
   const { session, key } = useWorkspace();

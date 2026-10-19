@@ -46,6 +46,7 @@ func (r *runReads) Pull(ctx context.Context, repo string, n int64) (reviewprovid
 
 type runChoice struct {
 	state, reason string
+	sourceReason  string
 	prefix        []SourcePlan
 	number        int64
 	head          string
@@ -63,75 +64,32 @@ func runReason(err error) string {
 	return "source_unavailable"
 }
 
-// runFront uses only a fixed fresh source prefix, and reads local obligations
-// transactionally. It never chooses a convenient suffix past a blocked front.
-func (e *Engine) runFront(ctx context.Context, q *sql.Tx, r Run, repo int64, prefix []SourcePlan) (int64, string, error) {
-	for _, plan := range prefix {
-		if plan.Repository.ID != repo || !sameTarget(plan.Pull, repo, plan.Pull.Number) {
-			return 0, "source_unavailable", nil
-		}
-		if plan.Pull.Merged {
-			continue
-		}
-		pendingRoutes, err := pendingIncomingRoutes(ctx, q, r.ProjectID, plan.Pull.Number)
-		if err != nil {
-			var failure *core.Error
-			if errors.As(err, &failure) && failure.Code == "storage_unavailable" {
-				return 0, "routed_findings_unavailable", nil
-			}
-			return 0, "", err
-		}
-		if pendingRoutes > 0 {
-			return 0, "routed_findings_pending", nil
-		}
-		anchor := Anchor{RepositoryID: repo, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef}
-		state, err := comparison(ctx, q, r.ProjectID, repo, plan.Pull.Number, anchor, r.Channel)
-		if err != nil {
-			var failure *core.Error
-			if errors.As(err, &failure) && failure.Code == "storage_unavailable" {
-				return 0, "review_evidence_unavailable", nil
-			}
-			return 0, "", err
-		}
-		if state.Pending {
-			return 0, "review_evidence_pending", nil
-		}
-		if state.RoundsConfigured && state.RoundsComplete || !state.RoundsConfigured && state.Covered {
-			continue
-		}
-		if plan.Pull.State != "open" {
-			return 0, "front_unavailable", nil
-		}
-		return plan.Pull.Number, "", nil
-	}
-	return 0, "", nil
-}
 func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader) (runChoice, error) {
 	reads := &runReads{reader: reader, repos: map[int64]reviewprovider.Repository{}, pulls: map[string]map[int64]reviewprovider.Pull{}}
 	repository, err := reads.Repository(ctx, repo)
 	if err != nil {
-		return runChoice{state: "held", reason: runReason(err)}, nil
+		return runChoice{state: "held", reason: runReason(err), sourceReason: runReason(err)}, nil
 	}
 	if repository.ID != repo || !repositoryPattern(repository.FullName) || repository.DefaultBranch == "" {
-		return runChoice{state: "held", reason: "repository_changed"}, nil
+		return runChoice{state: "held", reason: "repository_changed", sourceReason: "repository_changed"}, nil
 	}
 	choice := runChoice{state: "empty", reason: "queue_complete"}
 	for _, n := range c.Queue {
 		if ctx.Err() != nil {
-			return runChoice{state: "held", reason: "source_unavailable"}, nil
+			return runChoice{state: "held", reason: "source_unavailable", sourceReason: "source_unavailable"}, nil
 		}
 		pull, err := reads.Pull(ctx, repository.FullName, n)
 		if err != nil {
-			return runChoice{state: "held", reason: runReason(err)}, nil
+			return runChoice{state: "held", reason: runReason(err), sourceReason: runReason(err)}, nil
 		}
 		if !sameTarget(pull, repo, n) || pull.State != "open" && pull.State != "closed" || pull.Merged && pull.State != "closed" {
-			return runChoice{state: "held", reason: "source_unavailable"}, nil
+			return runChoice{state: "held", reason: "source_unavailable", sourceReason: "source_unavailable"}, nil
 		}
 		plan := SourcePlan{Repository: repository, Pull: pull, ParentSHA: pull.BaseSHA, ObservedAt: stamp()}
 		if !pull.Merged && pull.State == "open" {
 			plan, err = ResolveSource(ctx, reads, repo, c, Request{PullNumber: n, HeadSHA: pull.HeadSHA, Channel: r.Channel})
 			if err != nil {
-				return runChoice{state: "held", reason: runReason(err)}, nil
+				return runChoice{state: "held", reason: runReason(err), sourceReason: runReason(err)}, nil
 			}
 		}
 		choice.prefix = append(choice.prefix, plan)
@@ -303,7 +261,7 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	choice, readErr := e.chooseRun(readCtx, r, repo, configuration, readers[configuration.CapabilityID])
 	if readCtx.Err() != nil {
-		choice = runChoice{state: "held", reason: "source_unavailable"}
+		choice = runChoice{state: "held", reason: "source_unavailable", sourceReason: "source_unavailable"}
 		readErr = nil
 	}
 	cancel()
@@ -332,6 +290,9 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 			return updateRun(ctx, tx, current, "held", reason, "")
 		}
 		if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}, repo, metadataPins, choice.prefix); err != nil {
+			return err
+		}
+		if err = writeFrontFrame(ctx, tx, current, repo, c, choice); err != nil {
 			return err
 		}
 		if choice.state == "held" {

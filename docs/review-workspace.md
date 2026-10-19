@@ -24,6 +24,7 @@ All paths below are relative to `/api/v1/projects/{project_id}`. Existing instan
 | `POST /reviews/import/preview` | Administrator-only, provider-free prepared observation preview; no receipt or write. |
 | `POST /reviews/import/apply` | Administrator-only prepared observation apply bound to its preview, with the existing observation receipt semantics. |
 | `POST /reviews/queue/edits` | Administrator-only bounded selected metadata, retirement and reactivation; preserves omitted history. |
+| `GET /reviews/fronts` | Provider-free current per-channel assessment over a bounded verified source frame; see [fronts](review-fronts.md). |
 | `GET /reviews/queue` | Compact ordered PR summaries, including merged and closed history. |
 | `GET /reviews/pulls/{number}` | One compact PR summary, including latest attempt facts per channel. |
 | `GET /reviews/pulls/{number}/runs` | Newest-first run summaries with cursor pagination. |
