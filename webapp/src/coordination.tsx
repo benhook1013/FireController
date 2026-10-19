@@ -56,6 +56,24 @@ function PrimaryHistory({ workerId }: { workerId: string }) {
   return <div className="coordination-history"><h4>Focus history</h4><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ol>{query.data?.items.map(row => <li key={row.revision}><strong>Revision {row.revision}</strong><p>{row.job_id ? <Link to={jobPath(home, row.job_id)}>Job {row.job_id}</Link> : 'No primary job selected.'}</p><p className="full-text">{row.reason}</p><p className="item-meta">Recorded by {row.actor_id} · Worker {row.actor_worker_id || 'not bound'} · <time dateTime={row.created_at}>{date(row.created_at)}</time></p></li>)}</ol></ReadState><Pager paging={paging} page={query.data} label="focus history" busy={query.isFetching} /></div>;
 }
 
+const noteFilterFields = ['worker_id', 'job_id', 'phase', 'kind', 'status'] as const;
+function validNoteFilters(options: NoteOptions): boolean {
+  // Match Api.notes admission before either URL reads or form navigation.
+  const identity = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+  if ((['worker_id', 'job_id'] as const).some(field => options[field] !== undefined && !identity.test(options[field]!))) return false;
+  if (options.phase !== undefined && (!options.phase || /[\uD800-\uDFFF\p{Cc}]/u.test(options.phase) || /^\p{White_Space}*$/u.test(options.phase) || new TextEncoder().encode(options.phase).byteLength > 200)) return false;
+  if (options.kind !== undefined && options.kind !== 'reminder' && options.kind !== 'source') return false;
+  if (options.status !== undefined && !['pending', 'consumed', 'dismissed', 'all'].includes(options.status)) return false;
+  return options.include_assigned_jobs === undefined || typeof options.include_assigned_jobs === 'boolean' && (!options.include_assigned_jobs || options.worker_id !== undefined);
+}
+export function parseNoteFilters(params: URLSearchParams): NoteOptions | undefined {
+  if ([...noteFilterFields, 'include_assigned_jobs'].some(field => params.getAll(field).length > 1)
+    || params.has('include_assigned_jobs') && !['true', 'false'].includes(params.get('include_assigned_jobs') ?? '')) return undefined;
+  const options: NoteOptions = {};
+  for (const field of noteFilterFields) if (params.has(field)) Object.assign(options, { [field]: params.get(field) });
+  if (params.has('include_assigned_jobs')) options.include_assigned_jobs = params.get('include_assigned_jobs') === 'true';
+  return validNoteFilters(options) ? options : undefined;
+}
 type FilterValues = { worker_id: string; job_id: string; phase: string; kind: string; status: string; include_assigned_jobs: boolean };
 export function NotesView() {
   const [params, setParams] = useSearchParams();
@@ -65,20 +83,19 @@ function NotesBrowser({ params, change }: { params: URLSearchParams; change: (va
   const label = useProjectHeading('notes');
   const [values, setValues] = useState<FilterValues>({ worker_id: params.get('worker_id') ?? '', job_id: params.get('job_id') ?? '', phase: params.get('phase') ?? '', kind: params.get('kind') ?? '', status: params.get('status') ?? 'pending', include_assigned_jobs: params.get('include_assigned_jobs') === 'true' });
   const [formError, setFormError] = useState('');
-  const options: NoteOptions = {};
-  for (const field of ['worker_id', 'job_id', 'phase', 'kind', 'status'] as const) {
-    if (params.has(field)) Object.assign(options, { [field]: params.get(field) });
-  }
-  if (params.has('include_assigned_jobs')) Object.assign(options, { include_assigned_jobs: params.get('include_assigned_jobs') === 'true' });
-  const malformed = ['worker_id', 'job_id', 'phase', 'kind', 'status', 'include_assigned_jobs'].some(field => params.getAll(field).length > 1)
-    || params.has('include_assigned_jobs') && !['true', 'false'].includes(params.get('include_assigned_jobs') ?? '');
+  const options = parseNoteFilters(params);
   const update = (field: keyof FilterValues, value: string | boolean) => setValues(current => ({ ...current, [field]: value }));
   function apply(event: FormEvent) {
     event.preventDefault();
-    if (values.include_assigned_jobs && !values.worker_id) { setFormError('Choose a worker before including assigned jobs.'); return; }
+    const selected: NoteOptions = { include_assigned_jobs: values.include_assigned_jobs };
+    for (const field of noteFilterFields) if (values[field]) Object.assign(selected, { [field]: values[field] });
+    if (!validNoteFilters(selected)) {
+      setFormError(values.include_assigned_jobs && !values.worker_id ? 'Choose a worker before including assigned jobs.' : 'The note filters are invalid. Enter valid filters to continue.');
+      return;
+    }
     setFormError('');
     const next = new URLSearchParams();
-    for (const field of ['worker_id', 'job_id', 'phase', 'kind', 'status'] as const) if (values[field]) next.set(field, values[field]);
+    for (const field of noteFilterFields) if (values[field]) next.set(field, values[field]);
     if (values.include_assigned_jobs) next.set('include_assigned_jobs', 'true');
     change(next);
   }
@@ -93,7 +110,7 @@ function NotesBrowser({ params, change }: { params: URLSearchParams; change: (va
       <button type="submit">Apply note filters</button>
       {formError && <p className="notice" role="alert">{formError}</p>}
     </form>
-    {malformed ? <p className="notice" role="alert">The note filters are invalid. Apply valid filters to continue.</p> : <NotesList options={options} />}
+    {options === undefined ? <p className="notice" role="alert">The note filters are invalid. Apply valid filters to continue.</p> : <NotesList options={options} />}
   </div>;
 }
 function NotesList({ options }: { options: NoteOptions }) {
