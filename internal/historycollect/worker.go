@@ -45,15 +45,39 @@ func (e *Engine) Run(ctx context.Context) (<-chan error, error) {
 	go func() {
 		defer close(done)
 		defer func() { e.start.Lock(); e.running = false; e.start.Unlock() }()
+		retryDelay := 25 * time.Millisecond
 		for ctx.Err() == nil {
 			worked, err := e.advance(ctx)
 			if ctx.Err() != nil {
 				return
 			}
 			if err != nil {
+				var failure *core.Error
+				if errors.As(err, &failure) && failure.Code == "overloaded" {
+					timer := time.NewTimer(retryDelay)
+					select {
+					case <-ctx.Done():
+						if !timer.Stop() {
+							select {
+							case <-timer.C:
+							default:
+							}
+						}
+						return
+					case <-timer.C:
+					}
+					if retryDelay < 250*time.Millisecond {
+						retryDelay *= 2
+						if retryDelay > 250*time.Millisecond {
+							retryDelay = 250 * time.Millisecond
+						}
+					}
+					continue
+				}
 				done <- err
 				return
 			}
+			retryDelay = 25 * time.Millisecond
 			if worked {
 				continue
 			}
@@ -199,10 +223,9 @@ func (e *Engine) advance(ctx context.Context) (bool, error) {
 	}
 	// Retry local writer contention with the already captured response. This
 	// never repeats a provider GET merely because SQLite is temporarily busy.
-	commitCtx, commitCancel := context.WithTimeout(ctx, 15*time.Second)
-	defer commitCancel()
+	commitRetryDelay := 25 * time.Millisecond
 	for {
-		err = e.store.BackgroundWrite(commitCtx, func(ctx context.Context, tx *sql.Tx) error {
+		err = e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			current, err := readOperation(ctx, tx, r.ProjectID, r.ID)
 			if err != nil {
 				return err
@@ -224,6 +247,9 @@ func (e *Engine) advance(ctx context.Context) (bool, error) {
 			}
 			return commitCapture(ctx, tx, current, capture, body, ids)
 		})
+		if ctx.Err() != nil {
+			return true, nil
+		}
 		var failure *core.Error
 		if !errors.As(err, &failure) || failure.Code != "overloaded" {
 			if err == nil {
@@ -231,10 +257,23 @@ func (e *Engine) advance(ctx context.Context) (bool, error) {
 			}
 			return true, err
 		}
+		timer := time.NewTimer(commitRetryDelay)
 		select {
-		case <-commitCtx.Done():
-			return true, err
-		case <-time.After(25 * time.Millisecond):
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return true, nil
+		case <-timer.C:
+		}
+		if commitRetryDelay < 250*time.Millisecond {
+			commitRetryDelay *= 2
+			if commitRetryDelay > 250*time.Millisecond {
+				commitRetryDelay = 250 * time.Millisecond
+			}
 		}
 	}
 }
