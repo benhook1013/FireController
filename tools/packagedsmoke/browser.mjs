@@ -8,6 +8,7 @@ let phase = 'configuration';
 let checkpoint = '';
 let counters = () => ({});
 let failureClass = '';
+let workerHistoryBefore = -1, workerHistoryAfter = -1;
 let sendStatus = 0, replyStatus = 0, conversationMatch = false;
 let lastHTTPStatus = 0;
 let lastAllowWrites = false, lastCanEditPresentation = false;
@@ -75,6 +76,8 @@ try {
         latest_done: await page.locator('.delivery-checkpoint p').filter({hasText:'Latest checkpoint is visible.'}).count(),
         latest_next: await page.locator('.delivery-checkpoint p').filter({hasText:'Continue from the latest checkpoint.'}).count(),
         earlier_done: await page.locator('.delivery-checkpoint p').filter({hasText:'Earlier checkpoint only.'}).count(),
+        worker_history_before: workerHistoryBefore,
+        worker_history_after: workerHistoryAfter,
         inbox_sidebar: await page.locator('.sidebar').count(),
         inbox_heading: await page.getByRole('heading',{name:'Builder inbox',exact:true}).count(),
         readonly_new_message: await page.getByRole('button',{name:'New message',exact:true}).count(),
@@ -319,6 +322,25 @@ try {
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
   await page.getByRole('button',{name:'Select worker Builder',exact:true}).click();
   checkpoint = 'inbox-worker-selected';
+  await page.getByRole('heading',{name:'Builder inbox',exact:true}).waitFor();
+  checkpoint = 'worker-inbox-workers-nav';
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Workers',exact:true}).click();
+  const builderInbox = page.getByRole('button',{name:'Open Builder inbox',exact:true});
+  await builderInbox.waitFor();
+  workerHistoryBefore = await page.evaluate(() => history.state.idx);
+  checkpoint = 'worker-inbox-open';
+  await builderInbox.click();
+  await page.getByRole('heading',{name:'Builder inbox',exact:true}).waitFor();
+  workerHistoryAfter = await page.evaluate(() => history.state.idx);
+  checkpoint = 'worker-inbox-history';
+  need(Number.isInteger(workerHistoryBefore) && workerHistoryAfter === workerHistoryBefore + 1);
+  checkpoint = 'worker-inbox-back';
+  await page.goBack();
+  await page.waitForURL(config.origin + home + '/workers');
+  await page.getByRole('button',{name:'Open Builder inbox',exact:true}).waitFor();
+  need(await page.evaluate(() => history.state.idx) === workerHistoryBefore);
+  checkpoint = 'worker-inbox-return';
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
   await page.getByRole('heading',{name:'Builder inbox',exact:true}).waitFor();
   checkpoint = 'inbox-heading';
   need(await page.locator('.sidebar').count() === 1);
