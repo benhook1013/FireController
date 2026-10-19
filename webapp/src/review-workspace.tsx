@@ -1,5 +1,5 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Link, useLocation, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from './api';
 import { terminalBrowserSession } from './browser-session';
@@ -85,14 +85,14 @@ export function missingPullFacts(pull: ReviewPullSummary): string[] {
   if (!pull.base_ref) missing.push('Base branch was not captured.');
   if (!pull.base_sha) missing.push('Base commit was not captured.');
   if (pull.ci_state === 'unknown') missing.push('CI status is unknown.');
-  if (pull.mergeability === 'unknown') missing.push('Mergeability is unknown.');
+  if (pull.state !== 'merged' && pull.mergeability === 'unknown') missing.push('Mergeability is unknown.');
   if (pull.state === 'unknown') missing.push('Open or closed state is unknown.');
   if (!pull.complete && !missing.length) missing.push('The source marked this PR incomplete without identifying another missing field.');
   return missing;
 }
 export function ReviewPullFacts({ pull }: { pull: ReviewPullSummary }) {
   const missing = missingPullFacts(pull);
-  return <div className="review-pull-facts"><span className={`badge review-state-${pull.state}`}>{reviewLabel(pull.state)}</span><span>CI: {reviewLabel(pull.ci_state)}</span><span>Mergeability: {reviewLabel(pull.mergeability)}</span>{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
+  return <div className="review-pull-facts"><span className={`badge review-state-${pull.state}`}>{reviewLabel(pull.state)}</span><span>CI: {reviewLabel(pull.ci_state)}</span>{pull.state !== 'merged' && <span>Mergeability: {reviewLabel(pull.mergeability)}</span>}{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
 }
 // Only a first bounded page can establish the head from its known predecessors.
 export function reviewQueueDistances(items: ReviewPullSummary[], firstPage: boolean): (number | undefined)[] {
@@ -127,10 +127,16 @@ function ReviewQueueRow({ pull, snapshot, distance, index, progress }: { pull: R
   const external = githubLink(session.project, `pull/${pull.number}`);
   const position = distance === undefined ? String(index + 1).padStart(2, '0') : formatQueueDistance(distance);
   const front = distance === 1;
-  return <li className={`review-queue-row review-row-${pull.state}${front ? ' review-row-front' : ''} ${highlight}`}><span className="review-queue-position" aria-label={distance === undefined ? `Stored order ${position} on this page` : `Queue distance ${position}${front ? ': first open PR' : ''}`}>{position}</span><div className="review-queue-content"><div className="review-pull-heading"><span className="review-number">#{pull.number}</span><h3>{external ? <a href={external} target="_blank" rel="noopener noreferrer">{pull.title}</a> : pull.title}</h3></div><ReviewPullFacts pull={pull} /><ReviewRunsView number={pull.number} snapshot={snapshot} head={pull.head_sha} attempts={pull.latest_attempts} expected={pull.run_count} progress={progress} /><ReviewDetailsLink number={pull.number} snapshot={snapshot} /></div></li>;
+  return <li id={`review-pr-${pull.number}`} className={`review-queue-row review-row-${pull.state}${front ? ' review-row-front' : ''} ${highlight}`}><span className="review-queue-position" aria-label={distance === undefined ? `Stored order ${position} on this page` : `Queue distance ${position}${front ? ': first open PR' : ''}`}>{position}</span><div className="review-queue-content"><div className="review-pull-heading"><span className="review-number">#{pull.number}</span><h3>{external ? <a href={external} target="_blank" rel="noopener noreferrer">{pull.title}</a> : pull.title}</h3></div><ReviewPullFacts pull={pull} /><ReviewRunsView number={pull.number} snapshot={snapshot} head={pull.head_sha} attempts={pull.latest_attempts} expected={pull.run_count} progress={progress} /><ReviewDetailsLink number={pull.number} snapshot={snapshot} /></div></li>;
+}
+export function reviewQueueHashTarget(items: ReviewPullSummary[] | undefined, hash: string): string | undefined {
+  const pull = items?.find(item => hash === `#review-pr-${item.number}`);
+  return pull ? `review-pr-${pull.number}` : undefined;
 }
 export function ReviewQueueView({ embedded = false }: { embedded?: boolean }) {
   const label = useProjectHeading('reviews');
+  const location = useLocation();
+  const lastJump = useRef('');
   const groups = usePresentation()?.review_groups ?? [];
   const { session, key } = useWorkspace();
   const paging = usePaging();
@@ -140,6 +146,17 @@ export function ReviewQueueView({ embedded = false }: { embedded?: boolean }) {
   const progress = useReviewProgress(page?.items.map(pull => pull.number) ?? []);
   const distances = page ? reviewQueueDistances(page.items, paging.number === 1) : [];
   const sections = page ? groupReviewQueue(page.items, groups) : [];
+  useEffect(() => {
+    const target = reviewQueueHashTarget(page?.configured ? page.items : undefined, location.hash);
+    if (!target) { lastJump.current = ''; return; }
+    const jump = `${location.key}:${target}`;
+    if (lastJump.current === jump) return;
+    const frame = requestAnimationFrame(() => {
+      const row = document.getElementById(target);
+      if (row) { row.scrollIntoView(); lastJump.current = jump; }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [page, location.hash, location.key]);
   const navigation = { ...paging, next: (cursor: string) => { if (page) setContinuationSnapshot(page.snapshot_id); paging.next(cursor); } };
   return <section id="review-queue" className={embedded ? 'delivery-reviews' : ''} aria-labelledby="review-queue-title"><div className="delivery-section-heading"><h2 id="review-queue-title">{label}</h2></div><ReadState error={query.error} loading={query.isPending} empty={false}>{page && (page.configured ? <><ReviewProvenance value={page} /><ReviewNotice />{progress.error && <p className="notice">Current round limits could not be loaded. Retained review history remains available.</p>}<section className="panel review-queue-panel">{sections.map((section, sectionIndex) => <section key={sectionIndex} className={`review-queue-group${section.title ? '' : ' review-queue-ungrouped'}`} {...(section.title ? { 'aria-labelledby': `review-group-${sectionIndex}` } : {})}>{section.title && <h3 id={`review-group-${sectionIndex}`} className="review-queue-group-title">{section.title}</h3>}<ul className="review-queue">{section.rows.map(({ pull, index }) => <ReviewQueueRow key={pull.number} pull={pull} snapshot={page.snapshot_id} distance={distances[index]} index={index} progress={progress.error ? undefined : progress.data?.items.find(item => item.pull_number === pull.number)} />)}</ul></section>)}{page.items.length === 0 && <p className="empty">No pull requests in the review queue.</p>}{(page.has_more || paging.number > 1) && <Pager paging={navigation} page={page} label="review queue" busy={query.isFetching} />}</section></> : <section className="panel empty"><h3>No review queue yet</h3></section>)}</ReadState></section>;
 }
