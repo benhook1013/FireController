@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -51,6 +52,103 @@ type deliveryPageValue[T any] struct {
 type deliveryValue struct {
 	Workers deliveryPageValue[deliveryWorkerValue] `json:"workers"`
 	Jobs    deliveryPageValue[deliveryJobValue]    `json:"jobs"`
+}
+
+func TestDeliveryWhitespaceOnlyTruncatedCheckpointPreviewsRetainFullText(t *testing.T) {
+	for _, mode := range []string{"ASCII", "Unicode"} {
+		t.Run(mode, func(t *testing.T) {
+			a := setupAPI(t)
+			project := a.createProject("whitespace-preview", "synthetic/whitespace-preview")
+			token := a.grant(project, "whitespace-preview-reader-writer", "read", "write")
+			worker := a.createWorker(project, "Builder")
+			job := createCheckpointTestJob(t, a, project, token)
+			base := "/api/v1/projects/" + project + "/jobs/" + job.ID
+			donePrefix, nextPrefix, blocker := strings.Repeat(" ", 241), strings.Repeat("\t", 241), ""
+			wantDone, wantNext := strings.Repeat(" ", 240), strings.Repeat("\t", 240)
+			if mode == "Unicode" {
+				donePrefix, nextPrefix = strings.Repeat("\u2003", 81), strings.Repeat("\u3000", 81)
+				wantDone, wantNext = strings.Repeat("\u2003", 80), strings.Repeat("\u3000", 80)
+				blocker = strings.Repeat("\n", 241) + "Waiting for a decision."
+			}
+			done, next := donePrefix+"Completed the stored work.", nextPrefix+"Continue the next step."
+			progressOK(t, a.callWorker(http.MethodPost, base+"/checkpoints", token, worker, "leading-whitespace-checkpoint", map[string]any{
+				"expected_job_revision": 1, "done": done, "next": next, "blocker": blocker,
+			}), http.StatusCreated)
+
+			// Retain every value in the affected durable tables, including the
+			// untrimmed full checkpoint text and existing receipts/events.
+			state := func() map[string]string {
+				t.Helper()
+				out := map[string]string{}
+				for _, table := range []string{"jobs", "job_history", "job_checkpoints", "events", "receipts"} {
+					rows, err := a.store.DB().Query(`SELECT * FROM ` + table + ` ORDER BY rowid`)
+					if err != nil {
+						t.Fatal(err)
+					}
+					columns, err := rows.Columns()
+					if err != nil {
+						t.Fatal(err)
+					}
+					values := [][]any{}
+					for rows.Next() {
+						row := make([]any, len(columns))
+						dest := make([]any, len(columns))
+						for i := range row {
+							dest[i] = &row[i]
+						}
+						if err := rows.Scan(dest...); err != nil {
+							t.Fatal(err)
+						}
+						values = append(values, row)
+					}
+					if err := rows.Err(); err != nil {
+						t.Fatal(err)
+					}
+					rows.Close()
+					raw, err := json.Marshal(values)
+					if err != nil {
+						t.Fatal(err)
+					}
+					out[table] = string(raw)
+				}
+				return out
+			}
+			before, lookups := state(), a.lookups
+			response := a.call(http.MethodGet, "/api/v1/projects/"+project+"/delivery", token, "", nil)
+			progressOK(t, response, http.StatusOK)
+			var delivery deliveryValue
+			decodeResponse(t, response, &delivery)
+			if len(delivery.Jobs.Items) != 1 || delivery.Jobs.Items[0].Checkpoint == nil {
+				t.Fatal("missing Delivery checkpoint", delivery)
+			}
+			preview := delivery.Jobs.Items[0].Checkpoint
+			if preview.Done != wantDone || preview.Next != wantNext || !preview.DoneTruncated || !preview.NextTruncated || len(preview.Done) != 240 || len(preview.Next) != 240 || strings.TrimSpace(preview.Done) != "" || strings.TrimSpace(preview.Next) != "" || !utf8.ValidString(preview.Done) || !utf8.ValidString(preview.Next) {
+				t.Fatal("valid full text did not produce exact bounded whitespace previews", preview)
+			}
+			if mode == "Unicode" && (preview.Blocker != strings.Repeat("\n", 240) || !preview.BlockerTruncated) || mode == "ASCII" && (preview.Blocker != "" || preview.BlockerTruncated) {
+				t.Fatal("optional blocker preview changed", preview)
+			}
+			latest := a.call(http.MethodGet, base+"/checkpoints/latest", token, "", nil)
+			progressOK(t, latest, http.StatusOK)
+			var full struct {
+				Checkpoint checkpointAPIValue `json:"checkpoint"`
+			}
+			decodeResponse(t, latest, &full)
+			if full.Checkpoint.Done != done || full.Checkpoint.Next != next || full.Checkpoint.Blocker != blocker {
+				t.Fatal("checkpoint storage or full read trimmed accepted text")
+			}
+			for _, field := range []string{"done", "next"} {
+				for i, invalid := range []string{"", strings.Repeat(" ", 241), strings.Repeat("\u2003", 81)} {
+					request := map[string]any{"expected_job_revision": 1, "done": "Completed", "next": "Continue"}
+					request[field] = invalid
+					progressOK(t, a.callWorker(http.MethodPost, base+"/checkpoints", token, worker, fmt.Sprintf("blank-full-%s-%d", field, i), request), http.StatusBadRequest)
+				}
+			}
+			if !reflect.DeepEqual(before, state()) || a.lookups != lookups {
+				t.Fatal("stored Delivery/full reads or invalid appends changed rows, receipts/events, or provider calls")
+			}
+		})
+	}
 }
 
 func TestDeliveryReadIsBoundedPrivateAndIncludesLatestCheckpointSummary(t *testing.T) {
