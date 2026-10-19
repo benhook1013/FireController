@@ -26,8 +26,7 @@ class AcquisitionErrorTests(unittest.TestCase):
             side_effect=FrameRefusal('source_requests_not_clear'))
         self.assertEqual((code, stdout), (3, ''))
         self.assertEqual(json.loads(stderr), {
-            'error': 'source_acquisition_refused',
-            'reason': 'source_requests_not_clear',
+            'error': 'source_requests_not_clear',
             'next_action': 'Resolve retained source requests and verify they are clear before a fresh acquisition.',
         })
         self.assertEqual(len(stderr.splitlines()), 1)
@@ -37,7 +36,8 @@ class AcquisitionErrorTests(unittest.TestCase):
         code, stdout, stderr = self.invoke(
             side_effect=FrameRefusal('source_state_changed'))
         self.assertEqual((code, stdout), (3, ''))
-        self.assertEqual(json.loads(stderr)['reason'], 'source_state_changed')
+        self.assertEqual(json.loads(stderr)['error'], 'source_state_changed')
+        self.assertNotIn('reason', json.loads(stderr))
         self.assertIn('fresh sealed handoff', json.loads(stderr)['next_action'])
 
     def test_unknown_or_provider_errors_never_echo_exception_content(self):
@@ -49,7 +49,8 @@ class AcquisitionErrorTests(unittest.TestCase):
             with self.subTest(kind=type(error).__name__):
                 code, stdout, stderr = self.invoke(side_effect=error)
                 self.assertEqual((code, stdout), (3, ''))
-                self.assertEqual(stderr, '{"error":"source_acquisition_refused"}\n')
+                self.assertEqual(json.loads(stderr), {'error':'source_acquisition_refused'})
+                self.assertEqual(len(stderr.splitlines()), 1)
 
     def test_exception_arguments_are_not_formatted_or_coerced(self):
         class PrivateValue:
@@ -62,7 +63,8 @@ class AcquisitionErrorTests(unittest.TestCase):
         for error in (FrameRefusal(PrivateValue()), RuntimeError(PrivateValue())):
             code, stdout, stderr = self.invoke(side_effect=error)
             self.assertEqual((code, stdout), (3, ''))
-            self.assertEqual(stderr, '{"error":"source_acquisition_refused"}\n')
+            self.assertEqual(json.loads(stderr), {'error':'source_acquisition_refused'})
+            self.assertEqual(len(stderr.splitlines()), 1)
 
     def test_success_does_not_add_refusal_or_diagnostic_fields(self):
         result = dict(kind='source_owner_frame', outcome='created', prs=1,
