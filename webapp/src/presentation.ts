@@ -79,11 +79,17 @@ export function validPresentation(v: unknown, project: string): v is Presentatio
 export function validPresentationSnapshot(v: unknown, project: string): v is PresentationSnapshot {
   return object(v) && exact(v, ['presentation', 'event_cursor']) && validPresentation(v.presentation, project) && cursor(v.event_cursor);
 }
+function metadataResource(event: string, value: unknown): boolean {
+  if (event !== 'reviews.rounds_configured') return identity(value);
+  if (typeof value !== 'string') return false;
+  const match = /^([1-9][0-9]{0,9})\/(hosted|cli)$/u.exec(value);
+  return match !== null && match[0] === value && Number(match[1]) <= 2147483647;
+}
 export function validMetadataPage(v: unknown, limit: number): v is ProjectMetadataPage {
   if (!object(v) || !exact(v, ['items', 'event_cursor', 'has_more']) || !Array.isArray(v.items) || v.items.length > limit || !cursor(v.event_cursor) || typeof v.has_more !== 'boolean' || v.has_more && v.items.length === 0) return false;
   const seen = new Set<string>();
   for (const item of v.items) {
-    if (!object(item) || !exact(item, ['event_type', 'resource_id', 'revision', 'event_cursor']) || typeof item.event_type !== 'string' || !projectEventTypeSet.has(item.event_type) || !identity(item.resource_id) || !positive(item.revision) || !cursor(item.event_cursor) || seen.has(item.event_cursor)) return false;
+    if (!object(item) || !exact(item, ['event_type', 'resource_id', 'revision', 'event_cursor']) || typeof item.event_type !== 'string' || !projectEventTypeSet.has(item.event_type) || !metadataResource(item.event_type, item.resource_id) || !positive(item.revision) || !cursor(item.event_cursor) || seen.has(item.event_cursor)) return false;
     seen.add(item.event_cursor);
   }
   return !v.has_more || v.items.at(-1)?.event_cursor === v.event_cursor;
