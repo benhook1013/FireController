@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [rest, backup-0, backup-1, reviewexec-0, reviewexec-1, reviewruntime]
+        shard: [rest, backup-0, backup-1, backup-2, backup-3, reviewexec-0, reviewexec-1, reviewruntime]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -41,7 +41,7 @@ jobs:
             case "$package" in
               github.com/benhook1013/FireController/internal/backup)
                 case "$SHARD" in
-                  backup-0|backup-1) shard="$SHARD" ;;
+                  backup-0|backup-1|backup-2|backup-3) shard="$SHARD" ;;
                   *) shard=backup ;;
                 esac ;;
               github.com/benhook1013/FireController/internal/reviewexec)
@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$SHARD" in
-            backup-0|backup-1) family=backup ;;
+            backup-0|backup-1|backup-2|backup-3) family=backup ;;
             reviewexec-0|reviewexec-1) family=reviewexec ;;
             *) printf 'unknown test shard\n' >&2; exit 1 ;;
           esac
@@ -79,7 +79,7 @@ jobs:
           import re
           import sys
 
-          shard = re.fullmatch(r"(backup|reviewexec)-([01])", os.environ["SHARD"])
+          shard = re.fullmatch(r"(backup|reviewexec)-([0-3])", os.environ["SHARD"])
           if not shard:
               raise SystemExit("unknown test shard")
           family = shard[1]
@@ -99,11 +99,12 @@ jobs:
           names.sort(key=lambda name: name.encode("utf-8"))
           if len(names) != len(set(names)):
               raise SystemExit("duplicate Go test name")
-          halves = {family + "-0": names[::2], family + "-1": names[1::2]}
-          left, right = map(set, halves.values())
-          if not left or not right or left & right or left | right != set(names):
+          count = 4 if family == "backup" else 2
+          partitions = {f"{family}-{index}": names[index::count] for index in range(count)}
+          sets = [set(part) for part in partitions.values()]
+          if any(not part for part in sets) or set().union(*sets) != set(names) or sum(map(len, sets)) != len(names):
               raise SystemExit("incomplete test partition")
-          selected = halves.get(os.environ["SHARD"])
+          selected = partitions.get(os.environ["SHARD"])
           if not selected:
               raise SystemExit("unknown or empty test shard")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
