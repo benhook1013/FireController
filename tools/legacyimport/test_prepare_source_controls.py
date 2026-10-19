@@ -117,6 +117,114 @@ class LocalContractTests(unittest.TestCase):
                 path.write_bytes(b"after")
         self.assertEqual(result.exception.code, "source_changed")
 
+    def test_caller_oserror_is_preserved_and_handle_closed(self):
+        path = self.private("caller-error", b"sealed")
+        failure = OSError("private caller failure")
+        handles = []
+        real_fdopen = os.fdopen
+
+        def tracked_fdopen(*args, **kwargs):
+            handle = real_fdopen(*args, **kwargs)
+            handles.append(handle)
+            return handle
+
+        with mock.patch.object(adapter.os, "fdopen", side_effect=tracked_fdopen):
+            with self.assertRaises(OSError) as result:
+                with adapter.private_input(str(path), 6) as (_, body):
+                    self.assertEqual(body, b"sealed")
+                    raise failure
+        self.assertIs(result.exception, failure)
+        self.assertEqual(path.read_bytes(), b"sealed")
+        self.assertEqual(len(handles), 1)
+        self.assertTrue(handles[0].closed)
+
+    def test_body_failure_still_revalidates_input(self):
+        for change in ("digest", "permissions", "identity", "sidecar"):
+            with self.subTest(change=change):
+                path = self.private("changed-" + change, b"sealed")
+                initial = path.stat()
+                with self.assertRaises(adapter.Refusal) as result:
+                    with adapter.private_input(str(path), 6, snapshot=True):
+                        if change == "digest":
+                            path.write_bytes(b"edited")
+                            os.utime(path, ns=(initial.st_atime_ns, initial.st_mtime_ns))
+                        elif change == "permissions":
+                            path.chmod(0o644)
+                        elif change == "identity":
+                            replacement = self.private("replacement", b"sealed")
+                            os.replace(replacement, path)
+                        else:
+                            self.private(path.name + "-wal", b"x")
+                        raise OSError("private caller failure")
+                self.assertEqual(result.exception.code,
+                                 "snapshot_unsealed" if change == "sidecar" else "source_changed")
+
+    def test_admission_and_verification_io_failures_are_safe(self):
+        with self.assertRaises(adapter.Refusal) as result:
+            with adapter.private_input(str(self.root / "missing"), 6):
+                self.fail("missing input admitted")
+        self.assertEqual(result.exception.code, "input_unavailable")
+        for caller_failure in (False, True):
+            with self.subTest(caller_failure=caller_failure):
+                path = self.private("removed", b"sealed")
+                handles = []
+                real_fdopen = os.fdopen
+
+                def tracked_fdopen(*args, **kwargs):
+                    handle = real_fdopen(*args, **kwargs)
+                    handles.append(handle)
+                    return handle
+
+                with mock.patch.object(adapter.os, "fdopen", side_effect=tracked_fdopen):
+                    with self.assertRaises(adapter.Refusal) as result:
+                        with adapter.private_input(str(path), 6):
+                            path.unlink()
+                            if caller_failure:
+                                raise OSError("private caller failure")
+                self.assertEqual(result.exception.code, "input_unavailable")
+                self.assertTrue(handles[0].closed)
+
+    def test_initial_read_io_failure_closes_handle(self):
+        path = self.private("read-error", b"sealed")
+        handles = []
+        real_fdopen = os.fdopen
+
+        def tracked_fdopen(*args, **kwargs):
+            handle = real_fdopen(*args, **kwargs)
+            handles.append(handle)
+            return handle
+
+        with mock.patch.object(adapter.os, "fdopen", side_effect=tracked_fdopen), \
+                mock.patch.object(adapter.os, "fstat", side_effect=OSError("private read failure")):
+            with self.assertRaises(adapter.Refusal) as result:
+                with adapter.private_input(str(path), 6):
+                    self.fail("unreadable input admitted")
+        self.assertEqual(result.exception.code, "input_unavailable")
+        self.assertTrue(handles[0].closed)
+
+    def test_fdopen_failure_closes_raw_descriptor(self):
+        path = self.private("fdopen-error", b"sealed")
+        descriptors = []
+
+        def failed_fdopen(fd, *_args, **_kwargs):
+            descriptors.append(fd)
+            raise OSError("private fdopen failure")
+
+        with mock.patch.object(adapter.os, "fdopen", side_effect=failed_fdopen):
+            with self.assertRaises(adapter.Refusal) as result:
+                with adapter.private_input(str(path), 6):
+                    self.fail("unopened input admitted")
+        self.assertEqual(result.exception.code, "input_unavailable")
+        self.assertEqual(len(descriptors), 1)
+        try:
+            with self.assertRaises(OSError):
+                os.fstat(descriptors[0])
+        finally:
+            try:
+                os.close(descriptors[0])
+            except OSError:
+                pass
+
     def test_output_create_exact_replay_and_no_overwrite(self):
         path = self.root / "prepared.json"
         self.assertEqual(adapter.publish(str(path), b"value\n"), "created")
