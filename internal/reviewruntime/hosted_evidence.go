@@ -37,6 +37,29 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		result.Reason = "capture_invalid"
 		return result, nil
 	}
+	var baseline HostedCaptureRecord
+	var baselineReason string
+	var baselineErr error
+	baselineLoaded := false
+	loadBaseline := func() {
+		if !baselineLoaded {
+			baseline, baselineReason, baselineErr = loadHostedStandingBaseline(ctx, captures, engine, attempt, retained)
+			baselineLoaded = true
+		}
+	}
+	if !inventory.Complete && inventory.Publication.State == "active" && inventory.Publication.Trigger.State == "adopted" {
+		loadBaseline()
+		if baselineErr != nil {
+			result.Reason = "standing_baseline_unproven"
+			return result, baselineErr
+		}
+		if baselineReason == "" {
+			fallback, err := reviewprovider.ExtractHostedFindingsWithBaseline(retained.Snapshot, baseline.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
+			if err == nil && fallback.Complete && fallback.Publication.StandingZero != nil {
+				inventory = fallback
+			}
+		}
+	}
 	if !inventory.Complete || inventory.Publication.State != "attributed" {
 		result.Reason = inventory.Reason
 		if result.Reason == "" {
@@ -46,13 +69,17 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 	}
 	publication := inventory.Publication
 	if publication.StandingZero != nil {
-		reason, err := hostedStandingBaseline(ctx, captures, engine, attempt, retained, publication.StandingZero.ProviderRunID)
-		if err != nil || reason != "" {
-			result.Reason = reason
+		loadBaseline()
+		if baselineErr != nil || baselineReason != "" {
+			result.Reason = baselineReason
 			if result.Reason == "" {
 				result.Reason = "standing_baseline_unproven"
 			}
-			return result, err
+			return result, baselineErr
+		}
+		if !hostedStandingRunNew(baseline.Snapshot, retained.ProviderActor, publication.StandingZero.ProviderRunID) {
+			result.Reason = "standing_run_not_new"
+			return result, nil
 		}
 	}
 	base, proven := reviewprovider.ResolveHostedComparison(publication, anchor.CandidateSHA, anchor.ParentSHA, anchor.MergeBaseSHA)
@@ -146,38 +173,39 @@ func retainHostedObservation(ctx context.Context, captures *HostedCaptureStore, 
 	return result, retained, nil
 }
 
-// hostedStandingBaseline proves that a standing comment's run identity is new
-// relative to the same attempt's complete, immutable pre-post query history.
+// loadHostedStandingBaseline validates the same attempt's complete, immutable
+// pre-post query history before either annotation attribution or UUID checks.
 // Journal position selects the latest pre-post query; an invalid latest source
 // cannot be replaced by older bytes. Current summary timestamps alone cannot
 // establish that mutable-source fact. Local fetch timing uses the exact journal
 // instant, while provider trigger matching retains its second-level floor.
-func hostedStandingBaseline(ctx context.Context, captures *HostedCaptureStore, engine *reviewexec.Engine, attempt reviewexec.Attempt, retained HostedCaptureRecord, runID string) (string, error) {
+func loadHostedStandingBaseline(ctx context.Context, captures *HostedCaptureStore, engine *reviewexec.Engine, attempt reviewexec.Attempt, retained HostedCaptureRecord) (HostedCaptureRecord, string, error) {
 	const unproven = "standing_baseline_unproven"
+	empty := HostedCaptureRecord{}
 	query, err := engine.ReadHostedAllowanceQuery(ctx, attempt.ProjectID, attempt.ID)
 	if err != nil {
 		var missing *core.Error
 		if errors.As(err, &missing) && missing.Code == "not_found" {
-			return unproven, nil
+			return empty, unproven, nil
 		}
-		return unproven, err
+		return empty, unproven, err
 	}
 	intent := reviewprovider.HostedTriggerIntent{OperationID: query.OperationID, AttemptID: query.AttemptID, HeadSHA: query.Anchor.CandidateSHA}
 	earliest, err := time.Parse(time.RFC3339Nano, query.EarliestPosting)
 	sameActor := func(a, b reviewprovider.Author) bool { return a.ID == b.ID && a.Kind == b.Kind }
 	if err != nil || query.Comment == nil || !sameHostedQueryTarget(*attempt.Anchor, query.Anchor) || query.OperationID != attempt.OperationID || intent != retained.Intent || !sameActor(query.PostingActor, retained.PostingActor) || !sameActor(query.ProviderActor, retained.ProviderActor) {
-		return unproven, nil
+		return empty, unproven, nil
 	}
 	posting, err := engine.ReadHostedPostingBoundary(ctx, attempt.ProjectID, attempt.ID)
 	if err != nil {
-		return unproven, err
+		return empty, unproven, err
 	}
 	if !retained.EarliestPosting.Equal(posting.Truncate(time.Second)) {
-		return unproven, nil
+		return empty, unproven, nil
 	}
 	observations, err := engine.ReadHostedObservations(ctx, attempt.ProjectID, attempt.ID)
 	if err != nil {
-		return unproven, err
+		return empty, unproven, err
 	}
 	var baseline *HostedCaptureRecord
 	for position := len(observations) - 1; position >= 0; position-- {
@@ -188,38 +216,44 @@ func hostedStandingBaseline(ctx context.Context, captures *HostedCaptureStore, e
 		}
 		record, err := captures.Read(ctx, attempt.ID, CaptureReference{ID: in.CaptureID, SHA256: in.CaptureSHA256, Bytes: in.CaptureBytes})
 		if err != nil {
-			return unproven, err
+			return empty, unproven, err
 		}
 		if !record.Snapshot.Complete || record.Snapshot.IssueComments == nil || record.Snapshot.Reviews == nil || record.Snapshot.ReviewComments == nil || record.RepositoryID != query.Anchor.RepositoryID || record.Repository != query.Anchor.Repository || record.PullNumber != query.Anchor.PullNumber || record.Intent != intent || !sameActor(record.PostingActor, query.PostingActor) || !sameActor(record.ProviderActor, query.ProviderActor) || !record.EarliestPosting.Equal(earliest.Truncate(time.Second)) ||
 			in.ExpectedAnchor != query.Anchor || in.Intent != query.Intent || in.StartedAt != record.StartedAt.Format(time.RFC3339Nano) || in.FinishedAt != record.FinishedAt.Format(time.RFC3339Nano) || in.ObservedAt != record.Snapshot.ObservedAt.Format(time.RFC3339Nano) {
-			return unproven, nil
+			return empty, unproven, nil
 		}
 		if !hostedBaselineQueryPresent(record.Snapshot, query) {
-			return unproven, nil
+			return empty, unproven, nil
 		}
 		baseline = &record
 		break
 	}
 	if baseline == nil {
-		return unproven, nil
+		return empty, unproven, nil
 	}
+	return *baseline, "", nil
+}
+
+// A provider run identity must be absent from every provider-owned baseline
+// body, including the unmodified roots omitted from attribution-only parsing.
+func hostedStandingRunNew(baseline reviewprovider.HostedPublicationSnapshot, provider reviewprovider.Author, runID string) bool {
 	containsRun := func(author reviewprovider.Author, body string) bool {
-		return sameActor(author, query.ProviderActor) && strings.Contains(strings.ToLower(body), strings.ToLower(runID))
+		return author.ID == provider.ID && author.Kind == provider.Kind && strings.Contains(strings.ToLower(body), strings.ToLower(runID))
 	}
-	for _, comment := range baseline.Snapshot.IssueComments {
+	for _, comment := range baseline.IssueComments {
 		if containsRun(comment.Author, comment.Body) {
-			return "standing_run_not_new", nil
+			return false
 		}
 	}
-	for _, review := range baseline.Snapshot.Reviews {
+	for _, review := range baseline.Reviews {
 		if containsRun(review.Author, review.Body) {
-			return "standing_run_not_new", nil
+			return false
 		}
 	}
-	for _, comment := range baseline.Snapshot.ReviewComments {
+	for _, comment := range baseline.ReviewComments {
 		if containsRun(comment.Author, comment.Body) {
-			return "standing_run_not_new", nil
+			return false
 		}
 	}
-	return "", nil
+	return true
 }
