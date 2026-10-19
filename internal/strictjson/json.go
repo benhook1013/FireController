@@ -54,6 +54,11 @@ func exactFields(data []byte, t reflect.Type) bool {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+	// RawMessage retains nested bytes for its owning decoder; Validate has
+	// already checked syntax, duplicate keys and Unicode across the whole body.
+	if t == reflect.TypeOf(json.RawMessage(nil)) {
+		return true
+	}
 	switch t.Kind() {
 	case reflect.Struct:
 		var fields map[string]json.RawMessage
