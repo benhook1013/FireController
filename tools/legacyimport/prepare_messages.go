@@ -17,7 +17,7 @@ const prepareMessagesUsage = `Usage: legacyimport prepare-messages --snapshot AB
 Prepare explicitly selected historical messages with mapped authors/recipients
 and selected or already-imported parents. Association policy must be archive.
 Private output is a native import batch; no service or delivery is called.
-Optional --timeout bounds preparation (default30s, maximum5m).
+Optional --timeout bounds preparation (default 30s, maximum 5m).
 `
 
 func runPrepareMessages(ctx context.Context, args []string, stdout, stderr io.Writer) int {
