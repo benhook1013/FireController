@@ -191,7 +191,7 @@ export async function runEventWatch<S, P>(source: EventWatchSource<S, P>, callba
         } catch (snapshotError) {
           if (signal.aborted) break;
           callbacks.status('closed');
-          throw snapshotError instanceof ApiError ? snapshotError : new ApiError('connection_failed', 'The inbox snapshot could not be loaded.');
+          throw snapshotError instanceof ApiError ? snapshotError : new ApiError('connection_failed', 'The event snapshot could not be loaded.');
         }
       }
       if (isTerminal(error)) { callbacks.status('closed'); throw error; }
