@@ -185,7 +185,9 @@ function validDelivery(value: unknown, project: string, options: DeliveryOptions
     if (checkpoint !== null) {
       if (!record(checkpoint) || !keys(checkpoint, ['sequence', 'job_revision', 'done', 'next', 'blocker', 'done_truncated', 'next_truncated', 'blocker_truncated']) || !positive(checkpoint.sequence) || !positive(checkpoint.job_revision) || Number(checkpoint.job_revision) > Number(job.revision)) return false;
       for (const field of ['done', 'next', 'blocker'] as const) {
-        if (!checkpointText(checkpoint[field], 240, field !== 'blocker') || typeof checkpoint[`${field}_truncated`] !== 'boolean') return false;
+        const truncated = checkpoint[`${field}_truncated`], required = field !== 'blocker';
+        // A nonblank full value can have a whitespace-only bounded prefix.
+        if (typeof truncated !== 'boolean' || !checkpointText(checkpoint[field], 240, required && !truncated) || required && checkpoint[field] === '') return false;
       }
     }
   }
