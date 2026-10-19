@@ -27,8 +27,8 @@ func TestCurrentSummaryInventoryAuthenticV4BackupRemainsSupported(t *testing.T) 
 		t.Fatal(err)
 	}
 	statements := []string{`DROP TRIGGER review_runs_snapshot_revision_insert`, `DROP TRIGGER review_runs_snapshot_revision_update`, `DROP TABLE review_findings`, `DROP TABLE review_attempts`, `DROP TABLE review_runs`, `DROP TABLE review_retired_pulls`, `DROP TABLE review_pulls`}
-	statements = append(statements, reviews.HistorySchemaSQL()...)
-	for _, statement := range reviews.HistoryReadViewSQL() {
+	statements = append(statements, reviews.HistorySchemaSQLV6()...)
+	for _, statement := range reviews.HistoryReadViewSQLV6() {
 		statements = append(statements, statement)
 	}
 	if err = store.EnsureSchema(t.Context(), "reviews", []string{}, []string{}, []string{}, statements); err != nil {
