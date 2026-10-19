@@ -12,7 +12,7 @@ let workerHistoryBefore = -1, workerHistoryAfter = -1;
 let sendStatus = 0, replyStatus = 0, conversationMatch = false;
 let lastHTTPStatus = 0;
 let lastAllowWrites = false, lastCanEditPresentation = false;
-let renewalProof = { response_received:false, response_ok:false, response_object:false, response_has_session:false, response_has_project:false, response_has_instance:false, response_expiry_string:false, response_expiry_valid:false, response_shape_valid:false, response_session_matches:false, response_project_matches:false, response_instance_matches:false, response_identity_matches:false, response_expiry_changed:false, storage_matches_response:false, storage_expiry_changed:false };
+let renewalProof = { renewal_response_received:false, renewal_response_ok:false, current_read_ok:false, current_shape_valid:false, current_identity_matches:false, current_read_only:false, current_expiry_valid:false, current_expiry_nondecreasing:false, storage_matches_current:false };
 let failureSnapshot = async () => ({});
 let diagnostics = () => ({});
 const need = (value) => { if (!value) throw new Error('assertion'); };
@@ -690,43 +690,45 @@ try {
   await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(1);
   checkpoint = 'reload-session-renewed';
   const renewalResponse = await renewalResponsePromise;
-  let renewalView;
-  try { renewalView = await renewalResponse.json(); } catch { renewalView = undefined; }
+  renewalProof.renewal_response_received = true; renewalProof.renewal_response_ok = renewalResponse.status() === 200;
+  need(renewalProof.renewal_response_ok);
+  // Chromium may retire the CDP body handle independently of the page's
+  // successful renewal. Validate actual current cookie authority instead.
+  const current = await page.evaluate(async ({prefix, sessionID, project, instance, bindingKey}) => {
+    const binding = JSON.parse(sessionStorage.getItem(bindingKey));
+    if (binding?.sessionID !== sessionID || binding.projectID !== project || binding.instanceID !== instance) throw new Error('current session binding differs');
+    const response = await fetch(prefix + '/browser-session', {headers:{'X-FC-Browser-Session':sessionID, 'X-FC-Instance':instance}, credentials:'same-origin', cache:'no-store', redirect:'error', signal:AbortSignal.timeout(5000)});
+    if (response.status !== 200) return {status:response.status, view:null};
+    return {status:response.status, view:await response.json()};
+  }, {prefix, sessionID, project:config.project, instance:config.instance, bindingKey});
+  const currentView = current.view;
   const originalBinding = JSON.parse(selectedBinding);
-  const responseObject = !!renewalView && typeof renewalView === 'object' && !Array.isArray(renewalView);
-  const responseExpiryString = typeof renewalView?.expires_at === 'string';
-  const responseExpiry = responseExpiryString && Number.isFinite(Date.parse(renewalView.expires_at));
-  const responseSessionMatches = renewalView?.session_id === sessionID;
-  const responseProjectMatches = renewalView?.project_id === config.project;
-  const responseInstanceMatches = renewalView?.instance_id === config.instance;
+  const fields = ['session_id', 'instance_id', 'project_id', 'expires_at', 'allow_writes', 'can_edit_presentation'];
+  const currentObject = !!currentView && typeof currentView === 'object' && !Array.isArray(currentView);
+  const currentShape = currentObject && Object.keys(currentView).length === fields.length && fields.every(field => Object.hasOwn(currentView, field));
+  const currentExpiry = typeof currentView?.expires_at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(currentView.expires_at) && Number.isFinite(Date.parse(currentView.expires_at));
   renewalProof = {
-    response_received:true,
-    response_ok:renewalResponse.status() === 200,
-    response_object:responseObject,
-    response_has_session:!!renewalView && Object.hasOwn(renewalView, 'session_id'),
-    response_has_project:!!renewalView && Object.hasOwn(renewalView, 'project_id'),
-    response_has_instance:!!renewalView && Object.hasOwn(renewalView, 'instance_id'),
-    response_expiry_string:responseExpiryString,
-    response_expiry_valid:responseExpiry,
-    response_shape_valid:responseObject && responseExpiry,
-    response_session_matches:responseSessionMatches,
-    response_project_matches:responseProjectMatches,
-    response_instance_matches:responseInstanceMatches,
-    response_identity_matches:responseObject && responseSessionMatches && responseProjectMatches && responseInstanceMatches,
-    response_expiry_changed:responseExpiry && renewalView.expires_at !== originalBinding.expiresAt,
-    storage_matches_response:false,
-    storage_expiry_changed:false,
+    renewal_response_received:true,
+    renewal_response_ok:renewalResponse.status() === 200,
+    current_read_ok:current.status === 200,
+    current_shape_valid:currentShape,
+    current_identity_matches:currentShape && currentView.session_id === sessionID && currentView.project_id === config.project && currentView.instance_id === config.instance,
+    current_read_only:currentShape && currentView.allow_writes === false && currentView.can_edit_presentation === false,
+    current_expiry_valid:currentExpiry && Date.parse(currentView.expires_at) > Date.now() && Date.parse(currentView.expires_at) <= Date.now() + 86400000 + 300000,
+    // Cookies use Unix seconds; a same-second renewal need not change expiry.
+    current_expiry_nondecreasing:currentExpiry && Date.parse(currentView.expires_at) >= Date.parse(originalBinding.expiresAt),
+    storage_matches_current:false,
   };
-  checkpoint = 'reload-expiry-transition';
-  let storageChanged = false;
-  try { await expect.poll(async () => JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey)).expiresAt, {timeout:5000}).not.toBe(originalBinding.expiresAt); storageChanged = true; } catch { /* retain bounded diagnostics for the refused assertion */ }
-  const renewedBinding = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey));
-  renewalProof.storage_matches_response = typeof renewalView?.expires_at === 'string' && renewedBinding.expiresAt === renewalView.expires_at;
-  renewalProof.storage_expiry_changed = renewedBinding.expiresAt !== originalBinding.expiresAt;
+  checkpoint = 'reload-current-authority';
+  need(Object.entries(renewalProof).filter(([name]) => name !== 'storage_matches_current').every(([, value]) => value === true));
+  checkpoint = 'reload-expiry-persistence';
+  try { await expect.poll(async () => JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey)).expiresAt, {timeout:5000}).toBe(currentView.expires_at); renewalProof.storage_matches_current = true; } catch { /* retain bounded diagnostics for the refused assertion */ }
   checkpoint = 'reload-expiry-evidence';
-  need(renewalProof.response_received && renewalProof.response_ok && renewalProof.response_shape_valid && renewalProof.response_identity_matches && renewalProof.response_expiry_changed && storageChanged && renewalProof.storage_matches_response && renewalProof.storage_expiry_changed);
+  need(renewalProof.storage_matches_current);
   checkpoint = 'reload-binding-retained';
   const retained = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey));
+  const bindingFields = ['version', 'projectID', 'instanceID', 'sessionID', 'expiresAt', 'selectedworkerID'];
+  need(retained.version === 1 && Object.keys(retained).length === bindingFields.length && bindingFields.every(field => Object.hasOwn(retained, field)));
   need(retained.projectID === config.project && retained.instanceID === config.instance && retained.sessionID === sessionID && retained.selectedworkerID === config.worker);
   checkpoint = 'reload-expiry-window';
   need(Date.parse(retained.expiresAt) > Date.now() && Date.parse(retained.expiresAt) <= Date.now() + 86400000 + 300000);
