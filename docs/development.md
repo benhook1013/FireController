@@ -25,6 +25,8 @@ make smoke
 
 On Linux, install the Chromium revision for the pinned Playwright dependency and run `make browser-smoke` for the separate actual embedded-browser lifecycle check. The [packaged smoke guide](../tools/packagedsmoke/README.md#embedded-browser-lifecycle) owns setup, budgets and limitations. Linux CI's `rest` job runs `make smoke`, `make legacyimport migration-smoke` and `make browser-smoke` after the service build. Native Windows/macOS CI runs the coordination and upgrade packaged workloads; it does not run the Linux migration or browser targets.
 
+The optional [CodeRabbit golangci-lint integration](https://docs.coderabbit.ai/tools/golangci-lint) discovers the root [`.golangci.yml`](../.golangci.yml). It retains all 28 documented assertive-profile linters and test analysis while supplying the `packaged_smoke` tag, so the packaged test package can be type-checked without executing its workloads. A repository config replaces the generated provider profile; keep that enabled set explicit. With golangci-lint 2.14.0 and the project Go toolchain, use `golangci-lint config verify` and `golangci-lint run ./tools/packagedsmoke` for focused validation. This optional lint does not replace `make check` or packaged runtime proof; local results do not establish CodeRabbit's exact sandbox invocation or platform coverage.
+
 Explicit [browser coordination views](browser-coordination.md) read worker pause/focus and note current/history data without mutation or automatic archive expansion.
 
 ## Private profile file
