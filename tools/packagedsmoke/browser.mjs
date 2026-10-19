@@ -412,7 +412,7 @@ try {
     if (['canvas', 'surface', 'header', 'hero'].includes(family)) theme[family + '_muted'] = '#000000';
   }
   const brand = 'UnbrokenProjectBrand'.repeat(5) + '<literal>';
-  const receipt = await write('PUT', '/presentation', {expected_revision:0, presentation:{name:title, brand_name:brand, theme}});
+  const receipt = await write('PUT', '/presentation', {expected_revision:0, presentation:{name:title, brand_name:brand, theme, review_groups:[{title:'Smoke release',pull_numbers:[31,32]}]}});
   need(receipt.revision === 1 && receipt.outcome === 'updated');
   await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
   need(metadataStreams === 1 && presentationReads === 1);
@@ -459,7 +459,7 @@ try {
   need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === binding);
   await expect(page.getByRole('button', {name:'Select worker Builder', exact:true})).toHaveAttribute('aria-pressed', 'true');
   phase = 'metadata-live-update';
-  const liveReceipt = await write('PUT', '/presentation', {expected_revision:1, presentation:{name:title, brand_name:'Smoke live <literal>', theme}});
+  const liveReceipt = await write('PUT', '/presentation', {expected_revision:1, presentation:{name:title, brand_name:'Smoke live <literal>', theme, review_groups:[{title:'Smoke release',pull_numbers:[31,32]}]}});
   need(liveReceipt.revision === 2 && liveReceipt.outcome === 'updated');
   await expect.poll(async () => (await appearance()).brand, {timeout:5000}).toBe('Smoke live <literal>');
   need(metadataStreams === 2 && presentationReads === 3 && inboxStreams === 1 && sessionPosts === 1);
@@ -668,6 +668,8 @@ try {
   checkpoint = 'queue-heading';
   const deliveryQueue = page.locator('#review-queue');
   await expect(deliveryQueue.getByRole('heading', {name:'Reviews', exact:true})).toBeVisible();
+  await expect(deliveryQueue.getByRole('heading', {name:'Smoke release', exact:true})).toBeVisible();
+  need(await deliveryQueue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.querySelector('.review-number').textContent).join('|')) === '#31|#32');
   checkpoint = 'queue-pull';
   await expect(deliveryQueue.getByRole('link', {name:'Live review updated', exact:true})).toBeVisible();
   await expect(deliveryQueue.locator('.review-state-merged').filter({hasText:'Merged'})).toBeVisible();
