@@ -3,11 +3,14 @@ package historycollect
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/benhook1013/FireController/internal/core"
 )
 
 func collectionWaitCount(t *testing.T, e *Engine, want int) {
@@ -262,5 +265,81 @@ func TestCollectionHTTPWaitCapacityFallsBackToAcceptedOriginalReceipt(t *testing
 	collectionWaitCount(t, h.e, 0)
 	if before != collectionStoreRows(t, h.f) || len(h.f.provider.calls) != 0 {
 		t.Fatal("capacity waits changed actions or invoked provider work")
+	}
+}
+
+func TestCollectionWaitLifetimeCancelsBlockedReadAndUnregisters(t *testing.T) {
+	f := newCollectionStoreFixture(t)
+	project, worker := f.project(t, "selected/repository")
+	scope := f.scope(t, project, worker, f.admin)
+	lifetime, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e, err := New(f.store, f.provider, strings.Repeat("a", 64), WithWaitLifetime(lifetime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := f.enqueue(t, scope, "lifetime-held-read", Selection{[]int64{47}})
+	before := collectionStoreRows(t, f)
+	f.store.DB().SetMaxOpenConns(1)
+	conn, err := f.store.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	done := make(chan collectionWaitResult, 1)
+	go func() {
+		value, err := e.Wait(t.Context(), scope, receipt.ID, 900*time.Second)
+		done <- collectionWaitResult{value, err}
+	}()
+	collectionWaitCount(t, e, 1)
+	cancel()
+	select {
+	case got := <-done:
+		collectionStoreCode(t, got.err, "overloaded")
+		var failure *core.Error
+		if !errors.As(got.err, &failure) || failure.Details.(map[string]string)["reason"] != "collection_wait_lifetime" || got.operation.ID != "" {
+			t.Fatal("lifetime cancellation did not stop the blocked authorized read")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lifetime did not cancel pending database admission")
+	}
+	collectionWaitCount(t, e, 0)
+	if err = conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if before != collectionStoreRows(t, f) || len(f.provider.calls) != 0 {
+		t.Fatal("detaching blocked observer changed work")
+	}
+	// An already-ended lifetime cannot admit another wait or expose a result.
+	if value, err := e.Wait(t.Context(), scope, receipt.ID, 0); err == nil || value.ID != "" {
+		t.Fatal("ended observer lifetime exposed a zero-wait result")
+	}
+	collectionWaitCount(t, e, 0)
+}
+
+func TestCollectionWaitLifetimeReceiptNeverMasksCallerCancellation(t *testing.T) {
+	f := newCollectionStoreFixture(t)
+	project, worker := f.project(t, "selected/repository")
+	scope := f.scope(t, project, worker, f.admin)
+	e := f.engine(t)
+	receipt := f.enqueue(t, scope, "caller-before-lifetime", Selection{[]int64{47}})
+	lifetime, cancelLifetime := context.WithCancel(context.Background())
+	cancelLifetime()
+	e.waitLifetime = lifetime
+	waitCtx, cleanup := e.waitContext(context.Background())
+	defer cleanup()
+	caller, cancel := context.WithCancel(t.Context())
+	cancel()
+	reason := waitCanceled(waitCtx)
+	if detached, _ := e.acceptedWaitDetached(caller, scope, receipt.ID, reason); detached {
+		t.Fatal("caller cancellation became successful acceptance response")
+	}
+	before := collectionStoreRows(t, f)
+	if _, err := e.Wait(caller, scope, receipt.ID, time.Second); err == nil {
+		t.Fatal("canceled caller admitted a result wait")
+	}
+	collectionWaitCount(t, e, 0)
+	if before != collectionStoreRows(t, f) || len(f.provider.calls) != 0 {
+		t.Fatal("caller cancellation changed work")
 	}
 }

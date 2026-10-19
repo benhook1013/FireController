@@ -58,26 +58,43 @@ type Receipt struct {
 }
 
 type Engine struct {
-	store       *core.Store
-	provider    Provider
-	fingerprint string
-	start       sync.Mutex
-	running     bool
-	wake        chan struct{}
-	waitMu      sync.Mutex
-	waiters     map[string]map[*waiter]struct{}
-	waitCount   int
-	principals  map[string]int
+	store        *core.Store
+	provider     Provider
+	fingerprint  string
+	start        sync.Mutex
+	running      bool
+	wake         chan struct{}
+	waitMu       sync.Mutex
+	waiters      map[string]map[*waiter]struct{}
+	waitCount    int
+	principals   map[string]int
+	waitLifetime context.Context
 }
 
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var operationPattern = regexp.MustCompile(`^history_collection_[0-9a-f]{32}$`)
 
-func New(store *core.Store, provider Provider, fingerprint string) (*Engine, error) {
+// EngineOption composes trusted application integrations before use.
+type EngineOption func(*Engine)
+
+// WithWaitLifetime detaches result observers when the service stops. It never
+// cancels accepted collection work or provider acquisition.
+func WithWaitLifetime(ctx context.Context) EngineOption {
+	return func(e *Engine) { e.waitLifetime = ctx }
+}
+
+func New(store *core.Store, provider Provider, fingerprint string, options ...EngineOption) (*Engine, error) {
 	if store == nil || provider != nil && !digestPattern.MatchString(fingerprint) || provider == nil && fingerprint != "" {
 		return nil, core.Fail("configuration_invalid", "The history reader configuration is invalid.", 500)
 	}
-	return &Engine{store: store, provider: provider, fingerprint: fingerprint, wake: make(chan struct{}, 1), waiters: make(map[string]map[*waiter]struct{}), principals: make(map[string]int)}, nil
+	e := &Engine{store: store, provider: provider, fingerprint: fingerprint, wake: make(chan struct{}, 1), waiters: make(map[string]map[*waiter]struct{}), principals: make(map[string]int)}
+	for _, option := range options {
+		if option == nil {
+			return nil, core.Fail("configuration_invalid", "The history reader configuration is invalid.", 500)
+		}
+		option(e)
+	}
+	return e, nil
 }
 
 func stamp() string { return time.Now().UTC().Format(time.RFC3339Nano) }

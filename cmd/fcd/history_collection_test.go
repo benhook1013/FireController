@@ -5,7 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -227,5 +230,192 @@ func TestHistoryCollectionDaemonStopsWhenAcquisitionLaneFails(t *testing.T) {
 	code := run(ctx, []string{"--data-dir", f.dir, "--listen", "127.0.0.1:0", "--history-collection"}, &out, &diagnostics)
 	if code != 3 || ctx.Err() != nil || !strings.Contains(diagnostics.String(), `"code":"storage_unavailable"`) || strings.Contains(diagnostics.String(), f.token) {
 		t.Fatal("daemon kept serving after its acquisition lane failed", code)
+	}
+}
+
+// This provider is an enqueue-only fixture: acquisition is never started and
+// no provider method has an implementation capable of external work.
+type historyCollectionEnqueueOnly struct{ historycollect.Provider }
+
+func TestHistoryCollectionDaemonShutdownDetachesPendingGET(t *testing.T) {
+	f := historyCollectionDaemonSource(t)
+	store, err := core.Open(t.Context(), f.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err = historycollect.EnsureSchema(t.Context(), store); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := historycollect.New(store, historyCollectionEnqueueOnly{}, strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := server.New(store)
+	engine.Register(mux)
+	r := httptest.NewRequest("POST", "/api/v1/projects/"+f.project+"/history/collections", strings.NewReader(`{"pull_numbers":[47]}`))
+	r.SetPathValue("project_id", f.project)
+	r.Header.Set("Authorization", "Bearer "+f.token)
+	r.Header.Set("X-FC-Instance", f.instance)
+	r.Header.Set("X-FC-Worker", f.worker)
+	r.Header.Set("Idempotency-Key", "shutdown-seed")
+	r.Header.Set("Prefer", "wait=0")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	var receipt historycollect.Receipt
+	if w.Code != 202 || json.Unmarshal(w.Body.Bytes(), &receipt) != nil {
+		t.Fatal("canonical queued seed failed", w.Code)
+	}
+	snapshot := func() string {
+		var values []string
+		for _, table := range []string{"history_collections", "history_collection_pages", "history_collection_seen", "receipts", "events"} {
+			rows, err := store.DB().Query("SELECT * FROM " + table + " ORDER BY 1,2")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			columns, err := rows.Columns()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+				v := make([]any, len(columns))
+				dest := make([]any, len(v))
+				for i := range v {
+					dest[i] = &v[i]
+				}
+				if err = rows.Scan(dest...); err != nil {
+					t.Fatal(err)
+				}
+				b, err := json.Marshal(v)
+				if err != nil {
+					t.Fatal(err)
+				}
+				values = append(values, table+string(b))
+			}
+			if err = rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			rows.Close()
+		}
+		return strings.Join(values, "\n")
+	}
+	before := snapshot()
+	if err = store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The actual daemon starts with collection disabled, preserving this queued
+	// work without launching a provider lane. Its real HTTP request remains open.
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	stdout, stderr := &output{ready: make(chan struct{})}, &output{ready: make(chan struct{})}
+	done := make(chan int, 1)
+	go func() { done <- run(ctx, []string{"--data-dir", f.dir, "--listen", "127.0.0.1:0"}, stdout, stderr) }()
+	joined := false
+	t.Cleanup(func() {
+		cancel()
+		if !joined {
+			select {
+			case <-done:
+				joined = true
+			case <-time.After(8 * time.Second):
+				t.Error("owned daemon did not join cleanup")
+			}
+		}
+	})
+	select {
+	case <-stdout.ready:
+	case code := <-done:
+		joined = true
+		t.Fatal("daemon startup failed", code)
+	case <-time.After(8 * time.Second):
+		t.Fatal("daemon startup deadline")
+	}
+	var listening map[string]string
+	if json.Unmarshal([]byte(stdout.String()), &listening) != nil || listening["instance_id"] != f.instance {
+		t.Fatal("daemon identity changed")
+	}
+	clientCtx, cancelClient := context.WithCancel(t.Context())
+	defer cancelClient()
+	request, err := http.NewRequestWithContext(clientCtx, "GET", "http://"+listening["address"]+"/api/v1/projects/"+f.project+"/history/collections/"+receipt.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header = r.Header.Clone()
+	request.Header.Set("Prefer", "wait=900")
+	sent := make(chan struct{})
+	request = request.WithContext(httptrace.WithClientTrace(request.Context(), &httptrace.ClientTrace{WroteRequest: func(info httptrace.WroteRequestInfo) {
+		if info.Err == nil {
+			close(sent)
+		}
+	}}))
+	type result struct {
+		status int
+		err    error
+	}
+	responseDone := make(chan result, 1)
+	go func() {
+		resp, err := (&http.Client{Timeout: 8 * time.Second}).Do(request)
+		if err != nil {
+			responseDone <- result{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		_, err = io.Copy(io.Discard, resp.Body)
+		responseDone <- result{resp.StatusCode, err}
+	}()
+	clientJoined := false
+	t.Cleanup(func() {
+		cancelClient()
+		if !clientJoined {
+			select {
+			case <-responseDone:
+				clientJoined = true
+			case <-time.After(8 * time.Second):
+				t.Error("owned collection client did not join cleanup")
+			}
+		}
+	})
+	select {
+	case <-sent:
+	case <-time.After(time.Second):
+		t.Fatal("GET was not sent")
+	}
+	select {
+	case got := <-responseDone:
+		clientJoined = true
+		t.Fatal("pending GET returned before shutdown", got.status, got.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	started := time.Now()
+	cancel()
+	var code int
+	select {
+	case code = <-done:
+		joined = true
+	case <-time.After(8 * time.Second):
+		t.Fatal("daemon did not join")
+	}
+	var got result
+	select {
+	case got = <-responseDone:
+		clientJoined = true
+	case <-time.After(time.Second):
+		t.Fatal("GET client did not join")
+	}
+	store, err = core.Open(t.Context(), f.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if snapshot() != before {
+		t.Fatal("shutdown mutated collection, captures, receipts or events")
+	}
+	t.Logf("actual daemon shutdown: exit=%d elapsed=%s HTTP=%d transport_error=%t retained_rows_unchanged=true", code, time.Since(started), got.status, got.err != nil)
+	if code != 0 || stderr.String() != "" {
+		t.Fatal("pending collection GET forced daemon shutdown", code)
+	}
+	if time.Since(started) > 2*time.Second || got.err != nil || got.status != 503 {
+		t.Fatal("observer did not detach promptly with nonterminal error", got.status, got.err)
 	}
 }

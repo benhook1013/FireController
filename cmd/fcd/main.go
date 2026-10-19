@@ -193,7 +193,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
-	collection, err := historycollect.New(store, historyProvider, historyFingerprint)
+	collection, err := historycollect.New(store, historyProvider, historyFingerprint, historycollect.WithWaitLifetime(resultWaitLifetime))
 	if err != nil {
 		diagnosticError(stderr, err)
 		return 3
