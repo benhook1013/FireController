@@ -17,7 +17,7 @@ The default budget is thirty seconds, adjustable with `--timeout` up to five min
 
 ## Prepare selected jobs
 
-Create a private strict JSON selection with `version: 1`, the destination `repository_id` and `expected_revision` from `fc import state`, a stable source namespace, `workers` mapping exact old worker names to explicitly configured native IDs, selected stable `job_ids` and `checkpoint_mode` of `none`, `latest` or `all`. At most twenty-five jobs and one hundred selected checkpoints fit a batch. All other source classes stay excluded; this command does not import a full job revision timeline or choose a source scope automatically.
+Create a private strict JSON selection with `version: 1`, the destination project's GitHub `repository_id`, the current `expected_revision` from `fc import state`, a stable source namespace, `workers` mapping exact old worker names to explicitly configured native IDs, selected stable `job_ids` and `checkpoint_mode` of `none`, `latest` or `all`. At most twenty-five jobs and one hundred selected checkpoints fit a batch. All other source classes stay excluded; this command does not import a full job revision timeline or choose a source scope automatically.
 
 ```sh
 bin/legacyimport prepare-jobs --snapshot /private/export/controller.sqlite3 --selection /private/import/selection.json --output /private/import/jobs.json
