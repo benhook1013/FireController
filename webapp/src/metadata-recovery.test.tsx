@@ -15,8 +15,13 @@ describe('project update recovery control', () => {
   it('uses a neutral loading indicator during attachment and automatic recovery', () => {
     for (const status of ['connecting', 'reconnecting'] as const) {
       const html = renderToStaticMarkup(<ProjectUpdateNotice status={status} reconnect={() => {}} />);
-      expect(html).toContain('class="loading-spinner"');
-      expect(html).toContain(`role="status" aria-label="${status === 'connecting' ? 'Connecting' : 'Reconnecting'} project updates"`);
+      const label = `${status === 'connecting' ? 'Connecting' : 'Reconnecting'} project updates`;
+      expect(html).toContain('role="status"');
+      expect(html).toContain('<span class="loading-spinner" aria-hidden="true"></span>');
+      expect(html).toContain(`<span class="visually-hidden">${label}</span>`);
+      expect(html).toMatch(new RegExp(`<span role="status"[^>]*><span class="loading-spinner" aria-hidden="true"></span><span class="visually-hidden">${label}</span></span>`));
+      expect(html.replace(`<span class="visually-hidden">${label}</span>`, '')).not.toContain(label);
+      expect(html).not.toContain('aria-label=');
       expect(html).not.toContain('class="notice"');
       expect(html).not.toContain('disconnected');
       expect(html).not.toContain('may be stale');

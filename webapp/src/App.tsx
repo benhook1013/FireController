@@ -287,7 +287,7 @@ function Connect({ projectId, busy, notice, onConnect, cancel }: { projectId: st
 }
 
 function LoadingSpinner({ label }: { label: string }) {
-  return <span className="loading-spinner" role="status" aria-label={label} />;
+  return <span role="status" style={{ display: 'inline-flex' }}><span className="loading-spinner" aria-hidden="true" /><span className="visually-hidden">{label}</span></span>;
 }
 
 export function ProjectUpdateNotice({ status, reconnect }: { status: LiveStatus; reconnect(): void }) {
