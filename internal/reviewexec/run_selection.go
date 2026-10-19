@@ -121,8 +121,11 @@ func (e *Engine) EnqueueRun(ctx context.Context, scope core.Scope, key string, i
 		if input.ExpectedConfigurationRevision != nil && *input.ExpectedConfigurationRevision != revision {
 			return nil, conflict()
 		}
-		if c.Paused || !slices.Contains(c.Channels, input.Channel) {
-			return nil, core.Fail("reviews_paused", "The requested review channel is unavailable or paused.", 409)
+		if c.Paused {
+			return nil, core.Fail("reviews_paused", "Review execution is paused for this project.", 409)
+		}
+		if !slices.Contains(c.Channels, input.Channel) {
+			return nil, core.Fail("review_not_configured", "The selected PR or channel is not configured.", 409)
 		}
 		if e.validateConfiguration(c) != nil {
 			return nil, core.Fail("capability_unavailable", "The configured review capability is unavailable.", 409)
