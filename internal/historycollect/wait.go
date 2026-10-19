@@ -2,6 +2,7 @@ package historycollect
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -23,6 +24,48 @@ func (e *Engine) notify(id string) {
 	}
 }
 
+var errWaitLifetime = errors.New("collection wait lifetime ended")
+
+func (e *Engine) waitContext(ctx context.Context) (context.Context, func()) {
+	waitCtx, cancel := context.WithCancelCause(ctx)
+	if e.waitLifetime == nil {
+		return waitCtx, func() { cancel(context.Canceled) }
+	}
+	if e.waitLifetime.Err() != nil {
+		cancel(errWaitLifetime)
+	}
+	stop := context.AfterFunc(e.waitLifetime, func() { cancel(errWaitLifetime) })
+	return waitCtx, func() { stop(); cancel(context.Canceled) }
+}
+
+func waitCanceled(ctx context.Context) error {
+	failure := &core.Error{Code: "overloaded", Message: "The collection wait was canceled; its operation is unchanged.", Status: 503}
+	if errors.Is(context.Cause(ctx), errWaitLifetime) {
+		failure.Details = map[string]string{"reason": "collection_wait_lifetime"}
+	}
+	return failure
+}
+
+// Only observer shutdown can return the already committed receipt. Caller
+// cancellation and failed current authorization retain the recovery error.
+func (e *Engine) acceptedWaitDetached(ctx context.Context, scope core.Scope, id string, err error) (bool, error) {
+	var failure *core.Error
+	if ctx.Err() != nil || !errors.As(err, &failure) || failure.Code != "overloaded" {
+		return false, err
+	}
+	details, ok := failure.Details.(map[string]string)
+	if !ok || details["reason"] != "collection_wait_lifetime" {
+		return false, err
+	}
+	if _, authErr := e.Read(ctx, scope, id); authErr != nil {
+		return false, authErr
+	}
+	if ctx.Err() != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Wait subscribes before reading, so completion between admission and the first
 // read cannot be missed. Cancellation detaches only this waiter. The operation
 // remains durable and reads recheck current administrator/project/worker scope.
@@ -30,8 +73,23 @@ func (e *Engine) Wait(ctx context.Context, scope core.Scope, id string, duration
 	if ctx == nil || !operationPattern.MatchString(id) || scope.PrincipalID == "" || duration < 0 || duration > 900*time.Second {
 		return Operation{}, invalid()
 	}
+	waitCtx, cleanup := e.waitContext(ctx)
+	defer cleanup()
+	read := func() (Operation, error) {
+		if waitCtx.Err() != nil {
+			return Operation{}, waitCanceled(waitCtx)
+		}
+		value, err := e.Read(waitCtx, scope, id)
+		if waitCtx.Err() != nil {
+			return Operation{}, waitCanceled(waitCtx)
+		}
+		return value, err
+	}
 	if duration == 0 {
-		return e.Read(ctx, scope, id)
+		return read()
+	}
+	if waitCtx.Err() != nil {
+		return Operation{}, waitCanceled(waitCtx)
 	}
 	w := &waiter{principal: scope.PrincipalID, changed: make(chan struct{}, 1)}
 	e.waitMu.Lock()
@@ -62,7 +120,7 @@ func (e *Engine) Wait(ctx context.Context, scope core.Scope, id string, duration
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
 	for {
-		value, err := e.Read(ctx, scope, id)
+		value, err := read()
 		if err != nil {
 			return Operation{}, err
 		}
@@ -70,10 +128,10 @@ func (e *Engine) Wait(ctx context.Context, scope core.Scope, id string, duration
 			return value, nil
 		}
 		select {
-		case <-ctx.Done():
-			return Operation{}, core.Fail("overloaded", "The collection wait was canceled; its operation is unchanged.", 503)
+		case <-waitCtx.Done():
+			return Operation{}, waitCanceled(waitCtx)
 		case <-timer.C:
-			return e.Read(ctx, scope, id)
+			return read()
 		case <-w.changed:
 		}
 	}
