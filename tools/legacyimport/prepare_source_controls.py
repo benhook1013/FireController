@@ -97,23 +97,34 @@ def private_input(raw, maximum, *, snapshot=False):
         if snapshot:
             no_sidecars(path)
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        with os.fdopen(fd, "rb") as handle:
+        try:
+            handle = os.fdopen(fd, "rb")
+        except BaseException:
+            os.close(fd)
+            raise
+    except OSError:
+        refuse("input_unavailable")
+    with handle:
+        try:
             if identity(os.fstat(handle.fileno())) != identity(initial):
                 refuse("source_changed")
             body = handle.read(maximum + 1)
             if len(body) != initial.st_size:
                 refuse("source_changed")
+        except OSError:
+            refuse("input_unavailable")
+        try:
+            yield path, body
+        finally:
             try:
-                yield path, body
-            finally:
                 current = path.lstat()
                 handle.seek(0)
                 if identity(current) != identity(initial) or digest(handle.read(maximum + 1)) != digest(body):
                     refuse("source_changed")
                 if snapshot:
                     no_sidecars(path)
-    except OSError:
-        refuse("input_unavailable")
+            except OSError:
+                refuse("input_unavailable")
 
 
 def no_sidecars(path):
