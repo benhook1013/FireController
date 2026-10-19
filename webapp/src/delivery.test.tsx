@@ -15,7 +15,7 @@ const run = (channel: 'hosted' | 'cli'): ReviewRunSummary => ({ source: 'fixture
 const pull = (number: number, state: ReviewPullSummary['state']): ReviewPullSummary => ({ number, state, title: `Change ${number}`, head_sha: 'head', base_ref: 'main', base_sha: 'base', ci_state: 'success', mergeability: 'mergeable', complete: true, run_count: 2, attempt_count: 0, recent_runs: [run('hosted'), run('cli')], latest_attempts: [] });
 const queue = (items: ReviewPullSummary[], has_more = false): ReviewQueue => ({ items, has_more, ...(has_more ? { cursor: 'next_queue' } : {}), configured: true, project_id: 'project_one', revision: 1, snapshot_id: 'snapshot_one', source: 'retained', observed_at: '2026-10-18T00:00:00Z', recorded_at: '2026-10-18T00:00:00Z' });
 function markup(node: React.ReactNode) {
-  const session = { controller: new AbortController(), api: {} } as Session;
+  const session = { project:{id:'project_one',repository:'example/project'}, controller: new AbortController(), api: {} } as Session;
   const client = new QueryClient();
   try { return renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key, home, selectWorker: () => {}, fail: () => {}, ready: false }}>{node}</WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>); }
   finally { client.clear(); }
@@ -54,9 +54,19 @@ describe('bounded Delivery board', () => {
     expect(laterPage).toContain('No jobs in loaded slice.');
     expect(laterPage).not.toContain('No open jobs.');
   });
+  it('keeps primary focus first without letting a parked primary hide active lane work', () => {
+    const value = {...board,workers:{...board.workers,items:[{...worker,primary_job_id:'job_parked'}]}};
+    const lanes=groupDeliveryLanes(value);
+    expect(lanes[0].jobs.map(item=>item.id)).toEqual(['job_parked','job_active','job_blocked']);
+    const html=markup(<DeliveryLanes value={value} home={home} />);
+    expect(html).toContain('Worker inbox');
+    expect(html).toContain('Job history');
+    expect(html).toContain('worker_id=worker_one&amp;status=all');
+    expect(html).toContain('badge delivery-primary');
+  });
   it('requests one atomic bounded page with independent cursors and cancellation, without actor filtering', async () => {
     const read = vi.fn().mockResolvedValue(board);
-    const session = { controller: new AbortController(), api: { delivery: read } } as unknown as Session;
+    const session = { project:{id:'project_one',repository:'example/project'}, controller: new AbortController(), api: { delivery: read } } as unknown as Session;
     const options = deliveryQuery(session, key, 'workers_two', 'jobs_three');
     const request = new AbortController();
     await options.queryFn({ signal: request.signal });
@@ -83,7 +93,7 @@ describe('stored merge head and review summaries', () => {
     expect(partial).not.toContain('No open pull requests');
     const head = markup(<MergeHeadContent queue={queue([pull(2, 'open')])} home={home} />);
     expect(head).toContain('snapshot=snapshot_one');
-    expect(head).toContain('CI: success');
+    expect(head).toContain('CI: Success');
     expect(head).not.toContain('Observed CI');
     expect(head).not.toContain('First open PR');
     expect(head).not.toContain('runs ·');
@@ -100,7 +110,7 @@ describe('stored merge head and review summaries', () => {
   });
   it('shares one bounded queue read between hero and overview without run/archive fanout', async () => {
     const read = vi.fn().mockResolvedValue(queue([pull(2, 'open')]));
-    const session = { controller: new AbortController(), api: { reviewQueue: read } } as unknown as Session;
+    const session = { project:{id:'project_one',repository:'example/project'}, controller: new AbortController(), api: { reviewQueue: read } } as unknown as Session;
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     try {
       const hero = deliveryReviewQuery(session, key), overview = deliveryReviewQuery(session, key);
@@ -112,7 +122,7 @@ describe('stored merge head and review summaries', () => {
   });
   it('keeps only project identity in the hero when no open or configured queue exists', () => {
     for (const value of [queue([pull(1, 'merged')]), { ...queue([]), configured: false }]) {
-      const session = { controller: new AbortController(), api: {} } as Session;
+      const session = { project:{id:'project_one',repository:'example/project'}, controller: new AbortController(), api: {} } as Session;
       const client = new QueryClient();
       client.setQueryData(deliveryReviewQuery(session, key).queryKey, value);
       try {
@@ -126,7 +136,7 @@ describe('stored merge head and review summaries', () => {
   });
   it('renders both independently paged board and overview from retained data without starting another read', () => {
     const api = { delivery: vi.fn(), reviewQueue: vi.fn() };
-    const session = { controller: new AbortController(), api } as unknown as Session;
+    const session = { project:{id:'project_one',repository:'example/project'}, controller: new AbortController(), api } as unknown as Session;
     const client = new QueryClient();
     client.setQueryData(deliveryQuery(session, key).queryKey, board);
     client.setQueryData(deliveryReviewQuery(session, key).queryKey, queue([pull(2, 'open')]));

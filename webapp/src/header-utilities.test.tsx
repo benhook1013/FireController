@@ -27,10 +27,16 @@ describe('project header utilities', () => {
       expect(html).not.toContain('may be stale');
     }
   });
+  it('leaves malformed repository labels as literal text without links', () => {
+    for (const repository of ['owner/../other', 'owner/..', '../repository', 'owner/repository/extra', 'owner/repo?token=1', 'https://evil.example/repo', 'owner/repo\n', 'owner\\repo', 'owner/%2e%2e']) {
+      const html = renderToStaticMarkup(<ProjectIdentityHero name="Project" repository={repository} />);
+      expect(html).not.toContain('href=');
+    }
+  });
   it('contracts the hero to literal project identity without internal identifiers or duplicate utilities', () => {
     const html = renderToStaticMarkup(<ProjectIdentityHero name="Project <literal>" repository="owner/repository" />);
     expect(html).toContain('<h1>Project &lt;literal&gt;</h1>');
-    expect(html).toContain('>owner/repository</p>');
+    expect(html).toContain('href="https://github.com/owner/repository" target="_blank" rel="noreferrer noopener">owner/repository</a>');
     expect(html).not.toMatch(/class="identity"|Project utilities|role="status"|<button|Work, with context|Browse jobs and read worker conversations/u);
   });
 });

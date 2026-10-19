@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import type { FormEvent } from 'react';
-import { Link, NavLink, Route, Routes, matchPath, useBlocker, useLocation, useMatch, useNavigate, useParams } from 'react-router';
+import { Link, NavLink, Route, Routes, matchPath, useBlocker, useLocation, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Api, ApiError, type BrowserSessionView } from './api';
 import { WorkspaceContext, useWorkspace, signalFor, usePaging, Pager, ReadState, errorText } from './workspace';
@@ -11,11 +11,13 @@ import { ProjectSettings } from './project-settings';
 import { ProjectMap, ProjectMapEntryView, ProjectMapRevisionView, JobWorkstreamPanel } from './project-map';
 import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView } from './coordination';
 import { ContextualNotes } from './contextual-notes';
+import { EditorialMarkdown } from './editorial-markdown';
+import { githubRepositoryURL } from './github-links';
 import { Delivery, DeliveryHero } from './delivery';
 import { refreshEventQueries } from './queries';
 import { ReviewQueueView, ReviewPullView, ReviewRunView } from './review-workspace';
 import { PageSkeleton, WorkspaceSkeleton } from './loading';
-import { browserSessionKey, clearBrowserSession, loadBrowserSession, renewedBrowserSessionBinding, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
+import { browserSessionKey, sessionIdentity, clearBrowserSession, loadBrowserSession, renewedBrowserSessionBinding, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
 import { BrowserSessionRenewal, listenForSessionActivity } from './session-renewal';
 import { applyPresentationRoot } from './presentation';
 import { PresentationContext, usePresentation, useProjectHeading } from './presentation-context';
@@ -324,7 +326,8 @@ export function ProjectHeaderUtilities({ status, refreshing, refresh, disconnect
 }
 
 export function ProjectIdentityHero({ name, repository }: { name: string; repository: string }) {
-  return <section className="hero project-identity"><div className="hero-project"><h1>{name}</h1><p className="repository">{repository}</p></div></section>;
+  const href = githubRepositoryURL(repository);
+  return <section className="hero project-identity"><div className="hero-project"><h1>{name}</h1><p className="repository">{href ? <a href={href} target="_blank" rel="noreferrer noopener">{repository}</a> : repository}</p></div></section>;
 }
 
 export function ProjectUpdateNotice({ status, reconnect }: { status: LiveStatus; reconnect(): void }) {
@@ -400,11 +403,36 @@ function WorkerList({ compact = false }: { compact?: boolean }) {
   return <section className={compact ? 'worker-panel' : 'panel'}><div className="section-heading"><div><p className="eyebrow">People & agents</p><h2>{compact ? label : presentation?.headings.workers ?? 'Project workers'}</h2></div>{compact && <span className="small-label">Select worker</span>}</div><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul className="worker-list">{query.data?.items.map(worker => <li key={worker.id}><button type="button" aria-label={compact ? `Select worker ${worker.name}` : `Open ${worker.name} inbox`} aria-pressed={compact ? session.worker?.id === worker.id : undefined} onClick={() => { selectWorker(worker); if (!compact) void navigate(`${home}/inbox`); }}><span className="worker-avatar" aria-hidden="true">{worker.name.slice(0, 2).toUpperCase()}</span><span><strong>{worker.name}</strong><small>{worker.id}</small></span><span className="worker-arrow" aria-hidden="true">↗</span></button><Link className="worker-detail-link" to={`${home}/workers/${encodeURIComponent(worker.id)}`} aria-label={`Read ${worker.name} details`}>Worker details</Link></li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="workers" busy={query.isFetching} /></section>;
 }
 function Workers() { const label = useProjectHeading('workers'); return <><div className="page-heading"><p className="eyebrow">Connected project</p><h2>{label}</h2><p>View worker details or open an inbox.</p></div><WorkerList /></>; }
+type JobStatusFilter = JobSummary['status'] | 'open' | 'all';
+export function jobFilters(params: URLSearchParams): { status: JobStatusFilter; workerId: string } | undefined {
+  const status = params.get('status') ?? 'open';
+  const workerId = params.get('worker_id') ?? '';
+  if (params.getAll('status').length > 1 || params.getAll('worker_id').length > 1
+    || !['open', 'all', 'active', 'blocked', 'parked', 'completed'].includes(status)
+    || params.has('worker_id') && !sessionIdentity(workerId)) return undefined;
+  return { status: status as JobStatusFilter, workerId };
+}
+export function changedJobFilters(params: URLSearchParams, change: { status?: JobStatusFilter; workerId?: string }): URLSearchParams {
+  const next = new URLSearchParams(params);
+  if (change.status !== undefined) { next.delete('status'); if (change.status !== 'open') next.set('status', change.status); }
+  if (change.workerId !== undefined) { next.delete('worker_id'); if (change.workerId) next.set('worker_id', change.workerId); }
+  return next;
+}
 export function Jobs() {
   const label = useProjectHeading('jobs');
-  const [status, setStatus] = useState('open');
-  const [worker, setWorker] = useState<Worker | null>(null);
-  return <><div className="page-heading"><h2>{label}</h2></div><div className="filters"><label>Status<select aria-label="Job status" value={status} onChange={event => setStatus(event.target.value)}><option value="open">Open jobs</option><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label><JobWorkerFilter selected={worker} select={setWorker} /></div><JobList key={`${status}/${worker?.id ?? ''}`} status={status as JobSummary['status'] | 'open' | ''} worker={worker} /></>;
+  const [params, setParams] = useSearchParams();
+  const filters = jobFilters(params);
+  return <><div className="page-heading"><h2>{label}</h2></div>{filters
+    ? <FilteredJobs filters={filters} change={change => setParams(changedJobFilters(params, change))} />
+    : <p className="notice" role="alert">The job filters are invalid. <button type="button" onClick={() => setParams(changedJobFilters(params, { status: 'open', workerId: '' }))}>Reset job filters</button></p>}</>;
+}
+function FilteredJobs({ filters: { status, workerId }, change }: { filters: { status: JobStatusFilter; workerId: string }; change(value: { status?: JobStatusFilter; workerId?: string }): void }) {
+  const { session, key } = useWorkspace();
+  const worker = useQuery({ queryKey: [...key, 'worker', workerId], queryFn: ({ signal }) => session.api.worker(workerId, signalFor(session, signal)), enabled: Boolean(workerId), staleTime: Infinity });
+  const selected = workerId ? worker.data ?? { id: workerId, name: workerId, project_id: '' } : null;
+  return <><div className="filters"><label>Status<select aria-label="Job status" value={status} onChange={event => change({ status: event.target.value as JobStatusFilter })}><option value="open">Open jobs</option><option value="all">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label><JobWorkerFilter selected={selected} select={value => change({ workerId: value?.id ?? '' })} /></div>
+    {workerId ? <ReadState error={worker.error} loading={worker.isPending} empty={false}>{worker.data && <JobList key={`${status}/${workerId}`} status={status === 'all' ? '' : status} worker={worker.data} />}</ReadState> : <JobList key={`${status}/`} status={status === 'all' ? '' : status} worker={null} />}
+  </>;
 }
 function JobList({ status, worker }: { status: JobSummary['status'] | 'open' | ''; worker: Worker | null }) {
   const { session, key, home } = useWorkspace();
@@ -419,15 +447,15 @@ function JobList({ status, worker }: { status: JobSummary['status'] | 'open' | '
   return <div className="job-worker-filter"><label>Worker<select aria-label="Job worker" value={selected?.id ?? ''} onChange={event => { if (!event.target.value) select(null); else { const worker = workers.find(item => item.id === event.target.value); if (worker) select(worker); } }}><option value="">All workers</option>{selected && !workers.some(worker => worker.id === selected.id) && <option value={selected.id}>{selected.name}</option>}{workers.map(worker => <option key={worker.id} value={worker.id}>{worker.name}</option>)}</select></label>{selected && <button className="worker-filter-clear" type="button" aria-label="Show jobs for all workers" onClick={() => select(null)}>×</button>}{(paging.number > 1 || query.data?.has_more) && <div className="worker-option-pages"><span>Workers page {paging.number}</span><button type="button" disabled={paging.number === 1 || query.isFetching} onClick={paging.previous}>Previous workers</button><button type="button" disabled={!query.data?.has_more || !query.data.cursor || query.isFetching} onClick={() => { if (query.data?.cursor) paging.next(query.data.cursor); }}>More workers</button></div>}{query.error && <span className="error-copy" role="alert">Worker choices could not be loaded.</span>}</div>;
 }
 
-function JobDetail() {
+export function JobDetail() {
   const { jobId = '' } = useParams();
   const { session, key, home } = useWorkspace();
   const query = useQuery({ queryKey: [...key, 'job', jobId], queryFn: ({ signal }) => session.api.job(jobId, signalFor(session, signal)), staleTime: Infinity });
   const job = query.data;
-  return <><Link className="back-link" to={`${home}/jobs`}>← All jobs</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{job && <><div className="page-heading"><span className={`badge status-${job.status}`}>{job.status}</span><h2>{job.title}</h2><p>{job.worker_id ? <Link to={`${home}/workers/${encodeURIComponent(job.worker_id)}`}>{job.worker_id}</Link> : 'Unassigned'} · Revision {job.revision}</p></div><ContextualNotes key={`notes-${jobId}`} jobId={jobId} /><section className="panel brief"><h3>Job brief</h3><p className="full-text">{job.brief || 'No brief supplied.'}</p><dl className="metadata"><div><dt>Job ID</dt><dd>{job.id}</dd></div><div><dt>Created</dt><dd>{time(job.created_at)}</dd></div><div><dt>Updated</dt><dd>{time(job.updated_at)}</dd></div></dl></section><JobWorkstreamPanel key={`workstream-${jobId}`} jobId={jobId} /><JobChecklistPanel key={`checklist-${jobId}`} jobId={jobId} jobRevision={job.revision} /><JobCheckpointPanel key={jobId} jobId={jobId} jobRevision={job.revision} /><JobUpdatesPanel key={`updates-${jobId}`} jobId={jobId} jobRevision={job.revision} /></>}</ReadState></>;
+  return <><Link className="back-link" to={`${home}/jobs`}>← All jobs</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{job && <><div className="page-heading"><span className={`badge status-${job.status}`}>{job.status}</span><h2>{job.title}</h2><p>{job.worker_id ? <Link to={`${home}/workers/${encodeURIComponent(job.worker_id)}`}>{job.worker_id}</Link> : 'Unassigned'} · Revision {job.revision}</p></div><ContextualNotes key={`notes-${jobId}`} jobId={jobId} /><section className="panel brief"><h3>Job brief</h3><EditorialMarkdown>{job.brief || 'No brief supplied.'}</EditorialMarkdown><dl className="metadata"><div><dt>Job ID</dt><dd>{job.id}</dd></div><div><dt>Created</dt><dd>{time(job.created_at)}</dd></div><div><dt>Updated</dt><dd>{time(job.updated_at)}</dd></div></dl></section><JobWorkstreamPanel key={`workstream-${jobId}`} jobId={jobId} /><JobChecklistPanel key={`checklist-${jobId}`} jobId={jobId} jobRevision={job.revision} /><JobCheckpointPanel key={jobId} jobId={jobId} jobRevision={job.revision} /><JobUpdatesPanel key={`updates-${jobId}`} jobId={jobId} jobRevision={job.revision} /></>}</ReadState></>;
 }
-function ChecklistItems({ items }: { items: ChecklistItem[] }) {
-  return items.length ? <ol>{items.map(item => <li key={item.id}><span className="badge neutral">{item.done ? 'Completed' : 'To do'}</span><p className="full-text">{item.text}</p></li>)}</ol> : <p className="empty">No checklist items.</p>;
+export function ChecklistItems({ items }: { items: ChecklistItem[] }) {
+  return items.length ? <ol>{items.map(item => <li key={item.id}><span className="badge neutral">{item.done ? 'Completed' : 'To do'}</span><EditorialMarkdown>{item.text}</EditorialMarkdown></li>)}</ol> : <p className="empty">No checklist items.</p>;
 }
 function JobChecklistPanel({ jobId, jobRevision }: { jobId: string; jobRevision: number }) {
   const { session, key } = useWorkspace();
@@ -458,10 +486,10 @@ function JobUpdatesPanel({ jobId, jobRevision }: { jobId: string; jobRevision: n
   const [open, setOpen] = useState(false);
   return <section className="panel" aria-label="Job narrative updates"><div className="section-heading"><div><p className="eyebrow">Recorded progress</p><h3>Narrative updates</h3></div><button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)}>{open ? 'Close updates' : 'Show updates'}</button></div>{open && <JobUpdates jobId={jobId} jobRevision={jobRevision} />}</section>;
 }
-function JobUpdateContent({ update, jobRevision }: { update: JobUpdate; jobRevision: number }) {
+export function JobUpdateContent({ update, jobRevision }: { update: JobUpdate; jobRevision: number }) {
   return <article className="brief"><p className="item-meta">Update {update.sequence} · Recorded against job revision {update.job_revision}</p>
     {update.job_revision > jobRevision && <p className="notice" role="status">The job changed while its details were being read. Refresh visible data to align the brief and updates.</p>}
-    <p className="full-text">{update.body}</p><div><strong>Evidence</strong>{update.evidence.length ? <ul>{update.evidence.map((reference, index) => <li className="full-text" key={`${index}-${reference}`}>{reference}</li>)}</ul> : <p className="empty">No evidence references.</p>}</div>
+    <EditorialMarkdown>{update.body}</EditorialMarkdown><div><strong>Evidence</strong>{update.evidence.length ? <ul>{update.evidence.map((reference, index) => <li className="full-text" key={`${index}-${reference}`}>{reference}</li>)}</ul> : <p className="empty">No evidence references.</p>}</div>
     <dl className="metadata"><div><dt>Recorded by</dt><dd>{update.actor_id}</dd></div><div><dt>Worker</dt><dd>{update.worker_id || 'No worker attribution'}</dd></div><div><dt>Recorded</dt><dd><time dateTime={update.created_at}>{time(update.created_at)}</time></dd></div></dl></article>;
 }
 function JobUpdates({ jobId, jobRevision }: { jobId: string; jobRevision: number }) {
@@ -487,12 +515,12 @@ function JobCheckpointPanel({ jobId, jobRevision }: { jobId: string; jobRevision
     </ReadState>
   </section>;
 }
-function CheckpointContent({ checkpoint }: { checkpoint: Checkpoint }) {
+export function CheckpointContent({ checkpoint }: { checkpoint: Checkpoint }) {
   return <article className="brief">
     <p className="item-meta">Sequence {checkpoint.sequence} · Captured at job revision {checkpoint.job_revision}</p>
-    <p className="full-text"><strong>Done</strong><br />{checkpoint.done}</p>
-    <p className="full-text"><strong>Next</strong><br />{checkpoint.next}</p>
-    <p className="full-text"><strong>Blocker</strong><br />{checkpoint.blocker || 'None'}</p>
+    <div><strong>Done</strong><EditorialMarkdown>{checkpoint.done}</EditorialMarkdown></div>
+    <div><strong>Next</strong><EditorialMarkdown>{checkpoint.next}</EditorialMarkdown></div>
+    <div><strong>Blocker</strong><EditorialMarkdown>{checkpoint.blocker || 'None'}</EditorialMarkdown></div>
     <div><strong>Evidence</strong>{checkpoint.evidence.length ? <ul>{checkpoint.evidence.map((item, index) => <li className="full-text" key={`${index}-${item}`}>{item}</li>)}</ul> : <p className="empty">No evidence references.</p>}</div>
     <dl className="metadata"><div><dt>Recorded by</dt><dd>{checkpoint.actor_id}</dd></div><div><dt>Worker</dt><dd>{checkpoint.worker_id || 'No worker attribution'}</dd></div><div><dt>Recorded</dt><dd><time dateTime={checkpoint.created_at}>{time(checkpoint.created_at)}</time></dd></div></dl>
   </article>;
@@ -504,7 +532,24 @@ function CheckpointHistory({ jobId }: { jobId: string }) {
   return <div className="brief"><h4>Checkpoint history</h4><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}>{query.data?.items.map(checkpoint => <CheckpointContent checkpoint={checkpoint} key={checkpoint.id} />)}</ReadState><Pager paging={paging} page={query.data} label="checkpoints" busy={query.isFetching} /></div>;
 }
 function ChooseWorker() { return <section className="panel empty"><h3>Choose a worker to open an inbox</h3><p>Select a worker from the list. Their incoming messages will stay connected as you browse.</p></section>; }
-function Inbox() {
+export function inboxWorkerSelector(params: URLSearchParams): string | undefined {
+  const values=params.getAll('worker_id');
+  if (!values.length) return '';
+  return values.length===1 && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(values[0]) ? values[0] : undefined;
+}
+export function Inbox() {
+  const [params]=useSearchParams();
+  const workerId=inboxWorkerSelector(params);
+  const {session,key,selectWorker}=useWorkspace();
+  const worker=useQuery({queryKey:[...key,'worker',workerId ?? 'invalid'],queryFn:({signal})=>session.api.worker(workerId!,signalFor(session,signal)),enabled:!!workerId && session.worker?.id!==workerId,staleTime:Infinity});
+  useEffect(()=>{
+    if (workerId && worker.data?.id===workerId && worker.data.project_id===session.project.id && session.worker?.id!==workerId && !session.controller.signal.aborted) selectWorker(worker.data);
+  },[workerId,worker.data,session,selectWorker]);
+  if (workerId===undefined) return <p className="notice" role="alert">The inbox worker link is invalid. Choose a worker from the inbox list.</p>;
+  if (workerId && session.worker?.id!==workerId) return <ReadState error={worker.error} loading={worker.isPending || !!worker.data} empty={false}>{null}</ReadState>;
+  return <SelectedInbox />;
+}
+function SelectedInbox() {
   const presentation = usePresentation();
   const label = useProjectHeading('inbox');
   const { session } = useWorkspace();
@@ -524,9 +569,9 @@ function Conversation() {
   const { conversationId = '' } = useParams();
   return <><Link className="back-link" to={`${home}/inbox`}>← Worker inbox</Link><div className="page-heading"><p className="eyebrow">{session.worker?.name ?? 'Worker inbox'}</p><h2>Conversation</h2><p>Reading leaves message state unchanged.</p></div>{session.worker ? <ConversationMessages key={conversationId} id={conversationId} /> : <ChooseWorker />}</>;
 }
-function ConversationMessages({ id }: { id: string }) {
+export function ConversationMessages({ id }: { id: string }) {
   const { session, key } = useWorkspace();
   const paging = usePaging();
   const query = useQuery({ queryKey: [...key, 'thread', id, paging.cursor], queryFn: ({ signal }) => session.api.thread(id, { limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
-  return <section className="panel"><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ol className="conversation-list">{query.data?.items.map(message => <li key={message.id}><div className="message-top"><strong>{message.sender_worker_id}<span className="message-direction"> to {message.recipient_worker_id}</span></strong><time dateTime={message.created_at}>{time(message.created_at)}</time></div><p className="full-text">{message.body}</p><MessageComposer reply={message} /></li>)}</ol></ReadState><Pager paging={paging} page={query.data} label="messages" busy={query.isFetching} /></section>;
+  return <section className="panel"><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ol className="conversation-list">{query.data?.items.map(message => <li key={message.id}><div className="message-top"><strong>{message.sender_worker_id}<span className="message-direction"> to {message.recipient_worker_id}</span></strong><time dateTime={message.created_at}>{time(message.created_at)}</time></div><EditorialMarkdown>{message.body}</EditorialMarkdown><MessageComposer reply={message} /></li>)}</ol></ReadState><Pager paging={paging} page={query.data} label="messages" busy={query.isFetching} /></section>;
 }

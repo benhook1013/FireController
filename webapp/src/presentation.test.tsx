@@ -23,6 +23,18 @@ describe('project appearance and metadata boundary', () => {
     expect(validPresentationConfig({ ...config, theme: { surface_text: '#f7f6f3' } })).toBe(false);
     expect(validPresentationConfig({ ...config, headings: { jobs: 'Untrusted\nheading' } })).toBe(false);
   });
+  it('validates bounded project queue groups without changing queue or review rules', () => {
+    const config={name:'Project',brand_name:'Brand',tagline:'Tagline',headings:{},theme:{},review_groups:[{title:'Foundation',pull_numbers:[1,2]},{title:'Delivery',pull_numbers:[9]}]};
+    expect(validPresentationConfig(config)).toBe(true);
+    expect(validPresentationConfig({...config,review_groups:null})).toBe(false);
+    expect(validPresentationConfig({...config,review_groups:[{title:'One',pull_numbers:[1]},{title:'Two',pull_numbers:[1]}]})).toBe(false);
+    expect(validPresentationConfig({...config,review_groups:[{title:'One',pull_numbers:[]}]})).toBe(false);
+    expect(validPresentationConfig({...config,review_groups:[{title:'One',pull_numbers:[2147483648]}]})).toBe(false);
+    expect(validPresentationSnapshot({...snapshot,presentation:{...presentation,review_groups:config.review_groups}},project.id)).toBe(false);
+    expect(validPresentationSnapshot({...snapshot,presentation:{...presentation,revision:1,updated_at:'2026-10-19T00:00:00Z',review_groups:config.review_groups}},project.id)).toBe(true);
+    expect(validPresentationConfig({...config,theme:{merged_text:'#f2ebf8'}})).toBe(false);
+    expect(validPresentationConfig({...config,theme:{merged_rail_text:'#7042a0'}})).toBe(false);
+  });
   it('preserves the approved fallback colors and layout and covers the shared token vocabulary', async () => {
     const fs = await vi.importActual<{ readFileSync(path: URL, encoding: 'utf8'): string }>('node:fs');
     const styles = fs.readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
@@ -34,7 +46,8 @@ describe('project appearance and metadata boundary', () => {
     const original = base.replace(/var\(--fc-[a-z_]+,([^()]+)\)/gu, '$1');
     const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(original));
     expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('be741206be6ffabd6407a5a3277b3a32efa212bc3413b853a92615f05bcb8af2');
-    const tokens = new Set(Array.from(styles.matchAll(/--fc-([a-z_]+)/gu), match => match[1]));
+    const modularStyles = styles + fs.readFileSync(new URL('./review-queue.css', import.meta.url), 'utf8');
+    const tokens = new Set(Array.from(modularStyles.matchAll(/--fc-([a-z_]+)/gu), match => match[1]));
     expect([...tokens].sort()).toEqual(Object.keys(presentationDefaults.theme).sort());
     // Decorative shadows may stay literal. All informative declarations use
     // bounded roles, including colors added by stored-review views.
@@ -119,10 +132,13 @@ describe('project appearance and metadata boundary', () => {
     const fs = await vi.importActual<{ readFileSync(path: URL, encoding: 'utf8'): string }>('node:fs');
     const styles = fs.readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
     const theme: Record<string, string> = { focus: '#808080', accent_background: '#ffffff', accent_text: '#000000', accent_soft_background: '#000000' };
-    for (const family of ['canvas', 'surface', 'header', 'hero', 'active', 'blocked', 'parked', 'completed']) {
+    for (const family of ['canvas', 'surface', 'header', 'hero', 'active', 'blocked', 'parked', 'completed', 'merged']) {
       theme[`${family}_background`] = '#000000'; theme[`${family}_text`] = '#ffffff';
       if (['canvas', 'surface', 'header', 'hero'].includes(family)) theme[`${family}_muted`] = '#ffffff';
     }
+    const retainedTheme = {...theme}; delete retainedTheme.merged_background; delete retainedTheme.merged_text;
+    expect(validPresentationSnapshot({presentation:{...presentation,revision:1,updated_at:'2026-10-16T01:00:00Z',theme:retainedTheme},event_cursor:'cursor'},project.id)).toBe(true);
+    theme.merged_rail='#000000'; theme.merged_rail_text='#ffffff';
     // Both status surfaces may legally differ from the surrounding dark panel.
     theme.blocked_background = theme.parked_background = '#ffffff';
     theme.blocked_text = theme.parked_text = '#000000';

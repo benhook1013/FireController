@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { ReadState, signalFor, useWorkspace, type Session } from './workspace';
 import type { DeliverySnapshot, ReviewPullSummary, ReviewQueue } from './types';
-import { ReviewQueueView, ReviewRunsView } from './review-workspace';
+import { ReviewQueueView, ReviewRunsView, ReviewPullFacts } from './review-workspace';
 import { DeliveryBoardArchive } from './delivery-board';
 import './delivery.css';
 
@@ -19,9 +19,9 @@ export function groupDeliveryLanes(value: DeliverySnapshot): DeliveryLane[] {
     lanes.get(job.worker_id)!.jobs.push(job);
   }
   if (!lanes.has('')) lanes.set('', { id: '', name: 'Unassigned', jobs: [] });
-  return [...lanes.values()].map(lane => ({ ...lane, jobs: [...lane.jobs].sort((a, b) => statusOrder[a.status] - statusOrder[b.status]) })).sort((a, b) => {
+  return [...lanes.values()].map(lane => ({ ...lane, jobs: [...lane.jobs].sort((a, b) => Number(b.id === lane.worker?.primary_job_id) - Number(a.id === lane.worker?.primary_job_id) || statusOrder[a.status] - statusOrder[b.status]) })).sort((a, b) => {
     if (!a.id) return 1; if (!b.id) return -1;
-    return (a.jobs.length ? statusOrder[a.jobs[0].status] : 3) - (b.jobs.length ? statusOrder[b.jobs[0].status] : 3);
+    return Math.min(3, ...a.jobs.map(job => statusOrder[job.status])) - Math.min(3, ...b.jobs.map(job => statusOrder[job.status]));
   });
 }
 export function deliveryQuery(session: Session, key: readonly string[], workerCursor = '', jobCursor = '') {
@@ -39,8 +39,26 @@ function CheckpointPreview({ job }: { job: DeliveryJob }) {
   if (!checkpoint) return <p className="delivery-empty">No checkpoint recorded.</p>;
   return <div className="delivery-checkpoint">{checkpoint.job_revision !== job.revision && <p className="delivery-checkpoint-stale">Checkpoint from job revision {checkpoint.job_revision}; current revision {job.revision}.</p>}{checkpoint.next && <p><strong>Next</strong>{preview(checkpoint.next, checkpoint.next_truncated)}</p>}{checkpoint.blocker && <p className="delivery-blocker"><strong>Blocker</strong>{preview(checkpoint.blocker, checkpoint.blocker_truncated)}</p>}{checkpoint.done && <p><strong>Done</strong>{preview(checkpoint.done, checkpoint.done_truncated)}</p>}</div>;
 }
+function LaneInboxLink({ lane, home }: { lane: DeliveryLane; home: string }) {
+  const { session, selectWorker } = useWorkspace();
+  return <Link to={`${home}/inbox?${new URLSearchParams({worker_id:lane.id})}`} onClick={event => {
+    if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) selectWorker({ id: lane.id, name: lane.name, project_id: session.project.id });
+  }}>Worker inbox</Link>;
+}
 export function DeliveryLanes({ value, home, partialJobs = value.jobs.has_more }: { value: DeliverySnapshot; home: string; partialJobs?: boolean }) {
-  return <div className="delivery-lanes">{groupDeliveryLanes(value).map(lane => <section className="panel delivery-lane" key={lane.id} aria-label={`${lane.name} jobs`}><header className="delivery-lane-heading"><h3>{lane.id ? <Link to={`${home}/workers/${encodeURIComponent(lane.id)}`}>{lane.name}</Link> : lane.name}</h3>{lane.worker?.paused && <span className="badge status-parked">Paused</span>}{lane.worker?.paused && lane.worker.pause_reason && <p className="delivery-pause">{preview(lane.worker.pause_reason, lane.worker.pause_reason_truncated)}</p>}{lane.id && !lane.worker && <p className="delivery-page-note">Owner outside this worker page</p>}{lane.worker?.primary_job_id && !lane.jobs.some(job => job.id === lane.worker!.primary_job_id) && <Link className="delivery-primary-link" to={`${home}/jobs/${encodeURIComponent(lane.worker.primary_job_id)}`}>Primary job</Link>}</header>{lane.jobs.length ? <ul className="delivery-job-list">{lane.jobs.map(job => <li key={job.id}><div className="delivery-job-state"><span className={`badge status-${job.status}`}>{job.status}</span>{lane.worker?.primary_job_id === job.id && <span className="delivery-primary">Primary focus</span>}</div><h4><Link to={`${home}/jobs/${encodeURIComponent(job.id)}`}>{job.title}</Link></h4><CheckpointPreview job={job} /><Link className="delivery-job-link" to={`${home}/jobs/${encodeURIComponent(job.id)}`} aria-label={`Read job ${job.title}`}>Read job →</Link></li>)}</ul> : <p className="delivery-empty">{partialJobs ? 'No jobs in loaded slice.' : 'No open jobs.'}</p>}</section>)}</div>;
+  return <div className="delivery-lanes">{groupDeliveryLanes(value).map(lane => <section className="panel delivery-lane" key={lane.id} aria-label={`${lane.name} jobs`}>
+    <header className="delivery-lane-heading"><h3>{lane.id ? <Link to={`${home}/workers/${encodeURIComponent(lane.id)}`}>{lane.name}</Link> : lane.name}</h3>
+      {lane.id && <nav className="delivery-worker-links" aria-label={`${lane.name} links`}><LaneInboxLink lane={lane} home={home} /><Link to={`${home}/jobs?${new URLSearchParams({worker_id:lane.id,status:'all'})}`}>Job history</Link></nav>}
+      {lane.worker?.paused && <span className="badge status-parked">Paused</span>}
+      {lane.worker?.paused && lane.worker.pause_reason && <p className="delivery-pause">{preview(lane.worker.pause_reason, lane.worker.pause_reason_truncated)}</p>}
+      {lane.id && !lane.worker && <p className="delivery-page-note">Owner outside this worker page</p>}
+      {lane.worker?.primary_job_id && !lane.jobs.some(job => job.id === lane.worker!.primary_job_id) && <Link className="delivery-primary-link" to={`${home}/jobs/${encodeURIComponent(lane.worker.primary_job_id)}`}>Primary job</Link>}
+    </header>
+    {lane.jobs.length ? <ul className="delivery-job-list">{lane.jobs.map(job => <li key={job.id}>
+      <div className="delivery-job-heading"><h4><Link to={`${home}/jobs/${encodeURIComponent(job.id)}`}>{job.title}</Link></h4><div className="delivery-job-state"><span className={`badge status-${job.status}`}>{job.status[0].toUpperCase()+job.status.slice(1)}</span>{lane.worker?.primary_job_id === job.id && <span className="badge delivery-primary">Primary focus</span>}</div></div>
+      <CheckpointPreview job={job} /><Link className="delivery-job-link" to={`${home}/jobs/${encodeURIComponent(job.id)}`} aria-label={`Read job ${job.title}`}>Read job →</Link>
+    </li>)}</ul> : <p className="delivery-empty">{partialJobs ? 'No jobs in loaded slice.' : 'No open jobs.'}</p>}
+  </section>)}</div>;
 }
 
 type MergeHead = { state: 'head'; pull: ReviewPullSummary } | { state: 'unknown'; reason: 'unconfigured' | 'preceding' | 'next-page' } | { state: 'none' };
@@ -53,13 +71,10 @@ export function selectMergeHead(queue: ReviewQueue): MergeHead {
   }
   return queue.has_more ? { state: 'unknown', reason: 'next-page' } : { state: 'none' };
 }
-function PullFacts({ pull }: { pull: ReviewPullSummary }) {
-  return <div className="delivery-pull-facts"><span className={`badge ${pull.state === 'merged' || pull.state === 'closed' ? 'neutral' : 'status-active'}`}>{pull.state}{pull.state === 'merged' ? ' · retained' : ''}</span><span>CI: {pull.ci_state}</span><span>Mergeability: {pull.mergeability}</span>{!pull.complete && <span>Incomplete PR observation</span>}</div>;
-}
 export function MergeHeadContent({ queue, home }: { queue: ReviewQueue; home: string }) {
   const head = selectMergeHead(queue);
   if (head.state === 'none' || head.state === 'unknown' && head.reason === 'unconfigured') return null;
-  return <><p className="eyebrow">Merge train</p>{head.state === 'head' ? <><h2><Link to={snapshotLink(home, 'pulls', head.pull.number, queue.snapshot_id)}>#{head.pull.number} · {head.pull.title}</Link></h2><PullFacts pull={head.pull} /><ReviewRunsView number={head.pull.number} snapshot={queue.snapshot_id} head={head.pull.head_sha} attempts={head.pull.latest_attempts} expected={head.pull.run_count} compact /></> : <><h2>Merge head not determined</h2><p>{head.reason === 'preceding' ? 'An earlier queue entry has unknown state.' : 'No open PR is loaded yet; more queue entries remain.'}</p></>}<Link className="delivery-head-link" to={`${home}#review-queue`} aria-label="Jump to review queue"><span>Review queue</span><span className="delivery-link-arrow" aria-hidden="true">↗</span></Link></>;
+  return <><p className="eyebrow">Merge train</p>{head.state === 'head' ? <><h2><Link to={snapshotLink(home, 'pulls', head.pull.number, queue.snapshot_id)}>#{head.pull.number} · {head.pull.title}</Link></h2><ReviewPullFacts pull={head.pull} /><ReviewRunsView number={head.pull.number} snapshot={queue.snapshot_id} head={head.pull.head_sha} attempts={head.pull.latest_attempts} expected={head.pull.run_count} compact /></> : <><h2>Merge head not determined</h2><p>{head.reason === 'preceding' ? 'An earlier queue entry has unknown state.' : 'No open PR is loaded yet; more queue entries remain.'}</p></>}<Link className="delivery-head-link" to={`${home}#review-queue`} aria-label="Jump to review queue"><span>Review queue</span><span className="delivery-link-arrow" aria-hidden="true">↗</span></Link></>;
 }
 export function DeliveryHero({ children }: { children: ReactNode }) {
   const { session, key, home } = useWorkspace();

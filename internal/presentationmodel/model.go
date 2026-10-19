@@ -19,11 +19,18 @@ const MaxConfigBytes = 16 << 10
 
 // Config retains explicit overrides only; missing map keys use reference defaults.
 type Config struct {
-	Name      string            `json:"name"`
-	BrandName string            `json:"brand_name"`
-	Tagline   string            `json:"tagline"`
-	Headings  map[string]string `json:"headings"`
-	Theme     map[string]string `json:"theme"`
+	Name         string            `json:"name"`
+	BrandName    string            `json:"brand_name"`
+	Tagline      string            `json:"tagline"`
+	Headings     map[string]string `json:"headings"`
+	Theme        map[string]string `json:"theme"`
+	ReviewGroups []ReviewGroup     `json:"review_groups,omitempty"`
+}
+
+// ReviewGroup labels explicitly selected PRs without changing review order or policy.
+type ReviewGroup struct {
+	Title       string  `json:"title"`
+	PullNumbers []int64 `json:"pull_numbers"`
 }
 
 type Reference struct {
@@ -72,6 +79,28 @@ func Normalize(in Config) (Config, error) {
 		}
 	}
 	out := Config{Name: strings.TrimSpace(in.Name), BrandName: strings.TrimSpace(in.BrandName), Tagline: strings.TrimSpace(in.Tagline), Headings: copyMap(in.Headings), Theme: copyMap(in.Theme)}
+	if len(in.ReviewGroups) > 40 {
+		return Config{}, invalid()
+	}
+	titles, pulls := map[string]bool{}, map[int64]bool{}
+	for _, group := range in.ReviewGroups {
+		title := strings.TrimSpace(group.Title)
+		if !named(title, 160) || titles[title] || len(group.PullNumbers) == 0 {
+			return Config{}, invalid()
+		}
+		titles[title] = true
+		copy := ReviewGroup{Title: title, PullNumbers: append([]int64(nil), group.PullNumbers...)}
+		for _, number := range copy.PullNumbers {
+			if number < 1 || number > 2147483647 || pulls[number] {
+				return Config{}, invalid()
+			}
+			pulls[number] = true
+			if len(pulls) > 1000 {
+				return Config{}, invalid()
+			}
+		}
+		out.ReviewGroups = append(out.ReviewGroups, copy)
+	}
 	if out.BrandName == "" {
 		out.BrandName = reference.BrandName
 	}
@@ -127,10 +156,13 @@ func Normalize(in Config) (Config, error) {
 			}
 		}
 	}
-	for _, family := range []string{"active", "blocked", "parked", "completed"} {
+	for _, family := range []string{"active", "blocked", "parked", "completed", "merged"} {
 		if !pair(family+"_text", family+"_background", 4.5) {
 			return Config{}, invalid()
 		}
+	}
+	if !pair("merged_rail_text", "merged_rail", 4.5) {
+		return Config{}, invalid()
 	}
 	if !pair("accent_text", "accent_background", 4.5) || !pair("accent_background", "canvas_background", 4.5) || !pair("accent_background", "surface_background", 4.5) {
 		return Config{}, invalid()
@@ -142,6 +174,12 @@ func Normalize(in Config) (Config, error) {
 	}
 	for _, bg := range []string{"canvas_background", "surface_background", "header_background", "hero_background", "accent_background", "accent_soft_background", "active_background", "blocked_background", "parked_background", "completed_background"} {
 		if !pair("focus", bg, 3) {
+			return Config{}, invalid()
+		}
+	}
+	// New palette roles must not invalidate retained themes that predate them.
+	for _, background := range []string{"merged_background", "merged_rail"} {
+		if _, explicit := out.Theme[background]; explicit && !pair("focus", background, 3) {
 			return Config{}, invalid()
 		}
 	}
@@ -182,6 +220,9 @@ func Decode(raw []byte) (Config, error) {
 		return Config{}, invalid()
 	}
 	if _, ok := fields["name"]; !ok {
+		return Config{}, invalid()
+	}
+	if value, ok := fields["review_groups"]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 		return Config{}, invalid()
 	}
 	for _, key := range []string{"name", "brand_name", "tagline"} {

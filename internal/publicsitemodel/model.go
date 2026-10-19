@@ -197,6 +197,10 @@ func normalizeLinks(in []Link) ([]Link, error) {
 }
 
 func NormalizeManifest(in Manifest) (Manifest, error) {
+	// Queue headings are private operational metadata, not public appearance.
+	if len(in.Presentation.ReviewGroups) != 0 {
+		return Manifest{}, invalidModel()
+	}
 	if !slugPattern.MatchString(in.Slug) || !publicText(in.Description, 8<<10, true, false) || len(in.ProjectMap) > MaxCards || len(in.Progress) > MaxCards || len(in.WorkerLanes) > MaxWorkerLanes || len(in.Reviews) > MaxReviews {
 		return Manifest{}, invalidModel()
 	}

@@ -6,19 +6,22 @@ import type { BrowserPresentationConfig, BrowserPresentationReceipt } from './ap
 import { ReadState, signalFor, useWorkspace } from './workspace';
 import { ActionNotice, useBrowserAction } from './browser-actions';
 import { validPresentationConfig } from './presentation';
-import type { Presentation } from './types';
+import type { Presentation, ReviewGroup } from './types';
 
-export type PresentationDraft = { name: string; brand_name: string; tagline: string; headings: string; theme: string };
+export type PresentationDraft = { name: string; brand_name: string; tagline: string; headings: string; theme: string; review_groups?: ReviewGroup[] };
+function copyReviewGroups(groups: ReviewGroup[]): ReviewGroup[] {
+  return groups.map(group => ({ ...group, pull_numbers: [...group.pull_numbers] }));
+}
 export function presentationDraft(value: BrowserPresentationConfig): PresentationDraft {
-  return { name: value.name, brand_name: value.brand_name, tagline: value.tagline, headings: JSON.stringify(value.headings, null, 2), theme: JSON.stringify(value.theme, null, 2) };
+  return { name: value.name, brand_name: value.brand_name, tagline: value.tagline, headings: JSON.stringify(value.headings, null, 2), theme: JSON.stringify(value.theme, null, 2), ...(value.review_groups === undefined ? {} : { review_groups: copyReviewGroups(value.review_groups) }) };
 }
 export function decodePresentationDraft(draft: PresentationDraft): BrowserPresentationConfig {
   if (draft.headings.length > 16 << 10 || draft.theme.length > 16 << 10) throw new ApiError('invalid_request', 'Appearance overrides exceed their supported size.');
   let headings: unknown, theme: unknown;
   try { headings = JSON.parse(draft.headings); theme = JSON.parse(draft.theme); } catch { throw new ApiError('invalid_request', 'Use JSON objects for heading and theme overrides.'); }
-  const value = { name: draft.name, brand_name: draft.brand_name, tagline: draft.tagline, headings, theme };
+  const value = { name: draft.name, brand_name: draft.brand_name, tagline: draft.tagline, headings, theme, ...(Object.hasOwn(draft, 'review_groups') ? { review_groups: draft.review_groups } : {}) };
   if (!validPresentationConfig(value)) throw new ApiError('invalid_request', 'Use supported headings, colors, contrast and bounded text.');
-  return value;
+  return { ...value, ...(value.review_groups === undefined ? {} : { review_groups: copyReviewGroups(value.review_groups) }) };
 }
 type PresentationAction = { worker: string; config: BrowserPresentationConfig; revision: number };
 
@@ -43,7 +46,7 @@ function PresentationEditor({ initial, reload }: { initial: Presentation; reload
   const action = useBrowserAction<PresentationAction, BrowserPresentationReceipt>(slot,
     (input, actionKey, signal) => session.api.replacePresentation(input.worker, input.config, input.revision, actionKey, signal),
     async receipt => { setRevision(receipt.revision); await queryClient.invalidateQueries({ queryKey: [...key, 'settings', 'presentation'] }); });
-  const change = (field: keyof PresentationDraft, value: string) => { setDraft(current => ({ ...current, [field]: value })); setLocalError(undefined); action.clearNotice(); };
+  const change = (field: Exclude<keyof PresentationDraft, 'review_groups'>, value: string) => { setDraft(current => ({ ...current, [field]: value })); setLocalError(undefined); action.clearNotice(); };
   const submit = (event: FormEvent) => {
     event.preventDefault(); setLocalError(undefined);
     try { void action.run({ worker, config: decodePresentationDraft(draft), revision }); } catch (error) { setLocalError(error); }

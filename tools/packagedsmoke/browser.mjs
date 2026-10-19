@@ -314,7 +314,7 @@ try {
   await expect(unassignedLane.getByText('Unassigned parked work', {exact:true})).toBeVisible();
   checkpoint = 'unassigned-job';
   const inspectorStatuses = await inspectorLane.locator('.delivery-job-state .badge').allTextContents();
-  need(inspectorStatuses.join('|') === 'active|blocked|parked');
+  need(inspectorStatuses.join('|') === 'Active|Blocked|Parked');
   checkpoint = 'status-order';
   checkpoint = 'latest-checkpoint-done';
   const latestDone = inspectorLane.locator('.delivery-checkpoint p').filter({hasText:'Latest checkpoint is visible.'});
@@ -662,7 +662,7 @@ try {
   checkpoint = 'hosted-run';
   await page.locator('#review-queue').getByRole('region', {name:'Hosted CodeRabbit', exact:true}).getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
   checkpoint = 'merged-retention';
-  need(await page.getByText('merged · retained history', {exact:true}).count() === 1);
+  need(await page.locator('.review-state-merged').filter({hasText:'Merged'}).count() === 1);
   checkpoint = 'delivery-queue';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
   checkpoint = 'queue-heading';
@@ -670,7 +670,7 @@ try {
   await expect(deliveryQueue.getByRole('heading', {name:'Reviews', exact:true})).toBeVisible();
   checkpoint = 'queue-pull';
   await expect(deliveryQueue.getByRole('link', {name:'Live review updated', exact:true})).toBeVisible();
-  await expect(deliveryQueue.getByText('merged · retained history', {exact:true})).toBeVisible();
+  await expect(deliveryQueue.locator('.review-state-merged').filter({hasText:'Merged'})).toBeVisible();
   checkpoint = 'merge-head';
   await expect(page.getByRole('region', {name:'Merge train head'}).getByRole('link', {name:'#32 · Live review updated', exact:true})).toBeVisible();
   checkpoint = 'hosted-summary';
