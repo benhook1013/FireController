@@ -128,6 +128,21 @@ export class PublicSiteApi {
       decodePage: raw => { const value = parse(raw); if (!validatePublicChange(value, current.generation)) throw invalid(); return value; },
       pageCursor: value => value.cursor, substantive: () => true,
       parseStreamError: raw => { const value = parse(raw); if (!object(value) || !exact(value, ['error']) || !object(value.error) || !exact(value.error, ['code']) || !['resync_required', 'not_found'].includes(String(value.error.code))) return invalid(); return failure(value.error.code === 'not_found' ? 404 : 409); }, event: 'public-project',
-    }, { ...callbacks, events: async change => { if (change.revision <= current.revision) return; const next = await this.snapshot(signal); if (next.generation !== current.generation) throw failure(409); if (next.revision < change.revision) throw invalid(); current = next; if (!signal.aborted) await callbacks.snapshot(next); } }, signal);
+    }, { ...callbacks, events: async change => {
+      if (change.revision <= current.revision) return;
+      let next: PublicSnapshot;
+      try { next = await this.snapshot(signal); }
+      catch (error) {
+        // Transport failures belong to reconnect handling, rather than being
+        // mistaken for failures in the view callback below. Keep API errors
+        // (including replay expiry) and caller cancellation unchanged.
+        if (!signal.aborted && (error instanceof TypeError || error instanceof DOMException && ['AbortError', 'NetworkError', 'TimeoutError'].includes(error.name))) throw new ApiError('stream_unavailable', 'The public project could not be refreshed.');
+        throw error;
+      }
+      if (next.generation !== current.generation) throw failure(409);
+      if (next.revision < change.revision) throw invalid();
+      current = next;
+      if (!signal.aborted) await callbacks.snapshot(next);
+    } }, signal);
   }
 }

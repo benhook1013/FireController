@@ -75,6 +75,106 @@ describe('public transport has no private connection authority', () => {
 });
 
 describe('quiet public live delivery', () => {
+  it.each(['network', 'body network', 'deadline', 'server'])('replays the unprocessed change after an event snapshot %s failure', async kind => {
+    vi.useFakeTimers();
+    let reads = 0, stream!: ReadableStreamDefaultController<Uint8Array>, failedSignal: AbortSignal | undefined;
+    const cursors: string[] = [], seen: number[] = [], statuses: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      expect(init.credentials).toBe('omit'); expect(init.redirect).toBe('error'); expect(init.cache).toBe('no-store');
+      expect(new Headers(init.headers).has('authorization')).toBe(false);
+      expect(new Headers(init.headers).has('x-fc-browser-session')).toBe(false);
+      if (url.includes('/events?')) {
+        cursors.push(new URL(url, 'https://public.example').searchParams.get('cursor')!);
+        return new Response(new ReadableStream<Uint8Array>({ start(output) {
+          stream = output; output.enqueue(frame(2));
+          init.signal!.addEventListener('abort', () => { try { output.close(); } catch { /* canceled reader */ } }, { once: true });
+        } }), { headers: { 'content-type': 'text/event-stream' } });
+      }
+      expect(url).toBe('/api/v1/public/projects/showcase');
+      reads++;
+      if (reads === 1) return json(snapshot());
+      if (reads === 2) {
+        if (kind === 'network') throw new TypeError('Synthetic network failure');
+        if (kind === 'body network') return new Response(new ReadableStream({ start(output) { output.error(new TypeError('Synthetic body failure')); } }), { headers: { 'content-type': 'application/json' } });
+        if (kind === 'server') return json({}, 503);
+        failedSignal = init.signal!;
+        return new Promise<Response>((_resolve, reject) => init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+      }
+      return json(snapshot(reads - 1));
+    }));
+    const controller = new AbortController();
+    const watch = new PublicSiteApi('showcase').watch({ snapshot: value => { seen.push(value.revision); }, status: value => { statuses.push(value); } }, controller.signal).catch(error => error);
+    try {
+      await flush();
+      if (kind === 'deadline') { await vi.advanceTimersByTimeAsync(5000); expect(failedSignal?.aborted).toBe(true); }
+      expect(statuses.at(-1)).toBe('reconnecting'); expect(seen).toEqual([1]); expect(reads).toBe(2);
+      await vi.advanceTimersByTimeAsync(999); expect(cursors).toEqual([`${generation}:1`]);
+      await vi.advanceTimersByTimeAsync(1); await flush();
+      expect(cursors).toEqual([`${generation}:1`, `${generation}:1`]); expect(seen).toEqual([1, 2]); expect(reads).toBe(3);
+      stream.enqueue(frame(2)); await flush(); expect(reads).toBe(3);
+      stream.enqueue(frame(3)); await flush(); expect(seen).toEqual([1, 2, 3]);
+    } finally { controller.abort(); await watch; }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels the actual pending event snapshot without a retry or late callback', async () => {
+    vi.useFakeTimers(); let reads = 0, streams = 0, pendingSignal: AbortSignal | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      if (url.includes('/events?')) {
+        streams++;
+        return new Response(new ReadableStream({ start(output) { output.enqueue(frame(2)); init.signal!.addEventListener('abort', () => { try { output.close(); } catch { /* canceled reader */ } }, { once: true }); } }), { headers: { 'content-type': 'text/event-stream' } });
+      }
+      if (++reads === 1) return json(snapshot());
+      pendingSignal = init.signal!;
+      return new Promise<Response>((_resolve, reject) => init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+    }));
+    const controller = new AbortController(), seen: number[] = [];
+    const watch = new PublicSiteApi('showcase').watch({ snapshot: value => { seen.push(value.revision); }, status() {} }, controller.signal);
+    await flush(); expect(reads).toBe(2); expect(pendingSignal?.aborted).toBe(false);
+    controller.abort(); await watch; expect(pendingSignal?.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(10_000); expect(reads).toBe(2); expect(streams).toBe(1); expect(seen).toEqual([1]); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['malformed', 'not found', 'older revision', 'view callback'])('keeps an event snapshot %s failure terminal', async kind => {
+    vi.useFakeTimers(); let reads = 0, streams = 0;
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/events?')) { streams++; return new Response(new ReadableStream({ start(output) { output.enqueue(frame(2)); } }), { headers: { 'content-type': 'text/event-stream' } }); }
+      if (++reads === 1) return json(snapshot());
+      if (kind === 'not found') return json({}, 404);
+      if (kind === 'malformed') return new Response('{', { headers: { 'content-type': 'application/json' } });
+      return json(snapshot(kind === 'older revision' ? 1 : 2));
+    }));
+    const seen: number[] = [], statuses: string[] = [];
+    const error = await new PublicSiteApi('showcase').watch({ snapshot: value => {
+      if (value.revision === 2 && kind === 'view callback') throw new TypeError('Synthetic view failure');
+      seen.push(value.revision);
+    }, status: value => { statuses.push(value); } }, new AbortController().signal).catch(value => value);
+    expect(error).toMatchObject({ code: kind === 'not found' ? 'not_found' : kind === 'view callback' ? 'callback_failed' : 'invalid_response' });
+    expect(statuses.at(-1)).toBe('closed'); expect(seen).toEqual([1]);
+    await vi.advanceTimersByTimeAsync(10_000); expect(reads).toBe(2); expect(streams).toBe(1); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('retains event snapshot 409 resynchronization instead of treating it as a transport failure', async () => {
+    vi.useFakeTimers(); let reads = 0; const cursors: string[] = [], seen: number[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      if (url.includes('/events?')) {
+        cursors.push(new URL(url, 'https://public.example').searchParams.get('cursor')!);
+        return new Response(new ReadableStream({ start(output) {
+          if (cursors.length === 1) output.enqueue(frame(2));
+          init.signal!.addEventListener('abort', () => { try { output.close(); } catch { /* canceled reader */ } }, { once: true });
+        } }), { headers: { 'content-type': 'text/event-stream' } });
+      }
+      reads++; return reads === 2 ? json({}, 409) : json(snapshot(reads === 1 ? 1 : 2));
+    }));
+    const controller = new AbortController();
+    const watch = new PublicSiteApi('showcase').watch({ snapshot: value => { seen.push(value.revision); }, status() {} }, controller.signal);
+    try {
+      await flush(); expect(reads).toBe(3); expect(seen).toEqual([1, 2]);
+      await vi.advanceTimersByTimeAsync(1000); expect(cursors).toEqual([`${generation}:1`, `${generation}:2`]);
+    } finally { controller.abort(); await watch; }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('discards a late canceled scope while another public project loads independently', async () => {
     let completeOld!: (value: Response) => void;
     const other = snapshot(); other.slug = 'other-project'; other.content.slug = other.slug; other.generation = `public_generation_${'c'.repeat(32)}`; other.cursor = `${other.generation}:1`;
