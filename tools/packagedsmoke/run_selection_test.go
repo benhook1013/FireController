@@ -35,6 +35,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewruntime"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -114,7 +115,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	}
 	bootstrap.stop(t)
 	project, worker, _, workerFile := seedAccess(t, ctx, data, bootstrap.instance, strings.TrimSpace(string(admin)), private)
-	seedRunSelectionConfiguration(t, ctx, data, catalogPath, project, worker, strings.TrimSpace(string(admin)), 0, []int64{2, 3}, true)
+	originalSnapshot := seedRunSelectionConfiguration(t, ctx, data, catalogPath, project, worker, strings.TrimSpace(string(admin)), 0, []int64{2, 3}, true)
 	initial := readUpgradeState(t, ctx, data)
 	daemon := startDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogPath)
 	target, _ := url.Parse("http://" + daemon.address)
@@ -182,6 +183,23 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	expectedFirst := map[string]int{"GET /repositories/991": 2, "GET /repos/synthetic/packaged-smoke/pulls/2": 1, "GET /repos/synthetic/packaged-smoke/pulls/3": 2}
 	if !reflect.DeepEqual(providerBefore, expectedFirst) {
 		t.Fatalf("first source request inventory differs: %v", providerBefore)
+	}
+	// Actual packaged provider reads update pre-existing display facts without
+	// another provider request, while the original pinned snapshot stays intact.
+	for _, number := range []string{"2", "3"} {
+		var current client.ReviewPull
+		decode(t, call("reviews", "pull", number), &current)
+		if current.Pull.Title != "Synthetic selection target" || current.Pull.Diff == nil || *current.Pull.Diff != (client.ReviewPullDiff{Files: 1, Additions: 3, Deletions: 2}) || current.Pull.IsDraft == nil || *current.Pull.IsDraft {
+			t.Fatal("fresh source metadata missing from actual CLI read")
+		}
+	}
+	var pinned client.ReviewPull
+	decode(t, call("reviews", "pull", "3", "--snapshot", originalSnapshot), &pinned)
+	if pinned.Pull.Title != "Before provider" || pinned.Pull.IsDraft == nil || !*pinned.Pull.IsDraft || pinned.Pull.Diff == nil || pinned.Pull.Diff.Files != 17 {
+		t.Fatal("source publication rewrote original pinned metadata")
+	}
+	if !reflect.DeepEqual(provider.inventory(), expectedFirst) {
+		t.Fatal("stored metadata reads reacquired provider facts")
 	}
 	// Expect-PR is a genuine assertion: the closed channel front remains PR3,
 	// so another explicit invocation expecting PR2 creates no native child/Git.
@@ -316,6 +334,9 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 		t.Fatal("restart/recovery/read altered retained tables")
 	}
 	changed := map[string]bool{"review_selections": true, "review_operations": true, "review_execution_attempts": true, "review_execution_transitions": true, "review_execution_reservations": true, "events": true, "receipts": true, "sqlite_sequence": true}
+	for _, name := range []string{"review_snapshots", "review_workspace", "review_current_pulls", "review_pull_versions", "review_pull_memberships", "review_current_attempts", "review_attempt_versions", "review_attempt_memberships", "review_current_totals"} {
+		changed[name] = true
+	}
 	for name, h := range initial.tables {
 		if !changed[name] && (beforeRestart.tables[name] != h || beforeRestart.counts[name] != initial.counts[name]) {
 			t.Fatalf("selection changed unrelated table %s", name)
@@ -344,7 +365,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 func runSelectionShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
-func seedRunSelectionConfiguration(t *testing.T, ctx context.Context, data, catalogPath, project, worker, admin string, previous int64, queue []int64, initial bool) {
+func seedRunSelectionConfiguration(t *testing.T, ctx context.Context, data, catalogPath, project, worker, admin string, previous int64, queue []int64, initial bool) string {
 	t.Helper()
 	store, err := core.Open(ctx, data)
 	if err != nil {
@@ -362,6 +383,8 @@ func seedRunSelectionConfiguration(t *testing.T, ctx context.Context, data, cata
 	}
 	mux := http.NewServeMux()
 	engine.Register(mux)
+	reviews.Register(mux, store)
+	var originalSnapshot string
 	call := func(path, key string, body any) {
 		t.Helper()
 		raw, err := json.Marshal(body)
@@ -378,6 +401,11 @@ func seedRunSelectionConfiguration(t *testing.T, ctx context.Context, data, cata
 		if w.Code < 200 || w.Code >= 300 {
 			t.Fatalf("trusted configuration rejected status=%d", w.Code)
 		}
+		if strings.HasSuffix(path, "/observations") {
+			var receipt reviews.Receipt
+			decode(t, w.Body.Bytes(), &receipt)
+			originalSnapshot = receipt.ID
+		}
 	}
 	prefix := "/api/v1/projects/" + project + "/reviews"
 	if initial {
@@ -386,7 +414,15 @@ func seedRunSelectionConfiguration(t *testing.T, ctx context.Context, data, cata
 	call(prefix+"/execution/configuration", fmt.Sprintf("configuration-%d", previous), map[string]any{"expected_revision": previous, "capability_id": cap.ID, "mode": "independent", "queue": queue, "channels": []string{"cli"}, "paused": false})
 	if initial {
 		call(prefix+"/rounds/2/cli", "close-two", map[string]any{"expected_revision": 0, "action": "close"})
+		pulls := []reviews.PullInput{}
+		for _, n := range []int64{2, 3} {
+			draft := true
+			pulls = append(pulls, reviews.PullInput{Number: n, Title: "Before provider", State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", CIState: "unknown", Mergeability: "unknown", Diff: &reviews.PullDiff{Files: 17, Additions: 1, Deletions: 1}, IsDraft: &draft})
+		}
+		zero := int64(0)
+		call(prefix+"/observations", "initial-source-metadata", reviews.ObservationRequest{ExpectedRevision: &zero, RepositoryID: 991, Source: "synthetic-import", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Queue: pulls})
 	}
+	return originalSnapshot
 }
 
 type runSelectionHTTPSFixture struct {
@@ -433,7 +469,7 @@ func newRunSelectionHTTPSFixture(t *testing.T, private, token string) *runSelect
 			if strings.HasSuffix(r.URL.Path, "/3") {
 				number = 3
 			}
-			body = map[string]any{"number": number, "title": "Synthetic selection target", "state": "open", "merged": false, "head": map[string]any{"sha": strings.Repeat("a", 40), "repo": repo}, "base": map[string]any{"sha": strings.Repeat("b", 40), "ref": "main", "repo": repo}, "changed_files": 1}
+			body = map[string]any{"number": number, "title": "Synthetic selection target", "state": "open", "merged": false, "head": map[string]any{"sha": strings.Repeat("a", 40), "repo": repo}, "base": map[string]any{"sha": strings.Repeat("b", 40), "ref": "main", "repo": repo}, "changed_files": 1, "additions": 3, "deletions": 2, "draft": false}
 		default:
 			refuse()
 			return
