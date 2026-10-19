@@ -77,6 +77,26 @@ describe('project appearance and metadata boundary', () => {
     for (const value of [{ ...page, cursor: 'message_cursor' }, { ...page, event_cursor: null }, { ...page, items: null }, { ...page, has_more: true, items: [] }, { ...page, event_cursor: 'wrong_last' }, { ...page, items: [...page.items, ...page.items] }, { ...page, items: [{ ...page.items[0], event_type: 'message.sent' }] }, { ...page, items: [{ ...page.items[0], revision: Number.MAX_SAFE_INTEGER + 1 }] }, { ...page, items: [{ ...page.items[0], body: 'not metadata' }] }]) expect(validMetadataPage(value, 25)).toBe(false);
   });
 
+  it('accepts canonical round-control resources without widening other event identities', () => {
+    const event = { event_type: 'reviews.rounds_configured', resource_id: '32/hosted', revision: 1, event_cursor: 'round_cursor' };
+    const page = { items: [event], event_cursor: event.event_cursor, has_more: false };
+    for (const resource_id of ['1/cli', '32/hosted', '32/cli', '2147483647/hosted']) {
+      expect(validMetadataPage({ ...page, items: [{ ...event, resource_id }] }, 25), resource_id).toBe(true);
+    }
+    for (const resource_id of ['0/cli', '01/cli', '-1/cli', '+1/cli', '1.0/cli', '1e2/cli', '2147483648/cli', '99999999999999999999/cli', '1/CLI', '1/unknown', '1/cli/more', '1//cli', '1%2fcli', '../cli', '1/cli\n', 'record_one', null]) {
+      expect(validMetadataPage({ ...page, items: [{ ...event, resource_id }] }, 25), String(resource_id)).toBe(false);
+    }
+    for (const event_type of ['map.entry_updated', 'coordination.imported', 'review.observed', 'review.evidence.finalized']) {
+      expect(validMetadataPage({ ...page, items: [{ ...event, event_type }] }, 25), event_type).toBe(false);
+      expect(validMetadataPage({ ...page, items: [{ ...event, event_type, resource_id: 'record_one' }] }, 25), event_type).toBe(true);
+    }
+    for (const item of [{ ...event, payload: { channel: 'hosted' } }, { ...event, revision: 0 }, { ...event, event_cursor: '' }]) {
+      expect(validMetadataPage({ ...page, items: [item] }, 25)).toBe(false);
+    }
+    expect(validMetadataPage({ ...page, extra: true }, 25)).toBe(false);
+    expect(validMetadataPage({ ...page, items: [event, event] }, 25)).toBe(false);
+  });
+
   it('preserves bounded well-formed retained names only at implicit revision zero', () => {
     const retainedNames = ['  Retained\tname\n\u0000\u0085  ', ' \t\n ', ' \t' + '🔥'.repeat(49) + '\n '];
     expect(new TextEncoder().encode(retainedNames[2]).length).toBe(200);
