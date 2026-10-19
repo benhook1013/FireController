@@ -332,7 +332,7 @@ func (o *browserOutput) safePhase() string {
 			if record.Phase == "delivery-overview" {
 				allowed := false
 				switch record.Checkpoint {
-				case "initial-snapshot", "delivery-heading", "builder-job", "builder-primary", "inspector-paused", "inspector-pause-reason", "unassigned-job", "status-order", "latest-checkpoint-done", "latest-checkpoint-next", "latest-checkpoint", "old-checkpoint-absent", "overview-request-budget", "lane-count", "private-identifiers-absent", "layout-capture", "notes-nav-absent", "inbox-nav-click", "inbox-worker-selected", "inbox-heading", "inbox-sidebar", "inbox-readonly-composer", "inbox-readonly-writes", "default-appearance", "default-title", "default-indicator-colors", "default-indicator-contrast":
+				case "initial-snapshot", "delivery-heading", "builder-job", "builder-primary", "inspector-paused", "inspector-pause-reason", "unassigned-job", "status-order", "latest-checkpoint-done", "latest-checkpoint-next", "latest-checkpoint", "old-checkpoint-absent", "overview-request-budget", "lane-count", "private-identifiers-absent", "layout-capture", "notes-nav-absent", "inbox-nav-click", "inbox-worker-selected", "worker-inbox-workers-nav", "worker-inbox-open", "worker-inbox-history", "worker-inbox-back", "worker-inbox-return", "inbox-heading", "inbox-sidebar", "inbox-readonly-composer", "inbox-readonly-writes", "default-appearance", "default-title", "default-indicator-colors", "default-indicator-contrast":
 					allowed = true
 				}
 				valid := allowed
