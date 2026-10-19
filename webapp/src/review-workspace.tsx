@@ -11,6 +11,7 @@ import { RelativeTime } from './relative-time';
 import { EditorialMarkdown } from './editorial-markdown';
 import { githubRepositoryURL } from './github-links';
 import './review-queue.css';
+import './review-history.css';
 import { useReviewProgress, ReviewProgressView } from './review-progress-view';
 import type { ReviewProgressItem, ReviewRoundProgress } from './review-progress';
 import type { Project, ReviewGroup, ReviewAttemptSummary, ReviewAttemptItem, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
@@ -171,7 +172,7 @@ export function ReviewPullView() {
   const { session, key, home } = useWorkspace();
   const query = useQuery({ queryKey: [...key, 'reviews', snapshot ?? 'current', 'pull', number], queryFn: ({ signal }) => session.api.reviewPull(number, snapshot, signalFor(session, signal)), staleTime: Infinity });
   const value = query.data;
-  return <><Link className="back-link" to={`${home}/reviews`}>← Review queue</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">Pull request #{value.pull.number}</p><h2>{value.pull.title}</h2>{githubLink(session.project, `pull/${value.pull.number}`) && <a href={githubLink(session.project, `pull/${value.pull.number}`)} target="_blank" rel="noopener noreferrer">Open PR #{value.pull.number} on GitHub ↗</a>}</div><ReviewProvenance value={value} /><section className="panel review-pull-summary"><ReviewPullFacts pull={value.pull} /><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div></dl></section><ReviewRunsView key={number} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} attempts={value.pull.latest_attempts} expected={value.pull.run_count} detail /><ReviewAttempts key={`attempts:${number}`} number={number} snapshot={value.snapshot_id} expected={value.pull.attempt_count} /></>}</ReadState></>;
+  return <><Link className="back-link" to={`${home}/reviews`}>← Review queue</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">Pull request #{value.pull.number}</p><h2>{value.pull.title}</h2>{githubLink(session.project, `pull/${value.pull.number}`) && <a href={githubLink(session.project, `pull/${value.pull.number}`)} target="_blank" rel="noopener noreferrer">Open PR #{value.pull.number} on GitHub ↗</a>}</div><ReviewProvenance value={value} /><section className="panel review-pull-summary"><ReviewPullFacts pull={value.pull} /><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div></dl></section><ReviewRoundHistory key={`${number}:${value.snapshot_id}`} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} expected={value.pull.run_count} /><ReviewAttempts key={`attempts:${number}`} number={number} snapshot={value.snapshot_id} expected={value.pull.attempt_count} /></>}</ReadState></>;
 }
 function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSummary; snapshot: string; head: string; highlights: Map<string, string> }) {
   const { home } = useWorkspace();
@@ -201,6 +202,59 @@ export function ReviewRunsView({ number, snapshot, head, attempts, expected, det
   const lane = (channel: string, title: string) => <ReviewLane key={channel} channel={channel} title={title} runs={runs} attempts={attempts} snapshot={snapshot} head={head} loading={archive.loading} failed={!!archive.error} partial={archive.hasMore || runs.length !== expected} highlights={highlights} compact={compact} progress={progress?.channels.find(item => item.channel === channel)} />;
   const otherChannels = [['manual', 'Manual reviews'], ['subagent', 'Subagent reviews']].filter(([channel]) => runs.some(run => run.channel === channel) || attempts.some(attempt => attempt.channel === channel));
   return <section className={compact ? 'review-history delivery-head-history' : detail ? 'panel review-history' : 'review-history'} aria-label={`PR #${number} review rounds`}>{detail && <div className="section-heading"><h3>Review rounds</h3><span className="small-label">Shown rounds · oldest to newest per channel</span></div>}{!!archive.error && <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>}<div className="review-lanes">{lane('hosted', 'Hosted CodeRabbit')}{lane('cli', 'CLI CodeRabbit')}</div>{!compact && otherChannels.length > 0 && <section className="review-other-history"><h4>Other retained reviews</h4><div className="review-lanes">{otherChannels.map(([channel, title]) => lane(channel, title))}</div></section>}{!compact && <ArchiveProgress shown={runs.length} expected={expected} snapshot={snapshot} label="review rounds" hasMore={archive.hasMore} busy={archive.busy} more={archive.more} />}</section>;
+}
+
+export function InlineReviewFindings({ number, run, snapshot }: { number: number; run: ReviewRunSummary; snapshot: string }) {
+  const { session, key } = useWorkspace();
+  const query = useQuery({
+    queryKey: [...key, 'reviews', snapshot, 'inline-run', run.id],
+    queryFn: async ({ signal }) => {
+      const value = await session.api.reviewRun(run.id, snapshot, signalFor(session, signal));
+      if (value.pull_number !== number) throw new ApiError('invalid_response', 'The retained review run belongs to another pull request.');
+      return value;
+    },
+    staleTime: Infinity, gcTime: 0, refetchOnMount: 'always', retry: false,
+  });
+  const value = query.data;
+  return <div className="review-history-findings"><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <>
+    <p className="review-history-finding-count">{value.findings.length} recorded / {value.run.found} reported findings</p>
+    <ReviewCoverageLimits limits={value.run.coverage_limits} />
+    {value.findings.length ? <ul>{value.findings.map(finding => <ReviewFindingView key={finding.source_finding_id} finding={finding} />)}</ul> : <p className="review-empty">{value.run.found === 0 ? 'No findings reported for this run.' : 'No findings recorded in this source snapshot.'}{!value.run.complete && ' The source record is incomplete.'}</p>}
+  </>}</ReadState>{!!query.error && !terminal(query.error) && <button type="button" onClick={() => { void query.refetch(); }} disabled={query.isFetching}>Retry findings</button>}</div>;
+}
+export function ReviewHistoryRow({ number, run, snapshot, head }: { number: number; run: ReviewRunSummary; snapshot: string; head: string }) {
+  const { home } = useWorkspace();
+  const [open, setOpen] = useState(false);
+  const title = run.channel === 'hosted' ? 'Hosted' : run.channel === 'cli' ? 'CLI' : reviewLabel(run.channel);
+  const findingsID = `review-history-findings-${run.id}`;
+  return <li className="review-history-row" data-run-id={run.id}>
+    <div className="review-history-row-heading"><button className="review-history-toggle" type="button" aria-expanded={open} aria-controls={findingsID} aria-label={`${open ? 'Hide' : 'Show'} findings for ${run.channel} run ${run.source_run_id}`} onClick={() => setOpen(value => !value)}>
+      <span className="review-history-kind">{title}</span><span className="review-history-counts"><strong>{run.found}</strong> found · <strong>{run.accepted}</strong> accepted · <strong>{run.routed}</strong> routed</span>
+      <span className="review-history-age">{run.finished_at ? <RelativeTime value={run.finished_at} /> : run.started_at ? <>Started <RelativeTime value={run.started_at} /></> : 'Date unknown'}</span>
+      <span className="review-history-disclosure">{open ? 'Hide findings' : 'Show findings'} <span aria-hidden="true">{open ? '▾' : '▸'}</span></span>
+    </button><Link className="review-history-details-link" to={reviewLink(home, 'runs', run.id, snapshot)} aria-label={`Open ${run.channel} run ${run.source_run_id}`}>Run details ↗</Link></div>
+    <div className="review-history-flags">{run.outcome !== 'completed' && <span>{reviewLabel(run.outcome)}</span>}{!run.complete && <span className="review-warning">Incomplete record</span>}{!run.finalized && <span className="review-warning">Counts not finalized</span>}{!run.attributable && <span className="review-warning">Attribution unconfirmed</span>}{!head || !run.head_sha ? <span className="review-warning">Head association unknown</span> : head !== run.head_sha && <span className="review-warning">Different observed head</span>}</div>
+    {open && <div id={findingsID}><InlineReviewFindings number={number} run={run} snapshot={snapshot} /></div>}
+  </li>;
+}
+export function ReviewHistoryGroups({ number, runs, snapshot, head, partial, loading, failed }: { number: number; runs: ReviewRunSummary[]; snapshot: string; head: string; partial: boolean; loading: boolean; failed: boolean }) {
+  const channels = [['hosted', 'Hosted CodeRabbit'], ['cli', 'CLI CodeRabbit'], ...[['manual', 'Manual reviews'], ['subagent', 'Subagent reviews']].filter(([channel]) => runs.some(run => run.channel === channel))];
+  return <div className="review-history-groups">{channels.map(([channel, title]) => {
+    const items = runs.filter(run => run.channel === channel);
+    return <section className="review-history-channel" aria-label={title} key={channel}><div className="review-lane-heading"><h4>{title}</h4><span>{loading ? '' : failed ? 'History unavailable' : `${items.length} ${items.length === 1 ? 'run' : 'runs'}${partial ? ' shown' : ''}`}</span></div>
+      {loading ? <PageSkeleton rows={2} label="Loading retained rounds" /> : failed && !items.length ? <p className="review-empty">Round history could not be loaded.</p> : items.length ? <ul className="review-history-run-list">{items.map(run => <ReviewHistoryRow key={run.id} number={number} run={run} snapshot={snapshot} head={head} />)}</ul> : <p className="review-empty">{partial ? 'No rounds in loaded pages. Coverage is unknown.' : 'No rounds recorded. Coverage is unknown.'}</p>}
+    </section>;
+  })}</div>;
+}
+function ReviewRoundHistory({ number, snapshot, head, expected }: { number: number; snapshot: string; head: string; expected: number }) {
+  const archive = useReviewArchive<ReviewRunSummary>('runs', number, snapshot, expected);
+  const runs = [...archive.items].reverse();
+  if (terminal(archive.error)) return <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>;
+  return <section className="panel review-history review-round-history" aria-label={`PR #${number} review rounds`}><div className="section-heading"><h3>Review rounds</h3><span className="small-label">Shown rounds · oldest to newest per channel</span></div>
+    {!!archive.error && <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>}
+    <ReviewHistoryGroups number={number} runs={runs} snapshot={snapshot} head={head} loading={archive.loading} failed={!!archive.error} partial={archive.hasMore || runs.length !== expected} />
+    <ArchiveProgress shown={runs.length} expected={expected} snapshot={snapshot} label="review rounds" hasMore={archive.hasMore} busy={archive.busy} more={archive.more} />
+  </section>;
 }
 
 export function ReviewFindingView({ finding }: { finding: ReviewFinding }) {

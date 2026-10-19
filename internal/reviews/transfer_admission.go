@@ -155,7 +155,7 @@ func planTransferPull(ctx context.Context, tx HistoryQuery, project, snapshot st
 		if retired != 0 {
 			return nil, transferConflict("A retired PR requires explicit queue reactivation before historical transfer.")
 		}
-		body = append(metadata, int64(0), int64(0), int64(0), "[]", "[]")
+		body = append(metadata, int64(0), int64(0), int64(0), "[]", "[]", mustJSON(pullMetadata(pull)))
 		position = next
 	} else if err != nil {
 		return nil, err
@@ -166,6 +166,9 @@ func planTransferPull(ctx context.Context, tx HistoryQuery, project, snapshot st
 		}
 		if retired != 0 {
 			return nil, transferConflict("A retired PR requires explicit queue reactivation before historical transfer.")
+		}
+		if mustJSON(pullMetadata(pull)) != "{}" && body[12] != mustJSON(pullMetadata(pull)) {
+			return nil, transferConflict("Selected display metadata differs from the current workspace.")
 		}
 		if !reflect.DeepEqual(body[:7], metadata) {
 			return nil, transferConflict("Selected PR metadata differs from the current workspace; prepare the batch with current metadata.")

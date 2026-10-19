@@ -315,6 +315,8 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		SourceCollisions bool   `json:"source_collisions"`
 		PinnedTail       bool   `json:"pinned_tail"`
 		CurrentReset     bool   `json:"current_reset"`
+		InlineFindings   bool   `json:"inline_findings"`
+		DetailRequests   int    `json:"detail_requests"`
 		FixtureWrites    int    `json:"fixture_writes"`
 	}
 	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
@@ -323,10 +325,10 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	}
 	// Twenty explicit archive reads plus one bounded current-hero read on
 	// the pinned tab after metadata changes; no automatic archive walking.
-	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 20 || result.ArchiveRequests != 21 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || result.FixtureWrites != 1 {
+	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 20 || result.ArchiveRequests != 21 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || result.DetailRequests != 2 || result.FixtureWrites != 1 {
 		phase := "unavailable"
 		switch result.Phase {
-		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "pinned-continuation":
+		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation":
 			phase = result.Phase
 		}
 		t.Fatalf("packaged archive browser failed at phase=%s; raw output withheld to protect fixture authority", phase)
@@ -339,7 +341,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	changed := map[string]int{
 		"review_snapshots": 1, "review_workspace": 0,
 		"review_pull_versions": 1, "review_pull_memberships": 1, "review_current_pulls": 0,
-		"review_run_versions": 1, "review_run_memberships": 1, "review_current_runs": -122,
+		"review_run_versions": 1, "review_run_memberships": 1, "review_current_runs": -122, "review_finding_versions": 1,
 		"review_attempt_versions": 1, "review_attempt_memberships": 1, "review_current_attempts": -122,
 		"review_current_totals": 0, "review_current_attempt_order": -122, "review_current_run_order": -122,
 		"events": 1, "receipts": 1, "sqlite_sequence": 0,
@@ -473,6 +475,8 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 	one := int64(1)
 	pull.Title = "Current archive metadata"
 	pull.Runs = []reviews.RunInput{{SourceRunID: "current-only-run", Channel: "cli", HeadSHA: pull.HeadSHA, Reviewer: "Synthetic reviewer", Scope: "full", Outcome: "completed", Attributable: true, Complete: true, StartedAt: at.Add(3 * time.Minute).Format(time.RFC3339Nano), FinishedAt: at.Add(4 * time.Minute).Format(time.RFC3339Nano), Finalized: true, CoverageLimits: []string{}, Findings: []reviews.Finding{}}}
+	pull.Runs[0].Found = 1
+	pull.Runs[0].Findings = []reviews.Finding{{SourceFindingID: "inline-finding", Title: "Inline retained finding", Detail: "Useful **inline detail**\n\n- Kept in this PR\n\n[unsafe](javascript:alert(1)) ![remote](https://outside.invalid/pixel)", Severity: "low", Disposition: "rejected", DecisionReason: "Reviewed *source proof*.", Actor: "Fixture reviewer", DecidedAt: at.Add(4 * time.Minute).Format(time.RFC3339Nano)}}
 	pull.Attempts = []reviews.Attempt{{SourceAttemptID: "current-only-attempt", Channel: "cli", HeadSHA: pull.HeadSHA, State: "completed", StartedAt: at.Add(3 * time.Minute).Format(time.RFC3339Nano), FinishedAt: at.Add(4 * time.Minute).Format(time.RFC3339Nano), DurationSeconds: &one, SourceRunID: "current-only-run"}}
 	observation.ExpectedRevision, observation.ObservedAt, observation.Queue = &one, at.Add(5*time.Minute).Format(time.RFC3339Nano), []reviews.PullInput{pull}
 	newer, _ := json.Marshal(observation)

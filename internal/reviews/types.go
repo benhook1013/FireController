@@ -15,6 +15,9 @@ type ObservationRequest struct {
 }
 
 type PullInput struct {
+	Diff         *PullDiff  `json:"diff,omitempty"`
+	IsDraft      *bool      `json:"is_draft,omitempty"`
+	MergedAt     string     `json:"merged_at,omitempty"`
 	Number       int64      `json:"number"`
 	Title        string     `json:"title"`
 	State        string     `json:"state"`
@@ -138,6 +141,9 @@ type RunSummary struct {
 }
 
 type PullSummary struct {
+	Diff           *PullDiff        `json:"diff,omitempty"`
+	IsDraft        *bool            `json:"is_draft,omitempty"`
+	MergedAt       string           `json:"merged_at,omitempty"`
 	Number         int64            `json:"number"`
 	Title          string           `json:"title"`
 	State          string           `json:"state"`

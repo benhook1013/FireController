@@ -69,7 +69,7 @@ func queue(store *core.Store) http.HandlerFunc {
 			}
 			response.Configured = true
 			setMetaQueue(&response, meta)
-			rows, err := tx.QueryContext(ctx, `SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.run_count,p.attempt_count,p.recent_runs_json,p.latest_attempts_json,p.position
+			rows, err := tx.QueryContext(ctx, `SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.run_count,p.attempt_count,p.recent_runs_json,p.latest_attempts_json,p.metadata_json,p.position
 				FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.position>? AND NOT EXISTS (
 					SELECT 1 FROM review_retired_pulls retired WHERE retired.project_id=p.project_id AND retired.snapshot_id=p.snapshot_id AND retired.number=p.number
 				) ORDER BY p.position LIMIT ?`,
@@ -82,15 +82,20 @@ func queue(store *core.Store) http.HandlerFunc {
 			for rows.Next() {
 				var item PullSummary
 				var complete int
-				var recentJSON, latestJSON string
+				var recentJSON, latestJSON, metadataJSON string
 				var rowPosition int
-				if err := rows.Scan(&item.Number, &item.Title, &item.State, &item.HeadSHA, &item.BaseRef, &item.BaseSHA, &item.CIState, &item.Mergeability, &complete, &item.RunCount, &item.AttemptCount, &recentJSON, &latestJSON, &rowPosition); err != nil {
+				if err := rows.Scan(&item.Number, &item.Title, &item.State, &item.HeadSHA, &item.BaseRef, &item.BaseSHA, &item.CIState, &item.Mergeability, &complete, &item.RunCount, &item.AttemptCount, &recentJSON, &latestJSON, &metadataJSON, &rowPosition); err != nil {
 					return err
 				}
 				if len(response.Items) == limit {
 					response.HasMore = true
 					break
 				}
+				m, err := ReadPullMetadata(metadataJSON, item.State)
+				if err != nil {
+					return err
+				}
+				item.Diff, item.IsDraft, item.MergedAt = m.Diff, m.IsDraft, m.MergedAt
 				item.Complete = complete != 0
 				if err := strictStoredJSON(recentJSON, &item.RecentRuns); err != nil {
 					return err
@@ -152,15 +157,20 @@ func pull(store *core.Store) http.HandlerFunc {
 			}
 			setMetaPull(&response, meta)
 			var complete int
-			var recentJSON, latestJSON string
-			err = tx.QueryRowContext(ctx, `SELECT number,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=?`, scope.ProjectID, meta.SnapshotID, number).Scan(
-				&response.Pull.Number, &response.Pull.Title, &response.Pull.State, &response.Pull.HeadSHA, &response.Pull.BaseRef, &response.Pull.BaseSHA, &response.Pull.CIState, &response.Pull.Mergeability, &complete, &response.Pull.RunCount, &response.Pull.AttemptCount, &recentJSON, &latestJSON)
+			var recentJSON, latestJSON, metadataJSON string
+			err = tx.QueryRowContext(ctx, `SELECT number,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json,metadata_json FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=?`, scope.ProjectID, meta.SnapshotID, number).Scan(
+				&response.Pull.Number, &response.Pull.Title, &response.Pull.State, &response.Pull.HeadSHA, &response.Pull.BaseRef, &response.Pull.BaseSHA, &response.Pull.CIState, &response.Pull.Mergeability, &complete, &response.Pull.RunCount, &response.Pull.AttemptCount, &recentJSON, &latestJSON, &metadataJSON)
 			if errors.Is(err, sql.ErrNoRows) {
 				return notFound("The pull request is unavailable in this snapshot.")
 			}
 			if err != nil {
 				return err
 			}
+			m, err := ReadPullMetadata(metadataJSON, response.Pull.State)
+			if err != nil {
+				return err
+			}
+			response.Pull.Diff, response.Pull.IsDraft, response.Pull.MergedAt = m.Diff, m.IsDraft, m.MergedAt
 			response.Pull.Complete = complete != 0
 			if err := strictStoredJSON(recentJSON, &response.Pull.RecentRuns); err != nil {
 				return err

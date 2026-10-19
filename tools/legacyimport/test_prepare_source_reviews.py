@@ -63,6 +63,27 @@ class ReviewsAdapterTests(unittest.TestCase):
         self.selected=self.root/"selection.json"; self.output=self.root/"transfer.json"; self.proof=self.root/"provenance.json"
         self.save_selection()
 
+    def test_optional_display_metadata_known_zero_forwarded(self):
+        pull = self.selection["pulls"][0]
+        pull.update(diff=dict(files=0, additions=0, deletions=0), is_draft=False,
+                    merged_at="2026-01-01T00:00:00.123456789Z")
+        self.save_selection(); self.invoke()
+        actual = json.loads(self.output.read_bytes())["groups"][0]["pulls"][0]
+        for key in ("diff", "is_draft", "merged_at"):
+            self.assertEqual(actual[key], pull[key])
+
+    def test_optional_display_metadata_invalid_refused(self):
+        for change in ({"diff": {}}, {"diff": dict(files=0, additions=0)},
+                       {"diff": dict(files=True, additions=0, deletions=0)},
+                       {"diff": dict(files=-1, additions=0, deletions=0)},
+                       {"diff": dict(files=2147483648, additions=0, deletions=0)},
+                       {"is_draft": "false"}, {"merged_at": "invalid"},
+                       {"state": "open", "merged_at": "2026-01-01T00:00:00Z"}):
+            selection = copy.deepcopy(self.selection)
+            selection["pulls"][0].update(change)
+            with self.assertRaises(adapter.Refusal):
+                adapter.selection_input(selection)
+
     def save_selection(self):
         self.selected.write_bytes(adapter.canonical(self.selection));self.selected.chmod(0o600)
 

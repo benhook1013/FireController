@@ -72,6 +72,9 @@ func validateObservationContent(queue []PullInput, retirements []RetiredPull, re
 			!oneOf(pull.Mergeability, "unknown", "mergeable", "conflicting") {
 			return validationError("A pull request contains invalid identity, state or summary fields.")
 		}
+		if err := pullMetadata(*pull).Validate(pull.State); err != nil {
+			return err
+		}
 		if pull.Runs == nil {
 			pull.Runs = []RunInput{}
 		}

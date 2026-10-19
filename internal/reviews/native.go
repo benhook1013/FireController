@@ -176,6 +176,11 @@ func nativePullBody(ctx context.Context, tx *sql.Tx, project, previous string, p
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, 0, err
 	}
+	metadataJSON, metadataErr := inheritedPullMetadata(body, pull)
+	if metadataErr != nil {
+		return nil, 0, metadataErr
+	}
+	body[12] = metadataJSON
 	complete := any(int64(0))
 	if err == nil && body[2] == pull.HeadSHA {
 		complete = body[7]

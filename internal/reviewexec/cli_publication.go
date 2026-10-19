@@ -99,11 +99,19 @@ func (e *Engine) PublishEvidence(ctx context.Context, project, evidenceID string
 // facts or provider state. Callers must use the same transaction for publication.
 func currentReviewPull(ctx context.Context, tx *sql.Tx, project string, number int64) (reviews.PullInput, error) {
 	var pull reviews.PullInput
-	err := tx.QueryRowContext(ctx, `SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete
+	var metadataJSON string
+	err := tx.QueryRowContext(ctx, `SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.metadata_json
 		FROM review_workspace w JOIN review_pulls p ON p.project_id=w.project_id AND p.snapshot_id=w.snapshot_id
-		WHERE w.project_id=? AND p.number=?`, project, number).Scan(&pull.Number, &pull.Title, &pull.State, &pull.HeadSHA, &pull.BaseRef, &pull.BaseSHA, &pull.CIState, &pull.Mergeability, &pull.Complete)
+		WHERE w.project_id=? AND p.number=?`, project, number).Scan(&pull.Number, &pull.Title, &pull.State, &pull.HeadSHA, &pull.BaseRef, &pull.BaseSHA, &pull.CIState, &pull.Mergeability, &pull.Complete, &metadataJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return reviews.PullInput{}, core.Fail("review_projection_missing", "The current review workspace has no stored facts for this pull request.", 409)
+	}
+	if err == nil {
+		m, e := reviews.ReadPullMetadata(metadataJSON, pull.State)
+		if e != nil {
+			return pull, e
+		}
+		pull.Diff, pull.IsDraft, pull.MergedAt = m.Diff, m.IsDraft, m.MergedAt
 	}
 	return pull, err
 }

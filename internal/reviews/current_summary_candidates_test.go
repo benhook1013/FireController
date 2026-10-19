@@ -132,6 +132,7 @@ func TestCurrentRunOrderUpgradeBackfillAndCorruptSourceRollback(t *testing.T) {
 		if _, err := f.store.DB().Exec(`DROP TABLE review_current_run_order`); err != nil {
 			t.Fatal(err)
 		}
+		removeMetadataForPre7Fixture(t, f.store)
 		if _, err := f.store.DB().Exec(`UPDATE metadata SET value='5' WHERE key='schema:reviews'`); err != nil {
 			t.Fatal(err)
 		}
@@ -139,7 +140,7 @@ func TestCurrentRunOrderUpgradeBackfillAndCorruptSourceRollback(t *testing.T) {
 			t.Fatal("v5 current-order migration failed", err)
 		}
 		var version string
-		if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "6" {
+		if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "7" {
 			t.Fatal("new review schema version not installed", version, err)
 		}
 		if err := ValidateCurrentRunOrder(t.Context(), f.store.DB()); err != nil {
@@ -166,6 +167,7 @@ func TestCurrentRunOrderUpgradeBackfillAndCorruptSourceRollback(t *testing.T) {
 		if _, err := f.store.DB().Exec(`DROP TABLE review_current_run_order`); err != nil {
 			t.Fatal(err)
 		}
+		removeMetadataForPre7Fixture(t, f.store)
 		if _, err := f.store.DB().Exec(`UPDATE metadata SET value='5' WHERE key='schema:reviews'`); err != nil {
 			t.Fatal(err)
 		}

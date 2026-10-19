@@ -91,7 +91,7 @@ def selection_input(value):
         text(value[key], 128, True)
     seen, runs = set(), set()
     for p in value["pulls"]:
-        if (not exact_keys(p, PULL_KEYS) or not integer(p["number"], 1, 2147483647)
+        if (not isinstance(p, dict) or not set(PULL_KEYS).issubset(p) or not set(p).issubset(set(PULL_KEYS) | {"diff", "is_draft", "merged_at"}) or not integer(p["number"], 1, 2147483647)
                 or p["number"] in seen or type(p["run_ids"]) is not list or not 1 <= len(p["run_ids"]) <= 100):
             refuse("selection_invalid")
         seen.add(p["number"])
@@ -101,6 +101,17 @@ def selection_input(value):
                 or p["ci_state"] not in ("unknown", "pending", "success", "failure")
                 or p["mergeability"] not in ("unknown", "mergeable", "conflicting")):
             refuse("selection_invalid")
+        if "diff" in p:
+            diff = p["diff"]
+            if (not exact_keys(diff, ("files", "additions", "deletions"))
+                    or any(not integer(n, 0, 2147483647) for n in diff.values())):
+                refuse("selection_invalid")
+        if "is_draft" in p and type(p["is_draft"]) is not bool:
+            refuse("selection_invalid")
+        if "merged_at" in p:
+            if p["state"] != "merged" or not p["merged_at"]:
+                refuse("selection_invalid")
+            clock(p["merged_at"])
         for run in p["run_ids"]:
             text(run, 256, True)
             if run in runs:

@@ -37,10 +37,11 @@ func newStepProvider(t *testing.T) *stepProvider {
 		t.Fatal(err)
 	}
 	line, original := int64(5), int64(8)
+	additions, deletions, draft := int64(0), int64(7), false
 	p := &stepProvider{
 		repository: reviewprovider.Repository{ID: 123, FullName: "renamed/repository", DefaultBranch: "main"},
 		pulls: map[int64]reviewprovider.Pull{
-			47: {Number: 47, RepositoryID: 123, Title: "Retain merged <history>", State: "closed", Merged: true, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 3},
+			47: {Number: 47, RepositoryID: 123, Title: "Retain merged <history>", State: "closed", Merged: true, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 3, Additions: &additions, Deletions: &deletions, IsDraft: &draft, MergedAt: "2026-01-01T00:00:00.123456789Z"},
 			12: {Number: 12, RepositoryID: 123, Title: "Retain closed history", State: "closed", HeadSHA: strings.Repeat("c", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main"},
 		},
 		reviews: []reviewprovider.HostedReview{

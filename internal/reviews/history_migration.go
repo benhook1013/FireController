@@ -21,7 +21,7 @@ func historyMigrationSQL() []string {
 		legacy string
 		spec   historyRecordSpec
 	}{
-		{"legacy_review_pulls", historyPullRecord},
+		{"legacy_review_pulls", historyPullRecordV4},
 		{"legacy_review_runs", historyRunRecord},
 		{"legacy_review_attempts", historyAttemptRecord},
 		{"legacy_review_retired_pulls", historyRetiredRecord},
@@ -32,7 +32,7 @@ func historyMigrationSQL() []string {
 		statements = append(statements, "ALTER TABLE "+table+" RENAME TO legacy_"+table+";")
 	}
 	statements = append(statements, "DROP TRIGGER review_runs_snapshot_revision_insert;", "DROP TRIGGER review_runs_snapshot_revision_update;")
-	statements = append(statements, HistorySchemaSQL()...)
+	statements = append(statements, HistorySchemaSQLV6()...)
 	qualify := func(alias string, columns []string) string {
 		out := make([]string, len(columns))
 		for i, column := range columns {
@@ -67,7 +67,7 @@ func historyMigrationSQL() []string {
 	for _, table := range []string{"legacy_review_findings", "legacy_review_runs", "legacy_review_attempts", "legacy_review_pulls", "legacy_review_retired_pulls"} {
 		statements = append(statements, "DROP TABLE "+table+";")
 	}
-	views := HistoryReadViewSQL()
+	views := HistoryReadViewSQLV6()
 	for _, name := range []string{"review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls"} {
 		statements = append(statements, views[name])
 	}

@@ -90,12 +90,12 @@ func historySide(value string) *string {
 func validHistoryPull(p Pull) bool {
 	// The normalized Pull retains only repository identity, not the provider's
 	// repository-name/default-branch object; validate only its retained fields.
-	return validPullNumber(p.Number) && p.RepositoryID > 0 && validPlainText(p.Title, 4096) && strings.TrimSpace(p.Title) != "" && (p.State == "open" || p.State == "closed") && (!p.Merged || p.State == "closed") && validSHA(p.HeadSHA) && validSHA(p.BaseSHA) && validPlainText(p.BaseRef, 255) && strings.TrimSpace(p.BaseRef) != "" && p.ChangedFiles >= 0 && p.ChangedFiles <= 1000000
+	return validPullNumber(p.Number) && p.RepositoryID > 0 && validPlainText(p.Title, 4096) && strings.TrimSpace(p.Title) != "" && (p.State == "open" || p.State == "closed") && (!p.Merged || p.State == "closed") && validSHA(p.HeadSHA) && validSHA(p.BaseSHA) && validPlainText(p.BaseRef, 255) && strings.TrimSpace(p.BaseRef) != "" && p.ChangedFiles >= 0 && p.ChangedFiles <= 1000000 && validPullDisplayMetadata(p)
 }
 
 // Unlike provider wire decoding, retained facts have an exact, fully emitted
-// field set. time.Time is a JSON string and optional location pointers alone
-// may be null; missing fields, aliases and unknown fields are not equivalent.
+// field set except explicitly optional Pull display facts added after legacy
+// captures. Missing facts stay unknown; aliases and unknown fields are refused.
 func historyFactShape(data []byte, t reflect.Type) bool {
 	if t.Kind() == reflect.Pointer {
 		if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
@@ -118,13 +118,41 @@ func historyFactShape(data []byte, t reflect.Type) bool {
 		return true
 	} // Typed unmarshal checks scalar types and integer bounds.
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(data, &fields) != nil || fields == nil || len(fields) != t.NumField() {
+	if json.Unmarshal(data, &fields) != nil || fields == nil || len(fields) > t.NumField() {
 		return false
 	}
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		raw, ok := fields[field.Name]
+		if !ok && t == reflect.TypeOf(Pull{}) && strings.Contains(field.Tag.Get("json"), "omitempty") {
+			continue
+		}
 		if !ok || !historyFactShape(raw, field.Type) {
+			return false
+		}
+	}
+	for name := range fields {
+		if _, ok := t.FieldByName(name); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func validPullDisplayMetadata(p Pull) bool {
+	if (p.Additions == nil) != (p.Deletions == nil) {
+		return false
+	}
+	for _, n := range []*int64{p.Additions, p.Deletions} {
+		if n != nil && (*n < 0 || *n > 2147483647) {
+			return false
+		}
+	}
+	if p.MergedAt != "" {
+		if !p.Merged || len(p.MergedAt) > 64 {
+			return false
+		}
+		if _, err := time.Parse(time.RFC3339Nano, p.MergedAt); err != nil {
 			return false
 		}
 	}

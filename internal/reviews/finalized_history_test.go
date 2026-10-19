@@ -180,7 +180,7 @@ func TestFinalizedHistoryVersionOneMigrationAndReplay(t *testing.T) {
 	f.mux = mux
 	var version string
 	var revision int64
-	if err := store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "6" {
+	if err := store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "7" {
 		t.Fatal("migration version", version, err)
 	}
 	if err := store.DB().QueryRow(`SELECT snapshot_revision FROM review_runs WHERE project_id=? AND snapshot_id=?`, f.project, saved.ID).Scan(&revision); err != nil || revision != 1 {

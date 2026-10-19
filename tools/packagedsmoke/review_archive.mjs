@@ -13,7 +13,7 @@ try {
   need(Number.isSafeInteger(number) && number > 0 && count === 123);
   const prefix = `/api/v1/projects/${config.project}`;
   const path = `/projects/${config.project}/reviews/pulls/${number}`;
-  const archives = [];
+  const archives = [], details = [];
   let errors = 0, external = 0, forbiddenWrites = 0, sessionPosts = 0;
   phase = 'launch';
   server = await chromium.launchServer({ headless:true, ...(config.executable ? {executablePath:config.executable} : {}), timeout:5000, proxy:{server:config.proxy,bypass:'127.0.0.1,localhost'}, args:['--disable-background-networking','--no-first-run'] });
@@ -33,6 +33,11 @@ try {
         if (url.pathname === prefix+'/browser-session' && request.method() === 'POST') sessionPosts++;
         else if (!(url.pathname === prefix+'/browser-session' && request.method() === 'DELETE') && !(url.pathname === prefix+'/browser-session/renew' && request.method() === 'POST')) forbiddenWrites++;
       }
+      const detail = url.pathname.match(/\/reviews\/runs\/(review_run_[a-f0-9]{32})$/u);
+      if (detail) {
+        details.push({name,id:detail[1],snapshot:url.searchParams.get('snapshot')});
+        if (!/^review_snapshot_[a-f0-9]{32}$/u.test(url.searchParams.get('snapshot') ?? '')) errors++;
+      }
       const match = url.pathname.match(/\/reviews\/pulls\/[1-9][0-9]*\/(runs|attempts)$/u);
       if (match) {
         const limit = Number(url.searchParams.get('limit'));
@@ -48,7 +53,7 @@ try {
     const attempts = page.getByRole('region',{name:`PR #${number} attempts`,exact:true});
     await rounds.waitFor(); await attempts.waitFor();
     await attempts.locator('summary').click();
-    await expect.poll(() => rounds.locator('.review-round-pill').count()).toBe(20);
+    await expect.poll(() => rounds.locator('.review-history-row').count()).toBe(20);
     await expect.poll(() => attempts.locator('li').count()).toBe(20);
     need(await rounds.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).count() === 1);
     need(await rounds.getByRole('region',{name:'CLI CodeRabbit',exact:true}).count() === 1);
@@ -64,7 +69,7 @@ try {
     const section = feed === 'runs' ? view.rounds : view.attempts;
     const before = requests(view,feed).length;
     await section.getByRole('button',{name:feed === 'runs' ? 'Load more review rounds' : 'Load more attempts',exact:true}).click();
-    await expect.poll(() => section.locator(feed === 'runs' ? '.review-round-pill' : 'li').count()).toBe(shown);
+    await expect.poll(() => section.locator(feed === 'runs' ? '.review-history-row' : 'li').count()).toBe(shown);
     need(requests(view,feed).length === before+1);
     if (feed === 'runs') await expect(section.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText(`${shown} runs${shown < count ? ' shown' : ''}`);
   };
@@ -87,13 +92,13 @@ try {
           const identity=document.querySelector('.project-identity');
           const project=identity.querySelector('.hero-project');
           const container=element.closest('.delivery-hero');
-          const arrow=element.querySelector('.delivery-link-arrow');
-          return {head:rect(element),identity:rect(identity),project:rect(project),container:rect(container),arrow:rect(arrow),joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
+          const arrow=element.querySelector('.delivery-head-link');
+          return {head:rect(element),identity:rect(identity),project:rect(project),container:rect(container),arrow:{...rect(arrow),text:arrow.textContent,children:arrow.children.length,color:getComputedStyle(arrow).color,weight:getComputedStyle(arrow).fontWeight,decoration:getComputedStyle(arrow).textDecorationLine},joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
         });
         need(geometry.groups.length === 2);
         need(geometry.joined && geometry.twoTone);
         need(Math.abs((geometry.project.top+geometry.project.bottom)-(geometry.identity.top+geometry.identity.bottom)) <= 2);
-        need(Math.abs(geometry.arrow.width-(geometry.arrow.bottom-geometry.arrow.top)) <= 1 && geometry.arrow.width >= 28);
+        need(geometry.arrow.text === 'Review queue ↗' && geometry.arrow.children === 0 && geometry.arrow.color === 'rgb(36, 40, 50)' && geometry.arrow.weight === '750' && geometry.arrow.decoration.includes('underline'));
         need(geometry.arrow.right <= geometry.head.right && geometry.head.right-geometry.arrow.right <= 32 && geometry.arrow.bottom <= geometry.head.bottom && geometry.head.bottom-geometry.arrow.bottom <= 32);
         if (width === 1440) need(Math.abs(geometry.head.top-geometry.identity.top) <= 1 && Math.abs(geometry.head.left-geometry.identity.right) <= 1);
         else {
@@ -115,18 +120,28 @@ try {
   const current = await connect('current');
   await readableMergeHead(current.page);
   need(requests(current,'runs').length === 1 && requests(current,'attempts').length === 1);
+  need(details.length === 0); // Summary rendering does not collect every finding body.
   await more(current,'runs',40); await more(current,'attempts',40);
   phase = 'pinned-first-pages';
   const pinned = await connect('pinned',config.snapshot);
   need(requests(pinned,'runs').length === 1 && requests(pinned,'attempts').length === 1);
   await new Promise(resolve => setTimeout(resolve,100));
   need(requests(pinned,'runs').length === 1 && requests(pinned,'attempts').length === 1);
+  need(details.length === 0);
+  phase = 'inline-empty-findings';
+  const pinnedRow = pinned.rounds.locator(`[data-run-id="${config.first_run_id}"]`);
+  await pinnedRow.getByRole('button', {name:/^Show findings for cli run /}).click();
+  await pinnedRow.getByText('No findings reported for this run.', {exact:true}).waitFor();
+  need(details.length === 1 && details[0].name === 'pinned' && details[0].id === config.first_run_id && details[0].snapshot === config.snapshot);
+  need(new URL(pinned.page.url()).pathname === path);
+  await pinnedRow.getByRole('button', {name:/^Hide findings for cli run /}).click();
+  need(await pinnedRow.locator('.review-history-findings').count() === 0 && details.length === 1);
 
   phase = 'metadata-refresh';
   const raw = await fs.readFile(config.new_observation_file,'utf8'); need(Buffer.byteLength(raw) <= 256<<10);
   const response = await fetch(config.origin+prefix+'/reviews/observations',{method:'POST',headers:{Authorization:'Bearer '+admin,'X-FC-Instance':config.instance,'X-FC-Worker':config.worker,'Idempotency-Key':'packaged-archive-new-observation','Content-Type':'application/json'},body:raw,signal:AbortSignal.timeout(5000)});
   need(response.status === 201); await response.arrayBuffer();
-  await expect.poll(() => current.rounds.locator('.review-round-pill').count()).toBe(1);
+  await expect.poll(() => current.rounds.locator('.review-history-row').count()).toBe(1);
   await expect.poll(() => current.attempts.locator('li').count()).toBe(1);
   await current.page.locator('.page-heading').getByRole('heading',{name:'Current archive metadata',exact:true}).waitFor();
   need(await current.rounds.getByRole('link',{name:/current-only-run/u}).count() === 1);
@@ -135,14 +150,27 @@ try {
   need(await current.attempts.getByRole('button',{name:'Load more attempts',exact:true}).count() === 0);
   need(requests(current,'runs').filter(item => item.snapshot !== config.snapshot).length === 1);
   need(requests(current,'attempts').filter(item => item.snapshot !== config.snapshot).length === 1);
-  need(await pinned.rounds.locator('.review-round-pill').count() === 20 && await pinned.attempts.locator('li').count() === 20);
+  phase = 'inline-current-findings';
+  const currentRow = current.rounds.locator('.review-history-row');
+  need(details.length === 1);
+  await expect(currentRow.locator('.review-history-counts')).toHaveText('1 found · 0 accepted · 0 routed');
+  await currentRow.getByRole('button', {name:'Show findings for cli run current-only-run', exact:true}).click();
+  await currentRow.getByRole('heading', {name:'Inline retained finding', exact:true}).waitFor();
+  await expect(currentRow.locator('.review-history-findings strong')).toHaveText('inline detail');
+  await expect(currentRow.locator('.review-history-findings li').filter({hasText:'Kept in this PR'}).last()).toHaveText('Kept in this PR');
+  need(await currentRow.locator('.review-history-findings img').count() === 0 && await currentRow.locator('.review-history-findings a[href^="javascript:"]').count() === 0);
+  need(details.length === 2 && details[1].name === 'current' && details[1].snapshot !== config.snapshot && new URL(current.page.url()).pathname === path);
+  await currentRow.getByRole('button', {name:'Hide findings for cli run current-only-run', exact:true}).click();
+  need(await currentRow.locator('.review-history-findings').count() === 0 && details.length === 2);
+
+  need(await pinned.rounds.locator('.review-history-row').count() === 20 && await pinned.attempts.locator('li').count() === 20);
 
   phase = 'pinned-continuation';
   for (const shown of [40,60,80,100,120,123]) await more(pinned,'runs',shown);
   for (const shown of [40,60,80,100,120,123]) await more(pinned,'attempts',shown);
   need(requests(pinned,'runs').every(item => item.snapshot === config.snapshot));
   need(requests(pinned,'attempts').every(item => item.snapshot === config.snapshot));
-  const links = await pinned.rounds.locator('.review-round-pill').evaluateAll(elements => elements.map(element => element.getAttribute('href')));
+  const links = await pinned.rounds.locator('.review-history-details-link').evaluateAll(elements => elements.map(element => element.getAttribute('href')));
   need(new Set(links).size === count && links.some(link => link.includes(config.first_run_id)) && links.some(link => link.includes(config.tail_run_id)));
   need(await pinned.attempts.getByText(config.first_attempt_id,{exact:true}).count() === 1);
   const shared = pinned.attempts.locator('li').filter({hasText:config.tail_attempt_id});
@@ -154,9 +182,9 @@ try {
   // reads one bounded page for the new comparison. Neither walks that archive.
   const pinnedCurrentHero = archives.filter(item => item.name === pinned.name && item.feed === 'runs' && item.snapshot !== config.snapshot);
   need(pinnedCurrentHero.length === 1 && pinnedCurrentHero[0].cursor === null && pinnedCurrentHero[0].limit === 20);
-  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && archives.length === 21);
+  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && archives.length === 21 && details.length === 2);
   await context.close(); await browser.close(); browser=undefined; await server.close(); server=undefined;
-  console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,max_limit:20,source_collisions:true,pinned_tail:true,current_reset:true,fixture_writes:1}));
+  console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,max_limit:20,source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,detail_requests:details.length,fixture_writes:1}));
 } catch {
   console.log(JSON.stringify({state:'FAIL',phase})); process.exitCode=1;
 } finally {

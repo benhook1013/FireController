@@ -35,8 +35,8 @@ func historyInventoryFixture(t *testing.T) (*core.Store, string) {
 		t.Fatal(err)
 	}
 	var version string
-	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "6" {
-		t.Fatal("owning startup must install reviews v6", version, err)
+	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "7" {
+		t.Fatal("owning startup must install reviews v7", version, err)
 	}
 	return store, dir
 }
@@ -45,7 +45,7 @@ func TestHistoryInventoryV6CanonicalEmptySchemaIsReadOnly(t *testing.T) {
 	store, dir := historyInventoryFixture(t)
 	before := backupRows(t, store.DB())
 	versions, err := validateSchema(t.Context(), store.DB(), false)
-	if err != nil || versions["reviews"] != 6 {
+	if err != nil || versions["reviews"] != 7 {
 		t.Fatal("canonical v6 refused", versions, err)
 	}
 	// The five/six-column groups are checked independently of exact DDL too.
@@ -97,7 +97,7 @@ func TestHistoryInventoryV6RehashedSchemaViewsAndIndexesRefused(t *testing.T) {
 		{"wrong-run-order-index", `DROP INDEX review_current_run_order_eligible; CREATE INDEX review_current_run_order_eligible ON review_current_run_order(project_id,pull_number,channel,run_order ASC) WHERE outcome='completed' AND finalized=1`},
 		{"wrong-run-order-predicate", `DROP INDEX review_current_run_order_eligible; CREATE INDEX review_current_run_order_eligible ON review_current_run_order(project_id,pull_number,channel,run_order DESC) WHERE outcome='completed'`},
 		{"wrong-version", `UPDATE metadata SET value='3' WHERE key='schema:reviews'`},
-		{"future-version", `UPDATE metadata SET value='7' WHERE key='schema:reviews'`},
+		{"future-version", `UPDATE metadata SET value='8' WHERE key='schema:reviews'`},
 	}
 	for _, test := range []struct{ name, table, old, new string }{
 		{"missing-order-check", "review_current_pulls", "CHECK (position >= 0)", "CHECK (position >= -1)"},
@@ -176,7 +176,7 @@ func historyInventorySeedPull(t *testing.T, store *core.Store) {
 	if _, err := store.DB().Exec(`INSERT INTO projects VALUES('history-private','Private sentinel',701,'owner/history');
  INSERT INTO review_snapshots VALUES('history-private','review_snapshot_11111111111111111111111111111111',1,701,'synthetic-import','','','');
  INSERT INTO review_workspace VALUES('history-private',1,'review_snapshot_11111111111111111111111111111111');
- INSERT INTO review_pull_versions VALUES('history-private',7,1,'Retained merged PR','merged','','main','','success','mergeable',1,0,0,'[]','[]');
+ INSERT INTO review_pull_versions VALUES('history-private',7,1,'Retained merged PR','merged','','main','','success','mergeable',1,0,0,'[]','[]','{}');
  INSERT INTO review_pull_memberships VALUES('history-private',7,1,NULL,1,0);
  INSERT INTO review_current_pulls VALUES('history-private',7,1,0);
  INSERT INTO review_current_totals VALUES('history-private',7,0,0,0)`); err != nil {
@@ -541,15 +541,22 @@ func TestHistoryInventoryV6RehashedOwningPullVisibilityDamageRefused(t *testing.
 // Reconstruct only the truthful older derived schema in an exclusively owned
 // fixture; no retained source/history bytes or IDs are rewritten or migrated by
 // backup creation, inspection or inactive restore.
-func TestHistoryInventoryV4V5RemainSupportedWithoutRunOrderCache(t *testing.T) {
-	for _, version := range []int{4, 5} {
+func TestHistoryInventoryV4V5V6RemainSupportedWithoutFutureMetadata(t *testing.T) {
+	for _, version := range []int{4, 5, 6} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			f := historyInventoryRunOrderFixture(t)
-			if _, err := f.store.DB().Exec(`DROP TABLE review_current_run_order`); err != nil {
-				t.Fatal(err)
+			if version < 6 {
+				if _, err := f.store.DB().Exec(`DROP TABLE review_current_run_order`); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if version == 4 {
 				if _, err := f.store.DB().Exec(`DROP TABLE review_current_attempt_order; DROP TABLE review_current_totals`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, statement := range []string{`DROP VIEW review_pulls`, `ALTER TABLE review_pull_versions DROP COLUMN metadata_json`, reviews.HistoryReadViewSQLV6()["review_pulls"]} {
+				if _, err := f.store.DB().Exec(statement); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -575,7 +582,7 @@ func TestHistoryInventoryV4V5RemainSupportedWithoutRunOrderCache(t *testing.T) {
 			var installed int
 			err = db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name='review_current_run_order'`).Scan(&installed)
 			db.Close()
-			if err != nil || installed != 0 {
+			if err != nil || (installed == 1) != (version == 6) {
 				t.Fatal("inspection/restore installed a future cache", err)
 			}
 			for table, hash := range before {
@@ -625,7 +632,7 @@ func TestHistoryInventoryV6RehashedCurrentRunOrderDamageRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			versions, err := validateSchema(t.Context(), db, false)
-			if err != nil || versions["reviews"] != 6 {
+			if err != nil || versions["reviews"] != 7 {
 				t.Fatal("logical fixture changed canonical physical layout", versions, err)
 			}
 			fk, err := db.QueryContext(t.Context(), `PRAGMA foreign_key_check`)

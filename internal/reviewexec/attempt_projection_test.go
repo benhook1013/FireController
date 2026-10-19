@@ -168,6 +168,9 @@ func TestAttemptProjectionTransitionsPreserveCurrentFactsAndHistory(t *testing.T
 	moved.Title = "Current moved title"
 	moved.CIState = "pending"
 	moved.Mergeability = "conflicting"
+	movedDraft := false
+	moved.Diff = &reviews.PullDiff{Files: 2, Additions: 0, Deletions: 13}
+	moved.IsDraft = &movedDraft
 	marker := reviews.Attempt{SourceAttemptID: "fresh-metadata-observation", Channel: "hosted", HeadSHA: moved.HeadSHA, State: "prepared"}
 	projectionPublish(t, f, reviews.NativePublication{Pull: moved, Attempt: &marker})
 	var err error
@@ -177,7 +180,7 @@ func TestAttemptProjectionTransitionsPreserveCurrentFactsAndHistory(t *testing.T
 	}
 	pull, active := projectedAttempt(t, f, a)
 	assertProjectedTimes(t, f, a, active, false)
-	if pull.Pull.Title != moved.Title || pull.Pull.HeadSHA != moved.HeadSHA || pull.Pull.CIState != moved.CIState || pull.Pull.Mergeability != moved.Mergeability || active.HeadSHA != strings.Repeat("a", 40) || pull.ObservedAt != merged.ObservedAt {
+	if pull.Pull.Title != moved.Title || pull.Pull.HeadSHA != moved.HeadSHA || pull.Pull.CIState != moved.CIState || pull.Pull.Mergeability != moved.Mergeability || !reflect.DeepEqual(pull.Pull.Diff, moved.Diff) || !reflect.DeepEqual(pull.Pull.IsDraft, moved.IsDraft) || active.HeadSHA != strings.Repeat("a", 40) || pull.ObservedAt != merged.ObservedAt {
 		t.Fatal("attempt transition overwrote current PR facts or freshness", pull)
 	}
 	a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "captured", "")

@@ -736,7 +736,11 @@ type githubPull struct {
 		Ref  string           `json:"ref,required"`
 		Repo githubRepository `json:"repo,required"`
 	} `json:"base,required"`
-	ChangedFiles int64 `json:"changed_files,required"`
+	ChangedFiles int64   `json:"changed_files,required"`
+	Additions    *int64  `json:"additions"`
+	Deletions    *int64  `json:"deletions"`
+	Draft        *bool   `json:"draft"`
+	MergedAt     *string `json:"merged_at"`
 }
 
 type githubIssueComment struct {
@@ -901,7 +905,27 @@ func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
 			return Pull{}, errors.New("invalid head repository")
 		}
 	}
-	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles}, nil
+	mergedAt := ""
+	if raw.MergedAt != nil {
+		mergedAt = *raw.MergedAt
+	}
+	if (raw.Additions == nil) != (raw.Deletions == nil) {
+		return Pull{}, errors.New("GitHub pull request metadata is incomplete.")
+	}
+	for _, n := range []*int64{raw.Additions, raw.Deletions} {
+		if n != nil && (*n < 0 || *n > 2147483647) {
+			return Pull{}, errors.New("GitHub pull request metadata is invalid.")
+		}
+	}
+	if mergedAt != "" {
+		if !raw.Merged || len(mergedAt) > 64 {
+			return Pull{}, errors.New("GitHub merge time is invalid.")
+		}
+		if _, err := time.Parse(time.RFC3339Nano, mergedAt); err != nil {
+			return Pull{}, errors.New("GitHub merge time is invalid.")
+		}
+	}
+	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles, Additions: raw.Additions, Deletions: raw.Deletions, IsDraft: raw.Draft, MergedAt: mergedAt}, nil
 }
 
 func normalizeIssueComment(raw githubIssueComment) (IssueComment, error) {

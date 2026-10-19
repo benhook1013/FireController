@@ -79,6 +79,9 @@ type ReviewRunDetail struct {
 }
 
 type ReviewPullSummary struct {
+	Diff           *ReviewPullDiff    `json:"diff,omitempty"`
+	IsDraft        *bool              `json:"is_draft,omitempty"`
+	MergedAt       string             `json:"merged_at,omitempty"`
 	Number         int64              `json:"number"`
 	Title          string             `json:"title"`
 	State          string             `json:"state"`
@@ -276,7 +279,7 @@ func (c *Client) validReviewPull(value ReviewPullSummary) bool {
 	if !validPullNumber(value.Number) || !cleanReviewText(value.Title, 500, true) || !oneReviewOf(value.State, "open", "merged", "closed", "unknown") ||
 		!validReviewSHA(value.HeadSHA) || !cleanReviewText(value.BaseRef, 256, false) || !validReviewSHA(value.BaseSHA) ||
 		!oneReviewOf(value.CIState, "unknown", "pending", "success", "failure") || !oneReviewOf(value.Mergeability, "unknown", "mergeable", "conflicting") ||
-		value.RunCount < 0 || value.AttemptCount < 0 ||
+		!validReviewPullMetadata(value) || value.RunCount < 0 || value.AttemptCount < 0 ||
 		value.RecentRuns == nil || len(value.RecentRuns) > 3 || int64(len(value.RecentRuns)) > value.RunCount || value.RunCount > 0 && len(value.RecentRuns) == 0 ||
 		value.LatestAttempts == nil || len(value.LatestAttempts) > 4 || int64(len(value.LatestAttempts)) > value.AttemptCount || value.AttemptCount > 0 && len(value.LatestAttempts) == 0 {
 		return false

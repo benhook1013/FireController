@@ -71,7 +71,7 @@ func normalizeTransfer(req *TransferRequest) ([]byte, error) {
 }
 
 func sameTransferPullMetadata(a, b PullInput) bool {
-	return a.Number == b.Number && a.Title == b.Title && a.State == b.State && a.HeadSHA == b.HeadSHA && a.BaseRef == b.BaseRef && a.BaseSHA == b.BaseSHA && a.CIState == b.CIState && a.Mergeability == b.Mergeability && a.Complete == b.Complete
+	return a.Number == b.Number && a.Title == b.Title && a.State == b.State && a.HeadSHA == b.HeadSHA && a.BaseRef == b.BaseRef && a.BaseSHA == b.BaseSHA && a.CIState == b.CIState && a.Mergeability == b.Mergeability && a.Complete == b.Complete && mustJSON(pullMetadata(a)) == mustJSON(pullMetadata(b))
 }
 
 func transferPreview(instanceID string, scope core.Scope, req TransferRequest, body []byte) (TransferPreview, error) {

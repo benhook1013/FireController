@@ -60,7 +60,7 @@ func TestTransferNativeRetainedExactBodiesSurviveOmission(t *testing.T) {
 	attempt.TriggerID, attempt.ProviderReviewID = "trigger", "provider-review"
 	first := historyWriterSnapshot(t, tx, f.project, 1)
 	w := newHistorySnapshotWrite(f.project, 1)
-	if err := w.pull(t.Context(), tx, 7, 0, []any{"Owning PR", "open", "head", "main", "base", "unknown", "unknown", false, 0, 0, "[]", "[]"}); err != nil {
+	if err := w.pull(t.Context(), tx, 7, 0, []any{"Owning PR", "open", "head", "main", "base", "unknown", "unknown", false, 0, 0, "[]", "[]", "{}"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.run(t.Context(), tx, nativeSource, 7, 0, run); err != nil {

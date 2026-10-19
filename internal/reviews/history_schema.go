@@ -1,5 +1,7 @@
 package reviews
 
+import "strings"
+
 // HistorySchemaSQL returns independent canonical physical definitions for
 // migration and read-only backup inspection.
 func HistorySchemaSQL() []string {
@@ -14,7 +16,7 @@ func HistorySchemaSQL() []string {
 // in-place historical change. Cross-interval overlap and current-reference
 // visibility at the workspace revision require canonical logical validation;
 // the DDL enforces exact same-project body, owner, order and snapshot references.
-var historySchemaStatements = []string{
+var historySchemaStatementsV4 = []string{
 	`CREATE TABLE review_pull_versions (
  project_id TEXT NOT NULL,
  number INTEGER NOT NULL CHECK (number > 0 AND number <= 2147483647),
@@ -214,3 +216,12 @@ var historySchemaStatements = []string{
  FOREIGN KEY (project_id,number,start_revision,position) REFERENCES review_retired_memberships(project_id,number,start_revision,position) ON UPDATE NO ACTION ON DELETE NO ACTION
 );`,
 }
+
+// Version four is frozen for old backups and the original migration. Version seven appends metadata.
+func HistorySchemaSQLV6() []string { return append([]string(nil), historySchemaStatementsV4...) }
+
+var historySchemaStatements = func() []string {
+	out := HistorySchemaSQLV6()
+	out[0] = strings.Replace(out[0], " latest_attempts_json TEXT NOT NULL,\n", " latest_attempts_json TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (length(CAST(metadata_json AS BLOB)) <= 512),\n", 1)
+	return out
+}()

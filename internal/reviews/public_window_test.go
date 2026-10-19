@@ -229,6 +229,7 @@ func TestPublicSiteSparseHistoryRefreshUnderOrdinaryWrites(t *testing.T) {
 	if _, err := f.store.DB().Exec(`DROP TABLE review_current_run_order`); err != nil {
 		t.Fatal(err)
 	}
+	removeMetadataForPre7Fixture(t, f.store)
 	if _, err := f.store.DB().Exec(`UPDATE metadata SET value='5' WHERE key='schema:reviews'`); err != nil {
 		t.Fatal(err)
 	}

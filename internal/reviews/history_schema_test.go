@@ -32,9 +32,9 @@ func historyPhysicalFixture(t *testing.T) *apiFixture {
 		t.Fatal(err)
 	}
 	for _, number := range []int{1, 2} {
-		historyPhysicalExec(t, f, `INSERT INTO review_pull_versions VALUES(?,?,1,'Retained','','','','','','',1,0,0,'[]','[]')`, f.project, number)
+		historyPhysicalExec(t, f, `INSERT INTO review_pull_versions VALUES(?,?,1,'Retained','','','','','','',1,0,0,'[]','[]','{}')`, f.project, number)
 	}
-	historyPhysicalExec(t, f, `INSERT INTO review_pull_versions VALUES(?,1,3,'Changed','','','','','','',1,0,0,'[]','[]')`, f.project)
+	historyPhysicalExec(t, f, `INSERT INTO review_pull_versions VALUES(?,1,3,'Changed','','','','','','',1,0,0,'[]','[]','{}')`, f.project)
 	for _, run := range []struct {
 		id, source    string
 		version, pull int
@@ -94,7 +94,7 @@ func TestHistoryPhysicalSchemaExactVersionsAndHistoricalMembership(t *testing.T)
 	f := historyPhysicalFixture(t)
 	historyPhysicalMemberships(t, f)
 	var schema string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&schema); err != nil || schema != "6" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&schema); err != nil || schema != "7" {
 		t.Fatal("physical declarations changed legacy schema version", schema, err)
 	}
 	var tables int
@@ -152,7 +152,7 @@ func TestHistoryPhysicalSchemaRejectsForeignAndFutureReferences(t *testing.T) {
 		name, sql string
 		args      []any
 	}{
-		{"version-owner-project", `INSERT INTO review_pull_versions SELECT 'history-other',number,version_revision,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json FROM review_pull_versions WHERE project_id=? AND number=1 AND version_revision=1`, []any{f.project}},
+		{"version-owner-project", `INSERT INTO review_pull_versions SELECT 'history-other',number,version_revision,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json,metadata_json FROM review_pull_versions WHERE project_id=? AND number=1 AND version_revision=1`, []any{f.project}},
 		{"version-owning-snapshot", `INSERT INTO review_retired_versions VALUES(?,10,9,'defunct')`, []any{f.project}},
 		{"finding-owner-pr", `UPDATE review_finding_versions SET pull_number=2 WHERE project_id=? AND run_id='run-one' AND run_version_revision=1`, []any{f.project}},
 		{"finding-exact-version", `UPDATE review_finding_versions SET run_version_revision=2 WHERE project_id=? AND run_id='run-one' AND run_version_revision=1`, []any{f.project}},
