@@ -97,6 +97,9 @@ try {
         need(geometry.arrow.right <= geometry.head.right && geometry.head.right-geometry.arrow.right <= 32 && geometry.arrow.bottom <= geometry.head.bottom && geometry.head.bottom-geometry.arrow.bottom <= 32);
         if (width === 1440) need(Math.abs(geometry.head.top-geometry.identity.top) <= 1 && Math.abs(geometry.head.left-geometry.identity.right) <= 1);
         else {
+          // A phone must not retain the desktop panel's empty vertical space.
+          // Allow taller actual content without fixing one exact CSS height.
+          need(geometry.identity.bottom-geometry.identity.top <= Math.max(200,geometry.project.bottom-geometry.project.top+4));
           need(Math.abs(geometry.head.left-geometry.identity.left) <= 1 && Math.abs(geometry.head.right-geometry.identity.right) <= 1 && geometry.head.top >= geometry.identity.bottom);
           need(geometry.groups[1].top >= geometry.groups[0].bottom && Math.abs(geometry.groups[0].left-geometry.groups[1].left) <= 1 && Math.abs(geometry.groups[0].right-geometry.groups[1].right) <= 1);
         }
