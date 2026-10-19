@@ -189,7 +189,7 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 		if _, err = tx.ExecContext(ctx, `INSERT INTO review_round_controls(`+roundColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,pull_number,channel) DO UPDATE SET revision=excluded.revision,epoch=excluded.epoch,grant_revision=excluded.grant_revision,closed=excluded.closed,minimum=excluded.minimum,maximum=excluded.maximum,taper=excluded.taper,used=excluded.used,dry=excluded.dry,tapered=excluded.tapered,actor_id=excluded.actor_id,updated_at=excluded.updated_at`, c.ProjectID, c.PullNumber, c.Channel, c.Revision, c.Epoch, c.grantRevision, c.Closed, c.Minimum, c.Maximum, c.Taper, c.Used, c.Dry, c.Tapered, c.ActorID, c.CreatedAt, c.UpdatedAt); err != nil {
 			return nil, err
 		}
-		if err = core.AppendEvent(ctx, tx, scope, "reviews.rounds_configured", scope.ProjectID, c.Revision, map[string]any{"pull_number": pull, "channel": channel, "revision": c.Revision}); err != nil {
+		if err = core.AppendEvent(ctx, tx, scope, "reviews.rounds_configured", target, c.Revision, map[string]any{"pull_number": pull, "channel": channel, "revision": c.Revision}); err != nil {
 			return nil, err
 		}
 		outcome := "granted"
