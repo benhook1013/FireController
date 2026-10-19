@@ -15,6 +15,55 @@ async function client() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('bounded stored Delivery API', () => {
+  it('accepts nonempty whitespace-only truncated checkpoint previews', async () => {
+    const api = await client();
+    for (const prefix of [' '.repeat(240), '\t'.repeat(240), '\u2003'.repeat(80)]) {
+      const value = snapshot();
+      value.jobs.items = [{ ...value.jobs.items[0], checkpoint: { ...checkpoint, done: prefix, next: prefix, done_truncated: true, next_truncated: true } }];
+      const fetch = vi.fn().mockResolvedValue(json(value)); vi.stubGlobal('fetch', fetch);
+      await expect(api.delivery()).resolves.toEqual(value);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+    api.close();
+  });
+  it('keeps required preview text, flags and Unicode bounds strict', async () => {
+    const api = await client();
+    for (const field of ['done', 'next', 'blocker'] as const) {
+      const cases: Array<[unknown, unknown]> = [
+        ['valid', null], ['valid', 'true'], ['valid', 1], ['valid', undefined],
+        ['a'.repeat(241), true], ['\u2003'.repeat(81), true], ['\ud800', true], ['\udfff', true], ['\u0000', true], ['\u007f', true],
+      ];
+      if (field !== 'blocker') cases.push(['', true], ['', false], [' '.repeat(240), false], ['\u2003'.repeat(80), false]);
+      for (const [text, truncated] of cases) {
+        const value = snapshot();
+        value.jobs.items = [{ ...value.jobs.items[0], checkpoint: { ...checkpoint, [field]: text, [`${field}_truncated`]: truncated } as typeof checkpoint }];
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(value)));
+        await expect(api.delivery()).rejects.toMatchObject({ code: 'invalid_response' });
+      }
+    }
+    // A blocker remains optional, including when its supplied preview is blank.
+    for (const blocker of ['', ' '.repeat(240)]) {
+      const value = snapshot();
+      value.jobs.items = [{ ...value.jobs.items[0], checkpoint: { ...checkpoint, blocker, blocker_truncated: true } }];
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(value)));
+      await expect(api.delivery()).resolves.toEqual(value);
+    }
+    api.close();
+  });
+  it('still refuses empty or all-whitespace full checkpoints', async () => {
+    const api = await client();
+    const full = { id: 'checkpoint_one', project_id: project.id, job_id: 'job_one', job_revision: 1, sequence: 1, actor_id: 'principal_one', worker_id: 'worker_one', done: 'Done', next: 'Next', blocker: '', evidence: [], created_at: '2026-10-01T00:00:00Z' };
+    const latest = { job_id: 'job_one', job_revision: 1, checkpoint: full };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(latest)));
+    await expect(api.checkpointLatest('job_one')).resolves.toEqual(latest);
+    for (const field of ['done', 'next'] as const) {
+      for (const text of ['', ' '.repeat(241), '\u2003'.repeat(81)]) {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ job_id: 'job_one', job_revision: 1, checkpoint: { ...full, [field]: text } })));
+        await expect(api.checkpointLatest('job_one')).rejects.toMatchObject({ code: 'invalid_response' });
+      }
+    }
+    api.close();
+  });
   it('uses one scoped read with explicit independent continuation and no worker binding', async () => {
     const api = await client();
     const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
