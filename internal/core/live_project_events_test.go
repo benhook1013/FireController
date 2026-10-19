@@ -13,6 +13,7 @@ func TestLiveProjectReplayVisibleStateOnly(t *testing.T) {
 	// Keep this explicit wire contract independent of the replay query: an
 	// arbitrary journal event must never become a private browser notification.
 	kinds := []string{
+		"coordination.imported",
 		"project.presentation_changed", "map.entry_created", "map.entry_updated",
 		"job.workstream_changed", "job.created", "job.updated", "job.checkpointed", "job.update_appended", "job.checklist_replaced",
 		"workers.created", "worker.pause_changed", "worker.primary_job_changed", "note.created", "note.updated",
