@@ -13,6 +13,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import types
 import unittest
@@ -225,6 +227,51 @@ class LocalContractTests(unittest.TestCase):
             except OSError:
                 pass
 
+    def test_result_report_supports_string_streams_and_closes_null_sink(self):
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(adapter.report_result({"outcome": "unchanged"}), 0)
+        self.assertEqual(json.loads(output.getvalue()), {"outcome": "unchanged"})
+        self.assertEqual(len(output.getvalue().splitlines()), 1)
+
+        class FailedOutput(io.StringIO):
+            def flush(self):
+                raise OSError("private output failure")
+
+        class FailedWrite:
+            def write(self, _value):
+                raise OSError("private write failure")
+
+        for stream in (FailedOutput(), FailedWrite()):
+            with self.subTest(stream=type(stream).__name__):
+                with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(io.StringIO()) as errors, \
+                        mock.patch.object(adapter.os, "open", side_effect=AssertionError("no descriptor to redirect")) as opened:
+                    self.assertEqual(adapter.report_result({"outcome": "created"}), 3)
+                self.assertEqual(errors.getvalue(), '{"error":"output_report_failed"}\n')
+                opened.assert_not_called()
+
+        with self.private("stdout-target", b"owned").open("w") as target:
+            class DescriptorOutput(FailedOutput):
+                def fileno(self):
+                    return target.fileno()
+
+            descriptors = []
+            real_open = os.open
+
+            def tracked_open(*args, **kwargs):
+                fd = real_open(*args, **kwargs)
+                descriptors.append(fd)
+                return fd
+
+            with contextlib.redirect_stdout(DescriptorOutput()), contextlib.redirect_stderr(io.StringIO()) as errors, \
+                    mock.patch.object(adapter.os, "open", side_effect=tracked_open):
+                self.assertEqual(adapter.report_result({"outcome": "created"}), 3)
+            self.assertEqual(errors.getvalue(), '{"error":"output_report_failed"}\n')
+            self.assertEqual(len(descriptors), 1)
+            self.assertNotEqual(descriptors[0], target.fileno())
+            with self.assertRaises(OSError):
+                os.fstat(descriptors[0])
+            os.fstat(target.fileno())  # The stdout target remains owned by its stream.
+
     def test_output_create_exact_replay_and_no_overwrite(self):
         path = self.root / "prepared.json"
         self.assertEqual(adapter.publish(str(path), b"value\n"), "created")
@@ -343,6 +390,56 @@ class ActualSourceHelperTests(LocalContractTests):
         before = Path(self.args.output).read_bytes()
         self.assertEqual(self.run_preparation()[0]["outcome"], "unchanged")
         self.assertEqual(Path(self.args.output).read_bytes(), before)
+
+    def test_buffered_closed_pipe_preserves_prepared_exact_retry(self):
+        self._assert_buffered_stdout_failure()
+
+    def test_closed_stdout_descriptor_preserves_prepared_exact_retry(self):
+        self._assert_buffered_stdout_failure(close_stdout_fd=True)
+
+    def _assert_buffered_stdout_failure(self, *, close_stdout_fd=False):
+        self.inputs([self.review(1), self.review(2)])
+        script = Path(adapter.__file__).resolve()
+        bootstrap = self.root / "owned-controls-bootstrap.py"
+        bootstrap.write_text(
+            "import os, socket, subprocess, sys\n"
+            "from unittest.mock import patch\n"
+            f"sys.path.insert(0, {str(script.parent)!r})\n"
+            "import prepare_source_controls as module\n"
+            "assert not sys.stdout.line_buffering and not sys.stdout.write_through\n"
+            "with patch.object(socket, 'socket', side_effect=AssertionError('network forbidden')), "
+            "patch.object(subprocess, 'run', side_effect=AssertionError('subprocess forbidden')), "
+            "patch.object(subprocess, 'Popen', side_effect=AssertionError('subprocess forbidden')):\n"
+            "  if os.environ.get('OWNED_CLOSE_STDOUT_FD') == '1': os.close(sys.stdout.fileno())\n"
+            "  raise SystemExit(module.main())\n")
+        argv = [value for name, value in vars(self.args).items()
+                for value in ("--" + name.replace("_", "-"), str(value))]
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        env.pop("PYTHONUNBUFFERED", None)
+        env.pop("OWNED_CLOSE_STDOUT_FD", None)
+        if close_stdout_fd:
+            env["OWNED_CLOSE_STDOUT_FD"] = "1"
+        before = self.snapshot.read_bytes()
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        try:
+            completed = subprocess.run([sys.executable, str(bootstrap), *argv],
+                                       env=env, stdout=write_fd, stderr=subprocess.PIPE,
+                                       check=False, text=True, timeout=30)
+        finally:
+            os.close(write_fd)
+        retained = [Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()]
+        self.assertEqual(completed.returncode, 3, completed.stderr)
+        self.assertEqual(completed.stderr, '{"error":"output_report_failed"}\n')
+        self.assertEqual(self.snapshot.read_bytes(), before)
+        env.pop("OWNED_CLOSE_STDOUT_FD", None)
+        replay = subprocess.run([sys.executable, str(bootstrap), *argv], env=env,
+                                capture_output=True, check=False, text=True, timeout=30)
+        self.assertEqual(replay.returncode, 0, replay.stderr)
+        self.assertEqual(replay.stderr, "")
+        self.assertEqual(json.loads(replay.stdout)["outcome"], "unchanged")
+        self.assertEqual([Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()], retained)
+        self.assertEqual(self.snapshot.read_bytes(), before)
 
     def test_bounded_exhausted_pending_obligation_refuses_before_publication(self):
         self.allocation(max_additional_completed=1)
