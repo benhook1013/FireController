@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -17,7 +18,7 @@ import (
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
-// QueueEditRequest changes only selected queue metadata and visibility. It is
+// QueueEditRequest changes only selected queue metadata, visibility and order. It is
 // not a provider observation and cannot publish runs or attempts.
 type QueueEditRequest struct {
 	ExpectedRevision *int64           `json:"expected_revision"`
@@ -25,6 +26,7 @@ type QueueEditRequest struct {
 	Source           string           `json:"source"`
 	Queue            []QueuePullInput `json:"queue"`
 	Retired          []RetiredPull    `json:"retired"`
+	Order            []int64          `json:"order,omitempty"`
 }
 
 type QueuePullInput struct {
@@ -55,13 +57,13 @@ func readQueueEditJSON(w http.ResponseWriter, r *http.Request, dst *QueueEditReq
 			return validationError("Required queue edit fields must be present and non-null.")
 		}
 	}
-	for _, field := range []string{"queue", "retired"} {
+	for _, field := range []string{"queue", "retired", "order"} {
 		value, ok := fields[field]
 		if !ok {
 			continue
 		}
 		if string(value) == "null" {
-			return validationError("Queue and retirement arrays may be omitted or arrays, but not null.")
+			return validationError("Queue, retirement and order arrays may be omitted or arrays, but not null.")
 		}
 		if field != "queue" {
 			continue
@@ -97,7 +99,7 @@ func validateQueueEdit(req *QueueEditRequest) error {
 	if req.Retired == nil {
 		req.Retired = []RetiredPull{}
 	}
-	if len(req.Queue)+len(req.Retired) < 1 || len(req.Queue)+len(req.Retired) > maxQueuePulls {
+	if (len(req.Queue)+len(req.Retired) < 1 && req.Order == nil) || len(req.Queue)+len(req.Retired) > maxQueuePulls {
 		return validationError("Select between one and 100 queue entries and retirements.")
 	}
 	seen := make(map[int64]struct{}, len(req.Queue)+len(req.Retired))
@@ -125,6 +127,23 @@ func validateQueueEdit(req *QueueEditRequest) error {
 			return validationError("Queue entries and retirements must be unique and disjoint.")
 		}
 		seen[retired.Number] = struct{}{}
+	}
+	if req.Order != nil {
+		if len(req.Order) < 1 || len(req.Order) > maxQueuePulls {
+			return validationError("Order must select between one and 100 visible pull requests.")
+		}
+		ordered := make(map[int64]bool, len(req.Order))
+		for _, number := range req.Order {
+			if number < 1 || number > 2147483647 || ordered[number] {
+				return validationError("Order must contain unique positive 32-bit pull request numbers.")
+			}
+			ordered[number] = true
+		}
+		for _, retired := range req.Retired {
+			if ordered[retired.Number] {
+				return validationError("Order cannot select a retired pull request.")
+			}
+		}
 	}
 	return nil
 }
@@ -204,6 +223,12 @@ func publishQueueEdit(ctx context.Context, tx *sql.Tx, scope core.Scope, req Que
 		return Receipt{}, err
 	}
 	write := newHistorySnapshotWrite(scope.ProjectID, next)
+	type selectedPull struct {
+		body     []any
+		position int
+	}
+	pulls := make(map[int64]selectedPull, len(req.Queue)+len(req.Order))
+	var pullNumbers []int64
 	var nextPosition int
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position),-1)+1 FROM review_current_pulls WHERE project_id=?`, scope.ProjectID).Scan(&nextPosition); err != nil {
 		return Receipt{}, err
@@ -230,10 +255,47 @@ func publishQueueEdit(ctx context.Context, tx *sql.Tx, scope core.Scope, req Que
 		old[12] = metadataJSON
 		metadata := []any{selected.Title, selected.State, selected.HeadSHA, selected.BaseRef, selected.BaseSHA, selected.CIState, selected.Mergeability}
 		copy(old[:7], metadata)
-		if err := write.pull(ctx, tx, selected.Number, position, old); err != nil {
+		pulls[selected.Number] = selectedPull{old, position}
+		pullNumbers = append(pullNumbers, selected.Number)
+		if err := write.remove(ctx, tx, historyRetiredRecord, []any{selected.Number}); err != nil {
 			return Receipt{}, err
 		}
-		if err := write.remove(ctx, tx, historyRetiredRecord, []any{selected.Number}); err != nil {
+	}
+	positions := make([]int, 0, len(req.Order))
+	// Resolve only the bounded selection after metadata upserts. Publish each
+	// pull once so its new body and position share one historical membership.
+	for _, number := range req.Order {
+		pull, upserted := pulls[number]
+		if !upserted {
+			var retired bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_current_retired WHERE project_id=? AND number=?)`, scope.ProjectID, number).Scan(&retired); err != nil {
+				return Receipt{}, err
+			}
+			if retired {
+				return Receipt{}, validationError("Order must select currently visible pull requests.")
+			}
+			var err error
+			pull.body, pull.position, err = retainedTransferPullBody(ctx, tx, scope.ProjectID, number)
+			if errors.Is(err, sql.ErrNoRows) {
+				return Receipt{}, validationError("Order must select currently visible pull requests.")
+			}
+			if err != nil {
+				return Receipt{}, err
+			}
+			pulls[number] = pull
+			pullNumbers = append(pullNumbers, number)
+		}
+		positions = append(positions, pull.position)
+	}
+	sort.Ints(positions)
+	for i, number := range req.Order {
+		pull := pulls[number]
+		pull.position = positions[i]
+		pulls[number] = pull
+	}
+	for _, number := range pullNumbers {
+		pull := pulls[number]
+		if err := write.pull(ctx, tx, number, pull.position, pull.body); err != nil {
 			return Receipt{}, err
 		}
 	}

@@ -23,6 +23,7 @@ type reviewQueueEditDocument struct {
 	Source           string                      `json:"source"`
 	Queue            []reviewQueueEditPull       `json:"queue"`
 	Retired          []reviewQueueEditRetirement `json:"retired"`
+	Order            []int64                     `json:"order,omitempty"`
 }
 type reviewQueueEditPull struct {
 	Diff         *ReviewPullDiff `json:"diff,omitempty"`
@@ -43,10 +44,10 @@ type reviewQueueEditRetirement struct {
 }
 
 func queueEditValidation() error {
-	return fail("validation_failed", "Provide one bounded strict queue edit JSON document with 1 to 100 distinct selected PRs.", "Correct the selected metadata or retirements and retain the explicit key and destination binding.", http.StatusBadRequest)
+	return fail("validation_failed", "Provide one bounded strict queue edit JSON document with up to 100 metadata/retirement entries and up to 100 order entries.", "Select metadata, retirements or a nonempty order and retain the explicit key and destination binding.", http.StatusBadRequest)
 }
 
-// ValidateReviewQueueEditDocument validates metadata-only edits before loading
+// ValidateReviewQueueEditDocument validates selected queue edits before loading
 // credentials. Retained-history, current revision and administrator checks belong
 // to the service. Omitted arrays and optional SHA/base fields normalize there.
 func ValidateReviewQueueEditDocument(document json.RawMessage) error {
@@ -71,7 +72,7 @@ func reviewQueueEditDocumentValue(document json.RawMessage) (reviewQueueEditDocu
 		return value, queueEditValidation()
 	}
 	count := len(value.Queue) + len(value.Retired)
-	if count < 1 || count > 100 {
+	if (count < 1 && value.Order == nil) || count > 100 {
 		return value, queueEditValidation()
 	}
 	var fields map[string]json.RawMessage
@@ -102,6 +103,23 @@ func reviewQueueEditDocumentValue(document json.RawMessage) (reviewQueueEditDocu
 			return value, queueEditValidation()
 		}
 		seen[retired.Number] = true
+	}
+	if value.Order != nil {
+		if len(value.Order) < 1 || len(value.Order) > 100 {
+			return value, queueEditValidation()
+		}
+		ordered := make(map[int64]bool, len(value.Order))
+		for _, number := range value.Order {
+			if number < 1 || number > 2147483647 || ordered[number] {
+				return value, queueEditValidation()
+			}
+			ordered[number] = true
+		}
+		for _, retired := range value.Retired {
+			if ordered[retired.Number] {
+				return value, queueEditValidation()
+			}
+		}
 	}
 	if value.Queue == nil {
 		value.Queue = []reviewQueueEditPull{}

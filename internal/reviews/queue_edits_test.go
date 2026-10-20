@@ -188,11 +188,27 @@ func TestQueueEditsBoundedSelectionPreservesHistoryAndReactivates(t *testing.T) 
 		t.Fatalf("transfer crossed retirement marker: %d %s", denied.Code, denied.Body.String())
 	}
 	reactivate := queueEditRequest(5, []QueuePullInput{{Number: 1, Title: "Selected pull 1", State: "open", BaseRef: "main", CIState: "success", Mergeability: "mergeable"}}, nil)
+	reactivate.Order = []int64{202, 1}
 	if response := queueEditHTTP(f, reactivate, "queue-edit-reactivate"); response.Code != 201 {
 		t.Fatalf("reactivation failed: %d %s", response.Code, response.Body.String())
 	}
 	retiredTransfer.ExpectedRevision = int64Pointer(6)
 	transferApplyFor(t, f, retiredTransfer, "transfer-after-reactivation")
+	// A bounded order does not load or replace the complete 203-entry workspace.
+	order := queueEditRequest(7, nil, nil)
+	for n := int64(100); n >= 1; n-- {
+		order.Order = append(order.Order, n)
+	}
+	if response := queueEditHTTP(f, order, "large-relative-order"); response.Code != 201 {
+		t.Fatalf("large relative order: %d %s", response.Code, response.Body.String())
+	}
+	var untouched int
+	if err := f.store.DB().QueryRow(`SELECT position FROM review_current_pulls WHERE project_id=? AND number=203`, f.project).Scan(&untouched); err != nil || untouched != 202 {
+		t.Fatal("unselected append position changed", untouched, err)
+	}
+	if got := f.call("GET", base+"/queue?limit=1&cursor="+pinned.Cursor, f.readToken, "", nil); got.Code != 200 || got.Body.String() != oldContinuationBefore.Body.String() {
+		t.Fatal("relative order changed old cursor", got.Body.String())
+	}
 	if err := ValidateHistoryReferences(t.Context(), f.store.DB()); err != nil {
 		t.Fatal(err)
 	}
@@ -268,6 +284,163 @@ func TestQueueEditsReplayCASLimitsAndEventRollback(t *testing.T) {
 	}
 	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestQueueEditsRelativeOrderPreservesPinnedHistoryAndReplay(t *testing.T) {
+	f := newAPIFixture(t)
+	retained := samplePull(3, "Three")
+	retained.Runs = []RunInput{{SourceRunID: "original-run", Channel: "cli", Scope: "full", Outcome: "unknown", Found: 1, Findings: []Finding{{SourceFindingID: "original-finding", Title: "Original finding", Detail: "Original detail", Severity: "medium", Disposition: "unadjudicated"}}}}
+	retained.Attempts = []Attempt{{SourceAttemptID: "original-attempt", Channel: "cli", State: "unknown"}}
+	f.observe(t, reviewRequest(0, []PullInput{samplePull(1, "One"), samplePull(2, "Two"), retained, samplePull(4, "Four")}), "order-seed")
+	originalState := importDatabaseState(t, f)
+	base := importBase(f)
+	firstPage := f.call("GET", base+"/queue?limit=1", f.readToken, "", nil)
+	var page QueueResponse
+	if firstPage.Code != 200 || json.Unmarshal(firstPage.Body.Bytes(), &page) != nil || page.Cursor == "" {
+		t.Fatal(firstPage.Body.String())
+	}
+	pinnedPath := base + "/queue?limit=1&cursor=" + page.Cursor
+	pinned := f.call("GET", pinnedPath, f.readToken, "", nil).Body.String()
+	detailPath := base + "/pulls/3?snapshot=" + page.SnapshotID
+	detail := f.call("GET", detailPath, f.readToken, "", nil).Body.String()
+	positions := func() map[int64]int {
+		t.Helper()
+		rows, err := f.store.DB().Query(`SELECT number,position FROM review_current_pulls WHERE project_id=?`, f.project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		out := map[int64]int{}
+		for rows.Next() {
+			var n int64
+			var p int
+			if err := rows.Scan(&n, &p); err != nil {
+				t.Fatal(err)
+			}
+			out[n] = p
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	var versions int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM review_pull_versions WHERE project_id=?`, f.project).Scan(&versions); err != nil {
+		t.Fatal(err)
+	}
+	order := queueEditRequest(1, nil, nil)
+	order.Order = []int64{3, 1}
+	first := queueEditHTTP(f, order, "relative-order")
+	if first.Code != 201 {
+		t.Fatalf("order-only: %d %s", first.Code, first.Body.String())
+	}
+	if got := positions(); !reflect.DeepEqual(got, map[int64]int{1: 2, 2: 1, 3: 0, 4: 3}) {
+		t.Fatal(got)
+	}
+	var afterVersions int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM review_pull_versions WHERE project_id=?`, f.project).Scan(&afterVersions); err != nil || afterVersions != versions {
+		t.Fatalf("reorder copied immutable bodies: %d %d %v", versions, afterVersions, err)
+	}
+	before := importDatabaseState(t, f)
+	for _, selected := range [][]int64{{}, {1, 1}, {0}, {-1}, {2147483648}, {99}, make([]int64, 101)} {
+		bad := queueEditRequest(2, nil, nil)
+		bad.Order = selected
+		// Empty order must be sent explicitly; omitempty deliberately preserves old normalized bytes.
+		raw, _ := json.Marshal(bad)
+		if len(selected) == 0 {
+			raw = []byte(`{"expected_revision":2,"repository_id":701,"source":"operator","order":[]}`)
+		}
+		w := f.call("POST", base+"/queue/edits", f.admin, "bad-order", json.RawMessage(raw))
+		if w.Code != 400 || !reflect.DeepEqual(before, importDatabaseState(t, f)) {
+			t.Fatalf("invalid order mutated state: %v %d %s", selected, w.Code, w.Body.String())
+		}
+	}
+	for _, raw := range []string{`null`, `[null]`, `[1.0]`, `["1"]`, `true`} {
+		w := f.call("POST", base+"/queue/edits", f.admin, "bad-order-wire", json.RawMessage(`{"expected_revision":2,"repository_id":701,"source":"operator","order":`+raw+`}`))
+		if w.Code != 400 || !reflect.DeepEqual(before, importDatabaseState(t, f)) {
+			t.Fatalf("invalid wire order mutated state: %d %s", w.Code, w.Body.String())
+		}
+	}
+	mixed := queueEditRequest(2, []QueuePullInput{{Number: 5, Title: "Five", State: "open", CIState: "unknown", Mergeability: "unknown"}, {Number: 1, Title: "One edited", State: "open", CIState: "unknown", Mergeability: "unknown"}}, []RetiredPull{{Number: 2, Reason: "defunct"}})
+	mixed.Order = []int64{5, 1, 3}
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER order_event_failure BEFORE INSERT ON events WHEN NEW.event_type='review.observed' BEGIN SELECT RAISE(ABORT,'injected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if w := queueEditHTTP(f, mixed, "mixed-order"); w.Code != 500 || !reflect.DeepEqual(before, importDatabaseState(t, f)) {
+		t.Fatalf("order rollback: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := f.store.DB().Exec(`DROP TRIGGER order_event_failure`); err != nil {
+		t.Fatal(err)
+	}
+	if w := queueEditHTTP(f, mixed, "mixed-order"); w.Code != 201 {
+		t.Fatalf("mixed order: %d %s", w.Code, w.Body.String())
+	}
+	if got := positions(); !reflect.DeepEqual(got, map[int64]int{1: 2, 2: 1, 3: 4, 4: 3, 5: 0}) {
+		t.Fatal(got)
+	}
+	latest := f.call("GET", base+"/queue?limit=100", f.readToken, "", nil)
+	if json.Unmarshal(latest.Body.Bytes(), &page) != nil || len(page.Items) != 4 {
+		t.Fatal(latest.Body.String())
+	}
+	for i, n := range []int64{5, 1, 4, 3} {
+		if page.Items[i].Number != n {
+			t.Fatal(page.Items)
+		}
+	}
+	after := importDatabaseState(t, f)
+	for table, rows := range originalState {
+		if strings.HasPrefix(table, "review_run_") || strings.HasPrefix(table, "review_finding_") || strings.HasPrefix(table, "review_attempt_") {
+			if !reflect.DeepEqual(rows, after[table]) {
+				t.Fatalf("order changed retained history table %s", table)
+			}
+		}
+	}
+	if w := queueEditHTTP(f, order, "relative-order"); w.Code != 201 || w.Body.String() != first.Body.String() || !reflect.DeepEqual(after, importDatabaseState(t, f)) {
+		t.Fatalf("old replay: %d %s", w.Code, w.Body.String())
+	}
+	order.Order = []int64{1, 3}
+	if w := queueEditHTTP(f, order, "relative-order"); w.Code != 409 {
+		t.Fatal("changed-key order accepted", w.Code)
+	}
+	if w := queueEditHTTP(f, order, "stale-order"); w.Code != 409 {
+		t.Fatal("stale order accepted", w.Code)
+	}
+	retired := queueEditRequest(3, nil, nil)
+	retired.Order = []int64{2}
+	if w := queueEditHTTP(f, retired, "retired-order"); w.Code != 400 {
+		t.Fatal("retired order accepted", w.Code)
+	}
+	retired = queueEditRequest(3, nil, []RetiredPull{{Number: 3, Reason: "defunct"}})
+	retired.Order = []int64{3}
+	if w := queueEditHTTP(f, retired, "retiring-order"); w.Code != 400 {
+		t.Fatal("same-request retired order accepted", w.Code)
+	}
+	if !reflect.DeepEqual(after, importDatabaseState(t, f)) {
+		t.Fatal("refusal changed state")
+	}
+	if got := f.call("GET", pinnedPath, f.readToken, "", nil); got.Code != 200 || got.Body.String() != pinned {
+		t.Fatal("pinned cursor changed", got.Body.String())
+	}
+	if got := f.call("GET", detailPath, f.readToken, "", nil); got.Code != 200 || got.Body.String() != detail {
+		t.Fatal("pinned detail changed", got.Body.String())
+	}
+	if err := ValidateHistoryReferences(t.Context(), f.store.DB()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestQueueEditOmittedOrderNormalizationUnchanged(t *testing.T) {
+	req := queueEditRequest(7, nil, []RetiredPull{{Number: 2, Reason: "defunct"}})
+	if err := validateQueueEdit(&req); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(req)
+	if err != nil || string(raw) != `{"expected_revision":7,"repository_id":701,"source":"operator-queue-edit","queue":[],"retired":[{"number":2,"reason":"defunct"}]}` {
+		t.Fatalf("legacy normalized bytes changed: %s %v", raw, err)
 	}
 }
 

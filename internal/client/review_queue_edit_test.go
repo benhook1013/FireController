@@ -51,6 +51,10 @@ func TestReviewQueueEditClientValidationBeforeIO(t *testing.T) {
 		"retirement_reason": []byte(`{"expected_revision":0,"repository_id":701,"source":"x","retired":[{"number":2,"reason":"merged"}]}`),
 		"no_edits":          []byte(`{"expected_revision":0,"repository_id":701,"source":"x"}`),
 	}
+	for _, order := range []string{`null`, `[]`, `[1,1]`, `[0]`, `[-1]`, `[2147483648]`, `[1.0]`, `[null]`, `["1"]`, `true`, `[` + strings.Repeat(`1,`, 100) + `2]`} {
+		bad["order_"+order] = []byte(`{"expected_revision":0,"repository_id":701,"source":"x","order":` + order + `}`)
+	}
+	bad["retiring_order"] = []byte(`{"expected_revision":0,"repository_id":701,"source":"x","retired":[{"number":1,"reason":"defunct"}],"order":[1]}`)
 	for name, document := range bad {
 		t.Run(name, func(t *testing.T) {
 			_, err := c.EditReviewQueue(t.Context(), "selected-key", document)
@@ -74,6 +78,9 @@ func TestReviewQueueEditClientValidationBeforeIO(t *testing.T) {
 		if err := client.ValidateReviewQueueEditDocument(document); err != nil {
 			t.Fatal("valid omitted/empty fields refused", err)
 		}
+	}
+	if err := client.ValidateReviewQueueEditDocument([]byte(`{"expected_revision":0,"repository_id":701,"source":"x","order":[2147483647,1]}`)); err != nil {
+		t.Fatal("valid order-only refused", err)
 	}
 	// Count and normalized JSON budgets are checked locally, including HTML escapes.
 	var entries []any
@@ -199,6 +206,54 @@ func TestReviewQueueEditClientMetadataActualHTTP(t *testing.T) {
 				t.Fatal("metadata lost known/unknown values", pull.Pull, err)
 			}
 		})
+	}
+}
+
+func TestReviewQueueEditClientOrderOnlyActualHTTP(t *testing.T) {
+	f := newReviewClientFixture(t)
+	if _, err := f.store.DB().Exec(`UPDATE credentials SET is_admin=1 WHERE id='review-client-credential'`); err != nil {
+		t.Fatal(err)
+	}
+	c, err := client.New(t.Context(), profileBinding(t, f.server.URL, f.store.InstanceID(), f.project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	seed := json.RawMessage(`{"expected_revision":0,"repository_id":701,"source":"order seed","queue":[{"number":1,"title":"One","state":"open","ci_state":"unknown","mergeability":"unknown"},{"number":2,"title":"Two","state":"open","ci_state":"unknown","mergeability":"unknown"},{"number":3,"title":"Three","state":"open","ci_state":"unknown","mergeability":"unknown"}]}`)
+	if _, err := c.EditReviewQueue(t.Context(), "order-seed", seed); err != nil {
+		t.Fatal(err)
+	}
+	document := json.RawMessage(`{"expected_revision":1,"repository_id":701,"source":"order-only","order":[3,1]}`)
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/queue/edits") {
+			calls++
+			raw, err := io.ReadAll(r.Body)
+			if err != nil || !bytes.Equal(raw, document) {
+				t.Error("order-only wire changed", string(raw), err)
+			}
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+		}
+		f.server.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	bound, err := client.New(t.Context(), profileBinding(t, server.URL, f.store.InstanceID(), f.project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	receipt, err := bound.EditReviewQueue(t.Context(), "order-only", document)
+	if err != nil || receipt.Revision != 2 || calls != 1 {
+		t.Fatal(receipt, err, calls)
+	}
+	queue, err := bound.ReviewQueue(t.Context(), client.PageOptions{})
+	if err != nil || len(queue.Items) != 3 {
+		t.Fatal(queue, err)
+	}
+	for i, n := range []int64{3, 2, 1} {
+		if queue.Items[i].Number != n {
+			t.Fatal(queue.Items)
+		}
 	}
 }
 
