@@ -12,6 +12,8 @@ PR observations, queue edits, additive transfers and queue/detail reads accept o
 
 Review schema seven appends bounded canonical display metadata to immutable PR versions. Startup upgrades existing versions to unknown metadata, preserving their logical facts and pinned response behavior. Current native publication preserves metadata already known for the same head; changing the head discards older metadata unless the writer supplies fresh facts. Historical captured comparisons do not overwrite current PR metadata. Selected source preparation forwards known metadata explicitly; source collection retains provider facts, but does not by itself publish them into the review workspace.
 
+During native selection or source-refresh settlement, an invalid optional display entry is omitted without blocking valid entries or the verified source result. Its previous display facts remain unchanged. Repository and comparison validation, unsupported evidence, corrupt retained metadata and storage failures remain errors; this omission does not relax provider-response validation or authorize a review.
+
 The browser shows observed file and line counts, a Draft badge when known true on an open PR, and a bold relative age from the actual merge time. Older records with unknown metadata omit those details. Public projection retains its explicit allowlist; adding private display facts does not enroll them for publication.
 
 ## API and scope

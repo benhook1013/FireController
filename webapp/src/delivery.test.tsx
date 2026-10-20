@@ -123,7 +123,7 @@ describe('bounded Delivery board', () => {
     '[unsafe](javascript:alert%281%29',
     '```html\n<script>alert(1)</script>\n<img src="https://example.com/private.png">',
     '## Goal\n\n' + '- short line\n'.repeat(16),
-  ])('keeps every truncated prose marker outside the clipped, inert Markdown: %s', body => {
+  ])('keeps every truncated prose marker outside the inert Markdown: %s', body => {
     const current = {
       ...job('job_active', 'active'), brief_preview: body, brief_preview_truncated: true,
       update: {sequence: 1, job_revision: 3, body, body_truncated: true, created_at: '2026-10-19T08:00:00Z'},
@@ -137,6 +137,20 @@ describe('bounded Delivery board', () => {
     expect(parsedBodies).toHaveLength(5);
     for (const match of parsedBodies) expect(match[1]).not.toContain('…');
     expect(html).not.toMatch(/<img|<script|href="javascript:|src="https:/u);
+  });
+  it('retains every short list item across untruncated brief, update and checkpoint previews', () => {
+    const body = Array.from({length: 16}, (_, index) => `- Step ${index + 1}`).join('\n');
+    expect(new TextEncoder().encode(body).length).toBeLessThan(240);
+    const current = {
+      ...job('job_active', 'active'), brief_preview: body, brief_preview_truncated: false,
+      update: {sequence: 1, job_revision: 3, body, body_truncated: false, created_at: '2026-10-19T08:00:00Z'},
+      checkpoint: {sequence: 2, job_revision: 3, next: body, next_truncated: false, blocker: body, blocker_truncated: false, done: body, done_truncated: false, created_at: '2026-10-19T08:00:00Z'},
+    };
+    const html = markup(<DeliveryLanes value={{...board,jobs:{items:[current],has_more:false}}} home={home}/>);
+    for (let step = 1; step <= 16; step++) {
+      expect(html.match(new RegExp(`<li>Step ${step}</li>`, 'gu'))).toHaveLength(5);
+    }
+    expect(html).not.toContain('Preview truncated');
   });
   it('requests one atomic bounded page with independent cursors and cancellation, without actor filtering', async () => {
     const read = vi.fn().mockResolvedValue(board);
