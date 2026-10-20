@@ -22,6 +22,8 @@ Resolution is an explicit revision-guarded action retaining actor, reason and ev
 
 A positively identified terminal source result whose eventual adjudication can still change remaining allowance or dry streak has an unsettled policy boundary as well as unfinished findings. Retain a separate `result` obligation alongside its finding obligations, and defer numeric control preparation for that unsettled channel. Finding resolution cannot remove the result hold. Before explicitly resolving the result obligation, the administrator must verify evidence of its final counting effect and preserve the correct remaining policy at the destination. Resolution records that proof; it does not apply policy or count a completion automatically. Do not count preliminary zero accepted findings as a finalized dry round, or import today's allowance and later release the hold while ignoring the pending completion. An active, ambiguous or unidentified external request is not a terminal result and cannot be made quiescent by importing a hold.
 
+Admission validates each selected obligation, target list and resolution in bounded pages. Within one facts read, at most sixty-four successfully validated source namespaces are reused; additional namespaces are validated normally, and no cache survives the read. A proven change between the project repository and retained source repository produces a protective `repository_changed` hold. Missing or malformed retained authority remains unavailable and never supplies dispatch permission or completion credit.
+
 ## Bound administrator commands
 
 These deliberate setup operations use the existing private administrator profile; ordinary agent commands remain compact and provider-free:

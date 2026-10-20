@@ -25,6 +25,9 @@ func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64
 			if errors.As(err, &failure) {
 				switch failure.Code {
 				case "review_held":
+					if details, ok := failure.Details.(map[string]string); ok && details["reason"] == "repository_changed" {
+						return evaluatedFront{state: "held", reason: "repository_changed", plan: plan}, nil
+					}
 					return evaluatedFront{state: "held", reason: "source_obligations_pending", plan: plan}, nil
 				case "storage_unavailable":
 					return evaluatedFront{state: "held", reason: "source_obligations_unavailable", plan: plan}, nil
