@@ -36,10 +36,11 @@ func HostedAllowanceQueryBody(intent HostedTriggerIntent) (string, error) {
 	return "@coderabbitai rate limit\n\n<!-- firecontroller-allowance-query v1 operation=" + intent.OperationID + " attempt=" + intent.AttemptID + " head=" + intent.HeadSHA + " -->", nil
 }
 
-var hostedAllowanceCooldown = regexp.MustCompile(`^<!-- This is an auto-generated reply by CodeRabbit -->\nYour \[plan\]\(https://docs\.coderabbit\.ai/management/plans#fair-usage-limits-policy\) includes PR reviews subject to \[rate limits\]\(https://docs\.coderabbit\.ai/management/plans#rate-limits\)\. More reviews will be available in ([1-9][0-9]{0,3}) (minute|minutes)\.$`)
+var hostedAllowanceCooldown = regexp.MustCompile(`^<!-- This is an auto-generated reply by CodeRabbit -->\nYour \[plan\]\(https://docs\.coderabbit\.ai/management/plans(?:#fair-usage-limits-policy)?\) includes PR reviews subject to \[rate limits\]\(https://docs\.coderabbit\.ai/management/plans#rate-limits\)\. More reviews will be available in ([1-9][0-9]{0,3}) (minute|minutes)\.$`)
 var hostedAllowanceCommand = regexp.MustCompile(`(?i)@coderabbitai(?:[ \t]|$)`)
 
 const hostedAllowanceAvailable = "<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). Reviews are available now."
+const hostedAllowanceAvailableBasePlan = "<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). Reviews are available now."
 
 // ResolveHostedAllowance performs no I/O. It recognizes only the independently
 // observed availability/cooldown grammar, never infers numeric allowance and never
@@ -121,7 +122,7 @@ func ResolveHostedAllowance(snapshot HostedAllowanceSnapshot, intent HostedTrigg
 			continue
 		}
 		state, minutes := "available_observed", int64(0)
-		if comment.Body != hostedAllowanceAvailable {
+		if comment.Body != hostedAllowanceAvailable && comment.Body != hostedAllowanceAvailableBasePlan {
 			match := hostedAllowanceCooldown.FindStringSubmatch(comment.Body)
 			if match == nil {
 				unsupported = true

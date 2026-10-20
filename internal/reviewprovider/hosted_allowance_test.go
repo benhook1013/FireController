@@ -483,3 +483,89 @@ func TestHostedAllowanceInputAndCollectionBounds(t *testing.T) {
 		})
 	}
 }
+
+// The provider has independently returned both exact plan URLs. This literal
+// reproduces the newly observed fixed provider text with synthetic identities.
+const allowanceBasePlanAvailableReply = "<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). Reviews are available now."
+
+func TestHostedAllowanceBothObservedPlanURLs(t *testing.T) {
+	for _, baseURL := range []bool{false, true} {
+		for _, minutes := range []int{0, 1, 37, 1439} {
+			t.Run(fmt.Sprintf("base=%t/minutes=%d", baseURL, minutes), func(t *testing.T) {
+				s, intent, poster, bot, earliest := allowanceFixture(t)
+				body := allowanceReply(minutes)
+				wantState := "cooldown_observed"
+				if minutes == 0 {
+					body = allowanceAvailableReply()
+					wantState = "available_observed"
+				}
+				if baseURL {
+					if minutes == 0 {
+						body = allowanceBasePlanAvailableReply
+					} else {
+						body = strings.Replace(body, "/management/plans#fair-usage-limits-policy)", "/management/plans)", 1)
+					}
+				}
+				s.IssueComments[1].Body = body
+				before := append([]IssueComment(nil), s.IssueComments...)
+				got := resolveAllowance(t, s, intent, poster, bot, earliest)
+				if got.State != wantState || got.QueryCommentID != 91 || got.ResponseCommentID != 92 || !reflect.DeepEqual(before, s.IssueComments) {
+					t.Fatalf("observed URL lost exact attribution/source: %+v", got)
+				}
+				if minutes == 0 {
+					if !got.RetryNotBefore.IsZero() {
+						t.Fatal("availability invented reset")
+					}
+				} else if got.RetryNotBefore != s.IssueComments[1].CreatedAt.Add(time.Duration(minutes+1)*time.Minute) {
+					t.Fatal("cooldown lost conservative deadline")
+				}
+			})
+		}
+	}
+}
+
+func TestHostedAllowanceBasePlanURLKeepsExactSafetyGuards(t *testing.T) {
+	for _, cooldown := range []bool{false, true} {
+		changes := map[string]func(*HostedAllowanceSnapshot){
+			"unknown fragment": func(s *HostedAllowanceSnapshot) {
+				s.IssueComments[1].Body = strings.Replace(s.IssueComments[1].Body, "/management/plans)", "/management/plans#other)", 1)
+			},
+			"query parameter": func(s *HostedAllowanceSnapshot) {
+				s.IssueComments[1].Body = strings.Replace(s.IssueComments[1].Body, "/management/plans)", "/management/plans?known=true)", 1)
+			},
+			"trailing slash": func(s *HostedAllowanceSnapshot) {
+				s.IssueComments[1].Body = strings.Replace(s.IssueComments[1].Body, "/management/plans)", "/management/plans/)", 1)
+			},
+			"foreign plan host": func(s *HostedAllowanceSnapshot) {
+				s.IssueComments[1].Body = strings.Replace(s.IssueComments[1].Body, "docs.coderabbit.ai/management/plans)", "foreign.invalid/management/plans)", 1)
+			},
+			"unknown rate link": func(s *HostedAllowanceSnapshot) {
+				s.IssueComments[1].Body = strings.Replace(s.IssueComments[1].Body, "#rate-limits)", "#other)", 1)
+			},
+			"body suffix": func(s *HostedAllowanceSnapshot) { s.IssueComments[1].Body += "\n" },
+			"edited reply": func(s *HostedAllowanceSnapshot) {
+				s.IssueComments[1].UpdatedAt = s.IssueComments[1].UpdatedAt.Add(time.Second)
+			},
+			"foreign actor": func(s *HostedAllowanceSnapshot) { s.IssueComments[1].Author.ID++ },
+			"changed query head": func(s *HostedAllowanceSnapshot) {
+				s.IssueComments[0].Body = strings.Replace(s.IssueComments[0].Body, "head=", "head=0", 1)
+			},
+			"incomplete history": func(s *HostedAllowanceSnapshot) { s.Complete = false },
+		}
+		for name, change := range changes {
+			t.Run(fmt.Sprintf("cooldown=%t/%s", cooldown, name), func(t *testing.T) {
+				s, intent, poster, bot, earliest := allowanceFixture(t)
+				s.IssueComments[1].Body = allowanceBasePlanAvailableReply
+				if cooldown {
+					s.IssueComments[1].Body = strings.Replace(allowanceReply(37), "/management/plans#fair-usage-limits-policy)", "/management/plans)", 1)
+				}
+				change(&s)
+				before := append([]IssueComment(nil), s.IssueComments...)
+				got := resolveAllowance(t, s, intent, poster, bot, earliest)
+				if got.State == "available_observed" || got.State == "cooldown_observed" || got.ResponseCommentID != 0 || !got.RetryNotBefore.IsZero() || !reflect.DeepEqual(before, s.IssueComments) {
+					t.Fatalf("unsupported input gained positive observation: %+v", got)
+				}
+			})
+		}
+	}
+}
