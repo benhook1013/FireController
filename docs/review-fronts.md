@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The service stores bounded source frames from native queue selection and exposes their current local assessment to the browser. Focused core, HTTP, backup/restore and browser tests pass; packaged integration and installation qualification are recorded separately below. The installed evaluation service remains on the preceding runtime until that qualification completes. Do not infer a front from the first open merge head or retained review counts.
+The service stores bounded source frames from native queue selection and exposes their current local assessment to the browser. Focused core, HTTP, backup/restore and browser tests pass. Packaged front-read integration is recorded in [channel-front review selection](../tools/packagedsmoke/README.md#channel-front-review-selection); installed runtime qualification belongs to [own-project live proof](review-execution.md#own-project-live-qualification) and [deployment proof](hosting.md#executed-deployment-proof). Do not infer a front from the first open merge head or retained review counts.
 
 ## Purpose and authority
 
