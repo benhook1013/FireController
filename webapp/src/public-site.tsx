@@ -5,6 +5,7 @@ import { presentationDefaults, type ThemeToken } from './presentation';
 import flameEmber from './flame-ember.svg?no-inline';
 import './public-site.css';
 import { EditorialMarkdown } from './editorial-markdown';
+import { PublicHistorySkeleton, PublicProjectSkeleton } from './loading';
 
 export function PublicSiteRouter() {
   return <Routes><Route path="/public/:slug" element={<PublicProjectSite />} /><Route path="/public/:slug/history/:revision" element={<PublicProjectSite />} /><Route path="*" element={<PublicUnavailable />} /></Routes>;
@@ -53,10 +54,15 @@ export function PublicProjectAddress({ address, ...props }: Omit<PublicProjectPr
     return () => controller.abort();
   }, [address, retry]);
   if (!validPublicAddress(address) || failed) return props.fallback ?? <PublicUnavailable />;
-  if (!slug) return <div className="public-unavailable"><h1>Loading published project…</h1>{notice && <><p role="alert">{notice}</p><button type="button" onClick={() => setRetry(value => value + 1)}>Try again</button></>}</div>;
+  if (!slug) return <PublicProjectLoadState embedded={props.embedded} notice={notice} retry={() => { setNotice(''); setRetry(value => value + 1); }} />;
   return <PublicProjectBinding key={`${slug}:${props.revision ?? ''}:${props.generation ?? ''}`} {...props} slug={slug} home={`/projects/${encodeURIComponent(address)}`} />;
 }
 type PublicProjectProps = { slug: string; revision?: number; generation?: string; embedded?: boolean; fallback?: React.ReactNode; theme?: boolean; home?: string };
+export function PublicProjectLoadState({ embedded = false, notice = '', retry, signIn }: { embedded?: boolean; notice?: string; retry: () => void; signIn?: string }) {
+  if (!notice) return <PublicProjectSkeleton embedded={embedded} />;
+  const Layout = embedded ? 'div' : 'main';
+  return <Layout className="public-unavailable"><p role="alert">{notice}</p><button type="button" onClick={retry}>Try again</button>{signIn && <Link to={signIn}>Sign in</Link>}</Layout>;
+}
 export function PublicProjectBinding(props: PublicProjectProps) {
   return validPublicSlug(props.slug) ? <PublicProjectContent {...props} /> : props.fallback ?? <PublicUnavailable />;
 }
@@ -79,12 +85,11 @@ function PublicProjectContent({ slug, revision, generation, embedded = false, fa
     return () => { document.title = oldTitle; for (const [key, value] of previous) { if (value) root.style.setProperty(key, value); else root.style.removeProperty(key); } };
   }, [snapshot, theme]);
   if (failed) return fallback ?? <PublicUnavailable />;
-  const Loading = embedded ? 'div' : 'main';
-  if (!snapshot) return <Loading className="public-unavailable"><img className="flame" src={flameEmber} alt="" /><h1>Loading published project…</h1>{notice && <p role="alert">{notice}</p>}<button onClick={() => setRefresh(n => n + 1)}>Try again</button>{!embedded && <Link to={`/projects/${slug}?signin=1`}>Sign in</Link>}</Loading>;
+  if (!snapshot) return <PublicProjectLoadState embedded={embedded} notice={notice} retry={() => { setNotice(''); setRefresh(value => value + 1); }} signIn={embedded ? undefined : `/projects/${slug}?signin=1`} />;
   return <><PublicSnapshotView snapshot={snapshot} home={home} embedded={embedded} historical={revision !== undefined} status={status} refreshing={refreshing} refresh={() => setRefresh(n => n + 1)} browseHistory={() => setHistoryRequested(snapshot.generation)} history={<PublishedHistory key={snapshot.generation} home={home ?? `/projects/${snapshot.slug}`} api={api} snapshot={snapshot} requested={historyRequested === snapshot.generation} onRequest={() => setHistoryRequested(snapshot.generation)} />} />{notice && <div className="public-notice" role="alert">{notice}</div>}</>;
 }
 function PublishedHistory({ api, snapshot, requested, onRequest, home }: { home: string; api: PublicSiteApi; snapshot: PublicSnapshot; requested: boolean; onRequest: () => void }) {
   const [page, setPage] = useState<PublicHistory | null>(null), [error, setError] = useState(false), [cursor, setCursor] = useState<string>();
   useEffect(() => { if (!requested) return; const controller = new AbortController(); setError(false); void api.history(controller.signal, snapshot.generation, cursor).then(value => { if (!controller.signal.aborted) setPage(value); }).catch(() => { if (!controller.signal.aborted) setError(true); }); return () => controller.abort(); }, [api, snapshot, requested, cursor]);
-  return <>{!requested ? <button onClick={onRequest}>Browse published revisions</button> : error ? <p role="alert">Published history is unavailable. Return to the current project view to reconnect.</p> : !page ? <p className="muted">Loading published history…</p> : <><ul className="public-history">{page.items.map(item => <li key={item.revision}><Link to={`${home}/published/history/${item.revision}?generation=${snapshot.generation}`}>Revision {item.revision}</Link> <time dateTime={item.published_at}>{date(item.published_at)}</time></li>)}</ul><div className="public-history-controls">{cursor && <button onClick={() => setCursor(undefined)}>Newest published revisions</button>}{page.has_more && <button onClick={() => setCursor(page.cursor)}>Older published revisions</button>}</div></>}</>;
+  return <>{!requested ? <button onClick={onRequest}>Browse published revisions</button> : error ? <p role="alert">Published history is unavailable. Return to the current project view to reconnect.</p> : !page ? <PublicHistorySkeleton /> : <><ul className="public-history">{page.items.map(item => <li key={item.revision}><Link to={`${home}/published/history/${item.revision}?generation=${snapshot.generation}`}>Revision {item.revision}</Link> <time dateTime={item.published_at}>{date(item.published_at)}</time></li>)}</ul><div className="public-history-controls">{cursor && <button onClick={() => setCursor(undefined)}>Newest published revisions</button>}{page.has_more && <button onClick={() => setCursor(page.cursor)}>Older published revisions</button>}</div></>}</>;
 }

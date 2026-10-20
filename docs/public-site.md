@@ -16,6 +16,10 @@ Multi-project hosting does not make every project discoverable. Public slugs are
 
 Retain the default fire theme, compact channel-separated review progression, responsive layouts and Powered by FireController attribution. Public navigation includes project overview, selected map/progress, and selected review queue/history. Merged PRs remain visible as completed history. Publication is application state; viewing or refreshing the public site never calls GitHub or launches a review.
 
+## Loading and refresh
+
+Initial public-address resolution and snapshot loading use the same dimensionally stable public-page skeleton at desktop and narrow widths. Loading is announced accessibly without visible transient prose, a spinner or a retry button. A failed initial request offers retry; retry clears the failure while pending. Refresh retains the last good snapshot until its replacement is ready. An unavailable publication keeps the existing not-found or same-address sign-in behavior. Published-history loading uses a compact placeholder. These presentation states do not change publication, authentication or provider boundaries.
+
 ## Field boundary
 
 | Area | Public when explicitly selected | Authenticated workspace only |
@@ -136,3 +140,7 @@ An earlier combined browser run at `cfc594c00aeae8f24fc889bdd6735b055eabfc9b` fa
 ## Editorial presentation proof
 
 The shared Markdown renderer passed an actual packaged anonymous-browser check at desktop and narrow widths. Approved narrative order, headings, emphasis, lists and safe links rendered; image syntax caused no external request, raw HTML stayed literal and unsafe links stayed inactive. Private API reads, credential headers, domain writes and private fixture content were absent. Distinct canvas/card theme colours are checked in both views; private section navigation also has a sticky-header regression in the [editorial fixture](../tools/packagedsmoke/editorial_browser_test.go). Existing publication selection and history contracts remain unchanged. This proves the local synthetic interface, not remote publication or human visual acceptance.
+
+## Public loading proof
+
+The focused frontend suite passed 580 tests plus TypeScript checking. The existing actual packaged public Chromium workload now gates real daemon responses independently at friendly-address resolution and current-snapshot loading, at 1280px and 390px widths. Both pending stages have identical hero/navigation geometry, no visible transient loading prose or retry action, and no horizontal overflow. A genuine initial failure exposes retry, whose pending state returns to the skeleton before recovery. Existing quiet private activity, live publication, retained history, channel windows and unpublish checks remain enforced. The corrected public workload passed in 2.940 seconds with zero private requests, browser writes, external requests, page errors or remaining owned processes. The same regression failed against the preceding installed binary. This is synthetic local browser proof; installed HTTPS verification remains separate.

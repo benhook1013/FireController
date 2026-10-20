@@ -20,18 +20,20 @@ function paint(path:string){
 describe('one public/private project address',()=>{
   it('opens the public project with a header sign-in action and no private cached content',()=>{
     const html=paint('/projects/firemud');
-    expect(html).toContain('>Sign in</button>');expect(html).toContain('Loading published project');
+    expect(html).toContain('>Sign in</button>');expect(html).toContain('public-project-skeleton');
+    expect(html).not.toContain('<h1>Loading');expect(html).not.toContain('Try again');
     expect(html).not.toContain('Project credential');expect(html).not.toContain('CACHED_PRIVATE_BRIEF');
   });
   it('opens inline sign-in at the same friendly address with the project already selected',()=>{
     const html=paint('/projects/firemud?signin=1');
-    expect(html).toContain('Sign in to firemud');expect(html).toContain('Project credential');expect(html).toContain('Loading published project');
+    expect(html).toContain('Sign in to firemud');expect(html).toContain('Project credential');expect(html).toContain('public-project-skeleton');
+    expect(html).not.toContain('<h1>Loading');expect(html).not.toContain('Try again');
     expect(html).not.toContain('id="project-id"');expect(html).not.toContain('CACHED_PRIVATE_BRIEF');
   });
   it('requires login for private destinations without rendering any anonymous private lookup',()=>{
     const fetch=vi.fn();vi.stubGlobal('fetch',fetch);
     const html=paint('/projects/firemud/jobs/job_one?status=open');
-    expect(html).toContain('Sign in to firemud');expect(html).toContain('Project credential');expect(html).not.toContain('Loading published project');
+    expect(html).toContain('Sign in to firemud');expect(html).toContain('Project credential');expect(html).not.toContain('public-project-skeleton');
     expect(html).not.toContain('CACHED_PRIVATE_BRIEF');expect(fetch).not.toHaveBeenCalled();
   });
   it('accepts a friendly Project value at global sign-in and requires only credentials at a project URL',()=>{

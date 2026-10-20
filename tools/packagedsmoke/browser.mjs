@@ -50,7 +50,9 @@ try {
   page.setDefaultTimeout(5000);
   page.setDefaultNavigationTimeout(5000);
   const prefix = '/api/v1/projects/' + config.project;
-  const home = '/projects/' + config.project;
+  // The canonical fixture handle is separate from its immutable API identity.
+  const handle = 'packaged-smoke';
+  const home = '/projects/' + handle;
   const bindingKey = 'firecontroller.browser-session.v1';
   const loginAuthority = async (loginResponse, allowWrites, canEditPresentation) => {
     const posted = loginResponse.request().postDataJSON();
@@ -65,11 +67,11 @@ try {
     }, {prefix, bindingKey, sessionID:posted.session_id, project:config.project, instance:config.instance});
     const view = current.view, binding = current.binding;
     const fields = ['session_id', 'instance_id', 'project_id', 'expires_at', 'allow_writes', 'can_edit_presentation'];
-    const bindingFields = ['version', 'projectID', 'instanceID', 'sessionID', 'expiresAt', 'selectedworkerID'];
+    const bindingFields = ['version', 'projectID', 'projectHandle', 'instanceID', 'sessionID', 'expiresAt', 'selectedworkerID'];
     need(current.status === 200 && view && typeof view === 'object' && !Array.isArray(view) && Object.keys(view).length === fields.length && fields.every(field => Object.hasOwn(view, field)));
     need(view.session_id === posted.session_id && view.project_id === config.project && view.instance_id === config.instance && view.allow_writes === allowWrites && view.can_edit_presentation === canEditPresentation);
     need(typeof view.expires_at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(view.expires_at) && Number.isFinite(Date.parse(view.expires_at)) && Date.parse(view.expires_at) > Date.now() && Date.parse(view.expires_at) <= Date.now() + 86400000 + 300000);
-    need(binding.version === 1 && Object.keys(binding).length === bindingFields.length && bindingFields.every(field => Object.hasOwn(binding, field)) && binding.expiresAt === view.expires_at && typeof binding.selectedworkerID === 'string' && (binding.selectedworkerID === '' || /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(binding.selectedworkerID)));
+    need(binding.version === 1 && Object.keys(binding).length === bindingFields.length && bindingFields.every(field => Object.hasOwn(binding, field)) && binding.projectHandle === handle && binding.expiresAt === view.expires_at && typeof binding.selectedworkerID === 'string' && (binding.selectedworkerID === '' || /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(binding.selectedworkerID)));
     return view;
   };
 
@@ -193,6 +195,7 @@ try {
  let controlledAccessFailure = false;
  let controlledProgressAccessFailure = false, progressAccessFailures = 0;
  const expectedMissingSessionRoute = url => { if ((!controlledAccessFailure && !controlledProgressAccessFailure) || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ((controlledAccessFailure && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname)) || (controlledProgressAccessFailure && value.pathname === prefix + '/reviews/rounds/progress')); } catch { return false; } };
+ const unpublishedLocation = url => { try { const value = new URL(url); return value.origin === config.origin && value.pathname === '/api/v1/public/project-locations/' + handle && value.search === ''; } catch { return false; } };
   counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
   let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0, noteArchiveReads = 0;
   let deliveryReads = 0, jobBriefReads = 0, jobArchiveReads = 0, reviewRunReads = 0;
@@ -231,14 +234,14 @@ try {
   diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external, ...presenceDiagnostics(), delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads, contact_history_reads:contactHistoryReads });
   page.on('pageerror', () => errors++);
   page.on('console', value => {
-    if (value.type() !== 'error' || expectedMissingSessionRoute(value.location().url) || (controlledMessageFailure && value.location().url === config.origin + prefix + '/messages')) return;
+    if (value.type() !== 'error' || expectedMissingSessionRoute(value.location().url) || (controlledMessageFailure && value.location().url === config.origin + prefix + '/messages') || (unpublishedLocation(value.location().url) && /^Failed to load resource: the server responded with a status of 404 \(Not Found\)$/u.test(value.text()))) return;
     if (injectedRequest && injectedConsoleErrors === 0 && value.location().url === injectedRequest.url() && /^Failed to load resource: the server responded with a status of 400 \(Bad Request\)$/u.test(value.text())) injectedConsoleErrors++;
     else errors++;
   });
   page.on('response', value => {
     const url = new URL(value.url());
     if (value.request().method()==='GET' && url.origin===config.origin && url.pathname===prefix+'/workers/presence') { presenceResponses++; presenceHTTPStatus=value.status(); const timing=presenceTimings.get(value.request()); if(timing) timing.headers=performance.now(); }
-    if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else if (value.request() === injectedRequest && value.status() === 400) injectedResponses++; else errors++; } });
+    if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else if (value.request() === injectedRequest && value.status() === 400) injectedResponses++; else if (!(value.status() === 404 && value.request().method() === 'GET' && unpublishedLocation(value.url()))) errors++; } });
   page.on('request', request => {
     const url = new URL(request.url());
     if (url.origin !== config.origin) { external++; return; }
@@ -338,7 +341,7 @@ try {
   checkpoint = 'root';
   await page.goto(config.origin);
   checkpoint = 'project-input';
-  await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+  await page.getByLabel('Project', {exact:true}).fill(config.project);
   checkpoint = 'credential-input';
   await page.getByLabel('Project credential', {exact:true}).fill(token);
   need(await page.getByRole('checkbox').count() === 0);
@@ -823,7 +826,7 @@ try {
   await expect(queueHosted.locator('.review-lane-heading')).toContainText('1 run');
   const hero = page.getByRole('region', {name:'Merge train head', exact:true});
   const jump = hero.getByRole('link', {name:'Jump to review queue', exact:true});
-  await expect(jump).toHaveAttribute('href', `/projects/${config.project}#review-pr-32`);
+  await expect(jump).toHaveAttribute('href', `${home}#review-pr-32`);
   await expect(jump).toHaveText('Review queue ↗');
   need(await jump.locator('*').count() === 0);
   const jumpStyle = await jump.evaluate(element => { const style = getComputedStyle(element); return {color:style.color, weight:style.fontWeight, decoration:style.textDecorationLine}; });
@@ -955,9 +958,9 @@ try {
   need(renewalProof.storage_matches_current);
   checkpoint = 'reload-binding-retained';
   const retained = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey));
-  const bindingFields = ['version', 'projectID', 'instanceID', 'sessionID', 'expiresAt', 'selectedworkerID'];
+  const bindingFields = ['version', 'projectID', 'projectHandle', 'instanceID', 'sessionID', 'expiresAt', 'selectedworkerID'];
   need(retained.version === 1 && Object.keys(retained).length === bindingFields.length && bindingFields.every(field => Object.hasOwn(retained, field)));
-  need(retained.projectID === config.project && retained.instanceID === config.instance && retained.sessionID === sessionID && retained.selectedworkerID === config.worker);
+  need(retained.projectID === config.project && retained.projectHandle === handle && retained.instanceID === config.instance && retained.sessionID === sessionID && retained.selectedworkerID === config.worker);
   checkpoint = 'reload-expiry-window';
   need(Date.parse(retained.expiresAt) > Date.now() && Date.parse(retained.expiresAt) <= Date.now() + 86400000 + 300000);
   checkpoint = 'reload-cookie-rotated';
@@ -1002,23 +1005,30 @@ try {
   need(!privateStorage.includes(token) && !privateStorage.includes(admin) && !privateStorage.includes('allow_writes') && !privateStorage.includes('can_edit_presentation'));
 
   phase = 'disconnect';
-  await page.getByRole('button', {name:'Disconnect', exact:true}).click();
+  await page.getByRole('button', {name:'Sign out', exact:true}).click();
   await page.getByRole('button', {name:'Connect to project', exact:true}).waitFor();
   await expect.poll(async () => (await context.cookies()).some(value => value.name === cookieName), {timeout:5000}).toBe(false);
   await defaults();
   need((await appearance()).title === 'FireController');
   need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === null);
+  need(new URL(page.url()).pathname === home);
   need(sessionPosts === 1 && sessionDeletes === 1 && forbiddenWrites === 0 && errors === 0 && external === 0);
 
   phase = 'explicit-actions-connect';
  checkpoint='root-url';
+ await page.goto(config.origin + '/?signin=1');
+ const actionRootHistoryIndex=await page.evaluate(()=>history.state.idx);
+ // Canonical sign-in replaces its current entry. Retain a real prior global
+ // root entry through ordinary navigation for the later pending-action guard.
+ const rootBrand=page.locator('.mast .brand');
+ await expect(rootBrand).toHaveAttribute('href','/');
+ await rootBrand.click();
  await page.waitForURL(config.origin + '/');
  checkpoint='root-form';
- await expect(page.getByLabel('Project ID', {exact:true})).toHaveValue('');
- const actionRootHistoryIndex=await page.evaluate(()=>history.state.idx);
+ await expect(page.getByLabel('Project', {exact:true})).toHaveValue('');
   explicitActions = true;
  checkpoint='project-input';
-  await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+  await page.getByLabel('Project', {exact:true}).fill(config.project);
  checkpoint='credential-input';
   await page.getByLabel('Project credential', {exact:true}).fill(admin);
   need(await page.getByRole('checkbox').count()===0);
@@ -1156,23 +1166,34 @@ try {
   await page.getByText('Uncertain browser message',{exact:true}).waitFor();
   need(await page.getByText('Uncertain browser message',{exact:true}).count()===1);
   controlledMessageFailure=false; checkpoint = 'disconnect';
-  await page.getByRole('button',{name:'Disconnect',exact:true}).click();
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
   await page.getByRole('button',{name:'Connect to project',exact:true}).waitFor();
   checkpoint = 'action-counters';
   need(sessionPosts===2 && sessionDeletes===2 && sessionRenewals===3 && actionWrites===7 && forbiddenWrites===0 && errors===0 && external===0);
 
   phase = 'renewal-missing-cookie'; checkpoint = 'root-form';
-  // Disconnect renders its old project-route form before navigation replaces
-  // it. Wait for the destination form before filling either required input.
-  await page.waitForURL(config.origin + '/');
-  await expect(page.getByLabel('Project ID', {exact:true})).toHaveValue('');
+  // Signout stays on the same friendly project, already selected for login.
+  await page.waitForURL(config.origin + home);
+  await expect(page.getByLabel('Project', {exact:true})).toHaveCount(0);
+  // The old private-route form can precede the unpublished root fallback.
+  // Open the root's explicit inline form so publication resolution cannot
+  // remount it after its credential has been filled.
+  const reconnectSignIn=page.locator('.mast').getByRole('button',{name:'Sign in',exact:true});
+  await expect(reconnectSignIn).toHaveAttribute('aria-expanded','false');
+  await reconnectSignIn.click();
+  await expect(reconnectSignIn).toHaveAttribute('aria-expanded','true');
   checkpoint = 'project-input';
   explicitActions = false;
-  await page.getByLabel('Project ID', {exact:true}).fill(config.project);
   checkpoint = 'credential-input';
   await page.getByLabel('Project credential', {exact:true}).fill(token);
   checkpoint = 'submit';
+  await expect(page.getByLabel('Project credential', {exact:true})).toHaveValue(token);
+  need(await page.locator('.connect-card form').evaluate(form=>form.checkValidity()));
+  const reconnectedProject=page.waitForResponse(response=>response.request().method()==='GET' && new URL(response.url()).pathname==='/api/v1/projects/'+handle);
   await page.getByRole('button', {name:'Connect to project', exact:true}).click();
+  checkpoint = 'connect';
+  const reconnectedResponse=await reconnectedProject;
+  need(reconnectedResponse.status()===200);
   checkpoint = 'heading';
   await page.getByRole('heading', {name:'Browser configured project',exact:true}).waitFor();
   checkpoint = 'binding';
@@ -1199,7 +1220,7 @@ try {
   });
   // Access failure preserves the selected project route for reconnect.
   checkpoint = 'reconnect-input';
-  await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+  await expect(page.getByLabel('Project', {exact:true})).toHaveCount(0);
   await page.getByLabel('Project credential', {exact:true}).fill(token);
   await page.getByRole('button', {name:'Connect to project',exact:true}).click();
   checkpoint = 'progress-refusal';

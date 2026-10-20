@@ -67,6 +67,16 @@ describe('public project browser', () => {
     expect(html).not.toContain('No progress summaries have been published'); expect(html).not.toContain('href="#progress"'); expect(html).toContain('Powered by'); expect(html).toContain('flame'); expect(html).toContain('href="/projects/showcase?signin=1"');
     expect(html).toContain('&lt;script&gt;literal approved text&lt;/script&gt;'); expect(html).not.toContain('<script>'); expect(html).not.toContain('iframe'); expect(html).not.toMatch(/project_id|actor_id|snapshot_id|review_evidence_|public_round_/u);
   });
+  it('keeps approved content visible while refreshing or reconnecting', () => {
+    for (const status of ['connecting', 'reconnecting', 'closed']) {
+      const html = renderToStaticMarkup(<MemoryRouter><PublicSnapshotView snapshot={fixture()} status={status} refreshing refresh={() => {}} /></MemoryRouter>);
+      expect(html).toContain('Approved roadmap description');
+      expect(html).toContain('A project worth sharing');
+      expect(html).toContain('Retain merged work');
+      expect(html).not.toContain('public-project-skeleton');
+      expect(html).not.toContain('Try again');
+    }
+  });
   it('labels approved history as frozen and only links to public current view', () => {
     const html = renderToStaticMarkup(<MemoryRouter><PublicSnapshotView snapshot={fixture()} historical /></MemoryRouter>);
     expect(html).toContain('Revision 2 · frozen'); expect(html).toContain('approved revision is frozen'); expect(html).toContain('href="/projects/showcase"'); expect(html).not.toContain('/public/'); expect(html).not.toContain('Live published view');
