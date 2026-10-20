@@ -9,6 +9,7 @@ import { ReviewQueueView, ReviewRunsView, ReviewPullFacts } from './review-works
 import { DeliveryBoardArchive } from './delivery-board';
 import { RelativeTime } from './relative-time';
 import './delivery.css';
+import { MergeHeadSkeleton } from './loading';
 import { useReviewProgress } from './review-progress-view';
 import type { ReviewProgressItem } from './review-progress';
 
@@ -96,7 +97,7 @@ export function DeliveryHero({ children }: { children: ReactNode }) {
   const progress = useReviewProgress(query.data?.items.map(pull => pull.number) ?? []);
   const head = query.data && selectMergeHead(query.data);
   const showHead = Boolean(query.isPending || query.error || head?.state === 'head' || head?.state === 'unknown' && head.reason !== 'unconfigured');
-  return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Merge train head"><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <MergeHeadContent queue={query.data} home={home} progress={progress.error || head?.state !== 'head' ? undefined : progress.data?.items.find(item => item.pull_number === head.pull.number)} />}</ReadState></section>}</div>;
+  return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Merge train head">{query.isPending && !query.error ? <MergeHeadSkeleton /> : <ReadState error={query.error} loading={false} empty={false}>{query.data && <MergeHeadContent queue={query.data} home={home} progress={progress.error || head?.state !== 'head' ? undefined : progress.data?.items.find(item => item.pull_number === head.pull.number)} />}</ReadState>}</section>}</div>;
 }
 export function Delivery() {
   const { session, key, home } = useWorkspace();

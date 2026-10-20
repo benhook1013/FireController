@@ -138,6 +138,15 @@ describe('stored merge head and review summaries', () => {
       expect(hero.queryKey).toEqual([...key, 'reviews', 'current', 'queue', '']);
     } finally { client.clear(); }
   });
+  it('uses dedicated neutral merge-head loading rather than generic page rows', () => {
+    const html = markup(<DeliveryHero><section className="hero project-identity"><h1>Current verified project</h1></section></DeliveryHero>);
+    expect(html).toContain('Current verified project');
+    expect(html).toContain('Loading merge head');
+    expect(html.match(/class="review-lane skeleton-review-lane"/gu)).toHaveLength(2);
+    expect(html).not.toContain('skeleton-row');
+    expect(html).not.toContain('Review queue ↗');
+    expect(html).not.toContain('No open pull requests');
+  });
   it('keeps only project identity in the hero when no open or configured queue exists', () => {
     for (const value of [queue([pull(1, 'merged')]), { ...queue([]), configured: false }]) {
       const session = { project:{id:'project_one',repository:'example/project'}, controller: new AbortController(), api: {} } as Session;

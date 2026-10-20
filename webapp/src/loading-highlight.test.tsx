@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
 import { Jobs } from './App';
 import { findingDisplayFingerprint, nextSemanticHighlight, pullDisplayFingerprint, runDisplayFingerprint } from './review-workspace';
-import { PageSkeleton, WorkspaceSkeleton } from './loading';
+import { DeliveryHeroSkeleton, MergeHeadSkeleton, PageSkeleton, WorkspaceSkeleton } from './loading';
 import { WorkspaceContext, type Session } from './workspace';
 import type { ReviewFinding, ReviewPullSummary, ReviewRunSummary, Worker } from './types';
 
@@ -28,6 +28,21 @@ describe('neutral stable loading', () => {
     expect(html).not.toContain('Loading…');
     expect(html).not.toContain('<button');
     expect(html.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '')).toBe('');
+  });
+  it('uses the same two-sided Delivery structure and two quiet review cards while opening', () => {
+    const hero = renderToStaticMarkup(<DeliveryHeroSkeleton />);
+    expect(hero).toContain('class="delivery-hero skeleton-hero"');
+    expect(hero).toContain('class="hero project-identity"');
+    expect(hero).toContain('class="hero delivery-merge-head"');
+    expect(hero.match(/class="review-lane skeleton-review-lane"/gu)).toHaveLength(2);
+    expect(hero).toContain('data-channel="hosted"');
+    expect(hero).toContain('data-channel="cli"');
+    expect(hero).not.toMatch(/skeleton-connection|skeleton-row|<a|<button/gu);
+    expect(hero.replace(/<[^>]*>/gu, '')).toBe('');
+    const pending = renderToStaticMarkup(<MergeHeadSkeleton />);
+    expect(pending).toContain('role="status"><span class="visually-hidden">Loading merge head</span>');
+    expect(pending).toContain('aria-hidden="true"');
+    expect(pending.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '')).toBe('');
   });
   it('matches the page layout without exposing a previous project or forcing a sidebar', () => {
     const full = renderToStaticMarkup(<WorkspaceSkeleton />);
