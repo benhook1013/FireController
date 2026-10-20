@@ -143,6 +143,9 @@ func uiRoute(path string) bool {
 	if len(parts) == 3 {
 		return parts[2] == "jobs" || parts[2] == "inbox" || parts[2] == "workers" || parts[2] == "reviews" || parts[2] == "map" || parts[2] == "notes" || parts[2] == "settings"
 	}
+	if len(parts) == 4 && parts[2] == "reviews" && parts[3] == "history" {
+		return true
+	}
 	if len(parts) == 6 && parts[2] == "notes" && validID(parts[3]) && parts[4] == "history" {
 		revision, err := strconv.ParseInt(parts[5], 10, 64)
 		return err == nil && revision > 0 && strconv.FormatInt(revision, 10) == parts[5]

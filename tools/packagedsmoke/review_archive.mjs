@@ -30,7 +30,7 @@ try {
       const url = new URL(request.url());
       if (url.origin !== config.origin) { external++; return; }
       if (url.pathname === prefix+'/reviews/queue') queueReads.push({view:url.searchParams.get('view'),limit:Number(url.searchParams.get('limit')),cursor:url.searchParams.get('cursor')});
-      if (url.pathname === prefix+'/reviews/fronts' || url.pathname === prefix+'/reviews/round-progress') controlReads.push(url.pathname);
+      if (url.pathname === prefix+'/reviews/fronts' || url.pathname === prefix+'/reviews/rounds/progress') controlReads.push(url.pathname);
       if (request.method() !== 'GET') {
         if (url.pathname === prefix+'/browser-session' && request.method() === 'POST') sessionPosts++;
         else if (!(url.pathname === prefix+'/browser-session' && request.method() === 'DELETE') && !(url.pathname === prefix+'/browser-session/renew' && request.method() === 'POST')) forbiddenWrites++;
@@ -218,6 +218,14 @@ try {
   need(queueReads.every(read=>read.limit === 20 && read.cursor === null && (read.view === 'recent' || read.view === 'merged')));
   need(queueReads.filter(read=>read.view === 'merged').length === 1);
   await expect(queue.getByRole('link',{name:'Back to review queue',exact:true})).toHaveAttribute('href',reviewPath);
+  // The server must serve this route on a direct reload, before the SPA runs.
+  const reloaded = await current.page.reload();
+  need(reloaded.status() === 200 && reloaded.headers()['content-type'].startsWith('text/html'));
+  await expect(queue.locator('.review-queue-row')).toHaveCount(5);
+  need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-206','review-pr-204','review-pr-203','review-pr-202','review-pr-201']));
+  // A fresh application also re-reads the current hero's two shared controls.
+  await expect.poll(() => controlReads.length).toBe(controlsBefore + 2);
+  need(queueReads.filter(read=>read.view === 'merged').length === 2);
   if (config.proof_directory) for (const width of [1440,390]) {
     await current.page.setViewportSize({width,height:900});
     need(await current.page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth));
@@ -250,7 +258,9 @@ try {
   // reads one bounded page for the new comparison. Neither walks that archive.
   const pinnedCurrentHero = archives.filter(item => item.name === pinned.name && item.feed === 'runs' && item.snapshot !== config.snapshot);
   need(pinnedCurrentHero.length === 1 && pinnedCurrentHero[0].cursor === null && pinnedCurrentHero[0].limit === 20);
-  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && archives.length === 22 && details.length === 3);
+  // Reload restores the current hero and may invalidate its first page once
+  // when the live workspace snapshot arrives. Neither read follows a cursor.
+  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && archives.length >= 23 && archives.length <= 24 && details.length === 3);
   await context.close(); await browser.close(); browser=undefined; await server.close(); server=undefined;
   console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,max_limit:20,source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
 } catch {

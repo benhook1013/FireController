@@ -332,8 +332,10 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		_ = json.Unmarshal(lines[1], &result)
 	}
 	// Twenty explicit archive reads, one bounded current-hero read on the
-	// pinned tab, and one selected old merged PR; no automatic archive walking.
-	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 20 || result.ArchiveRequests != 22 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
+	// pinned tab, one or two first-page hero reads after reload's workspace
+	// restoration, and one selected old merged PR;
+	// no automatic archive walking.
+	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 20 || result.ArchiveRequests < 23 || result.ArchiveRequests > 24 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
 		phase := "unavailable"
 		switch result.Phase {
 		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation", "recent-queue", "merged-history":

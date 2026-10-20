@@ -61,6 +61,25 @@ func TestKnownBrowserRoutesServeOnlyEmbeddedIndex(t *testing.T) {
 	}
 }
 
+func TestReviewHistoryDirectNavigationAndReload(t *testing.T) {
+	handler := browserFixture()
+	for _, path := range []string{"/projects/project_1/reviews/history", "/projects/project_1/reviews/history?cursor=opaque"} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			w := request(t, handler, method, path)
+			if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/html; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("history deep link failed for %s: %d", method, w.Code)
+			}
+			if method == http.MethodGet && !strings.Contains(w.Body.String(), "Embedded browser fixture") || method == http.MethodHead && w.Body.Len() != 0 {
+				t.Fatal("history navigation did not preserve embedded GET/HEAD behavior")
+			}
+		}
+	}
+	for _, path := range []string{"/projects/project_1/reviews/history/extra", "/projects/project_1/reviews/historical", "/projects/project_1/reviews/%68istory", "/projects/project_1/reviews/history%2Fextra"} {
+		assertJSONError(t, request(t, handler, http.MethodGet, path), http.StatusNotFound, "not_found")
+	}
+	assertJSONError(t, request(t, handler, http.MethodPost, "/projects/project_1/reviews/history"), http.StatusMethodNotAllowed, "method_not_allowed")
+}
+
 func assertJSONError(t *testing.T, w *httptest.ResponseRecorder, status int, code string) {
 	t.Helper()
 	var got struct {
