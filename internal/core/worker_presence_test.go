@@ -309,6 +309,119 @@ func TestWorkerPresenceQuietStreamHeartbeatAndRevocation(t *testing.T) {
 	presenceEventually(t, func() bool { return presenceAttached(s) == 0 })
 }
 
+func completedPresenceContact(t *testing.T, s *Store, project, worker string, client int) (workerContactKey, time.Time) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := presenceRequest(ctx, worker, fmt.Sprintf("%032x", client))
+	req.SetPathValue("project_id", project)
+	scope, err := s.Scope(req, "read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _ := contactKey(scope)
+	p := &s.workerContact
+	p.mu.Lock()
+	entry := p.entries[key]
+	if entry == nil {
+		p.mu.Unlock()
+		t.Fatal("completed request contact was not admitted")
+	}
+	at := entry.lastSeen
+	p.mu.Unlock()
+	cancel()
+	presenceEventually(t, func() bool { return presenceAttached(s) == 0 })
+	return key, at
+}
+
+func TestWorkerPresenceCompletedClientChurnPreservesLatestContact(t *testing.T) {
+	s, reader := workerPresenceFixture(t)
+	before := presenceDurableHash(t, s)
+	var latest time.Time
+	for i := 0; i < workerContactPrincipalLimit+32; i++ {
+		_, latest = completedPresenceContact(t, s, "project", presenceID(1), i)
+	}
+	v := presenceRead(t, s, reader, presenceID(1))
+	if !v.Complete || v.Items[0].Attached || v.Items[0].LastSeenAt == nil || !v.Items[0].LastSeenAt.Equal(latest) {
+		t.Fatal("completed CLI key churn lost contact coverage or latest timestamp")
+	}
+	if len(s.workerContact.entries) != workerContactPrincipalLimit || s.workerContact.principals[reader.PrincipalID] != workerContactPrincipalLimit {
+		t.Fatal("completed CLI key churn exceeded the principal budget")
+	}
+	if before != presenceDurableHash(t, s) {
+		t.Fatal("completed CLI key churn changed durable state")
+	}
+}
+
+func TestWorkerPresenceEvictionRequiresRetainedWorkerCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		name, otherProject string
+		retainedSameWorker bool
+		equalTimestamp     bool
+	}{
+		{name: "newer retained observation", otherProject: "project", retainedSameWorker: true},
+		{name: "equal retained observation", otherProject: "project", retainedSameWorker: true, equalTimestamp: true},
+		{name: "newest contact for another worker is lost", otherProject: "project"},
+		{name: "same worker ID in another project cannot cover", otherProject: "other"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, reader := workerPresenceFixture(t)
+			before := presenceDurableHash(t, s)
+			oldest, _ := completedPresenceContact(t, s, "project", presenceID(1), 0)
+			incomingWorker := presenceID(2)
+			if tc.otherProject == "other" {
+				incomingWorker = presenceID(1)
+			}
+			var covering workerContactKey
+			for i := 1; i < workerContactPrincipalLimit; i++ {
+				worker := incomingWorker
+				if tc.retainedSameWorker && i == 1 {
+					worker = presenceID(1)
+				}
+				key, _ := completedPresenceContact(t, s, tc.otherProject, worker, i)
+				if i == 1 {
+					covering = key
+				}
+			}
+			p := &s.workerContact
+			p.mu.Lock()
+			at := time.Now().UTC().Add(-30 * time.Minute)
+			p.entries[oldest].lastSeen = at
+			if tc.retainedSameWorker {
+				p.entries[covering].lastSeen = at
+				if !tc.equalTimestamp {
+					p.entries[covering].lastSeen = at.Add(time.Minute)
+				}
+			}
+			p.mu.Unlock()
+			prior := presenceRead(t, s, reader, presenceID(1))
+			completedPresenceContact(t, s, tc.otherProject, incomingWorker, workerContactPrincipalLimit)
+			v := presenceRead(t, s, reader, presenceID(1))
+			if v.Complete != tc.retainedSameWorker || v.Items[0].Attached {
+				t.Fatal("eviction completeness did not match exact worker/project coverage")
+			}
+			if tc.retainedSameWorker {
+				if v.Items[0].LastSeenAt == nil || !v.Items[0].LastSeenAt.Equal(*prior.Items[0].LastSeenAt) {
+					t.Fatal("covered eviction changed the exported latest contact")
+				}
+			} else if v.Items[0].LastSeenAt != nil {
+				t.Fatal("unrelated worker or project fabricated retained contact")
+			}
+			nextWorker := incomingWorker
+			if tc.retainedSameWorker {
+				nextWorker = presenceID(1)
+			}
+			completedPresenceContact(t, s, tc.otherProject, nextWorker, workerContactPrincipalLimit+1)
+			if presenceRead(t, s, reader, presenceID(1)).Complete != tc.retainedSameWorker {
+				t.Fatal("later covered admission forgot a genuine sticky gap")
+			}
+			if len(p.entries) != workerContactPrincipalLimit || p.principals[reader.PrincipalID] != workerContactPrincipalLimit || before != presenceDurableHash(t, s) {
+				t.Fatal("eviction changed memory bounds or durable state")
+			}
+		})
+	}
+}
+
 func TestWorkerPresencePrincipalCapacityEvictionExpiryAndGenerations(t *testing.T) {
 	s, reader := workerPresenceFixture(t)
 	p := &s.workerContact

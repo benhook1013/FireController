@@ -106,7 +106,21 @@ func (s *Store) observeWorkerContact(ctx context.Context, scope Scope) {
 				p.mu.Unlock()
 				return
 			}
-			p.incomplete = true
+			// Inactive keys contribute only their worker's latest contact, not
+			// an exported connection count. Preserve completeness if that same
+			// project/worker timestamp remains covered after reclamation.
+			covered := oldest.project == key.project && oldest.worker == key.worker && !now.Before(candidate.lastSeen)
+			if !covered {
+				for existing, retained := range p.entries {
+					if existing != oldest && existing.project == oldest.project && existing.worker == oldest.worker && !retained.lastSeen.Before(candidate.lastSeen) {
+						covered = true
+						break
+					}
+				}
+			}
+			if !covered {
+				p.incomplete = true
+			}
 			p.remove(oldest)
 		}
 		entry = &workerContactEntry{}
