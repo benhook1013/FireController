@@ -569,3 +569,119 @@ func TestHostedAllowanceBasePlanURLKeepsExactSafetyGuards(t *testing.T) {
 		}
 	}
 }
+
+func TestHostedAllowanceGeneratedEnvelopeExactObservedFormats(t *testing.T) {
+	// This generic provider body matches the retained observed reply's bytes;
+	// actors, query identity and timestamps remain independent synthetic facts.
+	observed := "<!-- coderabbit-ai-generated:v1 -->\n\n<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). Reviews are available now."
+	for name, body := range map[string]string{
+		"observed-base-plan-available": observed,
+		"fair-usage-available":         "<!-- coderabbit-ai-generated:v1 -->\n\n" + allowanceAvailableReply(),
+		"fair-usage-cooldown":          "<!-- coderabbit-ai-generated:v1 -->\n\n" + allowanceReply(37),
+		"base-plan-cooldown":           "<!-- coderabbit-ai-generated:v1 -->\n\n" + strings.Replace(allowanceReply(1), "/management/plans#fair-usage-limits-policy)", "/management/plans)", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, intent, poster, bot, earliest := allowanceFixture(t)
+			s.IssueComments[1].Body = strings.TrimPrefix(body, "<!-- coderabbit-ai-generated:v1 -->\n\n")
+			want := resolveAllowance(t, s, intent, poster, bot, earliest)
+			if want.State != "available_observed" && want.State != "cooldown_observed" {
+				t.Fatal("plain grammar fixture not observed", want)
+			}
+			s.IssueComments[1].Body = body
+			before := append([]IssueComment(nil), s.IssueComments...)
+			for range 2 {
+				got := resolveAllowance(t, s, intent, poster, bot, earliest)
+				if got != want || !reflect.DeepEqual(before, s.IssueComments) {
+					t.Fatalf("known envelope changed observation identity, retry, source or replay: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestHostedAllowanceGeneratedEnvelopeRejectsUnknownWrapping(t *testing.T) {
+	const envelope = "<!-- coderabbit-ai-generated:v1 -->\n\n"
+	for _, plain := range []string{allowanceBasePlanAvailableReply, allowanceReply(37)} {
+		for name, body := range map[string]string{
+			"missing-separator":  strings.TrimSuffix(envelope, "\n\n") + plain,
+			"single-newline":     strings.TrimSuffix(envelope, "\n") + plain,
+			"extra-newline":      envelope + "\n" + plain,
+			"leading-space":      " " + envelope + plain,
+			"wrong-version":      strings.Replace(envelope, ":v1", ":v2", 1) + plain,
+			"wrong-case":         strings.Replace(envelope, "coderabbit-ai", "CodeRabbit-ai", 1) + plain,
+			"malformed-marker":   strings.Replace(envelope, " -->", "-->", 1) + plain,
+			"repeated-marker":    envelope + envelope + plain,
+			"embedded-marker":    strings.Replace(plain, "\n", "\n"+envelope, 1),
+			"trailing-marker":    plain + "\n" + envelope,
+			"arbitrary-comment":  "<!-- another generated marker -->\n\n" + plain,
+			"prose-before":       "Example:\n" + envelope + plain,
+			"prose-after-marker": envelope + "Example:\n" + plain,
+			"prose-suffix":       envelope + plain + "\nMore unrecognized information.",
+			"crlf-all":           strings.ReplaceAll(envelope+plain, "\n", "\r\n"),
+			"crlf-envelope":      strings.ReplaceAll(envelope, "\n", "\r\n") + plain,
+			"crlf-body":          envelope + strings.ReplaceAll(plain, "\n", "\r\n"),
+			"quoted":             envelope + "> " + strings.ReplaceAll(plain, "\n", "\n> "),
+			"fenced":             envelope + "```text\n" + plain + "\n```",
+			"billing-suffix":     envelope + plain + " Usage billing is enabled.",
+			"unknown-body":       envelope + "Usage-based reviews are available now.",
+		} {
+			t.Run(fmt.Sprintf("cooldown=%t/%s", strings.Contains(plain, "More reviews"), name), func(t *testing.T) {
+				s, intent, poster, bot, earliest := allowanceFixture(t)
+				s.IssueComments[1].Body = body
+				before := append([]IssueComment(nil), s.IssueComments...)
+				got := resolveAllowance(t, s, intent, poster, bot, earliest)
+				if got.State != "unproven" || got.Reason != "allowance_reply_unsupported" || got.ResponseCommentID != 0 || !got.ResponseCreatedAt.IsZero() || !got.RetryNotBefore.IsZero() || !reflect.DeepEqual(before, s.IssueComments) {
+					t.Fatalf("unsupported wrapping gained observation or changed source: %+v", got)
+				}
+			})
+		}
+	}
+}
+
+func TestHostedAllowanceGeneratedEnvelopePreservesCausalGuards(t *testing.T) {
+	const envelope = "<!-- coderabbit-ai-generated:v1 -->\n\n"
+	for _, plain := range []string{allowanceBasePlanAvailableReply, allowanceReply(37)} {
+		for name, change := range map[string]func(*HostedAllowanceSnapshot){
+			"incomplete": func(s *HostedAllowanceSnapshot) { s.Complete = false },
+			"edited-reply": func(s *HostedAllowanceSnapshot) {
+				s.IssueComments[1].UpdatedAt = s.IssueComments[1].UpdatedAt.Add(time.Second)
+			},
+			"foreign-actor": func(s *HostedAllowanceSnapshot) { s.IssueComments[1].Author.ID++ },
+			"foreign-kind":  func(s *HostedAllowanceSnapshot) { s.IssueComments[1].Author.Kind = "User" },
+			"competing-command": func(s *HostedAllowanceSnapshot) {
+				c := s.IssueComments[0]
+				c.ID = 93
+				c.Body = "@coderabbitai review"
+				c.CreatedAt = c.CreatedAt.Add(time.Second)
+				c.UpdatedAt = c.CreatedAt
+				s.IssueComments = append(s.IssueComments, c)
+			},
+			"unknown-alongside": func(s *HostedAllowanceSnapshot) {
+				c := s.IssueComments[1]
+				c.ID = 93
+				c.Body = "Unknown provider response"
+				s.IssueComments = append(s.IssueComments, c)
+			},
+			"duplicate-answer": func(s *HostedAllowanceSnapshot) {
+				c := s.IssueComments[1]
+				c.ID = 93
+				c.Body = strings.TrimPrefix(c.Body, envelope)
+				s.IssueComments = append(s.IssueComments, c)
+			},
+		} {
+			t.Run(fmt.Sprintf("cooldown=%t/%s", strings.Contains(plain, "More reviews"), name), func(t *testing.T) {
+				s, intent, poster, bot, earliest := allowanceFixture(t)
+				s.IssueComments[1].Body = envelope + plain
+				change(&s)
+				before := append([]IssueComment(nil), s.IssueComments...)
+				got := resolveAllowance(t, s, intent, poster, bot, earliest)
+				if got.State == "available_observed" || got.State == "cooldown_observed" || got.ResponseCommentID != 0 || !got.ResponseCreatedAt.IsZero() || !got.RetryNotBefore.IsZero() || !reflect.DeepEqual(before, s.IssueComments) {
+					t.Fatalf("envelope bypassed causal guards: %+v", got)
+				}
+				if name == "duplicate-answer" && (got.State != "ambiguous" || got.Reason != "conflicting_allowance_replies") {
+					t.Fatal("mixed enveloped/plain answers lost ambiguity", got)
+				}
+			})
+		}
+	}
+}
