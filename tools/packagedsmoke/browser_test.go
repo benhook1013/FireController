@@ -264,6 +264,9 @@ func (o *browserOutput) safePhase() string {
 			ReviewRunReads           int    `json:"run_fetches"`
 			PresenceReads            int    `json:"presence_reads"`
 			PresenceFinished         int    `json:"presence_finished"`
+			PresenceResponses        int    `json:"presence_responses"`
+			PresenceHTTPStatus       int    `json:"presence_http_status"`
+			PresenceFailed           int    `json:"presence_failed"`
 			PresenceHeaderErrors     int    `json:"presence_header_errors"`
 			DeliveryReads            int    `json:"delivery_reads"`
 			JobBriefReads            int    `json:"job_brief_reads"`
@@ -347,8 +350,8 @@ func (o *browserOutput) safePhase() string {
 				case "initial-snapshot", "delivery-heading", "builder-job", "builder-primary", "inspector-paused", "inspector-pause-reason", "unassigned-job", "status-order", "latest-checkpoint-done", "latest-checkpoint-next", "latest-checkpoint", "old-checkpoint-absent", "overview-request-budget", "lane-count", "private-identifiers-absent", "presence-initial", "presence-hidden", "presence-visible", "layout-capture", "notes-nav-absent", "inbox-nav-click", "inbox-worker-selected", "worker-inbox-workers-nav", "worker-inbox-open", "worker-inbox-history", "worker-inbox-back", "worker-inbox-return", "inbox-heading", "inbox-sidebar", "inbox-readonly-composer", "inbox-readonly-writes", "default-appearance", "default-title", "default-indicator-colors", "default-indicator-contrast":
 					allowed = true
 				}
-				valid := allowed
-				for _, n := range []int{record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Errors, record.External, record.Writes, record.ActionWrites, record.PresenceReads, record.PresenceFinished, record.PresenceHeaderErrors, record.DeliveryReads, record.JobBriefReads, record.JobArchiveReads, record.ContactHistoryReads} {
+				valid := allowed && (record.PresenceHTTPStatus == 0 || record.PresenceHTTPStatus >= 100 && record.PresenceHTTPStatus <= 599)
+				for _, n := range []int{record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Errors, record.External, record.Writes, record.ActionWrites, record.PresenceReads, record.PresenceFinished, record.PresenceResponses, record.PresenceFailed, record.PresenceHeaderErrors, record.DeliveryReads, record.JobBriefReads, record.JobArchiveReads, record.ContactHistoryReads} {
 					valid = valid && n >= 0 && n <= 1000
 				}
 				if valid {
@@ -364,7 +367,7 @@ func (o *browserOutput) safePhase() string {
 					}
 					result := fmt.Sprintf("delivery-overview/%s class=%s error=%s presentation_reads=%d metadata_streams=%d inbox_streams=%d forbidden_writes=%d action_writes=%d errors=%d external=%d", record.Checkpoint, class, name, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Writes, record.ActionWrites, record.Errors, record.External)
 					if record.Checkpoint == "presence-initial" || record.Checkpoint == "presence-hidden" || record.Checkpoint == "presence-visible" {
-						result += fmt.Sprintf(" presence_reads=%d presence_finished=%d presence_header_errors=%d delivery_reads=%d job_brief_reads=%d job_archive_reads=%d contact_history_reads=%d", record.PresenceReads, record.PresenceFinished, record.PresenceHeaderErrors, record.DeliveryReads, record.JobBriefReads, record.JobArchiveReads, record.ContactHistoryReads)
+						result += fmt.Sprintf(" presence_reads=%d presence_finished=%d presence_responses=%d presence_http_status=%d presence_failed=%d presence_header_errors=%d delivery_reads=%d job_brief_reads=%d job_archive_reads=%d contact_history_reads=%d", record.PresenceReads, record.PresenceFinished, record.PresenceResponses, record.PresenceHTTPStatus, record.PresenceFailed, record.PresenceHeaderErrors, record.DeliveryReads, record.JobBriefReads, record.JobArchiveReads, record.ContactHistoryReads)
 					}
 					return result
 				}
@@ -405,7 +408,7 @@ func (o *browserOutput) safePhase() string {
 			}
 			if record.Phase == "reload" {
 				switch record.Checkpoint {
-				case "reload-before", "reload-after-navigation", "reload-project-heading", "reload-queue-held", "reload-hash-retained", "reload-target-absent", "reload-heading-visible", "reload-session-renewed", "reload-current-authority", "reload-expiry-persistence", "reload-expiry-evidence", "reload-binding-retained", "reload-expiry-window", "reload-cookie-rotated", "reload-presentation-restored", "reload-sidebar-absent", "reload-connection-live", "reload-metadata-live", "reload-reader-counts":
+				case "reload-before", "reload-after-navigation", "reload-project-heading", "reload-queue-held", "reload-hash-retained", "reload-target-absent", "reload-queue-response", "reload-queue-unroute", "reload-head-position", "reload-heading-visible", "reload-session-renewed", "reload-current-authority", "reload-expiry-persistence", "reload-expiry-evidence", "reload-binding-retained", "reload-expiry-window", "reload-cookie-rotated", "reload-presentation-restored", "reload-sidebar-absent", "reload-connection-live", "reload-metadata-live", "reload-reader-counts":
 					class := "driver"
 					if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
 						class = record.FailureClass
@@ -524,7 +527,13 @@ func safeBrowserProgress(path string, now time.Time) string {
 				return "unavailable"
 			}
 			record[name] = value
-		case "session_posts", "session_deletes", "session_renewals", "terminal_responses", "errors", "forbidden_writes", "action_writes", "external", "presentation_reads", "metadata_streams", "inbox_streams", "injected_metadata_failures", "injected_console_errors", "http_status", "presence_reads", "presence_finished", "presence_header_errors", "delivery_reads", "job_brief_reads", "job_archive_reads", "contact_history_reads":
+		case "presence_http_status":
+			var value int
+			if json.Unmarshal(raw, &value) != nil || value != 0 && (value < 100 || value > 599) {
+				return "unavailable"
+			}
+			record[name] = value
+		case "session_posts", "session_deletes", "session_renewals", "terminal_responses", "errors", "forbidden_writes", "action_writes", "external", "presentation_reads", "metadata_streams", "inbox_streams", "injected_metadata_failures", "injected_console_errors", "http_status", "presence_reads", "presence_finished", "presence_responses", "presence_failed", "presence_header_errors", "delivery_reads", "job_brief_reads", "job_archive_reads", "contact_history_reads":
 			var value int
 			if json.Unmarshal(raw, &value) != nil || value < 0 || value > 1000 {
 				return "unavailable"
@@ -586,7 +595,7 @@ func TestBrowserProgressDiagnosticsAllowlist(t *testing.T) {
 }
 
 func TestBrowserReloadDiagnosticsAllowlist(t *testing.T) {
-	for _, checkpoint := range []string{"reload-project-heading", "reload-queue-held", "reload-hash-retained", "reload-target-absent"} {
+	for _, checkpoint := range []string{"reload-project-heading", "reload-queue-held", "reload-hash-retained", "reload-target-absent", "reload-queue-response", "reload-queue-unroute", "reload-head-position"} {
 		for _, class := range []string{"timeout", "assertion", "driver", "PRIVATE_SENTINEL"} {
 			t.Run(checkpoint+"/"+class, func(t *testing.T) {
 				body, err := json.Marshal(map[string]any{"state": "FAIL", "phase": "reload", "checkpoint": checkpoint, "failure_class": class, "body": "PRIVATE_SENTINEL", "url": "PRIVATE_SENTINEL", "credential": "PRIVATE_SENTINEL", "error": "PRIVATE_SENTINEL"})
@@ -693,7 +702,7 @@ func TestBrowserPresenceDiagnosticsAllowlist(t *testing.T) {
 					t.Fatal("private diagnostic value escaped")
 				}
 				if tc.wantDetail {
-					want := "delivery-overview/" + checkpoint + " class=assertion error=Error presentation_reads=0 metadata_streams=0 inbox_streams=0 forbidden_writes=0 action_writes=0 errors=0 external=0 presence_reads=2 presence_finished=1 presence_header_errors=0 delivery_reads=1 job_brief_reads=0 job_archive_reads=0 contact_history_reads=0"
+					want := "delivery-overview/" + checkpoint + " class=assertion error=Error presentation_reads=0 metadata_streams=0 inbox_streams=0 forbidden_writes=0 action_writes=0 errors=0 external=0 presence_reads=2 presence_finished=1 presence_responses=0 presence_http_status=0 presence_failed=0 presence_header_errors=0 delivery_reads=1 job_brief_reads=0 job_archive_reads=0 contact_history_reads=0"
 					if got != want {
 						t.Fatalf("bounded presence diagnostic differs: %q", got)
 					}
@@ -709,7 +718,75 @@ func TestBrowserPresenceDiagnosticsAllowlist(t *testing.T) {
 		t.Fatal("presence progress fixture")
 	}
 	got := safeBrowserProgress(path, time.UnixMilli(1000000))
-	if !strings.HasPrefix(got, "delivery-overview/presence-visible ") || !strings.Contains(got, " presence_reads=2 presence_finished=1 presence_header_errors=0 delivery_reads=1 job_brief_reads=0 job_archive_reads=0 contact_history_reads=0 operation=failure-snapshot age_ms=250") {
+	if !strings.HasPrefix(got, "delivery-overview/presence-visible ") || !strings.Contains(got, " presence_reads=2 presence_finished=1 presence_responses=0 presence_http_status=0 presence_failed=0 presence_header_errors=0 delivery_reads=1 job_brief_reads=0 job_archive_reads=0 contact_history_reads=0 operation=failure-snapshot age_ms=250") {
 		t.Fatal("fixed presence progress was not retained")
+	}
+}
+
+func TestBrowserPresenceLifecycleDiagnosticsAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		name, field string
+		value       any
+		valid       bool
+	}{
+		{"response", "presence_responses", 2, true},
+		{"failed", "presence_failed", 1, true},
+		{"unknown-status", "presence_http_status", 0, true},
+		{"minimum-status", "presence_http_status", 100, true},
+		{"maximum-status", "presence_http_status", 599, true},
+		{"negative-status", "presence_http_status", -1, false},
+		{"below-http-status", "presence_http_status", 99, false},
+		{"above-http-status", "presence_http_status", 600, false},
+		{"private-status", "presence_http_status", "PRIVATE_SENTINEL", false},
+		{"negative-responses", "presence_responses", -1, false},
+		{"unbounded-responses", "presence_responses", 1001, false},
+		{"negative-failed", "presence_failed", -1, false},
+		{"unbounded-failed", "presence_failed", 1001, false},
+		{"private-failed", "presence_failed", "PRIVATE_SENTINEL", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			counters := map[string]any{"presence_reads": 2, "presence_finished": 1, "presence_responses": 1, "presence_http_status": 200, "presence_failed": 0}
+			counters[tc.field] = tc.value
+			record := map[string]any{"state": "FAIL", "phase": "delivery-overview", "checkpoint": "presence-visible", "url": "PRIVATE_SENTINEL", "failure_text": "PRIVATE_SENTINEL"}
+			for name, value := range counters {
+				record[name] = value
+			}
+			body, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			output := &browserOutput{}
+			_, _ = output.Write(append(body, '\n'))
+			got := output.safePhase()
+			if strings.Contains(got, "PRIVATE_SENTINEL") {
+				t.Fatal("private terminal diagnostic escaped")
+			}
+			if tc.valid {
+				want := fmt.Sprintf(" presence_reads=2 presence_finished=1 presence_responses=%v presence_http_status=%v presence_failed=%v ", counters["presence_responses"], counters["presence_http_status"], counters["presence_failed"])
+				if !strings.Contains(got, want) {
+					t.Fatalf("safe lifecycle facts lost: %q", got)
+				}
+			} else if got != "delivery-overview" && got != "driver-start-or-cleanup" {
+				t.Fatalf("invalid lifecycle detail accepted: %q", got)
+			}
+			progress := map[string]any{"phase": "delivery-overview", "checkpoint": "presence-visible", "operation": "failure-snapshot", "observed_unix_ms": 999750, "counters": counters}
+			path := filepath.Join(t.TempDir(), "progress.json")
+			checkProgress := func(wantValid bool) {
+				body, err := json.Marshal(progress)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = os.WriteFile(path, body, 0600); err != nil {
+					t.Fatal(err)
+				}
+				value := safeBrowserProgress(path, time.UnixMilli(1000000))
+				if strings.Contains(value, "PRIVATE_SENTINEL") || wantValid && !strings.Contains(value, "presence_responses=") || !wantValid && value != "unavailable" {
+					t.Fatalf("unsafe or missing progress facts: %q", value)
+				}
+			}
+			checkProgress(tc.valid)
+			counters["failure_text"] = "PRIVATE_SENTINEL"
+			checkProgress(false)
+		})
 	}
 }

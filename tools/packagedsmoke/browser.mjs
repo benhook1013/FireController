@@ -96,7 +96,7 @@ try {
       const snapshot = {
         fixture_writes:fixtureWrites, action_writes:actionWrites, forbidden_writes:forbiddenWrites,
         delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads,
-        presence_reads:presenceReads, presence_finished:presenceFinished, presence_header_errors:presenceHeaderErrors,
+        presence_reads:presenceReads, presence_finished:presenceFinished, presence_responses:presenceResponses, presence_http_status:presenceHTTPStatus, presence_failed:presenceFailed, presence_header_errors:presenceHeaderErrors,
         contact_history_reads:contactHistoryReads, node_clock_ms:Date.now(),
         worker_history_before: workerHistoryBefore, worker_history_after: workerHistoryAfter,
       };
@@ -196,16 +196,19 @@ try {
   counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
   let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0, noteArchiveReads = 0;
   let deliveryReads = 0, jobBriefReads = 0, jobArchiveReads = 0, reviewRunReads = 0;
-  let presenceReads = 0, presenceFinished = 0, presenceHeaderErrors = 0, contactHistoryReads = 0;
+  let presenceReads = 0, presenceFinished = 0, presenceResponses = 0, presenceHTTPStatus = 0, presenceFailed = 0, presenceHeaderErrors = 0, contactHistoryReads = 0;
   let injectedRequest;
-  diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external, presence_reads:presenceReads, presence_finished:presenceFinished, presence_header_errors:presenceHeaderErrors, delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads, contact_history_reads:contactHistoryReads });
+  diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external, presence_reads:presenceReads, presence_finished:presenceFinished, presence_responses:presenceResponses, presence_http_status:presenceHTTPStatus, presence_failed:presenceFailed, presence_header_errors:presenceHeaderErrors, delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads, contact_history_reads:contactHistoryReads });
   page.on('pageerror', () => errors++);
   page.on('console', value => {
     if (value.type() !== 'error' || expectedMissingSessionRoute(value.location().url) || (controlledMessageFailure && value.location().url === config.origin + prefix + '/messages')) return;
     if (injectedRequest && injectedConsoleErrors === 0 && value.location().url === injectedRequest.url() && /^Failed to load resource: the server responded with a status of 400 \(Bad Request\)$/u.test(value.text())) injectedConsoleErrors++;
     else errors++;
   });
-  page.on('response', value => { if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else if (value.request() === injectedRequest && value.status() === 400) injectedResponses++; else errors++; } });
+  page.on('response', value => {
+    const url = new URL(value.url());
+    if (value.request().method()==='GET' && url.origin===config.origin && url.pathname===prefix+'/workers/presence') { presenceResponses++; presenceHTTPStatus=value.status(); }
+    if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else if (value.request() === injectedRequest && value.status() === 400) injectedResponses++; else errors++; } });
   page.on('request', request => {
     const url = new URL(request.url());
     if (url.origin !== config.origin) { external++; return; }
@@ -235,6 +238,10 @@ try {
     else if (url.pathname === prefix + '/browser-session' && request.method() === 'DELETE') sessionDeletes++;
     else if (explicitActions && ((request.method() === 'POST' && (url.pathname === prefix + '/messages' || /^messages\/[^/]+\/(?:seen|ack)$/.test(url.pathname.slice(prefix.length + 1)))) || (request.method() === 'PUT' && url.pathname === prefix + '/presentation'))) actionWrites++;
     else forbiddenWrites++;
+  });
+  page.on('requestfailed', request => {
+    const url = new URL(request.url());
+    if (request.method()==='GET' && url.origin===config.origin && url.pathname===prefix+'/workers/presence') presenceFailed++;
   });
   page.on('requestfinished', request => {
     if (request.method()==='GET' && request.url().startsWith(config.origin+prefix+'/workers/presence?')) presenceFinished++;
@@ -863,8 +870,11 @@ try {
     checkpoint = 'reload-target-absent';
     await expect(headRow).toHaveCount(0);
   } finally { releaseReloadQueue(); }
+  checkpoint = 'reload-queue-response';
   need((await reloadQueueResponsePromise).status() === 200);
+  checkpoint = 'reload-queue-unroute';
   await page.unroute(queuePattern, holdReloadQueue);
+  checkpoint = 'reload-head-position';
   await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
   checkpoint = 'reload-heading-visible';
   await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(1);
