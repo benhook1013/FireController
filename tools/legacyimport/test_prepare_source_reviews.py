@@ -85,6 +85,55 @@ class ReviewsAdapterTests(unittest.TestCase):
             self.assertNotIn(str(self.root).encode(),result.stdout+result.stderr)
         return result
 
+    def test_aggregate_cell_budget_admits_bounded_source_above_eight_mib(self):
+        payload = 'UNSELECTED_PRIVATE_' + 'x' * (65536 - len('UNSELECTED_PRIVATE_'))
+        with sqlite3.connect(self.snapshot) as connection:
+            connection.execute('CREATE TABLE unrelated(payload TEXT)')
+            connection.executemany('INSERT INTO unrelated VALUES(?)', [(payload,)] * 160)
+        before = self.snapshot.read_bytes()
+        with sqlite3.connect(self.snapshot) as connection:
+            # SQL aggregates may read cells inside SQLite; no unselected large
+            # body should be materialized as a Python result during admission.
+            def bounded_rows(cursor, row):
+                self.assertFalse(any(isinstance(value, str) and len(value) > 16384 for value in row))
+                return row
+            connection.row_factory = bounded_rows
+            bounds = adapter.bounded_database(connection)
+            self.assertGreater(bounds['cell_bytes'], 8 << 20)
+            self.assertLess(bounds['cell_bytes'], 32 << 20)
+        self.invoke()
+        value = json.loads(self.output.read_bytes())
+        self.assertEqual(len(value['groups'][0]['pulls'][0]['runs']), 1)
+        self.assertEqual(value['groups'][0]['pulls'][0]['runs'][0]['found'], 1)
+        self.assertNotIn(b'UNSELECTED_PRIVATE_', self.output.read_bytes() + self.proof.read_bytes())
+        self.assertEqual(self.snapshot.read_bytes(), before)
+        self.assertEqual(json.loads(self.proof.read_bytes())['source_bounds']['cell_bytes'], bounds['cell_bytes'])
+
+    def test_aggregate_cell_budget_above_thirty_two_mib_refuses(self):
+        with sqlite3.connect(':memory:') as connection:
+            connection.execute('CREATE TABLE cells(payload TEXT)')
+            connection.executemany('INSERT INTO cells VALUES(?)', [('x' * 65536,)] * 513)
+            connection.commit()
+            before = connection.execute('SELECT count(*),sum(length(payload)) FROM cells').fetchone()
+            self.assertGreater(before[1], 32 << 20)
+            with self.assertRaises(adapter.Refusal) as error:
+                adapter.bounded_database(connection)
+            self.assertEqual(error.exception.code, 'snapshot_bounds')
+            self.assertEqual(connection.execute('SELECT count(*),sum(length(payload)) FROM cells').fetchone(), before)
+        self.assertFalse(self.output.exists())
+        self.assertFalse(self.proof.exists())
+
+    def test_aggregate_change_keeps_per_table_and_total_row_bounds(self):
+        for tables, rows in ((1, 5001), (5, 4001)):
+            with self.subTest(tables=tables, rows=rows), sqlite3.connect(':memory:') as connection:
+                for n in range(tables):
+                    connection.execute('CREATE TABLE t%d(value INTEGER)' % n)
+                    connection.executemany('INSERT INTO t%d VALUES(?)' % n, [(1,)] * rows)
+                connection.commit()
+                with self.assertRaises(adapter.Refusal) as error:
+                    adapter.bounded_database(connection)
+                self.assertEqual(error.exception.code, 'snapshot_bounds')
+
     def test_actual_cli_semantics_private_replay_and_conservation(self):
         before=self.snapshot.read_bytes(),self.selected.read_bytes(),self.module.read_bytes()
         self.invoke();result=json.loads(self.output.read_bytes());p=result["groups"][0]["pulls"][0];r=p["runs"][0]

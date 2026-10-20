@@ -134,7 +134,7 @@ def bounded_database(connection):
             col = column[1].replace('"', '""')
             maximum, size = connection.execute('SELECT coalesce(max(length(CAST("'+col+'" AS BLOB))),0),coalesce(sum(length(CAST("'+col+'" AS BLOB))),0) FROM "'+name+'"').fetchone()
             total_bytes += size
-            if maximum > 256 << 10 or total_bytes > 8 << 20:
+            if maximum > 256 << 10 or total_bytes > 32 << 20:
                 refuse("snapshot_bounds")
     return dict(tables=len(tables), rows=total_rows, cell_bytes=total_bytes)
 
