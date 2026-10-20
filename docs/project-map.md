@@ -98,7 +98,7 @@ Clean checkpoint `a61c5fba16b98cd12737ac950bf9546211ead306` subsequently passed 
 
 ## Oversized retained-state reads
 
-Current and historical entry reads return the safe `storage_unavailable` response when stored JSON exceeds the byte bound. The SQL size guard does not expose a driver scan error or load the oversized body. A multibyte regression reproduced both HTTP 500 responses before the fix; authenticated SQLite/HTTP checks now prove HTTP 503, unchanged retained bodies, receipts and events, and continued valid and not-found reads. The complete project-map race suite passed in 6.680 seconds at this change. This is local synthetic proof, not deployed-data validation.
+Current and historical entry reads, plus editorial pages including continuation and lookahead rows, return the safe `storage_unavailable` response when stored JSON exceeds the byte bound. The SQL size guard does not expose a driver scan error or load the oversized body. Multibyte regressions reproduced the HTTP 500 failures before correction. Authenticated SQLite/HTTP checks prove HTTP 503, unchanged retained bodies, history, receipts and events, and continued valid reads. Editorial coverage includes first pages, both continuation positions and oversized lookahead rows. The complete project-map race suite passed in 10.550 seconds after the editorial correction. This is local synthetic proof, not deployed-data validation.
 
 ## Retained link readability
 
