@@ -96,7 +96,7 @@ try {
       const snapshot = {
         fixture_writes:fixtureWrites, action_writes:actionWrites, forbidden_writes:forbiddenWrites,
         delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads,
-        presence_reads:presenceReads, presence_finished:presenceFinished, presence_responses:presenceResponses, presence_http_status:presenceHTTPStatus, presence_failed:presenceFailed, presence_header_errors:presenceHeaderErrors,
+        ...presenceDiagnostics(),
         contact_history_reads:contactHistoryReads, node_clock_ms:Date.now(),
         worker_history_before: workerHistoryBefore, worker_history_after: workerHistoryAfter,
       };
@@ -197,8 +197,38 @@ try {
   let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0, noteArchiveReads = 0;
   let deliveryReads = 0, jobBriefReads = 0, jobArchiveReads = 0, reviewRunReads = 0;
   let presenceReads = 0, presenceFinished = 0, presenceResponses = 0, presenceHTTPStatus = 0, presenceFailed = 0, presenceHeaderErrors = 0, contactHistoryReads = 0;
+  let presenceFailureKind = 'none', presenceFailureMS = 0, presenceFailureHeadersMS = 0, presenceSignalAborts = 0, presenceSignalAbortMS = 0;
+  const presenceTimings = new WeakMap();
+  const presenceElapsed = (now, start) => start === undefined ? 0 : Math.min(120000, Math.max(0, Math.round(now - start)));
+  const presenceDiagnostics = () => ({ presence_reads:presenceReads, presence_finished:presenceFinished, presence_responses:presenceResponses, presence_http_status:presenceHTTPStatus, presence_failed:presenceFailed, presence_header_errors:presenceHeaderErrors, presence_failure_kind:presenceFailureKind, presence_failure_ms:presenceFailureMS, presence_failure_headers_ms:presenceFailureHeadersMS, presence_signal_aborts:presenceSignalAborts, presence_signal_abort_ms:presenceSignalAbortMS });
+  // Observe only this synthetic fixture's presence signal. Keep the original
+  // fetch promise and body handling; a signal may abort after headers arrive.
+  await page.exposeFunction('__fcSmokePresenceSignalAborted', elapsed => {
+    if (Number.isInteger(elapsed) && elapsed >= 0 && elapsed <= 120000) {
+      presenceSignalAborts = Math.min(1000, presenceSignalAborts + 1);
+      presenceSignalAbortMS = elapsed;
+    }
+  });
+  await page.addInitScript(({path}) => {
+    const original = globalThis.fetch;
+    globalThis.fetch = function(input, init) {
+      let url;
+      try { url = new URL(input instanceof Request ? input.url : input, location.href); }
+      catch { return original.apply(this, arguments); }
+      const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+      if (url.origin === location.origin && url.pathname === path && method === 'GET') {
+        const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+        if (signal) {
+          const started = performance.now();
+          const aborted = () => { void globalThis.__fcSmokePresenceSignalAborted(Math.min(120000, Math.max(0, Math.round(performance.now() - started)))).catch(() => {}); };
+          if (signal.aborted) aborted(); else signal.addEventListener('abort', aborted, {once:true});
+        }
+      }
+      return original.apply(this, arguments);
+    };
+  }, {path:prefix+'/workers/presence'});
   let injectedRequest;
-  diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external, presence_reads:presenceReads, presence_finished:presenceFinished, presence_responses:presenceResponses, presence_http_status:presenceHTTPStatus, presence_failed:presenceFailed, presence_header_errors:presenceHeaderErrors, delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads, contact_history_reads:contactHistoryReads });
+  diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external, ...presenceDiagnostics(), delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads, contact_history_reads:contactHistoryReads });
   page.on('pageerror', () => errors++);
   page.on('console', value => {
     if (value.type() !== 'error' || expectedMissingSessionRoute(value.location().url) || (controlledMessageFailure && value.location().url === config.origin + prefix + '/messages')) return;
@@ -207,7 +237,7 @@ try {
   });
   page.on('response', value => {
     const url = new URL(value.url());
-    if (value.request().method()==='GET' && url.origin===config.origin && url.pathname===prefix+'/workers/presence') { presenceResponses++; presenceHTTPStatus=value.status(); }
+    if (value.request().method()==='GET' && url.origin===config.origin && url.pathname===prefix+'/workers/presence') { presenceResponses++; presenceHTTPStatus=value.status(); const timing=presenceTimings.get(value.request()); if(timing) timing.headers=performance.now(); }
     if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else if (value.request() === injectedRequest && value.status() === 400) injectedResponses++; else errors++; } });
   page.on('request', request => {
     const url = new URL(request.url());
@@ -215,6 +245,7 @@ try {
     if (request.method() === 'GET') {
       if (url.pathname === prefix + '/workers/presence') {
         presenceReads++;
+        presenceTimings.set(request, {started:performance.now()});
         const headers=request.headers();
         if (Object.hasOwn(headers,'x-fc-worker') || Object.hasOwn(headers,'x-fc-session')) presenceHeaderErrors++;
       }
@@ -241,7 +272,14 @@ try {
   });
   page.on('requestfailed', request => {
     const url = new URL(request.url());
-    if (request.method()==='GET' && url.origin===config.origin && url.pathname===prefix+'/workers/presence') presenceFailed++;
+    if (request.method()==='GET' && url.origin===config.origin && url.pathname===prefix+'/workers/presence') {
+      presenceFailed++;
+      const timing=presenceTimings.get(request), now=performance.now();
+      presenceFailureMS=presenceElapsed(now,timing?.started);
+      presenceFailureHeadersMS=presenceElapsed(now,timing?.headers);
+      const error=request.failure()?.errorText;
+      presenceFailureKind=error==='net::ERR_ABORTED' ? 'aborted' : ['net::ERR_CONNECTION_ABORTED','net::ERR_CONNECTION_CLOSED','net::ERR_CONNECTION_FAILED','net::ERR_CONNECTION_REFUSED','net::ERR_CONNECTION_RESET','net::ERR_TIMED_OUT','net::ERR_NAME_NOT_RESOLVED','net::ERR_INTERNET_DISCONNECTED','net::ERR_NETWORK_CHANGED','net::ERR_EMPTY_RESPONSE','net::ERR_HTTP2_PROTOCOL_ERROR'].includes(error) ? 'connection' : 'other';
+    }
   });
   page.on('requestfinished', request => {
     if (request.method()==='GET' && request.url().startsWith(config.origin+prefix+'/workers/presence?')) presenceFinished++;

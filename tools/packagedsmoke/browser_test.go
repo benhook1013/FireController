@@ -237,41 +237,46 @@ func (o *browserOutput) browserPID() int { o.pidMu.Lock(); defer o.pidMu.Unlock(
 func (o *browserOutput) safePhase() string {
 	for _, line := range bytes.Split(o.bytes(), []byte("\n")) {
 		var record struct {
-			State                    string `json:"state"`
-			Phase                    string `json:"phase"`
-			Checkpoint               string `json:"checkpoint"`
-			FailureClass             string `json:"failure_class"`
-			FailureName              string `json:"failure_name"`
-			HTTPStatus               int    `json:"http_status"`
-			AllowWrites              bool   `json:"allow_writes"`
-			CanEditPresentation      bool   `json:"can_edit_presentation"`
-			ActionWrites             int    `json:"action_writes"`
-			External                 int    `json:"external"`
-			Posts                    int    `json:"session_posts"`
-			Deletes                  int    `json:"session_deletes"`
-			Renewals                 int    `json:"session_renewals"`
-			Refusals                 int    `json:"terminal_responses"`
-			Errors                   int    `json:"errors"`
-			Writes                   int    `json:"forbidden_writes"`
-			SendStatus               int    `json:"send_status"`
-			ReplyStatus              int    `json:"reply_status"`
-			Conversation             bool   `json:"conversation_match"`
-			PresentationReads        int    `json:"presentation_reads"`
-			MetadataStreams          int    `json:"metadata_streams"`
-			InboxStreams             int    `json:"inbox_streams"`
-			InjectedMetadataFailures int    `json:"injected_metadata_failures"`
-			InjectedConsoleErrors    int    `json:"injected_console_errors"`
-			ReviewRunReads           int    `json:"run_fetches"`
-			PresenceReads            int    `json:"presence_reads"`
-			PresenceFinished         int    `json:"presence_finished"`
-			PresenceResponses        int    `json:"presence_responses"`
-			PresenceHTTPStatus       int    `json:"presence_http_status"`
-			PresenceFailed           int    `json:"presence_failed"`
-			PresenceHeaderErrors     int    `json:"presence_header_errors"`
-			DeliveryReads            int    `json:"delivery_reads"`
-			JobBriefReads            int    `json:"job_brief_reads"`
-			JobArchiveReads          int    `json:"job_archive_reads"`
-			ContactHistoryReads      int    `json:"contact_history_reads"`
+			State                    string          `json:"state"`
+			Phase                    string          `json:"phase"`
+			Checkpoint               string          `json:"checkpoint"`
+			FailureClass             string          `json:"failure_class"`
+			FailureName              string          `json:"failure_name"`
+			HTTPStatus               int             `json:"http_status"`
+			AllowWrites              bool            `json:"allow_writes"`
+			CanEditPresentation      bool            `json:"can_edit_presentation"`
+			ActionWrites             int             `json:"action_writes"`
+			External                 int             `json:"external"`
+			Posts                    int             `json:"session_posts"`
+			Deletes                  int             `json:"session_deletes"`
+			Renewals                 int             `json:"session_renewals"`
+			Refusals                 int             `json:"terminal_responses"`
+			Errors                   int             `json:"errors"`
+			Writes                   int             `json:"forbidden_writes"`
+			SendStatus               int             `json:"send_status"`
+			ReplyStatus              int             `json:"reply_status"`
+			Conversation             bool            `json:"conversation_match"`
+			PresentationReads        int             `json:"presentation_reads"`
+			MetadataStreams          int             `json:"metadata_streams"`
+			InboxStreams             int             `json:"inbox_streams"`
+			InjectedMetadataFailures int             `json:"injected_metadata_failures"`
+			InjectedConsoleErrors    int             `json:"injected_console_errors"`
+			ReviewRunReads           int             `json:"run_fetches"`
+			PresenceReads            int             `json:"presence_reads"`
+			PresenceFinished         int             `json:"presence_finished"`
+			PresenceResponses        int             `json:"presence_responses"`
+			PresenceHTTPStatus       int             `json:"presence_http_status"`
+			PresenceFailed           int             `json:"presence_failed"`
+			PresenceHeaderErrors     int             `json:"presence_header_errors"`
+			PresenceFailureKind      json.RawMessage `json:"presence_failure_kind"`
+			PresenceFailureMS        json.RawMessage `json:"presence_failure_ms"`
+			PresenceFailureHeadersMS json.RawMessage `json:"presence_failure_headers_ms"`
+			PresenceSignalAborts     json.RawMessage `json:"presence_signal_aborts"`
+			PresenceSignalAbortMS    json.RawMessage `json:"presence_signal_abort_ms"`
+			DeliveryReads            int             `json:"delivery_reads"`
+			JobBriefReads            int             `json:"job_brief_reads"`
+			JobArchiveReads          int             `json:"job_archive_reads"`
+			ContactHistoryReads      int             `json:"contact_history_reads"`
 		}
 		if json.Unmarshal(line, &record) != nil || record.State != "FAIL" {
 			continue
@@ -351,6 +356,27 @@ func (o *browserOutput) safePhase() string {
 					allowed = true
 				}
 				valid := allowed && (record.PresenceHTTPStatus == 0 || record.PresenceHTTPStatus >= 100 && record.PresenceHTTPStatus <= 599)
+				// Missing optional observations mean unknown, as do zero durations.
+				presenceFailureKind := "none"
+				if len(record.PresenceFailureKind) != 0 {
+					presenceFailureKind = ""
+					valid = valid && json.Unmarshal(record.PresenceFailureKind, &presenceFailureKind) == nil && validPresenceFailureKind(presenceFailureKind)
+				}
+				var presenceFailureMS, presenceFailureHeadersMS, presenceSignalAborts, presenceSignalAbortMS int
+				for _, observation := range []struct {
+					raw     json.RawMessage
+					value   *int
+					maximum int
+				}{
+					{record.PresenceFailureMS, &presenceFailureMS, 120000},
+					{record.PresenceFailureHeadersMS, &presenceFailureHeadersMS, 120000},
+					{record.PresenceSignalAborts, &presenceSignalAborts, 1000},
+					{record.PresenceSignalAbortMS, &presenceSignalAbortMS, 120000},
+				} {
+					if len(observation.raw) != 0 {
+						valid = valid && !bytes.Equal(bytes.TrimSpace(observation.raw), []byte("null")) && json.Unmarshal(observation.raw, observation.value) == nil && *observation.value >= 0 && *observation.value <= observation.maximum
+					}
+				}
 				for _, n := range []int{record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Errors, record.External, record.Writes, record.ActionWrites, record.PresenceReads, record.PresenceFinished, record.PresenceResponses, record.PresenceFailed, record.PresenceHeaderErrors, record.DeliveryReads, record.JobBriefReads, record.JobArchiveReads, record.ContactHistoryReads} {
 					valid = valid && n >= 0 && n <= 1000
 				}
@@ -368,6 +394,7 @@ func (o *browserOutput) safePhase() string {
 					result := fmt.Sprintf("delivery-overview/%s class=%s error=%s presentation_reads=%d metadata_streams=%d inbox_streams=%d forbidden_writes=%d action_writes=%d errors=%d external=%d", record.Checkpoint, class, name, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Writes, record.ActionWrites, record.Errors, record.External)
 					if record.Checkpoint == "presence-initial" || record.Checkpoint == "presence-hidden" || record.Checkpoint == "presence-visible" {
 						result += fmt.Sprintf(" presence_reads=%d presence_finished=%d presence_responses=%d presence_http_status=%d presence_failed=%d presence_header_errors=%d delivery_reads=%d job_brief_reads=%d job_archive_reads=%d contact_history_reads=%d", record.PresenceReads, record.PresenceFinished, record.PresenceResponses, record.PresenceHTTPStatus, record.PresenceFailed, record.PresenceHeaderErrors, record.DeliveryReads, record.JobBriefReads, record.JobArchiveReads, record.ContactHistoryReads)
+						result += fmt.Sprintf(" presence_failure_kind=%s presence_failure_ms=%d presence_failure_headers_ms=%d presence_signal_aborts=%d presence_signal_abort_ms=%d", presenceFailureKind, presenceFailureMS, presenceFailureHeadersMS, presenceSignalAborts, presenceSignalAbortMS)
 					}
 					return result
 				}
@@ -479,6 +506,10 @@ func TestBrowserExplicitConnectDiagnosticsAllowlist(t *testing.T) {
 
 // Progress is a private observer record, never a source of response bodies or
 // output text. Reuse the terminal formatter's fixed phase/checkpoint vocabulary.
+func validPresenceFailureKind(value string) bool {
+	return value == "none" || value == "aborted" || value == "connection" || value == "other"
+}
+
 func safeBrowserProgress(path string, now time.Time) string {
 	const limit = 4096
 	info, err := os.Lstat(path)
@@ -521,6 +552,18 @@ func safeBrowserProgress(path string, now time.Time) string {
 			return "unavailable"
 		}
 		switch name {
+		case "presence_failure_kind":
+			var value string
+			if json.Unmarshal(raw, &value) != nil || !validPresenceFailureKind(value) {
+				return "unavailable"
+			}
+			record[name] = value
+		case "presence_failure_ms", "presence_failure_headers_ms", "presence_signal_abort_ms":
+			var value int
+			if json.Unmarshal(raw, &value) != nil || value < 0 || value > 120000 {
+				return "unavailable"
+			}
+			record[name] = value
 		case "allow_writes", "can_edit_presentation":
 			var value bool
 			if json.Unmarshal(raw, &value) != nil {
@@ -533,7 +576,7 @@ func safeBrowserProgress(path string, now time.Time) string {
 				return "unavailable"
 			}
 			record[name] = value
-		case "session_posts", "session_deletes", "session_renewals", "terminal_responses", "errors", "forbidden_writes", "action_writes", "external", "presentation_reads", "metadata_streams", "inbox_streams", "injected_metadata_failures", "injected_console_errors", "http_status", "presence_reads", "presence_finished", "presence_responses", "presence_failed", "presence_header_errors", "delivery_reads", "job_brief_reads", "job_archive_reads", "contact_history_reads":
+		case "session_posts", "session_deletes", "session_renewals", "terminal_responses", "errors", "forbidden_writes", "action_writes", "external", "presentation_reads", "metadata_streams", "inbox_streams", "injected_metadata_failures", "injected_console_errors", "http_status", "presence_reads", "presence_finished", "presence_responses", "presence_failed", "presence_header_errors", "presence_signal_aborts", "delivery_reads", "job_brief_reads", "job_archive_reads", "contact_history_reads":
 			var value int
 			if json.Unmarshal(raw, &value) != nil || value < 0 || value > 1000 {
 				return "unavailable"
@@ -702,7 +745,7 @@ func TestBrowserPresenceDiagnosticsAllowlist(t *testing.T) {
 					t.Fatal("private diagnostic value escaped")
 				}
 				if tc.wantDetail {
-					want := "delivery-overview/" + checkpoint + " class=assertion error=Error presentation_reads=0 metadata_streams=0 inbox_streams=0 forbidden_writes=0 action_writes=0 errors=0 external=0 presence_reads=2 presence_finished=1 presence_responses=0 presence_http_status=0 presence_failed=0 presence_header_errors=0 delivery_reads=1 job_brief_reads=0 job_archive_reads=0 contact_history_reads=0"
+					want := "delivery-overview/" + checkpoint + " class=assertion error=Error presentation_reads=0 metadata_streams=0 inbox_streams=0 forbidden_writes=0 action_writes=0 errors=0 external=0 presence_reads=2 presence_finished=1 presence_responses=0 presence_http_status=0 presence_failed=0 presence_header_errors=0 delivery_reads=1 job_brief_reads=0 job_archive_reads=0 contact_history_reads=0 presence_failure_kind=none presence_failure_ms=0 presence_failure_headers_ms=0 presence_signal_aborts=0 presence_signal_abort_ms=0"
 					if got != want {
 						t.Fatalf("bounded presence diagnostic differs: %q", got)
 					}
@@ -718,7 +761,7 @@ func TestBrowserPresenceDiagnosticsAllowlist(t *testing.T) {
 		t.Fatal("presence progress fixture")
 	}
 	got := safeBrowserProgress(path, time.UnixMilli(1000000))
-	if !strings.HasPrefix(got, "delivery-overview/presence-visible ") || !strings.Contains(got, " presence_reads=2 presence_finished=1 presence_responses=0 presence_http_status=0 presence_failed=0 presence_header_errors=0 delivery_reads=1 job_brief_reads=0 job_archive_reads=0 contact_history_reads=0 operation=failure-snapshot age_ms=250") {
+	if !strings.HasPrefix(got, "delivery-overview/presence-visible ") || !strings.Contains(got, " presence_reads=2 presence_finished=1 presence_responses=0 presence_http_status=0 presence_failed=0 presence_header_errors=0 delivery_reads=1 job_brief_reads=0 job_archive_reads=0 contact_history_reads=0 presence_failure_kind=none presence_failure_ms=0 presence_failure_headers_ms=0 presence_signal_aborts=0 presence_signal_abort_ms=0 operation=failure-snapshot age_ms=250") {
 		t.Fatal("fixed presence progress was not retained")
 	}
 }
@@ -729,6 +772,37 @@ func TestBrowserPresenceLifecycleDiagnosticsAllowlist(t *testing.T) {
 		value       any
 		valid       bool
 	}{
+		{"failure-none", "presence_failure_kind", "none", true},
+		{"failure-aborted", "presence_failure_kind", "aborted", true},
+		{"failure-connection", "presence_failure_kind", "connection", true},
+		{"failure-other", "presence_failure_kind", "other", true},
+		{"failure-unknown-label", "presence_failure_kind", "timeout", false},
+		{"failure-empty-label", "presence_failure_kind", "", false},
+		{"failure-private-label", "presence_failure_kind", "PRIVATE_SENTINEL", false},
+		{"failure-null-label", "presence_failure_kind", nil, false},
+		{"failure-request-unknown", "presence_failure_ms", 0, true},
+		{"failure-request-max", "presence_failure_ms", 120000, true},
+		{"failure-request-negative", "presence_failure_ms", -1, false},
+		{"failure-request-unbounded", "presence_failure_ms", 120001, false},
+		{"failure-request-fraction", "presence_failure_ms", 1.5, false},
+		{"failure-request-private", "presence_failure_ms", "PRIVATE_SENTINEL", false},
+		{"failure-request-null", "presence_failure_ms", nil, false},
+		{"failure-headers-observed", "presence_failure_headers_ms", 4999, true},
+		{"failure-headers-negative", "presence_failure_headers_ms", -1, false},
+		{"failure-headers-unbounded", "presence_failure_headers_ms", 120001, false},
+		{"failure-headers-private", "presence_failure_headers_ms", "PRIVATE_SENTINEL", false},
+		{"failure-headers-null", "presence_failure_headers_ms", nil, false},
+		{"signal-observed", "presence_signal_aborts", 1, true},
+		{"signal-count-max", "presence_signal_aborts", 1000, true},
+		{"signal-count-negative", "presence_signal_aborts", -1, false},
+		{"signal-count-unbounded", "presence_signal_aborts", 1001, false},
+		{"signal-count-private", "presence_signal_aborts", "PRIVATE_SENTINEL", false},
+		{"signal-count-null", "presence_signal_aborts", nil, false},
+		{"signal-timing-max", "presence_signal_abort_ms", 120000, true},
+		{"signal-timing-negative", "presence_signal_abort_ms", -1, false},
+		{"signal-timing-unbounded", "presence_signal_abort_ms", 120001, false},
+		{"signal-timing-private", "presence_signal_abort_ms", "PRIVATE_SENTINEL", false},
+		{"signal-timing-null", "presence_signal_abort_ms", nil, false},
 		{"response", "presence_responses", 2, true},
 		{"failed", "presence_failed", 1, true},
 		{"unknown-status", "presence_http_status", 0, true},
@@ -745,7 +819,7 @@ func TestBrowserPresenceLifecycleDiagnosticsAllowlist(t *testing.T) {
 		{"private-failed", "presence_failed", "PRIVATE_SENTINEL", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			counters := map[string]any{"presence_reads": 2, "presence_finished": 1, "presence_responses": 1, "presence_http_status": 200, "presence_failed": 0}
+			counters := map[string]any{"presence_reads": 2, "presence_finished": 1, "presence_responses": 1, "presence_http_status": 200, "presence_failed": 0, "presence_failure_kind": "none", "presence_failure_ms": 0, "presence_failure_headers_ms": 0, "presence_signal_aborts": 0, "presence_signal_abort_ms": 0}
 			counters[tc.field] = tc.value
 			record := map[string]any{"state": "FAIL", "phase": "delivery-overview", "checkpoint": "presence-visible", "url": "PRIVATE_SENTINEL", "failure_text": "PRIVATE_SENTINEL"}
 			for name, value := range counters {
@@ -765,6 +839,10 @@ func TestBrowserPresenceLifecycleDiagnosticsAllowlist(t *testing.T) {
 				want := fmt.Sprintf(" presence_reads=2 presence_finished=1 presence_responses=%v presence_http_status=%v presence_failed=%v ", counters["presence_responses"], counters["presence_http_status"], counters["presence_failed"])
 				if !strings.Contains(got, want) {
 					t.Fatalf("safe lifecycle facts lost: %q", got)
+				}
+				wantDiscriminators := fmt.Sprintf(" presence_failure_kind=%v presence_failure_ms=%v presence_failure_headers_ms=%v presence_signal_aborts=%v presence_signal_abort_ms=%v", counters["presence_failure_kind"], counters["presence_failure_ms"], counters["presence_failure_headers_ms"], counters["presence_signal_aborts"], counters["presence_signal_abort_ms"])
+				if !strings.Contains(got, wantDiscriminators) {
+					t.Fatalf("safe failure discriminators lost: %q", got)
 				}
 			} else if got != "delivery-overview" && got != "driver-start-or-cleanup" {
 				t.Fatalf("invalid lifecycle detail accepted: %q", got)
