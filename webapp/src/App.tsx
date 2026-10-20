@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import type { FormEvent } from 'react';
 import { Link, NavLink, Route, Routes, matchPath, useBlocker, useLocation, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Api, ApiError, type BrowserSessionView } from './api';
 import { WorkspaceContext, useWorkspace, signalFor, usePaging, Pager, ReadState, errorText } from './workspace';
 import type { Session } from './workspace';
@@ -29,7 +29,7 @@ import { startMetadataAttempt } from './metadata-recovery';
 import { createAppearanceAcceptor, refreshProjectView } from './appearance-refresh';
 import type { Presentation } from './types';
 import flameEmber from './flame-ember.svg?no-inline';
-import type { Checkpoint, ChecklistItem, JobUpdate, InboxItem, LiveStatus, Project, Worker } from './types';
+import type { Checkpoint, ChecklistItem, JobUpdate, InboxItem, LiveStatus, Page, Project, Worker } from './types';
 
 const pageSize = 20;
 function nonce(): string { return Array.from(crypto.getRandomValues(new Uint32Array(4)), value => value.toString(16).padStart(8, '0')).join(''); }
@@ -563,14 +563,37 @@ function SelectedInbox() {
   const { session } = useWorkspace();
   return <><div className="page-heading"><p className="eyebrow">Conversations</p><h2>{session.worker ? presentation?.headings.inbox ? `${session.worker.name} · ${label}` : `${session.worker.name} inbox` : label}</h2><p>Read incoming messages without changing their seen or acknowledged state.</p></div>{session.worker ? <><ContextualNotes key={`notes-${session.worker.id}`} workerId={session.worker.id} /><MessageComposer /><InboxPage /></> : <ChooseWorker />}</>;
 }
+export function cachedWorkerLabelsQuery(key: readonly string[]) {
+  // Observe the sidebar's existing first page without fetching workers here.
+  return queryOptions<Page<Worker>>({ queryKey: [...key, 'workers', ''], enabled: false });
+}
+function useMessageWorkerLabels() {
+  const { session, key } = useWorkspace();
+  const { data } = useQuery(cachedWorkerLabelsQuery(key));
+  return useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const worker of data?.items ?? []) {
+      if (worker.project_id === session.project.id) labels.set(worker.id, worker.name);
+    }
+    if (session.worker?.project_id === session.project.id) labels.set(session.worker.id, session.worker.name);
+    return labels;
+  }, [data, session.project.id, session.worker]);
+}
+function MessageWorkerLabel({ id, labels }: { id: string; labels: ReadonlyMap<string, string> }) {
+  const name = labels.get(id);
+  return <span title={id}>{name ?? id}{name && name !== id && <span className="visually-hidden"> ({id})</span>}</span>;
+}
 function InboxPage() {
   const { session, key, home, ready } = useWorkspace();
+  const labels = useMessageWorkerLabels();
   const paging = usePaging();
   const query = useQuery({ queryKey: [...key, 'inbox', paging.cursor], queryFn: ({ signal }) => session.api.inbox(session.worker!.id, { limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), enabled: ready, staleTime: Infinity });
-  return <section className="panel"><ReadState error={query.error} loading={!ready || query.isPending} empty={!query.data?.items.length}><ul className="inbox-list">{query.data?.items.map(item => <InboxRow key={item.id} item={item} home={home} />)}</ul></ReadState><Pager paging={paging} page={query.data} label="inbox" busy={query.isFetching || !ready} /></section>;
+  return <section className="panel"><ReadState error={query.error} loading={!ready || query.isPending} empty={!query.data?.items.length}><ul className="inbox-list">{query.data?.items.map(item => <InboxRow key={item.id} item={item} home={home} labels={labels} />)}</ul></ReadState><Pager paging={paging} page={query.data} label="inbox" busy={query.isFetching || !ready} /></section>;
 }
-function InboxRow({ item, home }: { item: InboxItem; home: string }) {
-  return <li><div className="message-top"><strong>{item.sender_worker_id}</strong><time dateTime={item.created_at}>{time(item.created_at)}</time></div><Link className="message-preview" aria-label={`Read conversation from ${item.sender_worker_id}`} to={`${home}/inbox/${encodeURIComponent(item.conversation_id)}`}>{item.preview || 'Open conversation'}{item.preview_truncated ? '…' : ''}</Link><div className="item-meta"><span className={`badge ${item.seen ? 'neutral' : 'status-active'}`}>{item.seen ? 'Seen' : 'Unread'}</span><span>{item.acknowledged ? 'Acknowledged' : 'Not acknowledged'}</span></div><RecipientActions item={item} /></li>;
+function InboxRow({ item, home, labels }: { item: InboxItem; home: string; labels: ReadonlyMap<string, string> }) {
+  const name = labels.get(item.sender_worker_id);
+  const sender = name ? `${name} (${item.sender_worker_id})` : item.sender_worker_id;
+  return <li><div className="message-top"><strong><MessageWorkerLabel id={item.sender_worker_id} labels={labels} /></strong><time dateTime={item.created_at}>{time(item.created_at)}</time></div><Link className="message-preview" aria-label={`Read conversation from ${sender}`} to={`${home}/inbox/${encodeURIComponent(item.conversation_id)}`}>{item.preview || 'Open conversation'}{item.preview_truncated ? '…' : ''}</Link><div className="item-meta"><span className={`badge ${item.seen ? 'neutral' : 'status-active'}`}>{item.seen ? 'Seen' : 'Unread'}</span><span>{item.acknowledged ? 'Acknowledged' : 'Not acknowledged'}</span></div><RecipientActions item={item} /></li>;
 }
 function Conversation() {
   const { session, home } = useWorkspace();
@@ -579,7 +602,8 @@ function Conversation() {
 }
 export function ConversationMessages({ id }: { id: string }) {
   const { session, key } = useWorkspace();
+  const labels = useMessageWorkerLabels();
   const paging = usePaging();
   const query = useQuery({ queryKey: [...key, 'thread', id, paging.cursor], queryFn: ({ signal }) => session.api.thread(id, { limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
-  return <section className="panel"><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ol className="conversation-list">{query.data?.items.map(message => <li key={message.id}><div className="message-top"><strong>{message.sender_worker_id}<span className="message-direction"> to {message.recipient_worker_id}</span></strong><time dateTime={message.created_at}>{time(message.created_at)}</time></div><EditorialMarkdown>{message.body}</EditorialMarkdown><MessageComposer reply={message} /></li>)}</ol></ReadState><Pager paging={paging} page={query.data} label="messages" busy={query.isFetching} /></section>;
+  return <section className="panel"><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ol className="conversation-list">{query.data?.items.map(message => <li key={message.id}><div className="message-top"><strong><MessageWorkerLabel id={message.sender_worker_id} labels={labels} /><span className="message-direction"> to <MessageWorkerLabel id={message.recipient_worker_id} labels={labels} /></span></strong><time dateTime={message.created_at}>{time(message.created_at)}</time></div><EditorialMarkdown>{message.body}</EditorialMarkdown><MessageComposer reply={message} /></li>)}</ol></ReadState><Pager paging={paging} page={query.data} label="messages" busy={query.isFetching} /></section>;
 }

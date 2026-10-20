@@ -31,8 +31,8 @@
 
 .delivery-job-context{font-size:.78rem;line-height:1.5;color:var(--fc-surface_muted,#666874)}.delivery-job-context p{overflow-wrap:anywhere}.delivery-brief,.delivery-update-body{margin:0 0 8px}.delivery-brief{color:var(--fc-surface_text,#252833)}.delivery-job-context .delivery-context-meta{font-size:.69rem;margin:0 0 8px}.delivery-update,.delivery-checklist{margin:12px 0}.delivery-checklist p{margin:0 0 6px}.delivery-checklist strong{font-size:.74rem;color:var(--fc-surface_text,#252833)}
 
-/* Bounded Markdown previews retain card density and headings below the job title. */
-.delivery-preview.editorial-markdown{font-size:.78rem;line-height:1.5;max-height:12em;overflow:hidden;max-width:100%}
+/* Server-bounded Markdown previews retain all supplied lines and headings below the job title. */
+.delivery-preview.editorial-markdown{font-size:.78rem;line-height:1.5;max-width:100%}
 .delivery-preview.editorial-markdown p,.delivery-preview.editorial-markdown ul,.delivery-preview.editorial-markdown ol,.delivery-preview.editorial-markdown blockquote,.delivery-preview.editorial-markdown pre{margin:0 0 .55em;white-space:normal}
 .delivery-preview.editorial-markdown h5,.delivery-preview.editorial-markdown h6{font-size:.82rem;line-height:1.35;letter-spacing:normal;margin:.8em 0 .4em}
 .delivery-preview.editorial-markdown h6{font-size:.79rem}

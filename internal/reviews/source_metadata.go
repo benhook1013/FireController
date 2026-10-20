@@ -79,6 +79,9 @@ func PublishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 	changes := []change{}
 	seen := map[int64]bool{}
 	for _, pull := range pulls {
+		if pull.Number < 1 || pull.Number > 2147483647 || !validSHA(pull.HeadSHA) || !validSHA(pull.BaseSHA) || !oneOf(pull.State, "open", "merged", "closed", "unknown") {
+			return Receipt{}, validationError("Source metadata contains invalid pull identity or state.")
+		}
 		if seen[pull.Number] || len(pull.Runs) != 0 || len(pull.Attempts) != 0 || pull.Complete || pull.CIState != "" || pull.Mergeability != "" {
 			return Receipt{}, validationError("Source metadata contains unsupported evidence or summary fields.")
 		}
@@ -109,6 +112,15 @@ func PublishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 		}
 		if pull.Title == "" {
 			pull.Title, _ = old[0].(string)
+		}
+		// Invalid optional provider display facts must not prevent the source
+		// worker from settling. Validate retained same-head metadata first so
+		// omitting a candidate cannot conceal corrupt inherited facts.
+		if _, err := inheritedPullMetadata(old, PullInput{HeadSHA: pull.HeadSHA, State: pull.State}); err != nil {
+			return Receipt{}, err
+		}
+		if !validText(pull.Title, 500, true) || !validText(pull.BaseRef, 256, false) || pullMetadata(pull).Validate(pull.State) != nil {
+			continue
 		}
 		pull.CIState, pull.Mergeability = "unknown", "unknown"
 		if old[2] == pull.HeadSHA && old[3] == pull.BaseRef && old[4] == pull.BaseSHA {

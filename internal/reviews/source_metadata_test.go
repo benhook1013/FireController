@@ -191,3 +191,81 @@ func TestSourceMetadataRetargetAndEventFailureAreSafe(t *testing.T) {
 		t.Fatal("retarget reused stale CI/merge facts or lost same-head display metadata", got)
 	}
 }
+
+func TestSourceMetadataInvalidOptionalEntryPreservesOtherPublication(t *testing.T) {
+	for _, field := range []string{"title", "base_ref", "merged_at", "diff"} {
+		t.Run(field, func(t *testing.T) {
+			f := newAPIFixture(t)
+			f.observe(t, reviewRequest(0, []PullInput{nativePull(1), nativePull(2)}), "source-start")
+			before := metadataRead(t, f, 1, "").Pull
+			bad := sourcePull(1, "Invalid replacement")
+			switch field {
+			case "title":
+				bad.Title = "bad\x7ftitle"
+			case "base_ref":
+				bad.BaseRef = "bad\x00ref"
+			case "merged_at":
+				bad.State, bad.MergedAt = "merged", "not-an-instant"
+			case "diff":
+				bad.Diff = &PullDiff{1, -1, 2}
+			}
+			good := sourcePull(2, "Valid fresh replacement")
+			r, err := sourcePublish(f, sourcePins(t, f, 1, 2), bad, good)
+			if err != nil || r.ID == "" {
+				t.Fatal("optional refusal blocked valid peer publication", r, err)
+			}
+			if got := metadataRead(t, f, 1, "").Pull; !reflect.DeepEqual(before, got) {
+				t.Fatal("invalid candidate changed current facts", got)
+			}
+			if got := metadataRead(t, f, 2, "").Pull; got.Title != good.Title {
+				t.Fatal("valid candidate was lost", got)
+			}
+		})
+	}
+}
+
+func TestSourceMetadataInvalidOptionalDoesNotMaskMandatoryFailure(t *testing.T) {
+	for _, field := range []string{"number", "head", "base", "state", "evidence", "duplicate", "pin", "repository", "retained_metadata"} {
+		t.Run(field, func(t *testing.T) {
+			f := newAPIFixture(t)
+			f.observe(t, reviewRequest(0, []PullInput{nativePull(1)}), "source-start")
+			pins := sourcePins(t, f, 1)
+			bad := sourcePull(1, "bad\x00title")
+			pulls := []PullInput{bad}
+			switch field {
+			case "number":
+				pulls[0].Number = 0
+			case "head":
+				pulls[0].HeadSHA = "not-a-sha"
+			case "base":
+				pulls[0].BaseSHA = "not-a-sha"
+			case "state":
+				pulls[0].State = "unrecognized"
+			case "evidence":
+				pulls[0].Complete = true
+			case "duplicate":
+				pulls = append(pulls, bad)
+			case "repository":
+				if _, err := f.store.DB().Exec(`UPDATE projects SET github_repository_id=999 WHERE id=?`, f.project); err != nil {
+					t.Fatal(err)
+				}
+			case "retained_metadata":
+				if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET metadata_json=? WHERE project_id=? AND number=1`, `{"diff":{"files":-1,"additions":0,"deletions":0}}`, f.project); err != nil {
+					t.Fatal(err)
+				}
+				pins = sourcePins(t, f, 1)
+			case "pin":
+				pin := pins[1]
+				pin.project = "another-project"
+				pins[1] = pin
+			}
+			before := importDatabaseState(t, f)
+			if _, err := sourcePublish(f, pins, pulls...); err == nil {
+				t.Fatal("mandatory failure was ignored")
+			}
+			if !reflect.DeepEqual(before, importDatabaseState(t, f)) {
+				t.Fatal("mandatory failure changed retained state")
+			}
+		})
+	}
+}
