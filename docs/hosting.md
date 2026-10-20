@@ -50,6 +50,8 @@ Local [operator backup, inspection, inactive restore and managed scheduling](bac
 
 ## Executed deployment proof
 
+The sections below are historical deployment checkpoints pinned to the source and conditions tested. Statements that the predecessor remained primary describe those checkpoints; current working authority is recorded in [development runtime](delivery.md#development-runtime).
+
 The original single-server deployment used source `648c363a34ea52ffa36573260802602f2adf8745` and packaged `fcd` SHA-256 `c7cf7b8f18174108d154e4c5d5dde0154fa477a2fc05efa436a28464d98ee3a7`. Existing ingress and cert-manager passed publicly trusted HTTPS checks with that service and embedded browser. This build preceded persistent browser sessions; the following original deployment checks do not establish the cookie flow. Desktop and 390px browser checks exercised project connection, retained merged/open review history, real run details, workers/jobs and read-only Refresh. They observed no browser writes, credential persistence, JavaScript/CSP errors or overflow. A viewport check is not proof from a physical phone.
 
 Actual HTTPS API checks verified authentication, read-only grant enforcement and instance mismatch rejection. The event stream delivered its initial frame and a keepalive after 15.5 seconds through the deployed proxies. Packaged CLI and stdio MCP reads succeeded against the HTTPS endpoint; three CLI reads took 1.16–1.23 seconds from the test machine. These small observations are not throughput or latency guarantees.

@@ -1,6 +1,7 @@
 import { chromium, expect } from '../../webapp/node_modules/@playwright/test/index.mjs';
 import fs from 'node:fs/promises';
 import {writeFileSync, renameSync} from 'node:fs';
+import { classifyBrowserFailure, retainBrowserFailure } from './browser-diagnostics.mjs';
 
 // All inputs are synthetic, private files produced by browser_test.go. Neither
 // Playwright diagnostics nor request/credential bytes are printed on failure.
@@ -78,83 +79,65 @@ try {
   };
 
   failureSnapshot = async () => {
+    const screenshot = path => page.screenshot({path,mask:[page.locator('input,textarea,code,.full-text,.message-preview')],timeout:2000});
     if (phase === 'live-reviews') {
-      const snapshot = {
-        updated_pull: await page.getByRole('link',{name:'Live review updated',exact:true}).count(),
-        hosted_run_link: await page.getByRole('link',{name:'Open hosted run live-hosted-round',exact:true}).count(),
-        history_sections: await page.locator('.review-history').count(),
-        hosted_sections: await page.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).count(),
-        review_alerts: await page.getByRole('alert').count(),
-        run_fetches: reviewRunReads,
-        fallback_geometry:fallbackGeometry,
-      };
-      if (config.diagnostic_directory) {
-        await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});
-        await page.screenshot({path:config.diagnostic_directory+'/review-failure.png',mask:[page.locator('input,textarea,code,.full-text,.message-preview')],timeout:2000});
-        await fs.writeFile(config.diagnostic_directory+'/review-failure.json',JSON.stringify({phase,checkpoint,...snapshot}),{mode:0o600});
-      }
-      return snapshot;
+      return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'review-failure.json',
+        snapshot:{phase,checkpoint,run_fetches:reviewRunReads,fallback_geometry:fallbackGeometry}, screenshot,
+        collect:async snapshot => {
+          snapshot.updated_pull=await page.getByRole('link',{name:'Live review updated',exact:true}).count();
+          snapshot.hosted_run_link=await page.getByRole('link',{name:'Open hosted run live-hosted-round',exact:true}).count();
+          snapshot.history_sections=await page.locator('.review-history').count();
+          snapshot.hosted_sections=await page.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).count();
+          snapshot.review_alerts=await page.getByRole('alert').count();
+        },
+      });
     }
     if (phase === 'delivery-overview') {
       // Persist local fixed counters first: optional DOM/indicator/screenshot
       // failures must not erase the checkpoint that explains the real failure.
-      const snapshot = {
-        fixture_writes:fixtureWrites, action_writes:actionWrites, forbidden_writes:forbiddenWrites,
-        delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads,
-        ...presenceDiagnostics(),
-        contact_history_reads:contactHistoryReads, node_clock_ms:Date.now(),
-        worker_history_before: workerHistoryBefore, worker_history_after: workerHistoryAfter,
-      };
-      const persist = async () => {
-        if (!config.diagnostic_directory) return;
-        await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});
-        await fs.writeFile(config.diagnostic_directory+'/delivery-failure.json',JSON.stringify({phase,checkpoint,...snapshot}),{mode:0o600});
-      };
-      await persist();
-      try {
-        snapshot.browser_clock_ms=await page.evaluate(()=>Date.now());
-        snapshot.browser_hidden=await page.evaluate(()=>document.visibilityState==='hidden');
-        snapshot.delivery_heading=await page.getByRole('heading',{name:'Delivery',exact:true}).count();
-        snapshot.inspector_lane=await page.locator('.delivery-lane[aria-label="Inspector jobs"]').count();
-        snapshot.active_job=await page.getByText('Inspector active work',{exact:true}).count();
-        snapshot.latest_done=await page.locator('.delivery-checkpoint p').filter({hasText:'Latest checkpoint is visible.'}).count();
-        snapshot.latest_next=await page.locator('.delivery-checkpoint p').filter({hasText:'Continue from the latest checkpoint.'}).count();
-        snapshot.earlier_done=await page.locator('.delivery-checkpoint p').filter({hasText:'Earlier checkpoint only.'}).count();
-        snapshot.inbox_sidebar=await page.locator('.sidebar').count();
-        snapshot.inbox_heading=await page.getByRole('heading',{name:'Builder inbox',exact:true}).count();
-        snapshot.readonly_new_message=await page.getByRole('button',{name:'New message',exact:true}).count();
-        snapshot.contact_labels=await page.locator('.worker-contact').count();
-        if (await page.locator('.feed-card .status-dot').count()) snapshot.indicators=await indicatorColors();
-      } catch { snapshot.dom_diagnostics_unavailable=true; }
-      await persist();
-      if (config.diagnostic_directory) await page.screenshot({path:config.diagnostic_directory+'/delivery-failure.png',mask:[page.locator('input,textarea,code,.full-text,.message-preview')],timeout:2000}).catch(()=>{});
-      return snapshot;
+      return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'delivery-failure.json', screenshot,
+        snapshot:{phase,checkpoint,
+          fixture_writes:fixtureWrites, action_writes:actionWrites, forbidden_writes:forbiddenWrites,
+          delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads,
+          ...presenceDiagnostics(),
+          contact_history_reads:contactHistoryReads, node_clock_ms:Date.now(),
+          worker_history_before: workerHistoryBefore, worker_history_after: workerHistoryAfter,
+        },
+        collect:async snapshot => {
+          snapshot.browser_clock_ms=await page.evaluate(()=>Date.now());
+          snapshot.browser_hidden=await page.evaluate(()=>document.visibilityState==='hidden');
+          snapshot.delivery_heading=await page.getByRole('heading',{name:'Delivery',exact:true}).count();
+          snapshot.inspector_lane=await page.locator('.delivery-lane[aria-label="Inspector jobs"]').count();
+          snapshot.active_job=await page.getByText('Inspector active work',{exact:true}).count();
+          snapshot.latest_done=await page.locator('.delivery-checkpoint p').filter({hasText:'Latest checkpoint is visible.'}).count();
+          snapshot.latest_next=await page.locator('.delivery-checkpoint p').filter({hasText:'Continue from the latest checkpoint.'}).count();
+          snapshot.earlier_done=await page.locator('.delivery-checkpoint p').filter({hasText:'Earlier checkpoint only.'}).count();
+          snapshot.inbox_sidebar=await page.locator('.sidebar').count();
+          snapshot.inbox_heading=await page.getByRole('heading',{name:'Builder inbox',exact:true}).count();
+          snapshot.readonly_new_message=await page.getByRole('button',{name:'New message',exact:true}).count();
+          snapshot.contact_labels=await page.locator('.worker-contact').count();
+          if (await page.locator('.feed-card .status-dot').count()) snapshot.indicators=await indicatorColors();
+        },
+      });
     }
     if (phase === 'reload') {
-      if (config.diagnostic_directory) {
-        await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});
-        await fs.writeFile(config.diagnostic_directory+'/reload-failure.json',JSON.stringify({phase,checkpoint,...renewalProof}),{mode:0o600});
-      }
-      return renewalProof;
+      return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'reload-failure.json', snapshot:{phase,checkpoint,...renewalProof} });
     }
     if (phase !== 'explicit-actions-uncertain') return {};
-    const snapshot = {
-      sent_links: await page.getByRole('link',{name:'Open sent conversation',exact:true}).count(),
-      retry_buttons: await page.getByRole('button',{name:'Retry exact send',exact:true}).count(),
-      send_buttons: await page.getByRole('button',{name:'Send message',exact:true}).count(),
-      composer_forms: await page.locator('.browser-composer form').count(),
-      message_matches: await page.getByText('Uncertain browser message',{exact:true}).count(),
-      conversation_items: await page.locator('.conversation-list > li').count(),
-      alerts: await page.getByRole('alert').count(),
-      inbox_route: new URL(page.url()).pathname === home+'/inbox',
-      conversation_route: new URL(page.url()).pathname.startsWith(home+'/inbox/'),
-    };
-    if (config.diagnostic_directory) {
-      await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});
-      await page.screenshot({path:config.diagnostic_directory+'/failure.png', mask:[page.locator('input,textarea,code,.full-text,.message-preview')], timeout:2000});
-      await fs.writeFile(config.diagnostic_directory+'/failure.json',JSON.stringify({phase,checkpoint,...snapshot}),{mode:0o600});
-    }
-    return snapshot;
+    return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'failure.json', screenshot,
+      snapshot:{phase,checkpoint,...counters()},
+      collect:async snapshot => {
+        snapshot.sent_links=await page.getByRole('link',{name:'Open sent conversation',exact:true}).count();
+        snapshot.retry_buttons=await page.getByRole('button',{name:'Retry exact send',exact:true}).count();
+        snapshot.send_buttons=await page.getByRole('button',{name:'Send message',exact:true}).count();
+        snapshot.composer_forms=await page.locator('.browser-composer form').count();
+        snapshot.message_matches=await page.getByText('Uncertain browser message',{exact:true}).count();
+        snapshot.conversation_items=await page.locator('.conversation-list > li').count();
+        snapshot.alerts=await page.getByRole('alert').count();
+        snapshot.inbox_route=new URL(page.url()).pathname === home+'/inbox';
+        snapshot.conversation_route=new URL(page.url()).pathname.startsWith(home+'/inbox/');
+      },
+    });
   };
   let fixtureWrites = 0;
   const write = async (method, path, body, status = 200, sender = config.worker) => {
@@ -1335,7 +1318,7 @@ try {
   need(!progressFailed);
   console.log(JSON.stringify({state:'PASS', repeated_fallback_hash:repeatedFallbackHash, fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, progress_access_refusals:progressAccessFailures, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
 } catch (error) {
-  failureClass = error?.name === 'TimeoutError' || /timeout|timed out|exceeded.*limit/i.test(error?.message || '') ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
+  failureClass = classifyBrowserFailure(error);
   const failureName = ['TimeoutError','Error','AssertionError','TypeError','ReferenceError','RangeError'].includes(error?.name) ? error.name : 'Other';
   operation = 'failure-snapshot'; publishProgress();
   const snapshot = await failureSnapshot().catch(()=>({diagnostic_failed:true}));

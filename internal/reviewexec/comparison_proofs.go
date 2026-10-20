@@ -130,9 +130,9 @@ func scanComparisonProof(row interface{ Scan(...any) error }) (comparisonProof, 
 	return p, err
 }
 
-// ValidateComparisonProofs is full read-only maintenance validation, not a
-// per-command scan. Re-derive credit from actual journals, captures and routes.
-func ValidateComparisonProofs(ctx context.Context, q EvidenceQuery) error {
+// validateComparisonProofSet checks that proofs and completed operations have
+// matching identities and scope. It does not validate the derived proof values.
+func validateComparisonProofSet(ctx context.Context, q EvidenceQuery) error {
 	var invalid int
 	err := q.QueryRowContext(ctx, `SELECT 1 FROM review_comparison_proofs p LEFT JOIN review_operations o ON o.id=p.operation_id WHERE p.operation_id IS NULL OR p.operation_id='' OR o.id IS NULL OR o.project_id!=p.project_id OR o.pull_number!=p.pull_number OR o.channel!=p.channel OR o.state!='completed' LIMIT 1`).Scan(&invalid)
 	if err == nil {
@@ -147,6 +147,15 @@ func ValidateComparisonProofs(ctx context.Context, q EvidenceQuery) error {
 		return adjudicationStorageError()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	return nil
+}
+
+// ValidateComparisonProofs is full read-only maintenance validation, not a
+// per-command scan. Re-derive credit from actual journals, captures and routes.
+func ValidateComparisonProofs(ctx context.Context, q EvidenceQuery) error {
+	if err := validateComparisonProofSet(ctx, q); err != nil {
 		return err
 	}
 	last := ""
