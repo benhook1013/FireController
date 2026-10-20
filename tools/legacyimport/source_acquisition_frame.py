@@ -65,11 +65,19 @@ def acquire_frame(controller, records, policy, *, repository_id, snapshot_sha256
         current = controller._reconciled_anchor(pr, live[pr], reconciliation)
         if current is None:
             raise FrameRefusal("source_anchor_unavailable")
+        transfer_audit = getattr(controller, '_check_transfer_evidence', None)
+        if transfer_audit is not None and not callable(transfer_audit):
+            raise FrameRefusal("source_transfer_audit_unsupported")
         for channel in channels:
-            controller._check_stop_evidence(
-                state, pr, policy.Channel(channel), current, reconciliation,
-                checkpoint_pin=None, stop_audit_cache=audit_cache,
-                history_cache=cache)
+            arguments = dict(stop_audit_cache=audit_cache, history_cache=cache)
+            if transfer_audit is None:
+                # Older trusted helpers retain their positive-checkpoint contract.
+                controller._check_stop_evidence(
+                    state, pr, policy.Channel(channel), current, reconciliation,
+                    checkpoint_pin=None, **arguments)
+            else:
+                transfer_audit(state, pr, policy.Channel(channel), current,
+                               reconciliation, **arguments)
         histories = {channel: controller._policy_history(
             state, pr, channel, reconciliation, history_cache=cache)
             for channel in (policy.Channel.CLI, policy.Channel.HOSTED)}
