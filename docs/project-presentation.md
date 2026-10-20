@@ -55,7 +55,7 @@ Optional `review_groups` is an ordered array of `{title,pull_numbers}` for priva
 
 The browser renders headings over consecutive matching rows in the actual stored order, repeating a heading when needed rather than regrouping/reordering the train. These labels do not change queue membership, selection, review requirements, channel closure or provider requests. They share the existing project presentation revision, history, authorization, replay and metadata event. No per-PR metadata fetch is added. Public manifests reject private review groups; public review enrollment remains separately explicit.
 
-Merged review styling has independently configurable `merged_background`/`merged_text` and `merged_rail`/`merged_rail_text` pairs. The defaults retain the established purple merged treatment. Both text pairs require 4.5:1 contrast. Explicitly configured merged backgrounds retain the focus contrast rule. Adding these roles does not invalidate retained themes that omitted them.
+Merged review styling has independently configurable `merged_background`/`merged_text` and `merged_rail`/`merged_rail_text` pairs. The defaults retain the established purple merged treatment. Both text pairs require 4.5:1 contrast. Explicitly configured `merged_background` and `merged_rail` colors also require focus contrast of at least 3:1. Adding these roles does not invalidate retained themes that omitted them.
 
 ## Separate project-metadata stream
 

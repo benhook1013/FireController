@@ -63,7 +63,10 @@ function JobContextPreview({ job }: { job: DeliveryJob }) {
 function LaneInboxLink({ lane, home }: { lane: DeliveryLane; home: string }) {
   const { session, selectWorker } = useWorkspace();
   return <Link to={`${home}/inbox?${new URLSearchParams({worker_id:lane.id})}`} onClick={event => {
-    if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) selectWorker({ id: lane.id, name: lane.name, project_id: session.project.id });
+    if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+      event.preventDefault();
+      selectWorker({ id: lane.id, name: lane.name, project_id: session.project.id });
+    }
   }}>Worker inbox</Link>;
 }
 export function DeliveryLanes({ value, home, partialJobs = value.jobs.has_more, presence }: { value: DeliverySnapshot; home: string; partialJobs?: boolean; presence?: WorkerPresence }) {
