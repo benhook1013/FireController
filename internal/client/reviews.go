@@ -130,6 +130,7 @@ type ReviewAttempt struct {
 	SourceRunID      string `json:"source_run_id"`
 	TriggerID        string `json:"trigger_id"`
 	ProviderReviewID string `json:"provider_review_id"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 type ReviewFinding struct {
@@ -347,7 +348,7 @@ func validReviewRunSummary(value ReviewRunSummary) bool {
 func validReviewAttempt(value ReviewAttempt) bool {
 	if !cleanReviewText(value.SourceAttemptID, 256, true) || !oneReviewOf(value.Channel, "cli", "hosted", "manual", "subagent") ||
 		!validReviewSHA(value.HeadSHA) || !oneReviewOf(value.State, "prepared", "preparing", "held", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "unknown") ||
-		!cleanReviewText(value.SourceRunID, 256, false) || !cleanReviewText(value.TriggerID, 128, false) || !cleanReviewText(value.ProviderReviewID, 128, false) {
+		!cleanReviewText(value.SourceRunID, 256, false) || !cleanReviewText(value.TriggerID, 128, false) || !cleanReviewText(value.ProviderReviewID, 128, false) || !validReviewAttemptReason(value.State, value.Reason) {
 		return false
 	}
 	if value.StartedAt != "" && !validTimestamp(value.StartedAt) || value.FinishedAt != "" && !validTimestamp(value.FinishedAt) {
@@ -364,6 +365,21 @@ func validReviewAttempt(value ReviewAttempt) bool {
 		}
 	}
 	return value.DurationSeconds == nil || *value.DurationSeconds >= 0
+}
+
+func validReviewAttemptReason(state, reason string) bool {
+	if reason == "" {
+		return true
+	}
+	if len(reason) > 128 || !oneReviewOf(state, "held", "uncertain", "rate_limited", "failed") || reason[0] < 'a' || reason[0] > 'z' {
+		return false
+	}
+	for i := 1; i < len(reason); i++ {
+		if c := reason[i]; !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func validReviewFinding(value ReviewFinding) bool {
@@ -510,6 +526,12 @@ func reviewShape(data []byte, typ reflect.Type) bool {
 					continue
 				}
 				return false
+			}
+			if name == "reason" && (typ == reflect.TypeOf(ReviewAttempt{}) || typ == reflect.TypeOf(reviewAttemptWire{})) {
+				var reason string
+				if json.Unmarshal(raw, &reason) != nil || reason == "" || len(reason) > 128 {
+					return false
+				}
 			}
 			if typ == reflect.TypeOf(ReviewSourceReviewStateSummary{}) && name == "review_decision" && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 				continue

@@ -82,7 +82,7 @@ try {
     const screenshot = path => page.screenshot({path,mask:[page.locator('input,textarea,code,.full-text,.message-preview')],timeout:2000});
     if (phase === 'live-reviews') {
       return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'review-failure.json',
-        snapshot:{phase,checkpoint,run_fetches:reviewRunReads,fallback_geometry:fallbackGeometry}, screenshot,
+        snapshot:{phase,checkpoint,run_fetches:reviewRunReads,attempt_fetches:reviewAttemptReads,pull_fetches:reviewPullReads,operation_reads:reviewOperationReads,fallback_geometry:fallbackGeometry}, screenshot,
         collect:async snapshot => {
           snapshot.updated_pull=await page.getByRole('link',{name:'Live review updated',exact:true}).count();
           snapshot.hosted_run_link=await page.getByRole('link',{name:'Open hosted run live-hosted-round',exact:true}).count();
@@ -185,6 +185,7 @@ try {
   counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
   let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0, noteArchiveReads = 0;
   let deliveryReads = 0, jobBriefReads = 0, jobArchiveReads = 0, reviewRunReads = 0;
+  let reviewAttemptReads = 0, reviewPullReads = 0, reviewOperationReads = 0;
   let presenceReads = 0, presenceFinished = 0, presenceResponses = 0, presenceHTTPStatus = 0, presenceFailed = 0, presenceHeaderErrors = 0, contactHistoryReads = 0;
   let presenceFailureKind = 'none', presenceFailureMS = 0, presenceFailureHeadersMS = 0, presenceSignalAborts = 0, presenceSignalAbortMS = 0;
   const presenceTimings = new WeakMap();
@@ -243,6 +244,9 @@ try {
       if (url.pathname === prefix + '/notes' && url.searchParams.get('status') === 'all') noteArchiveReads++;
       if (url.pathname === prefix + '/delivery') deliveryReads++;
       if (url.pathname === prefix + '/reviews/pulls/32/runs') reviewRunReads++;
+      if (url.pathname === prefix + '/reviews/pulls/32/attempts') reviewAttemptReads++;
+      if (url.pathname === prefix + '/reviews/pulls/32') reviewPullReads++;
+      if (url.pathname.startsWith(prefix + '/reviews/operations')) reviewOperationReads++;
       if (url.pathname === prefix + '/jobs' && url.searchParams.get('status') === 'all') jobArchiveReads++;
       if (/\/jobs\/[^/]+$/u.test(url.pathname.slice(prefix.length))) jobBriefReads++;
       if (url.pathname === prefix + '/project-events/stream') metadataStreams++;
@@ -300,7 +304,7 @@ try {
     online: document.querySelector('.feed-card .status-dot').classList.contains('online'),
     surface: getComputedStyle(document.querySelector('.feed-card')).backgroundColor,
   }));
-  const captureLayouts = async (name, widths) => {
+  const captureLayouts = async (name, widths, checkLayout) => {
     for (const width of widths) {
       await page.setViewportSize({width, height:900});
       need(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
@@ -312,6 +316,7 @@ try {
       await page.evaluate(() => window.scrollTo(0, 0));
       need(await page.locator('.mast').evaluate(element => Math.abs(element.getBoundingClientRect().top) <= 1));
       await expect(page.getByRole('button', {name:'Refresh visible data', exact:true})).toBeVisible();
+      if (checkLayout) await checkLayout();
       if (config.diagnostic_directory) {
         await fs.mkdir(config.diagnostic_directory, {recursive:true, mode:0o700});
         await page.screenshot({path:config.diagnostic_directory + '/' + name + '-' + width + '.png', fullPage:true, timeout:2000});
@@ -854,8 +859,12 @@ try {
   await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
   const finished = new Date().toISOString();
   const run = {source_run_id:'live-hosted-round', channel:'hosted', head_sha:open.head_sha, reviewer:'Synthetic reviewer', scope:'Synthetic comparison', outcome:'completed', attributable:true, complete:true, started_at:finished, finished_at:finished, found:0, accepted:0, routed:0, finalized:true, coverage_limits:[], findings:[]};
+  const reasonCode = 'hosted_finished_inventory_unproven';
+  const reasonText = 'Finished response could not be verified';
+  const reasonPillText = `Uncertain · ${reasonText}`;
+  const uncertainAttempt = {source_attempt_id:'live-hosted-uncertain',channel:'hosted',head_sha:open.head_sha,state:'uncertain',started_at:finished,finished_at:'',duration_seconds:null,source_run_id:'',trigger_id:'',provider_review_id:'',reason:reasonCode};
   checkpoint = 'updated-observation';
-  await write('POST', '/reviews/observations', observation(2, [merged, {...open, title:'Live review updated', runs:[run]}]), 201);
+  await write('POST', '/reviews/observations', observation(2, [merged, {...open, title:'Live review updated', runs:[run],attempts:[uncertainAttempt]}]), 201);
   checkpoint = 'updated-open-pull';
   await page.getByRole('link', {name:'Live review updated', exact:true}).waitFor();
   checkpoint = 'updated-merged-pull';
@@ -887,6 +896,15 @@ try {
   await expect(queueHosted.getByRole('link', {name:/^Open hosted run live-hosted-round:/})).toBeVisible();
   await expect(queueHosted.locator('.review-lane-heading')).toContainText('1 run');
   const hero = page.getByRole('region', {name:'Merge train head', exact:true});
+  checkpoint = 'attempt-reason-compact';
+  const heroHosted = hero.getByRole('region',{name:'Hosted CodeRabbit',exact:true});
+  const reasonPills = [queueHosted.locator('.review-attempt-state'),heroHosted.locator('.review-attempt-state')];
+  for (const pill of reasonPills) {
+    await expect(pill).toHaveCount(1);
+    await expect(pill).toHaveText(reasonPillText);
+    await expect(pill).toHaveAttribute('title',`Latest retained attempt: ${reasonPillText}`);
+    await expect(pill).toHaveAttribute('aria-label',`Latest retained hosted attempt: ${reasonPillText}`);
+  }
   const jump = hero.getByRole('link', {name:'Jump to review queue', exact:true});
   await expect(jump).toHaveAttribute('href', `${home}#review-pr-32`);
   await expect(jump).toHaveText('Review queue ↗');
@@ -926,7 +944,17 @@ try {
   const age = queueHosted.locator('.review-round-pill time');
   await expect(age).toHaveText(/^(?:Just now|Future date|\d+m ago|\d+h \d+m ago|\d+d \d+h ago)$/u);
   await expect(age).toHaveAttribute('datetime', finished);
-  await captureLayouts('delivery-populated', [1440, 390, 320]);
+  checkpoint = 'attempt-reason-layout';
+  await captureLayouts('delivery-populated', [1440, 390, 320], async () => {
+    for (const pill of reasonPills) {
+      await expect(pill).toHaveText(reasonPillText);
+      need(await pill.evaluate(element => {
+        const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect();
+        return box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;
+      }));
+    }
+    need(reviewOperationReads === 0 && reviewAttemptReads === 0);
+  });
   await jump.click();
   await expect.poll(() => new URL(page.url()).hash).toBe('#review-pr-32');
   checkpoint = 'queue-jump-visible';
@@ -935,6 +963,25 @@ try {
     await fs.mkdir(config.diagnostic_directory, {recursive:true, mode:0o700});
     await page.screenshot({path:config.diagnostic_directory + '/delivery-head-jump-390.png', timeout:2000});
   }
+  checkpoint = 'attempt-reason-detail';
+  const reasonReadBoundary = {pull:reviewPullReads,attempts:reviewAttemptReads,runs:reviewRunReads};
+  const attemptArchiveResponse = page.waitForResponse(response => response.request().method()==='GET' && new URL(response.url()).pathname===prefix+'/reviews/pulls/32/attempts');
+  await headRow.getByRole('link',{name:'Review details for PR #32',exact:true}).click();
+  const attemptArchive = await attemptArchiveResponse;
+  need(attemptArchive.status() === 200);
+  const retainedAttempts = await attemptArchive.json();
+  need(retainedAttempts.items.length === 1 && retainedAttempts.items[0].source_attempt_id === uncertainAttempt.source_attempt_id && retainedAttempts.items[0].state === 'uncertain' && retainedAttempts.items[0].reason === reasonCode);
+  checkpoint = 'attempt-reason-expanded';
+  const attemptsPanel = page.getByRole('region',{name:'PR #32 attempts',exact:true});
+  await expect(attemptsPanel.locator('summary')).toHaveText('Attempts (1)');
+  await attemptsPanel.locator('summary').click();
+  await expect(attemptsPanel.getByText('Reason',{exact:true})).toBeVisible();
+  await expect(attemptsPanel.getByTitle(reasonCode,{exact:true})).toBeVisible();
+  await expect(attemptsPanel.getByTitle(reasonCode,{exact:true})).toHaveText(reasonText);
+  await expect(attemptsPanel.locator('li strong')).toHaveText('Uncertain');
+  need(await page.locator('literal').count() === 0 && await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  checkpoint = 'attempt-reason-reads';
+  need(reviewPullReads === reasonReadBoundary.pull+1 && reviewAttemptReads === reasonReadBoundary.attempts+1 && reviewRunReads === reasonReadBoundary.runs && reviewOperationReads === 0);
   checkpoint = 'reviews-return';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
   checkpoint = 'reviews-heading';
@@ -1307,7 +1354,7 @@ try {
   await expect.poll(() => sessionDeletes).toBe(4);
   await page.getByRole('button', {name:'Connect to project',exact:true}).waitFor();
   need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === null);
-  need(sessionPosts === 4 && sessionRenewals === 3 && actionWrites === 7 && forbiddenWrites === 0 && errors === 0 && external === 0);
+  need(sessionPosts === 4 && sessionRenewals === 3 && actionWrites === 7 && forbiddenWrites === 0 && errors === 0 && external === 0 && reviewOperationReads === 0);
 
   phase = 'cleanup'; operation = 'cleanup'; checkpoint = 'context-close'; publishProgress();
   await context.close();

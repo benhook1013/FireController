@@ -116,7 +116,7 @@ func (w *historySnapshotWrite) attempt(ctx context.Context, tx *sql.Tx, source s
 	if err := retainedAttemptState(ctx, w.historyRead(tx), w.project, source, number, attempt); err != nil {
 		return err
 	}
-	version, err := w.version(ctx, tx, historyAttemptRecord, []any{source, attempt.SourceAttemptID}, []any{number, attempt.Channel, attempt.HeadSHA, attempt.State, attempt.StartedAt, attempt.FinishedAt, attempt.DurationSeconds, attempt.SourceRunID, attempt.TriggerID, attempt.ProviderReviewID}, false)
+	version, err := w.version(ctx, tx, historyAttemptRecord, []any{source, attempt.SourceAttemptID}, []any{number, attempt.Channel, attempt.HeadSHA, attempt.State, attempt.StartedAt, attempt.FinishedAt, attempt.DurationSeconds, attempt.SourceRunID, attempt.TriggerID, attempt.ProviderReviewID, attempt.Reason}, false)
 	if err != nil {
 		return err
 	}

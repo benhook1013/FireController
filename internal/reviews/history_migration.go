@@ -23,7 +23,7 @@ func historyMigrationSQL() []string {
 	}{
 		{"legacy_review_pulls", historyPullRecordV4},
 		{"legacy_review_runs", historyRunRecord},
-		{"legacy_review_attempts", historyAttemptRecord},
+		{"legacy_review_attempts", historyAttemptRecordV7},
 		{"legacy_review_retired_pulls", historyRetiredRecord},
 	}
 	// Renaming keeps all old references intact. Only empty/new physical objects

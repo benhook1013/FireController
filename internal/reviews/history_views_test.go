@@ -70,7 +70,7 @@ func historyViewsAttemptBody(index int, completed bool) []any {
 		duration = int64(60)
 	}
 	_, _, run := historyViewsRun("unused-project", index)
-	return []any{123, "cli", strings.Repeat("a", 40), state, "2026-10-01T00:00:00Z", finished, duration, run, "", ""}
+	return []any{123, "cli", strings.Repeat("a", 40), state, "2026-10-01T00:00:00Z", finished, duration, run, "", "", ""}
 }
 func historyViewsFinding(t *testing.T, tx *sql.Tx, project, id string, revision int64, proof string) {
 	t.Helper()

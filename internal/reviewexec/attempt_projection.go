@@ -96,6 +96,9 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 
 func journalBrowserAttempt(ctx context.Context, tx *sql.Tx, operation Operation, attempt Attempt) (reviews.Attempt, error) {
 	projected := reviews.Attempt{SourceAttemptID: attempt.ID, Channel: operation.Channel, HeadSHA: operation.HeadSHA, State: attempt.State}
+	if reviews.ValidAttemptReason(attempt.State, operation.Reason) {
+		projected.Reason = operation.Reason
+	}
 	var firstRevision int64
 	if err := tx.QueryRowContext(ctx, `SELECT revision,created_at FROM review_execution_transitions WHERE attempt_id=? ORDER BY revision LIMIT 1`, attempt.ID).Scan(&firstRevision, &projected.StartedAt); err != nil {
 		return projected, err
@@ -140,9 +143,9 @@ func attemptProjectionReplay(ctx context.Context, tx *sql.Tx, project string, nu
 	var receipt reviews.Receipt
 	var actual reviews.Attempt
 	var actualNumber int64
-	err := tx.QueryRowContext(ctx, `SELECT w.snapshot_id,w.revision,a.pull_number,a.source_attempt_id,a.channel,a.head_sha,a.state,a.started_at,a.finished_at,a.duration_seconds,a.source_run_id,a.trigger_id,a.provider_review_id
+	err := tx.QueryRowContext(ctx, `SELECT w.snapshot_id,w.revision,a.pull_number,a.source_attempt_id,a.channel,a.head_sha,a.state,a.started_at,a.finished_at,a.duration_seconds,a.source_run_id,a.trigger_id,a.provider_review_id,a.reason
  FROM review_workspace w JOIN review_attempts a ON a.project_id=w.project_id AND a.snapshot_id=w.snapshot_id
- WHERE w.project_id=? AND a.source='native-executor' AND a.source_attempt_id=?`, project, expected.SourceAttemptID).Scan(&receipt.ID, &receipt.Revision, &actualNumber, &actual.SourceAttemptID, &actual.Channel, &actual.HeadSHA, &actual.State, &actual.StartedAt, &actual.FinishedAt, &actual.DurationSeconds, &actual.SourceRunID, &actual.TriggerID, &actual.ProviderReviewID)
+ WHERE w.project_id=? AND a.source='native-executor' AND a.source_attempt_id=?`, project, expected.SourceAttemptID).Scan(&receipt.ID, &receipt.Revision, &actualNumber, &actual.SourceAttemptID, &actual.Channel, &actual.HeadSHA, &actual.State, &actual.StartedAt, &actual.FinishedAt, &actual.DurationSeconds, &actual.SourceRunID, &actual.TriggerID, &actual.ProviderReviewID, &actual.Reason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return reviews.Receipt{}, false, nil
 	}

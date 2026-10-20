@@ -19,6 +19,49 @@ async function connected() {
 afterEach(() => { for (const api of clients.splice(0)) api.close(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('bounded review archive API', () => {
+  it('retains optional safe attempt reasons in compact and archive reads without adding requests', async () => {
+    const api = await connected();
+    for (const reason of [undefined, 'hosted_finished_inventory_unproven', 'hosted_allowance_cooldown', 'allowance_exhausted', 'another_safe_code_2', 'a'.repeat(128)]) {
+      const item = { ...attempt, state: 'uncertain', ...(reason === undefined ? {} : { reason }) };
+      const { source: _producer, ...compact } = item;
+      const fetchMock = vi.fn().mockResolvedValueOnce(json({ ...metadata, items: [item], has_more: false })).mockResolvedValueOnce(json({ ...metadata, pull: { ...pull, latest_attempts: [compact] } }));
+      vi.stubGlobal('fetch', fetchMock);
+      const archived = (await api.reviewAttempts(123, { snapshot })).items[0];
+      const latest = (await api.reviewPull(123, snapshot)).pull.latest_attempts[0];
+      expect(archived).toEqual(item); expect(latest).toEqual(compact);
+      expect(Object.hasOwn(archived, 'reason')).toBe(reason !== undefined);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual(['/api/v1/projects/project_one/reviews/pulls/123/attempts', '/api/v1/projects/project_one/reviews/pulls/123']);
+      for (const [url, options] of fetchMock.mock.calls) { expect(new URL(String(url)).searchParams.get('snapshot')).toBe(snapshot); expect(options.method).toBe('GET'); }
+    }
+  });
+  it('rejects malformed or private attempt reasons in both compact and archive responses', async () => {
+    const api = await connected();
+    for (const reason of [null, '', 1, false, [], {}, 'Uppercase', 'bad-code', 'two words', 'line\nbreak', '_prefix', 'non_ascii_é', 'a'.repeat(129)]) {
+      const item = { ...attempt, state: 'held', reason };
+      const { source: _producer, ...compact } = item;
+      vi.stubGlobal('fetch', vi.fn(async () => json({ ...metadata, items: [item], has_more: false })));
+      await expect(api.reviewAttempts(123, { snapshot })).rejects.toMatchObject({ code: 'invalid_response' });
+      vi.stubGlobal('fetch', vi.fn(async () => json({ ...metadata, pull: { ...pull, latest_attempts: [compact] } })));
+      await expect(api.reviewPull(123, snapshot)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => json({ ...metadata, items: [{ ...attempt, state: 'held', reason: 'safe_code', error_body: 'PRIVATE_SENTINEL' }], has_more: false })));
+    await expect(api.reviewAttempts(123, { snapshot })).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+  it('permits omitted reasons in every state but refuses reasons outside diagnostic states', async () => {
+    const api = await connected();
+    for (const state of ['active', 'preparing', 'prepared', 'posting', 'completed', 'cancelled', 'unknown']) {
+      const item = { ...attempt, state };
+      vi.stubGlobal('fetch', vi.fn(async () => json({ ...metadata, items: [item], has_more: false })));
+      expect((await api.reviewAttempts(123, { snapshot })).items[0]).toEqual(item);
+      const withReason = { ...item, reason: 'hosted_finished_inventory_unproven' };
+      const { source: _producer, ...compact } = withReason;
+      vi.stubGlobal('fetch', vi.fn(async () => json({ ...metadata, items: [withReason], has_more: false })));
+      await expect(api.reviewAttempts(123, { snapshot })).rejects.toMatchObject({ code: 'invalid_response' });
+      vi.stubGlobal('fetch', vi.fn(async () => json({ ...metadata, pull: { ...pull, latest_attempts: [compact] } })));
+      await expect(api.reviewPull(123, snapshot)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
   it('accepts safe lifetime totals beyond100 but requires compact PR detail without its old attempts field', async () => {
     const api = await connected();
     for (const count of [137, Number.MAX_SAFE_INTEGER]) {

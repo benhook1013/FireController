@@ -66,6 +66,7 @@ type Attempt struct {
 	SourceRunID      string `json:"source_run_id"`
 	TriggerID        string `json:"trigger_id"`
 	ProviderReviewID string `json:"provider_review_id"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 // FindingRoute is the retained receiving-side state of a same-project route.
@@ -116,6 +117,7 @@ type AttemptSummary struct {
 	SourceRunID      string `json:"source_run_id"`
 	TriggerID        string `json:"trigger_id"`
 	ProviderReviewID string `json:"provider_review_id"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 type RunSummary struct {

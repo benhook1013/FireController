@@ -44,6 +44,7 @@ type reviewAttemptWire struct {
 	SourceRunID      string `json:"source_run_id"`
 	TriggerID        string `json:"trigger_id"`
 	ProviderReviewID string `json:"provider_review_id"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 type reviewAttemptsWire struct {
@@ -77,7 +78,7 @@ func (c *Client) ReviewAttempts(ctx context.Context, number int64, options Revie
 	out := ReviewAttempts{ProjectID: wire.ProjectID, Revision: wire.Revision, SnapshotID: wire.SnapshotID, Source: wire.Source, ObservedAt: wire.ObservedAt, RecordedAt: wire.RecordedAt, Items: make([]ReviewAttemptItem, 0, len(wire.Items)), Cursor: wire.Cursor, HasMore: wire.HasMore}
 	seen := make(map[[2]string]struct{}, len(wire.Items))
 	for _, item := range wire.Items {
-		attempt := ReviewAttempt{SourceAttemptID: item.SourceAttemptID, Channel: item.Channel, HeadSHA: item.HeadSHA, State: item.State, StartedAt: item.StartedAt, FinishedAt: item.FinishedAt, DurationSeconds: item.DurationSeconds, SourceRunID: item.SourceRunID, TriggerID: item.TriggerID, ProviderReviewID: item.ProviderReviewID}
+		attempt := ReviewAttempt{SourceAttemptID: item.SourceAttemptID, Channel: item.Channel, HeadSHA: item.HeadSHA, State: item.State, StartedAt: item.StartedAt, FinishedAt: item.FinishedAt, DurationSeconds: item.DurationSeconds, SourceRunID: item.SourceRunID, TriggerID: item.TriggerID, ProviderReviewID: item.ProviderReviewID, Reason: item.Reason}
 		if !cleanReviewText(item.Source, 128, true) || !validReviewAttempt(attempt) {
 			return ReviewAttempts{}, invalidResponse()
 		}

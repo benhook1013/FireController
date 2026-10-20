@@ -2,14 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { ReviewRunsView } from './review-workspace';
+import { ReviewAttempts, ReviewRunsView } from './review-workspace';
 import { WorkspaceContext, type Session } from './workspace';
-import type { ReviewRunSummary } from './types';
+import type { ReviewAttemptItem, ReviewAttemptSummary, ReviewRunSummary } from './types';
 import type { ReviewRoundProgress } from './review-progress';
 
 // Start at the loaded view boundary, in native newest-first producer order.
 // The mounted proof separately exercises real reads and shared query caching.
-const archive = vi.hoisted(() => ({ items: [] as ReviewRunSummary[], hasMore: false, busy: false, error: undefined }));
+const archive = vi.hoisted(() => ({ items: [] as (ReviewRunSummary | ReviewAttemptItem)[], hasMore: false, busy: false, error: undefined }));
 vi.mock('./review-archive', async importOriginal => {
   const actual = await importOriginal<typeof import('./review-archive')>();
   return { ...actual, ReviewArchive: class {
@@ -24,13 +24,14 @@ const run = (id: string, channel: 'hosted' | 'cli', changes: Partial<ReviewRunSu
 });
 const progress: ReviewRoundProgress = { channel: 'hosted', configured: true, revision: 1, epoch: 1, closed: false,
   minimum: 0, maximum: 8, taper: 2, used: 5, dry: 2, tapered: true, pending: 0 };
-function markup(compact = true) {
+function markup(compact = true, attempts: ReviewAttemptSummary[] = [], expanded = false) {
   const reviewRuns = vi.fn();
+  const reviewAttempts = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const session = { api: { reviewRuns }, controller: new AbortController() } as unknown as Session;
+  const session = { api: { reviewRuns, reviewAttempts }, controller: new AbortController() } as unknown as Session;
   try {
-    return renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key: ['fixture'], home: '/projects/project', ready: true, fail: () => {}, selectWorker: () => {} }}><ReviewRunsView number={7} snapshot="snapshot" head="head" attempts={[]} expected={archive.items.length} compact={compact} progress={{ pull_number: 7, channels: [progress] }} /></WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);
-  } finally { expect(reviewRuns).not.toHaveBeenCalled(); client.clear(); }
+    return renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key: ['fixture'], home: '/projects/project', ready: true, fail: () => {}, selectWorker: () => {} }}>{expanded ? <ReviewAttempts number={7} snapshot="snapshot" expected={archive.items.length} /> : <ReviewRunsView number={7} snapshot="snapshot" head="head" attempts={attempts} expected={archive.items.length} compact={compact} progress={{ pull_number: 7, channels: [progress] }} />}</WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);
+  } finally { expect(reviewRuns).not.toHaveBeenCalled(); expect(reviewAttempts).not.toHaveBeenCalled(); client.clear(); }
 }
 function links(html: string) { return [...html.matchAll(/aria-label="Open (?:hosted|cli) run ([^:]+):/gu)].map(match => match[1]); }
 
@@ -53,5 +54,44 @@ describe('merge-head recent review rounds', () => {
     expect(html).toContain('4 runs loaded · latest 3'); expect(html).toContain('No rounds in loaded pages. Coverage is unknown.');
     for (const text of ['Date unknown', 'Incomplete record', 'Counts not finalized', 'Attribution unconfirmed', 'Head association unknown']) expect(html).toContain(text);
     expect(html).not.toContain('Current cli round limits'); expect(html).not.toContain('Load more');
+  });
+});
+
+describe('retained attempt diagnostics', () => {
+  const attempt: ReviewAttemptItem = { source: 'native', source_attempt_id: 'attempt_one', channel: 'hosted', head_sha: 'head', state: 'uncertain', started_at: '', finished_at: '', duration_seconds: null, source_run_id: '', trigger_id: '', provider_review_id: '' };
+  it.each([
+    ['uncertain', 'hosted_finished_inventory_unproven', 'Uncertain', 'Finished response could not be verified'],
+    ['held', 'hosted_allowance_cooldown', 'Held', 'Waiting for hosted allowance'],
+    ['rate_limited', 'allowance_exhausted', 'Cooldown', 'CLI allowance exhausted'],
+    ['failed', 'another_safe_code', 'Failed', 'Another safe code'],
+    ['failed', 'constructor', 'Failed', 'Constructor'],
+  ] as const)('shows %s reason in the same compact pill and expanded attempt without fetching', (state, reason, label, text) => {
+    const value = { ...attempt, state, reason };
+    archive.items = []; archive.hasMore = false;
+    const compact = markup(true, [value]);
+    expect(compact).toContain(`aria-label="Latest retained hosted attempt: ${label} · ${text}"`);
+    expect(compact).toContain(`>${label} · ${text}</span>`);
+    expect(compact.match(/class="review-attempt-state /gu)).toHaveLength(1);
+    archive.items = [value];
+    const expanded = markup(false, [], true);
+    expect(expanded).toContain(`<small>Reason</small><span title="${reason}">${text}</span>`);
+    expect(expanded).toContain('Attempts (1)');
+  });
+  it('keeps old absent reasons and non-diagnostic states free of added prose', () => {
+    for (const state of ['held', 'uncertain', 'active', 'completed'] as const) {
+      const value = { ...attempt, state };
+      archive.items = [];
+      const compact = markup(true, [value]);
+      expect(compact).not.toContain(' · Finished response');
+      archive.items = [value];
+      expect(markup(false, [], true)).not.toContain('<small>Reason</small>');
+    }
+    for (const state of ['active', 'completed'] as const) {
+      const value = { ...attempt, state, reason: 'hosted_finished_inventory_unproven' };
+      archive.items = [];
+      expect(markup(true, [value])).not.toContain('Finished response could not be verified');
+      archive.items = [value];
+      expect(markup(false, [], true)).not.toContain('<small>Reason</small>');
+    }
   });
 });

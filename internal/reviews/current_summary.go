@@ -185,6 +185,14 @@ func validSummaryTotals(totals summaryTotals) bool {
 // verifies derived values against exact current versions, never grants native
 // execution authority, and is deliberately a full maintenance scan.
 func ValidateCurrentSummaries(ctx context.Context, q HistoryQuery) error {
+	var version int
+	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil {
+		return err
+	}
+	columns := summaryAttemptColumns
+	if version < 8 {
+		columns = summaryAttemptColumnsV7 + `,''`
+	}
 	queries := []string{
 		`SELECT 1 FROM review_current_pulls p LEFT JOIN review_current_totals t ON t.project_id=p.project_id AND t.pull_number=p.number WHERE t.project_id IS NULL LIMIT 1`,
 		`SELECT 1 FROM review_current_totals t WHERE t.run_count!=(SELECT count(*) FROM review_current_runs r WHERE r.project_id=t.project_id AND r.pull_number=t.pull_number) OR t.attempt_count!=(SELECT count(*) FROM review_current_attempts a WHERE a.project_id=t.project_id AND a.pull_number=t.pull_number) OR t.incomplete_run_count!=(SELECT count(*) FROM review_current_runs r JOIN review_run_memberships m ON m.project_id=r.project_id AND m.id=r.id AND m.start_revision=r.start_revision JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision WHERE r.project_id=t.project_id AND r.pull_number=t.pull_number AND v.complete=0) LIMIT 1`,
@@ -270,7 +278,7 @@ func ValidateCurrentSummaries(ctx context.Context, q HistoryQuery) error {
 			return err
 		}
 		for _, key := range page {
-			if err := validateCurrentSummaryFront(ctx, q, key.project, key.number); err != nil {
+			if err := validateCurrentSummaryFrontColumns(ctx, q, key.project, key.number, columns); err != nil {
 				return err
 			}
 			project, number = key.project, key.number
@@ -397,7 +405,8 @@ func (w *historySnapshotWrite) installCurrentSummaries(ctx context.Context, tx *
 	return nil
 }
 
-const summaryAttemptColumns = `v.source_attempt_id,v.channel,v.head_sha,v.state,v.started_at,v.finished_at,v.duration_seconds,v.source_run_id,v.trigger_id,v.provider_review_id`
+const summaryAttemptColumnsV7 = `v.source_attempt_id,v.channel,v.head_sha,v.state,v.started_at,v.finished_at,v.duration_seconds,v.source_run_id,v.trigger_id,v.provider_review_id`
+const summaryAttemptColumns = summaryAttemptColumnsV7 + `,v.reason`
 
 func (w *historySnapshotWrite) latestCurrentAttempts(ctx context.Context, tx HistoryQuery, number int64) ([]AttemptSummary, error) {
 	var changed []historyCurrentChange
@@ -427,7 +436,7 @@ func (w *historySnapshotWrite) latestCurrentAttempts(ctx context.Context, tx His
 		}
 		var candidate stagedCandidate
 		attempt := &candidate.attempt
-		err := tx.QueryRowContext(ctx, `SELECT `+summaryAttemptColumns+`,m.position FROM review_attempt_memberships m JOIN review_attempt_versions v ON v.project_id=m.project_id AND v.source=m.source AND v.source_attempt_id=m.source_attempt_id AND v.version_revision=m.version_revision WHERE m.project_id=? AND m.source=? AND m.source_attempt_id=? AND m.start_revision=?`, w.project, change.keys[0], change.keys[1], change.values[0]).Scan(&attempt.SourceAttemptID, &attempt.Channel, &attempt.HeadSHA, &attempt.State, &attempt.StartedAt, &attempt.FinishedAt, &attempt.DurationSeconds, &attempt.SourceRunID, &attempt.TriggerID, &attempt.ProviderReviewID, &candidate.position)
+		err := tx.QueryRowContext(ctx, `SELECT `+summaryAttemptColumns+`,m.position FROM review_attempt_memberships m JOIN review_attempt_versions v ON v.project_id=m.project_id AND v.source=m.source AND v.source_attempt_id=m.source_attempt_id AND v.version_revision=m.version_revision WHERE m.project_id=? AND m.source=? AND m.source_attempt_id=? AND m.start_revision=?`, w.project, change.keys[0], change.keys[1], change.values[0]).Scan(&attempt.SourceAttemptID, &attempt.Channel, &attempt.HeadSHA, &attempt.State, &attempt.StartedAt, &attempt.FinishedAt, &attempt.DurationSeconds, &attempt.SourceRunID, &attempt.TriggerID, &attempt.ProviderReviewID, &attempt.Reason, &candidate.position)
 		if err != nil {
 			return nil, err
 		}
@@ -446,7 +455,7 @@ func (w *historySnapshotWrite) latestCurrentAttempts(ctx context.Context, tx His
  CROSS JOIN review_current_attempts c ON c.project_id=o.project_id AND c.source=o.source AND c.source_attempt_id=o.source_attempt_id
  CROSS JOIN review_attempt_memberships m ON m.project_id=c.project_id AND m.source=c.source AND m.source_attempt_id=c.source_attempt_id AND m.start_revision=c.start_revision
  CROSS JOIN review_attempt_versions v ON v.project_id=m.project_id AND v.source=m.source AND v.source_attempt_id=m.source_attempt_id AND v.version_revision=m.version_revision
- WHERE o.project_id=? AND o.pull_number=? AND o.channel=?`+exclude+` ORDER BY o.sort_key DESC,o.position DESC LIMIT 1`, args...).Scan(&best.SourceAttemptID, &best.Channel, &best.HeadSHA, &best.State, &best.StartedAt, &best.FinishedAt, &best.DurationSeconds, &best.SourceRunID, &best.TriggerID, &best.ProviderReviewID, &bestKey, &bestPosition)
+ WHERE o.project_id=? AND o.pull_number=? AND o.channel=?`+exclude+` ORDER BY o.sort_key DESC,o.position DESC LIMIT 1`, args...).Scan(&best.SourceAttemptID, &best.Channel, &best.HeadSHA, &best.State, &best.StartedAt, &best.FinishedAt, &best.DurationSeconds, &best.SourceRunID, &best.TriggerID, &best.ProviderReviewID, &best.Reason, &bestKey, &bestPosition)
 		found := err == nil
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err

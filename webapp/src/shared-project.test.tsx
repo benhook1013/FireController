@@ -2,13 +2,27 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryRouter, RouterProvider, MemoryRouter } from 'react-router';
-import App, { Connect, JobSummaryPanel, leavesActionProject } from './App';
+import App, { Connect, JobSummaryPanel, Workspace, leavesActionProject } from './App';
 import { canonicalProjectLocation, projectHome, projectMatches } from './project-address';
 import { isCurrentProjectView } from './project-metadata';
 import { WorkspaceContext, type Session } from './workspace';
+import { BrowserActionMemory } from './browser-actions';
+import type { PublicSnapshot } from './public-site-api';
+
+const publication = vi.hoisted(() => ({ state: 'ordinary' as 'ordinary' | 'missing' | 'present', requests: [] as { address: string; revision?: number; generation?: string; embedded?: boolean; theme?: boolean }[] }));
+vi.mock('./public-site', async importOriginal => {
+  const actual = await importOriginal<typeof import('./public-site')>();
+  return { ...actual, PublicProjectAddress: (props: Parameters<typeof actual.PublicProjectAddress>[0]) => {
+    if (publication.state === 'ordinary') return <actual.PublicProjectAddress {...props} />;
+    publication.requests.push(props);
+    if (publication.state === 'missing') return props.fallback ?? <actual.PublicUnavailable />;
+    const snapshot: PublicSnapshot = { slug: 'published-firemud', generation: `public_generation_${'a'.repeat(32)}`, revision: props.revision ?? 3, published_at: '2026-10-17T12:00:00Z', cursor: 'published-cursor', content: { slug: 'published-firemud', presentation: { name: 'Approved FireMUD', brand_name: 'FireMUD', tagline: '', headings: {}, theme: {} }, description: 'Approved project narrative', links: [], project_map: [], progress: [], worker_lanes: [], reviews: [] } };
+    return <actual.PublicSnapshotView snapshot={snapshot} embedded={props.embedded} historical={props.revision !== undefined} home={`/projects/${props.address}`} />;
+  } };
+});
 
 const project={id:'project_one',handle:'firemud',name:'FireMUD',github_repository_id:123,repository:'owner/repo'};
-afterEach(()=>vi.unstubAllGlobals());
+afterEach(()=>{ vi.unstubAllGlobals(); publication.state='ordinary'; publication.requests=[]; });
 function paint(path:string){
   vi.stubGlobal('sessionStorage',{getItem:()=>null});
   const client=new QueryClient();client.setQueryData(['fc','old','instance','project_one','','job','job_one'],{brief:'CACHED_PRIVATE_BRIEF'});
@@ -77,5 +91,44 @@ describe('one public/private project address',()=>{
       const cleared=renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{session,key,home:projectHome(project),selectWorker:()=>{},fail:()=>{},ready:false}}><JobSummaryPanel jobId="job_one" jobRevision={5}/></WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);
       expect(cleared).not.toContain('aria-label="Job summary"');expect(cleared).not.toContain('Summary prose');
     }finally{client.clear();}
+  });
+});
+
+
+describe('signed-in Project publication routes', () => {
+  const generation = `public_generation_${'a'.repeat(32)}`;
+  function privatePaint(path: string) {
+    const client = new QueryClient(), fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    const session = { project, api: { browserCapabilities: { can_edit_presentation: false } }, controller: new AbortController(), worker: null, nonce: 'private-project-view', instanceId: 'instance_one', actions: new BrowserActionMemory() } as Session;
+    const router = createMemoryRouter([{ path: '*', element: <Workspace session={session} metadataStatus="live" reconnectProjectUpdates={() => {}} selectWorker={() => {}} fail={() => {}} /> }], { initialEntries: [path] });
+    try {
+      const html = renderToStaticMarkup(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>);
+      expect(fetch).not.toHaveBeenCalled(); expect(session.controller.signal.aborted).toBe(false);
+      expect(router.state.location.pathname + router.state.location.search).toBe(path);
+      expect(html).toContain('aria-label="Project navigation"'); expect(html).toContain('<h1>FireMUD</h1>');
+      expect(html).not.toContain('Sign in to the workspace'); expect(html).not.toContain('Project credential'); expect(html).not.toContain('href="/"');
+      return html;
+    } finally { router.dispose(); client.clear(); }
+  }
+  it.each([
+    ['/projects/firemud/project', 'No published overview', 'This project has no published overview yet.'],
+    [`/projects/firemud/published/history/2?generation=${generation}`, 'Published page unavailable', 'This revision is no longer available.'],
+  ])('keeps the signed-in shell when publication is missing at %s', (path, title, message) => {
+    publication.state = 'missing';
+    const html = privatePaint(path);
+    expect(html).toContain(`<h2>${title}</h2>`); expect(html).toContain(message); expect(html).not.toContain('Project unavailable');
+    expect(publication.requests).toHaveLength(1); expect(publication.requests[0]).toMatchObject({ address: 'firemud', embedded: true, theme: false });
+    if (path.includes('/history/')) expect(publication.requests[0]).toMatchObject({ revision: 2, generation });
+  });
+  it.each(['/projects/firemud/project', `/projects/firemud/published/history/2?generation=${generation}`])('keeps available approved content in the private route at %s', path => {
+    publication.state = 'present';
+    const html = privatePaint(path);
+    expect(html).toContain('Approved project narrative'); expect(html).not.toContain('No published overview'); expect(html).not.toContain('Published page unavailable');
+    if (path.includes('/history/')) expect(html).toContain('Revision 2 · frozen');
+  });
+  it('uses the historical empty state for an invalid revision without resolving a publication', () => {
+    publication.state = 'missing';
+    const html = privatePaint(`/projects/firemud/published/history/02?generation=${generation}`);
+    expect(html).toContain('<h2>Published page unavailable</h2>'); expect(publication.requests).toHaveLength(0);
   });
 });

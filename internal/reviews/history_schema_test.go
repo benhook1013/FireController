@@ -45,7 +45,7 @@ func historyPhysicalFixture(t *testing.T) *apiFixture {
 		source        string
 		version, pull int
 	}{{"producer-a", 1, 1}, {"producer-a", 3, 2}, {"producer-b", 1, 1}} {
-		historyPhysicalExec(t, f, `INSERT INTO review_attempt_versions VALUES(?,?,'shared-attempt',?,?,'cli','','completed','','',NULL,'shared-source-id','','')`, f.project, attempt.source, attempt.version, attempt.pull)
+		historyPhysicalExec(t, f, `INSERT INTO review_attempt_versions VALUES(?,?,'shared-attempt',?,?,'cli','','completed','','',NULL,'shared-source-id','','','')`, f.project, attempt.source, attempt.version, attempt.pull)
 	}
 	for _, number := range []int{8, 9} {
 		historyPhysicalExec(t, f, `INSERT INTO review_retired_versions VALUES(?,?,1,'defunct')`, f.project, number)
@@ -94,7 +94,7 @@ func TestHistoryPhysicalSchemaExactVersionsAndHistoricalMembership(t *testing.T)
 	f := historyPhysicalFixture(t)
 	historyPhysicalMemberships(t, f)
 	var schema string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&schema); err != nil || schema != "7" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&schema); err != nil || schema != "8" {
 		t.Fatal("physical declarations changed legacy schema version", schema, err)
 	}
 	var tables int

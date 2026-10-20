@@ -220,8 +220,18 @@ var historySchemaStatementsV4 = []string{
 // Version four is frozen for old backups and the original migration. Version seven appends metadata.
 func HistorySchemaSQLV6() []string { return append([]string(nil), historySchemaStatementsV4...) }
 
-var historySchemaStatements = func() []string {
+func HistorySchemaSQLV7() []string {
 	out := HistorySchemaSQLV6()
 	out[0] = strings.Replace(out[0], " latest_attempts_json TEXT NOT NULL,\n", " latest_attempts_json TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (length(CAST(metadata_json AS BLOB)) <= 512),\n", 1)
+	return out
+}
+
+var historySchemaStatements = func() []string {
+	out := HistorySchemaSQLV7()
+	for i, statement := range out {
+		if strings.HasPrefix(statement, "CREATE TABLE review_attempt_versions ") {
+			out[i] = strings.Replace(statement, " provider_review_id TEXT NOT NULL,\n", " provider_review_id TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '' CHECK (length(CAST(reason AS BLOB)) <= 128),\n", 1)
+		}
+	}
 	return out
 }()

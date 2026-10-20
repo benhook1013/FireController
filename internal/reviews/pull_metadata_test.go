@@ -164,7 +164,7 @@ func TestPullMetadataSchema6UpgradePreservesIdentityAndOldFacts(t *testing.T) {
 	f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='instance_id'`).Scan(&nextInstance)
 	f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='signing_key'`).Scan(&nextSigning)
 	f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version)
-	if version != "7" || instance != nextInstance || signing != nextSigning {
+	if version != "8" || instance != nextInstance || signing != nextSigning {
 		t.Fatal("migration changed identity/version")
 	}
 	if after := metadataLegacyRows(t, f); !reflect.DeepEqual(before, after) {

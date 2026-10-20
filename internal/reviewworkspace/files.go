@@ -34,7 +34,8 @@ func (m *Manager) ChangedFiles(ctx context.Context, w Workspace) ([]string, erro
 	return paths, nil
 }
 
-// ReviewFileCount counts an exact-content rename once for the review budget.
+// ReviewFileCount counts a Git-detected rename once for the review budget,
+// using Git's standard 50-percent similarity threshold explicitly.
 // ChangedFiles remains the complete, independently validated old/new path set;
 // neither this count nor rename detection changes the canonical patch anchor.
 func (m *Manager) ReviewFileCount(ctx context.Context, w Workspace) (int64, error) {
@@ -48,7 +49,7 @@ func (m *Manager) ReviewFileCount(ctx context.Context, w Workspace) (int64, erro
 		return 0, errVerification
 	}
 	var output bytes.Buffer
-	if m.run(ctx, w.Directory, &output, changedFilesOutputLimit, "diff", "--no-ext-diff", "--no-textconv", "--find-renames=100%", "--name-only", "-z", w.MergeBaseSHA, w.CandidateSHA, "--") != nil {
+	if m.run(ctx, w.Directory, &output, changedFilesOutputLimit, "diff", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "--name-only", "-z", w.MergeBaseSHA, w.CandidateSHA, "--") != nil {
 		return 0, errVerification
 	}
 	logical, err := parseChangedPaths(output.Bytes())

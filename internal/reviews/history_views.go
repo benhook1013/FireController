@@ -20,11 +20,17 @@ var historyRunRecord = historyRecordSpec{
 	body: []string{"pull_number", "source", "source_run_id", "channel", "head_sha", "reviewer", "scope", "outcome", "attributable", "complete", "started_at", "finished_at", "found", "accepted", "routed", "finalized", "fixed", "coverage_limits_json"},
 }
 
-var historyAttemptRecord = historyRecordSpec{
+var historyAttemptRecordV7 = historyRecordSpec{
 	versions: "review_attempt_versions", memberships: "review_attempt_memberships", current: "review_current_attempts",
 	keys: []string{"source", "source_attempt_id"}, placement: []string{"pull_number", "position"},
 	body: []string{"pull_number", "channel", "head_sha", "state", "started_at", "finished_at", "duration_seconds", "source_run_id", "trigger_id", "provider_review_id"},
 }
+
+var historyAttemptRecord = func() historyRecordSpec {
+	spec := historyAttemptRecordV7
+	spec.body = append(append([]string{}, spec.body...), "reason")
+	return spec
+}()
 
 var historyRetiredRecord = historyRecordSpec{
 	versions: "review_retired_versions", memberships: "review_retired_memberships", current: "review_current_retired",
@@ -90,11 +96,12 @@ func historyReadView(name string, spec historyRecordSpec, columns []string) stri
 
 // HistoryReadViewSQL returns independent canonical definitions for startup and
 // read-only backup inspection. These are read views, never writable adapters.
-func HistoryReadViewSQL() map[string]string { return historyReadViewSQL(true) }
+func HistoryReadViewSQL() map[string]string { return historyReadViewSQL(true, true) }
 
 // HistoryReadViewSQLV6 preserves the exact predecessor backup/startup definition.
-func HistoryReadViewSQLV6() map[string]string { return historyReadViewSQL(false) }
-func historyReadViewSQL(metadata bool) map[string]string {
+func HistoryReadViewSQLV6() map[string]string { return historyReadViewSQL(false, false) }
+func HistoryReadViewSQLV7() map[string]string { return historyReadViewSQL(true, false) }
+func historyReadViewSQL(metadata, reason bool) map[string]string {
 	result :=
 		map[string]string{
 			"review_pulls":         historyReadView("review_pulls", historyPullRecord, []string{"project_id", "snapshot_id", "position", "number", "title", "state", "head_sha", "base_ref", "base_sha", "ci_state", "mergeability", "complete", "run_count", "attempt_count", "recent_runs_json", "latest_attempts_json"}),
@@ -106,6 +113,9 @@ func historyReadViewSQL(metadata bool) map[string]string {
 	if metadata {
 		columns := append([]string{"project_id", "snapshot_id", "position", "number"}, historyPullRecord.body...)
 		result["review_pulls"] = historyReadView("review_pulls", historyPullRecord, columns)
+	}
+	if reason {
+		result["review_attempts"] = historyReadView("review_attempts", historyAttemptRecord, []string{"project_id", "snapshot_id", "pull_number", "position", "source", "source_attempt_id", "channel", "head_sha", "state", "started_at", "finished_at", "duration_seconds", "source_run_id", "trigger_id", "provider_review_id", "reason"})
 	}
 	return result
 }

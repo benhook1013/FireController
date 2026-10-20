@@ -407,6 +407,18 @@ func strictStoredJSON(data string, dst any) error {
 	if json.Unmarshal([]byte(data), dst) != nil {
 		return core.Fail("storage_unavailable", "Stored review projections are invalid.", 500)
 	}
+	if summaries, ok := dst.(*[]AttemptSummary); ok {
+		var fields []map[string]json.RawMessage
+		if json.Unmarshal([]byte(data), &fields) != nil {
+			return historyInconsistent()
+		}
+		for i, item := range *summaries {
+			_, provided := fields[i]["reason"]
+			if !ValidAttemptReason(item.State, item.Reason) || provided && item.Reason == "" {
+				return historyInconsistent()
+			}
+		}
+	}
 	return nil
 }
 func encodePosition(snapshot string, position int) string {

@@ -102,5 +102,5 @@ func transferNativeAttemptGuard(ctx context.Context, tx HistoryQuery, project, s
 	if err := retainedAttemptState(ctx, tx, project, source, number, attempt); err != nil {
 		return err
 	}
-	return transferNativeExactRecord(ctx, tx, project, historyAttemptRecord, []any{source, attempt.SourceAttemptID}, []any{number, attempt.Channel, attempt.HeadSHA, attempt.State, attempt.StartedAt, attempt.FinishedAt, attempt.DurationSeconds, attempt.SourceRunID, attempt.TriggerID, attempt.ProviderReviewID})
+	return transferNativeExactRecord(ctx, tx, project, historyAttemptRecord, []any{source, attempt.SourceAttemptID}, []any{number, attempt.Channel, attempt.HeadSHA, attempt.State, attempt.StartedAt, attempt.FinishedAt, attempt.DurationSeconds, attempt.SourceRunID, attempt.TriggerID, attempt.ProviderReviewID, attempt.Reason})
 }

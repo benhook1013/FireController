@@ -128,9 +128,16 @@ func TestPrepareReviewWorkspaceStopsAtOriginalGuardAndRetainsSafeReason(t *testi
 	}
 }
 
-func TestPrepareReviewWorkspaceExactRenameHonorsOneHundredFileBudget(t *testing.T) {
-	for _, exact := range []bool{true, false} {
-		t.Run(fmt.Sprintf("exact_%t", exact), func(t *testing.T) {
+func TestPrepareReviewWorkspaceRenameThresholdHonorsOneHundredFileBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+		admitted      bool
+	}{
+		{"exact", "", true},
+		{"similar_changed_content", "candidate\nchanged\n", true},
+		{"below_threshold", "unrelated replacement content\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			f := newCLIDriverFixture(t)
 			current, plan, a := workspacePreparationInputs(t, f)
 			current.Policy.Policy.MaxReviewFiles = 100
@@ -138,8 +145,8 @@ func TestPrepareReviewWorkspaceExactRenameHonorsOneHundredFileBudget(t *testing.
 			if err := os.Rename(filepath.Join(source, "reviewed.txt"), filepath.Join(source, "renamed.txt")); err != nil {
 				t.Fatal(err)
 			}
-			if !exact {
-				if err := os.WriteFile(filepath.Join(source, "renamed.txt"), []byte("candidate\nchanged\n"), 0600); err != nil {
+			if tc.content != "" {
+				if err := os.WriteFile(filepath.Join(source, "renamed.txt"), []byte(tc.content), 0600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -158,14 +165,14 @@ func TestPrepareReviewWorkspaceExactRenameHonorsOneHundredFileBudget(t *testing.
 				t.Fatal(err)
 			}
 			w, count, err := prepareReviewWorkspace(t.Context(), f.driver.fetch, f.manager.Verify, f.manager, f.capability.GitHubCredential(), current, plan, a.ID)
-			if exact {
+			if tc.admitted {
 				if err != nil || count != 100 || f.manager.Verify(t.Context(), w) != nil {
-					t.Fatal("exact rename incorrectly exceeded unchanged 100-file budget", count, err)
+					t.Fatal("detected rename incorrectly exceeded unchanged 100-file budget", count, err)
 				}
 			} else {
 				var failure *core.Error
 				if !errors.As(err, &failure) || failure.Code != "review_held" || failure.Details.(map[string]string)["reason"] != "project_file_limit" || count != 0 || w != (reviewworkspace.Workspace{}) {
-					t.Fatal("changed-content move bypassed file ceiling", count, err)
+					t.Fatal("below-threshold move bypassed file ceiling", count, err)
 				}
 			}
 			if err := f.store.DB().QueryRow("SELECT count(*) FROM events").Scan(&after); err != nil || after != before || f.reader.repositoryCalls != 0 || len(f.reader.calls) != 0 {

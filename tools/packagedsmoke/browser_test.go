@@ -324,7 +324,7 @@ func (o *browserOutput) safePhase() string {
 			if record.Phase == "live-reviews" {
 				allowed := false
 				switch record.Checkpoint {
-				case "reviews-open", "unconfigured", "fallback-observation", "fallback-first-jump", "fallback-scroll-away", "fallback-repeat-jump", "seed-observation", "initial-open-pull", "initial-merged-pull", "updated-observation", "updated-open-pull", "updated-merged-pull", "hosted-run", "merged-retention", "delivery-queue", "queue-heading", "queue-pull", "merge-head", "hosted-summary", "current-round-grants", "current-round-limits-shared", "current-round-close-live", "reviews-return", "reviews-heading", "selected-worker", "sanitized-literal", "reviews-url", "queue-jump-visible", "reload-head-spa":
+				case "reviews-open", "unconfigured", "fallback-observation", "fallback-first-jump", "fallback-scroll-away", "fallback-repeat-jump", "seed-observation", "initial-open-pull", "initial-merged-pull", "updated-observation", "updated-open-pull", "updated-merged-pull", "hosted-run", "merged-retention", "delivery-queue", "queue-heading", "queue-pull", "merge-head", "hosted-summary", "current-round-grants", "current-round-limits-shared", "current-round-close-live", "attempt-reason-compact", "attempt-reason-layout", "attempt-reason-detail", "attempt-reason-expanded", "attempt-reason-reads", "reviews-return", "reviews-heading", "selected-worker", "sanitized-literal", "reviews-url", "queue-jump-visible", "reload-head-spa":
 					allowed = true
 				}
 				valid := allowed

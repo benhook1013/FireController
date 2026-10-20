@@ -159,7 +159,7 @@ func validateObservationContent(queue []PullInput, retirements []RetiredPull, re
 			if !validText(attempt.SourceAttemptID, 256, true) || !oneOf(attempt.Channel, "cli", "hosted", "manual", "subagent") ||
 				!validSHA(attempt.HeadSHA) || !oneOf(attempt.State, "prepared", "preparing", "held", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "unknown") ||
 				(attempt.DurationSeconds != nil && *attempt.DurationSeconds < 0) || !validText(attempt.SourceRunID, 256, false) ||
-				!validText(attempt.TriggerID, 128, false) || !validText(attempt.ProviderReviewID, 128, false) {
+				!validText(attempt.TriggerID, 128, false) || !validText(attempt.ProviderReviewID, 128, false) || !ValidAttemptReason(attempt.State, attempt.Reason) {
 				return validationError("A review attempt contains invalid identity, state or time fields.")
 			}
 			if _, exists := attemptIDs[attempt.SourceAttemptID]; exists {
