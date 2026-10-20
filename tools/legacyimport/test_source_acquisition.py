@@ -1,6 +1,6 @@
 # Copyright 2026 FireController contributors. SPDX-License-Identifier: Apache-2.0
 """Owned synthetic assembled acquisition proof; all provider facts are fixtures."""
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, nullcontext, redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -32,6 +32,21 @@ class AcquisitionMainTests(unittest.TestCase):
         self.assertEqual(len(stderr.getvalue().splitlines()),1)
         return json.loads(stderr.getvalue())
 
+    def test_database_limit_cli_default_positive_range_and_duplicate_guard(self):
+        for tail, expected in (([], 32 << 20), (["--max-database-bytes", str(512 << 20)], 512 << 20),
+                               (["--max-database-bytes", str((1 << 63)-1)], (1 << 63)-1)):
+            with patch.object(acquire, 'acquire', return_value={}) as called, redirect_stdout(io.StringIO()):
+                self.assertEqual(acquire.main(self.arguments+tail), 0)
+            self.assertEqual(acquire.transfer.snapshot_limit(called.call_args.args[0]), expected)
+        for tail in (["--max-database-bytes", "0"], ["--max-database-bytes", "-1"],
+                     ["--max-database-bytes", str(1 << 63)], ["--max-database-bytes", "PRIVATE_BAD_VALUE"],
+                     ["--max-database-bytes", "1", "--max-database-bytes", "2"]):
+            with patch.object(acquire, 'acquire') as called, redirect_stderr(io.StringIO()) as errors, self.assertRaises(SystemExit) as failure:
+                acquire.main(self.arguments+tail)
+            self.assertEqual(failure.exception.code, 2)
+            self.assertEqual(errors.getvalue(), '{"error":"arguments_invalid"}\n')
+            called.assert_not_called()
+
     def test_known_local_refusal_families_preserve_stable_diagnostics(self):
         for failure,expected in (
                 (acquire.AcquisitionRefusal('source_repository_mismatch'),{'error':'source_repository_mismatch'}),
@@ -59,6 +74,75 @@ class AcquisitionMainTests(unittest.TestCase):
                 acquire.transfer.Refusal(private,body=private)):
             with self.subTest(family=type(failure).__name__):
                 self.assertEqual(self.refused(failure),{'error':'source_acquisition_refused'})
+
+
+class OfflineSnapshotBoundsTests(unittest.TestCase):
+    """All executable source/provider boundaries are fixtures, never real helpers."""
+    def setUp(self):
+        self.owned = tempfile.TemporaryDirectory(); self.addCleanup(self.owned.cleanup)
+        root = Path(self.owned.name)
+        self.source = root/'trusted'
+        self.package = self.source/'dev-tools/pr_review'; self.package.mkdir(parents=True)
+        common = root/'handoff'; common.mkdir(mode=0o700)
+        captures = common/'firemud'; captures.mkdir(mode=0o700)
+        self.snapshot = captures/'pr-review-stack.sqlite3'
+        self.snapshot.write_bytes(b'sealed synthetic snapshot'); self.snapshot.chmod(0o600)
+        plan = root/'plan.json'
+        plan.write_bytes(acquire.transfer.canonical(dict(version=1, repository='owner/project', repository_id=17,
+            default_base_ref='main', paused=True, scratch_git_writes=True,
+            prs=[dict(pull_number=7, channels=['cli'])])))
+        plan.chmod(0o600)
+        self.args = types.SimpleNamespace(source_root=str(self.source), common=str(common),
+            snapshot=str(self.snapshot), git_root=str(root/'proof-clone'), plan=str(plan),
+            output=str(root/'frame.json'), provenance=str(root/'provenance.json'))
+        stack = ExitStack(); self.addCleanup(stack.close)
+        module = types.SimpleNamespace(__file__=str(self.package/'fixture.py'), parse_repo=lambda _: None,
+                                       activate_hosted_preflight_budget=lambda *_args, **_kwargs: nullcontext())
+        stack.enter_context(patch.object(acquire.transfer, 'load_helpers', return_value=({'policy': object()}, {}, 'a'*64)))
+        stack.enter_context(patch.object(acquire.transfer, 'source_hash', return_value=(None, {}, 'a'*64)))
+        stack.enter_context(patch.object(acquire.importlib, 'import_module', return_value=module))
+        stack.enter_context(patch.object(acquire, 'bind_source', return_value=nullcontext((object(), object()))))
+        stack.enter_context(patch.object(acquire, 'scratch_git', return_value=root/'proof-clone'))
+        stack.enter_context(patch.object(acquire, 'repository_matches'))
+        stack.enter_context(patch.object(acquire, 'construct', return_value=object()))
+        def frame(*_args, **kwargs):
+            return dict(version=1, repository_id=17, snapshot_sha256=kwargs['snapshot_sha256'],
+                        projection_complete=True, quiescent=True, obligations_clear=True,
+                        prs=[dict(pull_number=7, channels={'cli': []})])
+        self.frame = stack.enter_context(patch.object(acquire, 'acquire_frame', side_effect=frame))
+
+    def test_explicit_database_bound_exact_retry_preserves_binding_and_outputs(self):
+        with self.snapshot.open('ab') as handle:
+            handle.truncate((33 << 20)+1)
+        with self.assertRaises(acquire.transfer.Refusal) as failure:
+            acquire.acquire(self.args)
+        self.assertEqual(failure.exception.code, 'input_file_invalid')
+        self.frame.assert_not_called()
+        self.args.max_database_bytes = 64 << 20
+        self.assertEqual(acquire.acquire(self.args)['outcome'], 'created')
+        before = Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()
+        self.frame.reset_mock()
+        self.args.max_database_bytes = 512 << 20
+        result = acquire.acquire(self.args)
+        self.assertTrue(result['replayed']); self.assertEqual(result['outcome'], 'unchanged')
+        self.frame.assert_not_called()
+        self.assertEqual(before, (Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()))
+
+    def test_changed_snapshot_or_sidecar_prevents_publication(self):
+        for mutation in ('digest', 'sidecar'):
+            with self.subTest(mutation=mutation):
+                def changed(*_args, **_kwargs):
+                    if mutation == 'digest':
+                        self.snapshot.write_bytes(b'changed synthetic snapshot')
+                    else:
+                        Path(str(self.snapshot)+'-wal').write_bytes(b'new sidecar')
+                    raise OSError('private synthetic failure')
+                self.frame.side_effect = changed
+                with self.assertRaises((acquire.transfer.Refusal, ConservationRefusal)):
+                    acquire.acquire(self.args)
+                self.assertFalse(Path(self.args.output).exists())
+                self.assertFalse(Path(self.args.provenance).exists())
+
 
 
 class AcquisitionTests(unittest.TestCase):

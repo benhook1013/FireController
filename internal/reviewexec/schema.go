@@ -2,10 +2,14 @@ package reviewexec
 
 import (
 	"context"
+	"github.com/benhook1013/FireController/internal/adoptionholds"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
 func EnsureSchema(ctx context.Context, store *core.Store) error {
+	if err := adoptionholds.EnsureSchema(ctx, store); err != nil {
+		return err
+	}
 	if err := EnsurePolicySchema(ctx, store); err != nil {
 		return err
 	}

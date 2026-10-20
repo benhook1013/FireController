@@ -21,8 +21,9 @@ from datetime import datetime, timezone
 sys.dont_write_bytecode = True
 
 from prepare_source_controls import (QuietParser, UniqueInput, Refusal, canonical,
-    check_output, digest, exact_keys, integer, normalized_path, private_input,
-    publish, refuse, source_hash, strict_json)
+    check_output, database_limit_option, digest, exact_keys, integer, normalized_path,
+    positive_limit, private_input, private_snapshot, publish, refuse, snapshot_limit,
+    source_hash, strict_json)
 
 MAX_SELECTION = 256 << 10
 MAX_PROJECTION = 1 << 20
@@ -122,7 +123,8 @@ def selection_input(value):
     return value
 
 
-def bounded_database(connection):
+def bounded_database(connection, *, max_rows_per_table=5000, max_total_rows=20000,
+                     max_cell_bytes=256 << 10, max_total_cell_bytes=32 << 20):
     """Conservative whole-source admission before helper fetchall/JSON expansion."""
     connection.execute("PRAGMA query_only=ON")
     connection.execute("BEGIN")
@@ -138,14 +140,14 @@ def bounded_database(connection):
             refuse("snapshot_bounds")
         count = connection.execute('SELECT count(*) FROM "'+name+'"').fetchone()[0]
         total_rows += count
-        if count > 5000 or total_rows > 20000:
+        if count > max_rows_per_table or total_rows > max_total_rows:
             refuse("snapshot_bounds")
         # SQL lengths first: no oversized cell is fetched into Python/helper JSON.
         for column in columns:
             col = column[1].replace('"', '""')
             maximum, size = connection.execute('SELECT coalesce(max(length(CAST("'+col+'" AS BLOB))),0),coalesce(sum(length(CAST("'+col+'" AS BLOB))),0) FROM "'+name+'"').fetchone()
             total_bytes += size
-            if maximum > 256 << 10 or total_bytes > 32 << 20:
+            if maximum > max_cell_bytes or total_bytes > max_total_cell_bytes:
                 refuse("snapshot_bounds")
     return dict(tables=len(tables), rows=total_rows, cell_bytes=total_bytes)
 
@@ -318,10 +320,10 @@ def prepare(args):
     # Source package is explicitly trusted executable input. Suppress accidental
     # source diagnostics, whose text could contain private records.
     with private_input(args.selection, MAX_SELECTION) as (_, selection_bytes), \
-            private_input(args.snapshot, 32 << 20, snapshot=True) as (path, snapshot_bytes):
+            private_snapshot(args.snapshot, snapshot_limit(args)) as (path, snapshot_sha):
         selected = selection_input(strict_json(selection_bytes))
         with contextlib.closing(sqlite3.connect(path.as_uri()+"?mode=ro&immutable=1", uri=True)) as connection:
-            bounds = bounded_database(connection)
+            bounds = bounded_database(connection, **source_limits(args))
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             records, hashes, code_hash = load_records(args.source_root, path)
             history = records.history_batch([p["number"] for p in selected["pulls"]],
@@ -366,7 +368,7 @@ def prepare(args):
         wrapper = wire_json(dict(preview_sha256="0"*64, batch=prepared))
         if len(output) > 256 << 10 or len(wrapper) > 256 << 10:
             refuse("transfer_bounds")
-        provenance = dict(version=1, kind="offline_source_review_preparation", snapshot_sha256=digest(snapshot_bytes),
+        provenance = dict(version=1, kind="offline_source_review_preparation", snapshot_sha256=snapshot_sha,
                           selection_sha256=digest(selection_bytes), source_code_sha256=code_hash, source_helpers=hashes,
                           prepared_sha256=digest(output), source_bounds=bounds,
                           source_history=history, selected_count_projections=count_projections, omissions=["attempts", "captures", "receiving_route_ledger", "native_execution_credit", "review_controls"],
@@ -387,10 +389,22 @@ def prepare(args):
                 archived_routes=sum(len(h.get("routes", [])) for h in history.values()))
 
 
+SOURCE_LIMITS = dict(max_rows_per_table=5000, max_total_rows=20000,
+                     max_cell_bytes=256 << 10, max_total_cell_bytes=32 << 20)
+
+
+def source_limits(args):
+    return {name: getattr(args, name, None) or default for name, default in SOURCE_LIMITS.items()}
+
+
 def parser():
     out = QuietParser(allow_abbrev=False, description=__doc__)
     for flag in ("source-root", "snapshot", "selection", "output", "provenance"):
         out.add_argument("--"+flag, required=True, action=UniqueInput)
+    database_limit_option(out)
+    for name, default in SOURCE_LIMITS.items():
+        out.add_argument("--"+name.replace("_", "-"), type=positive_limit, action=UniqueInput,
+                         help=f"positive source admission limit, at most 9223372036854775807 (default: {default})")
     return out
 
 

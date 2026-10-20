@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -236,4 +237,132 @@ func TestPrepareMessagesCLICancellationAndHelp(t *testing.T) {
 	if code := run(t.Context(), []string{"prepare-messages", "--help"}, &out, &diagnostic); code != 0 || !strings.Contains(out.String(), "Association policy must be archive") || diagnostic.Len() != 0 {
 		t.Fatal("help unavailable")
 	}
+}
+
+func TestPrepareMessagesCLIInspectionLimitsValidateBeforeInputReads(t *testing.T) {
+	dir := t.TempDir()
+	snapshot, selection, output := filepath.Join(dir, "PRIVATE_MISSING_SNAPSHOT"), filepath.Join(dir, "PRIVATE_MISSING_SELECTION"), filepath.Join(dir, "never.json")
+	base := prepareMessageArgs(snapshot, selection, output)
+	var help bytes.Buffer
+	if code := run(t.Context(), []string{"prepare-messages", "--help"}, &help, &bytes.Buffer{}); code != 0 {
+		t.Fatal("help failed", code)
+	}
+	for _, name := range []string{"max-database-bytes", "max-rows-per-table", "max-total-rows", "max-cell-bytes", "max-total-cell-bytes"} {
+		if !strings.Contains(help.String(), "--"+name+" N") {
+			t.Fatalf("help omits %s", name)
+		}
+		for _, value := range []string{"0", "-1", "PRIVATE_NOT_A_NUMBER", "9223372036854775807", "9223372036854775808"} {
+			t.Run(name+"/"+value, func(t *testing.T) {
+				args := append(append([]string{}, base...), "--"+name, value)
+				var out, diagnostic bytes.Buffer
+				if code := run(t.Context(), args, &out, &diagnostic); code != 2 || out.Len() != 0 || readDiagnostic(t, diagnostic.Bytes()) != "arguments_invalid" {
+					t.Fatal("invalid limit reached missing input", code)
+				}
+				assertMessageOutputSafe(t, diagnostic.Bytes(), snapshot, selection, output, value)
+			})
+		}
+		t.Run(name+"/duplicate", func(t *testing.T) {
+			args := append(append([]string{}, base...), "--"+name, "100", "--"+name+"=200")
+			var out, diagnostic bytes.Buffer
+			if code := run(t.Context(), args, &out, &diagnostic); code != 2 || out.Len() != 0 || readDiagnostic(t, diagnostic.Bytes()) != "arguments_invalid" {
+				t.Fatal("duplicate limit reached missing input", code)
+			}
+			assertMessageOutputSafe(t, diagnostic.Bytes(), snapshot, selection, output)
+		})
+		for _, value := range []string{"1", "9223372036854775806"} {
+			t.Run(name+"/positive/"+value, func(t *testing.T) {
+				args := append(append([]string{}, base...), "--"+name+"="+value)
+				var out, diagnostic bytes.Buffer
+				if code := run(t.Context(), args, &out, &diagnostic); code != 3 || out.Len() != 0 || readDiagnostic(t, diagnostic.Bytes()) != "selection_invalid" {
+					t.Fatal("valid positive limit did not proceed to selected input", code)
+				}
+				assertMessageOutputSafe(t, diagnostic.Bytes(), snapshot, selection, output)
+			})
+		}
+	}
+	if _, err := os.Lstat(output); !os.IsNotExist(err) {
+		t.Fatal("argument validation published output")
+	}
+}
+
+func TestPrepareMessagesCLIInspectionOverridesAndReplayConserveSource(t *testing.T) {
+	snapshot, selection, _ := prepareMessageCLIFixture(t)
+	// Only unselected source data exceeds the default; selected messages retain
+	// their original native limits and content under every admission override.
+	largeCell := legacy.DefaultLimits().MaxCellBytes + 1
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(snapshot)}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(t.Context(), `INSERT INTO job_updates(job_id,created_at,kind,body) VALUES('PRIVATE_SOURCE_JOB','2024-02-03T04:05:06Z','progress',?)`, strings.Repeat("x", int(largeCell)))
+	closeErr := db.Close()
+	if err != nil || closeErr != nil {
+		t.Fatal("synthetic oversized update", err, closeErr)
+	}
+	before, err := os.ReadFile(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refuse := func(args []string, output string) {
+		t.Helper()
+		var out, diagnostic bytes.Buffer
+		if code := run(t.Context(), args, &out, &diagnostic); code != 3 || out.Len() != 0 || readDiagnostic(t, diagnostic.Bytes()) != "snapshot_too_large" {
+			t.Fatal("inspection bound not enforced", code, diagnostic.String())
+		}
+		assertMessageOutputSafe(t, diagnostic.Bytes(), snapshot, selection, output)
+		if _, err := os.Lstat(output); !os.IsNotExist(err) {
+			t.Fatal("limit refusal published output")
+		}
+	}
+	defaultOutput := filepath.Join(filepath.Dir(snapshot), "default-refused.json")
+	refuse(prepareMessageArgs(snapshot, selection, defaultOutput), defaultOutput)
+	var canonicalPrepared []byte
+	for name, raised := range map[string]int64{
+		"max-database-bytes":   int64(len(before)),
+		"max-rows-per-table":   100,
+		"max-total-rows":       1000,
+		"max-cell-bytes":       largeCell,
+		"max-total-cell-bytes": largeCell + (1 << 20),
+	} {
+		t.Run(name, func(t *testing.T) {
+			output := filepath.Join(filepath.Dir(snapshot), name+".json")
+			base := prepareMessageArgs(snapshot, selection, output)
+			if name != "max-cell-bytes" {
+				base = append(base, "--max-cell-bytes", strconv.FormatInt(largeCell, 10))
+			}
+			refuse(append(append([]string{}, base...), "--"+name, "1"), output)
+			args := append(append([]string{}, base...), "--"+name+"="+strconv.FormatInt(raised, 10))
+			var out, diagnostic bytes.Buffer
+			if code := run(t.Context(), args, &out, &diagnostic); code != 0 || diagnostic.Len() != 0 {
+				t.Fatal("selected sufficient limit failed", code, diagnostic.String())
+			}
+			assertMessageOutputSafe(t, out.Bytes(), snapshot, selection, output)
+			prepared, err := os.ReadFile(output)
+			var batch coordimportmodel.Batch
+			if err != nil || json.Unmarshal(prepared, &batch) != nil || len(batch.Jobs) != 0 || len(batch.Messages) != 3 || batch.Messages[0].Body != privateMessageBody || batch.Messages[1].ReplyToSourceKey != "PRIVATE_ROOT" {
+				t.Fatal("inspection override changed selected native content", err)
+			}
+			if canonicalPrepared == nil {
+				canonicalPrepared = prepared
+			} else if !bytes.Equal(canonicalPrepared, prepared) {
+				t.Fatal("admission-only limits changed prepared bytes")
+			}
+			info, err := os.Lstat(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out.Reset()
+			replay := append(append([]string{}, base...), "--"+name, strconv.FormatInt(raised+1, 10))
+			if code := run(t.Context(), replay, &out, &diagnostic); code != 0 || diagnostic.Len() != 0 {
+				t.Fatal("bound-only exact replay failed", code, diagnostic.String())
+			}
+			same, err := os.ReadFile(output)
+			now, statErr := os.Lstat(output)
+			if err != nil || statErr != nil || !bytes.Equal(prepared, same) || !os.SameFile(info, now) {
+				t.Fatal("bound-only replay replaced output")
+			}
+		})
+	}
+	assertPrepareSourceConserved(t, snapshot, before)
 }

@@ -189,3 +189,51 @@ func TestReviewRoundsMutationValidationAndUnknownResponse(t *testing.T) {
 		t.Fatal("unsent cancellation became uncertain", err)
 	}
 }
+
+func TestReviewRoundsReadUnboundedSafeCounters(t *testing.T) {
+	for _, mode := range []string{"unbounded", "wrong-placeholder", "unsafe-used", "unproven-unbounded", "null-flag"} {
+		t.Run(mode, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/instance") {
+					handshake(w)
+					return
+				}
+				c := roundControlSample()
+				c.Closed = false
+				c.MaximumUnbounded = true
+				c.Maximum = 0
+				c.Minimum = 9007199254740991
+				c.Used = 9007199254740990
+				c.Dry = 0
+				c.OriginSource = "source"
+				c.OriginKey = "2-cli"
+				c.OriginSHA256 = strings.Repeat("a", 64)
+				switch mode {
+				case "wrong-placeholder":
+					c.Maximum = 5
+				case "unsafe-used":
+					c.Used = 9007199254740992
+				case "unproven-unbounded":
+					c.OriginSource = ""
+					c.OriginKey = ""
+					c.OriginSHA256 = ""
+				}
+				raw, _ := json.Marshal(c)
+				if mode == "null-flag" {
+					raw = []byte(strings.Replace(string(raw), `"maximum_unbounded":true`, `"maximum_unbounded":null`, 1))
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(raw)
+			}))
+			defer server.Close()
+			c, err := newClient(t, server).ReviewRoundControl(context.Background(), 2, "cli")
+			if mode == "unbounded" {
+				if err != nil || !c.MaximumUnbounded || c.Maximum != 0 {
+					t.Fatal("unbounded read lost", c, err)
+				}
+			} else {
+				checkError(t, err, "invalid_response")
+			}
+		})
+	}
+}

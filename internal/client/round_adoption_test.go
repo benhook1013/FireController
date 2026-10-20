@@ -166,3 +166,37 @@ func TestRoundAdoptionSingleDispatchAndStrictReceipt(t *testing.T) {
 }
 
 func adoptionHash(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+
+func TestRoundAdoptionV2UnboundedAndLegacyCanonical(t *testing.T) {
+	legacy := adoptionRaw(t)
+	if strings.Contains(string(legacy), "maximum_unbounded") {
+		t.Fatal("legacy payload changed")
+	}
+	explicitFalse := append(append([]byte{}, legacy[:len(legacy)-1]...), []byte(`,"maximum_unbounded":false}`)...)
+	if client.ValidateReviewRoundAdoptionDocument(explicitFalse) == nil {
+		t.Fatal("v1 accepted v2 field")
+	}
+	p := adoptionDocument()
+	p.Version = 2
+	p.MaximumUnbounded = true
+	p.MaximumRemaining = 0
+	p.MinimumRemaining = 9007199254740991
+	raw, _ := json.Marshal(p)
+	if err := client.ValidateReviewRoundAdoptionDocument(raw); err != nil {
+		t.Fatal("unbounded source policy refused", err)
+	}
+	for _, change := range []func(*client.PreparedReviewRoundControl){func(p *client.PreparedReviewRoundControl) { p.MaximumRemaining = 1 }, func(p *client.PreparedReviewRoundControl) { p.MinimumRemaining++ }, func(p *client.PreparedReviewRoundControl) { p.MaximumUnbounded = false }} {
+		bad := p
+		change(&bad)
+		b, _ := json.Marshal(bad)
+		if client.ValidateReviewRoundAdoptionDocument(b) == nil {
+			t.Fatal("ambiguous/unsafe bound accepted")
+		}
+	}
+	for _, literal := range []string{"null", "1", `"true"`} {
+		bad := strings.Replace(string(raw), `"maximum_unbounded":true`, `"maximum_unbounded":`+literal, 1)
+		if client.ValidateReviewRoundAdoptionDocument([]byte(bad)) == nil {
+			t.Fatal("invalid optional flag accepted")
+		}
+	}
+}

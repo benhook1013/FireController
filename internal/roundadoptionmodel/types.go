@@ -3,20 +3,30 @@
 package roundadoptionmodel
 
 type Prepared struct {
-	Version          int    `json:"version"`
-	RepositoryID     int64  `json:"repository_id"`
-	ExpectedRevision *int64 `json:"expected_revision"`
-	PullNumber       int64  `json:"pull_number"`
-	Channel          string `json:"channel"`
-	Source           string `json:"source"`
-	SourceKey        string `json:"source_key"`
-	SourceSHA256     string `json:"source_sha256"`
-	MinimumRemaining int64  `json:"minimum_remaining"`
-	MaximumRemaining int64  `json:"maximum_remaining"`
-	InitialDry       int64  `json:"initial_dry"`
-	Taper            int64  `json:"taper"`
-	Tapered          bool   `json:"tapered"`
-	Closed           bool   `json:"closed"`
+	Obligations      *ObligationsReference `json:"obligations,omitempty"`
+	Version          int                   `json:"version"`
+	RepositoryID     int64                 `json:"repository_id"`
+	ExpectedRevision *int64                `json:"expected_revision"`
+	PullNumber       int64                 `json:"pull_number"`
+	Channel          string                `json:"channel"`
+	Source           string                `json:"source"`
+	SourceKey        string                `json:"source_key"`
+	SourceSHA256     string                `json:"source_sha256"`
+	MinimumRemaining int64                 `json:"minimum_remaining"`
+	MaximumRemaining int64                 `json:"maximum_remaining"`
+	MaximumUnbounded bool                  `json:"maximum_unbounded,omitempty"`
+	InitialDry       int64                 `json:"initial_dry"`
+	Taper            int64                 `json:"taper"`
+	Tapered          bool                  `json:"tapered"`
+	Closed           bool                  `json:"closed"`
+}
+
+// ObligationsReference binds carried policy to retained source obligations,
+// separately from the combined configuration-provenance digest.
+type ObligationsReference struct {
+	Namespace      string `json:"namespace"`
+	SnapshotSHA256 string `json:"snapshot_sha256"`
+	Revision       int64  `json:"revision"`
 }
 
 type ApplyRequest struct {

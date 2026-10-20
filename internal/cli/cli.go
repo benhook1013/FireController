@@ -66,15 +66,16 @@ type invocation struct {
 	presentation *presentationInvocation
 	publication  *publicationInvocation
 
-	reviewQueueEdit    *reviewQueueEditInvocation
-	reviewImport       *reviewImportInvocation
-	reviewTransfer     *reviewTransferInvocation
-	coordinationImport *coordinationImportInvocation
-	mapImport          *mapImportInvocation
-	history            *historyInvocation
-	reviewRun          *reviewRunInvocation
-	rounds             *reviewRoundsInvocation
-	roundAdoption      *roundAdoptionInvocation
+	reviewQueueEdit     *reviewQueueEditInvocation
+	reviewImport        *reviewImportInvocation
+	reviewTransfer      *reviewTransferInvocation
+	coordinationImport  *coordinationImportInvocation
+	mapImport           *mapImportInvocation
+	history             *historyInvocation
+	reviewRun           *reviewRunInvocation
+	rounds              *reviewRoundsInvocation
+	roundAdoption       *roundAdoptionInvocation
+	adoptionObligations *adoptionObligationsInvocation
 
 	waitSeconds int
 }
@@ -142,6 +143,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.roundAdoption != nil {
 		if err := prepareRoundAdoption(ctx, call.roundAdoption); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+	}
+	if call.adoptionObligations != nil {
+		if err := prepareAdoptionObligations(ctx, call.adoptionObligations); err != nil {
 			return reportClientError(stderr, err, ctx)
 		}
 	}
@@ -215,6 +221,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.roundAdoption != nil {
 		return executeRoundAdoption(requestCtx, ctx, service, call.roundAdoption, stdout, stderr)
+	}
+	if call.adoptionObligations != nil {
+		return executeAdoptionObligations(requestCtx, ctx, service, call.adoptionObligations, stdout, stderr)
 	}
 	if call.rounds != nil {
 		return executeReviewRounds(requestCtx, ctx, service, call.rounds, stdout, stderr)
@@ -433,6 +442,11 @@ func parseInvocation(args []string) (invocation, bool) {
 		}
 		var ok bool
 		call.rounds, ok = parseReviewRounds(operationArgs)
+		return call, ok
+	}
+	if call.command == "reviews" && call.subcommand == "obligations" {
+		var ok bool
+		call.adoptionObligations, ok = parseAdoptionObligations(operationArgs)
 		return call, ok
 	}
 	if call.command == "reviews" && call.subcommand == "queue-edit" {

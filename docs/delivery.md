@@ -10,6 +10,8 @@ The [native review workspace](review-workspace.md) implements stored queue, PR/r
 
 ## Remaining product work
 
+The [unfinished-adoption boundary](adoption-obligations.md) now implements enforced source finding/route holds, strict policy linkage, typed administrator commands and an explicitly absent maximum. Focused race, canonical backup and built-command checks pass. A complete source-owner export of carried obligations, faithful treatment of unfinalized source counting effects and installed cross-project cutover qualification remain active work; those are separate from coordination import or display history.
+
 The [Delivery and Project website redesign](browser-experience.md) restores the default worker/job lanes, Unassigned lane, review queue and merge-head hero in source. Focused Delivery API checks and actual packaged desktop/narrow browser proof pass, including compact sticky utilities, retained archives and renewal. A separate actual browser fixture proves missed presentation/job updates after a closed feed, pending Refresh behavior and a delivered late response remaining isolated after a project switch. Release qualification remains active. The editorial Project slice replaces the map catalogue with a flexible Markdown website and deliberate ordering; source/API/client and private/public browser checks pass. Existing filters/detail views stay available. Prior UI acceptance does not establish human acceptance of the redesigned experience.
 
 Core coordination, review execution and browser feature slices are implemented in the current stack, with their focused and controlled executable proof recorded below.

@@ -46,6 +46,9 @@ func policyAdmissionConflict() error {
 
 func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operation Operation) (ExecutionContext, error) {
 	result := ExecutionContext{Operation: operation}
+	if err := requireSourceObligationsClear(ctx, tx, operation.ProjectID, operation.PullNumber); err != nil {
+		return ExecutionContext{}, err
+	}
 	configuration, revision, err := readConfiguration(ctx, tx, operation.ProjectID)
 	if err != nil {
 		return ExecutionContext{}, err
@@ -213,6 +216,9 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 			return invalid()
 		}
 		if plan.Pull.Merged {
+			if err := requireSourceObligationsClear(ctx, tx, project, number); err != nil {
+				return err
+			}
 			if plan.Pull.State != "closed" {
 				return invalid()
 			}
@@ -220,6 +226,9 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 		}
 		if !validCoverageSource(plan) {
 			return invalid()
+		}
+		if err := requireSourceObligationsClear(ctx, tx, project, number); err != nil {
+			return err
 		}
 		anchor := Anchor{RepositoryID: current.RepositoryID, PullNumber: number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef}
 		comparison, err := comparison(ctx, tx, project, current.RepositoryID, number, anchor, current.Operation.Channel)

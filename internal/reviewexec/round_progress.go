@@ -10,18 +10,19 @@ import (
 // RoundProgressChannel contains current native allowance facts only. Pending
 // counts operations bound to this epoch, not coverage or permission to dispatch.
 type RoundProgressChannel struct {
-	Channel    string `json:"channel"`
-	Configured bool   `json:"configured"`
-	Revision   int64  `json:"revision"`
-	Epoch      int64  `json:"epoch"`
-	Closed     bool   `json:"closed"`
-	Minimum    int64  `json:"minimum"`
-	Maximum    int64  `json:"maximum"`
-	Taper      int64  `json:"taper"`
-	Used       int64  `json:"used"`
-	Dry        int64  `json:"dry"`
-	Tapered    bool   `json:"tapered"`
-	Pending    int64  `json:"pending"`
+	Channel          string `json:"channel"`
+	Configured       bool   `json:"configured"`
+	Revision         int64  `json:"revision"`
+	Epoch            int64  `json:"epoch"`
+	Closed           bool   `json:"closed"`
+	Minimum          int64  `json:"minimum"`
+	Maximum          int64  `json:"maximum"`
+	MaximumUnbounded bool   `json:"maximum_unbounded,omitempty"`
+	Taper            int64  `json:"taper"`
+	Used             int64  `json:"used"`
+	Dry              int64  `json:"dry"`
+	Tapered          bool   `json:"tapered"`
+	Pending          int64  `json:"pending"`
 }
 
 type RoundProgressItem struct {
@@ -75,7 +76,7 @@ func (e *Engine) ReadRoundProgress(ctx context.Context, scope core.Scope, number
 				item.Channels = append(item.Channels, RoundProgressChannel{
 					Channel: channel, Configured: control.Configured, Revision: control.Revision,
 					Epoch: control.Epoch, Closed: control.Closed, Minimum: control.Minimum,
-					Maximum: control.Maximum, Taper: control.Taper, Used: control.Used,
+					Maximum: control.Maximum, MaximumUnbounded: control.MaximumUnbounded, Taper: control.Taper, Used: control.Used,
 					Dry: control.Dry, Tapered: control.Tapered, Pending: pending,
 				})
 			}

@@ -34,10 +34,28 @@ func roundAdoptionDocument(raw json.RawMessage) (PreparedReviewRoundControl, str
 			return value, "", roundAdoptionInvalid()
 		}
 	}
+	if _, flag := fields["maximum_unbounded"]; flag && (value.Version != 2 || bytes.Equal(bytes.TrimSpace(fields["maximum_unbounded"]), []byte("null"))) {
+		return value, "", roundAdoptionInvalid()
+	}
+	if rawRef, present := fields["obligations"]; present {
+		var ref map[string]json.RawMessage
+		if value.Version != 2 || bytes.Equal(bytes.TrimSpace(rawRef), []byte("null")) || json.Unmarshal(rawRef, &ref) != nil || len(ref) != 3 || value.Obligations == nil {
+			return value, "", roundAdoptionInvalid()
+		}
+		for _, name := range []string{"namespace", "snapshot_sha256", "revision"} {
+			if len(ref[name]) == 0 || bytes.Equal(bytes.TrimSpace(ref[name]), []byte("null")) {
+				return value, "", roundAdoptionInvalid()
+			}
+		}
+		binding := value.Obligations
+		if binding.Namespace != value.Source || !controlHex(binding.SnapshotSHA256, 64) || binding.Revision < 1 || binding.Revision > 9007199254740991 {
+			return value, "", roundAdoptionInvalid()
+		}
+	}
 	text := func(s string) bool {
 		return s != "" && s == strings.TrimSpace(s) && len(s) <= 200 && utf8.ValidString(s) && strings.IndexFunc(s, unicode.IsControl) < 0
 	}
-	if value.Version != 1 || value.RepositoryID < 1 || value.ExpectedRevision == nil || *value.ExpectedRevision != 0 || !validPullNumber(value.PullNumber) || !oneReviewOf(value.Channel, "cli", "hosted") || !text(value.Source) || !text(value.SourceKey) || !controlHex(value.SourceSHA256, 64) || value.MinimumRemaining < 0 || value.MaximumRemaining < value.MinimumRemaining || value.MaximumRemaining > 1000 || value.InitialDry < 0 || value.InitialDry > 1000 || value.Taper < 1 || value.Taper > 1000 || value.InitialDry >= value.Taper && !value.Tapered {
+	if (value.Version != 1 && value.Version != 2) || value.RepositoryID < 1 || value.ExpectedRevision == nil || *value.ExpectedRevision != 0 || !validPullNumber(value.PullNumber) || !oneReviewOf(value.Channel, "cli", "hosted") || !text(value.Source) || !text(value.SourceKey) || !controlHex(value.SourceSHA256, 64) || value.MinimumRemaining < 0 || value.MaximumRemaining < 0 || (!value.MaximumUnbounded && value.MaximumRemaining < value.MinimumRemaining || value.MaximumUnbounded && (value.MaximumRemaining != 0 || value.MinimumRemaining > 9007199254740991)) || value.MaximumRemaining > 1000 || value.InitialDry < 0 || value.InitialDry > 1000 || value.Taper < 1 || value.Taper > 1000 || value.InitialDry >= value.Taper && !value.Tapered {
 		return value, "", roundAdoptionInvalid()
 	}
 	canonical, err := json.Marshal(value)

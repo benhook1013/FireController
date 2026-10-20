@@ -23,6 +23,9 @@ import tempfile
 import unicodedata
 
 MAX_SNAPSHOT = 32 << 20
+MAX_LIMIT = (1 << 63) - 1
+MAX_ROUND_COUNT = (1 << 53) - 1
+SNAPSHOT_CHUNK_BYTES = 1 << 20
 MAX_HISTORY = 1 << 20
 MAX_SELECTION = 16 << 10
 
@@ -123,6 +126,63 @@ def private_input(raw, maximum, *, snapshot=False):
                     refuse("source_changed")
                 if snapshot:
                     no_sidecars(path)
+            except OSError:
+                refuse("input_unavailable")
+
+
+def snapshot_digest(handle, size):
+    """Hash a pinned snapshot without retaining database bytes in memory."""
+    result, total = hashlib.sha256(), 0
+    while block := handle.read(min(SNAPSHOT_CHUNK_BYTES, size - total + 1)):
+        total += len(block)
+        if total > size:
+            refuse("source_changed")
+        result.update(block)
+    if total != size:
+        refuse("source_changed")
+    return result.hexdigest()
+
+
+@contextlib.contextmanager
+def private_snapshot(raw, maximum):
+    """Conserve one open, private sealed file through projection/publication."""
+    path = normalized_path(raw)
+    try:
+        initial = path.lstat()
+        if not private_regular(initial) or not 0 < initial.st_size <= maximum:
+            refuse("input_file_invalid")
+        no_sidecars(path)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            handle = os.fdopen(fd, "rb")
+        except BaseException:
+            os.close(fd)
+            raise
+    except OSError:
+        refuse("input_unavailable")
+    with handle:
+        try:
+            if identity(os.fstat(handle.fileno())) != identity(initial):
+                refuse("source_changed")
+            source_sha = snapshot_digest(handle, initial.st_size)
+            if identity(os.fstat(handle.fileno())) != identity(initial):
+                refuse("source_changed")
+        except OSError:
+            refuse("input_unavailable")
+        try:
+            yield path, source_sha
+        finally:
+            try:
+                if (identity(path.lstat()) != identity(initial)
+                        or identity(os.fstat(handle.fileno())) != identity(initial)):
+                    refuse("source_changed")
+                handle.seek(0)
+                if snapshot_digest(handle, initial.st_size) != source_sha:
+                    refuse("source_changed")
+                if (identity(path.lstat()) != identity(initial)
+                        or identity(os.fstat(handle.fileno())) != identity(initial)):
+                    refuse("source_changed")
+                no_sidecars(path)
             except OSError:
                 refuse("input_unavailable")
 
@@ -266,7 +326,9 @@ def control_facts(helpers, state, selected, history):
         raise Refusal("closure_only", pull_number=pr, channel=channel.value,
                       capability="fc reviews rounds close", numeric_counts="unknown")
     if allocation is not None:
-        if allocation.max_additional_completed is None:
+        # Both absent bounds are the source's legacy one-result allocation,
+        # not an explicit minimum-only rule. Keep that unsupported distinction.
+        if allocation.min_additional_completed is None and allocation.max_additional_completed is None:
             refuse("controls_unsupported")
         snapshot = controller._bounded_allocation_evidence(allocation, history)
         if snapshot.get("error") is not None or snapshot.get("in_flight") != 0:
@@ -309,13 +371,21 @@ def control_facts(helpers, state, selected, history):
             dry = 0
         elif policy.taper_satisfied(channel, [item], 1):
             dry += 1
-    if (not integer(minimum, 0, 1000) or not integer(maximum, 1, 1000)
-            or minimum > maximum or not integer(used, 0, maximum)
+    # Only an explicitly absent source allocation maximum carries this meaning;
+    # exhausted finite controls retain their existing v1 zero representation.
+    unbounded = allocation is not None and maximum is None
+    if (not integer(minimum, 0, MAX_ROUND_COUNT if unbounded else 1000)
+            or (unbounded and not integer(used, 0, MAX_ROUND_COUNT))
+            or (not unbounded and (not integer(maximum, 1, 1000)
+                                   or minimum > maximum or not integer(used, 0, maximum)))
             or not integer(dry, 0, 1000) or not integer(threshold, 1, 1000)):
         refuse("controls_unsupported")
-    minimum, maximum = max(0, minimum - used), max(0, maximum - used)
-    return dict(minimum_remaining=minimum, maximum_remaining=maximum, initial_dry=dry,
-                taper=threshold, tapered=tapered, closed=False)
+    facts = dict(minimum_remaining=max(0, minimum - used),
+                 maximum_remaining=0 if unbounded else max(0, maximum - used),
+                 initial_dry=dry, taper=threshold, tapered=tapered, closed=False)
+    if unbounded:
+        facts["maximum_unbounded"] = True
+    return facts
 
 
 def check_output(raw, body):
@@ -359,9 +429,9 @@ def prepare(args):
     # before any prepared output is published.
     with private_input(args.selection, MAX_SELECTION) as (_, selection_bytes), \
             private_input(args.history_file, MAX_HISTORY) as (_, history_bytes), \
-            private_input(args.snapshot, MAX_SNAPSHOT, snapshot=True) as (path, snapshot_bytes):
+            private_snapshot(args.snapshot, snapshot_limit(args)) as (path, snapshot_sha):
         selected = selection_input(strict_json(selection_bytes))
-        snapshot_sha, history_sha = digest(snapshot_bytes), digest(history_bytes)
+        history_sha = digest(history_bytes)
         history = selected_history(strict_json(history_bytes), selected, snapshot_sha)
         uri = path.as_uri() + "?mode=ro&immutable=1"
         with contextlib.closing(sqlite3.connect(uri, uri=True)) as connection:
@@ -377,6 +447,8 @@ def prepare(args):
         binding = dict(version=1, snapshot_sha256=snapshot_sha, history_sha256=history_sha,
                        source_code_sha256=code_hash)
         prepared = {key: selected[key] for key in ("version", "repository_id", "expected_revision", "pull_number", "channel", "source", "source_key")}
+        if facts.get("maximum_unbounded") is True:
+            prepared["version"] = 2
         prepared.update(source_sha256=digest(canonical(binding)), **facts)
         provenance = dict(version=1, kind="offline_source_control_preparation", binding=binding,
                           source_sha256=prepared["source_sha256"], source_helpers=hashes,
@@ -408,10 +480,30 @@ class UniqueInput(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
+def positive_limit(value):
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("invalid positive limit") from None
+    if not 1 <= parsed <= MAX_LIMIT:
+        raise argparse.ArgumentTypeError("invalid positive limit")
+    return parsed
+
+
+def database_limit_option(out):
+    out.add_argument("--max-database-bytes", type=positive_limit, action=UniqueInput,
+                     help="snapshot byte limit, 1..9223372036854775807 (default: 33554432)")
+
+
+def snapshot_limit(args):
+    return getattr(args, "max_database_bytes", None) or MAX_SNAPSHOT
+
+
 def parser():
-    out = QuietParser(allow_abbrev=False, description=__doc__, epilog="History is owner-exported JSON v1: repository_id, snapshot_sha256, projection_complete:true, quiescent:true, obligations_clear:true, prs:[{pull_number,channels:{cli:[effective rows],hosted:[effective rows]}}]. Selection is v1: repository_id, expected_revision:0, source, source_key, pull_number, channel. Output is a native 14-field prepared control; separate provenance records input/helper hashes. obligations_clear asserts authoritative accepted-finding and incoming/outgoing route clearance; unknown/unavailable clearance is not clear. No live acquisition or independent assertion verification or migration-readiness claim.")
+    out = QuietParser(allow_abbrev=False, description=__doc__, epilog="History is owner-exported JSON v1: repository_id, snapshot_sha256, projection_complete:true, quiescent:true, obligations_clear:true, prs:[{pull_number,channels:{cli:[effective rows],hosted:[effective rows]}}]. Selection is v1: repository_id, expected_revision:0, source, source_key, pull_number, channel. Output is a native v1 prepared control for finite bounds, or v2 with maximum_unbounded:true and maximum_remaining:0 for a source minimum-only allocation; separate provenance records input/helper hashes. obligations_clear asserts authoritative accepted-finding and incoming/outgoing route clearance; unknown/unavailable clearance is not clear. No live acquisition or independent assertion verification or migration-readiness claim.")
     for flag in ("source-root", "snapshot", "history-file", "selection", "output", "provenance"):
         out.add_argument("--" + flag, required=True, action=UniqueInput)
+    database_limit_option(out)
     return out
 
 

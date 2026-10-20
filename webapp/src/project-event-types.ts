@@ -18,6 +18,8 @@ export const projectEventTypes = [
   'review.observed',
   'reviews.policy_configured',
   'reviews.rounds_configured',
+  'reviews.adoption_obligations_imported',
+  'reviews.adoption_obligation_resolved',
   'review.requested',
   'review.operation_updated',
   'review.route.routed',

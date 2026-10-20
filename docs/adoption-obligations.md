@@ -1,0 +1,63 @@
+# Unfinished review obligations during adoption
+
+## Implementation status
+
+The service and bound CLI implement source-bound finding and route holds, revision-guarded resolution, policy linkage and minimum-only round adoption. Focused runtime and canonical backup checks cover these boundaries. The optional source adapter still requires an obligation-clear canonical frame; exporting a complete carried set from an actual predecessor and qualifying the installed combined cutover remain unfinished. Native hold support alone does not establish source completeness or settle an unfinalized source result.
+
+## Preserve the working rules
+
+A project can move to this service while useful review work remains unfinished. It must not finish reviews in the predecessor merely to satisfy the importer, lose an outstanding correction or route, or receive fabricated native review credit. Keep the predecessor fenced and its exact retained records available privately.
+
+Optional source tooling exports the selected effective policy and its current unresolved obligations from one sealed source. The export distinguishes current obligations from incomplete historical attempts and unselected history. It preserves source identities, original attribution, current disposition and the precise selected PRs affected by each obligation. Unknown scope or source audit failure remains an explicit refusal. Paused workers, a completed provider attempt, exhausted rounds and channel closure never establish clearance.
+
+## Carried obligations
+
+The native service accepts generic source-bound obligations through an administrator preview/apply facility, independently of display history and captured native evidence. A carried obligation identifies its source namespace and immutable key, repository and snapshot digest, kind (finding or route), retained summary and evidence references, and explicitly affected PRs. The service retains private original provenance. It does not interpret imported text as instructions, merge authority or proof of current-code coverage.
+
+Open obligations hold new review admission and queue progression for their affected PRs in both channels. The guard applies before provider preparation and again at transactional operation admission and final dispatch. A finished grant, existing capture, channel closure, head change, reordered queue or another channel cannot bypass it. Unrelated PRs and projects retain their existing behavior. Local assessment and browser views explain the hold with bounded counts and a deliberate detail read; ordinary calls do not print the imported ledger.
+
+Preview is read-only and binds the complete selected batch to the destination instance, project, administrator, worker and expected revision. Apply rechecks scope and current authority and atomically records obligations, provenance, receipt and compact events. An original-key replay returns the original result. Reimport cannot reopen a resolved obligation, erase a native action or silently replace changed source facts. Omission is additive, never deletion or resolution. Admission refuses conflicting provenance. A protective hold may arrive during queued or prepared work; final dispatch guards must observe it. It does not cancel or relabel an existing intent, or prevent consuming and finalizing a result that was already posted.
+
+Resolution is an explicit revision-guarded action retaining actor, reason and evidence pointers. The worker must establish that the carried obligation has been addressed; importing it or merging its original PR is insufficient. Preserve original source state and later native resolution as distinct facts. Resolution neither changes original finalized review counts nor creates a captured review, comparison coverage, CI observation or merge permission.
+
+A terminal source result whose eventual adjudication can still change remaining allowance or dry streak has an unsettled policy boundary as well as unfinished findings. Generic finding resolution does not settle that accounting. Keep the affected review control unavailable for dispatch until the source owner provides its complete canonical counting effect and that effect is preserved in the adopted policy. Do not count preliminary zero accepted findings as a finalized dry round, or import today's allowance and later release the hold while ignoring the pending completion.
+
+## Bound administrator commands
+
+These deliberate setup operations use the existing private administrator profile; ordinary agent commands remain compact and provider-free:
+
+```sh
+fc reviews obligations adopt preview --file /private/obligations.json
+fc reviews obligations adopt apply --file /private/obligations.json --preview SHA256 --key import-obligations
+fc reviews obligations list --pr 42 --status open
+fc reviews obligations read OBLIGATION_ID
+fc reviews obligations resolve OBLIGATION_ID --expected-revision 1 --reason "Correction verified" --evidence COMMIT_OR_PROOF --key resolve-obligation
+```
+
+The version-one batch contains `source: {namespace, repository_id, snapshot_sha256}`, `expected_revision` and one to one hundred `obligations`. Each obligation contains `source_key`, `kind` (`finding` or `route`), `affected_pull_numbers`, `summary`, `evidence` and `original_status` (`pending` or `open`). Original evidence may be an explicit empty array when unavailable; a native resolution requires at least one evidence pointer. Each normalized original JSON record is bounded to 32 KiB, a combined normalized resolution request to 16 KiB, and the complete normalized apply wrapper to 256 KiB. These encoded bounds include escaping so an accepted record remains readable within the 64 KiB full-detail budget and valid for backup. The CLI validates the owner-private regular input before reading credentials or making a request. Preview changes no state; apply binds its exact normalized content and preserves original-key recovery after lost output or later resolution.
+
+`list` returns identity, status, revision and affected PRs, without expanding summaries or evidence. `read` deliberately returns retained originals and any native resolution. The HTTP owner is `/api/v1/projects/{project_id}/reviews/adoption-obligations`, with `GET`, `GET /{id}`, `POST /preview`, `POST /apply` and `POST /{id}/resolve`; mutations require administrator authority and a valid project worker. Reads and mutations retain the ordinary short command budget and never call a review provider.
+
+## Policy and obligation linkage
+
+Operational policy adoption can proceed when the source audit establishes clearance, or when its complete selected unresolved set has been retained as matching native holds. The latter is transfer, not clearance. Bind policy and obligation provenance to the same repository, source namespace and sealed snapshot, and verify the matching retained obligation revision during policy admission. A helper must not change `obligations_clear` to true or drop source obligations to obtain a policy payload. Display-only imports and an arbitrary note are not substitutes for enforced holds.
+
+Version-two prepared controls can include `obligations: {namespace, snapshot_sha256, revision}`. The namespace must equal the prepared control's `source`; the repository and exact current retained source revision must match at preview and apply. This snapshot digest is separate from `source_sha256`, which can bind combined source, helper and frame provenance. Later additive imports preserve the older immutable policy reference, while a stale preview cannot adopt against a newer source revision. Version-one payloads retain their existing shape and meaning.
+
+Preserve effective remaining minimum, dry streak, reached taper and explicit closure. A source policy with no hard maximum retains an explicitly absent maximum; zero remains exhausted and must not mean unlimited. Ordinary administrator grants may continue to require an explicit finite maximum. Unbounded adoption does not permit concurrent dispatch past the existing channel reservation, change taper, waive minimums, or overflow completion accounting. Reads and the browser distinguish an absent ceiling from a finite remaining count.
+
+The explicit `maximum_unbounded` flag represents that absent ceiling. It is omitted when false, preserving ordinary finite records. When true, numeric `maximum` (or prepared `maximum_remaining`) is zero only as a storage placeholder; the flag supplies the unbounded meaning. A false or absent flag with zero retains its existing exhausted meaning. A new finite grant clears the flag. Completion and dry counters remain exact within the shared JavaScript-safe integer bound and refuse further advancement before overflow; this implementation bound is not a substituted review allowance.
+
+## Required proof
+
+Use actual selected unfinished findings and routes in addition to bounded synthetic failure cases. Prove that each affected PR is held across both channels, captured coverage, completed grants, queue movement, restart and a hold inserted between preparation and dispatch. Prove unrelated project/PR independence, strict source/policy linkage, atomic refusal, original-key replay after later resolution, additive reimport and no fabricated evidence or completion credit.
+
+Canonical backup creation, inspection and inactive restore must preserve the original obligations, resolution history and policy binding, and reject resealed malformed graphs before destination writes. Actual packaged clients must recover a committed action after lost output and retain short local command budgets. Minimum-only policy proof must cover taper before and after its minimum, accepted-count reset, closure/reopen, capacity, restart and overflow refusal. Installed qualification remains separate from these local checks.
+
+## Executed local proof and limits
+
+Focused normal and race tests exercise both-channel admission, a hold arriving during preparation, held reservation release before dispatch, and preserved uncertainty after possible dispatch. They also cover covered/finished/merged predecessor holds, unrelated project independence, exact source-policy binding, stale-preview refusal, original-key recovery, additive import and no fabricated review credit. Browser tests validate the compact held assessment and scoped live invalidation without discarding captured history.
+
+Canonical backup creation, inspection and inactive restore preserve unresolved and resolved obligations, additive source revisions, an older linked policy reference and a minimum-only grant. Independently resealed malformed graphs, unexpected indexes, empty or oversized resolution evidence and mismatched source bindings refuse before destination creation. Escaped-text boundary tests reproduced accepted records that exceeded later read budgets; normalized encoded limits now refuse them atomically while accepting exact-boundary details.
+
+The built daemon, CLI and optional converter passed the combined operational-adoption workload in 563 ms: 51 CLI invocations, two utility calls and 98 loopback API requests, with a maximum CLI call of 10 ms. It retained two source holds, explicitly resolved one without reopening it on retry, carried four controls including a source-linked absent maximum, recovered lost output, imported a selected historical reply and preserved the facts across restart. Seventy-nine unrelated native tables remained unchanged, and no external HTTP or native provider operation occurred. These small synthetic local timings do not establish remote latency, fleet capacity, a complete predecessor export or installed cutover.

@@ -137,6 +137,9 @@ func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Sc
 	if !slices.Contains(c.Queue, r.PullNumber) || !slices.Contains(c.Channels, r.Channel) {
 		return Receipt{}, core.Fail("review_not_configured", "The selected PR or channel is not configured.", 409)
 	}
+	if err := requireSourceObligationsClear(ctx, tx, scope.ProjectID, r.PullNumber); err != nil {
+		return Receipt{}, err
+	}
 	policy, err := readPolicy(ctx, tx, scope.ProjectID)
 	if err != nil {
 		return Receipt{}, err

@@ -1176,6 +1176,7 @@ describe('captured comparison policy assessment', () => {
       { ...assessment, state: 'sufficient', channels: [{ channel: 'cli', covered: true, pending: false }] },
       { ...assessment, state: 'unconfigured', policy_revision: 0, channels: [] },
       { ...assessment, channels: [{ channel: 'hosted', covered: false, pending: true }] },
+      { ...assessment, source_obligations_pending: 2, reason: 'source_obligations_pending', channels: [{ channel: 'cli', covered: true, pending: false }] },
     ]) {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
       await expect(client.reviewPolicyAssessment(evidenceID)).resolves.toEqual(value);
@@ -1204,6 +1205,13 @@ describe('captured comparison policy assessment', () => {
       { ...assessment, state: 'sufficient' }, { ...assessment, state: 'merge_ready' }, { ...assessment, channels: [] },
       { ...assessment, state: 'unconfigured', channels: [], policy_revision: 1 },
       { ...assessment, state: 'held', channels: [{ channel: 'cli', covered: true, pending: false }] },
+      { ...assessment, state: 'sufficient', source_obligations_pending: 1, reason: 'source_obligations_pending', channels: [{ channel: 'cli', covered: true, pending: false }] },
+      { ...assessment, source_obligations_pending: 1, channels: [{ channel: 'cli', covered: true, pending: false }] },
+      { ...assessment, source_obligations_pending: 0, reason: 'source_obligations_pending' },
+      { ...assessment, source_obligations_pending: -1, reason: 'source_obligations_pending' },
+      { ...assessment, source_obligations_pending: Number.MAX_SAFE_INTEGER + 1, reason: 'source_obligations_pending' },
+      { ...assessment, source_obligations_pending: null, reason: 'source_obligations_pending' },
+      { ...assessment, source_obligations_pending: '1', reason: 'source_obligations_pending' },
       { ...assessment, channels: [assessment.channels[0], assessment.channels[0]] },
       { ...assessment, channels: [{ channel: 'manual', covered: false, pending: false }] },
       { ...assessment, channels: [{ channel: 'cli', covered: 1, pending: false }] },

@@ -173,10 +173,9 @@ def acquire(args):
         plan=transfer.strict_json(plan_bytes)
         selected=plan_input(plan)
         helpers['github'].parse_repo(plan['repository'])
-        _, snapshot_bytes=stack.enter_context(transfer.private_input(str(snapshot),32<<20,snapshot=True))
-        snapshot_sha=transfer.digest(snapshot_bytes)
+        _, snapshot_sha=stack.enter_context(transfer.private_snapshot(str(snapshot),transfer.snapshot_limit(args)))
         roots=(common/'firemud',common/'coderabbit-review-logs')
-        capture_inventory=stack.enter_context(conserved_roots(roots))
+        capture_inventory=stack.enter_context(conserved_roots(roots,admitted_snapshot=snapshot))
         inventory_sha=transfer.digest(transfer.canonical(capture_inventory))
         expected=dict(snapshot_sha256=snapshot_sha,source_code_sha256=code_hash,
                       capture_inventory_sha256=inventory_sha,
@@ -234,6 +233,7 @@ def main(argv=None):
     parser=transfer.QuietParser(allow_abbrev=False,description=__doc__)
     for name in ('source-root','common','snapshot','git-root','plan','output','provenance'):
         parser.add_argument('--'+name,required=True,action=transfer.UniqueInput)
+    transfer.database_limit_option(parser)
     args=parser.parse_args(argv)
     try:
         result=acquire(args)

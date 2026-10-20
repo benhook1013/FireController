@@ -1,9 +1,11 @@
 # Copyright 2026 FireController contributors. SPDX-License-Identifier: Apache-2.0
 """Canonical copied-helper audit/projection proof over owned synthetic inputs."""
 import copy
+import contextlib
 import dataclasses
 import importlib
 import importlib.util
+import io
 from pathlib import Path
 import unittest
 
@@ -92,26 +94,56 @@ class FrameTests(unittest.TestCase):
                 scope_timeline_complete=True, completed=False, attributable=False,
                 anchored=False, provisional=False, non_counting=True, accepted=0, raw=0)], 'hosted': []}
             expected_rows = copy.deepcopy(evidence.rows)
-            frame = self.acquire(controller, records)
-            self.assertEqual(frame['prs'][0]['channels']['hosted'], [])
-            self.assertEqual(len(frame['prs'][0]['channels']['cli']), 1)
-            self.assertTrue(frame['prs'][0]['channels']['cli'][0]['scope_timeline_complete'])
-            self.assertFalse(frame['prs'][0]['channels']['cli'][0]['completed'])
-            helpers = dict(HELPERS, controller=controller_module, policy=policy)
-            facts = transfer.control_facts(helpers, store.load(),
-                {'pull_number':7, 'channel':'cli'}, frame['prs'][0]['channels']['cli'])
-            self.assertEqual(facts, dict(minimum_remaining=0, maximum_remaining=1,
-                initial_dry=0, taper=3, tapered=False, closed=False))
+            before_state = store.load().to_dict()
+            if getattr(controller, '_check_transfer_evidence', None) is None:
+                # Older helpers retain their positive stop-checkpoint contract;
+                # an empty grant must not silently manufacture transfer proof.
+                frame = None
+                with contextlib.redirect_stdout(io.StringIO()) as output, \
+                        contextlib.redirect_stderr(io.StringIO()) as errors, \
+                        self.assertRaises(controller_module.ControllerError) as failure:
+                    frame = self.acquire(controller, records)
+                self.assertEqual(failure.exception.args,
+                    ('review stop requires a completed attributable checkpoint',))
+                self.assertIsNone(frame)
+                self.assertEqual((output.getvalue(), errors.getvalue()), ('', ''))
+            else:
+                frame = self.acquire(controller, records)
+                self.assertEqual(frame['prs'][0]['channels']['hosted'], [])
+                self.assertEqual(len(frame['prs'][0]['channels']['cli']), 1)
+                self.assertTrue(frame['prs'][0]['channels']['cli'][0]['scope_timeline_complete'])
+                self.assertFalse(frame['prs'][0]['channels']['cli'][0]['completed'])
+                helpers = dict(HELPERS, controller=controller_module, policy=policy)
+                facts = transfer.control_facts(helpers, store.load(),
+                    {'pull_number':7, 'channel':'cli'}, frame['prs'][0]['channels']['cli'])
+                self.assertEqual(facts, dict(minimum_remaining=0, maximum_remaining=1,
+                    initial_dry=0, taper=3, tapered=False, closed=False))
             self.assertEqual(evidence.rows, expected_rows)
+            self.assertGreater(evidence.audits, 0)
+            self.assertEqual(store.load().to_dict(), before_state)
         self.assert_conserved()
 
     def test_empty_window_transfer_does_not_manufacture_history_or_stop(self):
         with bind_source(HELPERS, common=self.common, snapshot=self.database) as (store, records):
             controller, evidence = self.fixture(store, records)
             evidence.rows = {'cli': [], 'hosted': []}
-            frame = self.acquire(controller, records)
-            self.assertEqual(frame['prs'][0]['channels'], {'cli': [], 'hosted': []})
+            before_state = store.load().to_dict()
+            if getattr(controller, '_check_transfer_evidence', None) is None:
+                frame = None
+                with contextlib.redirect_stdout(io.StringIO()) as output, \
+                        contextlib.redirect_stderr(io.StringIO()) as errors, \
+                        self.assertRaises(controller_module.ControllerError) as failure:
+                    frame = self.acquire(controller, records)
+                self.assertEqual(failure.exception.args,
+                    ('review stop requires a completed attributable checkpoint',))
+                self.assertIsNone(frame)
+                self.assertEqual((output.getvalue(), errors.getvalue()), ('', ''))
+            else:
+                frame = self.acquire(controller, records)
+                self.assertEqual(frame['prs'][0]['channels'], {'cli': [], 'hosted': []})
             self.assertGreater(evidence.audits, 0)
+            self.assertEqual(evidence.rows, {'cli': [], 'hosted': []})
+            self.assertEqual(store.load().to_dict(), before_state)
             state = store.load()
             live, reconciliation = controller._reconciliation(state, evidence_prs={7}, prefetch_complete_history=True)
             current = controller._reconciled_anchor(7, live[7], reconciliation)

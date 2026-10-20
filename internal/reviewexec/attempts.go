@@ -199,6 +199,9 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if anchor.PullNumber != o.PullNumber || anchor.CandidateSHA != o.HeadSHA {
 			return conflict()
 		}
+		if err := requireSourceObligationsClear(ctx, tx, project, o.PullNumber); err != nil {
+			return err
+		}
 		var repositoryID int64
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err

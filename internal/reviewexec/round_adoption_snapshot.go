@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/benhook1013/FireController/internal/adoptionholds"
+	"github.com/benhook1013/FireController/internal/adoptionholdsmodel"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -102,12 +104,18 @@ func validateRoundAdoptions(ctx context.Context, q EvidenceQuery) error {
 			if repository != p.RepositoryID {
 				return roundUnavailable()
 			}
+			if p.Obligations != nil {
+				ref := p.Obligations
+				if err := adoptionholds.VerifyRetainedSource(ctx, q, r.project, adoptionholdsmodel.Source{Namespace: ref.Namespace, RepositoryID: p.RepositoryID, SnapshotSHA256: ref.SnapshotSHA256}, ref.Revision); err != nil {
+					return roundUnavailable()
+				}
+			}
 			var action, baseline string
 			if err = q.QueryRowContext(ctx, `SELECT action,body_json FROM review_round_changes WHERE project_id=? AND pull_number=? AND channel=? AND revision=1 AND epoch=1`, r.project, r.pull, r.channel).Scan(&action, &baseline); err != nil {
 				return err
 			}
 			var c RoundControl
-			if strictjson.Decode([]byte(baseline), &c) != nil || encoded(c) != baseline || !validRoundControl(c) || action != "grant" || c.ProjectID != r.project || c.PullNumber != r.pull || c.Channel != r.channel || c.Revision != 1 || c.Epoch != 1 || c.Used != 0 || c.InitialDry != p.InitialDry || c.Dry != p.InitialDry || c.InitiallyTapered != p.Tapered || c.Tapered != (p.Tapered && p.MinimumRemaining == 0) || c.Closed != p.Closed || c.Minimum != p.MinimumRemaining || c.Maximum != p.MaximumRemaining || c.Taper != p.Taper || c.OriginSource != p.Source || c.OriginKey != p.SourceKey || c.OriginSHA256 != p.SourceSHA256 {
+			if strictjson.Decode([]byte(baseline), &c) != nil || encoded(c) != baseline || !validRoundControl(c) || action != "grant" || c.ProjectID != r.project || c.PullNumber != r.pull || c.Channel != r.channel || c.Revision != 1 || c.Epoch != 1 || c.Used != 0 || c.InitialDry != p.InitialDry || c.Dry != p.InitialDry || c.InitiallyTapered != p.Tapered || c.Tapered != (p.Tapered && p.MinimumRemaining == 0) || c.Closed != p.Closed || c.Minimum != p.MinimumRemaining || c.Maximum != p.MaximumRemaining || c.MaximumUnbounded != p.MaximumUnbounded || c.Taper != p.Taper || c.OriginSource != p.Source || c.OriginKey != p.SourceKey || c.OriginSHA256 != p.SourceSHA256 {
 				return roundUnavailable()
 			}
 			project, pull, channel = r.project, r.pull, r.channel

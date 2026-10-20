@@ -15,3 +15,13 @@ func validIncomingRoutePolicy(pending int64, capacity bool, reason string) bool 
 	}
 	return reason == ""
 }
+
+func validSourceObligationPolicy(pending, incoming int64, capacity bool, reason string) bool {
+	if pending < 0 || pending > maxIncomingRoutePending {
+		return false
+	}
+	if pending > 0 && incoming == 0 && !capacity {
+		return reason == "source_obligations_pending"
+	}
+	return validIncomingRoutePolicy(incoming, capacity, reason)
+}

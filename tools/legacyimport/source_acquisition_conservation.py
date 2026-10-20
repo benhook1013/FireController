@@ -17,9 +17,13 @@ def identity(info):
             info.st_size, info.st_mtime_ns, info.st_nlink)
 
 
-def inventory(roots, *, max_bytes=128 << 20, max_entries=20000, timeout=15):
+def inventory(roots, *, max_bytes=128 << 20, max_entries=20000, timeout=15, admitted_snapshot=None):
     deadline, remaining_bytes, remaining_entries = time.monotonic()+timeout, max_bytes, max_entries
     result = {}
+    if admitted_snapshot is not None:
+        admitted_snapshot = Path(admitted_snapshot)
+        if not admitted_snapshot.is_absolute() or admitted_snapshot.resolve() != admitted_snapshot:
+            raise ConservationRefusal('capture_root_not_explicit')
 
     def budget():
         if time.monotonic() > deadline:
@@ -48,7 +52,11 @@ def inventory(roots, *, max_bytes=128 << 20, max_entries=20000, timeout=15):
             if identity(path.lstat()) != identity(info):
                 raise ConservationRefusal('capture_changed')
         elif stat.S_ISREG(info.st_mode):
-            remaining_bytes -= info.st_size
+            # The exact snapshot has its own open-FD byte admission and final
+            # rehash. Keep its full manifest evidence without charging it to
+            # the independent capture budget. Aliases/other files still count.
+            if path != admitted_snapshot:
+                remaining_bytes -= info.st_size
             if remaining_bytes < 0:
                 raise ConservationRefusal('capture_inventory_too_large')
             digest, size = hashlib.sha256(), 0

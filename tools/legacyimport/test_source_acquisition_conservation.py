@@ -1,5 +1,6 @@
 # Copyright 2026 FireController contributors. SPDX-License-Identifier: Apache-2.0
 from pathlib import Path
+import os
 import tempfile
 import unittest
 
@@ -47,6 +48,34 @@ class ConservationTests(unittest.TestCase):
         (self.root/'link').symlink_to(self.file)
         with self.assertRaises(ConservationRefusal):
             inventory([self.root])
+
+    def test_exact_admitted_snapshot_keeps_hash_without_capture_byte_charge(self):
+        snapshot = self.root/'snapshot.sqlite3'
+        snapshot.write_bytes(b'separately admitted database')
+        before = inventory([self.root])
+        self.assertEqual(inventory([self.root], max_bytes=len(b'original'), admitted_snapshot=snapshot), before)
+        entry = before['0/snapshot.sqlite3']
+        self.assertEqual(entry[0], 'file')
+        self.assertEqual(len(entry[2]), 64)
+        with self.assertRaises(ConservationRefusal):
+            inventory([self.root], max_bytes=len(b'original')-1, admitted_snapshot=snapshot)
+        # A second path for the same inode is still an independently budgeted entry.
+        os.link(snapshot, self.root/'alias')
+        with self.assertRaises(ConservationRefusal):
+            inventory([self.root], max_bytes=len(b'original'), admitted_snapshot=snapshot)
+
+    def test_admitted_snapshot_retains_conservation_kind_and_entry_guards(self):
+        snapshot = self.root/'snapshot.sqlite3'
+        snapshot.write_bytes(b'separately admitted database')
+        with self.assertRaises(ConservationRefusal):
+            inventory([self.root], max_bytes=len(b'original'), max_entries=2, admitted_snapshot=snapshot)
+        with self.assertRaises(ConservationRefusal):
+            with conserved_roots([self.root], max_bytes=len(b'original'), admitted_snapshot=snapshot):
+                snapshot.write_bytes(b'changed database')
+        link = self.root/'snapshot-link'
+        link.symlink_to(snapshot)
+        with self.assertRaises(ConservationRefusal):
+            inventory([self.root], admitted_snapshot=link)
 
     def test_failure_does_not_skip_final_conservation_check(self):
         with self.assertRaises(ConservationRefusal):
