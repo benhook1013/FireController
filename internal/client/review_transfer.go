@@ -44,6 +44,9 @@ type transferAdmission struct {
 	Groups           []json.RawMessage `json:"groups"`
 }
 type transferPullAdmission struct {
+	Diff         *ReviewPullDiff   `json:"diff,omitempty"`
+	IsDraft      *bool             `json:"is_draft,omitempty"`
+	MergedAt     string            `json:"merged_at,omitempty"`
 	Number       int64             `json:"number"`
 	Title        string            `json:"title"`
 	State        string            `json:"state"`
@@ -92,7 +95,10 @@ func reviewTransferDocument(document json.RawMessage) (transferAdmission, Review
 		localPulls, runIDs, attemptIDs := map[int64]bool{}, map[string]bool{}, map[string]bool{}
 		for _, raw := range group.Pulls {
 			var pull transferPullAdmission
-			if !decodeTransferObject(raw, &pull, []string{"number", "title", "state", "head_sha", "base_ref", "base_sha", "ci_state", "mergeability", "complete", "runs", "attempts"}) || !validPullNumber(pull.Number) || localPulls[pull.Number] || !cleanReviewText(pull.Title, 500, true) || !oneReviewOf(pull.State, "open", "merged", "closed", "unknown") || !validReviewSHA(pull.HeadSHA) || !cleanReviewText(pull.BaseRef, 256, false) || !validReviewSHA(pull.BaseSHA) || !oneReviewOf(pull.CIState, "unknown", "pending", "success", "failure") || !oneReviewOf(pull.Mergeability, "unknown", "mergeable", "conflicting") || len(pull.Runs) > 100 || len(pull.Attempts) > 100 {
+			if !decodeTransferObject(raw, &pull, []string{"number", "title", "state", "head_sha", "base_ref", "base_sha", "ci_state", "mergeability", "complete", "runs", "attempts", "diff", "is_draft", "merged_at"}) || !validPullNumber(pull.Number) || localPulls[pull.Number] || !cleanReviewText(pull.Title, 500, true) || !oneReviewOf(pull.State, "open", "merged", "closed", "unknown") || !validReviewSHA(pull.HeadSHA) || !cleanReviewText(pull.BaseRef, 256, false) || !validReviewSHA(pull.BaseSHA) || !oneReviewOf(pull.CIState, "unknown", "pending", "success", "failure") || !oneReviewOf(pull.Mergeability, "unknown", "mergeable", "conflicting") || len(pull.Runs) > 100 || len(pull.Attempts) > 100 {
+				return batch, counts, transferValidation()
+			}
+			if !validReviewPullMetadata(ReviewPullSummary{State: pull.State, Diff: pull.Diff, IsDraft: pull.IsDraft, MergedAt: pull.MergedAt}) {
 				return batch, counts, transferValidation()
 			}
 			if len(pull.Complete) > 0 && !bytes.Equal(bytes.TrimSpace(pull.Complete), []byte("false")) {
