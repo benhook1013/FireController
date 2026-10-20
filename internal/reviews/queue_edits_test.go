@@ -287,6 +287,67 @@ func TestQueueEditsReplayCASLimitsAndEventRollback(t *testing.T) {
 	}
 }
 
+func TestQueueEditsNullDisplayMetadataRefusedWithoutMutationOrKeyReservation(t *testing.T) {
+	for _, field := range []string{"diff", "is_draft", "merged_at"} {
+		t.Run(field, func(t *testing.T) {
+			f := newAPIFixture(t)
+			pull := samplePull(1, "Retained metadata")
+			pull.HeadSHA = strings.Repeat("a", 40)
+			pull.Diff = &PullDiff{Files: 2, Additions: 3, Deletions: 4}
+			draft := true
+			pull.IsDraft = &draft
+			pull.MergedAt = "2026-01-01T00:00:00Z"
+			f.observe(t, reviewRequest(0, []PullInput{pull}), "null-metadata-seed")
+			selected := QueuePullInput{Number: pull.Number, Title: pull.Title, State: pull.State, HeadSHA: pull.HeadSHA, BaseRef: pull.BaseRef, BaseSHA: pull.BaseSHA, CIState: pull.CIState, Mergeability: pull.Mergeability}
+			valid := queueEditRequest(1, []QueuePullInput{selected}, nil)
+			var document map[string]any
+			if err := json.Unmarshal(importJSON(t, valid), &document); err != nil {
+				t.Fatal(err)
+			}
+			item := document["queue"].([]any)[0].(map[string]any)
+			item[field] = nil
+			invalid := json.RawMessage(importJSON(t, document))
+			before := importDatabaseState(t, f)
+			key := "null-metadata-key"
+			refused := f.call(http.MethodPost, importBase(f)+"/queue/edits", f.admin, key, invalid)
+			requireImportResponse(t, refused, http.StatusBadRequest, "validation_failed")
+			if !reflect.DeepEqual(before, importDatabaseState(t, f)) {
+				t.Fatal("null display metadata changed records, receipts or events")
+			}
+			// Omission still inherits same-head facts, and rejection cannot consume
+			// the key needed to submit the corrected original request.
+			first := queueEditHTTP(f, valid, key)
+			requireImportResponse(t, first, http.StatusCreated, "")
+			kept := metadataRead(t, f, pull.Number, "").Pull
+			if !reflect.DeepEqual(kept.Diff, pull.Diff) || kept.IsDraft == nil || !*kept.IsDraft || kept.MergedAt != pull.MergedAt {
+				t.Fatal("omitted same-head display metadata was not inherited")
+			}
+			// Known zero/false and the permitted empty merge-time string remain
+			// distinct from JSON null. Empty time preserves same-head provenance.
+			document["expected_revision"] = 2
+			item["diff"] = &PullDiff{}
+			item["is_draft"] = false
+			item["merged_at"] = ""
+			later := f.call(http.MethodPost, importBase(f)+"/queue/edits", f.admin, "explicit-empty-metadata", document)
+			requireImportResponse(t, later, http.StatusCreated, "")
+			updated := metadataRead(t, f, pull.Number, "").Pull
+			if updated.Diff == nil || *updated.Diff != (PullDiff{}) || updated.IsDraft == nil || *updated.IsDraft || updated.MergedAt != pull.MergedAt {
+				t.Fatal("known zero, false or permitted empty metadata changed meaning")
+			}
+			after := importDatabaseState(t, f)
+			replay := queueEditHTTP(f, valid, key)
+			if replay.Code != http.StatusCreated || replay.Body.String() != first.Body.String() || !reflect.DeepEqual(after, importDatabaseState(t, f)) {
+				t.Fatal("original omitted-metadata replay changed after later edits")
+			}
+			refused = f.call(http.MethodPost, importBase(f)+"/queue/edits", f.admin, key, invalid)
+			requireImportResponse(t, refused, http.StatusBadRequest, "validation_failed")
+			if !reflect.DeepEqual(after, importDatabaseState(t, f)) {
+				t.Fatal("null metadata was normalized into an existing replay")
+			}
+		})
+	}
+}
+
 func TestQueueEditsRelativeOrderPreservesPinnedHistoryAndReplay(t *testing.T) {
 	f := newAPIFixture(t)
 	retained := samplePull(3, "Three")

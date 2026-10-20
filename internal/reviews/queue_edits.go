@@ -79,7 +79,7 @@ func readQueueEditJSON(w http.ResponseWriter, r *http.Request, dst *QueueEditReq
 					return validationError("Required queue metadata must be present and non-null.")
 				}
 			}
-			for _, optional := range []string{"head_sha", "base_ref", "base_sha"} {
+			for _, optional := range []string{"head_sha", "base_ref", "base_sha", "diff", "is_draft", "merged_at"} {
 				if value, ok := entry[optional]; ok && string(value) == "null" {
 					return validationError("Optional queue metadata must be omitted or non-null.")
 				}
