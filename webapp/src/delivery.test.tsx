@@ -113,6 +113,7 @@ describe('bounded Delivery board', () => {
     expect(lanes[0].jobs.map(item=>item.id)).toEqual(['job_parked','job_active','job_blocked']);
     const html=markup(<DeliveryLanes value={value} home={home} />);
     expect(html).toContain('Worker inbox');
+    expect(html).toContain(`href="${home}/inbox?worker_id=worker_one"`);
     expect(html).toContain('Job history');
     expect(html).toContain('worker_id=worker_one&amp;status=all');
     expect(html).toContain('badge delivery-primary');

@@ -461,6 +461,35 @@ try {
   need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Notes',exact:true}).count() === 0);
   checkpoint = 'notes-nav-absent';
   checkpoint = 'inbox-nav-click';
+  const laneInbox = builderLane.getByRole('link',{name:'Worker inbox',exact:true});
+  await expect(laneInbox).toHaveAttribute('href', `${home}/inbox?worker_id=${config.worker}`);
+  // Observe modified-click handling after React, suppressing only the native
+  // new-tab default so this bounded fixture opens no additional session.
+  const modifiedLaneClick = await laneInbox.evaluate((anchor,key) => {
+    const binding = sessionStorage.getItem(key), index = history.state.idx;
+    let prevented;
+    const observe = event => { prevented = event.defaultPrevented; event.preventDefault(); };
+    document.addEventListener('click',observe,{once:true});
+    try {
+      anchor.dispatchEvent(new MouseEvent('click',{button:0,ctrlKey:true,bubbles:true,cancelable:true}));
+      return {prevented,sameBinding:sessionStorage.getItem(key) === binding,sameHistory:history.state.idx === index};
+    } finally { document.removeEventListener('click',observe); }
+  },bindingKey);
+  need(modifiedLaneClick.prevented === false && modifiedLaneClick.sameBinding && modifiedLaneClick.sameHistory);
+  workerHistoryBefore = await page.evaluate(() => history.state.idx);
+  await laneInbox.click();
+  await page.getByRole('heading',{name:'Builder inbox',exact:true}).waitFor();
+  workerHistoryAfter = await page.evaluate(() => history.state.idx);
+  checkpoint = 'worker-inbox-history';
+  need(Number.isInteger(workerHistoryBefore) && workerHistoryAfter === workerHistoryBefore + 1);
+  need(new URL(page.url()).pathname === home + '/inbox' && new URL(page.url()).search === '');
+  need(JSON.parse(await page.evaluate(key => sessionStorage.getItem(key),bindingKey)).selectedworkerID === config.worker);
+  checkpoint = 'worker-inbox-back';
+  await page.goBack();
+  await page.waitForURL(config.origin + home);
+  await page.getByRole('heading',{name:'Delivery',exact:true}).waitFor();
+  need(await page.evaluate(() => history.state.idx) === workerHistoryBefore);
+  checkpoint = 'inbox-nav-click';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
   await page.getByRole('button',{name:'Select worker Builder',exact:true}).click();
   checkpoint = 'inbox-worker-selected';
@@ -801,35 +830,36 @@ try {
       const box = element.getBoundingClientRect(), mast = document.querySelector('.mast').getBoundingClientRect();
       const maximum = Math.max(0, document.documentElement.scrollHeight - innerHeight);
       const target = Math.max(0, Math.min(maximum, scrollY + box.top - parseFloat(getComputedStyle(element).scrollMarginTop)));
-      // Test the existing section's actual scroll margin and bottom clamp;
-      // the narrow mast can be taller than that margin.
-      return {top:Math.round(box.top),mast_bottom:Math.round(mast.bottom),scroll:Math.round(scrollY),target:Math.round(target),aligned:box.bottom > mast.bottom && box.top < innerHeight && Math.abs(scrollY - target) <= 2};
+      return {top:Math.round(box.top),mast_bottom:Math.round(mast.bottom),scroll:Math.round(scrollY),target:Math.round(target),aligned:box.top >= mast.bottom - 1 && box.top < innerHeight && Math.abs(scrollY - target) <= 2};
     });
     fallbackGeometry = geometry;
     return geometry.aligned;
   };
-  checkpoint = 'fallback-first-jump';
-  const fallbackPage = await page.evaluate(() => ({origin:performance.timeOrigin, session:sessionStorage.getItem('firecontroller.browser-session.v1')}));
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await expect.poll(fallbackPosition).toBe(false);
-  await fallbackJump.click();
-  await expect.poll(() => new URL(page.url()).hash).toBe('#review-queue');
-  await expect.poll(fallbackPosition).toBe(true);
-  need(fallbackGeometry.scroll > 2);
-  const fallbackKey = await page.evaluate(() => history.state.key);
-  need(typeof fallbackKey === 'string' && fallbackKey.length > 0);
-  checkpoint = 'fallback-scroll-away';
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await expect.poll(fallbackPosition).toBe(false);
-  need(new URL(page.url()).hash === '#review-queue');
-  need(await page.evaluate(() => history.state.key) === fallbackKey);
-  checkpoint = 'fallback-repeat-jump';
-  await fallbackJump.click();
-  await expect.poll(() => page.evaluate(() => history.state.key)).not.toBe(fallbackKey);
-  need(typeof await page.evaluate(() => history.state.key) === 'string');
-  need(new URL(page.url()).pathname === home && new URL(page.url()).hash === '#review-queue');
-  await expect.poll(fallbackPosition).toBe(true);
-  need(JSON.stringify(await page.evaluate(() => ({origin:performance.timeOrigin, session:sessionStorage.getItem('firecontroller.browser-session.v1')}))) === JSON.stringify(fallbackPage));
+  for (const width of [390, 320]) {
+    await page.setViewportSize({width,height:900});
+    checkpoint = 'fallback-first-jump';
+    const fallbackPage = await page.evaluate(() => ({origin:performance.timeOrigin, session:sessionStorage.getItem('firecontroller.browser-session.v1')}));
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect.poll(fallbackPosition).toBe(false);
+    await fallbackJump.click();
+    await expect.poll(() => new URL(page.url()).hash).toBe('#review-queue');
+    await expect.poll(fallbackPosition).toBe(true);
+    need(fallbackGeometry.scroll > 2);
+    const fallbackKey = await page.evaluate(() => history.state.key);
+    need(typeof fallbackKey === 'string' && fallbackKey.length > 0);
+    checkpoint = 'fallback-scroll-away';
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect.poll(fallbackPosition).toBe(false);
+    need(new URL(page.url()).hash === '#review-queue');
+    need(await page.evaluate(() => history.state.key) === fallbackKey);
+    checkpoint = 'fallback-repeat-jump';
+    await fallbackJump.click();
+    await expect.poll(() => page.evaluate(() => history.state.key)).not.toBe(fallbackKey);
+    need(typeof await page.evaluate(() => history.state.key) === 'string');
+    need(new URL(page.url()).pathname === home && new URL(page.url()).hash === '#review-queue');
+    await expect.poll(fallbackPosition).toBe(true);
+    need(JSON.stringify(await page.evaluate(() => ({origin:performance.timeOrigin, session:sessionStorage.getItem('firecontroller.browser-session.v1')}))) === JSON.stringify(fallbackPage));
+  }
   repeatedFallbackHash = true;
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
   checkpoint = 'seed-observation';
@@ -899,7 +929,7 @@ try {
     const target = Math.max(0, Math.min(maximum, scrollY + box.top - parseFloat(margin)));
     return {belowHeader:box.top >= mast.bottom - 1, inViewport:box.top < innerHeight && box.bottom > mast.bottom, atRowTarget:Math.abs(scrollY - target) <= 2, margin};
   });
-  const expectedHeadPosition = {belowHeader:true, inViewport:true, atRowTarget:true, margin:'130px'};
+  const expectedHeadPosition = {belowHeader:true, inViewport:true, atRowTarget:true, margin:page.viewportSize().width <= 650 ? '160px' : '130px'};
   await expect(hero.getByRole('region', {name:'Hosted CodeRabbit', exact:true}).locator('.review-lane-heading')).toContainText('1 run');
   checkpoint = 'current-round-limits-shared';
   await expect(hero.locator('[aria-label="Current hosted round limits"]')).toContainText('0 of 5 used');
