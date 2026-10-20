@@ -280,7 +280,7 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 		if observed.State == "completed" {
 			return reviewexec.Result{State: "completed", Reason: "hosted_evidence_retained", ExternalID: externalID}, nil
 		}
-		if observed.Reason == "hosted_observation_capacity" {
+		if observed.Reason == "hosted_observation_capacity" || observed.Reason == "hosted_finished_inventory_unproven" {
 			return reviewexec.Result{State: "uncertain", Reason: observed.Reason, ExternalID: externalID}, nil
 		}
 		if observed.Reason == "conflicting_trigger_evidence" || observed.Reason == "trigger_identity_changed" {

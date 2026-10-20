@@ -35,7 +35,7 @@ The canonical JSON configuration is at most 16 KiB, within the existing API requ
 
 ## API and history
 
-Paths are under `/api/v1/projects/{project_id}`. Reads require project read access. Replacement requires existing administrator authority and an explicit worker binding; receiving a message never grants that authority. Browser sessions remain read-only.
+Paths are under `/api/v1/projects/{project_id}`. Reads require project read access. Replacement requires existing administrator authority and an explicit worker binding; receiving a message never grants that authority. Browser appearance writes require an administrator session, its login-time permission ceiling and the existing worker binding; messaging follows the session's separate write permission.
 
 | Method and path | Contract |
 | --- | --- |

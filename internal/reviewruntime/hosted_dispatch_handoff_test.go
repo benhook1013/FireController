@@ -123,6 +123,52 @@ type handoffObservationProvider struct {
 	calls int
 }
 
+func TestHostedDispatchFinishedInventoryUnprovenHandsOff(t *testing.T) {
+	f := newHostedDriverFixture(t)
+	op, attempt := f.prepareHosted(t)
+	p := &handoffObservationProvider{HostedProvider: f.provider}
+	p.alter = func(snapshot *reviewprovider.HostedPublicationSnapshot) {
+		unsupportedFinishedSnapshot(snapshot, f.provider.bot, 200)
+	}
+	f.hosted.provider = p
+	result, err := f.hosted.Dispatch(t.Context(), op, attempt, f.callback(t, &attempt))
+	if err != nil || result.State != "uncertain" || result.Reason != "hosted_finished_inventory_unproven" || result.ExternalID != "200" || p.calls != 1 || f.provider.reviews != 1 || f.provider.queries != 1 {
+		t.Fatalf("finished unsupported observation lost its classified handoff: %+v %v", result, err)
+	}
+	if hostedDriverJournal(t, f, attempt.ID) != "active" || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+		t.Fatal("driver settled supervisor-owned attempt")
+	}
+	if _, err := f.engine.Advance(t.Context(), f.project, attempt.ID, attempt.Revision, result.State, result.Reason, result.ExternalID); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := f.engine.ReadHostedRecovery(t.Context(), f.project, attempt.ID, f.capability.ID)
+	if err != nil || bound.Attempt.State != "uncertain" || bound.Operation.Reason != result.Reason || cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_round_completions`) != 0 {
+		t.Fatal("handoff lost reservation or fabricated credit", bound, err)
+	}
+	candidate, err := f.engine.PendingHostedRecovery(t.Context(), f.capability.ID)
+	if err != nil || candidate == nil || candidate.AttemptID != attempt.ID {
+		t.Fatal("same attempt not eligible for continued observation", candidate, err)
+	}
+	gate := newSchedulerGate(f.hosted)
+	ctx, cancel := context.WithCancel(t.Context())
+	done, err := f.hosted.StartRecovery(ctx)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	defer func() { cancel(); schedulerDone(t, done, false) }()
+	for _, delay := range []time.Duration{30 * time.Second, 60 * time.Second} {
+		gate.interval(t, delay)
+		current, err := f.engine.ReadHostedRecovery(t.Context(), f.project, attempt.ID, f.capability.ID)
+		if err != nil || current.Attempt.Revision != bound.Attempt.Revision || current.Attempt.State != "uncertain" || current.Operation.Reason != result.Reason || f.provider.reviews != 1 || f.provider.queries != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+			t.Fatal("continued observation churned state, credited or reposted", current, err)
+		}
+		if delay == 30*time.Second {
+			gate.resume(t)
+		}
+	}
+}
+
 func (p *handoffObservationProvider) ObserveHosted(ctx context.Context, repository string, number int64) (reviewprovider.HostedPublicationSnapshot, error) {
 	p.calls++
 	if p.err != nil {

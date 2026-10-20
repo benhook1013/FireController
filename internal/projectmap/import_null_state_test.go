@@ -13,6 +13,73 @@ import (
 	"github.com/benhook1013/FireController/internal/projectmap"
 )
 
+func TestMapImportMissingLatestHistoryReturnsSafeUnavailableWithoutWrites(t *testing.T) {
+	f := setup(t)
+	first := f.previewImport(importDocument())
+	f.applyImport(first, "import-original")
+	next := first.Document
+	next.Source.Snapshot = "snapshot-two"
+	f.applyImport(f.previewImport(next), "import-next-source")
+	latest := f.importRecord(0)
+	if latest.Revision != 2 {
+		t.Fatal("fixture needs independently retained older history")
+	}
+	// Prepare a valid, unused apply before damaging storage, so both write
+	// planning and preview must consult the retained source pointer.
+	next.Source.Snapshot = "snapshot-three"
+	prepared := f.previewImport(next)
+	// Simulate damaged retained storage; normal writes enforce the history
+	// foreign keys. Restore enforcement before exercising any HTTP request.
+	conn, err := f.store.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.ExecContext(t.Context(), `PRAGMA foreign_keys=OFF`); err != nil {
+		conn.Close()
+		t.Fatal(err)
+	}
+	result, deleteErr := conn.ExecContext(t.Context(), `DELETE FROM project_map_import_history WHERE project_id=? AND source_key=? AND revision=?`, f.project, latest.SourceKey, latest.Revision)
+	_, restoreErr := conn.ExecContext(t.Context(), `PRAGMA foreign_keys=ON`)
+	closeErr := conn.Close()
+	if deleteErr != nil || restoreErr != nil || closeErr != nil {
+		t.Fatal("damage fixture and restore foreign-key enforcement", deleteErr, restoreErr, closeErr)
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		t.Fatal("fixture must remove exactly the latest history record", rows, err)
+	}
+	before := f.importState()
+	path := f.importPath() + "s/selected-history"
+	for _, request := range []struct {
+		name, method, path, key string
+		body                    any
+	}{
+		{"latest", "GET", path, "", nil},
+		{"preview", "POST", f.importPath() + "/preview", "", prepared.Document},
+		{"apply", "POST", f.importPath(), "import-after-corruption", projectmap.ImportApplyRequest{Document: prepared.Document, PreviewSHA256: prepared.PreviewSHA256}},
+	} {
+		t.Run(request.name, func(t *testing.T) {
+			w := f.call(request.method, request.path, f.admin, request.key, request.body)
+			want := fmt.Sprintf("{\"error\":{\"code\":\"storage_unavailable\",\"message\":\"Stored project-map state is unavailable.\"},\"request_id\":%q}\n", w.Header().Get("X-Request-ID"))
+			if w.Code != 503 || w.Header().Get("X-Request-ID") == "" || w.Body.String() != want {
+				t.Errorf("missing retained history lost safe classification: status%d body%s", w.Code, w.Body.String())
+			}
+			if !reflect.DeepEqual(before, f.importState()) {
+				t.Fatal("failed request changed retained rows, receipts or events")
+			}
+		})
+	}
+	var failure *core.Error
+	if err := f.validate(); !errors.As(err, &failure) || failure.Code != "storage_unavailable" || failure.Status != 503 {
+		t.Errorf("snapshot corruption lost domain classification: %v", err)
+	}
+	expect(t, f.call("GET", path+"/history/1", f.admin, "", nil), 200)
+	expect(t, f.call("GET", path+"/history/99", f.admin, "", nil), 404)
+	expect(t, f.call("GET", f.importPath()+"s/unknown-source", f.admin, "", nil), 404)
+	if !reflect.DeepEqual(before, f.importState()) {
+		t.Fatal("failed reads/planning or validation changed retained rows, receipts or events")
+	}
+}
+
 func TestMapImportStoredNullRecordReturnsSafeUnavailableWithoutWrites(t *testing.T) {
 	for _, mode := range []string{"current_pointer_mismatch", "oversized_current", "oversized_historical"} {
 		t.Run(mode, func(t *testing.T) {

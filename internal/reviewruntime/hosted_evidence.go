@@ -47,7 +47,7 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 			baselineLoaded = true
 		}
 	}
-	if !inventory.Complete && inventory.Publication.State == "active" && inventory.Publication.Trigger.State == "adopted" {
+	if !inventory.Complete && (inventory.Publication.State == "active" || inventory.Publication.State == "uncertain" && inventory.Reason == "hosted_finished_inventory_unproven") && inventory.Publication.Trigger.State == "adopted" {
 		loadBaseline()
 		if baselineErr != nil {
 			result.Reason = "standing_baseline_unproven"

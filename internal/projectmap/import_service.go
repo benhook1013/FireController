@@ -50,12 +50,12 @@ func decodeImportRecord(raw string) (ImportRecord, error) {
 func readImportRecord(ctx context.Context, tx *sql.Tx, project, source string, revision int64) (ImportRecord, error) {
 	var raw sql.NullString
 	var rowRevision int64
-	var actor, worker, at string
+	var actor, worker, at sql.NullString
 	var err error
 	if revision == 0 {
 		// Scalar pointer and latest immutable source record must agree even on
 		// ordinary reads. This stays bounded to one record, not its whole history.
-		err = tx.QueryRowContext(ctx, `SELECT s.revision,CASE WHEN length(CAST(s.record_json AS BLOB))<=? AND s.record_json=h.record_json THEN s.record_json ELSE NULL END,h.actor_id,h.worker_id,h.created_at FROM project_map_import_sources s JOIN project_map_import_history h ON h.project_id=s.project_id AND h.source_key=s.source_key AND h.revision=s.revision WHERE s.project_id=? AND s.source_key=?`, MaxImportRecordBytes, project, source).Scan(&rowRevision, &raw, &actor, &worker, &at)
+		err = tx.QueryRowContext(ctx, `SELECT s.revision,CASE WHEN length(CAST(s.record_json AS BLOB))<=? AND s.record_json=h.record_json THEN s.record_json ELSE NULL END,h.actor_id,h.worker_id,h.created_at FROM project_map_import_sources s LEFT JOIN project_map_import_history h ON h.project_id=s.project_id AND h.source_key=s.source_key AND h.revision=s.revision WHERE s.project_id=? AND s.source_key=?`, MaxImportRecordBytes, project, source).Scan(&rowRevision, &raw, &actor, &worker, &at)
 	} else {
 		err = tx.QueryRowContext(ctx, `SELECT revision,CASE WHEN length(CAST(record_json AS BLOB))<=? THEN record_json ELSE NULL END,actor_id,worker_id,created_at FROM project_map_import_history WHERE project_id=? AND source_key=? AND revision=?`, MaxImportRecordBytes, project, source, revision).Scan(&rowRevision, &raw, &actor, &worker, &at)
 	}
@@ -65,14 +65,14 @@ func readImportRecord(ctx context.Context, tx *sql.Tx, project, source string, r
 	if err != nil {
 		return ImportRecord{}, err
 	}
-	if !raw.Valid {
+	if !raw.Valid || !actor.Valid || !worker.Valid || !at.Valid {
 		return ImportRecord{}, unavailable()
 	}
 	record, err := decodeImportRecord(raw.String)
 	if err != nil {
 		return ImportRecord{}, err
 	}
-	if record.SourceKey != source || record.Revision != rowRevision || record.ActorID != actor || record.WorkerID != worker || record.CreatedAt != at {
+	if record.SourceKey != source || record.Revision != rowRevision || record.ActorID != actor.String || record.WorkerID != worker.String || record.CreatedAt != at.String {
 		return ImportRecord{}, unavailable()
 	}
 	return record, nil

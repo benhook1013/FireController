@@ -214,6 +214,38 @@ func validPublicationSnapshot(s HostedPublicationSnapshot) bool {
 	return true
 }
 
+// A strict finished-command reply is diagnostic only. It cannot supply an
+// inventory, comparison, run identity or completion time. The caller has already
+// validated the complete snapshot and original trigger; reuse that resolver's
+// closing boundary rather than independently guessing the command window.
+func publicationFinishedInventoryUnproven(snapshot HostedPublicationSnapshot, result HostedPublication, provider Author, closing time.Time) bool {
+	inside := func(at time.Time) bool {
+		return at.After(result.Trigger.CreatedAt) && (closing.IsZero() || at.Before(closing))
+	}
+	for _, review := range snapshot.Reviews {
+		if publicationActor(review.Author, provider) && review.State == "pending" {
+			return false
+		}
+	}
+	count := 0
+	for _, comment := range snapshot.IssueComments {
+		if !publicationActor(comment.Author, provider) || !inside(comment.UpdatedAt) {
+			continue
+		}
+		if standingFinishedAck(comment.Body) {
+			if !inside(comment.CreatedAt) {
+				return false
+			}
+			count++
+		} else if inside(comment.CreatedAt) {
+			// A different fresh provider reply may be an unknown command outcome.
+			// Older mutable standing comments are allowed to remain unsupported.
+			return false
+		}
+	}
+	return count == 1
+}
+
 // ResolveHostedPublication performs no I/O and does not initiate or retry any
 // provider action. Incomplete/ambiguous evidence never proves absence of a post.
 func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedTriggerIntent, postingAuthor, providerAuthor Author, earliestPosting time.Time) (HostedPublication, error) {
@@ -310,6 +342,10 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 	if total == 0 {
 		result = resolveStandingZero(snapshot, result, intent, providerAuthor, closing)
 		if result.State == "attributed" || result.State == "ambiguous" {
+			return result, nil
+		}
+		if publicationFinishedInventoryUnproven(snapshot, result, providerAuthor, closing) {
+			result.State, result.Reason = "uncertain", "hosted_finished_inventory_unproven"
 			return result, nil
 		}
 		if !closing.IsZero() {

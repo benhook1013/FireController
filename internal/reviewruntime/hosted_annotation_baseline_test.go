@@ -38,7 +38,7 @@ func runtimeAnnotatedStandingFixture(t *testing.T, edit func(*HostedCaptureRecor
 func TestRetainHostedAnnotatedStandingZeroFinalizationAndReplay(t *testing.T) {
 	f, record := runtimeAnnotatedStandingFixture(t, nil)
 	strict, err := reviewprovider.ExtractHostedFindings(record.Snapshot, record.Intent, record.PostingActor, record.ProviderActor, record.EarliestPosting)
-	if err != nil || strict.Complete || strict.Publication.State != "active" || strict.Publication.Trigger.State != "adopted" {
+	if err != nil || strict.Complete || strict.Publication.State != "uncertain" || strict.Reason != "hosted_finished_inventory_unproven" || strict.Publication.Trigger.State != "adopted" {
 		t.Fatal("synthetic old-root annotation must remain strictly incomplete", strict, err)
 	}
 	journal, err := f.f.engine.ReadHostedObservations(t.Context(), f.f.project, f.a.ID)
