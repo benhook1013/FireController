@@ -414,3 +414,101 @@ func TestReviewTransferClientSelectedBatchBounds(t *testing.T) {
 		t.Fatal("metadata-only partial transfer refused", err)
 	}
 }
+
+func TestReviewTransferClientMetadataRealPreviewApplyReplay(t *testing.T) {
+	for _, tc := range []struct {
+		name, state, mergedAt string
+		diff                  *domain.PullDiff
+		draft                 *bool
+	}{
+		{"known-nonzero", "open", "", &domain.PullDiff{Files: 3, Additions: 12, Deletions: 4}, func() *bool { v := true; return &v }()},
+		{"known-zero-false", "open", "", &domain.PullDiff{}, func() *bool { v := false; return &v }()},
+		{"merged-instant", "merged", "2026-10-19T22:10:11.123Z", &domain.PullDiff{Files: 1}, nil},
+		{"unknown", "open", "", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newReviewClientFixture(t)
+			if _, err := f.store.DB().Exec(`UPDATE credentials SET is_admin=1 WHERE id='review-client-credential'`); err != nil {
+				t.Fatal(err)
+			}
+			zero := int64(0)
+			request := domain.TransferRequest{Version: 1, ExpectedRevision: &zero, RepositoryID: 701, Publisher: "metadata transfer", Groups: []domain.TransferGroup{{Source: "original-metadata", Pulls: []domain.PullInput{{Number: 7, Title: "Observed display facts", State: tc.state, HeadSHA: strings.Repeat("a", 40), BaseRef: "main", BaseSHA: strings.Repeat("b", 40), CIState: "unknown", Mergeability: "unknown", Diff: tc.diff, IsDraft: tc.draft, MergedAt: tc.mergedAt, Runs: []domain.RunInput{}, Attempts: []domain.Attempt{}}}}}}
+			raw, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := string(raw)
+			counts := func() string {
+				var value string
+				if err := f.store.DB().QueryRow(`SELECT (SELECT count(*) FROM review_snapshots)||':'||(SELECT count(*) FROM receipts)||':'||(SELECT count(*) FROM events)`).Scan(&value); err != nil {
+					t.Fatal(err)
+				}
+				return value
+			}
+			before := counts()
+			preview, err := f.client.PreviewReviewTransfer(t.Context(), raw)
+			if err != nil {
+				t.Fatal("actual metadata preview refused", err)
+			}
+			if counts() != before || preview.NativeCoverage || preview.Coverage != "partial" || preview.Counts != (client.ReviewTransferCounts{Pulls: 1}) {
+				t.Fatal("metadata-only preview changed state or coverage", preview)
+			}
+			receipt, err := f.client.ApplyReviewTransfer(t.Context(), "metadata-once", preview.PreviewSHA256, raw)
+			if err != nil || receipt.Revision != 1 {
+				t.Fatal(receipt, err)
+			}
+			pull, err := f.client.ReviewPull(t.Context(), 7, receipt.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (pull.Pull.Diff == nil) != (tc.diff == nil) || tc.diff != nil && (pull.Pull.Diff.Files != tc.diff.Files || pull.Pull.Diff.Additions != tc.diff.Additions || pull.Pull.Diff.Deletions != tc.diff.Deletions) || (pull.Pull.IsDraft == nil) != (tc.draft == nil) || tc.draft != nil && *pull.Pull.IsDraft != *tc.draft || pull.Pull.MergedAt != tc.mergedAt {
+				t.Fatal("metadata lost known/unknown values", pull.Pull)
+			}
+			saved := counts()
+			replay, err := f.client.ApplyReviewTransfer(t.Context(), "metadata-once", preview.PreviewSHA256, raw)
+			if err != nil || replay != receipt || counts() != saved || string(raw) != original {
+				t.Fatal("exact metadata replay changed retained state or input", replay, err)
+			}
+		})
+	}
+}
+
+func TestReviewTransferClientMalformedMetadataRefusedBeforeHTTP(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		calls.Add(1)
+		http.Error(w, "unexpected", 500)
+	}))
+	defer server.Close()
+	c := newClient(t, server)
+	for _, fields := range []string{
+		`"diff":{"files":-1,"additions":0,"deletions":0}`,
+		`"diff":{"files":2147483648,"additions":0,"deletions":0}`,
+		`"diff":{"files":0,"additions":0}`,
+		`"diff":{"files":null,"additions":0,"deletions":0}`,
+		`"diff":{"files":0,"additions":0,"deletions":0,"extra":0}`,
+		`"diff":{"files":0,"additions":0,"deletions":0},"diff":{}`,
+		`"is_draft":"false"`, `"is_draft":1`,
+		`"merged_at":"2026-10-19T22:00:00Z"`, `"merged_at":"not-an-instant"`,
+		`"unknown_metadata":false`,
+	} {
+		raw := json.RawMessage(strings.ReplaceAll(string(transferDocument()), `"title":"Selected retained history"`, `"title":"Selected retained history",`+fields))
+		if fields == `"merged_at":"not-an-instant"` {
+			raw = json.RawMessage(strings.ReplaceAll(string(raw), `"state":"open"`, `"state":"merged"`))
+		}
+		if client.ValidateReviewTransferDocument(raw) == nil {
+			t.Fatal("malformed metadata admitted", fields)
+		}
+		_, err := c.PreviewReviewTransfer(t.Context(), raw)
+		checkError(t, err, "validation_failed")
+		_, err = c.ApplyReviewTransfer(t.Context(), "metadata-invalid", strings.Repeat("b", 64), raw)
+		checkError(t, err, "validation_failed")
+		if calls.Load() != 0 {
+			t.Fatal("malformed metadata dispatched HTTP")
+		}
+	}
+}
