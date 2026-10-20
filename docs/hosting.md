@@ -6,7 +6,7 @@ One FireController service serves the API, live event transport and embedded bro
 
 The current daemon accepts only loopback listeners. Remote deployment places a TLS reverse proxy in front of that listener. The Go CLI and local stdio MCP adapter can use an HTTPS service URL in their private profiles; a remote controller does not require a remotely exposed MCP endpoint. See [client binding](agent-client.md) and [MCP configuration](mcp.md#configure-one-agent-binding).
 
-The [container runtime guide](container-runtime.md) provides the supported Linux/amd64 image build, Git HTTPS dependencies and private-volume run configuration. Native hosted reviews require Git even when no provider CLI is installed.
+The [container runtime guide](container-runtime.md) provides the supported Linux/amd64 image build, Git HTTPS dependencies and private-volume run configuration. The image’s default command listens on `127.0.0.1:8081`; set the proxy upstream to the daemon’s actual `--listen` address. Native hosted reviews require Git even when no provider CLI is installed.
 
 ## A single authoritative installation
 
