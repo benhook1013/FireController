@@ -99,5 +99,8 @@ func backfillComparisonProofs(ctx context.Context, conn *sql.Conn) error {
 			break
 		}
 	}
-	return ValidateComparisonProofs(ctx, conn)
+	// Each inserted proof was already derived from retained authority above.
+	// Under the exclusive migration transaction, only the set check remains;
+	// backup validation still independently re-derives every retained proof.
+	return validateComparisonProofSet(ctx, conn)
 }

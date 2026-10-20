@@ -488,6 +488,144 @@ func (o *browserOutput) safePhase() string {
 	return "driver-start-or-cleanup"
 }
 
+// Exercise the same helper as the driver with genuine Playwright failures.
+// No daemon, application credentials or provider inputs are needed.
+func TestBrowserFailureDiagnosticsRetained(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	private := privateFixtureDirectory(t)
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("Node is required for browser diagnostic proof")
+	}
+	node, err = filepath.Abs(node)
+	if err != nil {
+		t.Fatal("Node executable unavailable")
+	}
+	helper, _ := filepath.Abs("browser-diagnostics.mjs")
+	playwright, _ := filepath.Abs("../../webapp/node_modules/@playwright/test/index.mjs")
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal("browser cache unavailable")
+	}
+	browserPath := os.Getenv("PLAYWRIGHT_BROWSERS_PATH")
+	if browserPath == "" {
+		browserPath = filepath.Join(cache, "ms-playwright")
+	}
+	executable := os.Getenv("FC_BROWSER_EXECUTABLE")
+	if !filepath.IsAbs(browserPath) || executable != "" && !filepath.IsAbs(executable) {
+		t.Fatal("browser installation selectors must be absolute")
+	}
+	var external atomic.Int64
+	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { external.Add(1); w.WriteHeader(502) }))
+	defer deny.Close()
+	config, err := json.Marshal(map[string]string{"helper": helper, "playwright": playwright, "directory": filepath.Join(private, "diagnostics"), "proxy": deny.URL, "executable": executable})
+	if err != nil {
+		t.Fatal("browser diagnostic configuration unavailable")
+	}
+	configFile := filepath.Join(private, "diagnostics.json")
+	if os.WriteFile(configFile, config, 0600) != nil {
+		t.Fatal("browser diagnostic configuration unavailable")
+	}
+	const probe = `
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+import assert from 'node:assert/strict';
+let server, browser, passed=false;
+try {
+  const config=JSON.parse(await fs.readFile(process.argv[2],'utf8'));
+  const {classifyBrowserFailure,retainBrowserFailure}=await import(pathToFileURL(config.helper));
+  const {chromium,expect}=await import(pathToFileURL(config.playwright));
+  server=await chromium.launchServer({headless:true,timeout:5000,proxy:{server:config.proxy},...(config.executable?{executablePath:config.executable}:{}),args:['--disable-background-networking','--no-first-run']});
+  console.log(JSON.stringify({event:'browser_started',pid:server.process().pid}));
+  browser=await chromium.connect(server.wsEndpoint(),{timeout:5000});
+  const context=await browser.newContext();let requests=0;
+  await context.route('**/*',route=>{requests++;return route.abort();});
+  const page=await context.newPage();
+  const secret='PRIVATE_SENTINEL';
+  await page.setContent('<button disabled id="'+secret+'">'+secret+'</button>');
+  await page.evaluate(secret=>{location.hash=secret;},secret);
+  await context.addCookies([{name:'private',value:secret,url:'https://fixture.invalid'}]);
+  let matcher;
+  try {await expect(page.locator('#'+secret)).toBeEnabled({timeout:50});} catch(error) {matcher=error;}
+  assert.equal(matcher?.matcherResult?.name,'toBeEnabled');
+  assert.equal(classifyBrowserFailure(matcher),'assertion');
+  assert.equal(classifyBrowserFailure(new assert.AssertionError({message:secret})),'assertion');
+  assert.equal(classifyBrowserFailure(new Error('assertion')),'assertion');
+  assert.equal(classifyBrowserFailure(new Error(secret)),'driver');
+  let timeout;
+  try {await page.locator('#absent').waitFor({timeout:50});} catch(error) {timeout=error;}
+  assert.equal(timeout?.name,'TimeoutError');
+  assert.equal(classifyBrowserFailure(timeout),'timeout');
+  await page.close();
+  const read=async name=>JSON.parse(await fs.readFile(path.join(config.directory,name),'utf8'));
+  const closed={phase:'explicit-actions-uncertain',checkpoint:'retry',action_writes:1};
+  let closedSeedSeen=false;
+  const closedResult=await retainBrowserFailure({directory:config.directory,filename:'failure.json',snapshot:{...closed},
+    collect:async snapshot=>{closedSeedSeen=JSON.stringify(await read('failure.json'))===JSON.stringify(closed);snapshot.count=await page.locator('button').count();},
+    screenshot:output=>page.screenshot({path:output,timeout:2000})});
+  assert(closedSeedSeen);
+  assert.deepEqual(closedResult,{...closed,dom_diagnostics_unavailable:true,screenshot_unavailable:true});
+  assert.deepEqual(await read('failure.json'),closedResult);
+  const second=await context.newPage();await second.setContent('<button>'+secret+'</button>');
+  const seed={phase:'live-reviews',checkpoint:'queue-heading',run_fetches:2};
+  let reviewSeedSeen=false,screenshotSeedSeen=false;
+  const screenshotResult=await retainBrowserFailure({directory:config.directory,filename:'review-failure.json',snapshot:{...seed},
+    collect:async snapshot=>{reviewSeedSeen=JSON.stringify(await read('review-failure.json'))===JSON.stringify(seed);snapshot.button_count=await second.locator('button').count();},
+    screenshot:async output=>{screenshotSeedSeen=(await read('review-failure.json')).button_count===1;await second.close();await second.screenshot({path:output,timeout:2000});}});
+  assert(reviewSeedSeen&&screenshotSeedSeen&&second.isClosed());
+  assert.deepEqual(screenshotResult,{...seed,button_count:1,screenshot_unavailable:true});
+  assert.deepEqual(await read('review-failure.json'),screenshotResult);
+  const delivery={phase:'delivery-overview',checkpoint:'presence-visible',presence_reads:2};
+  const partial=await retainBrowserFailure({directory:config.directory,filename:'delivery-failure.json',snapshot:{...delivery},
+    collect:async snapshot=>{snapshot.first_count=1;snapshot.closed_count=await page.locator('button').count();}});
+  assert.deepEqual(partial,{...delivery,first_count:1,dom_diagnostics_unavailable:true});
+  assert.deepEqual(await read('delivery-failure.json'),partial);
+  for(const file of ['failure.json','review-failure.json','delivery-failure.json']) {
+    const raw=await fs.readFile(path.join(config.directory,file),'utf8');
+    assert(!raw.includes(secret));assert(!raw.includes('about:'));assert(!raw.includes('cookie'));
+    assert.equal((await fs.stat(path.join(config.directory,file))).mode&0o777,0o600);
+  }
+  assert.equal((await fs.stat(config.directory)).mode&0o777,0o700);
+  assert.equal(requests,0);
+  await context.close();passed=true;
+} catch {process.exitCode=1;}
+finally {
+  try {if(browser) await browser.close();if(server) await server.close();}
+  catch {passed=false;process.exitCode=1;}
+}
+console.log(JSON.stringify({state:passed?'PASS':'FAIL',matcher_assertion:passed,closed_page:passed,screenshot_failure:passed,private_json:passed}));
+`
+	command := exec.CommandContext(ctx, node, "--input-type=module", "-", configFile)
+	command.Stdin = strings.NewReader(probe)
+	command.Env = []string{"HOME=" + private, "USERPROFILE=" + private, "TMPDIR=" + private, "PATH=", "PLAYWRIGHT_BROWSERS_PATH=" + browserPath, "HTTP_PROXY=" + deny.URL, "HTTPS_PROXY=" + deny.URL, "NO_PROXY=127.0.0.1,localhost"}
+	command.SysProcAttr, command.WaitDelay = &syscall.SysProcAttr{Setpgid: true}, time.Second
+	output, stderr := &browserOutput{}, &boundedOutput{}
+	command.Stdout, command.Stderr = output, stderr
+	if command.Start() != nil {
+		t.Fatal("browser diagnostic probe could not start")
+	}
+	defer func() {
+		if pid := output.browserPID(); pid > 1 {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+	}()
+	err = command.Wait()
+	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
+	var result struct {
+		State             string `json:"state"`
+		MatcherAssertion  bool   `json:"matcher_assertion"`
+		ClosedPage        bool   `json:"closed_page"`
+		ScreenshotFailure bool   `json:"screenshot_failure"`
+		PrivateJSON       bool   `json:"private_json"`
+	}
+	if err != nil || stderr.len() != 0 || external.Load() != 0 || output.browserPID() < 2 || len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || !result.MatcherAssertion || !result.ClosedPage || !result.ScreenshotFailure || !result.PrivateJSON {
+		t.Fatal("browser diagnostic failure-path proof failed; raw output withheld")
+	}
+}
+
 func TestBrowserExplicitConnectDiagnosticsAllowlist(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{

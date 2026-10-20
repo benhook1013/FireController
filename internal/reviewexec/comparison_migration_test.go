@@ -262,3 +262,71 @@ func TestComparisonMigrationEarlierCancellationLeavesDomainAbsent(t *testing.T) 
 	}
 	coverageComparison(t, f, a, current, ComparisonState{Covered: true})
 }
+
+func TestComparisonProofSetRefusesMissingOrMismatchedAuthority(t *testing.T) {
+	f, _, _ := comparisonMigrationFixture(t)
+	before, proofs := comparisonSourceRows(t, f), comparisonMigrationProofs(t, f)
+	if err := validateComparisonProofSet(t.Context(), f.store.DB()); err != nil {
+		t.Fatal("valid comparison set refused", err)
+	}
+	for _, tc := range []struct{ name, mutation string }{
+		{"missing", `DROP TRIGGER review_comparison_proofs_retain; DELETE FROM review_comparison_proofs`},
+		{"orphan", `PRAGMA defer_foreign_keys=ON; UPDATE review_comparison_proofs SET operation_id='missing-operation' WHERE operation_id=(SELECT min(operation_id) FROM review_comparison_proofs)`},
+		{"empty-identity", `PRAGMA defer_foreign_keys=ON; UPDATE review_comparison_proofs SET operation_id='' WHERE operation_id=(SELECT min(operation_id) FROM review_comparison_proofs)`},
+		{"wrong-project", `UPDATE review_comparison_proofs SET project_id='exec-project-two'`},
+		{"wrong-pull", `UPDATE review_comparison_proofs SET pull_number=pull_number+1`},
+		{"wrong-channel", `UPDATE review_comparison_proofs SET channel=CASE channel WHEN 'cli' THEN 'hosted' ELSE 'cli' END`},
+		{"noncompleted-operation", `UPDATE review_operations SET state='failed' WHERE state='completed'`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checked := false
+			err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+				if _, err := tx.ExecContext(ctx, tc.mutation); err != nil {
+					return err
+				}
+				checked = true
+				return validateComparisonProofSet(ctx, tx)
+			})
+			if !checked || err == nil {
+				t.Fatal("set mismatch did not reach validation/refusal", checked, err)
+			}
+			if !reflect.DeepEqual(before, comparisonSourceRows(t, f)) || !reflect.DeepEqual(proofs, comparisonMigrationProofs(t, f)) {
+				t.Fatal("refused set check changed retained authority or proofs")
+			}
+		})
+	}
+	// Set membership is insufficient for maintenance: a forged anchor has the
+	// right owner but must still fail the exported full re-derivation boundary.
+	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE review_comparison_proofs SET candidate_sha=?`, strings.Repeat("e", 40)); err != nil {
+			return err
+		}
+		if err := validateComparisonProofSet(ctx, tx); err != nil {
+			t.Error("derived-value mutation unexpectedly changed the set", err)
+			return err
+		}
+		return ValidateComparisonProofs(ctx, tx)
+	})
+	if err == nil || !reflect.DeepEqual(proofs, comparisonMigrationProofs(t, f)) {
+		t.Fatal("full validation lost derived-value rejection/rollback", err)
+	}
+}
+
+func TestComparisonMigrationSetMismatchRollsBack(t *testing.T) {
+	f, _, _ := comparisonMigrationFixture(t)
+	comparisonPreDomain(t, f)
+	before := comparisonSourceRows(t, f)
+	statements := append([]string{}, ComparisonSchemaSQL()...)
+	statements = append(statements, `CREATE TRIGGER review_comparison_test_wrong_scope AFTER INSERT ON review_comparison_proofs BEGIN UPDATE review_comparison_proofs SET pull_number=pull_number+1 WHERE operation_id=NEW.operation_id; END;`)
+	err := f.store.EnsureSchemaWithBackfill(t.Context(), "review_comparison", [][]string{statements}, backfillComparisonProofs)
+	if err == nil {
+		t.Fatal("migration accepted mismatched proof scope")
+	}
+	assertComparisonDomainAbsent(t, f)
+	if !reflect.DeepEqual(before, comparisonSourceRows(t, f)) {
+		t.Fatal("set mismatch changed retained source authority")
+	}
+	if err := ensureComparisonSchema(t.Context(), f.store); err != nil {
+		t.Fatal("canonical retry after set refusal failed", err)
+	}
+}
