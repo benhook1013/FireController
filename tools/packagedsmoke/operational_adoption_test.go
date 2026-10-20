@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/adoptionholdsmodel"
 	"github.com/benhook1013/FireController/internal/cli"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/coordimportmodel"
@@ -106,7 +107,7 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 	var requests, denied atomic.Int64
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		allowed := r.Method == "GET" || r.Method == "POST" && (r.URL.Path == prefix+"/jobs" || r.URL.Path == prefix+"/messages" || strings.HasPrefix(r.URL.Path, prefix+"/messages/") || strings.HasPrefix(r.URL.Path, prefix+"/reviews/rounds/") || r.URL.Path == prefix+"/coordination/imports/preview" || r.URL.Path == prefix+"/coordination/imports/apply")
+		allowed := r.Method == "GET" || r.Method == "POST" && (r.URL.Path == prefix+"/jobs" || r.URL.Path == prefix+"/messages" || strings.HasPrefix(r.URL.Path, prefix+"/messages/") || strings.HasPrefix(r.URL.Path, prefix+"/reviews/rounds/") || strings.HasPrefix(r.URL.Path, prefix+"/reviews/adoption-obligations/") || r.URL.Path == prefix+"/coordination/imports/preview" || r.URL.Path == prefix+"/coordination/imports/apply")
 		if !allowed {
 			denied.Add(1)
 			w.WriteHeader(403)
@@ -181,12 +182,60 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 	unrelatedThreadBefore := call("inspector", "inbox", "thread", unrelatedMessage.ConversationID)
 	initial := readUpgradeState(t, ctx, data)
 	zero := int64(0)
+	holds := adoptionholdsmodel.Batch{Version: 1, Source: adoptionholdsmodel.Source{Namespace: "packaged-sealed-controls", RepositoryID: 991, SnapshotSHA256: strings.Repeat("f", 64)}, ExpectedRevision: &zero,
+		Obligations: []adoptionholdsmodel.Obligation{
+			{SourceKey: "pending-finding", Kind: "finding", AffectedPullNumbers: []int64{3}, Summary: "Private original finding", Evidence: []string{}, OriginalStatus: "pending"},
+			{SourceKey: "pending-route", Kind: "route", AffectedPullNumbers: []int64{3}, Summary: "Private original routed correction", Evidence: []string{"source:route"}, OriginalStatus: "open"},
+		}}
+	holdFile := writeJSON("obligations.json", holds)
+	var holdPreview client.AdoptionObligationPreview
+	decode(t, call("builder", "reviews", "obligations", "adopt", "preview", "--file", holdFile), &holdPreview)
+	if holdPreview.Selected != 2 || holdPreview.New != 2 || !reflect.DeepEqual(initial, readUpgradeState(t, ctx, data)) {
+		t.Fatal("obligation preview changed state or selection")
+	}
+	holdApply := []string{"reviews", "obligations", "adopt", "apply", "--file", holdFile, "--preview", holdPreview.PreviewSHA256, "--key", "adoption-holds-original"}
+	holdReceipt := call("builder", holdApply...)
+	var held client.AdoptionObligationReceipt
+	decode(t, holdReceipt, &held)
+	if held.New != 2 || held.Revision != 1 || !bytes.Equal(holdReceipt, call("builder", holdApply...)) {
+		t.Fatal("obligation apply lost source revision or exact replay")
+	}
+	var holdPage client.AdoptionObligationPage
+	compactHolds := call("builder", "reviews", "obligations", "list", "--pr", "3", "--status", "open")
+	decode(t, compactHolds, &holdPage)
+	if len(holdPage.Items) != 2 || holdPage.NextCursor != "" || bytes.Contains(compactHolds, []byte("Private original")) {
+		t.Fatal("compact obligations lost selected holds or expanded private text")
+	}
+	var resolvedID string
+	for _, item := range holdPage.Items {
+		if item.SourceKey == "pending-finding" {
+			resolvedID = item.ID
+		}
+	}
+	if resolvedID == "" {
+		t.Fatal("finding mapping unavailable")
+	}
+	var original client.AdoptionObligation
+	decode(t, call("builder", "reviews", "obligations", "read", resolvedID), &original)
+	if original.Original.Summary != holds.Obligations[0].Summary || original.Original.Evidence == nil || len(original.Original.Evidence) != 0 || original.Status != "open" {
+		t.Fatal("deliberate obligation detail lost original facts")
+	}
+	resolveArgs := []string{"reviews", "obligations", "resolve", resolvedID, "--expected-revision", "1", "--reason", "Synthetic correction verified", "--evidence", "proof:synthetic-correction", "--key", "adoption-hold-resolution"}
+	resolvedReceipt := call("builder", resolveArgs...)
+	if !bytes.Equal(holdReceipt, call("builder", holdApply...)) {
+		t.Fatal("original import receipt changed after resolution")
+	}
+	decode(t, call("builder", "reviews", "obligations", "list", "--pr", "3", "--status", "open"), &holdPage)
+	if len(holdPage.Items) != 1 || holdPage.Items[0].SourceKey != "pending-route" {
+		t.Fatal("reimport reopened a resolved finding or lost its unresolved route")
+	}
 	preparedControl := roundadoptionmodel.Prepared{Version: 1, RepositoryID: 991, ExpectedRevision: &zero, PullNumber: 2, Channel: "cli", Source: "packaged-sealed-controls", SourceKey: "pr-2-cli", SourceSHA256: strings.Repeat("a", 64), MinimumRemaining: 1, MaximumRemaining: 4, InitialDry: 2, Taper: 3}
 	controlFile := writeJSON("control.json", preparedControl)
 	controlHash := binaryHash(t, controlFile)
+	beforeRoundPreview := readUpgradeState(t, ctx, data)
 	var preview client.ReviewRoundAdoptionPreview
 	decode(t, call("builder", "reviews", "rounds", "adopt", "preview", "--file", controlFile), &preview)
-	if !reflect.DeepEqual(initial, readUpgradeState(t, ctx, data)) {
+	if !reflect.DeepEqual(beforeRoundPreview, readUpgradeState(t, ctx, data)) {
 		t.Fatal("round preview changed native state")
 	}
 	applyControl := []string{"reviews", "rounds", "adopt", "apply", "--file", controlFile, "--preview", preview.PreviewSHA256, "--key", "adoption-control-original"}
@@ -251,10 +300,10 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 		control             roundadoptionmodel.Prepared
 	}{
 		{"2", "hosted", "zero", roundadoptionmodel.Prepared{Version: 1, RepositoryID: 991, ExpectedRevision: &zero, PullNumber: 2, Channel: "hosted", Source: "packaged-sealed-controls", SourceKey: "pr-2-hosted", SourceSHA256: strings.Repeat("b", 64), Taper: 1}},
-		{"3", "cli", "sticky", roundadoptionmodel.Prepared{Version: 1, RepositoryID: 991, ExpectedRevision: &zero, PullNumber: 3, Channel: "cli", Source: "packaged-sealed-controls", SourceKey: "pr-3-cli", SourceSHA256: strings.Repeat("c", 64), MinimumRemaining: 2, MaximumRemaining: 4, Taper: 3, Tapered: true}},
+		{"3", "cli", "sticky-unbounded", roundadoptionmodel.Prepared{Version: 2, RepositoryID: 991, ExpectedRevision: &zero, PullNumber: 3, Channel: "cli", Source: "packaged-sealed-controls", SourceKey: "pr-3-cli", SourceSHA256: strings.Repeat("c", 64), MinimumRemaining: 2, MaximumUnbounded: true, Taper: 3, Tapered: true, Obligations: &roundadoptionmodel.ObligationsReference{Namespace: holds.Source.Namespace, SnapshotSHA256: holds.Source.SnapshotSHA256, Revision: 1}}},
 		{"3", "hosted", "closed", roundadoptionmodel.Prepared{Version: 1, RepositoryID: 991, ExpectedRevision: &zero, PullNumber: 3, Channel: "hosted", Source: "packaged-sealed-controls", SourceKey: "pr-3-hosted", SourceSHA256: strings.Repeat("d", 64), MaximumRemaining: 2, Taper: 1, Closed: true}},
 	}
-	inputHashes := map[string][32]byte{controlFile: controlHash, adminFile: adminHash}
+	inputHashes := map[string][32]byte{controlFile: controlHash, adminFile: adminHash, holdFile: binaryHash(t, holdFile)}
 	for path, hash := range profileHashes {
 		inputHashes[path] = hash
 	}
@@ -264,7 +313,7 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 		decode(t, call("builder", "reviews", "rounds", "adopt", "preview", "--file", file), &preview)
 		call("builder", "reviews", "rounds", "adopt", "apply", "--file", file, "--preview", preview.PreviewSHA256, "--key", "adoption-"+variant.name)
 		actual := readRound(variant.pull, variant.channel)
-		if actual.Used != 0 || actual.Maximum != variant.control.MaximumRemaining || actual.Minimum != variant.control.MinimumRemaining || actual.Closed != variant.control.Closed || actual.InitiallyTapered != variant.control.Tapered || actual.Tapered {
+		if actual.Used != 0 || actual.Maximum != variant.control.MaximumRemaining || actual.MaximumUnbounded != variant.control.MaximumUnbounded || actual.Minimum != variant.control.MinimumRemaining || actual.Closed != variant.control.Closed || actual.InitiallyTapered != variant.control.Tapered || actual.Tapered {
 			t.Fatal("zero/sticky/closed control changed operational meaning")
 		}
 	}
@@ -367,6 +416,9 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 	daemon.stop(t)
 	retained := readUpgradeState(t, ctx, data)
 	changed := map[string]bool{"review_round_controls": true, "review_round_changes": true, "review_round_adoptions": true, "coordination_import_state": true, "coordination_import_messages": true, "coordination_import_batches": true, "inbox_conversations": true, "inbox_messages": true, "inbox_recipient_state": true, "events": true, "receipts": true, "sqlite_sequence": true}
+	for _, name := range []string{"review_adoption_sources", "review_adoption_imports", "review_adoption_obligations", "review_adoption_targets", "review_adoption_resolutions"} {
+		changed[name] = true
+	}
 	if initial.version != retained.version || !reflect.DeepEqual(initial.metadata, retained.metadata) || len(initial.tables) != len(retained.tables) {
 		t.Fatal("adoption changed native identity/schema")
 	}
@@ -392,6 +444,15 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 	targetMu.Lock()
 	target = next
 	targetMu.Unlock()
+	if !bytes.Equal(holdReceipt, call("builder", holdApply...)) || !bytes.Equal(resolvedReceipt, call("builder", resolveArgs...)) {
+		t.Fatal("restart lost obligation receipts")
+	}
+	decode(t, call("builder", "reviews", "obligations", "read", resolvedID), &original)
+	decode(t, call("builder", "reviews", "obligations", "list", "--pr", "3", "--status", "open"), &holdPage)
+	unbounded := readRound("3", "cli")
+	if original.Status != "resolved" || original.Resolution == nil || len(original.Resolution.Evidence) != 1 || len(holdPage.Items) != 1 || holdPage.Items[0].SourceKey != "pending-route" || !unbounded.MaximumUnbounded || unbounded.Minimum != 2 || unbounded.Used != 0 {
+		t.Fatal("restart lost original/resolution facts, unresolved hold or unbounded policy")
+	}
 	if !bytes.Equal(adoptedBytes, call("builder", applyControl...)) || readRound("2", "cli") != replaced || !bytes.Equal(importedBytes, call("builder", messageApply...)) || !bytes.Equal(ackBytes, call("inspector", ackArgs...)) {
 		t.Fatal("restart lost original receipts or overwritten state")
 	}

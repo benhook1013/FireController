@@ -25,6 +25,7 @@ type ReviewRequest struct {
 	PullNumber                    int64  `json:"pull_number"`
 	Channel                       string `json:"channel"`
 	HeadSHA                       string `json:"head_sha"`
+	AllowOutOfOrder               bool   `json:"allow_out_of_order,omitempty"`
 }
 
 type ReviewRequestReceipt struct {
@@ -61,6 +62,7 @@ type ReviewOperation struct {
 	PullNumber            int64                       `json:"pull_number"`
 	Channel               string                      `json:"channel"`
 	HeadSHA               string                      `json:"head_sha"`
+	AllowOutOfOrder       bool                        `json:"allow_out_of_order,omitempty"`
 	State                 string                      `json:"state"`
 	Revision              int64                       `json:"revision"`
 	Reason                string                      `json:"reason"`
@@ -182,7 +184,7 @@ func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRe
 	}
 	valid := false
 	if operation := result.Operation; operation != nil {
-		valid = c.validReviewOperation(*operation) && operation.WorkerID == c.identity.WorkerID && operation.PullNumber == request.PullNumber && operation.HeadSHA == request.HeadSHA && operation.Channel == request.Channel && operation.ConfigurationRevision == request.ExpectedConfigurationRevision && !oneReviewOf(operation.State, "queued", "preparing", "posting", "active")
+		valid = c.validReviewOperation(*operation) && operation.WorkerID == c.identity.WorkerID && operation.PullNumber == request.PullNumber && operation.HeadSHA == request.HeadSHA && operation.Channel == request.Channel && operation.AllowOutOfOrder == request.AllowOutOfOrder && operation.ConfigurationRevision == request.ExpectedConfigurationRevision && !oneReviewOf(operation.State, "queued", "preparing", "posting", "active")
 	} else if receipt := result.Receipt; receipt != nil {
 		valid = ValidateReviewOperationID(receipt.ID) == nil && receipt.State == "queued" && receipt.Revision == 1
 	}

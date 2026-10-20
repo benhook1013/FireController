@@ -2,10 +2,14 @@ package reviewexec
 
 import (
 	"context"
+	"github.com/benhook1013/FireController/internal/adoptionholds"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
 func EnsureSchema(ctx context.Context, store *core.Store) error {
+	if err := adoptionholds.EnsureSchema(ctx, store); err != nil {
+		return err
+	}
 	if err := EnsurePolicySchema(ctx, store); err != nil {
 		return err
 	}
@@ -27,6 +31,8 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	}, []string{
 		`CREATE TABLE review_hosted_preflight(attempt_id TEXT PRIMARY KEY REFERENCES review_execution_attempts(id),project_id TEXT NOT NULL REFERENCES projects(id),body_json TEXT NOT NULL)`,
 		`CREATE TABLE review_hosted_allowance_queries(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),operation_id TEXT NOT NULL REFERENCES review_operations(id),capability_fingerprint TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision IN (1,2)),body_json TEXT NOT NULL)`,
+	}, []string{
+		`ALTER TABLE review_operations ADD COLUMN allow_out_of_order INTEGER NOT NULL DEFAULT 0 CHECK(allow_out_of_order IN (0,1))`,
 	}); err != nil {
 		return err
 	}

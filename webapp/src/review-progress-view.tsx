@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { signalFor, useWorkspace } from './workspace';
-import { roundProgressState, type ReviewRoundProgress } from './review-progress';
+import { roundProgressState, roundProgressAllowance, type ReviewRoundProgress } from './review-progress';
 
 export function useReviewProgress(pulls: number[]) {
   const { session, key, fail } = useWorkspace();
@@ -17,7 +17,7 @@ export function ReviewProgressView({ value }: { value?: ReviewRoundProgress }) {
   if (!value?.configured) return null;
   return <div className="review-current-progress" aria-label={`Current ${value.channel} round limits`}>
     <span className="review-progress-state">{roundProgressState(value)}</span>
-    <span>{value.used} of {value.maximum} used · Max {value.maximum - value.used} remaining</span>
+    <span>{roundProgressAllowance(value)}</span>
     {value.minimum > value.used && <span>Minimum {value.minimum - value.used} more</span>}
     <span title="Consecutive eligible rounds with no accepted findings; a maximum can finish early after its minimum is met.">Taper {value.dry}/{value.taper}</span>
     {value.pending > 0 && <span>{value.pending} in flight</span>}

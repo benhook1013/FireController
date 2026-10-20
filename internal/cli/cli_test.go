@@ -227,18 +227,111 @@ func TestRelativeDefaultDirectoryCannotSelectWorkspaceConfiguration(t *testing.T
 }
 
 func TestVersionDoesNotNeedOrReadConfiguration(t *testing.T) {
-	code, stdout, stderr := run([]string{"version"}, map[string]string{"FC_PROFILE": "missing"})
-	if code != 0 || stderr != "" {
-		t.Fatalf("code=%d stderr=%s", code, stderr)
+	missing := filepath.Join(t.TempDir(), "nonexistent-profiles.json")
+	for _, args := range [][]string{{"version"}, {"--profiles-file", missing, "--profile=bound-role", "version"}, {"version", "--profile", "missing", "--profiles-file=" + missing}} {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		var stdout, stderr bytes.Buffer
+		code := cli.RunContext(ctx, args, map[string]string{"FC_PROFILE": "missing"}, &stdout, &stderr)
+		if code != 0 || stderr.Len() != 0 {
+			t.Fatalf("args=%v code=%d stderr=%s", args, code, &stderr)
+		}
+		var result map[string]string
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || len(result) != 1 || result["version"] != cli.Version {
+			t.Fatalf("version=%s err=%v", &stdout, err)
+		}
 	}
-	var result map[string]string
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil || len(result) != 1 || result["version"] == "" {
-		t.Fatalf("version=%s err=%v", stdout, err)
+}
+
+func TestLocalHelpUsesBoundSelectorsWithoutConfigurationOrNetwork(t *testing.T) {
+	var requests atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer service.Close()
+	// An existing malformed file cannot be mistaken for a successfully resolved
+	// profile; the local commands must finish before any configuration admission.
+	path := filepath.Join(t.TempDir(), "malformed-profiles.json")
+	before := []byte(`PRIVATE_NOT_CONFIGURATION`)
+	if err := os.WriteFile(path, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, spelling := range []string{"help", "--help", "-h"} {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		var stdout, stderr bytes.Buffer
+		code := cli.RunContext(ctx, []string{"--profiles-file", path, "--profile=bound-role", spelling}, map[string]string{"FC_PROFILE": "unrelated", "FC_SERVER": service.URL}, &stdout, &stderr)
+		if code != cli.ExitSuccess || stderr.Len() != 0 || stdout.Len() > 4096 {
+			t.Fatalf("local help %s: code=%d bytes=%d stderr=%s", spelling, code, stdout.Len(), &stderr)
+		}
+		var result struct {
+			Usage         string `json:"usage"`
+			Binding       string `json:"binding"`
+			CommandGroups []struct {
+				Name     string `json:"name"`
+				Commands []struct {
+					Command string `json:"command"`
+					Scope   string `json:"scope"`
+				} `json:"commands"`
+			} `json:"command_groups"`
+			Documentation struct {
+				Basis string   `json:"basis"`
+				Paths []string `json:"paths"`
+			} `json:"documentation"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Usage == "" || result.Binding == "" || len(result.CommandGroups) == 0 || !strings.Contains(result.Documentation.Basis, "same release") || len(result.Documentation.Paths) == 0 {
+			t.Fatalf("incomplete help: %s err=%v", &stdout, err)
+		}
+		for _, required := range []string{"doctor", "context", "jobs context JOB_ID", "notes read NOTE_ID", "inbox thread CONVERSATION_ID", "inbox send --to WORKER_ID --body TEXT --key KEY"} {
+			found := false
+			for _, group := range result.CommandGroups {
+				for _, command := range group.Commands {
+					if command.Command == required && command.Scope != "" {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("missing scoped discovery %q", required)
+			}
+		}
+		if strings.Contains(stdout.String(), path) || strings.Contains(stdout.String(), "PRIVATE_NOT_CONFIGURATION") || strings.Contains(stdout.String(), service.URL) {
+			t.Fatal("local help exposed configuration input")
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatal("local help contacted service")
+	}
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) {
+		t.Fatal("local help changed profile file", err)
+	}
+}
+
+func TestLocalHelpAndVersionRejectMalformedArguments(t *testing.T) {
+	for _, args := range [][]string{
+		{"help", "extra"}, {"--help", "extra"}, {"-h", "extra"}, {"version", "extra"}, {"jobs", "--help"},
+		{"help", "--unknown"}, {"version", "--unknown"}, {"help", "--profile"}, {"version", "--profiles-file="},
+		{"help", "--profile=a", "--profile=b"}, {"--profiles-file=a", "--profiles-file=b", "version"},
+		{"help", "--profile", " padded "}, {"version", "--profile", "bad\x00profile"}, {"help", "--profiles-file", "bad\npath"},
+	} {
+		failure(t, args, nil, cli.ExitUsage, "invalid_arguments")
+	}
+	code, stdout, stderr := run([]string{"unsupported-command"}, nil)
+	if code != cli.ExitUsage || stdout != "" || !strings.Contains(stderr, "bound launcher with help") || strings.Contains(stderr, "Use fc ") {
+		t.Fatal("unsupported command assumed an executable name", code, stdout, stderr)
+	}
+}
+
+func TestLocalHelpAndVersionReportOutputFailure(t *testing.T) {
+	for _, command := range []string{"help", "version"} {
+		var stderr bytes.Buffer
+		code := cli.Run([]string{"--profiles-file", "nonexistent", "--profile=bound-role", command}, nil, setupFailingWriter{}, &stderr)
+		if code != cli.ExitConfig || !strings.Contains(stderr.String(), `"code":"output_failed"`) || strings.Contains(stderr.String(), "private output failure") {
+			t.Fatal(command, code, stderr.String())
+		}
 	}
 }
 
 func TestUsageAndSelectionErrorsKeepStdoutClean(t *testing.T) {
-	for _, args := range [][]string{nil, {"unknown"}, {"context", "extra"}, {"context", "--unknown"}, {"context", "--profile"}, {"context", "--profiles-file="}, {"context", "--profile", "a", "--profile", "b"}, {"context", "--profiles-file", "a", "--profiles-file", "b"}, {"version", "--profile", "a"}, {"context", "--profile", "--profiles-file", "a"}} {
+	for _, args := range [][]string{nil, {"unknown"}, {"context", "extra"}, {"context", "--unknown"}, {"context", "--profile"}, {"context", "--profiles-file="}, {"context", "--profile", "a", "--profile", "b"}, {"context", "--profiles-file", "a", "--profiles-file", "b"}, {"context", "--profile", "--profiles-file", "a"}} {
 		failure(t, args, nil, cli.ExitUsage, "invalid_arguments")
 	}
 	failure(t, []string{"context"}, nil, cli.ExitConfig, "profile_required")

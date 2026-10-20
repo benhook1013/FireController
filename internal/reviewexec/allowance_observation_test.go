@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -249,5 +250,50 @@ func TestHeldAllowanceNegativeWriteEventFailureRollsBack(t *testing.T) {
 				t.Fatal("negative observation/event did not roll back safely", err)
 			}
 		})
+	}
+}
+
+func TestHeldAllowanceExplicitOrderHTTPReplayAndRestart(t *testing.T) {
+	f := newAttemptFixture(t)
+	explicitOrderConfigure(t, f)
+	receipt := explicitOrderEnqueue(t, f, "held-explicit-choice", "cli", true, 1)
+	a := f.start(t, attemptProject, receipt)
+	in := CLIAllowanceObservation{Anchor: explicitOrderAnchor(), ObservedAt: stamp(), Remaining: 0, Limit: 3, FullCapacityInMS: 0, RollingWindowMS: 3600000, ChangedFiles: 1}
+	if err := f.e.RecordCLIExhaustion(t.Context(), attemptProject, a.ID, 1, in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, 1, "held", "allowance_exhausted", ""); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/projects/" + attemptProject + "/reviews/operations/" + a.OperationID
+	read := f.request("GET", path, f.writer, "", "")
+	var original Operation
+	if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &original) != nil || !original.AllowOutOfOrder || original.Allowance == nil || original.Allowance.Remaining == nil || *original.Allowance.Remaining != 0 {
+		t.Fatal("explicit held result lost choice or known-zero facts", read.Code, read.Body.String())
+	}
+	body, _ := json.Marshal(explicitOrderRequest("cli", true))
+	before := policyState(t, f)
+	request := httptest.NewRequest("POST", "/api/v1/projects/"+attemptProject+"/reviews/requests", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+f.writer)
+	request.Header.Set("Idempotency-Key", "held-explicit-choice")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Prefer", "wait=2")
+	replay := httptest.NewRecorder()
+	f.handler.ServeHTTP(replay, request)
+	if replay.Code != http.StatusOK || !bytes.Equal(replay.Body.Bytes(), read.Body.Bytes()) || before != policyState(t, f) {
+		t.Fatal("exact explicit replay changed original held facts or rows", replay.Code, replay.Body.String())
+	}
+	body, _ = json.Marshal(explicitOrderRequest("cli", false))
+	changed := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/requests", f.writer, "held-explicit-choice", string(body))
+	if changed.Code != http.StatusConflict || before != policyState(t, f) {
+		t.Fatal("same key changed retained ordering intent", changed.Code)
+	}
+	explicitOrderReopen(t, f)
+	op, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), a.OperationID)
+	if err != nil || !reflect.DeepEqual(op, original) {
+		t.Fatal("restart lost explicit held operation", op, err)
+	}
+	if err := ValidateAllowanceSnapshot(t.Context(), f.store.DB(), 7); err != nil {
+		t.Fatal("schema-seven held snapshot rejected", err)
 	}
 }

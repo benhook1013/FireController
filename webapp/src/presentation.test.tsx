@@ -42,10 +42,11 @@ describe('project appearance and metadata boundary', () => {
     // Baseline keeps the selected Inter 600 header/five-pixel gap and removes
     // the redundant left hero eyebrow and permission pill as requested. The
     // mobile title now scales below 390px so ordinary words fit at 320px;
-    // the 390px and desktop title sizes remain unchanged.
+    // the 390px and desktop title sizes remain unchanged. Outer surfaces now
+    // use the selected square-corner hierarchy; nested cards retain rounding.
     const original = base.replace(/var\(--fc-[a-z_]+,([^()]+)\)/gu, '$1');
     const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(original));
-    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('be741206be6ffabd6407a5a3277b3a32efa212bc3413b853a92615f05bcb8af2');
+    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('3262371200449714193a11ea2c508701a06c2d9d2bea93d9d32ea66c54913ba0');
     const modularStyles = styles + fs.readFileSync(new URL('./review-queue.css', import.meta.url), 'utf8');
     const tokens = new Set(Array.from(modularStyles.matchAll(/--fc-([a-z_]+)/gu), match => match[1]));
     expect([...tokens].sort()).toEqual(Object.keys(presentationDefaults.theme).sort());

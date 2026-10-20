@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PublicSiteApi, validatePublicChange, validatePublicSnapshot, type PublicSnapshot } from './public-site-api';
+import { publicProjectLocation } from './public-site-api';
 
 const generation = `public_generation_${'a'.repeat(32)}`;
 const published = '2026-10-17T12:00:00Z';
@@ -10,6 +11,24 @@ function json(value: unknown, status = 200) { return new Response(JSON.stringify
 function frame(revision: number, extra: Record<string, unknown> = {}) { const cursor = `${generation}:${revision}`; return new TextEncoder().encode(`event: public-project\nid: ${cursor}\ndata: ${JSON.stringify({ revision, published_at: published, cursor, ...extra })}\n\n`); }
 async function flush() { for (let i = 0; i < 80; i++) await Promise.resolve(); }
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+describe('anonymous project address resolution', () => {
+  it.each(['firemud','project_one','legacy-public'])('resolves only the enabled publication slug for %s without cookies or private identity', async address => {
+    const fetch=vi.fn().mockResolvedValue(new Response(JSON.stringify({slug:'published-showcase'}),{headers:{'content-type':'application/json'}}));vi.stubGlobal('fetch',fetch);
+    await expect(publicProjectLocation(address,new AbortController().signal)).resolves.toBe('published-showcase');
+    expect(fetch.mock.calls[0][0]).toBe(`/api/v1/public/project-locations/${address}`);
+    expect(fetch.mock.calls[0][1]).toMatchObject({method:'GET',credentials:'omit',cache:'no-store',redirect:'error',headers:{Accept:'application/json'}});
+  });
+  it.each([{slug:'published-showcase',project_id:'private'}, {slug:null}, {slug:'UPPER'}, {}, {slug:'../other'}])('rejects any private or malformed location field',async value=>{
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}})));
+    await expect(publicProjectLocation('firemud',new AbortController().signal)).rejects.toBeDefined();
+  });
+  it('refuses malformed addresses before I/O and preserves unpublished404',async()=>{
+    const fetch=vi.fn().mockResolvedValue(new Response('{}',{status:404,headers:{'content-type':'application/json'}}));vi.stubGlobal('fetch',fetch);
+    await expect(publicProjectLocation('../other',new AbortController().signal)).rejects.toBeDefined();expect(fetch).not.toHaveBeenCalled();
+    await expect(publicProjectLocation('firemud',new AbortController().signal)).rejects.toMatchObject({status:404});
+  });
+});
 
 describe('anonymous publication DTO boundary', () => {
   it('preserves old payloads and accepts only optional boolean channel window flags', () => {

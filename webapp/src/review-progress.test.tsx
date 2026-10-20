@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Api } from './api';
-import { roundProgressState, type ReviewRoundProgress } from './review-progress';
+import { roundProgressState, validRoundProgress, type ReviewRoundProgress } from './review-progress';
 import { ReviewProgressView } from './review-progress-view';
 
 const project = { id: 'project_one', name: 'Progress', github_repository_id: 1, repository: 'owner/project' };
@@ -52,4 +52,21 @@ describe('current round progress', () => {
     expect(roundProgressState({...current,used:5})).toBe('Allowance used');
     const exact=renderToStaticMarkup(<ReviewProgressView value={{...current,minimum:5}}/>);expect(exact).toContain('Minimum 3 more');
   });
+  it('renders a minimum-only rule without fabricating an exhausted maximum', async () => {
+    const value: ReviewRoundProgress = {...current,maximum_unbounded:true,maximum:0,minimum:2001,used:2000,dry:0};
+    expect(validRoundProgress(value,'hosted')).toBe(true);
+    expect(roundProgressState(value)).toBe('More rounds allowed');
+    const html=renderToStaticMarkup(<ReviewProgressView value={value}/>);
+    expect(html).toContain('2000 used · No maximum');expect(html).toContain('Minimum 1 more');expect(html).toContain('Taper 0/1');
+    expect(html).not.toMatch(/remaining|of 0 used|Allowance used/u);
+    const api=await connected();const response={...result,items:[{pull_number:31,channels:[value,absent]}]};
+    vi.stubGlobal('fetch',vi.fn(async()=>json(response)));expect(await api.reviewProgress([31])).toEqual(response);
+    expect(roundProgressState({...current,maximum:0,used:0,maximum_unbounded:false})).toBe('Allowance used');
+  });
+  it('requires an explicit boolean and zero placeholder and rejects unsafe counters', () => {
+    const value={...current,maximum_unbounded:true,maximum:0,minimum:Number.MAX_SAFE_INTEGER,used:Number.MAX_SAFE_INTEGER,dry:0};
+    expect(validRoundProgress(value,'hosted')).toBe(true);
+    for(const bad of [{...value,maximum:1},{...value,maximum_unbounded:false},{...value,maximum_unbounded:null},{...value,maximum_unbounded:1},{...value,used:Number.MAX_SAFE_INTEGER+1},{...value,dry:Number.MAX_SAFE_INTEGER+1},{...absent,maximum_unbounded:true}]) expect(validRoundProgress(bad,bad.channel)).toBe(false);
+  });
+
 });

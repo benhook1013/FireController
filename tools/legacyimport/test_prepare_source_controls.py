@@ -112,6 +112,124 @@ class LocalContractTests(unittest.TestCase):
             with adapter.private_input(str(path), 6, snapshot=True):
                 self.fail("unsealed input admitted")
 
+    def test_database_limit_cli_range_and_safe_diagnostics(self):
+        args = [value for name in ("source-root", "snapshot", "history-file", "selection", "output", "provenance")
+                for value in ("--"+name, "/private/"+name)]
+        self.assertEqual(adapter.snapshot_limit(adapter.parser().parse_args(args)), 32 << 20)
+        for value in ("1", str(512 << 20), str((1 << 63)-1)):
+            self.assertEqual(adapter.parser().parse_args(args+["--max-database-bytes", value]).max_database_bytes, int(value))
+        for tail in (["--max-database-bytes", "0"], ["--max-database-bytes", "-1"],
+                     ["--max-database-bytes", str(1 << 63)], ["--max-database-bytes", "PRIVATE_BAD_VALUE"],
+                     ["--max-database-bytes", "1", "--max-database-bytes", "2"]):
+            with contextlib.redirect_stderr(io.StringIO()) as errors, self.assertRaises(SystemExit) as failure:
+                adapter.parser().parse_args(args+tail)
+            self.assertEqual(failure.exception.code, 2)
+            self.assertEqual(errors.getvalue(), '{"error":"arguments_invalid"}\n')
+
+    def test_snapshot_streams_bounded_chunks_and_rehashes_open_descriptor(self):
+        size = (33 << 20) + 17
+        path = self.private("large-snapshot", b"")
+        with path.open("wb") as handle:
+            handle.truncate(size)
+        with self.assertRaises(adapter.Refusal) as failure:
+            with adapter.private_snapshot(str(path), adapter.MAX_SNAPSHOT):
+                self.fail("default admitted oversized snapshot")
+        self.assertEqual(failure.exception.code, "input_file_invalid")
+        reads, handles = [], []
+        real_fdopen = os.fdopen
+
+        class TrackedInput:
+            def __init__(self, handle):
+                self.handle = handle
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                self.handle.close()
+            def read(self, count=-1):
+                self_test.assertGreater(count, 0)
+                self_test.assertLessEqual(count, 1 << 20)
+                block = self.handle.read(count)
+                reads.append(len(block))
+                return block
+
+        self_test = self
+        def tracked_fdopen(*args, **kwargs):
+            handle = TrackedInput(real_fdopen(*args, **kwargs))
+            handles.append(handle)
+            return handle
+        expected = adapter.hashlib.sha256()
+        for _ in range(33):
+            expected.update(bytes(1 << 20))
+        expected.update(bytes(17))
+        with mock.patch.object(adapter.os, "fdopen", side_effect=tracked_fdopen):
+            with adapter.private_snapshot(str(path), size) as (actual, source_sha):
+                self.assertEqual(actual, path)
+                self.assertEqual(source_sha, expected.hexdigest())
+                self.assertFalse(handles[0].closed)
+        self.assertTrue(handles[0].closed)
+        self.assertEqual(len(handles), 1)
+        self.assertEqual(sum(reads), 2*size)
+
+    def test_snapshot_private_admission_and_final_conservation(self):
+        for change in ("digest", "permissions", "identity", "sidecar", "removed", "growth", "shrink"):
+            path = self.private("snapshot-"+change, b"sealed")
+            initial = path.stat()
+            with self.subTest(change=change), self.assertRaises(adapter.Refusal) as failure:
+                with adapter.private_snapshot(str(path), 6):
+                    if change == "digest":
+                        path.write_bytes(b"edited")
+                        os.utime(path, ns=(initial.st_atime_ns, initial.st_mtime_ns))
+                    elif change == "permissions":
+                        path.chmod(0o644)
+                    elif change == "identity":
+                        os.replace(self.private("replacement-snapshot", b"sealed"), path)
+                    elif change == "sidecar":
+                        self.private(path.name+"-wal", b"x")
+                    elif change == "removed":
+                        path.unlink()
+                    else:
+                        path.write_bytes(b"sealed+" if change == "growth" else b"seal")
+                    raise OSError("private caller failure")
+            self.assertEqual(failure.exception.code, "snapshot_unsealed" if change == "sidecar"
+                             else "input_unavailable" if change == "removed" else "source_changed")
+        private = self.private("private-snapshot", b"sealed")
+        link = self.root/"snapshot-link"; link.symlink_to(private)
+        for invalid in ("relative", str(link)):
+            with self.subTest(invalid=invalid), self.assertRaises(adapter.Refusal):
+                with adapter.private_snapshot(invalid, 6):
+                    self.fail("invalid snapshot admitted")
+        private.chmod(0o644)
+        with self.assertRaises(adapter.Refusal):
+            with adapter.private_snapshot(str(private), 6):
+                self.fail("public snapshot admitted")
+
+    def test_control_bound_only_retry_preserves_prepared_and_provenance(self):
+        path = self.root/"control-snapshot"
+        with sqlite3.connect(path) as connection:
+            connection.execute("CREATE TABLE review_state(singleton INTEGER, state_json TEXT)")
+            connection.execute("INSERT INTO review_state VALUES(1, '{}')")
+        path.chmod(0o600)
+        snapshot_sha = adapter.digest(path.read_bytes())
+        history = dict(version=1, repository_id=17, snapshot_sha256=snapshot_sha,
+                       projection_complete=True, quiescent=True, obligations_clear=True,
+                       prs=[dict(pull_number=7, channels={"cli": []})])
+        args = types.SimpleNamespace(source_root=str(self.root/"trusted"), snapshot=str(path),
+                history_file=str(self.private("history", adapter.canonical(history))),
+                selection=str(self.private("selection", adapter.canonical(self.selected))),
+                output=str(self.root/"control-output"), provenance=str(self.root/"control-proof"))
+        store = types.SimpleNamespace(validate_controller_compatibility=lambda _: 1,
+                                     load_validated_controller_state=lambda *_args, **_kwargs: object())
+        with mock.patch.object(adapter, "load_helpers", return_value=({"sqlite_store": store}, {}, "a"*64)), \
+                mock.patch.object(adapter, "source_hash", return_value=(None, {}, "a"*64)), \
+                mock.patch.object(adapter, "control_facts", return_value={"remaining_min": 1}):
+            self.assertEqual(adapter.prepare(args)["outcome"], "created")
+            before = Path(args.output).read_bytes(), Path(args.provenance).read_bytes()
+            args.max_database_bytes = 512 << 20
+            self.assertEqual(adapter.prepare(args)["outcome"], "unchanged")
+        self.assertEqual(before, (Path(args.output).read_bytes(), Path(args.provenance).read_bytes()))
+
     def test_source_change_detected_after_callback(self):
         path = self.private("changing", b"before")
         with self.assertRaises(adapter.Refusal) as result:
@@ -362,6 +480,17 @@ class ActualSourceHelperTests(LocalContractTests):
         self.assertEqual(proof["binding"]["snapshot_sha256"], adapter.digest(before))
         self.assertEqual(proof["binding"]["history_sha256"], adapter.digest(self.history_path.read_bytes()))
         self.assertEqual(control["source_sha256"], adapter.digest(adapter.canonical(proof["binding"])))
+        # Finite controls retain the exact v1 byte shape, including omission of
+        # the new flag. The old input/helper binding remains unchanged.
+        old_binding = dict(version=1, snapshot_sha256=adapter.digest(before),
+                           history_sha256=adapter.digest(self.history_path.read_bytes()),
+                           source_code_sha256=adapter.source_hash(self.source_root)[2])
+        self.assertEqual(proof["binding"], old_binding)
+        expected = dict(self.selected, source_sha256=adapter.digest(adapter.canonical(old_binding)),
+                        minimum_remaining=1, maximum_remaining=4, initial_dry=2,
+                        taper=3, tapered=False, closed=False)
+        self.assertEqual(Path(self.args.output).read_bytes(), adapter.canonical(expected))
+        self.assertEqual(proof["binding"]["version"], 1)
         self.assertEqual(result["sha256"], adapter.digest(Path(self.args.output).read_bytes()))
         self.assertFalse(any(Path(str(self.snapshot) + suffix).exists() for suffix in ("-wal", "-shm", "-journal")))
 
@@ -473,6 +602,8 @@ class ActualSourceHelperTests(LocalContractTests):
         self.private("history.json", adapter.canonical(clear))
         _, control = self.run_preparation()
         self.assertEqual((control["minimum_remaining"], control["maximum_remaining"], control["initial_dry"]), (0, 0, 0))
+        self.assertEqual(control["version"], 1)
+        self.assertNotIn("maximum_unbounded", control)
         proof = json.loads(Path(self.args.provenance).read_bytes())
         self.assertIs(proof["source_owner_assertions"]["obligations_clear"], True)
         self.assertFalse(proof["independently_verified_live_assertions"])
@@ -575,12 +706,121 @@ class ActualSourceHelperTests(LocalContractTests):
         self.assertFalse(Path(self.args.output).exists())
         self.assertFalse(Path(self.args.provenance).exists())
 
-    def test_unknown_unbounded_controls_refuse(self):
+    def test_minimum_only_emits_v2_without_native_credit_and_replays(self):
         self.allocation(min_additional_completed=2, max_additional_completed=None)
-        self.inputs([])
+        self.inputs([self.timeline(), self.review(1)])
+        before = self.snapshot.read_bytes(), self.history_path.read_bytes()
+        result, control = self.run_preparation()
+        self.assertEqual(control, dict(self.selected, version=2,
+                         source_sha256=control["source_sha256"], minimum_remaining=1,
+                         maximum_remaining=0, maximum_unbounded=True, initial_dry=1,
+                         taper=3, tapered=False, closed=False))
+        proof = json.loads(Path(self.args.provenance).read_bytes())
+        self.assertEqual(proof["binding"], dict(version=1, snapshot_sha256=adapter.digest(before[0]),
+                         history_sha256=adapter.digest(before[1]),
+                         source_code_sha256=adapter.source_hash(self.source_root)[2]))
+        self.assertEqual(proof["source_owner_assertions"],
+                         dict(projection_complete=True, quiescent=True, obligations_clear=True))
+        self.assertEqual(proof["prepared_sha256"], result["sha256"])
+        retained = Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()
+        self.assertEqual(self.run_preparation()[0]["outcome"], "unchanged")
+        self.assertEqual((Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()), retained)
+        self.assertEqual((self.snapshot.read_bytes(), self.history_path.read_bytes()), before)
+        with sqlite3.connect(self.snapshot) as db:
+            self.assertEqual({row[0] for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")},
+                             {"controller_metadata", "review_state"})
+
+    def test_minimum_only_uses_canonical_eligibility_and_taper_baselines(self):
+        cases = (
+            ("explicit-zero-minimum", 0, [], (0, 0, False)),
+            ("empty", 2, [], (2, 0, False)),
+            ("one-used", 2, [self.review(1)], (1, 1, False)),
+            ("early-taper-before-minimum", 4, [self.review(i) for i in range(1, 4)], (1, 3, True)),
+            ("minimum-met", 2, [self.review(i) for i in range(1, 5)], (0, 4, True)),
+            ("accepted-tranche-reset", 2,
+             [self.review(1), self.review(2), self.review(3), self.review(4, 1), self.review(5)], (0, 1, False)),
+            ("ignored-rows", 2,
+             [self.review(1), self.review(2, 1, non_counting=True), self.review(3, 1, correction=True),
+              self.review(4, 1, provisional=True), self.review(5, 1, completed=False),
+              self.review(6, 1, attributable=False), self.review(7, anchored=False)], (1, 1, False)),
+            ("native-safe-minimum", (1 << 53)-1, [self.review(1)], ((1 << 53)-2, 1, False)),
+        )
+        for name, minimum, rows, expected in cases:
+            with self.subTest(name=name):
+                self.allocation(min_additional_completed=minimum, max_additional_completed=None)
+                facts = adapter.control_facts(self.helpers, self.state, self.selected, [self.timeline(), *rows])
+                self.assertEqual((facts["minimum_remaining"], facts["initial_dry"], facts["tapered"]), expected)
+                self.assertIs(facts["maximum_unbounded"], True)
+                self.assertEqual(facts["maximum_remaining"], 0)
+                self.assertIs(facts["closed"], False)
+
+    def test_minimum_only_missing_timeline_and_inflight_refuse(self):
+        self.allocation(min_additional_completed=2, max_additional_completed=None)
+        for rows in ([], [self.review(1)], [self.timeline(), self.timeline()],
+                     [self.timeline(), self.review(1, completed=False, active_review=True, run_id="active-request")]):
+            with self.subTest(rows=rows), self.assertRaises(adapter.Refusal) as result:
+                adapter.control_facts(self.helpers, self.state, self.selected, rows)
+            self.assertEqual(result.exception.code, "projection_invalid")
+
+    def test_minimum_only_source_baselines_preserve_reopen_distinction(self):
+        rows = [self.timeline(), self.review(1), self.review(2), self.review(3)]
+        for reopens, dry, tapered in ((False, 3, True), (True, 1, False)):
+            with self.subTest(reopens_taper=reopens):
+                self.allocation(min_additional_completed=2, max_additional_completed=None,
+                                baseline_checkpoints=("checkpoint-1",),
+                                baseline_source_run_ids=("run-2",), reopens_taper=reopens)
+                facts = adapter.control_facts(self.helpers, self.state, self.selected, rows)
+                self.assertEqual((facts["minimum_remaining"], facts["initial_dry"], facts["tapered"]),
+                                 (1, dry, tapered))
+                self.assertIs(facts["maximum_unbounded"], True)
+
+    def test_minimum_only_native_counter_overflow_refuses(self):
+        self.allocation(min_additional_completed=1 << 53, max_additional_completed=None)
+        self.inputs([self.timeline()])
         with self.assertRaises(adapter.Refusal) as result:
             adapter.prepare(self.args)
         self.assertEqual(result.exception.code, "controls_unsupported")
+        self.assertFalse(Path(self.args.output).exists())
+        self.assertFalse(Path(self.args.provenance).exists())
+
+    def test_absent_source_bounds_do_not_become_unbounded(self):
+        # Canonical _allocation_progress treats both absent as its legacy
+        # one-result allowance, distinct from min=0/max=None.
+        self.allocation(min_additional_completed=None, max_additional_completed=None)
+        self.inputs([self.timeline()])
+        with self.assertRaises(adapter.Refusal) as result:
+            self.run_preparation()
+        self.assertEqual(result.exception.code, "controls_unsupported")
+        self.assertFalse(Path(self.args.output).exists())
+        self.assertFalse(Path(self.args.provenance).exists())
+
+    def test_minimum_only_stop_remains_closure_only(self):
+        self.allocation(min_additional_completed=2, max_additional_completed=None,
+                        stop_basis="direct_human", stop_head="a" * 40,
+                        stop_parent_identity="main", stop_parent_head="b" * 40,
+                        stop_reason="Synthetic explicit minimum-only stop")
+        self.inputs([])
+        with self.assertRaises(adapter.Refusal) as result:
+            adapter.prepare(self.args)
+        self.assertEqual(result.exception.code, "closure_only")
+        self.assertEqual(result.exception.details["numeric_counts"], "unknown")
+        self.assertFalse(Path(self.args.output).exists())
+        self.assertFalse(Path(self.args.provenance).exists())
+
+    def test_minimum_only_does_not_relax_v1_clearance(self):
+        self.allocation(min_additional_completed=2, max_additional_completed=None)
+        self.inputs([self.timeline(), self.review(1)])
+        clear = json.loads(self.history_path.read_bytes())
+        held = json.loads(adapter.canonical(clear))
+        held["prs"][0]["channels"]["cli"][1]["held"] = True
+        pending = json.loads(adapter.canonical(clear))
+        pending["prs"][0]["channels"]["cli"][1]["source_resolution_status"] = "finding_pending"
+        for changed in (dict(clear, obligations_clear=False), held, pending, dict(clear, version=2)):
+            self.private("history.json", adapter.canonical(changed))
+            with self.subTest(frame=changed), self.assertRaises(adapter.Refusal):
+                self.run_preparation()
+            self.assertFalse(Path(self.args.output).exists())
+            self.assertFalse(Path(self.args.provenance).exists())
 
     def test_ambiguous_timeline_refuses(self):
         self.allocation()

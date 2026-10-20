@@ -3,13 +3,17 @@ import fs from 'node:fs/promises';
 
 // Disposable fixture credentials belong only to this separate API writer.
 // Anonymous page requests never receive these headers or a private session.
-let server, browser, phase = 'configuration';
+let server, browser, phase = 'configuration', diagnostics = {};
 const need = value => { if (!value) throw new Error('assertion'); };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
   const admin = (await fs.readFile(config.admin_file, 'utf8')).trim();
   const prefix = `/api/v1/projects/${config.project}`;
-  let writes = 0, pageErrors = 0, privateRequests = 0, pageWrites = 0, external = 0, publicReads = 0, historyReads = 0;
+  let writes = 0, pageErrors = 0, privateRequests = 0, pageWrites = 0, external = 0, publicReads = 0, historyReads = 0, pendingChecks = 0;
+  const gate = async (action, kind, fail = false) => {
+    const response = await fetch(`${config.gate_origin}/${action}?kind=${kind}${fail ? '&fail=1' : ''}`, { method: action === 'arrived' ? 'GET' : 'POST', signal: AbortSignal.timeout(5000) });
+    need(response.status === 204); await response.body?.cancel();
+  };
   const call = async (method, path, body, status = 200) => {
     const response = await fetch(config.origin + prefix + path, { method, headers: { Authorization: `Bearer ${admin}`, 'X-FC-Instance': config.instance, 'X-FC-Worker': config.worker, 'Idempotency-Key': `public-browser-${++writes}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
     need(response.status === status); return await response.json();
@@ -31,6 +35,7 @@ try {
   const publication = await call('PUT', '/publication', { ...approved, preview_sha256: preview.preview_sha256 });
   need(publication.revision === 1);
   const first = await publicRead(publicPath); need(first.revision === 1 && first.content.reviews[0].lifecycle === 'merged');
+  need((await publicRead(`/api/v1/public/project-locations/${config.public_address}`)).slug === 'public-smoke');
   phase = 'launch';
   server = await chromium.launchServer({ headless: true, ...(config.executable ? { executablePath: config.executable } : {}), timeout: 5000, proxy: { server: config.proxy, bypass: '127.0.0.1,localhost' }, args: ['--disable-background-networking', '--no-first-run'] });
   console.log(JSON.stringify({ event: 'browser_started', pid: server.process().pid }));
@@ -46,6 +51,75 @@ try {
     if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/v1/public/')) privateRequests++;
     if (url.pathname.startsWith('/api/v1/public/')) { publicReads++; if (url.pathname === publicPath + '/history') historyReads++; const headers = request.headers(); if (headers.authorization || headers.cookie || headers['x-fc-browser-session'] || headers['x-fc-worker'] || headers['x-fc-instance']) privateRequests++; }
   });
+  const pendingGeometry = async target => {
+    const shell = target.locator('.public-project-skeleton > .public-layout[role="status"]');
+    await expect(shell).toBeVisible();
+    need(await target.getByRole('button', { name: 'Try again', exact: true }).count() === 0);
+    need(await target.locator('.loading-spinner, .public-unavailable').count() === 0);
+    need(await shell.locator('h1,h2,h3,h4,button,a,[role="heading"]').count() === 0);
+    const geometry = await shell.evaluate(node => {
+      const rect = element => { const { x, y, width, height } = element.getBoundingClientRect(); return { x, y, width, height }; };
+      const label = node.querySelector(':scope > .visually-hidden'), style = label && getComputedStyle(label);
+      const copy = node.cloneNode(true); copy.querySelectorAll('.visually-hidden').forEach(element => element.remove());
+      return { viewport: innerWidth, overflow: document.documentElement.scrollWidth > innerWidth,
+        hiddenLabel: label?.textContent === 'Loading published project' && style.position === 'absolute' && style.width === '1px' && style.height === '1px' && style.overflow === 'hidden' && style.clip !== 'auto',
+        visibleText: copy.textContent.trim(), layout: rect(node), hero: rect(node.querySelector('.public-hero')), navigation: rect(node.querySelector('.public-navigation')),
+        content: rect(node.querySelector('.public-skeleton-content')) };
+    });
+    need(geometry.hiddenLabel && !geometry.overflow && geometry.visibleText === '');
+    need(geometry.hero.width >= geometry.viewport * 0.8 && geometry.hero.height >= 150 && geometry.hero.height <= 720);
+    need(geometry.navigation.y >= geometry.hero.y + geometry.hero.height && geometry.content.y >= geometry.navigation.y + geometry.navigation.height);
+    need(geometry.layout.x >= 0 && geometry.layout.x + geometry.layout.width <= geometry.viewport + 1);
+    pendingChecks++; return geometry;
+  };
+  const sameShellGeometry = (before, after) => {
+    for (const section of ['layout', 'hero', 'navigation']) for (const field of ['x', 'width']) need(Math.abs(before[section][field] - after[section][field]) <= 1);
+  };
+  // The proxy holds actual successful daemon responses. Each boundary is
+  // independent; no successful location/snapshot DTO is invented by the test.
+  for (const [label, width, height] of [['desktop', 1280, 960], ['phone', 390, 900]]) {
+    const pending = await context.newPage(); pending.setDefaultTimeout(5000); pending.setDefaultNavigationTimeout(5000); pending.on('pageerror', () => pageErrors++);
+    await pending.setViewportSize({ width, height });
+    phase = `pending-location-${label}`;
+    await gate('arm', 'location'); await gate('arm', 'snapshot');
+    await pending.goto(`${config.origin}/projects/${config.public_address}`);
+    await gate('arrived', 'location');
+    const resolving = await pendingGeometry(pending);
+    if (config.proof_directory) await pending.screenshot({ path: `${config.proof_directory}/pending-location-${label}.png`, fullPage: true });
+    await gate('release', 'location');
+    phase = `pending-snapshot-${label}`;
+    await gate('arrived', 'snapshot');
+    const loading = await pendingGeometry(pending); sameShellGeometry(resolving, loading);
+    need(Math.abs(resolving.hero.height - loading.hero.height) <= 1 && Math.abs(resolving.navigation.y - loading.navigation.y) <= 1);
+    if (config.proof_directory) await pending.screenshot({ path: `${config.proof_directory}/pending-snapshot-${label}.png`, fullPage: true });
+    await gate('release', 'snapshot');
+    await pending.getByRole('heading', { name: 'Public showcase', exact: true }).waitFor();
+    await expect(pending.locator('.public-project-skeleton')).toHaveCount(0);
+    await pending.getByRole('heading', { name: 'Published roadmap card', exact: true }).waitFor();
+    const loaded = await pending.locator('.public-project > .public-layout').evaluate(node => {
+      const rect = element => { const { x, width } = element.getBoundingClientRect(); return { x, width }; };
+      return { layout: rect(node), hero: rect(node.querySelector('.public-hero')), navigation: rect(node.querySelector('.public-navigation')) };
+    });
+    sameShellGeometry(loading, loaded);
+    need(await pending.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await pending.close();
+  }
+  // A genuine failed initial current-snapshot response gets a retry control.
+  // Retrying immediately returns to the skeleton while the real response waits.
+  phase = 'initial-error';
+  const retryPage = await context.newPage(); retryPage.setDefaultTimeout(5000); retryPage.setDefaultNavigationTimeout(5000); retryPage.on('pageerror', () => pageErrors++);
+  await gate('arm', 'snapshot', true);
+  await retryPage.goto(config.origin + '/public/public-smoke'); await gate('arrived', 'snapshot'); await gate('release', 'snapshot');
+  await expect(retryPage.getByRole('alert')).toBeVisible();
+  await expect(retryPage.getByRole('button', { name: 'Try again', exact: true })).toBeVisible();
+  need(await retryPage.locator('.public-project-skeleton').count() === 0);
+  phase = 'retry-pending';
+  await gate('arm', 'snapshot'); await retryPage.getByRole('button', { name: 'Try again', exact: true }).click(); await gate('arrived', 'snapshot');
+  await pendingGeometry(retryPage); need(await retryPage.getByRole('alert').count() === 0);
+  await gate('release', 'snapshot'); phase = 'retry-loaded';
+  await retryPage.getByRole('heading', { name: 'Public showcase', exact: true }).waitFor();
+  need(await retryPage.getByRole('alert').count() === 0 && await retryPage.getByRole('button', { name: 'Try again', exact: true }).count() === 0);
+  await expect(retryPage.locator('.public-project-skeleton')).toHaveCount(0); await retryPage.close();
   const pages = [];
   const page = await context.newPage(); pages.push(page);
   for (const page of pages) { page.setDefaultTimeout(5000); page.setDefaultNavigationTimeout(5000); page.on('pageerror', () => pageErrors++); }
@@ -140,14 +214,31 @@ try {
   await expect(phone.getByText('Live published view', { exact: true })).toBeVisible();
   phase = 'unpublish';
   await call('POST', '/publication/unpublish', { expected_revision: 1 });
-  await phone.getByRole('heading', { name: 'Project unavailable', exact: true }).waitFor();
+  // History navigation uses the unified address. Its terminal fallback is the
+  // canonical inline sign-in view; legacy /public links use unavailable instead.
+  need(new URL(phone.url()).pathname === '/projects/public-smoke');
+  await phone.getByRole('heading', { name: 'Sign in to public-smoke', exact: true }).waitFor();
+  await expect(phone.getByLabel('Project credential', { exact: true })).toBeVisible();
+  need(await phone.locator('.public-project').count() === 0);
+  phase = 'unpublish-retained';
   for (const path of [publicPath, `${publicPath}/history`, `${publicPath}/history/1?generation=${first.generation}`, `${publicPath}/events?cursor=${encodeURIComponent(first.cursor)}`]) { const response = await fetch(config.origin + path, { signal: AbortSignal.timeout(5000) }); need(response.status === 404); await response.body?.cancel(); }
-  await page.reload(); await page.getByRole('heading', { name: 'Project unavailable', exact: true }).waitFor();
+  phase = 'unpublish-frozen';
+  need(new URL(page.url()).pathname === '/projects/public-smoke/published/history/1');
+  await page.reload(); await page.getByRole('heading', { name: 'Sign in to public-smoke', exact: true }).waitFor();
+  need(await page.locator('.public-project').count() === 0);
+  phase = 'unpublish-legacy';
+  await phone.goto(config.origin + '/public/public-smoke');
+  await phone.getByRole('heading', { name: 'Project unavailable', exact: true }).waitFor();
+  need(await phone.locator('.public-project').count() === 0 && await phone.getByLabel('Project credential', { exact: true }).count() === 0);
+  await page.goto(`${config.origin}/public/public-smoke/history/1?generation=${first.generation}`);
+  await page.getByRole('heading', { name: 'Project unavailable', exact: true }).waitFor();
+  need(await page.locator('.public-project').count() === 0);
+  phase = 'privacy-final'; diagnostics = { page_errors: pageErrors, private_requests: privateRequests, page_writes: pageWrites, external_requests: external };
   need(pageErrors === 0 && privateRequests === 0 && pageWrites === 0 && external === 0);
   await context.close(); await browser.close(); browser = undefined; await server.close(); server = undefined;
-  console.log(JSON.stringify({ state: 'PASS', fixture_calls: writes, public_requests: publicReads, private_requests: privateRequests, page_writes: pageWrites, page_errors: pageErrors, external_requests: external, desktop: 1280, phone: 390, window_rounds: 100, window_has_more: limitedReview.hosted_has_more, window_private_quiet: true, window_history: true }));
+  console.log(JSON.stringify({ state: 'PASS', fixture_calls: writes, public_requests: publicReads, private_requests: privateRequests, page_writes: pageWrites, page_errors: pageErrors, external_requests: external, desktop: 1280, phone: 390, pending_checks: pendingChecks, retry_recovered: true, unpublish_fallbacks: true, window_rounds: 100, window_has_more: limitedReview.hosted_has_more, window_private_quiet: true, window_history: true }));
 } catch {
-  console.log(JSON.stringify({ state: 'FAIL', phase })); process.exitCode = 1;
+  console.log(JSON.stringify({ state: 'FAIL', phase, ...diagnostics })); process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});
   if (server) await server.close().catch(() => {});

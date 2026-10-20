@@ -26,8 +26,24 @@ var validStatuses = map[string]bool{
 	"active": true, "parked": true, "blocked": true, "completed": true,
 }
 
+type registration struct {
+	publicProjection func(context.Context, *sql.Tx, string, string) error
+}
+
+type Option func(*registration)
+
+// WithPublicProjection supplies the optional publication owner's transactional
+// refresh. Only assignment/status changes can affect approved job cards.
+func WithPublicProjection(refresh func(context.Context, *sql.Tx, string, string) error) Option {
+	return func(r *registration) { r.publicProjection = refresh }
+}
+
 // Register mounts the basic jobs API on the shared project API mux.
-func Register(mux *http.ServeMux, store *core.Store) {
+func Register(mux *http.ServeMux, store *core.Store, options ...Option) {
+	var config registration
+	for _, option := range options {
+		option(&config)
+	}
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/notes", createNote(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes", listNotes(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}", getNote(store))
@@ -39,7 +55,11 @@ func Register(mux *http.ServeMux, store *core.Store) {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/delivery", delivery(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}", getJob(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/context", getJobContext(store))
-	mux.HandleFunc("PATCH /api/v1/projects/{project_id}/jobs/{job_id}", editJob(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/summary", getSummary(store))
+	mux.HandleFunc("PUT /api/v1/projects/{project_id}/jobs/{job_id}/summary", replaceSummary(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/summary/history", summaryHistory(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/summary/history/{revision}", getSummaryRevision(store))
+	mux.HandleFunc("PATCH /api/v1/projects/{project_id}/jobs/{job_id}", editJob(store, config.publicProjection))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/history", jobHistory(store))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/jobs/{job_id}/updates", appendUpdate(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/updates", updateHistory(store))
@@ -324,7 +344,7 @@ func getJob(store *core.Store) http.HandlerFunc {
 	}
 }
 
-func editJob(store *core.Store) http.HandlerFunc {
+func editJob(store *core.Store, projection func(context.Context, *sql.Tx, string, string) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		scope, err := store.Scope(r, "write")
 		if err != nil {
@@ -407,6 +427,11 @@ func editJob(store *core.Store) http.HandlerFunc {
 			if err := core.AppendEvent(ctx, tx, scope, "job.updated", next.ID, next.Revision,
 				map[string]string{"status": next.Status, "worker_id": next.WorkerID}); err != nil {
 				return nil, err
+			}
+			if (current.WorkerID != next.WorkerID || current.Status != next.Status) && projection != nil {
+				if err := projection(ctx, tx, scope.ProjectID, jobID); err != nil {
+					return nil, err
+				}
 			}
 			return receipt{ID: next.ID, Revision: next.Revision, Outcome: "updated"}, nil
 		})

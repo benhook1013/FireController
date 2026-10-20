@@ -2,7 +2,7 @@ import { presenceWorkers, validWorkerPresence, type WorkerPresence } from './wor
 import type { WorkerPrimary, WorkerPrimaryHistoryEntry, WorkerPause, WorkerPauseHistoryEntry, NoteOptions, NoteSummary, Note, NoteHistorySummary, NoteRevision } from './types';
 import type {
   Checkpoint, ConversationPage, DeliverySnapshot, DeliveryOptions, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
-  JobSummary, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
+  JobSummary, JobPublicSummary, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
   Project, WatchCallbacks, Worker, ProjectMapEntry, ProjectMapSummary, ProjectMapOptions, ProjectMapHistorySummary, ProjectMapRevision, JobWorkstream, JobWorkstreamHistoryEntry,
   ReviewAttemptSummary, ReviewFinding, ReviewPull, ReviewPullSummary, ReviewQueue, ReviewRunDetail,
   ReviewRunOptions, ReviewRuns, ReviewRunSummary, ReviewPolicyAssessment, ReviewAttemptOptions, ReviewAttempts, ReviewAttemptItem,
@@ -160,7 +160,13 @@ async function readFailure(response: Response, signal: AbortSignal): Promise<Api
 }
 
 function validProject(value: unknown, expected: string): value is Project {
-  return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository']) && value.id === expected && contentText(value.name, 200) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
+  const handle = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(v);
+  const publicationAlias = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u.test(expected);
+  // An authenticated address lookup may use an enabled legacy publication
+  // alias. The service resolves and authorizes it; only the initial address
+  // lookup can adopt its canonical ID. Opaque selectors and resumed sessions
+  // remain pinned to their existing identity.
+  return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository'], ['handle']) && id(value.id) && (value.handle === undefined || handle(value.handle)) && (value.id === expected || value.handle === expected || publicationAlias && handle(value.handle)) && contentText(value.name, 200) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
 }
 function validWorker(value: unknown, projectId: string): value is Worker {
   return record(value) && keys(value, ['id', 'project_id', 'name']) && id(value.id) && value.project_id === projectId && displayName(value.name);
@@ -178,7 +184,8 @@ function validDelivery(value: unknown, project: string, options: DeliveryOptions
   const ranks: Record<string, number> = { active: 0, blocked: 1, parked: 2 };
   let previousRank = -1, previousJob = '';
   for (const job of value.jobs.items) {
-    if (!record(job) || !keys(job, ['id', 'title', 'worker_id', 'status', 'revision', 'worker_name', 'brief_preview', 'brief_preview_truncated', 'updated_at', 'update', 'checklist', 'checkpoint']) || !id(job.id) || !contentText(job.title, 240) || job.worker_id !== '' && !id(job.worker_id) || typeof job.status !== 'string' || !Object.hasOwn(ranks, job.status) || !positive(job.revision) || (job.worker_id === '' ? job.worker_name !== '' : !displayName(job.worker_name))) return false;
+    if (!record(job) || !keys(job, ['id', 'title', 'worker_id', 'status', 'revision', 'worker_name', 'brief_preview', 'brief_preview_truncated', 'updated_at', 'update', 'checklist', 'checkpoint'], ['summary']) || !id(job.id) || !contentText(job.title, 240) || job.worker_id !== '' && !id(job.worker_id) || typeof job.status !== 'string' || !Object.hasOwn(ranks, job.status) || !positive(job.revision) || (job.worker_id === '' ? job.worker_name !== '' : !displayName(job.worker_name))) return false;
+    if (job.summary !== undefined && (!validJobPublicSummary(job.summary, job.id) || job.summary.job_revision > Number(job.revision))) return false;
     const rank = ranks[job.status];
     if (rank < previousRank || rank === previousRank && job.id <= previousJob) return false;
     previousRank = rank; previousJob = job.id;
@@ -198,6 +205,9 @@ function validDelivery(value: unknown, project: string, options: DeliveryOptions
     }
   }
   return true;
+}
+function validJobPublicSummary(value: unknown, jobId: string): value is JobPublicSummary {
+  return record(value) && keys(value, ['job_id', 'job_revision', 'revision', 'title', 'body']) && value.job_id === jobId && positive(value.job_revision) && nonnegative(value.revision) && contentText(value.title, 240, true) && contentText(value.body, 2000, true) && (value.body === '' || checkpointText(value.body, 2000, true)) && (value.title === '' && value.body === '' || Number(value.revision) > 0 && typeof value.title === 'string' && value.title.trim().length > 0 && !/[\p{Cc}]/u.test(value.title) && typeof value.body === 'string' && value.body.trim().length > 0);
 }
 function validJob(value: unknown, projectId: string): value is Job {
   return record(value) && keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at']) && value.project_id === projectId && id(value.id) && contentText(value.title, 240) && contentText(value.brief, 32768, true) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && timestamp(value.created_at) && timestamp(value.updated_at);
@@ -377,16 +387,18 @@ function validAssessmentAnchor(value: unknown): boolean {
   return positive(value.repository_id) && repository.length === 2 && repository.every(part => /^[A-Za-z0-9._-]{1,100}$/u.test(part) && part !== '.' && part !== '..') && pullNumber(value.pull_number) && nonnegative(value.parent_pull_number) && value.parent_pull_number <= 2147483647 && [value.candidate_sha, value.base_sha, value.parent_sha, value.merge_base_sha].every(item => typeof item === 'string' && /^[a-f0-9]{40}$/u.test(item)) && typeof value.patch_sha256 === 'string' && /^[a-f0-9]{64}$/u.test(value.patch_sha256) && checkpointText(value.base_ref, 256, true) && !/[\u0080-\u009f]/u.test(value.base_ref) && assessmentTime(value.observed_at);
 }
 function validPolicyAssessment(value: unknown, project: string, evidence: string): value is ReviewPolicyAssessment {
-  if (!record(value) || !keys(value, ['project_id', 'evidence_id', 'anchor', 'source', 'policy_revision', 'evaluated_at', 'state', 'channels'], ['incoming_routes_pending', 'incoming_routes_capacity', 'reason']) || value.project_id !== project || value.evidence_id !== evidence || !validAssessmentAnchor(value.anchor) || value.source !== 'captured_comparison' || !nonnegative(value.policy_revision) || !assessmentTime(value.evaluated_at) || !Array.isArray(value.channels) || value.channels.length > 2) return false;
+  if (!record(value) || !keys(value, ['project_id', 'evidence_id', 'anchor', 'source', 'policy_revision', 'evaluated_at', 'state', 'channels'], ['incoming_routes_pending', 'incoming_routes_capacity', 'source_obligations_pending', 'reason']) || value.project_id !== project || value.evidence_id !== evidence || !validAssessmentAnchor(value.anchor) || value.source !== 'captured_comparison' || !nonnegative(value.policy_revision) || !assessmentTime(value.evaluated_at) || !Array.isArray(value.channels) || value.channels.length > 2) return false;
   const channels = value.channels;
   if (!channels.every(item => record(item) && keys(item, ['channel', 'covered', 'pending'], ['rounds_configured', 'rounds_complete']) && (item.rounds_configured === undefined || typeof item.rounds_configured === 'boolean') && (item.rounds_complete === undefined || typeof item.rounds_complete === 'boolean') && (!item.rounds_complete || item.rounds_configured === true) && (item.channel === 'cli' || item.channel === 'hosted') && typeof item.covered === 'boolean' && typeof item.pending === 'boolean') || new Set(channels.map(item => (item as Record<string, unknown>).channel)).size !== channels.length) return false;
   if (value.incoming_routes_pending !== undefined && !nonnegative(value.incoming_routes_pending) || value.incoming_routes_capacity !== undefined && typeof value.incoming_routes_capacity !== 'boolean' || value.reason !== undefined && typeof value.reason !== 'string') return false;
+  const sourcePending = value.source_obligations_pending ?? 0;
+  if (!nonnegative(sourcePending) || value.source_obligations_pending === null) return false;
   const incoming = value.incoming_routes_pending ?? 0;
   const capacity = value.incoming_routes_capacity ?? false;
   const reason = value.reason ?? '';
-  if (!nonnegative(incoming) || typeof capacity !== 'boolean' || (capacity && incoming !== 0) || (capacity ? reason !== 'routed_findings_capacity' : incoming > 0 ? reason !== 'routed_findings_pending' : reason !== '')) return false;
-  if (value.state === 'unconfigured') return value.policy_revision === 0 && channels.length === 0 && incoming === 0 && !capacity;
-  return value.policy_revision > 0 && channels.length > 0 && (value.state === 'sufficient' || value.state === 'held') && (incoming === 0 && !capacity && channels.every(item => (item as Record<string, unknown>).covered && !(item as Record<string, unknown>).pending && (!(item as Record<string, unknown>).rounds_configured || (item as Record<string, unknown>).rounds_complete))) === (value.state === 'sufficient');
+  if (!nonnegative(incoming) || typeof capacity !== 'boolean' || (capacity && incoming !== 0) || (capacity ? reason !== 'routed_findings_capacity' : incoming > 0 ? reason !== 'routed_findings_pending' : sourcePending > 0 ? reason !== 'source_obligations_pending' : reason !== '')) return false;
+  if (value.state === 'unconfigured') return value.policy_revision === 0 && channels.length === 0 && sourcePending === 0 && incoming === 0 && !capacity;
+  return value.policy_revision > 0 && channels.length > 0 && (value.state === 'sufficient' || value.state === 'held') && (sourcePending === 0 && incoming === 0 && !capacity && channels.every(item => (item as Record<string, unknown>).covered && !(item as Record<string, unknown>).pending && (!(item as Record<string, unknown>).rounds_configured || (item as Record<string, unknown>).rounds_complete))) === (value.state === 'sufficient');
 }
 const reviewMetadata = ['project_id', 'revision', 'snapshot_id', 'source', 'observed_at', 'recorded_at'];
 const reviewOutcomes = new Set(['completed', 'active', 'prepared', 'posting', 'failed', 'cancelled', 'rate_limited', 'uncertain', 'unknown']);
@@ -414,10 +426,11 @@ function validReviewAttemptItem(value: unknown): value is ReviewAttemptItem {
   return validReviewAttempt(attempt);
 }
 function validReviewPull(value: unknown): value is ReviewPullSummary {
-  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'attempt_count', 'recent_runs', 'latest_attempts'], ['diff', 'is_draft', 'merged_at']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || !nonnegative(value.attempt_count) || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(validReviewAttempt) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
+  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'attempt_count', 'recent_runs', 'latest_attempts'], ['diff', 'is_draft', 'merged_at', 'queue_position']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || !nonnegative(value.attempt_count) || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(validReviewAttempt) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
   if (Object.hasOwn(value, 'diff') && (!record(value.diff) || !keys(value.diff, ['files', 'additions', 'deletions']) || ![value.diff.files, value.diff.additions, value.diff.deletions].every(count => nonnegative(count) && count <= 2147483647))) return false;
   if (Object.hasOwn(value, 'is_draft') && typeof value.is_draft !== 'boolean') return false;
   if (Object.hasOwn(value, 'merged_at') && (value.state !== 'merged' || !timestamp(value.merged_at))) return false;
+  if (Object.hasOwn(value, 'queue_position') && (!nonnegative(value.queue_position) || Number(value.queue_position) > 2147483647)) return false;
   return new Set(value.recent_runs.map(item => item.id)).size === value.recent_runs.length && new Set(value.latest_attempts.map(item => item.channel)).size === value.latest_attempts.length;
 }
 function validFindingRoute(value: unknown): boolean {
@@ -457,7 +470,8 @@ export function validateMessageEventPage(value: unknown, project: string, worker
 }
 
 export class Api {
-  readonly projectId: string;
+  private boundProjectId: string;
+  get projectId(): string { return this.boundProjectId; }
   private token: string;
   private readonly session = new AbortController();
   private closed = false;
@@ -475,7 +489,7 @@ export class Api {
   constructor(token: string, projectId: string) {
     if (!text(token, 4096) || !id(projectId)) throw new ApiError('invalid_binding', 'Select a valid project and credential.');
     this.token = token;
-    this.projectId = projectId;
+    this.boundProjectId = projectId;
   }
   get instanceId(): string | undefined { return this.verifiedInstanceId; }
   get browserSession(): BrowserSessionView | undefined { return this.currentSession && { ...this.currentSession }; }
@@ -515,7 +529,8 @@ export class Api {
       if (!record(value) || !keys(value, ['instance_id']) || !id(value.instance_id)) throw new ApiError('invalid_response', 'The service returned an invalid instance identity.');
       if (this.expectedInstanceID && value.instance_id !== this.expectedInstanceID) throw new ApiError('instance_mismatch', 'The service identity differs from this saved project session.', 409);
       const project = await this.getJson(this.projectRoute(''), value.instance_id, budget.signal);
-      if (!validProject(project, this.projectId)) throw new ApiError('invalid_response', 'The service returned a project outside this binding.');
+      if (!validProject(project, this.projectId) || this.browserSessionID !== undefined && project.id !== this.projectId) throw new ApiError('invalid_response', 'The service returned a project outside this binding.');
+      this.boundProjectId = project.id;
       let capabilities: BrowserCapabilities = { allow_writes: false, can_edit_presentation: false };
       let session: BrowserSessionView | undefined;
       if (this.browserSessionID) {
@@ -783,6 +798,12 @@ export class Api {
     if (!validDelivery(value, this.projectId, options)) throw new ApiError('invalid_response', 'The service returned an invalid Delivery overview.');
     return value;
   }
+  async jobSummary(jobId: string, signal?: AbortSignal): Promise<JobPublicSummary> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'Choose a valid job.');
+    const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/summary`), signal);
+    if (!validJobPublicSummary(value, jobId)) throw new ApiError('invalid_response', 'The service returned an invalid job summary.');
+    return value;
+  }
   async job(jobId: string, signal?: AbortSignal): Promise<Job> {
     if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
     const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}`), signal);
@@ -931,11 +952,18 @@ export class Api {
     if (value.channels.some(channel => record(channel) && channel.state === 'ready') && (!value.snapshot_id || !positive(value.policy_revision))) throw bad();
     return value as unknown as ReviewFronts;
   }
-  async reviewQueue(options: PageOptions = {}, signal?: AbortSignal): Promise<ReviewQueue> {
-    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), pageOptions(options)), signal);
-    if (!record(value) || !keys(value, [...reviewMetadata, 'configured', 'items', 'has_more'], ['cursor']) || typeof value.configured !== 'boolean' || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options)) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
+  async reviewQueue(options: PageOptions & {view?: 'recent'|'merged'} = {}, signal?: AbortSignal): Promise<ReviewQueue> {
+    if (options.view !== undefined && options.view !== 'recent' && options.view !== 'merged') throw new ApiError('invalid_request', 'Choose a supported review queue view.');
+    const query = pageOptions(options);
+    if (options.view) query.set('view', options.view);
+    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), query), signal);
+    if (!record(value) || !keys(value, [...reviewMetadata, 'configured', 'items', 'has_more'], ['cursor', 'head_position']) || typeof value.configured !== 'boolean' || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options)) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
     if (value.configured ? !validReviewSnapshot(value, this.projectId) : value.project_id !== this.projectId || value.revision !== 0 || value.snapshot_id !== '' || value.source !== '' || value.observed_at !== '' || value.recorded_at !== '' || value.items.length !== 0 || value.has_more) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
     if (!value.items.every(validReviewPull) || new Set(value.items.map(item => item.number)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
+    if (Object.hasOwn(value, 'head_position') && (!options.view || !nonnegative(value.head_position) || Number(value.head_position) > 2147483647 || !value.configured)) throw new ApiError('invalid_response', 'The service returned an invalid review queue position.');
+    const positions = value.items.map(item => (item as ReviewPullSummary).queue_position);
+    if (options.view ? positions.some(position => position === undefined) : positions.some(position => position !== undefined)) throw new ApiError('invalid_response', 'The service returned invalid review queue positions.');
+    if (options.view && (new Set(positions).size !== positions.length || positions.some((position, index) => index > 0 && (options.view === 'merged' ? Number(position) >= Number(positions[index - 1]) : Number(position) <= Number(positions[index - 1]))) || options.view === 'merged' && value.items.some(item => (item as ReviewPullSummary).state !== 'merged'))) throw new ApiError('invalid_response', 'The service returned an invalid review queue order.');
     return value as unknown as ReviewQueue;
   }
   async reviewPull(number: number, snapshot?: string, signal?: AbortSignal): Promise<ReviewPull> {

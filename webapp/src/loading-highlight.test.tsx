@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
 import { Jobs } from './App';
 import { findingDisplayFingerprint, nextSemanticHighlight, pullDisplayFingerprint, runDisplayFingerprint } from './review-workspace';
-import { DeliveryHeroSkeleton, MergeHeadSkeleton, PageSkeleton, WorkspaceSkeleton } from './loading';
+import { DeliveryHeroSkeleton, MergeHeadSkeleton, PageSkeleton, PublicHistorySkeleton, PublicProjectSkeleton, WorkspaceSkeleton } from './loading';
 import { WorkspaceContext, type Session } from './workspace';
 import type { ReviewFinding, ReviewPullSummary, ReviewRunSummary, Worker } from './types';
 
@@ -54,6 +54,29 @@ describe('neutral stable loading', () => {
     expect(inbox).toContain('workspace-grid');
     expect(inbox).toContain('<aside');
     expect(inbox.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '')).toBe('');
+  });
+  it('reserves the public hero, navigation and prose without guessing project sections', () => {
+    for (const embedded of [false, true]) {
+      const html = renderToStaticMarkup(<PublicProjectSkeleton embedded={embedded} />);
+      expect(html).toContain('class="public-layout" role="status"');
+      expect(html).toContain('class="public-hero"');
+      expect(html).toContain('class="public-hero-status"');
+      expect(html).toContain('class="public-navigation"');
+      expect(html.match(/role="status"/gu)).toHaveLength(1);
+      expect(html).toContain('<span class="visually-hidden">Loading published project</span>');
+      expect(html.includes('<main')).toBe(!embedded);
+      expect(html.includes('<header')).toBe(!embedded);
+      expect(html).not.toMatch(/<h[1-6]|<button|<a\b|<img|<section|<article|spinner|review-lane|delivery-merge-head/gu);
+      expect(html.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '')).toBe('');
+    }
+  });
+  it('keeps a requested public revision-list placeholder compact and neutral', () => {
+    const html = renderToStaticMarkup(<PublicHistorySkeleton />);
+    expect(html).toContain('class="public-history-skeleton" role="status"');
+    expect(html).toContain('<span class="visually-hidden">Loading published history</span>');
+    expect(html.match(/class="skeleton-line/gu)).toHaveLength(1);
+    expect(html.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '')).toBe('');
+    expect(html).not.toMatch(/<h[1-6]|<button|<a\b|<img|page-skeleton|spinner/gu);
   });
 });
 

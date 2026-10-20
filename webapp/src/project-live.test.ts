@@ -25,6 +25,14 @@ function fixture() {
 }
 
 describe('live private project views', () => {
+  it('refreshes selected job summaries and delivery without touching private briefs, archives or another project', async () => {
+    const f=fixture(), summary=f.add(['job-summary','job_one']), delivery=f.add(['delivery','','']), brief=f.add(['job','job_one']), other=f.add(['job-summary','job_one'],true,['fc','session','instance','other','worker']);
+    try {
+      await refreshProjectMetadata(f.client,key,page([{event_type:'job.summary_replaced',resource_id:'job_one'}]),new AbortController().signal);
+      expect(summary.reads()).toBe(1);expect(delivery.reads()).toBe(1);expect(brief.reads()).toBe(0);expect(other.reads()).toBe(0);
+    } finally {f.close();}
+  });
+
   it('updates current round occupancy and fronts without refetching queue or pinned review history', async () => {
     const f=fixture();const progress=f.add(['reviews','current','round-progress',[31,32]]);const fronts=f.add(['reviews','current','fronts']);
     const queue=f.add(['reviews','current','queue','']);const history=f.add(['reviews','snapshot_old','run','run_one']);const inbox=f.add(['inbox','']);
@@ -72,6 +80,7 @@ describe('live private project views', () => {
     const f = fixture();
     const jobs = f.add(['jobs', '', false, '']);
     const job = f.add(['job', 'job_one']);
+    const summary = f.add(['job-summary', 'job_one']);
     const checklist = f.add(['checklist-current', 'job_one']);
     const checkpoint = f.add(['checkpoint-latest', 'job_one']);
     const updates = f.add(['job-updates', 'job_one', '']);
@@ -89,7 +98,7 @@ describe('live private project views', () => {
         { event_type: 'job.checklist_replaced', resource_id: 'job_one' },
         { event_type: 'job.update_appended', resource_id: 'update_record' },
       ]), new AbortController().signal);
-      for (const query of [jobs, job, checklist, checkpoint, updates, notes]) expect(query.reads()).toBe(1);
+      for (const query of [jobs, job, summary, checklist, checkpoint, updates, notes]) expect(query.reads()).toBe(1);
       expect(closedArchive.reads()).toBe(0); expect(closedArchive.state()?.isInvalidated).toBe(true);
       expect(inactiveNotes.reads()).toBe(0); expect(inactiveNotes.state()?.isInvalidated).toBe(true);
       for (const query of [otherJob, inbox, otherProject]) expect(query.reads()).toBe(0);
@@ -123,6 +132,8 @@ describe('live private project views', () => {
         { event_type: 'note.updated', resource_id: 'note_one' },
         { event_type: 'review.observed', resource_id: 'snapshot_new' },
         { event_type: 'reviews.policy_configured', resource_id: 'project' },
+        { event_type: 'reviews.adoption_obligations_imported', resource_id: 'sealed-source' },
+        { event_type: 'reviews.adoption_obligation_resolved', resource_id: 'adoption_obligation_one' },
         { event_type: 'review.evidence.finalized', resource_id: 'evidence_one' },
       ]), new AbortController().signal);
       for (const query of [workers, pause, focus, notes, note, current, assessment]) expect(query.reads()).toBe(1);

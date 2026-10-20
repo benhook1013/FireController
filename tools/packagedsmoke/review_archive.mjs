@@ -13,7 +13,7 @@ try {
   need(Number.isSafeInteger(number) && number > 0 && count === 123);
   const prefix = `/api/v1/projects/${config.project}`;
   const path = `/projects/${config.project}/reviews/pulls/${number}`;
-  const archives = [], details = [];
+  const archives = [], details = [], queueReads = [], controlReads = [];
   let errors = 0, external = 0, forbiddenWrites = 0, sessionPosts = 0;
   phase = 'launch';
   server = await chromium.launchServer({ headless:true, ...(config.executable ? {executablePath:config.executable} : {}), timeout:5000, proxy:{server:config.proxy,bypass:'127.0.0.1,localhost'}, args:['--disable-background-networking','--no-first-run'] });
@@ -29,6 +29,8 @@ try {
     page.on('request',request => {
       const url = new URL(request.url());
       if (url.origin !== config.origin) { external++; return; }
+      if (url.pathname === prefix+'/reviews/queue') queueReads.push({view:url.searchParams.get('view'),limit:Number(url.searchParams.get('limit')),cursor:url.searchParams.get('cursor')});
+      if (url.pathname === prefix+'/reviews/fronts' || url.pathname === prefix+'/reviews/rounds/progress') controlReads.push(url.pathname);
       if (request.method() !== 'GET') {
         if (url.pathname === prefix+'/browser-session' && request.method() === 'POST') sessionPosts++;
         else if (!(url.pathname === prefix+'/browser-session' && request.method() === 'DELETE') && !(url.pathname === prefix+'/browser-session/renew' && request.method() === 'POST')) forbiddenWrites++;
@@ -97,10 +99,10 @@ try {
           const container=element.closest('.delivery-hero');
           const link=element.querySelector('.delivery-head-link');
           const linkStyle=getComputedStyle(link);
-          return {head:rect(element),identity:rect(identity),project:rect(project),container:rect(container),link:rect(link),linkText:link.textContent,linkChildren:link.childElementCount,linkWeight:linkStyle.fontWeight,linkDecoration:linkStyle.textDecorationLine,joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
+          return {head:rect(element),identity:rect(identity),project:rect(project),container:rect(container),square:getComputedStyle(container).borderTopLeftRadius === '0px' && getComputedStyle(element).borderTopLeftRadius === '0px',roundedPills:[...element.querySelectorAll('.review-round-pill')].every(pill=>parseFloat(getComputedStyle(pill).borderTopLeftRadius)>0),link:rect(link),linkText:link.textContent,linkChildren:link.childElementCount,linkWeight:linkStyle.fontWeight,linkDecoration:linkStyle.textDecorationLine,joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
         });
         need(geometry.groups.length === 2);
-        need(geometry.joined && geometry.twoTone);
+        need(geometry.joined && geometry.twoTone && geometry.square && geometry.roundedPills);
         need(Math.abs((geometry.project.top+geometry.project.bottom)-(geometry.identity.top+geometry.identity.bottom)) <= 2);
         need(geometry.linkText === 'Review queue ↗' && geometry.linkChildren === 0 && geometry.linkWeight === '750' && geometry.linkDecoration.includes('underline'));
         need(geometry.link.right <= geometry.head.right && geometry.head.right-geometry.link.right <= 32 && geometry.link.bottom <= geometry.head.bottom && geometry.head.bottom-geometry.link.bottom <= 32);
@@ -181,6 +183,62 @@ try {
   await currentRow.getByRole('button', {name:'Hide findings for cli run current-only-run', exact:true}).click();
   need(await currentRow.locator('.review-history-findings').count() === 0 && details.length === 2);
 
+  phase = 'recent-queue';
+  const reviewPath = `/projects/${config.project}/reviews`;
+  await current.page.locator(`nav a[href="${reviewPath}"]`).click();
+  const queue = current.page.locator('#review-queue');
+  await expect(queue.locator('.review-queue-row')).toHaveCount(5);
+  need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-123','review-pr-203','review-pr-204','review-pr-205','review-pr-206']));
+  await expect(queue.locator('.review-count-key')).toContainText('last 48 hours and the latest two known merges');
+  const provenance = queue.locator('.review-freshness');
+  need(await provenance.locator('details').getAttribute('open') === null);
+  need(await provenance.locator('dl').isVisible() === false && !(await provenance.innerText()).includes('As of'));
+  need(await queue.locator('.review-pull-heading .badge').count() === 0);
+  need(await queue.getByText('Open',{exact:true}).count() === 0);
+  for (const merged of [203,204,206]) {
+    const facts = queue.locator(`#review-pr-${merged} .review-pull-facts`);
+    await expect(facts.locator(':scope > .badge')).toHaveCount(1);
+    await expect(facts.locator(':scope > .badge')).toHaveText('Merged');
+  }
+  need(await queue.locator('#review-pr-205 .review-pull-facts > .badge').count() === 0);
+  need(await queue.locator('.review-queue-panel').evaluate(panel=>getComputedStyle(panel).borderTopLeftRadius === '0px'));
+  if (config.proof_directory) for (const width of [1440,390]) {
+    await current.page.setViewportSize({width,height:900});
+    need(await current.page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth));
+    await current.page.screenshot({path:`${config.proof_directory}/recent-queue-${width}.png`,fullPage:true});
+  }
+  phase = 'merged-history';
+  const controlsBefore = controlReads.length;
+  await queue.locator('.delivery-section-heading').getByRole('link',{name:'Queue history',exact:true}).click();
+  await expect(queue.getByRole('heading',{name:'Queue history',exact:true})).toBeVisible();
+  await expect(queue.locator('.review-queue-row')).toHaveCount(5);
+  need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-206','review-pr-204','review-pr-203','review-pr-202','review-pr-201']));
+  await expect(queue.locator('#review-pr-201 .review-round-pill')).toHaveCount(1);
+  need(controlReads.length === controlsBefore);
+  need(queueReads.every(read=>read.limit === 20 && read.cursor === null && (read.view === 'recent' || read.view === 'merged')));
+  need(queueReads.filter(read=>read.view === 'merged').length === 1);
+  await expect(queue.getByRole('link',{name:'Back to review queue',exact:true})).toHaveAttribute('href',reviewPath);
+  // The server must serve this route on a direct reload, before the SPA runs.
+  const reloaded = await current.page.reload();
+  need(reloaded.status() === 200 && reloaded.headers()['content-type'].startsWith('text/html'));
+  await expect(queue.locator('.review-queue-row')).toHaveCount(5);
+  need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-206','review-pr-204','review-pr-203','review-pr-202','review-pr-201']));
+  // A fresh application also re-reads the current hero's two shared controls.
+  await expect.poll(() => controlReads.length).toBe(controlsBefore + 2);
+  need(queueReads.filter(read=>read.view === 'merged').length === 2);
+  if (config.proof_directory) for (const width of [1440,390]) {
+    await current.page.setViewportSize({width,height:900});
+    need(await current.page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth));
+    await current.page.screenshot({path:`${config.proof_directory}/merged-queue-${width}.png`,fullPage:true});
+  }
+  await queue.locator('#review-pr-201').getByRole('link',{name:'Review details for PR #201',exact:true}).click();
+  const original = current.page.locator('.main-content').getByRole('region',{name:'PR #201 review rounds',exact:true});
+  await original.getByRole('button',{name:'Show findings for cli run old-merged-original-round',exact:true}).click();
+  await expect(original.getByRole('heading',{name:'Original merged finding',exact:true})).toBeVisible();
+  await expect(original.locator('.review-history-findings strong')).toHaveText('retained evidence');
+  await expect(original.locator('.review-decision')).toContainText('Original retained reviewer');
+  need(details.length === 3 && details[2].snapshot !== config.snapshot);
+
   need(await pinned.rounds.locator('.review-history-row').count() === 20 && await pinned.attempts.locator('li').count() === 20);
 
   phase = 'pinned-continuation';
@@ -200,9 +258,11 @@ try {
   // reads one bounded page for the new comparison. Neither walks that archive.
   const pinnedCurrentHero = archives.filter(item => item.name === pinned.name && item.feed === 'runs' && item.snapshot !== config.snapshot);
   need(pinnedCurrentHero.length === 1 && pinnedCurrentHero[0].cursor === null && pinnedCurrentHero[0].limit === 20);
-  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && archives.length === 21 && details.length === 2);
+  // Reload restores the current hero and may invalidate its first page once
+  // when the live workspace snapshot arrives. Neither read follows a cursor.
+  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && archives.length >= 23 && archives.length <= 24 && details.length === 3);
   await context.close(); await browser.close(); browser=undefined; await server.close(); server=undefined;
-  console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,max_limit:20,source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,detail_requests:details.length,fixture_writes:1}));
+  console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,max_limit:20,source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
 } catch {
   console.log(JSON.stringify({state:'FAIL',phase})); process.exitCode=1;
 } finally {

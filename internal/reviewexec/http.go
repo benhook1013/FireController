@@ -1,6 +1,7 @@
 package reviewexec
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,12 +9,14 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/benhook1013/FireController/internal/adoptionholds"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
 // Register exposes project-scoped execution controls and retained evidence.
 // Provider work always runs outside these request handlers.
 func (e *Engine) Register(mux *http.ServeMux) {
+	adoptionholds.New(e.store).Register(mux)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/fronts", e.readFrontsHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/selections", e.enqueueRunHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/selections/{selection_id}", e.readRunHTTP)
@@ -100,11 +103,23 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var request Request
-	if err := core.ReadJSON(w, r, &request); err != nil {
+	var wire struct {
+		ExpectedConfigurationRevision int64           `json:"expected_configuration_revision"`
+		PullNumber                    int64           `json:"pull_number"`
+		Channel                       string          `json:"channel"`
+		HeadSHA                       string          `json:"head_sha"`
+		AllowOutOfOrder               json.RawMessage `json:"allow_out_of_order,omitempty"`
+	}
+	if err := core.ReadJSON(w, r, &wire); err != nil {
 		core.WriteError(w, err)
 		return
 	}
+	flag := bytes.TrimSpace(wire.AllowOutOfOrder)
+	if len(flag) != 0 && !bytes.Equal(flag, []byte("true")) && !bytes.Equal(flag, []byte("false")) {
+		core.WriteError(w, invalid())
+		return
+	}
+	request := Request{ExpectedConfigurationRevision: wire.ExpectedConfigurationRevision, PullNumber: wire.PullNumber, Channel: wire.Channel, HeadSHA: wire.HeadSHA, AllowOutOfOrder: bytes.Equal(flag, []byte("true"))}
 	key, err := core.IdempotencyKey(r, "idempotency_key_required")
 	if err != nil {
 		core.WriteError(w, err)

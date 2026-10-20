@@ -148,7 +148,7 @@ func TestRoundAdoptionInventoryResealedCorruptionRefused(t *testing.T) {
 }
 func TestRoundAdoptionInventoryVersionOnePredecessor(t *testing.T) {
 	f := newRestoreFixture(t)
-	for _, query := range []string{`DROP TABLE review_round_adoptions`, `DELETE FROM metadata WHERE key='schema:review_round_adoption'`, `DROP TABLE review_round_controls`, reviewexec.RoundSchemaV1SQL()[0], `UPDATE metadata SET value='1' WHERE key='schema:review_rounds'`} {
+	for _, query := range []string{`DROP TABLE review_round_adoptions`, `DELETE FROM metadata WHERE key='schema:review_round_adoption'`, `DROP TABLE review_round_controls`, reviewexec.RoundSchemaV1SQL()[0], `DROP TABLE review_round_completions`, reviewexec.RoundSchemaV1SQL()[4], `UPDATE metadata SET value='1' WHERE key='schema:review_rounds'`} {
 		if _, err := f.store.DB().Exec(query); err != nil {
 			t.Fatal(err)
 		}

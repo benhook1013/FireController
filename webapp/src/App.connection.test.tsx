@@ -62,10 +62,10 @@ describe('private connection first paint', () => {
     expect(html).toContain('<span class="visually-hidden">Opening project</span>');
     expect(html).not.toContain('Project credential');
   });
-  it('shows the login form immediately for a fresh tab without saved metadata', () => {
+  it('shows the login form immediately for a fresh private destination without saved metadata', () => {
     storage(null);
-    const html = firstPaint('/projects/project_one');
-    expect(html).toContain('Connect to a project');
+    const html = firstPaint('/projects/project_one/jobs');
+    expect(html).toContain('Sign in to project_one');
     expect(html).toContain('Project credential');
     expect(html).toContain('<form');
     expect(html).not.toContain('<span class="visually-hidden">Opening project</span>');

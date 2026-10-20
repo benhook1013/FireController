@@ -4,16 +4,20 @@ import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WorkspaceContext, type Session } from './workspace';
 import { PresentationContext } from './presentation-context';
-import { ReviewFindingView, ReviewPullFacts, ReviewQueueView, ReviewRunsView, formatQueueDistance, groupReviewQueue, missingPullFacts, reviewQueueDistances, reviewQueueHashTarget } from './review-workspace';
+import { ReviewFindingView, ReviewPullFacts, ReviewQueueView, ReviewRunsView, formatQueueDistance, groupReviewQueue, missingPullFacts, reviewQueueDistances, reviewQueueHashTarget, reviewQueueQuery } from './review-workspace';
+import type { ReviewFronts } from './review-fronts';
+import type { ReviewProgressItem } from './review-progress';
 import type { Presentation, ReviewAttemptSummary, ReviewFinding, ReviewPullSummary, ReviewQueue } from './types';
 
 const key = ['fc', 'connection', 'instance', 'project', 'actor'];
 const pull = (number: number, state: ReviewPullSummary['state'] = 'open'): ReviewPullSummary => ({ number, title: `Change ${number}`, state, head_sha: 'a'.repeat(40), base_ref: 'main', base_sha: 'b'.repeat(40), ci_state: 'success', mergeability: 'mergeable', complete: true, run_count: 0, attempt_count: 0, recent_runs: [], latest_attempts: [] });
-function markup(node: React.ReactNode, queue?: ReviewQueue, presentation?: Presentation) {
+function markup(node: React.ReactNode, queue?: ReviewQueue, presentation?: Presentation, options: { history?: boolean; fronts?: ReviewFronts; progress?: ReviewProgressItem[] } = {}) {
   const api = { reviewQueue: vi.fn(), reviewRuns: vi.fn() };
   const session = { api, controller: new AbortController(), project: { repository: 'example/project' } } as unknown as Session;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  if (queue) client.setQueryData([...key, 'reviews', 'current', 'queue', ''], queue);
+  if (queue) client.setQueryData(reviewQueueQuery(session, key, options.history ? 'merged' : 'recent').queryKey, queue);
+  if (options.fronts) client.setQueryData([...key, 'reviews', 'current', 'fronts'], options.fronts);
+  if (options.progress && queue) client.setQueryData([...key, 'reviews', 'current', 'round-progress', queue.items.map(item => item.number).sort((a, b) => a - b)], { items: options.progress });
   try {
     const html = renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><PresentationContext.Provider value={presentation}><WorkspaceContext.Provider value={{ session, key, home: '/projects/project', selectWorker: () => {}, fail: () => {}, ready: true }}>{node}</WorkspaceContext.Provider></PresentationContext.Provider></QueryClientProvider></MemoryRouter>);
     expect(api.reviewQueue).not.toHaveBeenCalled(); expect(api.reviewRuns).not.toHaveBeenCalled();
@@ -21,6 +25,7 @@ function markup(node: React.ReactNode, queue?: ReviewQueue, presentation?: Prese
   } finally { client.clear(); }
 }
 const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: false, configured: true, project_id: 'project', snapshot_id: 'snapshot', revision: 1, source: 'stored', observed_at: '2026-10-19T00:00:00Z', recorded_at: '2026-10-19T00:00:00Z' });
+const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main' }] });
 
 describe('truthful stored review presentation', () => {
   it('renders observed diff size and actual merge time without inventing values for old snapshots', () => {
@@ -43,6 +48,40 @@ describe('truthful stored review presentation', () => {
     expect(reviewQueueDistances(items, false)).toEqual([undefined, undefined, undefined, undefined]);
     expect(reviewQueueDistances([pull(1, 'merged')], true)).toEqual([undefined]);
     expect(formatQueueDistance(-1)).toBe('−01'); expect(formatQueueDistance(1)).toBe('+01');
+  });
+  it('preserves supplied global gaps on filtered and continuation pages without inventing a head', () => {
+    const items = [{ ...pull(1, 'merged'), queue_position: 1 }, { ...pull(2), queue_position: 8 }, { ...pull(3), queue_position: 11 }];
+    expect(reviewQueueDistances(items, true, 8)).toEqual([-7, 1, 4]);
+    expect(reviewQueueDistances(items, false, 8)).toEqual([-7, 1, 4]);
+    expect(reviewQueueDistances(items, true)).toEqual([undefined, undefined, undefined]);
+    expect(reviewQueueDistances([pull(2)], true, 8)).toEqual([undefined]);
+  });
+  it('places a single verified status in the facts row and gives terminal lifecycle priority', () => {
+    const html = markup(<ReviewQueueView />, queue([pull(1, 'merged'), { ...pull(2), is_draft: true }, pull(3)]), undefined, { fronts: fronts() });
+    const rows = [...html.matchAll(/<li id="review-pr-\d+"[\s\S]*?<\/li>/gu)].map(match => match[0]);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toContain('review-state-merged');
+    expect(rows[1].match(/>Review front · Hosted<\/span>/gu)).toHaveLength(1);
+    expect(rows[1]).toContain('review-pull-facts"><span class="badge review-position-front"');
+    expect(rows[1]).toContain('>Draft</span>');
+    expect(rows[2].match(/>Queued<\/span>/gu)).toHaveLength(1);
+    for (const row of rows) expect(row.slice(0, row.indexOf('review-pull-facts'))).not.toContain('review-position-');
+    expect(html).not.toContain('>Open</span>');
+    const closed = markup(<ReviewPullFacts pull={pull(1, 'closed')} status={{ kind: 'front', text: 'Review front', description: '' }} />);
+    expect(closed).toContain('>Closed</span>'); expect(closed).not.toContain('>Review front</span>');
+    for (const state of ['open', 'unknown'] as const) {
+      const absent = markup(<ReviewPullFacts pull={pull(1, state)} />);
+      expect(absent).not.toMatch(/class="badge review-(state|position)-/u);
+    }
+    const stale = markup(<ReviewQueueView />, queue([pull(2)]), undefined, { fronts: { ...fronts(), snapshot_id: 'old' } });
+    expect(stale).not.toContain('review-position-front');
+  });
+  it('uses current channel closure as the primary status without a second heading badge', () => {
+    const progress: ReviewProgressItem = { pull_number: 2, channels: [{ channel: 'hosted', configured: true, revision: 1, epoch: 1, closed: true, minimum: 0, maximum: 3, taper: 2, used: 1, dry: 0, tapered: false, pending: 0 }] };
+    const html = markup(<ReviewQueueView />, queue([pull(2)]), undefined, { fronts: fronts(), progress: [progress] });
+    expect(html).toContain('review-pull-facts"><span class="badge review-position-closed"');
+    expect(html.match(/class="badge review-position-closed"/gu)).toHaveLength(1);
+    expect(html).not.toContain('review-position-front');
   });
   it('resolves only exact row anchors already present in the loaded queue', () => {
     const items = [pull(1, 'merged'), pull(2)];
@@ -101,8 +140,34 @@ describe('truthful stored review presentation', () => {
     expect(html).toContain('href="https://github.com/example/project/pull/2"');
     expect(html).toMatch(/<a\b[^>]*aria-label="Review details for PR #2"[^>]*>Review details ↗<\/a>/u);
     expect(html).not.toContain('review-link-arrow');
-    expect(html).toContain('Merged PRs remain in the queue.'); expect(html).not.toContain('two days');
+    expect(html).toContain('Merged PRs from the last 48 hours and the latest two known merges stay here.');
+    expect(html).toContain('Full retained history is in'); expect(html).toContain('href="/projects/project/reviews/history"');
+    expect(html).not.toContain('Signed positions'); expect(html).not.toContain('As of ');
     expect(html).not.toContain('Latest attempt:'); expect(html).not.toContain('Incomplete PR observation');
+  });
+  it('renders merged history in supplied reverse queue order with a back link and no current controls', () => {
+    const items = [{ ...pull(9, 'merged'), queue_position: 9 }, { ...pull(2, 'merged'), queue_position: 2 }];
+    const html = markup(<ReviewQueueView history />, { ...queue(items), head_position: 10, has_more: true, cursor: 'older' }, undefined, { history: true, fronts: fronts() });
+    expect(html).toContain('<h2 id="review-queue-title">Queue history</h2>');
+    expect(html).toMatch(/href="\/projects\/project\/reviews"[^>]*>Back to review queue/u);
+    expect(html.indexOf('id="review-pr-9"')).toBeLessThan(html.indexOf('id="review-pr-2"'));
+    expect(html).toContain('Queue distance −01'); expect(html).toContain('Queue distance −08');
+    expect(html).toContain('Merged PRs are shown in reverse queue order.');
+    expect(html).toContain('Next queue history');
+    expect(html).not.toContain('last 48 hours'); expect(html).not.toContain('review-position-front');
+  });
+  it('isolates bounded recent and merged cursor reads by view and source snapshot', async () => {
+    const read = vi.fn().mockResolvedValue(queue([]));
+    const session = { controller: new AbortController(), api: { reviewQueue: read } } as unknown as Session;
+    const recent = reviewQueueQuery(session, key, 'recent');
+    const history = reviewQueueQuery(session, key, 'merged', 'older', 'snapshot');
+    expect(recent.queryKey).toEqual([...key, 'reviews', 'current', 'queue', 'recent', '']);
+    expect(history.queryKey).toEqual([...key, 'reviews', 'snapshot', 'queue', 'merged', 'older']);
+    await recent.queryFn({ signal: new AbortController().signal });
+    await history.queryFn({ signal: new AbortController().signal });
+    expect(read.mock.calls.map(call => call[0])).toEqual([{ limit: 20, view: 'recent' }, { limit: 20, view: 'merged', cursor: 'older' }]);
+    session.controller.abort();
+    expect(read.mock.calls.every(call => call[1].aborted)).toBe(true);
   });
   it('omits completed attempt prose and shows a concise retained rate-limit signal only with evidence', () => {
     const attempt: ReviewAttemptSummary = { source_attempt_id: 'attempt', channel: 'cli', head_sha: 'a'.repeat(40), state: 'completed', started_at: '', finished_at: '', duration_seconds: 1, source_run_id: '', trigger_id: '', provider_review_id: '' };

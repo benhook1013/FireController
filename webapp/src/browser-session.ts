@@ -4,6 +4,7 @@ export const browserSessionKey = 'firecontroller.browser-session.v1';
 export type BrowserSessionBinding = {
   version: 1;
   projectID: string;
+  projectHandle?: string;
   instanceID: string;
   sessionID: string;
   expiresAt: string;
@@ -23,7 +24,7 @@ function validBinding(value: unknown): value is BrowserSessionBinding {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
   const fields = ['version', 'projectID', 'instanceID', 'sessionID', 'expiresAt', 'selectedworkerID'];
-  return Object.keys(v).length === fields.length && fields.every(key => Object.hasOwn(v, key)) && v.version === 1 && sessionIdentity(v.projectID) && sessionIdentity(v.instanceID) && sessionSelector(v.sessionID) && sessionExpiry(v.expiresAt) && (v.selectedworkerID === '' || sessionIdentity(v.selectedworkerID));
+  return Object.keys(v).every(key => fields.includes(key) || key === 'projectHandle') && (v.projectHandle === undefined || typeof v.projectHandle === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(v.projectHandle)) && fields.every(key => Object.hasOwn(v, key)) && v.version === 1 && sessionIdentity(v.projectID) && sessionIdentity(v.instanceID) && sessionSelector(v.sessionID) && sessionExpiry(v.expiresAt) && (v.selectedworkerID === '' || sessionIdentity(v.selectedworkerID));
 }
 export function clearBrowserSession(target = storage()): void { try { target?.removeItem(browserSessionKey); } catch { /* storage may be disabled */ } }
 export function saveBrowserSession(binding: BrowserSessionBinding, target = storage()): boolean {
@@ -48,7 +49,7 @@ export function loadBrowserSession(projectID: string | undefined, discarded?: (b
   if (!validBinding(value)) { clearBrowserSession(target); return null; }
   // The recorded expiry can lag a successful Set-Cookie whose body was lost.
   // Only the current-session GET can establish whether the cookie is valid.
-  if (value.projectID !== projectID) {
+  if (value.projectID !== projectID && (value.projectHandle === undefined || value.projectHandle !== projectID)) {
     clearBrowserSession(target); discarded?.(value); return null;
   }
   return value;

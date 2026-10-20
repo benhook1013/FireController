@@ -31,7 +31,7 @@ export function reviewQueueBadges(pull: ReviewPullSummary, snapshot: string, fro
   const names = (channels: string[]) => channels.map(channel => channel === 'hosted' ? 'Hosted' : 'CLI').join(' + ');
   const closed = (channel: string) => {
     const value = progress?.pull_number === pull.number ? progress.channels.find(item => item.channel === channel) : undefined;
-    return !!value?.configured && (value.closed || value.tapered || value.used >= value.maximum);
+    return !!value?.configured && (value.closed || value.tapered || !value.maximum_unbounded && value.used >= value.maximum);
   };
   if (fronts.channels.length > 0 && fronts.channels.every(channel => closed(channel.channel))) return [{kind:'closed',text:'Review closed',description:'Current configured channels allow no further rounds; this is not a merge-readiness verdict.'}];
   const matching = fronts.channels.filter(channel => channel.state === 'ready' && channel.pull_number === pull.number && channel.head_sha === pull.head_sha && channel.base_sha === pull.base_sha && channel.base_ref === pull.base_ref && !closed(channel.channel));

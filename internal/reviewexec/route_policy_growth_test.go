@@ -11,14 +11,16 @@ func TestRoutePolicyGrowthExactPendingResolvedAndReceiverCorrections(t *testing.
 	// Both captures stay below the existing100-finding bound. Completing the
 	// first source releases its execution slot; no authority rows are fabricated.
 	f, firstAttempt, firstID := routeFixture(t, 52)
+	adjudicationComplete(t, f, firstAttempt)
+	// Establish genuine receiving coverage before incoming obligations arrive;
+	// new direct requests are held while receiving routes remain pending.
+	receiver, receiverID, reader := routePolicyReceiver(t, f, firstID)
 	routes := make([]findingRouteReceipt, 0, 103)
 	for i := range 52 {
 		routes = append(routes, routeCreate(t, f, firstID, fmt.Sprintf("growth-first-%d", i), routeRequest(int64(i), int64(i), 4)))
 	}
-	adjudicationComplete(t, f, firstAttempt)
 	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "growth-finalize-first", firstID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(52)})
 	adjudicationReceipt(t, raw, err, firstID, "finalized", 53)
-	receiver, receiverID, reader := routePolicyReceiver(t, f, firstID)
 
 	secondAttempt := f.start(t, attemptProject, f.enqueue(t, attemptProject, "growth-second-source", "cli", 6, 2))
 	anchor := attemptAnchor(attemptProject, 6)

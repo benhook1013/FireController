@@ -10,16 +10,25 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/benhook1013/FireController/internal/adoptionholds"
+	"github.com/benhook1013/FireController/internal/adoptionholdsmodel"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/roundadoptionmodel"
 )
 
 func normalizeRoundAdoption(p roundadoptionmodel.Prepared) (roundadoptionmodel.Prepared, []byte, error) {
-	if p.Version != 1 || p.RepositoryID <= 0 || p.ExpectedRevision == nil || *p.ExpectedRevision != 0 || p.PullNumber < 1 || p.PullNumber > 2147483647 || !validChannel(p.Channel) || !validRoundSource(p.Source) || !validRoundSource(p.SourceKey) || len(p.SourceSHA256) != 64 || strings.Trim(p.SourceSHA256, "0123456789abcdef") != "" || p.MinimumRemaining < 0 || p.MaximumRemaining < 0 || p.MaximumRemaining > 1000 || p.MinimumRemaining > p.MaximumRemaining || p.InitialDry < 0 || p.InitialDry > 1000 || p.Taper < 1 || p.Taper > 1000 || p.InitialDry >= p.Taper && !p.Tapered {
+	if (p.Version != 1 && p.Version != 2) || p.Version == 1 && p.MaximumUnbounded || p.RepositoryID <= 0 || p.ExpectedRevision == nil || *p.ExpectedRevision != 0 || p.PullNumber < 1 || p.PullNumber > 2147483647 || !validChannel(p.Channel) || !validRoundSource(p.Source) || !validRoundSource(p.SourceKey) || len(p.SourceSHA256) != 64 || strings.Trim(p.SourceSHA256, "0123456789abcdef") != "" || p.MinimumRemaining < 0 || p.MaximumRemaining < 0 || p.MaximumRemaining > 1000 || (!p.MaximumUnbounded && p.MinimumRemaining > p.MaximumRemaining || p.MaximumUnbounded && (p.MaximumRemaining != 0 || p.MinimumRemaining > roundSafeInteger)) || p.InitialDry < 0 || p.InitialDry > 1000 || p.Taper < 1 || p.Taper > 1000 || p.InitialDry >= p.Taper && !p.Tapered {
 		return p, nil, invalid()
 	}
 	zero := int64(0)
 	p.ExpectedRevision = &zero
+	if p.Obligations != nil {
+		ref := *p.Obligations
+		if p.Version != 2 || ref.Namespace != p.Source || ref.Revision < 1 || ref.Revision > roundSafeInteger || !hash.MatchString(ref.SnapshotSHA256) {
+			return p, nil, invalid()
+		}
+		p.Obligations = &ref
+	}
 	body, err := json.Marshal(p)
 	if err != nil || len(body) > 16384 {
 		return p, nil, invalid()
@@ -41,6 +50,12 @@ func (e *Engine) admitRoundAdoption(ctx context.Context, tx *sql.Tx, scope core.
 	}
 	if repository != p.RepositoryID {
 		return roundDenied("review_round_adoption_conflict", "The prepared rule does not match the destination repository.")
+	}
+	if p.Obligations != nil {
+		ref := p.Obligations
+		if err := adoptionholds.VerifySource(ctx, tx, scope.ProjectID, adoptionholdsmodel.Source{Namespace: ref.Namespace, RepositoryID: p.RepositoryID, SnapshotSHA256: ref.SnapshotSHA256}, ref.Revision); err != nil {
+			return err
+		}
 	}
 	config, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
 	if err != nil {
@@ -104,7 +119,7 @@ func (e *Engine) ApplyRoundAdoption(ctx context.Context, scope core.Scope, key s
 			return nil, err
 		}
 		at := stamp()
-		c := roundRecord{RoundControl: RoundControl{ProjectID: scope.ProjectID, PullNumber: p.PullNumber, Channel: p.Channel, Configured: true, Revision: 1, Epoch: 1, Closed: p.Closed, Minimum: p.MinimumRemaining, Maximum: p.MaximumRemaining, Taper: p.Taper, InitialDry: p.InitialDry, InitiallyTapered: p.Tapered, Dry: p.InitialDry, Tapered: p.Tapered && p.MinimumRemaining == 0, OriginSource: p.Source, OriginKey: p.SourceKey, OriginSHA256: p.SourceSHA256, ActorID: scope.PrincipalID, CreatedAt: at, UpdatedAt: at}, grantRevision: 1}
+		c := roundRecord{RoundControl: RoundControl{ProjectID: scope.ProjectID, PullNumber: p.PullNumber, Channel: p.Channel, Configured: true, Revision: 1, Epoch: 1, Closed: p.Closed, Minimum: p.MinimumRemaining, Maximum: p.MaximumRemaining, MaximumUnbounded: p.MaximumUnbounded, Taper: p.Taper, InitialDry: p.InitialDry, InitiallyTapered: p.Tapered, Dry: p.InitialDry, Tapered: p.Tapered && p.MinimumRemaining == 0, OriginSource: p.Source, OriginKey: p.SourceKey, OriginSHA256: p.SourceSHA256, ActorID: scope.PrincipalID, CreatedAt: at, UpdatedAt: at}, grantRevision: 1}
 		if !validRoundControl(c.RoundControl) {
 			return nil, roundUnavailable()
 		}

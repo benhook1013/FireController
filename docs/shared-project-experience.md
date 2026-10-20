@@ -1,0 +1,37 @@
+# Shared project experience
+
+## Delivery status
+
+This document owns the selected convergence of friendly project addresses, a single public/private browser entry point and record-linked publication. Handles, authenticated alias resolution, optional revisioned job summaries, linked publication selections, unified browser navigation and matching CLI/MCP clients are installed. Both selected publications are enabled from previewed map, summary and optional derived worker-lane selections. Actual private and anonymous two-project browser checks cover friendly routes, deep reload, retained-data hashes, source-revision matching, session isolation and responsive layouts. Canonical backup and inactive restore preserve the enabled publications. Provider review execution and workers remain paused; actual resumed-chat MCP discovery and genuine worker replies remain unproved.
+
+## One project address
+
+Each project has an instance-unique lowercase human-readable handle. The canonical browser address is `/projects/{handle}`. Existing opaque project IDs remain unchanged as resource, profile, grant, cursor and foreign-key identities. An authenticated project read exposes its handle. The browser accepts a handle or an existing ID at sign-in, resolves it under the supplied credential, then stores the canonical opaque identity in its private session. Credentials never appear in URLs. Display-name changes do not implicitly rename the handle.
+
+Project creation accepts an optional explicit handle. Otherwise derive it from the display name, falling back to a bounded stable generated handle if necessary. Explicit collisions refuse; automatic derived collisions receive deterministic unique suffixes. Startup gives existing projects stable unique handles without changing any existing identifiers, records or receipts. Handle changes are deliberate administrative operations rather than incidental naming edits. Private records remain protected when resolving names; a handle grants no access. Publication and project handles cannot bind the same public URL to different projects.
+
+## One browser experience
+
+The same project root opens approved public information without a login when publication is enabled. Sign in is a header action, not an empty replacement landing page. Signing in keeps the friendly URL and opens private operational content. Signing out returns to the public view. Private-only routes request authentication while preserving the intended destination. An unpublished project has a sign-in view. Public and private caches, transports and field contracts remain separate: anonymous requests never receive private briefs, messages, notes, IDs or captures. Sessions remain isolated between projects and tabs. Legacy public links remain navigable, but new navigation uses the canonical project URL.
+
+## Job summary and private brief
+
+Each job may have one optional shareable summary attached to it, separate from its detailed private brief. The summary has its own revision and retained history; its title and body are deliberately authored. It is private until selected for publication. Private job edits do not revise the summary. Summary writes use current job and summary revisions and explicit idempotency keys; normal job/status/brief reads and writes remain compatible. API, typed client, CLI and MCP expose compact explicit summary reads and guarded writes. Private browser cards prefer that concise summary where available and retain full private detail links. A missing summary never becomes an anonymous excerpt of the private brief.
+
+## Linked public content
+
+A private publication manifest can select jobs by stable job ID and an exact retained summary revision, with an explicitly chosen public key. The public card uses that selected title/body; its ordinary status may follow the enrolled job. Later summary or brief edits do not silently replace published prose. Existing generic editorial cards remain useful for content with no operational source; they are not required duplicate job descriptions. Public worker headlines should be derived from selected summaries where a worker lane is selected, rather than independently retelling the same job. Worker labels and any automatic assignment exposure require explicit selection.
+
+A manifest can also select an exact existing project-map entry revision. Reuse its approved narrative instead of requiring another description; exclude private triggers, import provenance and private operational references. Explicit preview shows every resulting anonymous field and destination. The service keeps source IDs/revisions only in authenticated configuration; public output contains public keys and safe selected content. Publication approval remains administrative, while ordinary agents can prepare summaries within their existing project-write permission. Publishing source references must preserve the existing anonymous history, event isolation, unpublish and backup contracts.
+
+Review finding text remains captured from providers and private by default. Counts, progression and deterministic checkpoint comments stay derived. This change adds no mandatory second finding summary and grants no provider request or review permission.
+
+## Efficient agent use
+
+Use briefs for standing instructions, checklists for remaining steps and a concise checkpoint or update for material progress. Do not restate each routine action across every surface. The worker doing a task can propose its summary/update with its result; the orchestrator checks and records it without spawning a separate summarization pass for every edit. These are optional workflow habits, not server-enforced rituals.
+
+## Installation and handover
+
+The combined runtime is installed with retained-data backup/restore qualification, and both selected public views are enabled from explicit previews. The installed browser proves friendly project addresses, ordinary sign-in, deep reload and project-isolated renewal/logout while the old comparison websites remain unchanged. The current canonical backup passed inactive restore with both publications and all execution pauses retained; its transferred off-host export also passed independent inspection. Disaster activation and provider resumption remain unproved.
+
+The human hands the orchestrator a self-contained text handover before expecting tool use. It includes the bound command, local/repository documentation, first reads, reply example and permission/pause boundaries. The orchestrator prepares separate pasteable handovers for its workers. Native messages are the subsequent acknowledgment proof, not the way an unonboarded worker learns how to open its inbox. The installed CLI, stdio MCP adapter, role launchers and skills are available; five role-bound stdio checks passed discovery, doctor and assigned reads, and the configured project host parses its coordination tools. This does not prove that a resumed chat discovers MCP or that genuine workers receive and answer a handover. Preserve the review pause and do not resume worker processes implicitly.

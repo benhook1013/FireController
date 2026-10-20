@@ -135,3 +135,43 @@ func TestRoundAdoptionCLIFileAndSyntaxBeforeCredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestRoundAdoptionCLIV2UnboundedReadAndExplicitFiniteReplacement(t *testing.T) {
+	f, project, worker := reviewExecutionFixture(t)
+	server := httptest.NewServer(f.handler)
+	defer server.Close()
+	profiles := mutationProfiles(t, f, server.URL, map[string][2]string{"admin": {project, worker}})
+	p := cliAdoptionControl()
+	p.Version = 2
+	p.MaximumUnbounded = true
+	p.MaximumRemaining = 0
+	p.MinimumRemaining = 1001
+	raw, _ := json.Marshal(p)
+	file := importCLIFile(t, raw)
+	before := f.resolverHit.Load()
+	code, out, stderr := mutationInvoke(t, profiles, "admin", "reviews", "rounds", "adopt", "preview", "--file", file)
+	var preview client.ReviewRoundAdoptionPreview
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &preview) != nil {
+		t.Fatal("v2 preview refused", code, stderr)
+	}
+	code, _, stderr = mutationInvoke(t, profiles, "admin", "reviews", "rounds", "adopt", "apply", "--file", file, "--preview", preview.PreviewSHA256, "--key", "unbounded-source")
+	if code != 0 || stderr != "" {
+		t.Fatal("v2 apply refused", code, stderr)
+	}
+	code, out, stderr = mutationInvoke(t, profiles, "admin", "reviews", "rounds", "read", "--pr", "2", "--channel", "cli")
+	var got client.ReviewRoundControl
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &got) != nil || !got.MaximumUnbounded || got.Maximum != 0 || got.Minimum != 1001 || got.Used != 0 {
+		t.Fatal("read invented finite maximum", code, stderr)
+	}
+	code, _, stderr = mutationInvoke(t, profiles, "admin", "reviews", "rounds", "grant", "--pr", "2", "--channel", "cli", "--expected-revision", "1", "--max", "5", "--key", "finite-again")
+	if code != 0 || stderr != "" {
+		t.Fatal("finite replacement refused", code, stderr)
+	}
+	code, out, stderr = mutationInvoke(t, profiles, "admin", "reviews", "rounds", "read", "--pr", "2", "--channel", "cli")
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &got) != nil || strings.Contains(out, "maximum_unbounded") || got.Maximum != 5 {
+		t.Fatal("finite read retained unbounded flag", code, stderr)
+	}
+	if f.resolverHit.Load() != before {
+		t.Fatal("configuration contacted provider")
+	}
+}

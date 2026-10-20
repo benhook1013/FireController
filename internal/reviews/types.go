@@ -141,6 +141,8 @@ type RunSummary struct {
 }
 
 type PullSummary struct {
+	// QueuePosition is the original zero-based position, only on selected views.
+	QueuePosition  *int             `json:"queue_position,omitempty"`
 	Diff           *PullDiff        `json:"diff,omitempty"`
 	IsDraft        *bool            `json:"is_draft,omitempty"`
 	MergedAt       string           `json:"merged_at,omitempty"`
@@ -160,16 +162,19 @@ type PullSummary struct {
 }
 
 type QueueResponse struct {
-	ProjectID  string        `json:"project_id"`
-	Configured bool          `json:"configured"`
-	Revision   int64         `json:"revision"`
-	SnapshotID string        `json:"snapshot_id"`
-	Source     string        `json:"source"`
-	ObservedAt string        `json:"observed_at"`
-	RecordedAt string        `json:"recorded_at"`
-	Items      []PullSummary `json:"items"`
-	Cursor     string        `json:"cursor,omitempty"`
-	HasMore    bool          `json:"has_more"`
+	// HeadPosition is set only on selected views whose first nonmerged/nonclosed
+	// entry is known open. Unknown predecessors cannot establish an open head.
+	HeadPosition *int          `json:"head_position,omitempty"`
+	ProjectID    string        `json:"project_id"`
+	Configured   bool          `json:"configured"`
+	Revision     int64         `json:"revision"`
+	SnapshotID   string        `json:"snapshot_id"`
+	Source       string        `json:"source"`
+	ObservedAt   string        `json:"observed_at"`
+	RecordedAt   string        `json:"recorded_at"`
+	Items        []PullSummary `json:"items"`
+	Cursor       string        `json:"cursor,omitempty"`
+	HasMore      bool          `json:"has_more"`
 }
 
 type PullResponse struct {

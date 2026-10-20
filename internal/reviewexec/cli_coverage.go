@@ -41,6 +41,9 @@ func (e *Engine) Comparison(ctx context.Context, project string, current SourceP
 	}
 	var result ComparisonState
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if err := requireSourceObligationsClear(ctx, tx, project, current.Pull.Number); err != nil {
+			return err
+		}
 		var repositoryID int64
 		if err := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
@@ -83,7 +86,7 @@ func comparison(ctx context.Context, tx *sql.Tx, project string, repositoryID, n
 		return ComparisonState{}, err
 	}
 	result.RoundsConfigured = rounds.Configured
-	result.RoundsComplete = rounds.Configured && (rounds.Closed || rounds.Used >= rounds.Maximum || rounds.Tapered)
+	result.RoundsComplete = rounds.Configured && (rounds.Closed || roundDone(rounds))
 	return result, nil
 }
 

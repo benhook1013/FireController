@@ -10,7 +10,7 @@ import (
 // EnsureRoundSchema installs explicit additional-round accounting. It never
 // derives grants or completion credit from existing execution/imported history.
 func EnsureRoundSchema(ctx context.Context, store *core.Store) error {
-	return store.EnsureSchema(ctx, "review_rounds", RoundSchemaV1SQL(), roundV2MigrationSQL())
+	return store.EnsureSchema(ctx, "review_rounds", RoundSchemaV1SQL(), roundV2MigrationSQL(), roundV3MigrationSQL())
 }
 
 var roundSchemaV1SQL = []string{
@@ -39,8 +39,8 @@ var roundSchemaV1SQL = []string{
 // RoundSchemaV1SQL retains the original canonical predecessor declarations.
 func RoundSchemaV1SQL() []string { return append([]string(nil), roundSchemaV1SQL...) }
 
-// RoundSchemaSQL returns the current canonical physical schema as a fresh slice.
-func RoundSchemaSQL() []string {
+// RoundSchemaV2SQL retains the carried-control predecessor declarations.
+func RoundSchemaV2SQL() []string {
 	out := RoundSchemaV1SQL()
 	out[0] = roundControlV2SQL()
 	return out
@@ -59,7 +59,37 @@ func roundV2MigrationSQL() []string {
 	return []string{
 		`ALTER TABLE review_round_controls RENAME TO legacy_review_round_controls`,
 		roundControlV2SQL(),
-		`INSERT INTO review_round_controls(` + roundColumns + `) SELECT ` + roundColumnsV1 + `,0,0,'','','' FROM legacy_review_round_controls`,
+		`INSERT INTO review_round_controls(` + roundColumnsV2 + `) SELECT ` + roundColumnsV1 + `,0,0,'','','' FROM legacy_review_round_controls`,
 		`DROP TABLE legacy_review_round_controls`,
+	}
+}
+
+// RoundSchemaSQL is the current schema; predecessor declarations stay exact.
+func RoundSchemaSQL() []string {
+	out := RoundSchemaV2SQL()
+	out[0] = roundControlV3SQL()
+	out[4] = strings.Replace(out[4], "ordinal BETWEEN 1 AND 1000", "ordinal BETWEEN 1 AND 9007199254740991", 1)
+	return out
+}
+func roundControlV3SQL() string {
+	s := roundControlV2SQL()
+	s = strings.Replace(s, "minimum BETWEEN 0 AND 1000", "minimum BETWEEN 0 AND 9007199254740991", 1)
+	s = strings.Replace(s, "maximum BETWEEN 0 AND 1000 AND minimum<=maximum", "(maximum_unbounded=0 AND maximum BETWEEN 0 AND 1000 AND minimum<=maximum) OR (maximum_unbounded=1 AND maximum=0)", 1)
+	s = strings.Replace(s, "used BETWEEN 0 AND maximum", "used BETWEEN 0 AND 9007199254740991 AND (maximum_unbounded=1 OR used<=maximum)", 1)
+	s = strings.Replace(s, "dry BETWEEN 0 AND used+initial_dry", "dry BETWEEN 0 AND used+initial_dry AND dry<=9007199254740991", 1)
+	s = strings.Replace(s, "actor_id TEXT NOT NULL", "maximum_unbounded INTEGER NOT NULL CHECK(maximum_unbounded IN (0,1)),actor_id TEXT NOT NULL", 1)
+	return s
+}
+func roundV3MigrationSQL() []string {
+	schema := RoundSchemaSQL()
+	return []string{
+		`ALTER TABLE review_round_controls RENAME TO legacy_review_round_controls_v2`,
+		schema[0],
+		`INSERT INTO review_round_controls(` + roundColumns + `) SELECT ` + roundColumnsV2 + `,0 FROM legacy_review_round_controls_v2`,
+		`DROP TABLE legacy_review_round_controls_v2`,
+		`ALTER TABLE review_round_completions RENAME TO legacy_review_round_completions_v2`,
+		schema[4],
+		`INSERT INTO review_round_completions SELECT * FROM legacy_review_round_completions_v2`,
+		`DROP TABLE legacy_review_round_completions_v2`,
 	}
 }

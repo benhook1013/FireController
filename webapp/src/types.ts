@@ -1,6 +1,6 @@
 export interface PageOptions {limit?: number; cursor?: string}
 export interface Page<T> {items: T[]; cursor?: string; has_more: boolean}
-export interface Project {id: string; name: string; github_repository_id: number; repository: string}
+export interface Project {handle?: string; id: string; name: string; github_repository_id: number; repository: string}
 export interface Worker {id: string; project_id: string; name: string}
 export interface JobSummary {id: string; title: string; worker_id: string; status: 'active'|'parked'|'blocked'|'completed'; revision: number}
 export interface Job extends JobSummary {project_id: string; brief: string; created_at: string; updated_at: string}
@@ -8,7 +8,8 @@ export interface DeliveryWorker extends Worker {primary_job_id: string; paused: 
 export interface DeliveryCheckpoint {sequence: number; job_revision: number; done: string; next: string; blocker: string; done_truncated: boolean; next_truncated: boolean; blocker_truncated: boolean; created_at: string}
 export interface DeliveryUpdate {sequence: number; job_revision: number; body: string; body_truncated: boolean; created_at: string}
 export interface DeliveryChecklist {revision: number; job_revision: number; total: number; done: number; created_at: string}
-export interface DeliveryJob extends JobSummary {worker_name: string; brief_preview: string; brief_preview_truncated: boolean; updated_at: string; update: DeliveryUpdate|null; checklist: DeliveryChecklist|null; checkpoint: DeliveryCheckpoint|null}
+export interface JobPublicSummary {job_id: string; job_revision: number; revision: number; title: string; body: string}
+export interface DeliveryJob extends JobSummary {summary?: JobPublicSummary;worker_name: string; brief_preview: string; brief_preview_truncated: boolean; updated_at: string; update: DeliveryUpdate|null; checklist: DeliveryChecklist|null; checkpoint: DeliveryCheckpoint|null}
 export interface DeliverySnapshot {workers: Page<DeliveryWorker>; jobs: Page<DeliveryJob>}
 export interface DeliveryOptions {worker_limit?: number; job_limit?: number; worker_cursor?: string; job_cursor?: string}
 export interface Checkpoint {id: string; project_id: string; job_id: string; job_revision: number; sequence: number; actor_id: string; worker_id: string; done: string; next: string; blocker: string; evidence: string[]; created_at: string}
@@ -44,11 +45,11 @@ export type ReviewAttemptState = ReviewOutcome|'preparing'|'held';
 export interface ReviewRunSummary {source: string; id: string; pull_number: number; source_run_id: string; channel: ReviewChannel; head_sha: string; reviewer: string; scope: string; coverage_limits: string[]; outcome: ReviewOutcome; attributable: boolean; complete: boolean; started_at: string; finished_at: string; found: number; accepted: number; routed: number; finalized: boolean; fixed: number}
 export interface ReviewAttemptSummary {source_attempt_id: string; channel: ReviewChannel; head_sha: string; state: ReviewAttemptState; started_at: string; finished_at: string; duration_seconds: number | null; source_run_id: string; trigger_id: string; provider_review_id: string}
 export interface ReviewPullDiff {files: number; additions: number; deletions: number}
-export interface ReviewPullSummary {diff?: ReviewPullDiff; is_draft?: boolean; merged_at?: string; number: number; title: string; state: 'open'|'merged'|'closed'|'unknown'; head_sha: string; base_ref: string; base_sha: string; ci_state: 'unknown'|'pending'|'success'|'failure'; mergeability: 'unknown'|'mergeable'|'conflicting'; complete: boolean; run_count: number; attempt_count: number; recent_runs: ReviewRunSummary[]; latest_attempts: ReviewAttemptSummary[]}
+export interface ReviewPullSummary {queue_position?: number; diff?: ReviewPullDiff; is_draft?: boolean; merged_at?: string; number: number; title: string; state: 'open'|'merged'|'closed'|'unknown'; head_sha: string; base_ref: string; base_sha: string; ci_state: 'unknown'|'pending'|'success'|'failure'; mergeability: 'unknown'|'mergeable'|'conflicting'; complete: boolean; run_count: number; attempt_count: number; recent_runs: ReviewRunSummary[]; latest_attempts: ReviewAttemptSummary[]}
 export interface ReviewFindingRoute {id:string;target_pull_number:number;revision:number;state:"active"|"superseded";disposition:"unadjudicated"|"accepted"|"rejected";reason:string;actor:string;decided_at:string;fix_sha:string;proof_note:string;fixed_at:string}
 export interface ReviewFinding {route?:ReviewFindingRoute;source_finding_id: string; title: string; detail: string; severity: 'info'|'low'|'medium'|'high'|'critical'|'unknown'; disposition: 'unadjudicated'|'accepted'|'routed'|'rejected'; decision_reason: string; actor: string; decided_at: string; fix_sha: string; proof_note: string; resolved_at: string}
 export interface ReviewSnapshot {project_id: string; revision: number; snapshot_id: string; source: string; observed_at: string; recorded_at: string}
-export interface ReviewQueue extends ReviewSnapshot, Page<ReviewPullSummary> {configured: boolean}
+export interface ReviewQueue extends ReviewSnapshot, Page<ReviewPullSummary> {configured: boolean; head_position?: number}
 export interface ReviewPull extends ReviewSnapshot {pull: ReviewPullSummary}
 export interface ReviewRunOptions extends PageOptions {snapshot?: string}
 export interface ReviewRuns extends ReviewSnapshot, Page<ReviewRunSummary> {}
@@ -59,7 +60,7 @@ export interface ReviewRunDetail extends ReviewSnapshot {pull_number: number; ru
 
 export interface ReviewAnchor {repository_id: number; repository: string; pull_number: number; parent_pull_number: number; candidate_sha: string; base_sha: string; parent_sha: string; merge_base_sha: string; patch_sha256: string; base_ref: string; observed_at: string}
 export interface ReviewPolicyAssessmentChannel {channel: 'cli'|'hosted'; covered: boolean; pending: boolean; rounds_configured?: boolean; rounds_complete?: boolean}
-export interface ReviewPolicyAssessment {incoming_routes_pending?:number;incoming_routes_capacity?:boolean;reason?:string;project_id: string; evidence_id: string; anchor: ReviewAnchor; source: 'captured_comparison'; policy_revision: number; evaluated_at: string; state: 'sufficient'|'held'|'unconfigured'; channels: ReviewPolicyAssessmentChannel[]}
+export interface ReviewPolicyAssessment {source_obligations_pending?:number;incoming_routes_pending?:number;incoming_routes_capacity?:boolean;reason?:string;project_id: string; evidence_id: string; anchor: ReviewAnchor; source: 'captured_comparison'; policy_revision: number; evaluated_at: string; state: 'sufficient'|'held'|'unconfigured'; channels: ReviewPolicyAssessmentChannel[]}
 
 export interface ReviewGroup {title: string; pull_numbers: number[]}
 export interface Presentation {project_id: string; revision: number; name: string; brand_name: string; tagline: string; headings: Partial<Record<import('./presentation').HeadingKey, string>>; theme: Partial<Record<import('./presentation').ThemeToken, string>>; review_groups?: ReviewGroup[]; updated_at: string}

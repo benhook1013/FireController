@@ -10,6 +10,7 @@ import (
 )
 
 type mutationInvocation struct {
+	summary                  client.SetJobSummaryRequest
 	reviewCheckpoint         client.ReviewCheckpointRequest
 	reviewCheckpointRecovery client.ReviewCheckpointRecovery
 	operation                string
@@ -35,6 +36,9 @@ type mutationInvocation struct {
 }
 
 func isMutation(command, operation string) bool {
+	if command == "jobs" && operation == "summary-set" {
+		return true
+	}
 	if command == "workers" && (operation == "pause" || operation == "resume") {
 		return true
 	}
@@ -55,6 +59,9 @@ func isMutation(command, operation string) bool {
 // keys make retries recoverable across separate CLI processes without a global
 // retry identity or silently regenerated key.
 func parseMutation(command, operation string, args []string) (*mutationInvocation, bool) {
+	if command == "jobs" && operation == "summary-set" {
+		return parseJobSummary(args)
+	}
 	if command == "workers" && (operation == "pause" || operation == "resume") {
 		return parseWorkerPause(operation, args)
 	}
@@ -178,6 +185,8 @@ func validMutationKey(key string) bool {
 
 func executeMutation(ctx context.Context, service *client.Client, call *mutationInvocation) (any, error) {
 	switch call.operation {
+	case "jobs summary-set":
+		return service.SetJobSummary(ctx, call.key, call.id, call.summary)
 	case "workers pause", "workers resume":
 		return service.ReplaceWorkerPause(ctx, call.key, call.pause)
 	case "jobs primary-set", "jobs primary-clear":

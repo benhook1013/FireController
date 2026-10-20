@@ -2,9 +2,10 @@ import type { QueryClient, QueryKey } from '@tanstack/react-query';
 import type { ProjectMetadataPage } from './types';
 import { refreshEventQueries } from './queries';
 
-export function isCurrentProjectView(project: string, pathname: string, lifetime: AbortController, current: AbortController | undefined): boolean {
+export function isCurrentProjectView(project: string, pathname: string, lifetime: AbortController, current: AbortController | undefined, handle?: string): boolean {
   const path = `/projects/${encodeURIComponent(project)}`;
-  return lifetime === current && !lifetime.signal.aborted && (pathname === path || pathname.startsWith(`${path}/`));
+  const alias = handle === undefined ? undefined : `/projects/${encodeURIComponent(handle)}`;
+  return lifetime === current && !lifetime.signal.aborted && (pathname === path || pathname.startsWith(`${path}/`) || alias !== undefined && (pathname === alias || pathname.startsWith(`${alias}/`)));
 }
 
 // Only affected stored-data views are invalidated. The shared helper cancels
@@ -15,7 +16,7 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
   const prefixes = new Map<string, QueryKey>();
   const add = (...parts: string[]) => { const prefix = [...key, ...parts]; prefixes.set(JSON.stringify(prefix), prefix); };
   if (all) {
-    for (const domain of ['delivery', 'map-editorial', 'map', 'map-entry', 'map-history', 'job-workstream', 'job-workstream-history', 'jobs', 'job', 'workers', 'worker', 'worker-pause', 'worker-pause-history', 'worker-primary', 'worker-primary-history', 'notes', 'note', 'note-history', 'checklist-current', 'checklist-history', 'checkpoint-latest', 'checkpoints', 'job-updates', 'inbox', 'thread']) add(domain);
+    for (const domain of ['delivery', 'map-editorial', 'map', 'map-entry', 'map-history', 'job-workstream', 'job-workstream-history', 'jobs', 'job', 'job-summary', 'workers', 'worker', 'worker-pause', 'worker-pause-history', 'worker-primary', 'worker-primary-history', 'notes', 'note', 'note-history', 'checklist-current', 'checklist-history', 'checkpoint-latest', 'checkpoints', 'job-updates', 'inbox', 'thread']) add(domain);
     add('reviews', 'current'); add('reviews', 'policy-assessment');
   }
   for (const { event_type: type, resource_id: id } of items) {
@@ -28,11 +29,13 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
       // An entry rename/archive affects recorded references in current views.
       add('job-workstream');
     } else if (type === 'job.created' || type === 'job.updated') {
-      add('delivery'); add('jobs'); add('job', id);
+      add('delivery'); add('jobs'); add('job', id); add('job-summary', id);
       // Captured revision labels must be compared with the new job revision.
       add('checklist-current', id); add('checkpoint-latest', id);
       // Assigned-job note lists depend on the job's current worker.
       add('notes');
+    } else if (type === 'job.summary_replaced') {
+      add('delivery'); add('job-summary', id);
     } else if (type === 'job.workstream_changed') {
       add('job-workstream', id); add('job-workstream-history', id);
     } else if (type === 'job.checkpointed') {

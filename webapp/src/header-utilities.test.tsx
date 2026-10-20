@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ProjectHeaderUtilities, ProjectIdentityHero } from './App';
 
 describe('project header utilities', () => {
-  it('exposes one attributed status with compact explicit refresh and disconnect controls', () => {
+  it('exposes one attributed status with compact explicit refresh and sign-out controls', () => {
     const html = renderToStaticMarkup(<ProjectHeaderUtilities status="live" refreshing={false} refresh={() => {}} disconnect={() => {}} />);
     expect(html).toContain('role="group" aria-label="Project utilities"');
     expect(html.match(/role="status"/gu)).toHaveLength(1);
@@ -12,7 +12,7 @@ describe('project header utilities', () => {
     expect(html).toContain('aria-label="Refresh visible data"');
     expect(html).toContain('aria-busy="false"');
     expect(html).toContain('>Refresh</button>');
-    expect(html).toContain('>Disconnect</button>');
+    expect(html).toContain('>Sign out</button>');
     expect(html).not.toContain('disabled');
     expect(html).not.toMatch(/connection-card|hero-actions|Project updates disconnected/u);
   });
@@ -23,7 +23,7 @@ describe('project header utilities', () => {
       expect(html.match(/role="status"/gu)).toHaveLength(1);
       expect(html).toContain('aria-busy="true" disabled=""');
       expect(html).toContain('>Refreshing…</button>');
-      expect(html).toContain('>Disconnect</button>');
+      expect(html).toContain('>Sign out</button>');
       expect(html).not.toContain('may be stale');
     }
   });

@@ -324,17 +324,21 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		InlineFindings   bool   `json:"inline_findings"`
 		DetailRequests   int    `json:"detail_requests"`
 		FixtureWrites    int    `json:"fixture_writes"`
+		QueueWindow      bool   `json:"queue_window"`
+		MergedHistory    bool   `json:"merged_history"`
 	}
 	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
 	if len(lines) == 2 {
 		_ = json.Unmarshal(lines[1], &result)
 	}
-	// Twenty explicit archive reads plus one bounded current-hero read on
-	// the pinned tab after metadata changes; no automatic archive walking.
-	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 20 || result.ArchiveRequests != 21 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || result.DetailRequests != 2 || result.FixtureWrites != 1 {
+	// Twenty explicit archive reads, one bounded current-hero read on the
+	// pinned tab, one or two first-page hero reads after reload's workspace
+	// restoration, and one selected old merged PR;
+	// no automatic archive walking.
+	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 20 || result.ArchiveRequests < 23 || result.ArchiveRequests > 24 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
 		phase := "unavailable"
 		switch result.Phase {
-		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation":
+		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation", "recent-queue", "merged-history":
 			phase = result.Phase
 		}
 		t.Fatalf("packaged archive browser failed at phase=%s; raw output withheld to protect fixture authority", phase)
@@ -346,10 +350,10 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	// old resolved snapshot must remain intact; native ledgers stay unchanged.
 	changed := map[string]int{
 		"review_snapshots": 1, "review_workspace": 0,
-		"review_pull_versions": 1, "review_pull_memberships": 1, "review_current_pulls": 0,
-		"review_run_versions": 1, "review_run_memberships": 1, "review_current_runs": -122, "review_finding_versions": 1,
+		"review_pull_versions": 7, "review_pull_memberships": 7, "review_current_pulls": 6,
+		"review_run_versions": 2, "review_run_memberships": 2, "review_current_runs": -121, "review_finding_versions": 2,
 		"review_attempt_versions": 1, "review_attempt_memberships": 1, "review_current_attempts": -122,
-		"review_current_totals": 0, "review_current_attempt_order": -122, "review_current_run_order": -122,
+		"review_current_totals": 6, "review_current_attempt_order": -122, "review_current_run_order": -121,
 		"events": 1, "receipts": 1, "sqlite_sequence": 0,
 	}
 	if len(before.tables) != len(after.tables) || !reflect.DeepEqual(before.metadata, after.metadata) || oldSnapshot != packagedArchiveSnapshotHash(t, ctx, data, project, snapshot) {
@@ -489,6 +493,29 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 	pull.Runs[0].Findings = []reviews.Finding{{SourceFindingID: "inline-finding", Title: "Inline retained finding", Detail: "Useful **inline detail**\n\n- Kept in this PR\n\n[unsafe](javascript:alert(1)) ![remote](https://outside.invalid/pixel)", Severity: "low", Disposition: "rejected", DecisionReason: "Reviewed *source proof*.", Actor: "Fixture reviewer", DecidedAt: at.Add(4 * time.Minute).Format(time.RFC3339Nano)}}
 	pull.Attempts = []reviews.Attempt{{SourceAttemptID: "current-only-attempt", Channel: "cli", HeadSHA: pull.HeadSHA, State: "completed", StartedAt: at.Add(3 * time.Minute).Format(time.RFC3339Nano), FinishedAt: at.Add(4 * time.Minute).Format(time.RFC3339Nano), DurationSeconds: &one, SourceRunID: "current-only-run"}}
 	observation.ExpectedRevision, observation.ObservedAt, observation.Queue = &one, at.Add(5*time.Minute).Format(time.RFC3339Nano), []reviews.PullInput{pull}
+	// Selected window inputs use the owning authenticated observation handler,
+	// rather than extending the legacy oversized archive's stopped SQL seed.
+	for _, selected := range []struct {
+		number int64
+		state  string
+		age    time.Duration
+	}{
+		{201, "merged", 10 * 24 * time.Hour},
+		{202, "merged", 9 * 24 * time.Hour},
+		{203, "merged", 4 * 24 * time.Hour},
+		{204, "merged", 0}, // Missing merge time stays visible.
+		{205, "unknown", 0},
+		{206, "merged", 24 * time.Hour},
+	} {
+		item := reviews.PullInput{Number: selected.number, Title: fmt.Sprintf("Queue window %d", selected.number), State: selected.state, HeadSHA: pull.HeadSHA, BaseRef: pull.BaseRef, BaseSHA: pull.BaseSHA, CIState: "success", Mergeability: "mergeable", Complete: true, Runs: []reviews.RunInput{}, Attempts: []reviews.Attempt{}}
+		if selected.age > 0 {
+			item.MergedAt = at.Add(-selected.age).Format(time.RFC3339Nano)
+		}
+		if selected.number == 201 {
+			item.Runs = []reviews.RunInput{{SourceRunID: "old-merged-original-round", Channel: "cli", HeadSHA: pull.HeadSHA, Reviewer: "Original retained reviewer", Scope: "full", Outcome: "completed", Attributable: true, Complete: true, StartedAt: at.Add(-11 * 24 * time.Hour).Format(time.RFC3339Nano), FinishedAt: at.Add(-10 * 24 * time.Hour).Format(time.RFC3339Nano), Found: 1, Finalized: true, CoverageLimits: []string{}, Findings: []reviews.Finding{{SourceFindingID: "old-merged-finding", Title: "Original merged finding", Detail: "Original **retained evidence**.", Severity: "low", Disposition: "rejected", DecisionReason: "Original review disposition.", Actor: "Original retained reviewer", DecidedAt: at.Add(-10 * 24 * time.Hour).Format(time.RFC3339Nano)}}}}
+		}
+		observation.Queue = append(observation.Queue, item)
+	}
 	newer, _ := json.Marshal(observation)
 	return receipt.ID, first, tail, newer
 }

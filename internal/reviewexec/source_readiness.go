@@ -34,21 +34,22 @@ type SourceReviewStateSummary struct {
 }
 
 type SourceReadinessAssessment struct {
-	ProjectID              string                    `json:"project_id"`
-	RefreshID              string                    `json:"refresh_id"`
-	Source                 string                    `json:"source"`
-	ConfigurationRevision  int64                     `json:"configuration_revision"`
-	PolicyRevision         int64                     `json:"policy_revision"`
-	SourceObservedAt       string                    `json:"source_observed_at"`
-	EvaluatedAt            string                    `json:"evaluated_at"`
-	Target                 SourceObservation         `json:"target"`
-	State                  string                    `json:"state"`
-	Reasons                []string                  `json:"reasons"`
-	Channels               []PolicyAssessmentChannel `json:"channels"`
-	CI                     SourceCISummary           `json:"ci"`
-	ReviewState            SourceReviewStateSummary  `json:"review_state"`
-	IncomingRoutesPending  int64                     `json:"incoming_routes_pending,omitempty"`
-	IncomingRoutesCapacity bool                      `json:"incoming_routes_capacity,omitempty"`
+	SourceObligationsPending int64                     `json:"source_obligations_pending,omitempty"`
+	ProjectID                string                    `json:"project_id"`
+	RefreshID                string                    `json:"refresh_id"`
+	Source                   string                    `json:"source"`
+	ConfigurationRevision    int64                     `json:"configuration_revision"`
+	PolicyRevision           int64                     `json:"policy_revision"`
+	SourceObservedAt         string                    `json:"source_observed_at"`
+	EvaluatedAt              string                    `json:"evaluated_at"`
+	Target                   SourceObservation         `json:"target"`
+	State                    string                    `json:"state"`
+	Reasons                  []string                  `json:"reasons"`
+	Channels                 []PolicyAssessmentChannel `json:"channels"`
+	CI                       SourceCISummary           `json:"ci"`
+	ReviewState              SourceReviewStateSummary  `json:"review_state"`
+	IncomingRoutesPending    int64                     `json:"incoming_routes_pending,omitempty"`
+	IncomingRoutesCapacity   bool                      `json:"incoming_routes_capacity,omitempty"`
 }
 
 type sourceReviewReader interface {
@@ -257,6 +258,13 @@ func (e *Engine) ReadSourceReadiness(ctx context.Context, scope core.Scope, numb
 			out.Reasons = append(out.Reasons, "routed_findings_capacity")
 		} else if out.IncomingRoutesPending > 0 {
 			out.Reasons = append(out.Reasons, "routed_findings_pending")
+		}
+		out.SourceObligationsPending, err = sourceObligationCount(ctx, tx, scope.ProjectID, number)
+		if err != nil {
+			return err
+		}
+		if out.SourceObligationsPending > 0 {
+			out.Reasons = append(out.Reasons, "source_obligations_pending")
 		}
 		anchor := Anchor{RepositoryID: r.repositoryID, PullNumber: number, CandidateSHA: r.Observation.HeadSHA, BaseSHA: r.Observation.BaseSHA, BaseRef: r.Observation.BaseRef, ParentPullNumber: r.Observation.ParentPullNumber, ParentSHA: r.Observation.ParentSHA}
 		missing, pending, roundsPending := false, false, false

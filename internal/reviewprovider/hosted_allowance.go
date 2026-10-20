@@ -3,6 +3,7 @@ package reviewprovider
 import (
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -41,6 +42,8 @@ var hostedAllowanceCommand = regexp.MustCompile(`(?i)@coderabbitai(?:[ \t]|$)`)
 
 const hostedAllowanceAvailable = "<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). Reviews are available now."
 const hostedAllowanceAvailableBasePlan = "<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). Reviews are available now."
+
+const hostedAllowanceGeneratedEnvelope = "<!-- coderabbit-ai-generated:v1 -->\n\n"
 
 // ResolveHostedAllowance performs no I/O. It recognizes only the independently
 // observed availability/cooldown grammar, never infers numeric allowance and never
@@ -122,8 +125,11 @@ func ResolveHostedAllowance(snapshot HostedAllowanceSnapshot, intent HostedTrigg
 			continue
 		}
 		state, minutes := "available_observed", int64(0)
-		if comment.Body != hostedAllowanceAvailable && comment.Body != hostedAllowanceAvailableBasePlan {
-			match := hostedAllowanceCooldown.FindStringSubmatch(comment.Body)
+		// One observed envelope may precede the exact existing grammar. Do not
+		// normalize whitespace or strip arbitrary, repeated or embedded comments.
+		reply := strings.TrimPrefix(comment.Body, hostedAllowanceGeneratedEnvelope)
+		if reply != hostedAllowanceAvailable && reply != hostedAllowanceAvailableBasePlan {
+			match := hostedAllowanceCooldown.FindStringSubmatch(reply)
 			if match == nil {
 				unsupported = true
 				continue

@@ -6,11 +6,16 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 
 ## Documents
 
+- [Shared project experience](shared-project-experience.md): friendly addresses, one public/private entry point, linked approved summaries and text-first agent onboarding.
+- [Job summaries](job-summaries.md): optional audience-facing prose with independent revision/history and explicit publication selection.
+- [Everyday-use skill](../skills/firecontroller-use/SKILL.md): existing worker connections, context recovery and handoffs.
+
 - [Worker contact](worker-presence.md): authenticated agent calls and quiet waits, separate from job state and model progress.
 
 - [Delivery and Project website](browser-experience.md): default worker lanes and review queue, merge-head hero and flexible editorial project presentation.
 
 - [Legacy adoption](legacy-adoption.md): optional source-specific tooling, selected retention and guarded native historical coordination imports, with explicit implementation gaps.
+- [Unfinished adoption obligations](adoption-obligations.md): enforced source finding and route holds, explicit resolution and minimum-only policy; source export and installed cutover proof remain separate.
 - [Stored review fronts](review-fronts.md): bounded verified source frames, current local channel assessment and honest browser front/queued/closed labels.
 - [Per-PR review rounds](review-round-controls.md): retained round limits, taper, channel closure and independent queue scheduling for adoption.
 - [Public project website](public-site.md): shareable project showcase, publication selection and the public/private field boundary.

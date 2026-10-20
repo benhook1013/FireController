@@ -3,8 +3,8 @@
 """Offline, explicitly selected source-helper adapter; never acquires live history.
 
 The history envelope is a SOURCE OWNER assertion of a canonical effective frame,
-quiescence and authoritative obligation clearance. This utility checks their
-shape/binding, not those live assertions.
+quiescence and either clearance or a complete carried obligation ledger. This
+utility checks shape and retained native bindings, not those live assertions.
 An explicit source-root is trusted executable Python code, not an inert dataset.
 """
 from __future__ import annotations
@@ -22,7 +22,13 @@ import sys
 import tempfile
 import unicodedata
 
+import source_carried_frame
+import source_carried_binding
+
 MAX_SNAPSHOT = 32 << 20
+MAX_LIMIT = (1 << 63) - 1
+MAX_ROUND_COUNT = (1 << 53) - 1
+SNAPSHOT_CHUNK_BYTES = 1 << 20
 MAX_HISTORY = 1 << 20
 MAX_SELECTION = 16 << 10
 
@@ -127,6 +133,63 @@ def private_input(raw, maximum, *, snapshot=False):
                 refuse("input_unavailable")
 
 
+def snapshot_digest(handle, size):
+    """Hash a pinned snapshot without retaining database bytes in memory."""
+    result, total = hashlib.sha256(), 0
+    while block := handle.read(min(SNAPSHOT_CHUNK_BYTES, size - total + 1)):
+        total += len(block)
+        if total > size:
+            refuse("source_changed")
+        result.update(block)
+    if total != size:
+        refuse("source_changed")
+    return result.hexdigest()
+
+
+@contextlib.contextmanager
+def private_snapshot(raw, maximum):
+    """Conserve one open, private sealed file through projection/publication."""
+    path = normalized_path(raw)
+    try:
+        initial = path.lstat()
+        if not private_regular(initial) or not 0 < initial.st_size <= maximum:
+            refuse("input_file_invalid")
+        no_sidecars(path)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            handle = os.fdopen(fd, "rb")
+        except BaseException:
+            os.close(fd)
+            raise
+    except OSError:
+        refuse("input_unavailable")
+    with handle:
+        try:
+            if identity(os.fstat(handle.fileno())) != identity(initial):
+                refuse("source_changed")
+            source_sha = snapshot_digest(handle, initial.st_size)
+            if identity(os.fstat(handle.fileno())) != identity(initial):
+                refuse("source_changed")
+        except OSError:
+            refuse("input_unavailable")
+        try:
+            yield path, source_sha
+        finally:
+            try:
+                if (identity(path.lstat()) != identity(initial)
+                        or identity(os.fstat(handle.fileno())) != identity(initial)):
+                    refuse("source_changed")
+                handle.seek(0)
+                if snapshot_digest(handle, initial.st_size) != source_sha:
+                    refuse("source_changed")
+                if (identity(path.lstat()) != identity(initial)
+                        or identity(os.fstat(handle.fileno())) != identity(initial)):
+                    refuse("source_changed")
+                no_sidecars(path)
+            except OSError:
+                refuse("input_unavailable")
+
+
 def no_sidecars(path):
     for suffix in ("-wal", "-shm", "-journal"):
         if os.path.lexists(str(path) + suffix):
@@ -200,6 +263,11 @@ def selection_input(value):
 def selected_history(value, selected, snapshot_sha):
     if type(value) is not dict:
         refuse("history_invalid")
+    if type(value.get('version')) is int and value['version'] == 2:
+        try:
+            return source_carried_frame.selected_history(value, selected, snapshot_sha)
+        except source_carried_frame.CarriedFrameRefusal as exc:
+            refuse(exc.code)
     # This independent owner assertion covers accepted-finding resolution and
     # incoming/outgoing routes. Unknown or unavailable clearance is not clear.
     # Quiescence alone only excludes active operations, not unfinished findings.
@@ -266,7 +334,9 @@ def control_facts(helpers, state, selected, history):
         raise Refusal("closure_only", pull_number=pr, channel=channel.value,
                       capability="fc reviews rounds close", numeric_counts="unknown")
     if allocation is not None:
-        if allocation.max_additional_completed is None:
+        # Both absent bounds are the source's legacy one-result allocation,
+        # not an explicit minimum-only rule. Keep that unsupported distinction.
+        if allocation.min_additional_completed is None and allocation.max_additional_completed is None:
             refuse("controls_unsupported")
         snapshot = controller._bounded_allocation_evidence(allocation, history)
         if snapshot.get("error") is not None or snapshot.get("in_flight") != 0:
@@ -309,13 +379,21 @@ def control_facts(helpers, state, selected, history):
             dry = 0
         elif policy.taper_satisfied(channel, [item], 1):
             dry += 1
-    if (not integer(minimum, 0, 1000) or not integer(maximum, 1, 1000)
-            or minimum > maximum or not integer(used, 0, maximum)
+    # Only an explicitly absent source allocation maximum carries this meaning;
+    # exhausted finite controls retain their existing v1 zero representation.
+    unbounded = allocation is not None and maximum is None
+    if (not integer(minimum, 0, MAX_ROUND_COUNT if unbounded else 1000)
+            or (unbounded and not integer(used, 0, MAX_ROUND_COUNT))
+            or (not unbounded and (not integer(maximum, 1, 1000)
+                                   or minimum > maximum or not integer(used, 0, maximum)))
             or not integer(dry, 0, 1000) or not integer(threshold, 1, 1000)):
         refuse("controls_unsupported")
-    minimum, maximum = max(0, minimum - used), max(0, maximum - used)
-    return dict(minimum_remaining=minimum, maximum_remaining=maximum, initial_dry=dry,
-                taper=threshold, tapered=tapered, closed=False)
+    facts = dict(minimum_remaining=max(0, minimum - used),
+                 maximum_remaining=0 if unbounded else max(0, maximum - used),
+                 initial_dry=dry, taper=threshold, tapered=tapered, closed=False)
+    if unbounded:
+        facts["maximum_unbounded"] = True
+    return facts
 
 
 def check_output(raw, body):
@@ -357,12 +435,28 @@ def prepare(args):
     helpers, hashes, code_hash = load_helpers(args.source_root)
     # All inputs remain open and unchanged through projection, then are verified
     # before any prepared output is published.
-    with private_input(args.selection, MAX_SELECTION) as (_, selection_bytes), \
+    with contextlib.ExitStack() as stack, \
+            private_input(args.selection, MAX_SELECTION) as (_, selection_bytes), \
             private_input(args.history_file, MAX_HISTORY) as (_, history_bytes), \
-            private_input(args.snapshot, MAX_SNAPSHOT, snapshot=True) as (path, snapshot_bytes):
+            private_snapshot(args.snapshot, snapshot_limit(args)) as (path, snapshot_sha):
         selected = selection_input(strict_json(selection_bytes))
-        snapshot_sha, history_sha = digest(snapshot_bytes), digest(history_bytes)
-        history = selected_history(strict_json(history_bytes), selected, snapshot_sha)
+        history_sha = digest(history_bytes)
+        history_value = strict_json(history_bytes)
+        history = selected_history(history_value, selected, snapshot_sha)
+        obligations_file = getattr(args, 'obligations_file', None)
+        obligations, obligations_sha = None, None
+        if history_value['version'] == 2:
+            if not obligations_file:
+                refuse('obligations_binding_required')
+            _, obligations_bytes = stack.enter_context(private_input(obligations_file, 2 << 20))
+            try:
+                obligations = source_carried_binding.reference(
+                    history_value, selected, snapshot_sha, strict_json(obligations_bytes))
+            except source_carried_frame.CarriedFrameRefusal as exc:
+                refuse(exc.code)
+            obligations_sha = digest(obligations_bytes)
+        elif obligations_file is not None:
+            refuse('obligations_binding_unexpected')
         uri = path.as_uri() + "?mode=ro&immutable=1"
         with contextlib.closing(sqlite3.connect(uri, uri=True)) as connection:
             connection.execute("PRAGMA query_only=ON")
@@ -376,16 +470,24 @@ def prepare(args):
             facts = control_facts(helpers, state, selected, history)
         binding = dict(version=1, snapshot_sha256=snapshot_sha, history_sha256=history_sha,
                        source_code_sha256=code_hash)
+        if obligations is not None:
+            binding.update(version=2, obligations_binding_sha256=obligations_sha)
         prepared = {key: selected[key] for key in ("version", "repository_id", "expected_revision", "pull_number", "channel", "source", "source_key")}
+        if facts.get("maximum_unbounded") is True or obligations is not None:
+            prepared["version"] = 2
+        if obligations is not None:
+            prepared['obligations'] = obligations
         prepared.update(source_sha256=digest(canonical(binding)), **facts)
         provenance = dict(version=1, kind="offline_source_control_preparation", binding=binding,
                           source_sha256=prepared["source_sha256"], source_helpers=hashes,
                           selection_sha256=digest(selection_bytes), prepared_sha256=digest(canonical(prepared)),
-                          source_owner_assertions={"projection_complete": True, "quiescent": True, "obligations_clear": True},
+                          source_owner_assertions={"projection_complete": True, "quiescent": True,
+                              "obligations_clear": history_value['obligations_clear']},
                           independently_verified_live_assertions=False)
     if source_hash(args.source_root)[2] != code_hash:
         refuse("source_changed")
-    if args.output == args.provenance or args.output in (args.snapshot, args.history_file, args.selection) or args.provenance in (args.snapshot, args.history_file, args.selection):
+    inputs = (args.snapshot, args.history_file, args.selection, getattr(args, 'obligations_file', None))
+    if args.output == args.provenance or args.output in inputs or args.provenance in inputs:
         refuse("output_invalid")
     output, proof = canonical(prepared), canonical(provenance)
     check_output(args.output, output)
@@ -408,10 +510,33 @@ class UniqueInput(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
+def positive_limit(value):
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("invalid positive limit") from None
+    if not 1 <= parsed <= MAX_LIMIT:
+        raise argparse.ArgumentTypeError("invalid positive limit")
+    return parsed
+
+
+def database_limit_option(out):
+    out.add_argument("--max-database-bytes", type=positive_limit, action=UniqueInput,
+                     help="snapshot byte limit, 1..9223372036854775807 (default: 33554432)")
+
+
+def snapshot_limit(args):
+    return getattr(args, "max_database_bytes", None) or MAX_SNAPSHOT
+
+
 def parser():
-    out = QuietParser(allow_abbrev=False, description=__doc__, epilog="History is owner-exported JSON v1: repository_id, snapshot_sha256, projection_complete:true, quiescent:true, obligations_clear:true, prs:[{pull_number,channels:{cli:[effective rows],hosted:[effective rows]}}]. Selection is v1: repository_id, expected_revision:0, source, source_key, pull_number, channel. Output is a native 14-field prepared control; separate provenance records input/helper hashes. obligations_clear asserts authoritative accepted-finding and incoming/outgoing route clearance; unknown/unavailable clearance is not clear. No live acquisition or independent assertion verification or migration-readiness claim.")
+    out = QuietParser(allow_abbrev=False, description=__doc__, epilog="History is owner-exported JSON v1: repository_id, snapshot_sha256, projection_complete:true, quiescent:true, obligations_clear:true, prs:[{pull_number,channels:{cli:[effective rows],hosted:[effective rows]}}]. Selection is v1: repository_id, expected_revision:0, source, source_key, pull_number, channel. Output is a native v1 prepared control for finite bounds, or v2 with maximum_unbounded:true and maximum_remaining:0 for a source minimum-only allocation; separate provenance records input/helper hashes. obligations_clear asserts authoritative accepted-finding and incoming/outgoing route clearance; unknown/unavailable clearance is not clear. No live acquisition or independent assertion verification or migration-readiness claim.")
     for flag in ("source-root", "snapshot", "history-file", "selection", "output", "provenance"):
         out.add_argument("--" + flag, required=True, action=UniqueInput)
+    database_limit_option(out)
+    out.add_argument('--obligations-file', action=UniqueInput,
+        help='private native unchanged-preview bindings for the complete version-two carried ledger; required for numeric preparation from that frame')
+    out.epilog += ' Version-two carried frames use obligations_clear:false with exact obligations, row-digest bindings and deferred_controls; nondeferred preparation requires --obligations-file with actual unchanged native preview receipts. Deferred controls produce no prepared policy. See tools/legacyimport/README.md.'
     return out
 
 

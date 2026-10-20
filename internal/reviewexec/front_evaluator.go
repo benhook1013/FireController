@@ -20,6 +20,13 @@ func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64
 		if plan.Repository.ID != repo || !sameTarget(plan.Pull, repo, plan.Pull.Number) {
 			return evaluatedFront{state: "unknown", reason: "source_unavailable"}, nil
 		}
+		if err := requireSourceObligationsClear(ctx, q, r.ProjectID, plan.Pull.Number); err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Code == "review_held" {
+				return evaluatedFront{state: "held", reason: "source_obligations_pending", plan: plan}, nil
+			}
+			return evaluatedFront{}, err
+		}
 		if plan.Pull.Merged {
 			continue
 		}

@@ -184,6 +184,7 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
 	var result struct {
 		State                    string `json:"state"`
+		RepeatedFallbackHash     bool   `json:"repeated_fallback_hash"`
 		FixtureWrites            int    `json:"fixture_writes"`
 		SessionPosts             int    `json:"session_posts"`
 		SessionDeletes           int    `json:"session_deletes"`
@@ -198,14 +199,14 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 		MetadataStreams          int    `json:"metadata_streams"`
 		InboxStreams             int    `json:"inbox_streams"`
 	}
-	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 24 || result.SessionPosts != 4 || result.SessionDeletes != 4 || result.SessionRenewals != 3 || result.MissingSessionRefusals < 1 || result.ProgressAccessRefusals != 1 || result.ActionWrites != 7 || !result.MetadataReconnect || result.InjectedMetadataFailures != 1 || result.InjectedConsoleErrors < 0 || result.InjectedConsoleErrors > 1 || result.PresentationReads != 4 || result.MetadataStreams < 3 || result.MetadataStreams > 4 || result.InboxStreams < 2 || result.InboxStreams > 3 {
+	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || !result.RepeatedFallbackHash || result.FixtureWrites != 25 || result.SessionPosts != 4 || result.SessionDeletes != 4 || result.SessionRenewals != 3 || result.MissingSessionRefusals < 1 || result.ProgressAccessRefusals != 1 || result.ActionWrites != 7 || !result.MetadataReconnect || result.InjectedMetadataFailures != 1 || result.InjectedConsoleErrors < 0 || result.InjectedConsoleErrors > 1 || result.PresentationReads != 4 || result.MetadataStreams < 3 || result.MetadataStreams > 4 || result.InboxStreams < 2 || result.InboxStreams > 3 {
 		t.Fatalf("invalid packaged browser result: fixture_writes=%d posts=%d deletes=%d renewals=%d refusals=%d actions=%d metadata=%t injected=%d console=%d reads=%d streams=%d inbox=%d", result.FixtureWrites, result.SessionPosts, result.SessionDeletes, result.SessionRenewals, result.MissingSessionRefusals, result.ActionWrites, result.MetadataReconnect, result.InjectedMetadataFailures, result.InjectedConsoleErrors, result.PresentationReads, result.MetadataStreams, result.InboxStreams)
 	}
 	daemon.stop(t)
 	if external.Load() != 0 {
 		t.Fatal("browser smoke attempted external HTTP")
 	}
-	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=24 session_posts=4 session_deletes=4 session_renewals=3 missing_session_control=passed progress_access_refusal=passed browser_action_writes=7 metadata_reconnect=true injected_metadata_failures=1 reader_presentation_reads=4 reader_metadata_streams=%d reader_inbox_streams=%d daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.MetadataStreams, result.InboxStreams, engine.Load())
+	t.Logf("packaged browser passed: total=%s viewport=390 repeated_fallback_hash=passed fixture_writes=25 session_posts=4 session_deletes=4 session_renewals=3 missing_session_control=passed progress_access_refusal=passed browser_action_writes=7 metadata_reconnect=true injected_metadata_failures=1 reader_presentation_reads=4 reader_metadata_streams=%d reader_inbox_streams=%d daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.MetadataStreams, result.InboxStreams, engine.Load())
 }
 
 // The only early driver output is its owned Chromium group ID. Keep all output
@@ -277,6 +278,13 @@ func (o *browserOutput) safePhase() string {
 			JobBriefReads            int             `json:"job_brief_reads"`
 			JobArchiveReads          int             `json:"job_archive_reads"`
 			ContactHistoryReads      int             `json:"contact_history_reads"`
+			FallbackGeometry         struct {
+				Top        int  `json:"top"`
+				MastBottom int  `json:"mast_bottom"`
+				Scroll     int  `json:"scroll"`
+				Target     int  `json:"target"`
+				Aligned    bool `json:"aligned"`
+			} `json:"fallback_geometry"`
 		}
 		if json.Unmarshal(line, &record) != nil || record.State != "FAIL" {
 			continue
@@ -316,7 +324,7 @@ func (o *browserOutput) safePhase() string {
 			if record.Phase == "live-reviews" {
 				allowed := false
 				switch record.Checkpoint {
-				case "reviews-open", "unconfigured", "seed-observation", "initial-open-pull", "initial-merged-pull", "updated-observation", "updated-open-pull", "updated-merged-pull", "hosted-run", "merged-retention", "delivery-queue", "queue-heading", "queue-pull", "merge-head", "hosted-summary", "current-round-grants", "current-round-limits-shared", "current-round-close-live", "reviews-return", "reviews-heading", "selected-worker", "sanitized-literal", "reviews-url", "queue-jump-visible", "reload-head-spa":
+				case "reviews-open", "unconfigured", "fallback-observation", "fallback-first-jump", "fallback-scroll-away", "fallback-repeat-jump", "seed-observation", "initial-open-pull", "initial-merged-pull", "updated-observation", "updated-open-pull", "updated-merged-pull", "hosted-run", "merged-retention", "delivery-queue", "queue-heading", "queue-pull", "merge-head", "hosted-summary", "current-round-grants", "current-round-limits-shared", "current-round-close-live", "reviews-return", "reviews-heading", "selected-worker", "sanitized-literal", "reviews-url", "queue-jump-visible", "reload-head-spa":
 					allowed = true
 				}
 				valid := allowed
@@ -327,6 +335,10 @@ func (o *browserOutput) safePhase() string {
 					class := "driver"
 					if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
 						class = record.FailureClass
+					}
+					if strings.HasPrefix(record.Checkpoint, "fallback-") {
+						g := record.FallbackGeometry
+						return fmt.Sprintf("live-reviews/%s class=%s top=%d mast_bottom=%d scroll=%d target=%d aligned=%t errors=%d external=%d forbidden_writes=%d", record.Checkpoint, class, g.Top, g.MastBottom, g.Scroll, g.Target, g.Aligned, record.Errors, record.External, record.Writes)
 					}
 					return fmt.Sprintf("live-reviews/%s class=%s run_fetches=%d presentation_reads=%d metadata_streams=%d inbox_streams=%d forbidden_writes=%d action_writes=%d errors=%d external=%d", record.Checkpoint, class, record.ReviewRunReads, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Writes, record.ActionWrites, record.Errors, record.External)
 				}

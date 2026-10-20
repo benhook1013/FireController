@@ -4,6 +4,8 @@ import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Delivery, DeliveryHero, DeliveryLanes, MergeHeadContent, deliveryQuery, deliveryReviewQuery, groupDeliveryLanes, selectMergeHead } from './delivery';
 import { WorkspaceContext, type Session } from './workspace';
+import { reviewQueueQuery } from './review-workspace';
+import type { ReviewFronts } from './review-fronts';
 import type { DeliveryJob, DeliverySnapshot, DeliveryWorker, ReviewPullSummary, ReviewQueue, ReviewRunSummary } from './types';
 
 const home = '/projects/project_one';
@@ -22,6 +24,13 @@ function markup(node: React.ReactNode) {
 }
 
 describe('bounded Delivery board', () => {
+  it('prefers the authored short summary over the private brief preview while keeping full detail links', () => {
+    const current = {...job('job_active','active'),brief_preview:'PRIVATE_STANDING_INSTRUCTIONS',summary:{job_id:'job_active',job_revision:3,revision:2,title:'Shareable card title',body:'A concise **result**.'}};
+    const html=markup(<DeliveryLanes value={{workers:{items:[worker],has_more:false},jobs:{items:[current],has_more:false}}} home={home}/>);
+    expect(html).toContain('Shareable card title');expect(html).toContain('A concise <strong>result</strong>');
+    expect(html).not.toContain('PRIVATE_STANDING_INSTRUCTIONS');expect(html).toContain('/jobs/job_active');
+  });
+
   it('keeps empty workers, real owners outside the worker page, and genuinely unassigned jobs distinct', () => {
     const lanes = groupDeliveryLanes(board);
     expect(lanes.map(lane => lane.id)).toEqual(['worker_one', 'outside_owner', 'empty_worker', '']);
@@ -150,6 +159,24 @@ describe('stored merge head and review summaries', () => {
     expect(selectMergeHead(queue([pull(1, 'closed')]))).toEqual({ state: 'none' });
     expect(selectMergeHead({ ...queue([]), configured: false })).toEqual({ state: 'unknown', reason: 'unconfigured' });
   });
+  it('uses the stored global head and remains conservative when a filtered window omits it', () => {
+    const items = [{ ...pull(1, 'merged'), queue_position: 2 }, { ...pull(2, 'open'), queue_position: 9 }, { ...pull(3, 'open'), queue_position: 12 }];
+    expect(selectMergeHead({ ...queue(items), head_position: 9 })).toEqual({ state: 'head', pull: items[1] });
+    expect(selectMergeHead(queue(items))).toEqual({ state: 'unknown', reason: 'preceding' });
+    expect(selectMergeHead({ ...queue([items[2]]), head_position: 9 })).toEqual({ state: 'unknown', reason: 'next-page' });
+    expect(selectMergeHead({ ...queue([pull(2, 'open')]), head_position: 9 })).toEqual({ state: 'unknown', reason: 'next-page' });
+    expect(selectMergeHead(queue([items[0]]))).toEqual({ state: 'none' });
+  });
+  it('renders the verified channel status once in the same facts position as the queue', () => {
+    const value = queue([pull(2, 'open')]);
+    const fronts: ReviewFronts = { project_id: 'project_one', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: value.snapshot_id, queue: [2], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: 'head', base_sha: 'base', base_ref: 'main' }] };
+    const html = markup(<MergeHeadContent queue={value} home={home} fronts={fronts} />);
+    expect(html).toContain('review-pull-facts"><span class="badge review-position-front"');
+    expect(html.match(/>Review front · Hosted<\/span>/gu)).toHaveLength(1);
+    expect(html).not.toContain('>Open</span>');
+    expect(markup(<MergeHeadContent queue={value} home={home} fronts={{ ...fronts, snapshot_id: 'old' }} />)).not.toContain('review-position-front');
+    expect(markup(<MergeHeadContent queue={value} home={home} />)).not.toMatch(/class="badge review-(position|state)-/u);
+  });
   it('does not claim no head or merge readiness from a partial queue', () => {
     const partial = markup(<MergeHeadContent queue={queue([pull(1, 'merged')], true)} home={home} />);
     expect(partial).toContain('Merge head not determined');
@@ -180,11 +207,11 @@ describe('stored merge head and review summaries', () => {
     const session = { project:{id:'project_one',repository:'example/project'}, controller: new AbortController(), api: { reviewQueue: read } } as unknown as Session;
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     try {
-      const hero = deliveryReviewQuery(session, key), overview = deliveryReviewQuery(session, key);
+      const hero = deliveryReviewQuery(session, key), overview = reviewQueueQuery(session, key, 'recent');
       await Promise.all([client.fetchQuery(hero), client.fetchQuery(overview)]);
       expect(read).toHaveBeenCalledTimes(1);
-      expect(read.mock.calls[0][0]).toEqual({ limit: 20 });
-      expect(hero.queryKey).toEqual([...key, 'reviews', 'current', 'queue', '']);
+      expect(read.mock.calls[0][0]).toEqual({ limit: 20, view: 'recent' });
+      expect(hero.queryKey).toEqual([...key, 'reviews', 'current', 'queue', 'recent', '']);
     } finally { client.clear(); }
   });
   it('uses dedicated neutral merge-head loading rather than generic page rows', () => {

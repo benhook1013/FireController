@@ -1,6 +1,8 @@
 # Copyright 2026 FireController contributors. SPDX-License-Identifier: Apache-2.0
 """Executable adapter proof with an explicitly selected synthetic trusted package."""
 import copy
+import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -97,14 +99,73 @@ class ReviewsAdapterTests(unittest.TestCase):
             args += ["--"+key,str(value)]
         return args
 
-    def invoke(self, expected=0, **kwargs):
+    def invoke(self, expected=0, limits=(), **kwargs):
         env=dict(os.environ,PYTHONDONTWRITEBYTECODE="1")
-        result=subprocess.run(self.command(),capture_output=not kwargs,env=env,timeout=10,**kwargs)
+        result=subprocess.run(self.command()+list(limits),capture_output=not kwargs,env=env,timeout=10,**kwargs)
         self.assertEqual(result.returncode,expected,result.stderr if not kwargs else "safe subprocess refusal")
         if not kwargs:
             self.assertNotIn(b"Original",result.stdout+result.stderr)
             self.assertNotIn(str(self.root).encode(),result.stdout+result.stderr)
         return result
+
+    def test_explicit_limit_cli_range_duplicates_and_safe_diagnostics(self):
+        args = self.command()[3:]
+        defaults = adapter.source_limits(adapter.parser().parse_args(args))
+        self.assertEqual(defaults, adapter.SOURCE_LIMITS)
+        for name in ("max-database-bytes", "max-rows-per-table", "max-total-rows", "max-cell-bytes", "max-total-cell-bytes"):
+            for value in ("1", str((1 << 63)-1)):
+                parsed = adapter.parser().parse_args(args+["--"+name, value])
+                self.assertEqual(getattr(parsed, name.replace("-", "_")), int(value))
+            for tail in (["--"+name, "0"], ["--"+name, "-1"], ["--"+name, str(1 << 63)],
+                         ["--"+name, "PRIVATE_BAD_VALUE"], ["--"+name, "1", "--"+name, "2"]):
+                with self.subTest(name=name, tail=tail), contextlib.redirect_stderr(io.StringIO()) as errors, self.assertRaises(SystemExit) as failure:
+                    adapter.parser().parse_args(args+tail)
+                self.assertEqual(failure.exception.code, 2)
+                self.assertEqual(errors.getvalue(), '{"error":"arguments_invalid"}\n')
+
+    def test_bound_only_retry_preserves_prepared_and_provenance(self):
+        self.invoke()
+        before = self.output.read_bytes(), self.proof.read_bytes()
+        raised = ("--max-database-bytes", str(512 << 20), "--max-rows-per-table", "100000",
+                  "--max-total-rows", "500000", "--max-cell-bytes", str(8 << 20),
+                  "--max-total-cell-bytes", str(512 << 20))
+        self.assertEqual(json.loads(self.invoke(limits=raised).stdout)["outcome"], "unchanged")
+        self.assertEqual(before, (self.output.read_bytes(), self.proof.read_bytes()))
+
+    def test_large_unselected_database_needs_explicit_byte_override(self):
+        with self.snapshot.open("ab") as handle:
+            handle.truncate((33 << 20)+17)
+        result = self.invoke(expected=3)
+        self.assertEqual(json.loads(result.stderr), {"error": "input_file_invalid"})
+        self.assertFalse(self.output.exists()); self.assertFalse(self.proof.exists())
+        self.invoke(limits=("--max-database-bytes", str(512 << 20)))
+        self.assertEqual(json.loads(self.output.read_bytes())["groups"][0]["pulls"][0]["runs"][0]["found"], 1)
+        with adapter.private_snapshot(str(self.snapshot), 512 << 20) as (_, source_sha):
+            self.assertEqual(json.loads(self.proof.read_bytes())["snapshot_sha256"], source_sha)
+
+    def test_explicit_table_and_cell_limits_are_independent_and_enforced(self):
+        cases = ((dict(max_rows_per_table=5001), 1, 5001, 1),
+                 (dict(max_total_rows=20005), 5, 4001, 1),
+                 (dict(max_cell_bytes=(256 << 10)+1), 1, 1, (256 << 10)+1),
+                 (dict(max_total_cell_bytes=513*65536), 1, 513, 65536))
+        for overrides, tables, rows, cell in cases:
+            with self.subTest(overrides=overrides), sqlite3.connect(':memory:') as connection:
+                for n in range(tables):
+                    connection.execute('CREATE TABLE t%d(payload TEXT)' % n)
+                    connection.executemany('INSERT INTO t%d VALUES(?)' % n, [('x'*cell,)]*rows)
+                connection.commit()
+                with self.assertRaises(adapter.Refusal) as failure:
+                    adapter.bounded_database(connection)
+                self.assertEqual(failure.exception.code, "snapshot_bounds")
+                connection.rollback()
+                bounds = adapter.bounded_database(connection, **overrides)
+                self.assertEqual(bounds["rows"], tables*rows)
+                self.assertEqual(bounds["cell_bytes"], tables*rows*cell)
+                connection.rollback()
+                lowered = {name: value-1 for name, value in overrides.items()}
+                with self.assertRaises(adapter.Refusal) as failure:
+                    adapter.bounded_database(connection, **lowered)
+                self.assertEqual(failure.exception.code, "snapshot_bounds")
 
     def test_aggregate_cell_budget_admits_bounded_source_above_eight_mib(self):
         payload = 'UNSELECTED_PRIVATE_' + 'x' * (65536 - len('UNSELECTED_PRIVATE_'))

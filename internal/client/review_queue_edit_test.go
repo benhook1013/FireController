@@ -51,6 +51,10 @@ func TestReviewQueueEditClientValidationBeforeIO(t *testing.T) {
 		"retirement_reason": []byte(`{"expected_revision":0,"repository_id":701,"source":"x","retired":[{"number":2,"reason":"merged"}]}`),
 		"no_edits":          []byte(`{"expected_revision":0,"repository_id":701,"source":"x"}`),
 	}
+	for _, order := range []string{`null`, `[]`, `[1,1]`, `[0]`, `[-1]`, `[2147483648]`, `[1.0]`, `[null]`, `["1"]`, `true`, `[` + strings.Repeat(`1,`, 100) + `2]`} {
+		bad["order_"+order] = []byte(`{"expected_revision":0,"repository_id":701,"source":"x","order":` + order + `}`)
+	}
+	bad["retiring_order"] = []byte(`{"expected_revision":0,"repository_id":701,"source":"x","retired":[{"number":1,"reason":"defunct"}],"order":[1]}`)
 	for name, document := range bad {
 		t.Run(name, func(t *testing.T) {
 			_, err := c.EditReviewQueue(t.Context(), "selected-key", document)
@@ -74,6 +78,9 @@ func TestReviewQueueEditClientValidationBeforeIO(t *testing.T) {
 		if err := client.ValidateReviewQueueEditDocument(document); err != nil {
 			t.Fatal("valid omitted/empty fields refused", err)
 		}
+	}
+	if err := client.ValidateReviewQueueEditDocument([]byte(`{"expected_revision":0,"repository_id":701,"source":"x","order":[2147483647,1]}`)); err != nil {
+		t.Fatal("valid order-only refused", err)
 	}
 	// Count and normalized JSON budgets are checked locally, including HTML escapes.
 	var entries []any
@@ -153,6 +160,122 @@ func TestReviewQueueEditClientTransportStrictReceiptAndNoRetry(t *testing.T) {
 	_, err = c.EditReviewQueue(ctx, "selected-key", document)
 	if !errors.As(err, &failure) || failure.OutcomeUnknown || calls.Load() != before {
 		t.Fatal("pre-dispatch cancellation sent request", err)
+	}
+}
+
+func TestReviewQueueEditClientMetadataActualHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields, state, mergedAt string
+		diff                          *client.ReviewPullDiff
+		draft                         *bool
+	}{
+		{"known-zero-false", `"diff":{"files":0,"additions":0,"deletions":0},"is_draft":false,`, "open", "", &client.ReviewPullDiff{}, func() *bool { v := false; return &v }()},
+		{"merged", `"diff":{"files":3,"additions":12,"deletions":4},"merged_at":"2026-10-19T22:10:11.123456789Z",`, "merged", "2026-10-19T22:10:11.123456789Z", &client.ReviewPullDiff{Files: 3, Additions: 12, Deletions: 4}, nil},
+		{"unknown", "", "open", "", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newReviewClientFixture(t)
+			if _, err := f.store.DB().Exec(`UPDATE credentials SET is_admin=1 WHERE id='review-client-credential'`); err != nil {
+				t.Fatal(err)
+			}
+			document := json.RawMessage(strings.Replace(string(queueEditDocument(0)), `"title":`, tc.fields+`"title":`, 1))
+			document = json.RawMessage(strings.Replace(string(document), `"state":"open"`, `"state":"`+tc.state+`"`, 1))
+			handler := f.server.Config.Handler
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/queue/edits") {
+					raw, err := io.ReadAll(r.Body)
+					if err != nil || !bytes.Equal(raw, document) {
+						t.Error("queue metadata wire bytes changed", err)
+					}
+					r.Body = io.NopCloser(bytes.NewReader(raw))
+				}
+				handler.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			c, err := client.New(t.Context(), profileBinding(t, server.URL, f.store.InstanceID(), f.project))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			receipt, err := c.EditReviewQueue(t.Context(), "metadata-edit", document)
+			if err != nil || receipt.Revision != 1 {
+				t.Fatal(receipt, err)
+			}
+			pull, err := c.ReviewPull(t.Context(), 1, receipt.ID)
+			if err != nil || !reflect.DeepEqual(pull.Pull.Diff, tc.diff) || !reflect.DeepEqual(pull.Pull.IsDraft, tc.draft) || pull.Pull.MergedAt != tc.mergedAt {
+				t.Fatal("metadata lost known/unknown values", pull.Pull, err)
+			}
+		})
+	}
+}
+
+func TestReviewQueueEditClientOrderOnlyActualHTTP(t *testing.T) {
+	f := newReviewClientFixture(t)
+	if _, err := f.store.DB().Exec(`UPDATE credentials SET is_admin=1 WHERE id='review-client-credential'`); err != nil {
+		t.Fatal(err)
+	}
+	c, err := client.New(t.Context(), profileBinding(t, f.server.URL, f.store.InstanceID(), f.project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	seed := json.RawMessage(`{"expected_revision":0,"repository_id":701,"source":"order seed","queue":[{"number":1,"title":"One","state":"open","ci_state":"unknown","mergeability":"unknown"},{"number":2,"title":"Two","state":"open","ci_state":"unknown","mergeability":"unknown"},{"number":3,"title":"Three","state":"open","ci_state":"unknown","mergeability":"unknown"}]}`)
+	if _, err := c.EditReviewQueue(t.Context(), "order-seed", seed); err != nil {
+		t.Fatal(err)
+	}
+	document := json.RawMessage(`{"expected_revision":1,"repository_id":701,"source":"order-only","order":[3,1]}`)
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/queue/edits") {
+			calls++
+			raw, err := io.ReadAll(r.Body)
+			if err != nil || !bytes.Equal(raw, document) {
+				t.Error("order-only wire changed", string(raw), err)
+			}
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+		}
+		f.server.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	bound, err := client.New(t.Context(), profileBinding(t, server.URL, f.store.InstanceID(), f.project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	receipt, err := bound.EditReviewQueue(t.Context(), "order-only", document)
+	if err != nil || receipt.Revision != 2 || calls != 1 {
+		t.Fatal(receipt, err, calls)
+	}
+	queue, err := bound.ReviewQueue(t.Context(), client.PageOptions{})
+	if err != nil || len(queue.Items) != 3 {
+		t.Fatal(queue, err)
+	}
+	for i, n := range []int64{3, 2, 1} {
+		if queue.Items[i].Number != n {
+			t.Fatal(queue.Items)
+		}
+	}
+}
+
+func TestReviewQueueEditClientMalformedMetadataBeforeIO(t *testing.T) {
+	var c *client.Client
+	for _, fields := range []string{
+		`"diff":null`, `"diff":[]`, `"diff":{}`, `"diff":{"files":0,"additions":0}`,
+		`"diff":{"files":null,"additions":0,"deletions":0}`, `"diff":{"files":0.5,"additions":0,"deletions":0}`,
+		`"diff":{"files":-1,"additions":0,"deletions":0}`, `"diff":{"files":2147483648,"additions":0,"deletions":0}`,
+		`"diff":{"files":0,"additions":0,"deletions":0,"extra":0}`, `"diff":{"files":0,"files":1,"additions":0,"deletions":0}`,
+		`"is_draft":null`, `"is_draft":"false"`, `"is_draft":0`, `"is_draft":false,"is_draft":true`,
+		`"merged_at":null`, `"merged_at":0`, `"merged_at":"not-an-instant"`, `"merged_at":"2026-10-19T22:10:11Z"`,
+	} {
+		document := json.RawMessage(strings.Replace(string(queueEditDocument(0)), `"title":`, fields+`,"title":`, 1))
+		if fields == `"merged_at":"not-an-instant"` {
+			document = json.RawMessage(strings.Replace(string(document), `"state":"open"`, `"state":"merged"`, 1))
+		}
+		if client.ValidateReviewQueueEditDocument(document) == nil {
+			t.Fatal("malformed metadata admitted", fields)
+		}
+		_, err := c.EditReviewQueue(t.Context(), "metadata-invalid", document)
+		checkError(t, err, "validation_failed")
 	}
 }
 

@@ -171,6 +171,8 @@ class PopulatedAcquisitionTests(unittest.TestCase):
             "baseRefOid": PARENT, "headRefName": "feature", "headRefOid": HEAD,
             "headRepository": {"nameWithOwner": "owner/project"}, "changedFiles": 0,
             "mergeable": "MERGEABLE", "mergedAt": None,
+            "comments": payload["data"]["repository"]["pullRequest"]["comments"],
+            "reviews": payload["data"]["repository"]["pullRequest"]["reviews"],
         }
         return [
             patch.object(github, "run_gh_query", return_value={"data": {"repository": {
@@ -316,6 +318,7 @@ class PopulatedAcquisitionTests(unittest.TestCase):
             f"'baseRefOid':{PARENT!r},'headRefName':'feature','headRefOid':{HEAD!r},"
             "'headRepository':{'nameWithOwner':'owner/project'},'changedFiles':0,"
             "'mergeable':'MERGEABLE','mergedAt':None}\n"
+            "identity.update({name:facts['data']['repository']['pullRequest'][name] for name in ('comments','reviews')})\n"
             "class GitFacts:\n"
             f"  def remote_heads(self): return {{'main':{PARENT!r},'feature':{HEAD!r}}}\n"
             "  def branch_head(self, ref): return self.remote_heads()[ref]\n"

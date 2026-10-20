@@ -33,11 +33,11 @@ func reviewHold(reason string) error {
 }
 
 func sameOperation(left, right reviewexec.Operation) bool {
-	return left.ID == right.ID && left.ProjectID == right.ProjectID && left.ActorID == right.ActorID && left.WorkerID == right.WorkerID && left.ConfigurationRevision == right.ConfigurationRevision && left.PolicyRevision == right.PolicyRevision && left.CapabilityFingerprint == right.CapabilityFingerprint && left.PullNumber == right.PullNumber && left.HeadSHA == right.HeadSHA && left.Channel == right.Channel
+	return left.ID == right.ID && left.ProjectID == right.ProjectID && left.ActorID == right.ActorID && left.WorkerID == right.WorkerID && left.ConfigurationRevision == right.ConfigurationRevision && left.PolicyRevision == right.PolicyRevision && left.CapabilityFingerprint == right.CapabilityFingerprint && left.PullNumber == right.PullNumber && left.HeadSHA == right.HeadSHA && left.Channel == right.Channel && left.AllowOutOfOrder == right.AllowOutOfOrder
 }
 
 func operationRequest(operation reviewexec.Operation) reviewexec.Request {
-	return reviewexec.Request{ExpectedConfigurationRevision: operation.ConfigurationRevision, PullNumber: operation.PullNumber, HeadSHA: operation.HeadSHA, Channel: operation.Channel}
+	return reviewexec.Request{ExpectedConfigurationRevision: operation.ConfigurationRevision, PullNumber: operation.PullNumber, HeadSHA: operation.HeadSHA, Channel: operation.Channel, AllowOutOfOrder: operation.AllowOutOfOrder}
 }
 
 // Each phase has its own memoizer. Repeated stack-resolution reads within one
@@ -99,7 +99,7 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 	if comparison.Covered && !rounds {
 		return plan, nil, reviewHold("target_already_covered")
 	}
-	if configuration.Mode != "stacked" {
+	if configuration.Mode != "stacked" || operation.AllowOutOfOrder {
 		return plan, nil, nil
 	}
 	position := slices.Index(configuration.Queue, operation.PullNumber)

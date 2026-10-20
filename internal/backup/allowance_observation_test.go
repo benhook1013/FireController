@@ -72,7 +72,7 @@ func TestAllowanceObservationsCanonicalBackupRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, number := range []int64{4, 6} {
-		raw, err := e.Enqueue(t.Context(), scope, "allowance-roundtrip-"+string(rune('0'+number)), reviewexec.Request{ExpectedConfigurationRevision: 2, PullNumber: number, HeadSHA: strings.Repeat("a", 40), Channel: "cli"})
+		raw, err := e.Enqueue(t.Context(), scope, "allowance-roundtrip-"+string(rune('0'+number)), reviewexec.Request{ExpectedConfigurationRevision: 2, PullNumber: number, HeadSHA: strings.Repeat("a", 40), Channel: "cli", AllowOutOfOrder: number == 4})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -118,13 +118,17 @@ func TestAllowanceObservationsCanonicalBackupRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	var explicit bool
+	if err := db.QueryRow(`SELECT allow_out_of_order FROM review_operations WHERE pull_number=4 AND channel='cli'`).Scan(&explicit); err != nil || !explicit {
+		t.Fatal("restored exhaustion lost explicit ordering choice", explicit, err)
+	}
 	after := backupRows(t, db)
 	for _, table := range []string{"review_cli_preflight", "review_hosted_preflight", "review_hosted_observations", "review_hosted_allowance_queries", "review_operations", "review_execution_attempts", "review_execution_transitions", "receipts"} {
 		if after[table] != before[table] {
 			t.Fatal("restored allowance facts changed", table)
 		}
 	}
-	if err := reviewexec.ValidateAllowanceSnapshot(t.Context(), db, 6); err != nil {
+	if err := reviewexec.ValidateAllowanceSnapshot(t.Context(), db, 7); err != nil {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{

@@ -4,13 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/benhook1013/FireController/internal/core"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/benhook1013/FireController/internal/adoptionholds"
+	"github.com/benhook1013/FireController/internal/adoptionholdsmodel"
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/roundadoptionmodel"
 )
 
@@ -259,7 +261,7 @@ func TestRoundAdoptionVersionOneUpgradeConservesHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, sql := range []string{`DROP TABLE review_round_adoptions`, `DELETE FROM metadata WHERE key='schema:review_round_adoption'`, `ALTER TABLE review_round_controls RENAME TO fixture_controls_v2`, RoundSchemaV1SQL()[0], `INSERT INTO review_round_controls(` + roundColumnsV1 + `) SELECT ` + roundColumnsV1 + ` FROM fixture_controls_v2`, `DROP TABLE fixture_controls_v2`, `UPDATE metadata SET value='1' WHERE key='schema:review_rounds'`} {
+	for _, sql := range []string{`DROP TABLE review_round_adoptions`, `DELETE FROM metadata WHERE key='schema:review_round_adoption'`, `ALTER TABLE review_round_controls RENAME TO fixture_controls_v2`, RoundSchemaV1SQL()[0], `INSERT INTO review_round_controls(` + roundColumnsV1 + `) SELECT ` + roundColumnsV1 + ` FROM fixture_controls_v2`, `DROP TABLE fixture_controls_v2`, `ALTER TABLE review_round_completions RENAME TO fixture_completions_v3`, RoundSchemaV1SQL()[4], `INSERT INTO review_round_completions SELECT * FROM fixture_completions_v3`, `DROP TABLE fixture_completions_v3`, `UPDATE metadata SET value='1' WHERE key='schema:review_rounds'`} {
 		if _, err = tx.ExecContext(t.Context(), sql); err != nil {
 			tx.Rollback()
 			t.Fatal(err)
@@ -367,6 +369,161 @@ func adoptionScope(t *testing.T, f *attemptFixture, token string, admin bool) co
 		t.Fatal(err)
 	}
 	return scope
+}
+
+func obligationSourceScope(t *testing.T, f *attemptFixture, project, worker string) core.Scope {
+	t.Helper()
+	if _, err := f.store.DB().Exec(`INSERT INTO workers(project_id,id,name) VALUES(?,?,?)`, project, worker, "Obligation importer "+worker); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "/", nil)
+	r.SetPathValue("project_id", project)
+	r.Header.Set("Authorization", "Bearer "+f.admin)
+	r.Header.Set("X-FC-Worker", worker)
+	scope, err := f.store.AdminScope(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
+func retainObligationSource(t *testing.T, f *attemptFixture, project, worker, namespace, snapshot string, revision int64) adoptionholdsmodel.Source {
+	t.Helper()
+	repository := int64(801)
+	if project == otherAttemptProject {
+		repository = 802
+	}
+	source := adoptionholdsmodel.Source{Namespace: namespace, RepositoryID: repository, SnapshotSHA256: snapshot}
+	service := adoptionholds.New(f.store)
+	scope := obligationSourceScope(t, f, project, worker)
+	obligations := []adoptionholdsmodel.Obligation{{SourceKey: "finding-one", Kind: "finding", AffectedPullNumbers: []int64{2}, Summary: "Retained correction", Evidence: []string{}, OriginalStatus: "open"}}
+	if revision == 1 {
+		obligations = append(obligations, adoptionholdsmodel.Obligation{SourceKey: "route-two", Kind: "route", AffectedPullNumbers: []int64{2}, Summary: "Retained route", Evidence: []string{"source:route-two"}, OriginalStatus: "pending"})
+	}
+	expected := revision
+	batch := adoptionholdsmodel.Batch{Version: 1, Source: source, ExpectedRevision: &expected, Obligations: obligations}
+	preview, err := service.Preview(t.Context(), scope, batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Apply(t.Context(), scope, fmt.Sprintf("retain-%s-%d", project, revision), adoptionholdsmodel.ApplyRequest{Batch: batch, PreviewSHA256: preview.PreviewSHA256}); err != nil {
+		t.Fatal(err)
+	}
+	return source
+}
+
+func v2Adoption(source adoptionholdsmodel.Source, revision int64) roundadoptionmodel.Prepared {
+	p := adoptionPrepared()
+	p.Version = 2
+	p.Obligations = &roundadoptionmodel.ObligationsReference{Namespace: source.Namespace, SnapshotSHA256: source.SnapshotSHA256, Revision: revision}
+	return p
+}
+
+func TestRoundAdoptionV2RequiresMatchingCurrentObligationSource(t *testing.T) {
+	t.Run("matching", func(t *testing.T) {
+		f := adoptionFixture(t)
+		source := retainObligationSource(t, f, attemptProject, "source-worker", "sealed-source", strings.Repeat("b", 64), 0)
+		adoptRound(t, f, v2Adoption(source, 1), "v2-matching")
+		adoptionValid(t, f)
+	})
+	for name, setup := range map[string]func(*testing.T, *attemptFixture) roundadoptionmodel.Prepared{
+		"missing namespace": func(t *testing.T, f *attemptFixture) roundadoptionmodel.Prepared {
+			return v2Adoption(adoptionholdsmodel.Source{Namespace: "sealed-source", RepositoryID: 801, SnapshotSHA256: strings.Repeat("b", 64)}, 1)
+		},
+		"foreign namespace": func(t *testing.T, f *attemptFixture) roundadoptionmodel.Prepared {
+			source := retainObligationSource(t, f, attemptProject, "source-worker", "sealed-source", strings.Repeat("b", 64), 0)
+			p := v2Adoption(source, 1)
+			p.Obligations.Namespace = "other-source"
+			return p
+		},
+		"foreign project": func(t *testing.T, f *attemptFixture) roundadoptionmodel.Prepared {
+			source := retainObligationSource(t, f, otherAttemptProject, "other-source-worker", "sealed-source", strings.Repeat("b", 64), 0)
+			source.RepositoryID = 801
+			return v2Adoption(source, 1)
+		},
+		"repository mismatch": func(t *testing.T, f *attemptFixture) roundadoptionmodel.Prepared {
+			source := retainObligationSource(t, f, attemptProject, "source-worker", "sealed-source", strings.Repeat("b", 64), 0)
+			p := v2Adoption(source, 1)
+			p.RepositoryID = 999
+			return p
+		},
+		"snapshot mismatch": func(t *testing.T, f *attemptFixture) roundadoptionmodel.Prepared {
+			source := retainObligationSource(t, f, attemptProject, "source-worker", "sealed-source", strings.Repeat("b", 64), 0)
+			p := v2Adoption(source, 1)
+			p.Obligations.SnapshotSHA256 = strings.Repeat("c", 64)
+			return p
+		},
+		"stale current revision": func(t *testing.T, f *attemptFixture) roundadoptionmodel.Prepared {
+			source := retainObligationSource(t, f, attemptProject, "source-worker", "sealed-source", strings.Repeat("b", 64), 0)
+			retainObligationSource(t, f, attemptProject, "source-worker-two", "sealed-source", strings.Repeat("b", 64), 1)
+			return v2Adoption(source, 1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := adoptionFixture(t)
+			p := setup(t, f)
+			before := roundTables(t, f)
+			normalized, body, normalizeErr := normalizeRoundAdoption(p)
+			if normalizeErr != nil {
+				if name != "foreign namespace" || roundTables(t, f) != before {
+					t.Fatal("unexpected normalization refusal or mutation", normalizeErr)
+				}
+				return
+			}
+			scope := adoptionScope(t, f, f.admin, true)
+			preview := f.e.roundAdoptionPreview(scope, normalized, body)
+			_, err := f.e.ApplyRoundAdoption(t.Context(), scope, "refuse-"+name, roundadoptionmodel.ApplyRequest{PreviewSHA256: preview.PreviewSHA256, Control: p})
+			if err == nil || roundTables(t, f) != before {
+				t.Fatal("mismatched source admitted or partially committed", err)
+			}
+		})
+	}
+}
+
+func TestRoundAdoptionV2SourceRevisionRaceAndOriginalReplay(t *testing.T) {
+	t.Run("advance between preview and apply", func(t *testing.T) {
+		f := adoptionFixture(t)
+		source := retainObligationSource(t, f, attemptProject, "source-worker", "sealed-source", strings.Repeat("b", 64), 0)
+		p := v2Adoption(source, 1)
+		scope := adoptionScope(t, f, f.admin, true)
+		preview, err := f.e.PreviewRoundAdoption(t.Context(), scope, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		retainObligationSource(t, f, attemptProject, "source-worker-two", "sealed-source", strings.Repeat("b", 64), 1)
+		before := roundTables(t, f)
+		if _, err = f.e.ApplyRoundAdoption(t.Context(), scope, "stale-preview", roundadoptionmodel.ApplyRequest{PreviewSHA256: preview.PreviewSHA256, Control: p}); err == nil || roundTables(t, f) != before {
+			t.Fatal("source revision race admitted or partially committed", err)
+		}
+	})
+	t.Run("original key replay after advance", func(t *testing.T) {
+		f := adoptionFixture(t)
+		source := retainObligationSource(t, f, attemptProject, "source-worker", "sealed-source", strings.Repeat("b", 64), 0)
+		p := v2Adoption(source, 1)
+		original := adoptRound(t, f, p, "linked-adoption")
+		retainObligationSource(t, f, attemptProject, "source-worker-two", "sealed-source", strings.Repeat("b", 64), 1)
+		before := roundTables(t, f)
+		scope := adoptionScope(t, f, f.admin, true)
+		normalized, body, err := normalizeRoundAdoption(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		preview := f.e.roundAdoptionPreview(scope, normalized, body)
+		replayed, err := f.e.ApplyRoundAdoption(t.Context(), scope, "linked-adoption", roundadoptionmodel.ApplyRequest{PreviewSHA256: preview.PreviewSHA256, Control: p})
+		if err != nil || string(replayed) != string(original) || roundTables(t, f) != before {
+			t.Fatal("original replay re-admitted against advanced source", err)
+		}
+	})
+}
+
+func TestRoundAdoptionV1RemainsIndependentOfObligationSources(t *testing.T) {
+	f := adoptionFixture(t)
+	p := adoptionPrepared()
+	if p.Version != 1 || p.Obligations != nil {
+		t.Fatal("fixture no longer exercises v1")
+	}
+	adoptRound(t, f, p, "v1-unchanged")
+	adoptionValid(t, f)
 }
 
 func TestRoundAdoptionStickyLatchWaitsForMinimumAfterAcceptedResets(t *testing.T) {

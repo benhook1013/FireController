@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -204,7 +205,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		return 3
 	}
 	mux := server.New(store, server.WithRepositoryResolver(resolver), server.WithBrowser(webui.Handler()))
-	jobs.Register(mux, store)
+	jobs.Register(mux, store, jobs.WithPublicProjection(func(ctx context.Context, tx *sql.Tx, project, job string) error {
+		return publicsite.RefreshForJob(ctx, tx, project, job, reviews.PublicSiteReviewFacts)
+	}))
 	projectmap.Register(mux, store)
 	presentation.Register(mux, store)
 	inbox.Register(mux, store)

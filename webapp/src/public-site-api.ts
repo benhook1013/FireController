@@ -93,22 +93,30 @@ async function boundedJSON(response: Response, signal: AbortSignal): Promise<unk
   try { return parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { throw invalid(); }
 }
 function failure(status: number): ApiError { return new ApiError(status === 409 ? 'resync_required' : status === 404 ? 'not_found' : 'public_unavailable', 'This published project is unavailable.', status); }
-export class PublicSiteApi {
-  readonly path: string;
-  constructor(readonly slug: string) { if (!validPublicSlug(slug)) throw invalid(); this.path = `/api/v1/public/projects/${slug}`; }
-  private async read(path: string, signal: AbortSignal): Promise<unknown> {
+async function publicRead(path: string, signal: AbortSignal): Promise<unknown> {
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 5000), combined = AbortSignal.any([signal, controller.signal]);
     try { const response = await fetch(path, { method: 'GET', credentials: 'omit', redirect: 'error', cache: 'no-store', headers: { Accept: 'application/json' }, signal: combined }); if (!response.ok) { await response.body?.cancel(); throw failure(response.status); } return await boundedJSON(response, combined); }
     finally { clearTimeout(timer); controller.abort(); }
   }
+export function validPublicAddress(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(value); }
+export async function publicProjectLocation(address: string, signal: AbortSignal): Promise<string> {
+  if (!validPublicAddress(address)) throw invalid();
+  const value = await publicRead(`/api/v1/public/project-locations/${encodeURIComponent(address)}`, signal);
+  if (!object(value) || !exact(value, ['slug']) || !validPublicSlug(value.slug)) throw invalid();
+  return value.slug;
+}
+
+export class PublicSiteApi {
+  readonly path: string;
+  constructor(readonly slug: string) { if (!validPublicSlug(slug)) throw invalid(); this.path = `/api/v1/public/projects/${slug}`; }
   async snapshot(signal: AbortSignal, revision?: number, generation?: string): Promise<PublicSnapshot> {
     if (revision !== undefined && (!positive(revision) || !validPublicGeneration(generation))) throw invalid();
-    const value = await this.read(revision === undefined ? this.path : `${this.path}/history/${revision}?generation=${generation}`, signal);
+    const value = await publicRead(revision === undefined ? this.path : `${this.path}/history/${revision}?generation=${generation}`, signal);
     if (!validatePublicSnapshot(value, this.slug, generation, revision)) throw invalid(); return value;
   }
   async history(signal: AbortSignal, generation: string, cursor?: string): Promise<PublicHistory> {
     if (!validPublicGeneration(generation) || cursor !== undefined && (typeof cursor !== 'string' || !positive(Number(cursor.split(':')[1])) || cursor !== cursorFor(generation, Number(cursor.split(':')[1])))) throw invalid();
-    const value = await this.read(`${this.path}/history?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, signal);
+    const value = await publicRead(`${this.path}/history?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, signal);
     if (!object(value) || !exact(value, ['slug', 'generation', 'items', 'has_more'], ['cursor']) || value.slug !== this.slug || value.generation !== generation || typeof value.has_more !== 'boolean' || !Array.isArray(value.items) || value.items.length > 20) throw invalid();
     let previous = cursor ? Number(cursor.split(':')[1]) : Infinity;
     for (const item of value.items) { if (!object(item) || !exact(item, ['revision', 'published_at']) || !positive(item.revision) || item.revision >= previous || !stamp(item.published_at)) throw invalid(); previous = item.revision; }

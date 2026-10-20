@@ -15,12 +15,40 @@ func decodeRoundAdoption(raw json.RawMessage) (roundadoptionmodel.Prepared, erro
 		return p, invalid()
 	}
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil || len(fields) != 14 {
+	if json.Unmarshal(raw, &fields) != nil {
 		return p, invalid()
+	}
+	_, flag := fields["maximum_unbounded"]
+	_, obligations := fields["obligations"]
+	expected := 14
+	if flag {
+		expected++
+	}
+	if obligations {
+		expected++
+	}
+	if (p.Version != 1 && p.Version != 2) || p.Version == 1 && (flag || obligations) || len(fields) != expected {
+		return p, invalid()
+	}
+	for _, name := range []string{"version", "repository_id", "expected_revision", "pull_number", "channel", "source", "source_key", "source_sha256", "minimum_remaining", "maximum_remaining", "initial_dry", "taper", "tapered", "closed"} {
+		if _, ok := fields[name]; !ok {
+			return p, invalid()
+		}
 	}
 	for _, v := range fields {
 		if bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
 			return p, invalid()
+		}
+	}
+	if obligations {
+		var ref map[string]json.RawMessage
+		if json.Unmarshal(fields["obligations"], &ref) != nil || len(ref) != 3 {
+			return p, invalid()
+		}
+		for _, name := range []string{"namespace", "snapshot_sha256", "revision"} {
+			if len(ref[name]) == 0 || bytes.Equal(bytes.TrimSpace(ref[name]), []byte("null")) {
+				return p, invalid()
+			}
 		}
 	}
 	return p, nil

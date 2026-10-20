@@ -46,6 +46,11 @@ func TestReviewQueueEditCLIArgumentsAndPrivateFilesBeforeCredentials(t *testing.
 	paths := []string{filepath.Join(t.TempDir(), "missing"), t.TempDir()}
 	for _, doc := range [][]byte{
 		[]byte(`null`), []byte(`[]`), []byte(`{"expected_revision":0,"repository_id":1,"source":"PRIVATE_INVALID_BODY","queue":null}`),
+		[]byte(`{"expected_revision":0,"repository_id":1,"source":"PRIVATE_INVALID_BODY","order":null}`),
+		[]byte(`{"expected_revision":0,"repository_id":1,"source":"PRIVATE_INVALID_BODY","order":[]}`),
+		[]byte(`{"expected_revision":0,"repository_id":1,"source":"PRIVATE_INVALID_BODY","order":[1,1]}`),
+		[]byte(`{"expected_revision":0,"repository_id":1,"source":"PRIVATE_INVALID_BODY","order":[null]}`),
+		[]byte(`{"expected_revision":0,"repository_id":1,"source":"PRIVATE_INVALID_BODY","order":[2147483648]}`),
 		[]byte(strings.Replace(string(queueEditCLIDocument(0)), `"number":1`, `"number":1,"number":2`, 1)),
 		[]byte(strings.Replace(string(queueEditCLIDocument(0)), `PRIVATE_SELECTED_METADATA`, `\ud800`, 1)),
 		[]byte(strings.Replace(string(queueEditCLIDocument(0)), `"title":`, `"runs":[],"title":`, 1)),
@@ -88,6 +93,47 @@ func TestReviewQueueEditCLIArgumentsAndPrivateFilesBeforeCredentials(t *testing.
 	code = cli.RunContext(ctx, []string{"reviews", "queue-edit", "--file", file, "--key", "key"}, nil, &stdout, &stderrBuffer)
 	if code != cli.ExitCancelled || stdout.Len() != 0 {
 		t.Fatal("preparation cancellation ignored", code, stderrBuffer.String())
+	}
+}
+
+func TestReviewQueueEditCLIOrderOnlyActualHTTP(t *testing.T) {
+	f, project, worker := importCLISetup(t)
+	zero := int64(0)
+	f.call(t, "POST", "/api/v1/projects/"+project+"/reviews/observations", f.admin, "", reviews.ObservationRequest{ExpectedRevision: &zero, RepositoryID: 1, Source: "order seed", ObservedAt: "2026-01-01T00:00:00Z", Queue: []reviews.PullInput{{Number: 1, Title: "One", State: "open", CIState: "unknown", Mergeability: "unknown"}, {Number: 2, Title: "Two", State: "open", CIState: "unknown", Mergeability: "unknown"}, {Number: 3, Title: "Three", State: "open", CIState: "unknown", Mergeability: "unknown"}}})
+	document := []byte(`{"expected_revision":1,"repository_id":1,"source":"order-only","order":[3,1]}`)
+	var calls atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/queue/edits") {
+			calls.Add(1)
+			raw, err := io.ReadAll(r.Body)
+			if err != nil || !bytes.Equal(raw, document) || r.Header.Get("X-FC-Worker") != worker || r.Header.Get("Idempotency-Key") != "order-only" {
+				t.Error("order-only CLI wire changed", err)
+			}
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+		}
+		f.handler.ServeHTTP(w, r)
+	}))
+	defer service.Close()
+	profiles := mutationProfiles(t, f, service.URL, map[string][2]string{"admin": {project, worker}})
+	file := importCLIFile(t, document)
+	provider := f.resolverHit.Load()
+	receipt := mutationSuccess(t, profiles, "admin", "reviews", "queue-edit", "--file", file, "--key", "order-only")
+	if receipt["revision"] != float64(2) || receipt["outcome"] != "queue_edited" || calls.Load() != 1 {
+		t.Fatal(receipt, calls.Load())
+	}
+	rows, err := f.store.DB().Query(`SELECT number FROM review_current_pulls WHERE project_id=? ORDER BY position`, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for _, n := range []int64{3, 2, 1} {
+		var got int64
+		if !rows.Next() || rows.Scan(&got) != nil || got != n {
+			t.Fatal("CLI order not applied", got, n)
+		}
+	}
+	if rows.Next() || rows.Err() != nil || f.resolverHit.Load() != provider {
+		t.Fatal("unexpected rows or provider work")
 	}
 }
 

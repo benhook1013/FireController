@@ -72,6 +72,17 @@ func TestReviewRoutePolicyOptionalFieldsAndIndependentIncomingHolds(t *testing.T
 			}{
 				{"omitted optional zero", func(v map[string]any) {}},
 				{"explicit zero", func(v map[string]any) { v["incoming_routes_pending"] = 0; v["incoming_routes_capacity"] = false }},
+				{"carried source obligation", func(v map[string]any) {
+					v["source_obligations_pending"] = 2
+					v["state"] = "held"
+					v["reason"] = "source_obligations_pending"
+				}},
+				{"native and carried obligations", func(v map[string]any) {
+					v["source_obligations_pending"] = 2
+					v["incoming_routes_pending"] = 1
+					v["state"] = "held"
+					v["reason"] = "routed_findings_pending"
+				}},
 				{"incoming one", func(v map[string]any) {
 					v["state"] = "held"
 					v["reason"] = "routed_findings_pending"
@@ -191,6 +202,19 @@ func TestReviewRoutePolicyRejectsMalformedOrContradictoryIncomingFacts(t *testin
 				edit func(map[string]any)
 			}{
 				{"false sufficient", func(v map[string]any) { v["state"] = "sufficient" }},
+				{"negative carried count", func(v map[string]any) { v["source_obligations_pending"] = -1 }},
+				{"unsafe carried count", func(v map[string]any) { v["source_obligations_pending"] = int64(1 << 53) }},
+				{"null carried count", func(v map[string]any) { v["source_obligations_pending"] = nil }},
+				{"carried reason without carried count", func(v map[string]any) {
+					v["incoming_routes_pending"] = 0
+					v["reason"] = "source_obligations_pending"
+				}},
+				{"carried hold falsely sufficient", func(v map[string]any) {
+					v["incoming_routes_pending"] = 0
+					v["source_obligations_pending"] = 1
+					v["reason"] = "source_obligations_pending"
+					v["state"] = "sufficient"
+				}},
 				{"negative count", func(v map[string]any) { v["incoming_routes_pending"] = -1 }},
 				{"unsafe exact count", func(v map[string]any) { v["incoming_routes_pending"] = int64(1 << 53) }},
 				{"null count", func(v map[string]any) { v["incoming_routes_pending"] = nil }},

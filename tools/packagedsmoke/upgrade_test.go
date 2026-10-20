@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"maps"
 	"net/http"
@@ -131,13 +132,13 @@ func TestPackagedUpgradeSmoke(t *testing.T) {
 	}
 	// No business rows/receipts are fabricated. Only later add-only empty tables
 	// are removed, matching the existing public jobs4 migration fixture pattern.
-	for _, table := range []string{"note_revisions", "notes", "worker_pause_history", "worker_pause_state"} {
+	for _, table := range []string{"job_summary_history", "job_summaries", "note_revisions", "notes", "worker_pause_history", "worker_pause_state"} {
 		var rows int
 		if err := store.DB().QueryRowContext(ctx, `SELECT count(*) FROM "`+table+`"`).Scan(&rows); err != nil || rows != 0 {
 			t.Fatalf("jobs4 fixture reconstruction requires empty %s", table)
 		}
 	}
-	if _, err = store.DB().ExecContext(ctx, `DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; UPDATE metadata SET value='4' WHERE key='schema:jobs'`); err != nil {
+	if _, err = store.DB().ExecContext(ctx, `DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; UPDATE metadata SET value='4' WHERE key='schema:jobs'`); err != nil {
 		t.Fatal("jobs4 fixture reconstruction failed")
 	}
 	if err = store.Close(); err != nil {
@@ -156,15 +157,18 @@ func TestPackagedUpgradeSmoke(t *testing.T) {
 	backupCtx, stopBackup := context.WithTimeout(ctx, stepTimeout)
 	bundle, err := backup.CreateFromDirectory(backupCtx, source, filepath.Join(private, "bundles"))
 	stopBackup()
-	if err != nil || bundle.ArtifactCount != 0 {
-		t.Fatal("canonical jobs4 backup unavailable")
+	if err != nil {
+		t.Fatalf("canonical jobs4 backup unavailable (code=%s)", upgradeBackupErrorCode(err))
+	}
+	if bundle.ArtifactCount != 0 {
+		t.Fatalf("canonical jobs4 fixture has unexpected artifacts (count=%d)", bundle.ArtifactCount)
 	}
 	bundleHashes := upgradeFileHashes(t, bundle.Path)
 	inspectCtx, stopInspect := context.WithTimeout(ctx, stepTimeout)
 	_, err = backup.Inspect(inspectCtx, bundle.Path)
 	stopInspect()
 	if err != nil {
-		t.Fatal("canonical jobs4 inspection failed")
+		t.Fatalf("canonical jobs4 inspection failed (code=%s)", upgradeBackupErrorCode(err))
 	}
 	if binaryHash(t, filepath.Join(source, "firecontroller.sqlite")) != sourceHash || !reflect.DeepEqual(before, readUpgradeState(t, ctx, source)) || !reflect.DeepEqual(bundleHashes, upgradeFileHashes(t, bundle.Path)) {
 		t.Fatal("backup or inspection mutated retained source/bundle")
@@ -236,7 +240,26 @@ func TestPackagedUpgradeSmoke(t *testing.T) {
 	if external.Load() != 0 || !reflect.DeepEqual(bundleHashes, upgradeFileHashes(t, bundle.Path)) || binaryHash(t, filepath.Join(source, "firecontroller.sqlite")) != sourceHash {
 		t.Fatal("upgrade changed protected inputs or attempted external HTTP")
 	}
-	t.Logf("reconstructed jobs4 upgrade passed: total=%s retained_tables_including_sqlite_sequence=%d new_empty_tables=4 http=%d source_bundle_unchanged=true external_http=0 owned_processes=0; other components current, no predecessor-binary/container claim", time.Since(started).Round(time.Millisecond), len(before.tables), httpRequests)
+	t.Logf("reconstructed jobs4 upgrade passed: total=%s retained_tables_including_sqlite_sequence=%d new_empty_tables=6 http=%d source_bundle_unchanged=true external_http=0 owned_processes=0; other components current, no predecessor-binary/container claim", time.Since(started).Round(time.Millisecond), len(before.tables), httpRequests)
+}
+
+// Only fixed local error classifications are diagnostic output. Backup errors
+// may wrap private paths or retained data; never log the raw error here.
+func upgradeBackupErrorCode(err error) string {
+	var failure *core.Error
+	if errors.As(err, &failure) {
+		switch failure.Code {
+		case "backup_invalid", "backup_unavailable", "backup_interrupted":
+			return failure.Code
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline_exceeded"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "cancelled"
+	}
+	return "unclassified"
 }
 
 type upgradeState struct {
@@ -361,11 +384,11 @@ func readUpgradeState(t *testing.T, ctx context.Context, data string) upgradeSta
 func assertJobsFourUpgrade(t *testing.T, before, after upgradeState) {
 	t.Helper()
 	expected := maps.Clone(before.metadata)
-	expected["schema:jobs"] = "6"
+	expected["schema:jobs"] = "7"
 	if before.version != 2 || after.version != 2 || !reflect.DeepEqual(expected, after.metadata) {
 		t.Fatal("upgrade changed undeclared metadata/base")
 	}
-	added := []string{"worker_pause_state", "worker_pause_history", "notes", "note_revisions"}
+	added := []string{"worker_pause_state", "worker_pause_history", "notes", "note_revisions", "job_summaries", "job_summary_history"}
 	if len(after.tables) != len(before.tables)+len(added) {
 		t.Fatal("upgrade table inventory differs")
 	}

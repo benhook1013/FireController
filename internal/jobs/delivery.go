@@ -57,6 +57,7 @@ type deliveryChecklist struct {
 }
 
 type deliveryJob struct {
+	Summary               *Summary            `json:"summary,omitempty"`
 	ID                    string              `json:"id"`
 	Title                 string              `json:"title"`
 	WorkerID              string              `json:"worker_id"`
@@ -229,7 +230,8 @@ func readDeliveryJobs(ctx context.Context, tx *sql.Tx, project, afterStatus, aft
 		SELECT j.id,j.title,COALESCE(j.worker_id,''),COALESCE(w.name,''),j.status,j.revision,j.brief,j.updated_at,
 		c.sequence,c.job_revision,c.done,c.next,c.blocker,c.created_at,
 		u.sequence,u.job_revision,u.body,u.created_at,
-		l.revision,l.job_revision,l.items_json,l.created_at
+		l.revision,l.job_revision,l.items_json,l.created_at,
+		s.revision,s.title,s.body
 		FROM selected x JOIN jobs j ON j.project_id=? AND j.id=x.id
 		LEFT JOIN workers w ON w.project_id=j.project_id AND w.id=j.worker_id
 		LEFT JOIN job_checkpoints c ON c.project_id=j.project_id AND c.job_id=j.id AND c.sequence=(
@@ -237,6 +239,7 @@ func readDeliveryJobs(ctx context.Context, tx *sql.Tx, project, afterStatus, aft
 		LEFT JOIN job_updates u ON u.project_id=j.project_id AND u.job_id=j.id AND u.sequence=(
 			SELECT sequence FROM job_updates WHERE project_id=j.project_id AND job_id=j.id ORDER BY sequence DESC LIMIT 1)
 		LEFT JOIN job_checklists l ON l.project_id=j.project_id AND l.job_id=j.id
+		LEFT JOIN job_summaries s ON s.project_id=j.project_id AND s.job_id=j.id
 		ORDER BY x.status,x.id`
 	args = append(args, limit+1, project)
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -252,7 +255,9 @@ func readDeliveryJobs(ctx context.Context, tx *sql.Tx, project, afterStatus, aft
 		var brief string
 		var updateSequence, updateJobRevision, checklistRevision, checklistJobRevision sql.NullInt64
 		var updateBody, updateAt, checklistRaw, checklistAt sql.NullString
-		if err := rows.Scan(&item.ID, &item.Title, &item.WorkerID, &item.WorkerName, &item.Status, &item.Revision, &brief, &item.UpdatedAt, &sequence, &jobRevision, &done, &next, &blocker, &checkpointAt, &updateSequence, &updateJobRevision, &updateBody, &updateAt, &checklistRevision, &checklistJobRevision, &checklistRaw, &checklistAt); err != nil {
+		var summaryRevision sql.NullInt64
+		var summaryTitle, summaryBody sql.NullString
+		if err := rows.Scan(&item.ID, &item.Title, &item.WorkerID, &item.WorkerName, &item.Status, &item.Revision, &brief, &item.UpdatedAt, &sequence, &jobRevision, &done, &next, &blocker, &checkpointAt, &updateSequence, &updateJobRevision, &updateBody, &updateAt, &checklistRevision, &checklistJobRevision, &checklistRaw, &checklistAt, &summaryRevision, &summaryTitle, &summaryBody); err != nil {
 			return err
 		}
 		if len(page.Items) == limit {
@@ -295,6 +300,14 @@ func readDeliveryJobs(ctx context.Context, tx *sql.Tx, project, afterStatus, aft
 				if entry.Done {
 					item.Checklist.Done++
 				}
+			}
+		}
+		if summaryRevision.Valid || summaryTitle.Valid || summaryBody.Valid {
+			if !summaryRevision.Valid || summaryRevision.Int64 < 1 || !summaryTitle.Valid || !summaryBody.Valid || !validSummary(summaryTitle.String, summaryBody.String) {
+				return summaryUnavailable()
+			}
+			if summaryTitle.String != "" {
+				item.Summary = &Summary{JobID: item.ID, JobRevision: item.Revision, Revision: summaryRevision.Int64, Title: summaryTitle.String, Body: summaryBody.String}
 			}
 		}
 		lastID, lastStatus = item.ID, item.Status

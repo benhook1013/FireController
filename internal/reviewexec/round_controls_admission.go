@@ -17,6 +17,9 @@ func (e *Engine) RoundAdmission(ctx context.Context, project, operationID string
 		if err != nil {
 			return err
 		}
+		if err := requireSourceObligationsClear(ctx, tx, project, operation.PullNumber); err != nil {
+			return err
+		}
 		configured, err = admitRoundControl(ctx, tx, operation)
 		return err
 	})

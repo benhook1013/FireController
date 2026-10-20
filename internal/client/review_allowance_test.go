@@ -41,6 +41,7 @@ func TestReviewAllowanceHTTPAllResultSurfaces(t *testing.T) {
 				if channel == "legacy" {
 					op.Allowance = nil
 				}
+				op.AllowOutOfOrder = surface == "operation" || surface == "request"
 				raw, _ := json.Marshal(op)
 				selection := selectionSample()
 				selection.Selection.Channel = op.Channel
@@ -77,7 +78,7 @@ func TestReviewAllowanceHTTPAllResultSurfaces(t *testing.T) {
 					}
 				case "request":
 					var value client.ReviewRequestResult
-					value, err = c.RequestReview(t.Context(), "retained-only", client.ReviewRequest{ExpectedConfigurationRevision: 7, PullNumber: 2, Channel: op.Channel, HeadSHA: op.HeadSHA}, 2)
+					value, err = c.RequestReview(t.Context(), "retained-only", client.ReviewRequest{ExpectedConfigurationRevision: 7, PullNumber: 2, Channel: op.Channel, HeadSHA: op.HeadSHA, AllowOutOfOrder: op.AllowOutOfOrder}, 2)
 					if value.Operation != nil {
 						got = *value.Operation
 					}

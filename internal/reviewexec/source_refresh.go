@@ -627,19 +627,20 @@ func sourceRefreshReason(err error) string {
 }
 
 type SourcePolicyAssessment struct {
-	IncomingRoutesPending  int64                     `json:"incoming_routes_pending,omitempty"`
-	IncomingRoutesCapacity bool                      `json:"incoming_routes_capacity,omitempty"`
-	ProjectID              string                    `json:"project_id"`
-	RefreshID              string                    `json:"refresh_id"`
-	Source                 string                    `json:"source"`
-	ConfigurationRevision  int64                     `json:"configuration_revision"`
-	PolicyRevision         int64                     `json:"policy_revision"`
-	SourceObservedAt       string                    `json:"source_observed_at"`
-	EvaluatedAt            string                    `json:"evaluated_at"`
-	State                  string                    `json:"state"`
-	Reason                 string                    `json:"reason,omitempty"`
-	Target                 SourceObservation         `json:"target"`
-	Channels               []PolicyAssessmentChannel `json:"channels"`
+	SourceObligationsPending int64                     `json:"source_obligations_pending,omitempty"`
+	IncomingRoutesPending    int64                     `json:"incoming_routes_pending,omitempty"`
+	IncomingRoutesCapacity   bool                      `json:"incoming_routes_capacity,omitempty"`
+	ProjectID                string                    `json:"project_id"`
+	RefreshID                string                    `json:"refresh_id"`
+	Source                   string                    `json:"source"`
+	ConfigurationRevision    int64                     `json:"configuration_revision"`
+	PolicyRevision           int64                     `json:"policy_revision"`
+	SourceObservedAt         string                    `json:"source_observed_at"`
+	EvaluatedAt              string                    `json:"evaluated_at"`
+	State                    string                    `json:"state"`
+	Reason                   string                    `json:"reason,omitempty"`
+	Target                   SourceObservation         `json:"target"`
+	Channels                 []PolicyAssessmentChannel `json:"channels"`
 }
 
 func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scope, number int64) (SourcePolicyAssessment, error) {
@@ -713,6 +714,16 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 			result.State, result.Reason = "held", "routed_findings_capacity"
 		} else if result.IncomingRoutesPending > 0 {
 			result.State, result.Reason = "held", "routed_findings_pending"
+		}
+		result.SourceObligationsPending, err = sourceObligationCount(ctx, tx, scope.ProjectID, number)
+		if err != nil {
+			return err
+		}
+		if result.SourceObligationsPending > 0 {
+			result.State = "held"
+			if result.Reason == "" {
+				result.Reason = "source_obligations_pending"
+			}
 		}
 		for _, channel := range policy.Policy.RequiredChannels {
 			state, err := comparison(ctx, tx, scope.ProjectID, r.repositoryID, number, anchor, channel)

@@ -94,6 +94,10 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		_ = s.Close()
 		return nil, storageError(err)
 	}
+	if err = s.ensureProjectHandles(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
 	return s, nil
 }
 

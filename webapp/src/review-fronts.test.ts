@@ -34,6 +34,12 @@ describe('current review position badges',()=>{
     progress.channels[1]={...control('cli'),configured:false,revision:0,epoch:0,maximum:0,taper:0};
     expect(reviewQueueBadges(pull(2),snapshot,value(),progress)).toEqual([]);
   });
+  it('does not close an unbounded grant at its required zero placeholder',()=>{
+    const progress:ReviewProgressItem={pull_number:2,channels:[{...control('hosted'),maximum_unbounded:true,maximum:0,minimum:3000,used:2000},control('cli',true)]};
+    expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review front · Hosted');
+    progress.channels[0]={...progress.channels[0],tapered:true,minimum:0};
+    expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review closed');
+  });
   it('rejects another snapshot, changed source identity, retired lifecycle and unknown positions',()=>{
     expect(reviewQueueBadges(pull(2),'review_snapshot_old',value())).toEqual([]);
     expect(reviewQueueBadges({...pull(2),head_sha:'c'.repeat(40)},snapshot,value())).toEqual([]);

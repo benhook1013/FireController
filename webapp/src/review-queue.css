@@ -16,3 +16,5 @@
 .review-diff{font-variant-numeric:tabular-nums}.review-diff strong,.review-merged-age{font-weight:750}.review-pull-facts .review-state-draft{background:var(--fc-parked_background,#e5e0d4);color:var(--fc-parked_text,#82704c)}
 
 .review-diff .review-additions{color:var(--fc-completed_text,#237451)}.review-diff .review-deletions{color:var(--fc-blocked_text,#a32234)}.delivery-merge-head .review-diff{background:var(--fc-surface_background,#f7f6f3);color:var(--fc-surface_text,#252833);border-radius:3px;padding:2px 5px}
+
+.review-pull-facts>.badge{border-radius:0}
