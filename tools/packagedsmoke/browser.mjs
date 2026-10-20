@@ -13,6 +13,8 @@ let stopProgress = () => {};
 let progressFailed = false;
 let counters = () => ({});
 let failureClass = '';
+let repeatedFallbackHash = false;
+let fallbackGeometry = {};
 let workerHistoryBefore = -1, workerHistoryAfter = -1;
 let sendStatus = 0, replyStatus = 0, conversationMatch = false;
 let lastHTTPStatus = 0;
@@ -84,6 +86,7 @@ try {
         hosted_sections: await page.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).count(),
         review_alerts: await page.getByRole('alert').count(),
         run_fetches: reviewRunReads,
+        fallback_geometry:fallbackGeometry,
       };
       if (config.diagnostic_directory) {
         await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});
@@ -784,8 +787,54 @@ try {
   merged.merged_at = new Date(Date.now() - (2*60+22)*60000).toISOString();
   const open = pull(32, 'open', 'Live review before');
   const observation = (revision, queue) => ({expected_revision:revision, repository_id:991, source:'packaged-browser', observed_at:new Date().toISOString(), queue, retired:[]});
+  checkpoint = 'fallback-observation';
+  // An unknown predecessor prevents the stored queue from claiming an open
+  // head. Use the real observation API, not a fabricated browser response.
+  await write('POST', '/reviews/observations', observation(0, [pull(33, 'unknown', 'Unknown preceding smoke PR'), open]), 201);
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
+  const fallbackHero = page.getByRole('region', {name:'Merge train head', exact:true});
+  await fallbackHero.getByRole('heading', {name:'Merge head not determined', exact:true}).waitFor();
+  const fallbackJump = fallbackHero.getByRole('link', {name:'Jump to review queue', exact:true});
+  await expect(fallbackJump).toHaveAttribute('href', `${home}#review-queue`);
+  const fallbackPosition = async () => {
+    const geometry = await page.locator('#review-queue').evaluate(element => {
+      const box = element.getBoundingClientRect(), mast = document.querySelector('.mast').getBoundingClientRect();
+      const maximum = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+      const target = Math.max(0, Math.min(maximum, scrollY + box.top - parseFloat(getComputedStyle(element).scrollMarginTop)));
+      // Test the existing section's actual scroll margin and bottom clamp;
+      // the narrow mast can be taller than that margin.
+      return {top:Math.round(box.top),mast_bottom:Math.round(mast.bottom),scroll:Math.round(scrollY),target:Math.round(target),aligned:box.bottom > mast.bottom && box.top < innerHeight && Math.abs(scrollY - target) <= 2};
+    });
+    fallbackGeometry = geometry;
+    return geometry.aligned;
+  };
+  checkpoint = 'fallback-first-jump';
+  const fallbackPage = await page.evaluate(() => ({origin:performance.timeOrigin, session:sessionStorage.getItem('firecontroller.browser-session.v1')}));
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await expect.poll(fallbackPosition).toBe(false);
+  await fallbackJump.click();
+  await expect.poll(() => new URL(page.url()).hash).toBe('#review-queue');
+  await expect.poll(fallbackPosition).toBe(true);
+  need(fallbackGeometry.scroll > 2);
+  const fallbackKey = await page.evaluate(() => history.state.key);
+  need(typeof fallbackKey === 'string' && fallbackKey.length > 0);
+  checkpoint = 'fallback-scroll-away';
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await expect.poll(fallbackPosition).toBe(false);
+  need(new URL(page.url()).hash === '#review-queue');
+  need(await page.evaluate(() => history.state.key) === fallbackKey);
+  checkpoint = 'fallback-repeat-jump';
+  await fallbackJump.click();
+  await expect.poll(() => page.evaluate(() => history.state.key)).not.toBe(fallbackKey);
+  need(typeof await page.evaluate(() => history.state.key) === 'string');
+  need(new URL(page.url()).pathname === home && new URL(page.url()).hash === '#review-queue');
+  await expect.poll(fallbackPosition).toBe(true);
+  need(JSON.stringify(await page.evaluate(() => ({origin:performance.timeOrigin, session:sessionStorage.getItem('firecontroller.browser-session.v1')}))) === JSON.stringify(fallbackPage));
+  repeatedFallbackHash = true;
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
   checkpoint = 'seed-observation';
-  await write('POST', '/reviews/observations', observation(0, [merged, open]), 201);
+  // Complete observations require explicit retirement of an omitted entry.
+  await write('POST', '/reviews/observations', {...observation(1, [merged, open]), retired:[{number:33,reason:'defunct'}]}, 201);
   checkpoint = 'initial-open-pull';
   await page.getByRole('link', {name:'Live review before', exact:true}).waitFor();
   checkpoint = 'initial-merged-pull';
@@ -793,7 +842,7 @@ try {
   const finished = new Date().toISOString();
   const run = {source_run_id:'live-hosted-round', channel:'hosted', head_sha:open.head_sha, reviewer:'Synthetic reviewer', scope:'Synthetic comparison', outcome:'completed', attributable:true, complete:true, started_at:finished, finished_at:finished, found:0, accepted:0, routed:0, finalized:true, coverage_limits:[], findings:[]};
   checkpoint = 'updated-observation';
-  await write('POST', '/reviews/observations', observation(1, [merged, {...open, title:'Live review updated', runs:[run]}]), 201);
+  await write('POST', '/reviews/observations', observation(2, [merged, {...open, title:'Live review updated', runs:[run]}]), 201);
   checkpoint = 'updated-open-pull';
   await page.getByRole('link', {name:'Live review updated', exact:true}).waitFor();
   checkpoint = 'updated-merged-pull';
@@ -1238,7 +1287,7 @@ try {
   checkpoint = 'server-close'; publishProgress();
   await server.close(); server = undefined;
   need(!progressFailed);
-  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, progress_access_refusals:progressAccessFailures, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
+  console.log(JSON.stringify({state:'PASS', repeated_fallback_hash:repeatedFallbackHash, fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, progress_access_refusals:progressAccessFailures, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
 } catch (error) {
   failureClass = error?.name === 'TimeoutError' || /timeout|timed out|exceeded.*limit/i.test(error?.message || '') ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
   const failureName = ['TimeoutError','Error','AssertionError','TypeError','ReferenceError','RangeError'].includes(error?.name) ? error.name : 'Other';
