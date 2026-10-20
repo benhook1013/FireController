@@ -25,8 +25,24 @@ describe('per-tab browser session binding', () => {
     expect(storage.values.size).toBe(0);
   });
 
+  it('restores a friendly alias only with the same per-tab immutable session identity', () => {
+    const one = memoryStorage(), two = memoryStorage();
+    const friendly = { ...binding, projectHandle: 'firemud' };
+    const other = { ...binding, projectID: 'project_two', projectHandle: 'firecontroller', sessionID: 'b'.repeat(32) };
+    expect(saveBrowserSession(friendly, one)).toBe(true);
+    expect(saveBrowserSession(other, two)).toBe(true);
+    expect(loadBrowserSession('firemud', undefined, one)).toEqual(friendly);
+    expect(loadBrowserSession(binding.projectID, undefined, one)).toEqual(friendly);
+    expect(renewedBrowserSessionBinding(friendly, {session_id:binding.sessionID,instance_id:binding.instanceID,project_id:binding.projectID,expires_at:binding.expiresAt})).toEqual(friendly);
+    const discarded = vi.fn();
+    expect(loadBrowserSession('firecontroller', discarded, one)).toBeNull();
+    expect(discarded).toHaveBeenCalledWith(friendly);
+    expect(loadBrowserSession('firecontroller', undefined, two)).toEqual(other);
+    expect(loadBrowserSession(undefined, undefined, two)).toBeNull();
+  });
+
   it('clears corrupt, malformed, mismatched, unknown-field and secret-bearing records', () => {
-    const invalid: unknown[] = [null, [], { ...binding, version: 2 }, { ...binding, sessionID: 'A'.repeat(32) }, { ...binding, instanceID: '../other' }, { ...binding, selectedworkerID: null }, { ...binding, expiresAt: '2026-02-30T12:00:00Z' }, { ...binding, expiresAt: '2026-10-16T12:00:00+00:00' }, { ...binding, credential: 'raw-private-token' }];
+    const invalid: unknown[] = [null, [], { ...binding, version: 2 }, { ...binding, sessionID: 'A'.repeat(32) }, { ...binding, instanceID: '../other' }, { ...binding, selectedworkerID: null }, { ...binding, expiresAt: '2026-02-30T12:00:00Z' }, { ...binding, expiresAt: '2026-10-16T12:00:00+00:00' }, { ...binding, credential: 'raw-private-token' }, { ...binding, projectHandle: null }, { ...binding, projectHandle: 'UPPER' }, { ...binding, projectHandle: '../other' }, { ...binding, projectHandle: 'a'.repeat(64) }];
     for (const value of invalid) {
       const storage = memoryStorage();
       storage.setItem(browserSessionKey, JSON.stringify(value));

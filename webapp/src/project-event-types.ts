@@ -7,6 +7,7 @@ export const projectEventTypes = [
   'job.workstream_changed',
   'job.created',
   'job.updated',
+  'job.summary_replaced',
   'job.checkpointed',
   'job.update_appended',
   'job.checklist_replaced',

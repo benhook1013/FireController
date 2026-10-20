@@ -80,6 +80,37 @@ func TestReviewHistoryDirectNavigationAndReload(t *testing.T) {
 	assertJSONError(t, request(t, handler, http.MethodPost, "/projects/project_1/reviews/history"), http.StatusMethodNotAllowed, "method_not_allowed")
 }
 
+func TestSharedProjectDirectNavigationAndReload(t *testing.T) {
+	handler := browserFixture()
+	for _, path := range []string{
+		"/projects/firemud/project", "/projects/firemud/project?signin=1",
+		"/projects/project_one/published/history/1", "/projects/legacy-public/published/history/1?generation=public_generation_fixture",
+		"/projects/firemud/published/history/9223372036854775807",
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			w := request(t, handler, method, path)
+			if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/html; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("shared project direct %s %s: %d", method, path, w.Code)
+			}
+			if method == http.MethodGet && !strings.Contains(w.Body.String(), "Embedded browser fixture") || method == http.MethodHead && w.Body.Len() != 0 {
+				t.Fatal("shared project direct GET/HEAD did not preserve embedded response")
+			}
+		}
+	}
+	for _, path := range []string{
+		"/projects/firemud/project/extra", "/projects/firemud/%70roject", "/projects/firemud/project%2Fextra",
+		"/projects/firemud/published", "/projects/firemud/published/history", "/projects/firemud/published/history/0",
+		"/projects/firemud/published/history/-1", "/projects/firemud/published/history/01", "/projects/firemud/published/history/1a",
+		"/projects/firemud/published/history/9223372036854775808", "/projects/firemud/published/history/1/extra",
+		"/projects/firemud/published/%68istory/1", "/projects/firemud/published/history/1%2Fextra",
+	} {
+		assertJSONError(t, request(t, handler, http.MethodGet, path), http.StatusNotFound, "not_found")
+	}
+	for _, path := range []string{"/projects/firemud/project", "/projects/firemud/published/history/1"} {
+		assertJSONError(t, request(t, handler, http.MethodPost, path), http.StatusMethodNotAllowed, "method_not_allowed")
+	}
+}
+
 func assertJSONError(t *testing.T, w *httptest.ResponseRecorder, status int, code string) {
 	t.Helper()
 	var got struct {

@@ -83,6 +83,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if primaryJobTool(name) {
 		return primaryJobArguments(name, data)
 	}
+	if name == "job_summary_read" || name == "job_summary_set" {
+		return jobSummaryArguments(name, data)
+	}
 	if jobProgressTool(name) {
 		return jobProgressArguments(name, data)
 	}
@@ -189,7 +192,7 @@ func mutationTool(name string) bool {
 	if name == "review_start" || name == "review_rounds_configure" {
 		return true
 	}
-	if name == "job_primary_replace" || name == "job_update_append" || name == "job_checklist_replace" {
+	if name == "job_summary_set" || name == "job_primary_replace" || name == "job_update_append" || name == "job_checklist_replace" {
 		return true
 	}
 	switch name {

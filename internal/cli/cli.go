@@ -91,7 +91,7 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer) int {
 func RunContext(ctx context.Context, args []string, env map[string]string, stdout, stderr io.Writer) int {
 	call, ok := parseInvocation(args)
 	if !ok {
-		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", "Use fc version, fc context, fc doctor, or a documented service command.")
+		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", "Run the bound launcher with help to discover supported commands and matching-release documentation.")
 	}
 	if call.history != nil && call.history.operation == "export-page" {
 		if err := prepareHistoryExport(call.history.output); err != nil {
@@ -99,12 +99,12 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		}
 	}
 	if call.command == "version" {
-		if call.hasProfile || call.hasProfilesFile {
-			return report(stderr, ExitUsage, "invalid_arguments", "The version command does not accept profile options.", "Use fc version.")
-		}
 		return emit(stdout, stderr, struct {
 			Version string `json:"version"`
 		}{Version})
+	}
+	if call.command == "help" {
+		return emit(stdout, stderr, localHelp())
 	}
 	if call.mapImport != nil {
 		if err := prepareMapImport(ctx, call.mapImport); err != nil {
@@ -337,6 +337,8 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value, err = service.CheckpointHistory(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "jobs" && call.subcommand == "updates":
 		value, err = service.JobUpdates(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+	case call.command == "jobs" && call.subcommand == "summary":
+		value, err = service.JobSummary(requestCtx, call.position[0])
 	case call.command == "jobs" && call.subcommand == "checklist":
 		value, err = service.JobChecklist(requestCtx, call.position[0])
 	case call.command == "jobs" && call.subcommand == "checklist-history":
@@ -396,7 +398,13 @@ func parseInvocation(args []string) (invocation, bool) {
 		return call, false
 	}
 	call.command = remaining[0]
-	if call.command == "version" || call.command == "context" || call.command == "doctor" {
+	if call.command == "--help" || call.command == "-h" {
+		call.command = "help"
+	}
+	if call.command == "version" || call.command == "help" {
+		return call, len(remaining) == 1 && (!call.hasProfile || validSetupText(call.profile)) && (!call.hasProfilesFile || validSetupText(call.profilesFile))
+	}
+	if call.command == "context" || call.command == "doctor" {
 		return call, len(remaining) == 1
 	}
 	if call.command == "profile" {
@@ -496,7 +504,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"] = true, true, true, true
 	case "inbox events":
 		allowed["--cursor"], allowed["--limit"], allowed["--wait-ms"] = true, true, true
-	case "workers pause-state", "jobs primary", "jobs read", "jobs checkpoint-latest", "jobs checklist":
+	case "workers pause-state", "jobs primary", "jobs read", "jobs checkpoint-latest", "jobs checklist", "jobs summary":
 	default:
 		return call, false
 	}
@@ -569,7 +577,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		}
 	}
 	expected := 0
-	if call.command == "jobs" && (call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "checkpoint-latest" || call.subcommand == "checkpoints" || call.subcommand == "updates" || call.subcommand == "checklist" || call.subcommand == "checklist-history") || call.command == "inbox" && call.subcommand == "thread" {
+	if call.command == "jobs" && (call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "checkpoint-latest" || call.subcommand == "checkpoints" || call.subcommand == "updates" || call.subcommand == "checklist" || call.subcommand == "checklist-history" || call.subcommand == "summary") || call.command == "inbox" && call.subcommand == "thread" {
 		expected = 1
 	}
 	if len(call.position) != expected {

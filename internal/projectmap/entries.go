@@ -350,6 +350,34 @@ func entryHistoryQuery(project, id string, before int64, limit int) (string, []a
 	return query + ` ORDER BY revision DESC LIMIT ?`, append(args, limit)
 }
 
+// ReadRevision returns one exact retained map revision through the same bounded
+// canonical decoder used by the authenticated history endpoint.
+func ReadRevision(ctx context.Context, tx *sql.Tx, project, id string, rev int64) (Revision, error) {
+	if ctx == nil || tx == nil || !validID(project) || !entryID.MatchString(id) || rev < 1 {
+		return Revision{}, invalid()
+	}
+	var value Revision
+	var raw sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT revision,actor_id,created_at,CASE WHEN length(CAST(state_json AS BLOB))<=? THEN state_json ELSE NULL END FROM project_map_entry_history WHERE project_id=? AND entry_id=? AND revision=?`, maxEntryBytes, project, id, rev).Scan(&value.Revision, &value.ActorID, &value.CreatedAt, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Revision{}, notFound()
+	}
+	if err != nil {
+		return Revision{}, err
+	}
+	if !raw.Valid {
+		return Revision{}, unavailable()
+	}
+	value.State, err = decodeEntry(raw.String)
+	if err != nil {
+		return Revision{}, err
+	}
+	if value.State.ID != id || value.State.ProjectID != project || value.State.Revision != rev || value.State.UpdatedAt != value.CreatedAt || !validID(value.ActorID) {
+		return Revision{}, unavailable()
+	}
+	return value, nil
+}
+
 func getRevision(store *core.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		scope, ok := scopeFor(store, w, r, "read")
@@ -367,25 +395,9 @@ func getRevision(store *core.Store) http.HandlerFunc {
 		}
 		var value Revision
 		err = store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
-			var raw sql.NullString
-			err := tx.QueryRowContext(ctx, `SELECT revision,actor_id,created_at,CASE WHEN length(CAST(state_json AS BLOB))<=? THEN state_json ELSE NULL END FROM project_map_entry_history WHERE project_id=? AND entry_id=? AND revision=?`, maxEntryBytes, scope.ProjectID, id, rev).Scan(&value.Revision, &value.ActorID, &value.CreatedAt, &raw)
-			if errors.Is(err, sql.ErrNoRows) {
-				return notFound()
-			}
-			if err != nil {
-				return err
-			}
-			if !raw.Valid {
-				return unavailable()
-			}
-			value.State, err = decodeEntry(raw.String)
-			if err != nil {
-				return err
-			}
-			if value.State.ID != id || value.State.ProjectID != scope.ProjectID || value.State.Revision != rev || value.State.UpdatedAt != value.CreatedAt || !validID(value.ActorID) {
-				return unavailable()
-			}
-			return nil
+			var err error
+			value, err = ReadRevision(ctx, tx, scope.ProjectID, id, rev)
+			return err
 		})
 		respond(w, value, err, 200)
 	}

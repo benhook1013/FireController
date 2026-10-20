@@ -53,7 +53,7 @@ function CheckpointPreview({ job }: { job: DeliveryJob }) {
 }
 function JobContextPreview({ job }: { job: DeliveryJob }) {
   return <div className="delivery-job-context">
-    {job.brief_preview && <DeliveryProsePreview className="delivery-brief" value={job.brief_preview} truncated={job.brief_preview_truncated} />}
+    {job.summary?.revision ? <div className="delivery-job-summary"><EditorialMarkdown compact>{job.summary.body}</EditorialMarkdown></div> : job.brief_preview && <DeliveryProsePreview className="delivery-brief" value={job.brief_preview} truncated={job.brief_preview_truncated} />}
     <p className="delivery-context-meta">Edited <RelativeTime value={job.updated_at} /></p>
     {job.update && <div className="delivery-update"><p className="delivery-context-meta">Progress · <RelativeTime value={job.update.created_at} /></p><DeliveryProsePreview className="delivery-update-body" value={job.update.body} truncated={job.update.body_truncated} />{job.update.job_revision !== job.revision && <p className="delivery-checkpoint-stale">Progress from job revision {job.update.job_revision}; current revision {job.revision}.</p>}</div>}
     {job.checklist && <div className="delivery-checklist"><p><strong>Checklist {job.checklist.done}/{job.checklist.total} done</strong> · <RelativeTime value={job.checklist.created_at} /></p>{job.checklist.job_revision !== job.revision && <p className="delivery-checkpoint-stale">Checklist from job revision {job.checklist.job_revision}; current revision {job.revision}.</p>}</div>}
@@ -76,7 +76,7 @@ export function DeliveryLanes({ value, home, partialJobs = value.jobs.has_more, 
       {lane.worker?.primary_job_id && !lane.jobs.some(job => job.id === lane.worker!.primary_job_id) && <Link className="delivery-primary-link" to={`${home}/jobs/${encodeURIComponent(lane.worker.primary_job_id)}`}>Primary job</Link>}
     </header>
     {lane.jobs.length ? <ul className="delivery-job-list">{lane.jobs.map(job => <li key={job.id}>
-      <div className="delivery-job-heading"><h4><Link to={`${home}/jobs/${encodeURIComponent(job.id)}`}>{job.title}</Link></h4><div className="delivery-job-state"><span className={`badge status-${job.status}`}>{job.status[0].toUpperCase()+job.status.slice(1)}</span>{lane.worker?.primary_job_id === job.id && <span className="badge delivery-primary">Primary focus</span>}</div></div>
+      <div className="delivery-job-heading"><h4><Link to={`${home}/jobs/${encodeURIComponent(job.id)}`}>{job.summary?.revision && job.summary.title || job.title}</Link></h4><div className="delivery-job-state"><span className={`badge status-${job.status}`}>{job.status[0].toUpperCase()+job.status.slice(1)}</span>{lane.worker?.primary_job_id === job.id && <span className="badge delivery-primary">Primary focus</span>}</div></div>
       <JobContextPreview job={job} /><Link className="delivery-job-link" to={`${home}/jobs/${encodeURIComponent(job.id)}`} aria-label={`Read job ${job.title}`}>Read job →</Link>
     </li>)}</ul> : <p className="delivery-empty">{partialJobs ? 'No jobs in loaded slice.' : 'No open jobs.'}</p>}
   </section>)}</div>;

@@ -385,7 +385,7 @@ func TestProgressRestartAndJobsV2MigrationPreserveStandingHistory(t *testing.T) 
 	a, _, token, worker, base := progressFixture(t)
 	progressOK(t, a.callWorker("POST", base+"/checkpoints", token, worker, "cp", map[string]any{"expected_job_revision": 1, "done": "checkpoint", "next": "continue"}), 201)
 	// Reconstruct the truthful preceding schema in this disposable fixture.
-	if _, err := a.store.DB().Exec(`DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; DROP TABLE worker_primary_job_history; DROP TABLE worker_primary_jobs; DROP TABLE job_updates;DROP TABLE job_checklists;DROP TABLE job_checklist_history;UPDATE metadata SET value='2' WHERE key='schema:jobs'`); err != nil {
+	if _, err := a.store.DB().Exec(`DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; DROP TABLE worker_primary_job_history; DROP TABLE worker_primary_jobs; DROP TABLE job_updates;DROP TABLE job_checklists;DROP TABLE job_checklist_history;UPDATE metadata SET value='2' WHERE key='schema:jobs'`); err != nil {
 		t.Fatal(err)
 	}
 	stable := map[string]string{}

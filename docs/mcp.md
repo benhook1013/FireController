@@ -38,6 +38,8 @@ Startup validates configuration without opening the credential or contacting the
 | `jobs_assigned` | Optional status/limit/cursor; one compact page assigned to the bound worker. |
 | `job_context` | Required job_id, optional limit; full current brief/checkpoint/checklist plus bound-worker focus/pause and compact pending notes/messages, with explicit omissions and replay watermark. |
 | `job_read` | Required job_id; explicit full job detail and brief. |
+| `job_summary_read` | Required job_id; current optional shareable title/body and independent summary revision; remains private. |
+| `job_summary_set` | Required job_id, expected_job_revision, expected_revision, title, body and idempotency_key; guarded summary replacement or explicit clear. |
 | `job_history` | Required job_id and optional limit/cursor; explicit full-state history page. |
 | `job_checkpoint_latest` | Required job_id; explicit latest checkpoint and current job revision, including null when none exists. |
 | `job_checkpoint_history` | Required job_id and optional limit/cursor; explicit newest-first checkpoint archive. |

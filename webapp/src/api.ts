@@ -2,7 +2,7 @@ import { presenceWorkers, validWorkerPresence, type WorkerPresence } from './wor
 import type { WorkerPrimary, WorkerPrimaryHistoryEntry, WorkerPause, WorkerPauseHistoryEntry, NoteOptions, NoteSummary, Note, NoteHistorySummary, NoteRevision } from './types';
 import type {
   Checkpoint, ConversationPage, DeliverySnapshot, DeliveryOptions, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
-  JobSummary, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
+  JobSummary, JobPublicSummary, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
   Project, WatchCallbacks, Worker, ProjectMapEntry, ProjectMapSummary, ProjectMapOptions, ProjectMapHistorySummary, ProjectMapRevision, JobWorkstream, JobWorkstreamHistoryEntry,
   ReviewAttemptSummary, ReviewFinding, ReviewPull, ReviewPullSummary, ReviewQueue, ReviewRunDetail,
   ReviewRunOptions, ReviewRuns, ReviewRunSummary, ReviewPolicyAssessment, ReviewAttemptOptions, ReviewAttempts, ReviewAttemptItem,
@@ -160,7 +160,13 @@ async function readFailure(response: Response, signal: AbortSignal): Promise<Api
 }
 
 function validProject(value: unknown, expected: string): value is Project {
-  return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository']) && value.id === expected && contentText(value.name, 200) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
+  const handle = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(v);
+  const publicationAlias = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u.test(expected);
+  // An authenticated address lookup may use an enabled legacy publication
+  // alias. The service resolves and authorizes it; only the initial address
+  // lookup can adopt its canonical ID. Opaque selectors and resumed sessions
+  // remain pinned to their existing identity.
+  return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository'], ['handle']) && id(value.id) && (value.handle === undefined || handle(value.handle)) && (value.id === expected || value.handle === expected || publicationAlias && handle(value.handle)) && contentText(value.name, 200) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
 }
 function validWorker(value: unknown, projectId: string): value is Worker {
   return record(value) && keys(value, ['id', 'project_id', 'name']) && id(value.id) && value.project_id === projectId && displayName(value.name);
@@ -178,7 +184,8 @@ function validDelivery(value: unknown, project: string, options: DeliveryOptions
   const ranks: Record<string, number> = { active: 0, blocked: 1, parked: 2 };
   let previousRank = -1, previousJob = '';
   for (const job of value.jobs.items) {
-    if (!record(job) || !keys(job, ['id', 'title', 'worker_id', 'status', 'revision', 'worker_name', 'brief_preview', 'brief_preview_truncated', 'updated_at', 'update', 'checklist', 'checkpoint']) || !id(job.id) || !contentText(job.title, 240) || job.worker_id !== '' && !id(job.worker_id) || typeof job.status !== 'string' || !Object.hasOwn(ranks, job.status) || !positive(job.revision) || (job.worker_id === '' ? job.worker_name !== '' : !displayName(job.worker_name))) return false;
+    if (!record(job) || !keys(job, ['id', 'title', 'worker_id', 'status', 'revision', 'worker_name', 'brief_preview', 'brief_preview_truncated', 'updated_at', 'update', 'checklist', 'checkpoint'], ['summary']) || !id(job.id) || !contentText(job.title, 240) || job.worker_id !== '' && !id(job.worker_id) || typeof job.status !== 'string' || !Object.hasOwn(ranks, job.status) || !positive(job.revision) || (job.worker_id === '' ? job.worker_name !== '' : !displayName(job.worker_name))) return false;
+    if (job.summary !== undefined && (!validJobPublicSummary(job.summary, job.id) || job.summary.job_revision > Number(job.revision))) return false;
     const rank = ranks[job.status];
     if (rank < previousRank || rank === previousRank && job.id <= previousJob) return false;
     previousRank = rank; previousJob = job.id;
@@ -198,6 +205,9 @@ function validDelivery(value: unknown, project: string, options: DeliveryOptions
     }
   }
   return true;
+}
+function validJobPublicSummary(value: unknown, jobId: string): value is JobPublicSummary {
+  return record(value) && keys(value, ['job_id', 'job_revision', 'revision', 'title', 'body']) && value.job_id === jobId && positive(value.job_revision) && nonnegative(value.revision) && contentText(value.title, 240, true) && contentText(value.body, 2000, true) && (value.body === '' || checkpointText(value.body, 2000, true)) && (value.title === '' && value.body === '' || Number(value.revision) > 0 && typeof value.title === 'string' && value.title.trim().length > 0 && !/[\p{Cc}]/u.test(value.title) && typeof value.body === 'string' && value.body.trim().length > 0);
 }
 function validJob(value: unknown, projectId: string): value is Job {
   return record(value) && keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at']) && value.project_id === projectId && id(value.id) && contentText(value.title, 240) && contentText(value.brief, 32768, true) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && timestamp(value.created_at) && timestamp(value.updated_at);
@@ -460,7 +470,8 @@ export function validateMessageEventPage(value: unknown, project: string, worker
 }
 
 export class Api {
-  readonly projectId: string;
+  private boundProjectId: string;
+  get projectId(): string { return this.boundProjectId; }
   private token: string;
   private readonly session = new AbortController();
   private closed = false;
@@ -478,7 +489,7 @@ export class Api {
   constructor(token: string, projectId: string) {
     if (!text(token, 4096) || !id(projectId)) throw new ApiError('invalid_binding', 'Select a valid project and credential.');
     this.token = token;
-    this.projectId = projectId;
+    this.boundProjectId = projectId;
   }
   get instanceId(): string | undefined { return this.verifiedInstanceId; }
   get browserSession(): BrowserSessionView | undefined { return this.currentSession && { ...this.currentSession }; }
@@ -518,7 +529,8 @@ export class Api {
       if (!record(value) || !keys(value, ['instance_id']) || !id(value.instance_id)) throw new ApiError('invalid_response', 'The service returned an invalid instance identity.');
       if (this.expectedInstanceID && value.instance_id !== this.expectedInstanceID) throw new ApiError('instance_mismatch', 'The service identity differs from this saved project session.', 409);
       const project = await this.getJson(this.projectRoute(''), value.instance_id, budget.signal);
-      if (!validProject(project, this.projectId)) throw new ApiError('invalid_response', 'The service returned a project outside this binding.');
+      if (!validProject(project, this.projectId) || this.browserSessionID !== undefined && project.id !== this.projectId) throw new ApiError('invalid_response', 'The service returned a project outside this binding.');
+      this.boundProjectId = project.id;
       let capabilities: BrowserCapabilities = { allow_writes: false, can_edit_presentation: false };
       let session: BrowserSessionView | undefined;
       if (this.browserSessionID) {
@@ -784,6 +796,12 @@ export class Api {
     }
     const value = await this.finiteGet(withQuery(this.projectRoute('delivery'), query), signal, undefined, maxBytes, assessmentJSON);
     if (!validDelivery(value, this.projectId, options)) throw new ApiError('invalid_response', 'The service returned an invalid Delivery overview.');
+    return value;
+  }
+  async jobSummary(jobId: string, signal?: AbortSignal): Promise<JobPublicSummary> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'Choose a valid job.');
+    const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/summary`), signal);
+    if (!validJobPublicSummary(value, jobId)) throw new ApiError('invalid_response', 'The service returned an invalid job summary.');
     return value;
   }
   async job(jobId: string, signal?: AbortSignal): Promise<Job> {

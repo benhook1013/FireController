@@ -64,12 +64,12 @@ describe('public project browser', () => {
     const html = renderToStaticMarkup(<MemoryRouter><PublicSnapshotView snapshot={fixture()} /></MemoryRouter>);
     expect(html).toContain('Roadmap'); expect(html).toContain('Builder lane'); expect(html).toContain('Public milestone'); expect(html).toContain('Retain merged work'); expect(html).toContain('merged');
     expect(html).toContain('aria-label="Hosted review rounds"'); expect(html).toContain('aria-label="CLI review rounds"'); expect(html).toContain('Incomplete coverage'); expect(html).toContain('Time unknown'); expect(html).toContain('Duration unknown');
-    expect(html).not.toContain('No progress summaries have been published'); expect(html).not.toContain('href="#progress"'); expect(html).toContain('Powered by'); expect(html).toContain('flame'); expect(html).toContain('href="/"');
+    expect(html).not.toContain('No progress summaries have been published'); expect(html).not.toContain('href="#progress"'); expect(html).toContain('Powered by'); expect(html).toContain('flame'); expect(html).toContain('href="/projects/showcase?signin=1"');
     expect(html).toContain('&lt;script&gt;literal approved text&lt;/script&gt;'); expect(html).not.toContain('<script>'); expect(html).not.toContain('iframe'); expect(html).not.toMatch(/project_id|actor_id|snapshot_id|review_evidence_|public_round_/u);
   });
   it('labels approved history as frozen and only links to public current view', () => {
     const html = renderToStaticMarkup(<MemoryRouter><PublicSnapshotView snapshot={fixture()} historical /></MemoryRouter>);
-    expect(html).toContain('Revision 2 · frozen'); expect(html).toContain('approved revision is frozen'); expect(html).toContain('href="/public/showcase"'); expect(html).not.toContain('/projects/'); expect(html).not.toContain('Live published view');
+    expect(html).toContain('Revision 2 · frozen'); expect(html).toContain('approved revision is frozen'); expect(html).toContain('href="/projects/showcase"'); expect(html).not.toContain('/public/'); expect(html).not.toContain('Live published view');
   });
   it('renders approved Markdown as narrative without executing HTML or fetching authored images', () => {
     const value = fixture(); value.content.description = '## Purpose\n\nUse **agents** together. ![Private image](https://elsewhere.example/track.png)';
@@ -77,7 +77,7 @@ describe('public project browser', () => {
     const html = renderToStaticMarkup(<MemoryRouter><PublicSnapshotView snapshot={value} /></MemoryRouter>);
     expect(html).toContain('<strong>agents</strong>'); expect(html).toContain('<em>update</em>'); expect(html).toContain('public-editorial'); expect(html).toContain('public-story');
     expect(html).toContain('href="https://example.com/reference"'); expect(html).toContain('rel="noreferrer noopener"');
-    expect(html).not.toContain('src="https://elsewhere.example'); expect(html).not.toContain('private_extra'); expect(html).not.toContain('/projects/');
+    expect(html).not.toContain('src="https://elsewhere.example'); expect(html).not.toContain('private_extra'); expect(html).not.toContain('/projects/project_private');
   });
 
 });

@@ -234,18 +234,16 @@ func (s *Store) browserScope(r *http.Request) (Scope, browserSessionClaims, erro
 	if s.browserSessionCodec().Decode(cookie.Name, value, &claims) != nil || claims.SessionID != values[0] || claims.InstanceID != s.instanceID || !browserSessionIdentity.MatchString(claims.InstanceID) || !browserSessionIdentity.MatchString(claims.ProjectID) || !browserCredentialHash.MatchString(claims.CredentialHash) || !browserSessionExpiryValid(claims.ExpiresAt, time.Now()) {
 		return Scope{}, browserSessionClaims{}, bad
 	}
-	project := r.PathValue("project_id")
-	if project == "" {
-		if r.URL.Path != "/api/v1/instance" {
-			return Scope{}, browserSessionClaims{}, Fail("forbidden", "The browser session permits only its project reads.", 403)
-		}
-		project = claims.ProjectID
+	var principal string
+	err := s.db.QueryRowContext(r.Context(), `SELECT principal_id FROM credentials WHERE token_sha256=? AND revoked=0`, claims.CredentialHash).Scan(&principal)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Scope{}, browserSessionClaims{}, bad
 	}
-	if project != claims.ProjectID {
-		return Scope{}, browserSessionClaims{}, Fail("forbidden", "The browser session permits only its project reads.", 403)
+	if err != nil {
+		return Scope{}, browserSessionClaims{}, storageError(err)
 	}
-	scope := Scope{ProjectID: project, WorkerID: r.Header.Get("X-FC-Worker"), tokenHash: claims.CredentialHash, instanceID: s.instanceID, readOnly: true, expiresAt: time.Unix(claims.ExpiresAt, 0), sessionProject: claims.ProjectID}
-	if len(r.Header.Values("X-FC-Worker")) > 1 || len(scope.WorkerID) > 128 {
+	worker := r.Header.Get("X-FC-Worker")
+	if len(r.Header.Values("X-FC-Worker")) > 1 || len(worker) > 128 {
 		return Scope{}, browserSessionClaims{}, Fail("validation_failed", "Select at most one valid worker identity.", 400)
 	}
 	if len(r.Header.Values("X-FC-Instance")) != 1 {
@@ -254,18 +252,27 @@ func (s *Store) browserScope(r *http.Request) (Scope, browserSessionClaims, erro
 	if err := s.checkExpectedInstance(r); err != nil {
 		return Scope{}, browserSessionClaims{}, err
 	}
-	err := s.db.QueryRowContext(r.Context(), `SELECT principal_id FROM credentials WHERE token_sha256=? AND revoked=0`, scope.tokenHash).Scan(&scope.PrincipalID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Scope{}, browserSessionClaims{}, bad
+	projectReference := r.PathValue("project_id")
+	project := projectReference
+	if project == "" {
+		if r.URL.Path != "/api/v1/instance" {
+			return Scope{}, browserSessionClaims{}, Fail("forbidden", "The browser session permits only its project reads.", 403)
+		}
+		project = claims.ProjectID
+	} else if resolved, resolveErr := s.ResolveProjectID(r.Context(), project); resolveErr != nil {
+		return Scope{}, browserSessionClaims{}, resolveErr
+	} else {
+		project = resolved
 	}
-	if err != nil {
-		return Scope{}, browserSessionClaims{}, storageError(err)
+	if project != claims.ProjectID {
+		return Scope{}, browserSessionClaims{}, Fail("forbidden", "The browser session permits only its project reads.", 403)
 	}
+	scope := Scope{PrincipalID: principal, ProjectID: project, WorkerID: worker, tokenHash: claims.CredentialHash, instanceID: s.instanceID, readOnly: true, expiresAt: time.Unix(claims.ExpiresAt, 0), sessionProject: claims.ProjectID}
 	// Every read remains attenuated, including /instance and administrator
 	// credentials. Only these explicit mutation routes can widen to write.
 	permission := "read"
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		if !claims.AllowWrites || !browserMutationAllowed(r, project) || r.Method == http.MethodPut && !claims.CanEditPresentation {
+		if !claims.AllowWrites || !browserMutationAllowed(r, projectReference) || r.Method == http.MethodPut && !claims.CanEditPresentation {
 			return Scope{}, browserSessionClaims{}, Fail("forbidden", "The browser session does not permit this operation.", 403)
 		}
 		if err = BrowserSessionOrigin(r, true); err != nil {

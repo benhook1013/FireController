@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/presentationmodel"
 	"github.com/benhook1013/FireController/internal/server"
 )
@@ -43,6 +44,9 @@ func newPublicationFixture(t *testing.T) *publicationFixture {
 	if err = EnsureSchema(t.Context(), store); err != nil {
 		t.Fatal(err)
 	}
+	if err = jobs.EnsureSchema(t.Context(), store); err != nil {
+		t.Fatal(err)
+	}
 	secret, err := os.ReadFile(filepath.Join(dir, "bootstrap-admin.token"))
 	if err != nil {
 		t.Fatal(err)
@@ -65,6 +69,9 @@ func newPublicationFixture(t *testing.T) *publicationFixture {
 		return out, nil
 	})
 	f.service.Register(f.mux, t.Context())
+	jobs.Register(f.mux, store, jobs.WithPublicProjection(func(ctx context.Context, tx *sql.Tx, project, job string) error {
+		return RefreshForJob(ctx, tx, project, job, f.service.reader)
+	}))
 	create := func(name string) string {
 		w := f.call(t, "POST", "/api/v1/projects", f.admin, "setup-"+name, map[string]any{"name": name, "repository": "synthetic/" + name})
 		var v struct {

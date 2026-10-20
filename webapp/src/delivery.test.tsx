@@ -24,6 +24,13 @@ function markup(node: React.ReactNode) {
 }
 
 describe('bounded Delivery board', () => {
+  it('prefers the authored short summary over the private brief preview while keeping full detail links', () => {
+    const current = {...job('job_active','active'),brief_preview:'PRIVATE_STANDING_INSTRUCTIONS',summary:{job_id:'job_active',job_revision:3,revision:2,title:'Shareable card title',body:'A concise **result**.'}};
+    const html=markup(<DeliveryLanes value={{workers:{items:[worker],has_more:false},jobs:{items:[current],has_more:false}}} home={home}/>);
+    expect(html).toContain('Shareable card title');expect(html).toContain('A concise <strong>result</strong>');
+    expect(html).not.toContain('PRIVATE_STANDING_INSTRUCTIONS');expect(html).toContain('/jobs/job_active');
+  });
+
   it('keeps empty workers, real owners outside the worker page, and genuinely unassigned jobs distinct', () => {
     const lanes = groupDeliveryLanes(board);
     expect(lanes.map(lane => lane.id)).toEqual(['worker_one', 'outside_owner', 'empty_worker', '']);

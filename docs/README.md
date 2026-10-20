@@ -6,6 +6,10 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 
 ## Documents
 
+- [Shared project experience](shared-project-experience.md): friendly addresses, one public/private entry point, linked approved summaries and text-first agent onboarding.
+- [Job summaries](job-summaries.md): optional audience-facing prose with independent revision/history and explicit publication selection.
+- [Everyday-use skill](../skills/firecontroller-use/SKILL.md): existing worker connections, context recovery and handoffs.
+
 - [Worker contact](worker-presence.md): authenticated agent calls and quiet waits, separate from job state and model progress.
 
 - [Delivery and Project website](browser-experience.md): default worker lanes and review queue, merge-head hero and flexible editorial project presentation.

@@ -174,6 +174,7 @@ func TestHistoryInventoryLegacyVersionsRejectViews(t *testing.T) {
 func historyInventorySeedPull(t *testing.T, store *core.Store) {
 	t.Helper()
 	if _, err := store.DB().Exec(`INSERT INTO projects VALUES('history-private','Private sentinel',701,'owner/history');
+ INSERT INTO project_handles VALUES('history-private','private-sentinel');
  INSERT INTO review_snapshots VALUES('history-private','review_snapshot_11111111111111111111111111111111',1,701,'synthetic-import','','','');
  INSERT INTO review_workspace VALUES('history-private',1,'review_snapshot_11111111111111111111111111111111');
  INSERT INTO review_pull_versions VALUES('history-private',7,1,'Retained merged PR','merged','','main','','success','mergeable',1,0,0,'[]','[]','{}');

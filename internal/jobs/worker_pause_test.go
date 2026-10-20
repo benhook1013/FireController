@@ -332,7 +332,7 @@ func TestWorkerPauseJobsFourMigrationAndRestart(t *testing.T) {
 	a, p, token, w, _, j1, _ := primaryFixture(t)
 	path := pausePath(p, w)
 	progressOK(t, a.call("PUT", primaryPath(p, w), token, "retained-focus", primaryRequest(0, j1)), 200)
-	if _, err := a.store.DB().Exec(`DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history;DROP TABLE worker_pause_state;UPDATE metadata SET value='4' WHERE key='schema:jobs'`); err != nil {
+	if _, err := a.store.DB().Exec(`DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history;DROP TABLE worker_pause_state;UPDATE metadata SET value='4' WHERE key='schema:jobs'`); err != nil {
 		t.Fatal(err)
 	}
 	stable := primaryCounts(t, a)

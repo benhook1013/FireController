@@ -22,6 +22,7 @@ func (s *Service) Register(mux *http.ServeMux, shutdown context.Context) {
 	mux.HandleFunc("PUT "+base, s.applyHTTP)
 	mux.HandleFunc("POST "+base+"/unpublish", s.unpublishHTTP)
 	public := "/api/v1/public/projects/{slug}"
+	mux.HandleFunc("GET /api/v1/public/project-locations/{address}", s.locationHTTP)
 	mux.HandleFunc("GET "+public, s.currentHTTP)
 	mux.HandleFunc("GET "+public+"/history", s.historyHTTP)
 	mux.HandleFunc("GET "+public+"/history/{revision}", s.revisionHTTP)
@@ -189,6 +190,43 @@ func (s *Service) currentHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := s.Current(r.Context(), r.PathValue("slug"))
+	respond(w, out, err)
+}
+
+// locationHTTP resolves an explicitly addressed published project without
+// disclosing private project identities or enumerating unpublished projects.
+func (s *Service) locationHTTP(w http.ResponseWriter, r *http.Request) {
+	if !publicQuery(w, r) {
+		return
+	}
+	address := r.PathValue("address")
+	if len(address) == 0 || len(address) > 128 {
+		core.WriteError(w, notFound())
+		return
+	}
+	out := struct {
+		Slug string `json:"slug"`
+	}{}
+	err := publicTx(r.Context(), s.store, func(ctx context.Context, tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT p.slug FROM project_publications p LEFT JOIN project_handles h ON h.project_id=p.project_id WHERE p.enabled=1 AND p.public_revision>=1 AND (p.slug=? OR p.project_id=? OR h.handle=?) LIMIT 2`, address, address, address)
+		if err != nil {
+			return unavailable()
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			if rows.Err() != nil {
+				return unavailable()
+			}
+			return notFound()
+		}
+		if rows.Scan(&out.Slug) != nil || !ValidSlug(out.Slug) {
+			return unavailable()
+		}
+		if rows.Next() || rows.Err() != nil {
+			return unavailable()
+		}
+		return nil
+	})
 	respond(w, out, err)
 }
 func (s *Service) revisionHTTP(w http.ResponseWriter, r *http.Request) {

@@ -182,5 +182,32 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
  FOREIGN KEY (project_id,worker_id) REFERENCES workers(project_id,id),
  FOREIGN KEY (project_id,job_id) REFERENCES jobs(project_id,id)
 );`,
+	}, []string{
+		`CREATE TABLE job_summaries (
+ project_id TEXT NOT NULL,
+ job_id TEXT NOT NULL,
+ revision INTEGER NOT NULL CHECK (revision >= 1),
+ job_revision INTEGER NOT NULL CHECK (job_revision >= 1),
+ title TEXT NOT NULL,
+ body TEXT NOT NULL,
+ actor_id TEXT NOT NULL,
+ worker_id TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY (project_id,job_id),
+ FOREIGN KEY (project_id,job_id) REFERENCES jobs(project_id,id) ON DELETE CASCADE
+);`,
+		`CREATE TABLE job_summary_history (
+ project_id TEXT NOT NULL,
+ job_id TEXT NOT NULL,
+ revision INTEGER NOT NULL CHECK (revision >= 1),
+ job_revision INTEGER NOT NULL CHECK (job_revision >= 1),
+ title TEXT NOT NULL,
+ body TEXT NOT NULL,
+ actor_id TEXT NOT NULL,
+ worker_id TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY (project_id,job_id,revision),
+ FOREIGN KEY (project_id,job_id) REFERENCES jobs(project_id,id) ON DELETE CASCADE
+);`,
 	})
 }
