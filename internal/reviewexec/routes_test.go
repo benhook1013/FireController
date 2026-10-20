@@ -793,3 +793,28 @@ func TestFindingRouteClockRollbackRerouteAndSourceUnroute(t *testing.T) {
 		})
 	}
 }
+
+func TestFindingRouteRealProducerMetadataEnvelope(t *testing.T) {
+	f, _, id := routeFixture(t, 2)
+	reader := evidenceReadScope(t, f, attemptProject, f.reader)
+	before := producerProjectCursor(t, f, reader)
+	fixed := routeCreate(t, f, id, "producer-route-fixed", routeRequest(0, 0, 4))
+	routeDecision(t, f, fixed.ID, "producer-route-decision", 1, "accepted")
+	routeFix(t, f, fixed.ID, "producer-route-fix", 2, "", strings.Repeat("a", 40))
+	old := routeCreate(t, f, id, "producer-route-old", routeRequest(1, 1, 4))
+	reroute := routeRequest(2, 1, 6)
+	reroute.ExpectedRouteRevision = 1
+	replacement := routeCreate(t, f, id, "producer-route-replacement", reroute)
+	// All kinds are actual producers; source and receiving revisions are distinct.
+	assertProducerProjectPage(t, f, reader, before, []core.ProjectEventItem{
+		{EventType: "review.route.routed", ResourceID: fixed.ID, Revision: 1},
+		{EventType: "review.evidence.routed", ResourceID: id, Revision: 1},
+		{EventType: "review.route.adjudicated", ResourceID: fixed.ID, Revision: 2},
+		{EventType: "review.route.fix_recorded", ResourceID: fixed.ID, Revision: 3},
+		{EventType: "review.route.routed", ResourceID: old.ID, Revision: 1},
+		{EventType: "review.evidence.routed", ResourceID: id, Revision: 2},
+		{EventType: "review.route.superseded", ResourceID: old.ID, Revision: 2},
+		{EventType: "review.route.routed", ResourceID: replacement.ID, Revision: 1},
+		{EventType: "review.evidence.routed", ResourceID: id, Revision: 3},
+	})
+}

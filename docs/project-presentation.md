@@ -119,3 +119,7 @@ Two diagnostic runs caught workload assumptions before the passing run: job crea
 ## Metadata reconnect proof
 
 The metadata reconnect fix has clean packaged proof at source `15f68195aadc4242f820b7b5a3d656766f7de043`, with daemon SHA-256 `11600ee04f2116940bb7845fd799efc25b67e5ebcbf1a2ea1ceb62c0c4a206ab`. All three canonical Chromium groups passed in 11.169 seconds against those clean binaries, including the metadata-failure and explicit reconnect scenario. The earlier uncommitted run reported 230 browser tests and a 1.315-second Chromium workload, but its exact immutable source/build fingerprint was not retained; that timing is unpinned historical diagnostics, not reproducible current-head proof. Its initial failure checkpoint was unavailable and is not claimed as a reproduced root cause.
+
+## Real producer envelope checks
+
+Focused tests drive note creation/editing, native review adjudication/finalization and finding routing/receiving decisions/fix references/rerouting through their actual mutation handlers, then consume the scoped project feed. They check the complete emitted page against the public event envelope, bounded identifiers and positive JavaScript-safe revisions, exact-key replay without duplicate events and reuse of the returned cursor. These checks complement browser decoder tests; they do not establish installed browser behavior or fleet throughput.

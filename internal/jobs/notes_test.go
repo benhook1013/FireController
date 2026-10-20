@@ -5,15 +5,18 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -604,4 +607,87 @@ func noteCountsWithoutArchive(t *testing.T, a *testAPI) string {
 		t.Fatal(err)
 	}
 	return fmt.Sprint(events, "/", receipts)
+}
+
+func TestNotesRealProducerMetadataEnvelope(t *testing.T) {
+	a := setupAPI(t)
+	project := a.createProject("note-event-producer", "owner/note-event-producer")
+	token := a.grant(project, "notes-event-producer-token", "read", "write")
+	actor := a.createWorker(project, "note-event-worker")
+	request := httptest.NewRequest("GET", "/", nil)
+	request.SetPathValue("project_id", project)
+	request.Header.Set("Authorization", "Bearer "+token)
+	scope, err := a.store.Scope(request, "read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentCursor := func() string {
+		t.Helper()
+		var cursor string
+		if err := a.store.Read(t.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
+			var err error
+			cursor, err = a.store.ProjectEventCursor(ctx, tx, scope)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return cursor
+	}
+	before := currentCursor()
+	base := "/api/v1/projects/" + project + "/notes"
+	created := noteCreate(t, a, base, token, actor, "producer-create", actor, "", "", "PRIVATE_NOTE_BODY")
+	patch := map[string]any{"expected_revision": 1, "body": "PRIVATE_EDITED_BODY"}
+	edited := noteCall(a, "PATCH", base+"/"+created.ID, token, actor, "producer-edit", patch)
+	noteOK(t, edited, 200)
+	var receipt receipt
+	decodeResponse(t, edited, &receipt)
+	if receipt.ID != created.ID || receipt.Revision != 2 {
+		t.Fatal("note edit changed identity/revision", receipt)
+	}
+	noteOK(t, noteCall(a, "PATCH", base+"/"+created.ID, token, actor, "producer-edit", patch), 200)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	stop := errors.New("bounded note producer page received")
+	var page core.ProjectEventPage
+	err = a.store.StreamProjectEvents(ctx, scope, before, 100, func(value core.ProjectEventPage) error { page = value; return stop }, func() error { return errors.New("note producer page missing") })
+	if !errors.Is(err, stop) || page.HasMore || len(page.Items) != 2 {
+		t.Fatalf("note producer event page: %+v %v", page, err)
+	}
+	validID := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+	seen := map[string]bool{before: true}
+	for i, item := range page.Items {
+		if item.EventType != []string{"note.created", "note.updated"}[i] || item.ResourceID != created.ID || item.Revision != int64(i+1) || !validID.MatchString(item.ResourceID) || item.Revision < 1 || item.Revision > 9007199254740991 {
+			t.Fatalf("browser-incompatible note producer: %+v", item)
+		}
+		if item.EventCursor == "" || len(item.EventCursor) > 4096 || strings.ContainsAny(item.EventCursor, " \t\r\n") || seen[item.EventCursor] {
+			t.Fatal("invalid note event cursor")
+		}
+		seen[item.EventCursor] = true
+	}
+	if page.EventCursor == before || page.EventCursor != currentCursor() {
+		t.Fatal("note event page lost scoped final cursor")
+	}
+	var resumed core.ProjectEventPage
+	err = a.store.StreamProjectEvents(ctx, scope, page.EventCursor, 100, func(value core.ProjectEventPage) error { resumed = value; return stop }, func() error { return errors.New("note resume page missing") })
+	if !errors.Is(err, stop) || len(resumed.Items) != 0 || resumed.HasMore || resumed.EventCursor != page.EventCursor {
+		t.Fatalf("returned note cursor cannot resume: %+v %v", resumed, err)
+	}
+	raw, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "PRIVATE_") {
+		t.Fatal("note producer leaked authored text")
+	}
+	var wire struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err = json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range wire.Items {
+		if len(item) != 4 || item["event_type"] == nil || item["resource_id"] == nil || item["revision"] == nil || item["event_cursor"] == nil {
+			t.Fatal("note event exposed non-envelope fields")
+		}
+	}
 }

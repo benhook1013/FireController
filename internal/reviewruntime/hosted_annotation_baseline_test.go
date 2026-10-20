@@ -96,6 +96,54 @@ func TestRetainHostedAnnotatedStandingZeroFinalizationAndReplay(t *testing.T) {
 	}
 }
 
+func TestRetainHostedModerateAnnotatedStandingZeroGuards(t *testing.T) {
+	for _, mode := range []string{"moderate", "unknown_label", "wrong_coverage_head", "reused_run", "missing_ack", "changed_annotation", "unknown_subset_path", "subset_count_mismatch"} {
+		t.Run(mode, func(t *testing.T) {
+			f, record := runtimeAnnotatedStandingFixture(t, func(baseline *HostedCaptureRecord) {
+				if mode == "reused_run" {
+					baseline.Snapshot.IssueComments[1].Body += " earlier " + runtimeStandingRun
+				}
+			})
+			record.Snapshot.IssueComments[1].Body = strings.Replace(record.Snapshot.IssueComments[1].Body, "🔵 Low", "🟡 Moderate", 1)
+			closing := "</dd>\n</dl>\n</details>\n<!-- recent_review_end -->"
+			section := "<details>\n<summary><strong>💤 Files with no reviewable changes: 1</strong></summary>\n<dl>\n<dd>\n* pkg/source.go\n</dd>\n</dl>\n</details>\n"
+			record.Snapshot.IssueComments[1].Body = strings.Replace(record.Snapshot.IssueComments[1].Body, closing, section+closing, 1)
+			switch mode {
+			case "unknown_label":
+				record.Snapshot.IssueComments[1].Body = strings.Replace(record.Snapshot.IssueComments[1].Body, "🟡 Moderate", "Unclassified", 1)
+			case "wrong_coverage_head":
+				record.Snapshot.IssueComments[1].Body = strings.Replace(record.Snapshot.IssueComments[1].Body, `"coveredCommitId":"`+record.Intent.HeadSHA, `"coveredCommitId":"`+strings.Repeat("d", 40), 1)
+			case "missing_ack":
+				record.Snapshot.IssueComments = record.Snapshot.IssueComments[:2]
+			case "changed_annotation":
+				record.Snapshot.ReviewComments[0].Body += " Unexpected extra prose."
+			case "unknown_subset_path":
+				record.Snapshot.IssueComments[1].Body = strings.Replace(record.Snapshot.IssueComments[1].Body, "* pkg/source.go", "* pkg/unknown.go", 1)
+			case "subset_count_mismatch":
+				record.Snapshot.IssueComments[1].Body = strings.Replace(record.Snapshot.IssueComments[1].Body, "no reviewable changes: 1", "no reviewable changes: 0", 1)
+			}
+			before, _ := json.Marshal(record)
+			state := cliAttemptState(t, f.f.store, f.a.ID)
+			result, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			count := cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, f.a.ID)
+			if mode == "moderate" {
+				if !result.Complete || count != 1 {
+					t.Fatal("moderate rating prevented authenticated standing result", result, count)
+				}
+			} else if result.Complete || count != 0 {
+				t.Fatal("moderate risk support bypassed standing proof", result, count)
+			}
+			after, _ := json.Marshal(record)
+			if !bytes.Equal(before, after) || cliAttemptState(t, f.f.store, f.a.ID) != state {
+				t.Fatal("retainer changed source or settled attempt")
+			}
+		})
+	}
+}
+
 func TestRetainHostedAnnotatedStandingZeroRefusesUnprovenBaseline(t *testing.T) {
 	for _, mode := range []string{"missing", "late", "wrong_repository", "query_edited", "reused_run", "body_changed", "path_changed", "review_changed", "annotation_after_finish"} {
 		t.Run(mode, func(t *testing.T) {

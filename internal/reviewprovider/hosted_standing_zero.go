@@ -19,13 +19,14 @@ type HostedStandingZero struct {
 var standingRunID = regexp.MustCompile("^- \\*\\*Run ID\\*\\*: `(" + publicationUUID + ")`$")
 var standingSelected = regexp.MustCompile(`^<summary><strong>📒 Files selected for processing: (0|[1-9][0-9]{0,4})</strong></summary>$`)
 var standingIgnored = regexp.MustCompile(`^<summary><strong>⛔ Files ignored due to path filters: (0|[1-9][0-9]{0,4})</strong></summary>$`)
+var standingNoReviewable = regexp.MustCompile(`^<summary><strong>💤 Files with no reviewable changes: (0|[1-9][0-9]{0,4})</strong></summary>$`)
 var standingFile = regexp.MustCompile("^\\* `([^`]+)`$")
 var standingIgnoredFile = regexp.MustCompile("^\\* `([^`]+)` is excluded by `[^`\\r\\n]+`(?:, `[^`\\r\\n]+`)*$")
 var standingCoverage = regexp.MustCompile(`^<!-- final_review_risk_coverage:\{"sourceCommitId":"([a-f0-9]{40})","coveredCommitId":"([a-f0-9]{40})","kind":"reviewed"\} -->$`)
 var standingAckInvocation = regexp.MustCompile(`^<!-- CodeRabbit review command invocation: v2:[a-f0-9]{64} -->$`)
 var standingAvailability = regexp.MustCompile(`^\*\*Included review availability:\*\* This review used your included allowance\. Your plan provides up to [1-9][0-9]{0,4} included reviews? per hour; (0|[1-9][0-9]{0,4}) remain after this review\.$`)
 var standingFindingClaim = regexp.MustCompile(`(?i)\b(?:comments?|findings?)\s*[:(]\s*[0-9]`)
-var standingRiskLabel = regexp.MustCompile(`^<summary><strong>Merge Risk:</strong> <strong>(?:🔵 Low|⚪ Minimal)</strong> · up to <code>([a-f0-9]{5})</code></summary>$`)
+var standingRiskLabel = regexp.MustCompile(`^<summary><strong>Merge Risk:</strong> <strong>(?:🔵 Low|⚪ Minimal|🟡 Moderate)</strong> · up to <code>([a-f0-9]{5})</code></summary>$`)
 
 const standingRecentStart = "<!-- recent_review_start -->"
 const standingRecentEnd = "<!-- recent_review_end -->"
@@ -281,6 +282,33 @@ func (p *standingRecentParser) files(pattern *regexp.Regexp, ignored bool, seen 
 	return count, found == count && p.close()
 }
 
+// This optional provider metadata is a counted subset of selected paths. It
+// neither reduces SelectedFiles nor claims that every selected file was reviewed.
+func (p *standingRecentParser) noReviewableFiles(selected map[string]bool) bool {
+	if !p.take("<details>") || p.at >= len(p.lines) {
+		return false
+	}
+	match := standingNoReviewable.FindStringSubmatch(p.lines[p.at])
+	if match == nil {
+		return false
+	}
+	p.at++
+	count, err := strconv.ParseInt(match[1], 10, 64)
+	if err != nil || count > 10000 || count > int64(len(selected)) || !p.take("<dl>", "<dd>") {
+		return false
+	}
+	seen := map[string]bool{}
+	for p.at < len(p.lines) && p.lines[p.at] != "</dd>" {
+		path, plain := strings.CutPrefix(p.lines[p.at], "* ")
+		p.at++
+		if !plain || !validRepoPath(path) || strings.TrimSpace(path) != path || strings.ContainsAny(path, "`<>[]*") || !selected[path] || seen[path] || int64(len(seen)) >= count {
+			return false
+		}
+		seen[path] = true
+	}
+	return int64(len(seen)) == count && p.close()
+}
+
 func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 	if !validBody(body) {
 		return zero, false
@@ -338,17 +366,28 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 	if !p.close() {
 		return zero, false
 	}
-	seen := map[string]bool{}
+	ignored := map[string]bool{}
 	// CodeRabbit omits the ignored-files block when there are no excluded
 	// paths. Only the exact next selected header permits that omission; any
 	// present or malformed ignored block still goes through strict validation.
 	if p.at+1 >= len(p.lines) || p.lines[p.at] != "<details>" || !standingSelected.MatchString(p.lines[p.at+1]) {
-		if zero.IgnoredFiles, valid = p.files(standingIgnored, true, seen); !valid {
+		if zero.IgnoredFiles, valid = p.files(standingIgnored, true, ignored); !valid {
 			return zero, false
 		}
 	}
-	if zero.SelectedFiles, valid = p.files(standingSelected, false, seen); !valid {
+	selected := map[string]bool{}
+	if zero.SelectedFiles, valid = p.files(standingSelected, false, selected); !valid {
 		return zero, false
+	}
+	for path := range selected {
+		if ignored[path] {
+			return zero, false
+		}
+	}
+	if p.at+1 < len(p.lines) && p.lines[p.at] == "<details>" && standingNoReviewable.MatchString(p.lines[p.at+1]) {
+		if !p.noReviewableFiles(selected) {
+			return zero, false
+		}
 	}
 	if p.at < len(p.lines) && standingAvailability.MatchString(p.lines[p.at]) {
 		p.at++
