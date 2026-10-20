@@ -4,7 +4,8 @@ import os
 import tempfile
 import unittest
 
-from source_acquisition_conservation import ConservationRefusal, conserved_roots, inventory
+from source_acquisition_conservation import (ConservationRefusal, conserved_roots, inventory,
+    DEFAULT_CAPTURE_BYTES, DEFAULT_CAPTURE_ENTRIES, MAX_CAPTURE_BYTES, MAX_CAPTURE_ENTRIES)
 
 
 class ConservationTests(unittest.TestCase):
@@ -49,6 +50,42 @@ class ConservationTests(unittest.TestCase):
         with self.assertRaises(ConservationRefusal):
             inventory([self.root])
 
+    def test_exact_byte_and_entry_boundaries_preserve_default_manifest(self):
+        self.assertEqual((DEFAULT_CAPTURE_BYTES, DEFAULT_CAPTURE_ENTRIES), (128 << 20, 20000))
+        default = inventory([self.root])
+        self.assertEqual(inventory([self.root], max_bytes=8, max_entries=2), default)
+        self.assertEqual(inventory([self.root], max_bytes=MAX_CAPTURE_BYTES,
+                                   max_entries=MAX_CAPTURE_ENTRIES), default)
+        for limits in (dict(max_bytes=7, max_entries=2), dict(max_bytes=8, max_entries=1)):
+            with self.subTest(limits=limits), self.assertRaises(ConservationRefusal) as failure:
+                inventory([self.root], **limits)
+            self.assertEqual(failure.exception.args, ('capture_inventory_too_large',))
+
+    def test_invalid_caps_refuse_before_visiting_inputs(self):
+        def forbidden_roots():
+            self.fail('invalid capture cap visited filesystem inputs')
+            yield self.root
+        for name, maximum in (('max_bytes', MAX_CAPTURE_BYTES), ('max_entries', MAX_CAPTURE_ENTRIES)):
+            for value in (0, -1, True, False, None, '1', 1.5, maximum+1):
+                with self.subTest(name=name, value=value), self.assertRaises(ConservationRefusal) as failure:
+                    inventory(forbidden_roots(), **{name: value})
+                self.assertEqual(failure.exception.args, ('capture_limits_invalid',))
+
+    def test_final_pass_uses_selected_caps_after_body_failure(self):
+        for name in ('bytes', 'entries'):
+            root = self.root/name
+            root.mkdir()
+            capture = root/'capture'
+            capture.write_bytes(b'original')
+            with self.subTest(name=name), self.assertRaises(ConservationRefusal) as failure:
+                with conserved_roots([root], max_bytes=8, max_entries=2):
+                    if name == 'bytes':
+                        capture.write_bytes(b'original+')
+                    else:
+                        (root/'added').write_bytes(b'')
+                    raise RuntimeError('owned synthetic body failure')
+            self.assertEqual(failure.exception.args, ('capture_inventory_too_large',))
+
     def test_exact_admitted_snapshot_keeps_hash_without_capture_byte_charge(self):
         snapshot = self.root/'snapshot.sqlite3'
         snapshot.write_bytes(b'separately admitted database')
@@ -63,6 +100,12 @@ class ConservationTests(unittest.TestCase):
         os.link(snapshot, self.root/'alias')
         with self.assertRaises(ConservationRefusal):
             inventory([self.root], max_bytes=len(b'original'), admitted_snapshot=snapshot)
+        charged = len(b'original')+snapshot.stat().st_size
+        manifest = inventory([self.root], max_bytes=charged, max_entries=4, admitted_snapshot=snapshot)
+        self.assertEqual(manifest['0/alias'][2], manifest['0/snapshot.sqlite3'][2])
+        for limits in (dict(max_bytes=charged-1, max_entries=4), dict(max_bytes=charged, max_entries=3)):
+            with self.subTest(limits=limits), self.assertRaises(ConservationRefusal):
+                inventory([self.root], admitted_snapshot=snapshot, **limits)
 
     def test_admitted_snapshot_retains_conservation_kind_and_entry_guards(self):
         snapshot = self.root/'snapshot.sqlite3'

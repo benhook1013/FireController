@@ -7,6 +7,7 @@ pause. Git proof writes are confined to a separately owned disposable clone.
 This is optional migration glue, not a native service dependency.
 """
 from contextlib import ExitStack
+import argparse
 import importlib
 import importlib.util
 import json
@@ -19,7 +20,8 @@ import sys
 import time
 
 from source_acquisition_frame import acquire_frame, FrameRefusal
-from source_acquisition_conservation import conserved_roots, ConservationRefusal
+from source_acquisition_conservation import (conserved_roots, ConservationRefusal,
+    DEFAULT_CAPTURE_BYTES, DEFAULT_CAPTURE_ENTRIES, MAX_CAPTURE_BYTES, MAX_CAPTURE_ENTRIES)
 from source_acquisition_bindings import bind_source, exact_path, BindingRefusal
 
 ADAPTER = Path(__file__).with_name('prepare_source_controls.py')
@@ -33,6 +35,7 @@ class AcquisitionRefusal(Exception):
 
 
 FRAME_REFUSAL_ACTIONS = {
+    'source_preflight_deadline_exceeded': 'No frame was published. Check provider responsiveness and the complete-stack acquisition path before retrying.',
     'source_writers_not_paused': 'Pause source writers before acquiring a fresh sealed handoff.',
     'source_binding_invalid': 'Verify the repository identity and sealed snapshot digest.',
     'source_selection_invalid': 'Select valid distinct PRs and channels in the acquisition plan.',
@@ -148,12 +151,31 @@ def construct(helpers, plan, store, records, gitroot):
         default_base_ref=plan['default_base_ref'],isolated_fixture=False)
 
 
+def capture_limits(args):
+    limits = dict(max_bytes=DEFAULT_CAPTURE_BYTES, max_entries=DEFAULT_CAPTURE_ENTRIES)
+    explicit = False
+    for name, key, maximum in (('max_capture_bytes', 'max_bytes', MAX_CAPTURE_BYTES),
+                               ('max_capture_entries', 'max_entries', MAX_CAPTURE_ENTRIES)):
+        value = getattr(args, name, None)
+        if value is not None:
+            if type(value) is not int or not 1 <= value <= maximum:
+                raise AcquisitionRefusal('capture_limits_invalid')
+            limits[key], explicit = value, True
+    return limits, explicit
+
+
 def acquire(args):
+    # Validate admission bounds before resolving or opening any source inputs.
+    limits, explicit_capture_limits = capture_limits(args)
     source, common=exact_path(args.source_root), exact_path(args.common)
     snapshot=exact_path(args.snapshot)
     output, provenance=exact_path(args.output),exact_path(args.provenance)
     request={name:str(exact_path(getattr(args,name))) for name in
              ('source_root','common','snapshot','git_root','plan','output','provenance')}
+    if explicit_capture_limits:
+        # Preserve old default provenance bytes, but bind both chosen caps when
+        # an operator explicitly changes this independent admission assertion.
+        request['capture_limits'] = dict(limits)
     if (output==provenance or any(path in (snapshot,Path(args.plan))
             or path.is_relative_to(common) or path.is_relative_to(source)
             for path in (output,provenance))):
@@ -175,7 +197,7 @@ def acquire(args):
         helpers['github'].parse_repo(plan['repository'])
         _, snapshot_sha=stack.enter_context(transfer.private_snapshot(str(snapshot),transfer.snapshot_limit(args)))
         roots=(common/'firemud',common/'coderabbit-review-logs')
-        capture_inventory=stack.enter_context(conserved_roots(roots,admitted_snapshot=snapshot))
+        capture_inventory=stack.enter_context(conserved_roots(roots,admitted_snapshot=snapshot,**limits))
         inventory_sha=transfer.digest(transfer.canonical(capture_inventory))
         expected=dict(snapshot_sha256=snapshot_sha,source_code_sha256=code_hash,
                       capture_inventory_sha256=inventory_sha,
@@ -186,7 +208,8 @@ def acquire(args):
             proof=transfer.strict_json(proof_bytes)
             if (type(proof) is not dict or proof.get('version')!=1
                     or proof.get('kind')!='source_owner_frame_acquisition'
-                    or proof.get('request')!=request or proof.get('source_helpers')!=hashes
+                    or transfer.canonical(proof.get('request'))!=transfer.canonical(request)
+                    or proof.get('source_helpers')!=hashes
                     or type(proof.get('binding')) is not dict
                     or any(proof['binding'].get(k)!=v for k,v in expected.items())
                     or proof.get('source_writer_pause_asserted') is not True
@@ -204,13 +227,21 @@ def acquire(args):
         else:
             store, records=stack.enter_context(bind_source(helpers,common=common,snapshot=snapshot))
             gitroot=scratch_git(args.git_root,common=common,source=source,repository=plan['repository'])
-            with helpers['github'].activate_hosted_preflight_budget(120,preflight_name='Source export'):
-                repository_matches(helpers,plan)
-                controller=construct(helpers,plan,store,records,gitroot)
-                frame=acquire_frame(controller,records,helpers['policy'],
-                    repository_id=plan['repository_id'],snapshot_sha256=snapshot_sha,
-                    selected=selected,writer_pause_confirmed=plan['paused'],
-                    history_validator=transfer.selected_history)
+            try:
+                with helpers['github'].activate_hosted_preflight_budget(120,preflight_name='Source export'):
+                    repository_matches(helpers,plan)
+                    controller=construct(helpers,plan,store,records,gitroot)
+                    frame=acquire_frame(controller,records,helpers['policy'],
+                        repository_id=plan['repository_id'],snapshot_sha256=snapshot_sha,
+                        selected=selected,writer_pause_confirmed=plan['paused'],
+                        history_validator=transfer.selected_history)
+            except Exception as exc:
+                # Recognize only the exact explicitly selected helper class.
+                # Its message/trace can contain private provider material.
+                deadline = getattr(helpers['github'], 'HostedPreflightDeadlineExceeded', None)
+                if isinstance(deadline, type) and type(exc) is deadline:
+                    raise AcquisitionRefusal('source_preflight_deadline_exceeded') from None
+                raise
             proof=dict(version=1,kind='source_owner_frame_acquisition',
                 request=request,source_helpers=hashes,retained_frame=frame,
                 source_writer_pause_asserted=True,durable_writer_fence_established=False,
@@ -229,11 +260,29 @@ def acquire(args):
                 sha256=proof['binding']['frame_sha256'],replayed=replayed)
 
 
+def positive_capture_limit(value, maximum):
+    if type(value) is not str:
+        raise argparse.ArgumentTypeError('invalid positive capture limit')
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError('invalid positive capture limit') from None
+    if not 1 <= parsed <= maximum:
+        raise argparse.ArgumentTypeError('invalid positive capture limit')
+    return parsed
+
+
 def main(argv=None):
     parser=transfer.QuietParser(allow_abbrev=False,description=__doc__)
     for name in ('source-root','common','snapshot','git-root','plan','output','provenance'):
         parser.add_argument('--'+name,required=True,action=transfer.UniqueInput)
     transfer.database_limit_option(parser)
+    parser.add_argument('--max-capture-bytes', action=transfer.UniqueInput,
+        type=lambda value: positive_capture_limit(value, MAX_CAPTURE_BYTES),
+        help='capture byte limit, 1..9223372036854775807 (default: 134217728); excludes only the separately admitted snapshot')
+    parser.add_argument('--max-capture-entries', action=transfer.UniqueInput,
+        type=lambda value: positive_capture_limit(value, MAX_CAPTURE_ENTRIES),
+        help='capture entry limit, 1..9223372036854775806 (default: 20000)')
     args=parser.parse_args(argv)
     try:
         result=acquire(args)
@@ -246,7 +295,7 @@ def main(argv=None):
             if type(value) is str and re.fullmatch(r'[a-z][a-z0-9_]{0,63}',value):
                 code=value
         report=dict(error=code)
-        if type(exc) is FrameRefusal and code in FRAME_REFUSAL_ACTIONS:
+        if type(exc) in (AcquisitionRefusal, FrameRefusal) and code in FRAME_REFUSAL_ACTIONS:
             report['next_action']=FRAME_REFUSAL_ACTIONS[code]
         print(json.dumps(report,sort_keys=True,separators=(',',':')),file=sys.stderr)
         return 3

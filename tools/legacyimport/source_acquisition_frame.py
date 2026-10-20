@@ -5,6 +5,8 @@ The caller must supply explicit adapters within a paused source acquisition
 procedure and verify its database/capture/Git provenance and conservation.
 This component neither acquires that pause nor posts review decisions.
 """
+from collections.abc import Mapping
+import copy
 import json
 
 
@@ -37,6 +39,30 @@ def acquire_frame(controller, records, policy, *, repository_id, snapshot_sha256
     def idle():
         if evidence.repository_cli_lock_status() != 'clear':
             raise FrameRefusal("source_cli_lock_uncertain")
+        identities_batch = getattr(getattr(controller, 'github', None), 'batch_pull_requests', None)
+        requests_batch = getattr(evidence, 'request_history_batch', None)
+        if callable(identities_batch) and callable(requests_batch):
+            # Each quiescence pass owns a fresh whole-stack identity snapshot;
+            # neither selected-only coverage nor an earlier audit cache is idle.
+            numbers = tuple(state.ordered_prs)
+            identities = identities_batch(numbers)
+            if (not isinstance(identities, Mapping)
+                    or any(type(pr) is not int for pr in identities)
+                    or set(identities) != set(numbers)
+                    or any(not isinstance(identities[pr], Mapping)
+                           or type(identities[pr].get('number')) is not int
+                           or identities[pr]['number'] != pr for pr in numbers)):
+                raise FrameRefusal("source_requests_not_clear")
+            requests = requests_batch(numbers, identities)
+            expected = {(pr, channel) for pr in numbers for channel in ('cli', 'hosted')}
+            if (not isinstance(requests, Mapping)
+                    or any(type(key) is not tuple or len(key) != 2
+                           or type(key[0]) is not int or key[1] not in ('cli', 'hosted')
+                           for key in requests)
+                    or set(requests) != expected
+                    or any(type(rows) is not list or rows for rows in requests.values())):
+                raise FrameRefusal("source_requests_not_clear")
+            return identities
         # Current-request readers deliberately exclude completed review history.
         # Requiring empty results is conservative: even a terminal diagnostic
         # must be understood rather than silently classified as settled here.
@@ -53,12 +79,27 @@ def acquire_frame(controller, records, policy, *, repository_id, snapshot_sha256
             if type(rows) is not list or rows:
                 raise FrameRefusal("source_routes_not_clear")
 
-    idle()
+    def identity_facts(identities):
+        # Exclude changing CI rollups, but retain facts that can change the
+        # stack, current requests or review policy between the two reads.
+        fields = ('number', 'headRefOid', 'baseRefOid', 'baseRefName',
+                  'headRefName', 'headRepository', 'state', 'merged',
+                  'mergedAt', 'isDraft', 'changedFiles', 'comments', 'reviews')
+        return {pr: {key: copy.deepcopy(value.get(key)) for key in fields}
+                for pr, value in identities.items()}
+
+    initial_identities = idle()
+    initial_facts = None if initial_identities is None else identity_facts(initial_identities)
     before_state = state.to_dict()
     cache, audit_cache = {}, {}
+    # The complete fresh identity snapshot just used by the request audit is
+    # also the source's supported reconciliation input. Omitting it makes the
+    # source fetch each configured PR again, serially, before selected history.
+    identity_arguments = {} if initial_identities is None else {
+        'live_identities': initial_identities, 'refresh_prs': set()}
     live, reconciliation = controller._reconciliation(
         state, evidence_prs=set(selected), history_cache=cache,
-        prefetch_complete_history=True)
+        prefetch_complete_history=True, **identity_arguments)
     pulls = []
     for pr, channels in selected.items():
         routes_clear(pr)
@@ -78,6 +119,12 @@ def acquire_frame(controller, records, policy, *, repository_id, snapshot_sha256
             else:
                 transfer_audit(state, pr, policy.Channel(channel), current,
                                reconciliation, **arguments)
+        # Audits refresh the evidence provider's local canonical histories.
+        # A transfer adapter need not also replace reconciliation's outer
+        # cache. Reproject that audited snapshot through the owning policy
+        # helpers; LiveEvidence.history reuses it without another provider read.
+        for channel in (policy.Channel.CLI, policy.Channel.HOSTED):
+            cache.pop((pr, channel.value), None)
         histories = {channel: controller._policy_history(
             state, pr, channel, reconciliation, history_cache=cache)
             for channel in (policy.Channel.CLI, policy.Channel.HOSTED)}
@@ -91,7 +138,9 @@ def acquire_frame(controller, records, policy, *, repository_id, snapshot_sha256
         pulls.append({'pull_number': pr, 'channels': {
             channel: histories[policy.Channel(channel)] for channel in channels}})
         routes_clear(pr)
-    idle()
+    final_identities = idle()
+    if initial_facts is not None and identity_facts(final_identities) != initial_facts:
+        raise FrameRefusal("source_state_changed")
     if controller.store.load().to_dict() != before_state:
         raise FrameRefusal("source_state_changed")
     frame = dict(version=1, repository_id=repository_id,

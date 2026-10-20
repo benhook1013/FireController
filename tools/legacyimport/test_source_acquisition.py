@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 import acquire_source_history as acquire
+import source_acquisition_conservation as conservation
 from source_acquisition_conservation import ConservationRefusal
 from source_acquisition_bindings import BindingRefusal
 from source_acquisition_frame import FrameRefusal
@@ -47,9 +48,50 @@ class AcquisitionMainTests(unittest.TestCase):
             self.assertEqual(errors.getvalue(), '{"error":"arguments_invalid"}\n')
             called.assert_not_called()
 
+    def test_capture_caps_cli_defaults_positive_range_and_safe_refusals(self):
+        for tail, expected, explicit in (
+                ([], dict(max_bytes=128 << 20, max_entries=20000), False),
+                (['--max-capture-bytes', str(768 << 20)], dict(max_bytes=768 << 20, max_entries=20000), True),
+                (['--max-capture-entries', '50000'], dict(max_bytes=128 << 20, max_entries=50000), True),
+                (['--max-capture-bytes', str((1 << 63)-1), '--max-capture-entries', str((1 << 63)-2)],
+                 dict(max_bytes=(1 << 63)-1, max_entries=(1 << 63)-2), True)):
+            with self.subTest(tail=tail), patch.object(acquire, 'acquire', return_value={}) as called, redirect_stdout(io.StringIO()):
+                self.assertEqual(acquire.main(self.arguments+tail), 0)
+            self.assertEqual(acquire.capture_limits(called.call_args.args[0]), (expected, explicit))
+        for option, maximum in (('--max-capture-bytes', (1 << 63)-1), ('--max-capture-entries', (1 << 63)-2)):
+            for value in ('0', '-1', '1.5', 'True', 'False', 'PRIVATE_BAD_VALUE', str(maximum+1)):
+                with self.subTest(option=option, value=value), patch.object(acquire, 'acquire') as called, \
+                        redirect_stderr(io.StringIO()) as errors, self.assertRaises(SystemExit) as failure:
+                    acquire.main(self.arguments+[option, value])
+                self.assertEqual(failure.exception.code, 2)
+                self.assertEqual(errors.getvalue(), '{"error":"arguments_invalid"}\n')
+                called.assert_not_called()
+            with patch.object(acquire, 'acquire') as called, redirect_stderr(io.StringIO()) as errors, self.assertRaises(SystemExit):
+                acquire.main(self.arguments+[option, '1', option, '2'])
+            self.assertEqual(errors.getvalue(), '{"error":"arguments_invalid"}\n')
+            called.assert_not_called()
+        for value in (True, False, 1, None):
+            with self.subTest(nontext=value), self.assertRaises(acquire.argparse.ArgumentTypeError):
+                acquire.positive_capture_limit(value, (1 << 63)-1)
+
+    def test_programmatic_invalid_capture_caps_precede_all_input_reads(self):
+        for name, maximum in (('max_capture_bytes', (1 << 63)-1), ('max_capture_entries', (1 << 63)-2)):
+            for value in (0, -1, True, False, '1', 1.5, maximum+1):
+                with self.subTest(name=name, value=value), \
+                        patch.object(acquire, 'exact_path', side_effect=AssertionError('no input resolution')) as paths, \
+                        patch.object(acquire.transfer, 'load_helpers', side_effect=AssertionError('no source helpers')) as helpers, \
+                        self.assertRaises(acquire.AcquisitionRefusal) as failure:
+                    acquire.acquire(types.SimpleNamespace(**{name: value}))
+                self.assertEqual(failure.exception.args, ('capture_limits_invalid',))
+                paths.assert_not_called()
+                helpers.assert_not_called()
+
     def test_known_local_refusal_families_preserve_stable_diagnostics(self):
         for failure,expected in (
                 (acquire.AcquisitionRefusal('source_repository_mismatch'),{'error':'source_repository_mismatch'}),
+                (acquire.AcquisitionRefusal('source_preflight_deadline_exceeded'),
+                 {'error':'source_preflight_deadline_exceeded', 'next_action':
+                  'No frame was published. Check provider responsiveness and the complete-stack acquisition path before retrying.'}),
                 (acquire.transfer.Refusal('controls_unsettled',private='/private/helper/body secret=fixture'),{'error':'controls_unsettled'}),
                 (BindingRefusal('source_database_not_sealed'),{'error':'source_database_not_sealed'}),
                 (FrameRefusal('source_requests_not_clear'),{'error':'source_requests_not_clear',
@@ -98,6 +140,7 @@ class OfflineSnapshotBoundsTests(unittest.TestCase):
         stack = ExitStack(); self.addCleanup(stack.close)
         module = types.SimpleNamespace(__file__=str(self.package/'fixture.py'), parse_repo=lambda _: None,
                                        activate_hosted_preflight_budget=lambda *_args, **_kwargs: nullcontext())
+        self.source_github = module
         stack.enter_context(patch.object(acquire.transfer, 'load_helpers', return_value=({'policy': object()}, {}, 'a'*64)))
         stack.enter_context(patch.object(acquire.transfer, 'source_hash', return_value=(None, {}, 'a'*64)))
         stack.enter_context(patch.object(acquire.importlib, 'import_module', return_value=module))
@@ -110,6 +153,31 @@ class OfflineSnapshotBoundsTests(unittest.TestCase):
                         projection_complete=True, quiescent=True, obligations_clear=True,
                         prs=[dict(pull_number=7, channels={'cli': []})])
         self.frame = stack.enter_context(patch.object(acquire, 'acquire_frame', side_effect=frame))
+
+    def test_exact_source_deadline_is_safe_fixed_refusal_without_publication(self):
+        class Deadline(TimeoutError):
+            def __str__(self):
+                raise AssertionError('private source diagnostic must not be formatted')
+        self.source_github.HostedPreflightDeadlineExceeded = Deadline
+        self.frame.side_effect = Deadline('PRIVATE provider body')
+        with self.assertRaises(acquire.AcquisitionRefusal) as failure:
+            acquire.acquire(self.args)
+        self.assertEqual(failure.exception.args, ('source_preflight_deadline_exceeded',))
+        self.assertFalse(Path(self.args.output).exists())
+        self.assertFalse(Path(self.args.provenance).exists())
+        self.assertEqual(self.snapshot.read_bytes(), b'sealed synthetic snapshot')
+
+    def test_foreign_deadline_subclass_remains_unclassified(self):
+        class Deadline(TimeoutError):
+            pass
+        class ForeignDeadline(Deadline):
+            pass
+        self.source_github.HostedPreflightDeadlineExceeded = Deadline
+        self.frame.side_effect = ForeignDeadline('PRIVATE provider body')
+        with self.assertRaises(ForeignDeadline):
+            acquire.acquire(self.args)
+        self.assertFalse(Path(self.args.output).exists())
+        self.assertFalse(Path(self.args.provenance).exists())
 
     def test_explicit_database_bound_exact_retry_preserves_binding_and_outputs(self):
         with self.snapshot.open('ab') as handle:
@@ -127,6 +195,146 @@ class OfflineSnapshotBoundsTests(unittest.TestCase):
         self.assertTrue(result['replayed']); self.assertEqual(result['outcome'], 'unchanged')
         self.frame.assert_not_called()
         self.assertEqual(before, (Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()))
+
+    def test_default_capture_admission_preserves_exact_original_provenance_shape(self):
+        self.assertEqual(acquire.acquire(self.args)['outcome'], 'created')
+        frame_bytes = Path(self.args.output).read_bytes()
+        request = {name: getattr(self.args, name) for name in
+                   ('source_root', 'common', 'snapshot', 'git_root', 'plan', 'output', 'provenance')}
+        roots = (Path(self.args.common)/'firemud', Path(self.args.common)/'coderabbit-review-logs')
+        manifest = conservation.inventory(roots, admitted_snapshot=self.snapshot)
+        expected = dict(version=1, kind='source_owner_frame_acquisition', request=request,
+            source_helpers={}, retained_frame=json.loads(frame_bytes), source_writer_pause_asserted=True,
+            durable_writer_fence_established=False, source_obligations_audited=True, scratch_git_writes_permitted=True,
+            binding=dict(snapshot_sha256=acquire.transfer.digest(self.snapshot.read_bytes()),
+                source_code_sha256='a'*64, capture_inventory_sha256=acquire.transfer.digest(acquire.transfer.canonical(manifest)),
+                plan_sha256=acquire.transfer.digest(Path(self.args.plan).read_bytes()),
+                frame_sha256=acquire.transfer.digest(frame_bytes)))
+        self.assertEqual(Path(self.args.provenance).read_bytes(), acquire.transfer.canonical(expected))
+        self.assertNotIn('capture_limits', expected['request'])
+        self.args.max_capture_bytes = 128 << 20
+        with self.assertRaises(acquire.AcquisitionRefusal) as failure:
+            acquire.acquire(self.args)
+        self.assertEqual(failure.exception.args, ('acquisition_replay_conflict',))
+
+    def test_explicit_caps_bind_replay_and_all_inventory_passes(self):
+        self.args.max_capture_bytes, self.args.max_capture_entries = 768 << 20, 50000
+        original_snapshot = self.snapshot.read_bytes()
+        with patch.object(conservation, 'inventory', wraps=conservation.inventory) as inventory:
+            self.assertEqual(acquire.acquire(self.args)['outcome'], 'created')
+            retained = Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()
+            proof = json.loads(retained[1])
+            self.assertEqual(proof['request']['capture_limits'], dict(max_bytes=768 << 20, max_entries=50000))
+            self.frame.reset_mock()
+            result = acquire.acquire(self.args)
+            self.assertTrue(result['replayed'])
+            self.assertEqual(result['outcome'], 'unchanged')
+            self.assertEqual(inventory.call_count, 4)
+            for call in inventory.call_args_list:
+                self.assertEqual(call.kwargs, dict(admitted_snapshot=self.snapshot, max_bytes=768 << 20, max_entries=50000))
+        self.frame.assert_not_called()
+        for name, value in (('max_capture_bytes', (768 << 20)+1), ('max_capture_entries', 50001),
+                            ('max_capture_bytes', None), ('max_capture_entries', None)):
+            previous = getattr(self.args, name)
+            setattr(self.args, name, value)
+            with self.subTest(name=name, value=value), self.assertRaises(acquire.AcquisitionRefusal) as failure:
+                acquire.acquire(self.args)
+            self.assertEqual(failure.exception.args, ('acquisition_replay_conflict',))
+            setattr(self.args, name, previous)
+        self.assertEqual((Path(self.args.output).read_bytes(), Path(self.args.provenance).read_bytes()), retained)
+        self.assertEqual(self.snapshot.read_bytes(), original_snapshot)
+        self.frame.assert_not_called()
+
+    def test_replay_caps_require_exact_integer_types(self):
+        self.args.max_capture_bytes, self.args.max_capture_entries = 1, 2
+        acquire.acquire(self.args)
+        proof_path = Path(self.args.provenance)
+        original_proof = proof_path.read_bytes()
+        original_frame = Path(self.args.output).read_bytes()
+        self.frame.reset_mock()
+        for name, value in (('max_bytes', True), ('max_bytes', 1.0), ('max_entries', 2.0)):
+            proof = json.loads(original_proof)
+            proof['request']['capture_limits'][name] = value
+            proof_path.write_bytes(acquire.transfer.canonical(proof))
+            with self.subTest(name=name, value=value), self.assertRaises(acquire.AcquisitionRefusal) as failure:
+                acquire.acquire(self.args)
+            self.assertEqual(failure.exception.args, ('acquisition_replay_conflict',))
+            self.assertEqual(Path(self.args.output).read_bytes(), original_frame)
+            proof_path.write_bytes(original_proof)
+        self.frame.assert_not_called()
+
+    def test_capture_caps_refuse_before_git_provider_or_frame_and_allow_exact_boundary(self):
+        capture = self.snapshot.parent/'capture'
+        capture.write_bytes(b'12345')
+        for byte_cap, entry_cap in ((4, 3), (5, 2)):
+            self.args.max_capture_bytes, self.args.max_capture_entries = byte_cap, entry_cap
+            with self.subTest(bytes=byte_cap, entries=entry_cap), \
+                    patch.object(acquire, 'scratch_git', side_effect=AssertionError('no Git proof')) as git, \
+                    patch.object(acquire, 'repository_matches', side_effect=AssertionError('no provider')) as provider, \
+                    self.assertRaises(ConservationRefusal) as failure:
+                acquire.acquire(self.args)
+            self.assertEqual(failure.exception.args, ('capture_inventory_too_large',))
+            git.assert_not_called()
+            provider.assert_not_called()
+            self.frame.assert_not_called()
+            self.assertFalse(Path(self.args.output).exists())
+            self.assertFalse(Path(self.args.provenance).exists())
+        self.args.max_capture_bytes, self.args.max_capture_entries = 5, 3
+        self.assertEqual(acquire.acquire(self.args)['outcome'], 'created')
+        frame = json.loads(Path(self.args.output).read_bytes())
+        self.assertEqual(set(frame), {'version', 'repository_id', 'snapshot_sha256', 'projection_complete', 'quiescent', 'obligations_clear', 'prs'})
+
+    def test_explicit_capture_cap_admits_large_unselected_artifact_without_default_change(self):
+        folder = self.snapshot.parent/'unselected'
+        folder.mkdir()
+        capture = folder/'capture'
+        size = (128 << 20)+1
+        with capture.open('wb') as handle:
+            handle.truncate(size)
+        capture.chmod(0o600)
+        with self.assertRaises(ConservationRefusal) as failure:
+            acquire.acquire(self.args)
+        self.assertEqual(failure.exception.args, ('capture_inventory_too_large',))
+        self.frame.assert_not_called()
+        self.assertFalse(Path(self.args.output).exists())
+        self.assertFalse(Path(self.args.provenance).exists())
+        self.args.max_capture_bytes = size
+        manifests = []
+        original = conservation.inventory
+        def tracked(*args, **kwargs):
+            result = original(*args, **kwargs)
+            manifests.append(result)
+            return result
+        with patch.object(conservation, 'inventory', side_effect=tracked):
+            self.assertEqual(acquire.acquire(self.args)['outcome'], 'created')
+        self.assertEqual(len(manifests), 2)
+        for manifest in manifests:
+            self.assertEqual(manifest['0/unselected/capture'][0], 'file')
+            self.assertEqual(manifest['0/unselected/capture'][1][4], size)
+            self.assertEqual(len(manifest['0/unselected/capture'][2]), 64)
+        self.assertEqual(manifests[0], manifests[1])
+        proof = json.loads(Path(self.args.provenance).read_bytes())
+        self.assertEqual(proof['request']['capture_limits'], dict(max_bytes=size, max_entries=20000))
+        self.assertEqual(proof['binding']['capture_inventory_sha256'],
+                         acquire.transfer.digest(acquire.transfer.canonical(manifests[0])))
+        self.assertNotIn('max_capture_bytes', self.frame.call_args.kwargs)
+        self.assertNotIn('max_capture_entries', self.frame.call_args.kwargs)
+
+    def test_final_inventory_uses_explicit_caps_before_publication(self):
+        capture = self.snapshot.parent/'capture'
+        capture.write_bytes(b'12345')
+        self.args.max_capture_bytes, self.args.max_capture_entries = 5, 3
+        original = self.frame.side_effect
+        def changed(*args, **kwargs):
+            frame = original(*args, **kwargs)
+            capture.write_bytes(b'123456')
+            return frame
+        self.frame.side_effect = changed
+        with self.assertRaises(ConservationRefusal) as failure:
+            acquire.acquire(self.args)
+        self.assertEqual(failure.exception.args, ('capture_inventory_too_large',))
+        self.assertFalse(Path(self.args.output).exists())
+        self.assertFalse(Path(self.args.provenance).exists())
 
     def test_changed_snapshot_or_sidecar_prevents_publication(self):
         for mutation in ('digest', 'sidecar'):

@@ -3,8 +3,8 @@
 """Offline, explicitly selected source-helper adapter; never acquires live history.
 
 The history envelope is a SOURCE OWNER assertion of a canonical effective frame,
-quiescence and authoritative obligation clearance. This utility checks their
-shape/binding, not those live assertions.
+quiescence and either clearance or a complete carried obligation ledger. This
+utility checks shape and retained native bindings, not those live assertions.
 An explicit source-root is trusted executable Python code, not an inert dataset.
 """
 from __future__ import annotations
@@ -21,6 +21,9 @@ import stat
 import sys
 import tempfile
 import unicodedata
+
+import source_carried_frame
+import source_carried_binding
 
 MAX_SNAPSHOT = 32 << 20
 MAX_LIMIT = (1 << 63) - 1
@@ -260,6 +263,11 @@ def selection_input(value):
 def selected_history(value, selected, snapshot_sha):
     if type(value) is not dict:
         refuse("history_invalid")
+    if type(value.get('version')) is int and value['version'] == 2:
+        try:
+            return source_carried_frame.selected_history(value, selected, snapshot_sha)
+        except source_carried_frame.CarriedFrameRefusal as exc:
+            refuse(exc.code)
     # This independent owner assertion covers accepted-finding resolution and
     # incoming/outgoing routes. Unknown or unavailable clearance is not clear.
     # Quiescence alone only excludes active operations, not unfinished findings.
@@ -427,12 +435,28 @@ def prepare(args):
     helpers, hashes, code_hash = load_helpers(args.source_root)
     # All inputs remain open and unchanged through projection, then are verified
     # before any prepared output is published.
-    with private_input(args.selection, MAX_SELECTION) as (_, selection_bytes), \
+    with contextlib.ExitStack() as stack, \
+            private_input(args.selection, MAX_SELECTION) as (_, selection_bytes), \
             private_input(args.history_file, MAX_HISTORY) as (_, history_bytes), \
             private_snapshot(args.snapshot, snapshot_limit(args)) as (path, snapshot_sha):
         selected = selection_input(strict_json(selection_bytes))
         history_sha = digest(history_bytes)
-        history = selected_history(strict_json(history_bytes), selected, snapshot_sha)
+        history_value = strict_json(history_bytes)
+        history = selected_history(history_value, selected, snapshot_sha)
+        obligations_file = getattr(args, 'obligations_file', None)
+        obligations, obligations_sha = None, None
+        if history_value['version'] == 2:
+            if not obligations_file:
+                refuse('obligations_binding_required')
+            _, obligations_bytes = stack.enter_context(private_input(obligations_file, 2 << 20))
+            try:
+                obligations = source_carried_binding.reference(
+                    history_value, selected, snapshot_sha, strict_json(obligations_bytes))
+            except source_carried_frame.CarriedFrameRefusal as exc:
+                refuse(exc.code)
+            obligations_sha = digest(obligations_bytes)
+        elif obligations_file is not None:
+            refuse('obligations_binding_unexpected')
         uri = path.as_uri() + "?mode=ro&immutable=1"
         with contextlib.closing(sqlite3.connect(uri, uri=True)) as connection:
             connection.execute("PRAGMA query_only=ON")
@@ -446,18 +470,24 @@ def prepare(args):
             facts = control_facts(helpers, state, selected, history)
         binding = dict(version=1, snapshot_sha256=snapshot_sha, history_sha256=history_sha,
                        source_code_sha256=code_hash)
+        if obligations is not None:
+            binding.update(version=2, obligations_binding_sha256=obligations_sha)
         prepared = {key: selected[key] for key in ("version", "repository_id", "expected_revision", "pull_number", "channel", "source", "source_key")}
-        if facts.get("maximum_unbounded") is True:
+        if facts.get("maximum_unbounded") is True or obligations is not None:
             prepared["version"] = 2
+        if obligations is not None:
+            prepared['obligations'] = obligations
         prepared.update(source_sha256=digest(canonical(binding)), **facts)
         provenance = dict(version=1, kind="offline_source_control_preparation", binding=binding,
                           source_sha256=prepared["source_sha256"], source_helpers=hashes,
                           selection_sha256=digest(selection_bytes), prepared_sha256=digest(canonical(prepared)),
-                          source_owner_assertions={"projection_complete": True, "quiescent": True, "obligations_clear": True},
+                          source_owner_assertions={"projection_complete": True, "quiescent": True,
+                              "obligations_clear": history_value['obligations_clear']},
                           independently_verified_live_assertions=False)
     if source_hash(args.source_root)[2] != code_hash:
         refuse("source_changed")
-    if args.output == args.provenance or args.output in (args.snapshot, args.history_file, args.selection) or args.provenance in (args.snapshot, args.history_file, args.selection):
+    inputs = (args.snapshot, args.history_file, args.selection, getattr(args, 'obligations_file', None))
+    if args.output == args.provenance or args.output in inputs or args.provenance in inputs:
         refuse("output_invalid")
     output, proof = canonical(prepared), canonical(provenance)
     check_output(args.output, output)
@@ -504,6 +534,9 @@ def parser():
     for flag in ("source-root", "snapshot", "history-file", "selection", "output", "provenance"):
         out.add_argument("--" + flag, required=True, action=UniqueInput)
     database_limit_option(out)
+    out.add_argument('--obligations-file', action=UniqueInput,
+        help='private native unchanged-preview bindings for the complete version-two carried ledger; required for numeric preparation from that frame')
+    out.epilog += ' Version-two carried frames use obligations_clear:false with exact obligations, row-digest bindings and deferred_controls; nondeferred preparation requires --obligations-file with actual unchanged native preview receipts. Deferred controls produce no prepared policy. See tools/legacyimport/README.md.'
     return out
 
 
