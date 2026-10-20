@@ -99,7 +99,8 @@ describe('truthful stored review presentation', () => {
     expect(html).toContain('review-row-merged'); expect(html).toContain('Queue distance −01'); expect(html).toContain('Queue distance +01: first open PR');
     expect(html.match(/Foundation &lt;literal&gt;/gu)).toHaveLength(2);
     expect(html).toContain('href="https://github.com/example/project/pull/2"');
-    expect(html).toContain('aria-label="Review details for PR #2"'); expect(html).toContain('review-link-arrow');
+    expect(html).toMatch(/<a\b[^>]*aria-label="Review details for PR #2"[^>]*>Review details ↗<\/a>/u);
+    expect(html).not.toContain('review-link-arrow');
     expect(html).toContain('Merged PRs remain in the queue.'); expect(html).not.toContain('two days');
     expect(html).not.toContain('Latest attempt:'); expect(html).not.toContain('Incomplete PR observation');
   });
