@@ -2,11 +2,15 @@ package reviewworkspace_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -21,6 +25,181 @@ func commitChangedFiles(t *testing.T, f *fixture) {
 	git(t, f.git, f.source, "commit", "-m", "synthetic changed paths")
 	f.candidate = git(t, f.git, f.source, "rev-parse", "HEAD")
 	git(t, f.git, f.cache, "fetch", "--no-tags", "--", f.source, "refs/heads/candidate:refs/heads/candidate")
+}
+
+func TestReviewFileCountExactRenameAtOneHundredAndCanonicalPatchUnchanged(t *testing.T) {
+	for _, exact := range []bool{true, false} {
+		t.Run(fmt.Sprintf("exact_%t", exact), func(t *testing.T) {
+			f := newFixture(t)
+			git(t, f.git, f.source, "switch", "candidate")
+			if err := os.Rename(filepath.Join(f.source, ".gitignore"), filepath.Join(f.source, "renamed.ignore")); err != nil {
+				t.Fatal(err)
+			}
+			if !exact {
+				write(t, filepath.Join(f.source, "renamed.ignore"), "ignored.tmp\n#x\n", 0600)
+			}
+			for i := 0; i < 97; i++ {
+				write(t, filepath.Join(f.source, fmt.Sprintf("added-%03d", i)), fmt.Sprintf("new content %d\n", i), 0600)
+			}
+			commitChangedFiles(t, &f)
+			w := prepare(t, f, "rename_budget")
+			raw, err := f.manager.ChangedFiles(t.Context(), w)
+			if err != nil || len(raw) != 101 || !slices.Contains(raw, ".gitignore") || !slices.Contains(raw, "renamed.ignore") {
+				t.Fatal("complete raw old/new paths changed", len(raw), err)
+			}
+			want := int64(101)
+			if exact {
+				want = 100
+			}
+			count, err := f.manager.ReviewFileCount(t.Context(), w)
+			if err != nil || count != want {
+				t.Fatal("review budget count changed", count, err)
+			}
+			// Mutable source refs cannot replace the exact admitted comparison.
+			git(t, f.git, f.cache, "update-ref", "refs/heads/main", f.candidate)
+			if again, err := f.manager.ReviewFileCount(t.Context(), w); err != nil || again != count {
+				t.Fatal("mutable refs changed the review count", again, err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, f.git, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary", "--full-index", "--no-renames", "--diff-algorithm=myers", "--src-prefix=a/", "--dst-prefix=b/", w.MergeBaseSHA, w.CandidateSHA, "--")
+			command.Dir = w.Directory
+			command.Env = []string{"PATH=" + os.Getenv("PATH"), "SystemRoot=" + os.Getenv("SystemRoot"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}
+			patch, err := command.Output()
+			hash := sha256.Sum256(patch)
+			if err != nil || hex.EncodeToString(hash[:]) != w.PatchSHA256 || f.manager.Verify(t.Context(), w) != nil {
+				t.Fatal("review count changed the canonical no-renames patch")
+			}
+		})
+	}
+}
+
+func reviewCountShellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func reviewCountGit(t *testing.T, f fixture, exactPass string) *reviewworkspace.Manager {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("controlled Git wrapper requires a Unix shell")
+	}
+	wrapper := filepath.Join(t.TempDir(), "count-git")
+	script := "#!/bin/sh\nfor arg do\nif [ \"$arg\" = '--find-renames=100%' ]; then\n" + exactPass + "\nfi\ndone\nexec " + reviewCountShellQuote(f.git) + " \"$@\"\n"
+	write(t, wrapper, script, 0700)
+	m, err := reviewworkspace.New(f.root, wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestReviewFileCountValidatesBothSidesBeforeCollapsingExactRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("source name intentionally invalid on Windows")
+	}
+	f := newFixture(t)
+	git(t, f.git, f.source, "switch", "candidate")
+	write(t, filepath.Join(f.source, "old\nname"), "exact retained content\n", 0600)
+	commitChangedFiles(t, &f)
+	base := f.candidate
+	if err := os.Rename(filepath.Join(f.source, "old\nname"), filepath.Join(f.source, "portable-name")); err != nil {
+		t.Fatal(err)
+	}
+	commitChangedFiles(t, &f)
+	w, err := f.manager.Prepare(t.Context(), 42, "invalid_old_name", f.candidate, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "unexpected-exact-pass")
+	m := reviewCountGit(t, f, "printf entered > "+reviewCountShellQuote(marker)+"\nexit 0")
+	if count, err := m.ReviewFileCount(t.Context(), w); err == nil || count != 0 {
+		t.Fatal("an exact rename hid a nonportable original path")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("rename collapsing ran before complete old/new path validation")
+	}
+}
+
+func TestReviewFileCountRejectsMalformedOrForeignOutputAndFinalWorkspaceChanges(t *testing.T) {
+	f := newFixture(t)
+	for _, tc := range []struct {
+		name, output string
+		mutate       bool
+	}{
+		{"unterminated", "source.txt", false},
+		{"empty_path", "\x00", false},
+		{"nonportable", "bad\\name\x00", false},
+		{"foreign", "not-in-raw-list\x00", false},
+		{"too_many_logical", "source.txt\x00base-only.txt\x00.gitignore\x00", false},
+		{"count_bound", strings.Repeat("source.txt\x00", 10001), false},
+		{"output_bound", strings.Repeat("a", (8<<20)+1), false},
+		{"final_workspace", "source.txt\x00base-only.txt\x00", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := prepare(t, f, "count_"+tc.name)
+			output := filepath.Join(t.TempDir(), "paths")
+			write(t, output, tc.output, 0600)
+			script := ""
+			if tc.mutate {
+				script = "printf changed > source.txt\n"
+			}
+			script += "exec /bin/cat " + reviewCountShellQuote(output)
+			m := reviewCountGit(t, f, script)
+			count, err := m.ReviewFileCount(t.Context(), w)
+			if err == nil || count != 0 || strings.Contains(err.Error(), f.root) || strings.Contains(err.Error(), tc.output) {
+				t.Fatal("invalid comparison count accepted or disclosed private details")
+			}
+		})
+	}
+}
+
+func TestReviewFileCountEmptyAndCancelledReads(t *testing.T) {
+	f := newFixture(t)
+	w, err := f.manager.Prepare(t.Context(), 42, "empty_count", f.candidate, f.candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := f.manager.ReviewFileCount(t.Context(), w); err != nil || count != 0 {
+		t.Fatal("empty comparison did not return an explicit zero count", count, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if count, err := f.manager.ReviewFileCount(ctx, w); err == nil || count != 0 {
+		t.Fatal("cancelled comparison accepted")
+	}
+	if _, err := f.manager.ReviewFileCount(nil, w); err == nil {
+		t.Fatal("nil context accepted")
+	}
+	var missing *reviewworkspace.Manager
+	if _, err := missing.ReviewFileCount(t.Context(), w); err == nil {
+		t.Fatal("nil manager accepted")
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	marker := filepath.Join(t.TempDir(), "entered")
+	m := reviewCountGit(t, f, "printf entered > "+reviewCountShellQuote(marker)+"\nexec /bin/sleep 5")
+	ctx, cancel = context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := m.ReviewFileCount(ctx, w); done <- err }()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_, entered := os.Stat(marker)
+	cancel()
+	select {
+	case err := <-done:
+		if entered != nil || err == nil || strings.Contains(err.Error(), f.root) {
+			t.Fatal("exact-rename pass did not cancel safely")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled exact-rename pass did not join")
+	}
 }
 
 func TestChangedFilesExactComparisonSortedAndPinned(t *testing.T) {

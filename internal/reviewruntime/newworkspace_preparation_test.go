@@ -3,6 +3,7 @@ package reviewruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -122,6 +123,56 @@ func TestPrepareReviewWorkspaceStopsAtOriginalGuardAndRetainsSafeReason(t *testi
 			}
 			if _, err = os.Stat(f.log); !errors.Is(err, os.ErrNotExist) {
 				t.Fatal("failed workspace preparation ran allowance/review", err)
+			}
+		})
+	}
+}
+
+func TestPrepareReviewWorkspaceExactRenameHonorsOneHundredFileBudget(t *testing.T) {
+	for _, exact := range []bool{true, false} {
+		t.Run(fmt.Sprintf("exact_%t", exact), func(t *testing.T) {
+			f := newCLIDriverFixture(t)
+			current, plan, a := workspacePreparationInputs(t, f)
+			current.Policy.Policy.MaxReviewFiles = 100
+			source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
+			if err := os.Rename(filepath.Join(source, "reviewed.txt"), filepath.Join(source, "renamed.txt")); err != nil {
+				t.Fatal(err)
+			}
+			if !exact {
+				if err := os.WriteFile(filepath.Join(source, "renamed.txt"), []byte("candidate\nchanged\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := 0; i < 99; i++ {
+				if err := os.WriteFile(filepath.Join(source, fmt.Sprintf("added-%03d", i)), []byte(fmt.Sprintf("new file %d\n", i)), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gitTestRun(t, source, "add", "--all")
+			gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "file count boundary")
+			gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/file-count")
+			plan.Pull.HeadSHA = gitTestOutput(t, source, "rev-parse", "HEAD")
+			plan.Pull.BaseSHA, plan.ParentSHA = f.headSHA, f.headSHA
+			var before, after int
+			if err := f.store.DB().QueryRow("SELECT count(*) FROM events").Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			w, count, err := prepareReviewWorkspace(t.Context(), f.driver.fetch, f.manager.Verify, f.manager, f.capability.GitHubCredential(), current, plan, a.ID)
+			if exact {
+				if err != nil || count != 100 || f.manager.Verify(t.Context(), w) != nil {
+					t.Fatal("exact rename incorrectly exceeded unchanged 100-file budget", count, err)
+				}
+			} else {
+				var failure *core.Error
+				if !errors.As(err, &failure) || failure.Code != "review_held" || failure.Details.(map[string]string)["reason"] != "project_file_limit" || count != 0 || w != (reviewworkspace.Workspace{}) {
+					t.Fatal("changed-content move bypassed file ceiling", count, err)
+				}
+			}
+			if err := f.store.DB().QueryRow("SELECT count(*) FROM events").Scan(&after); err != nil || after != before || f.reader.repositoryCalls != 0 || len(f.reader.calls) != 0 {
+				t.Fatal("file budget read provider or wrote native ledger", err)
+			}
+			if _, err := os.Stat(f.log); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("file budget check ran allowance or review")
 			}
 		})
 	}

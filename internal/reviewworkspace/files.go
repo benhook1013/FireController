@@ -27,7 +27,50 @@ func (m *Manager) ChangedFiles(ctx context.Context, w Workspace) ([]string, erro
 	if m.run(ctx, w.Directory, &output, changedFilesOutputLimit, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", w.MergeBaseSHA, w.CandidateSHA, "--") != nil {
 		return nil, errVerification
 	}
-	data := output.Bytes()
+	paths, err := parseChangedPaths(output.Bytes())
+	if err != nil || m.verify(ctx, w) != nil || ctx.Err() != nil {
+		return nil, errVerification
+	}
+	return paths, nil
+}
+
+// ReviewFileCount counts an exact-content rename once for the review budget.
+// ChangedFiles remains the complete, independently validated old/new path set;
+// neither this count nor rename detection changes the canonical patch anchor.
+func (m *Manager) ReviewFileCount(ctx context.Context, w Workspace) (int64, error) {
+	if m == nil || ctx == nil {
+		return 0, errInput
+	}
+	ctx, cancel := context.WithTimeout(ctx, materializationBudget)
+	defer cancel()
+	raw, err := m.ChangedFiles(ctx, w)
+	if err != nil {
+		return 0, errVerification
+	}
+	var output bytes.Buffer
+	if m.run(ctx, w.Directory, &output, changedFilesOutputLimit, "diff", "--no-ext-diff", "--no-textconv", "--find-renames=100%", "--name-only", "-z", w.MergeBaseSHA, w.CandidateSHA, "--") != nil {
+		return 0, errVerification
+	}
+	logical, err := parseChangedPaths(output.Bytes())
+	if err != nil || len(logical) > len(raw) {
+		return 0, errVerification
+	}
+	allowed := make(map[string]bool, len(raw))
+	for _, path := range raw {
+		allowed[path] = true
+	}
+	for _, path := range logical {
+		if !allowed[path] {
+			return 0, errVerification
+		}
+	}
+	if m.verify(ctx, w) != nil || ctx.Err() != nil {
+		return 0, errVerification
+	}
+	return int64(len(logical)), nil
+}
+
+func parseChangedPaths(data []byte) ([]string, error) {
 	if len(data) != 0 && data[len(data)-1] != 0 || bytes.Count(data, []byte{0}) > changedFilesCountLimit {
 		return nil, errVerification
 	}
@@ -46,9 +89,6 @@ func (m *Manager) ChangedFiles(ctx context.Context, w Workspace) ([]string, erro
 		}
 	}
 	sort.Strings(paths)
-	if m.verify(ctx, w) != nil || ctx.Err() != nil {
-		return nil, errVerification
-	}
 	return paths, nil
 }
 

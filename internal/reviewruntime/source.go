@@ -154,11 +154,10 @@ func prepareReviewWorkspace(ctx context.Context, fetch func(context.Context, int
 	if err := verify(ctx, workspace); err != nil {
 		return reviewworkspace.Workspace{}, 0, reviewHold("workspace_changed")
 	}
-	paths, err := manager.ChangedFiles(ctx, workspace)
-	if err != nil || len(paths) == 0 {
+	count, err := manager.ReviewFileCount(ctx, workspace)
+	if err != nil || count == 0 {
 		return reviewworkspace.Workspace{}, 0, reviewHold("comparison_unavailable")
 	}
-	count := int64(len(paths))
 	if ceiling := current.Policy.Policy.MaxReviewFiles; ceiling > 0 && count > ceiling {
 		return reviewworkspace.Workspace{}, 0, reviewHold("project_file_limit")
 	}
