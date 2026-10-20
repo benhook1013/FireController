@@ -71,12 +71,15 @@ func editorialEntries(store *core.Store) http.HandlerFunc {
 				defer rows.Close()
 				for rows.Next() {
 					var summary Summary
-					var body string
+					var body sql.NullString
 					var pos int64
 					if err := rows.Scan(&summary.ID, &summary.Kind, &summary.Title, &summary.State, &summary.Archived, &summary.Revision, &body, &pos); err != nil {
 						return err
 					}
-					value, err := decodeEntry(body)
+					if !body.Valid {
+						return unavailable()
+					}
+					value, err := decodeEntry(body.String)
 					if err != nil {
 						return err
 					}
