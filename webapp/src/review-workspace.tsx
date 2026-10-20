@@ -93,7 +93,7 @@ export function missingPullFacts(pull: ReviewPullSummary): string[] {
 }
 export function ReviewPullFacts({ pull }: { pull: ReviewPullSummary }) {
   const missing = missingPullFacts(pull);
-  return <div className="review-pull-facts"><span className={`badge review-state-${pull.state}`}>{reviewLabel(pull.state)}</span>{pull.is_draft === true && pull.state === 'open' && <span className="badge review-state-draft">Draft</span>}{pull.state === 'merged' && pull.merged_at && <strong className="review-merged-age"><RelativeTime value={pull.merged_at} /></strong>}{pull.diff && <span className="review-diff">{pull.diff.files.toLocaleString('en-US')} files · <strong>+{pull.diff.additions.toLocaleString('en-US')}</strong> / <strong>−{pull.diff.deletions.toLocaleString('en-US')}</strong> lines</span>}<span>CI: {reviewLabel(pull.ci_state)}</span>{pull.state !== 'merged' && <span>Mergeability: {reviewLabel(pull.mergeability)}</span>}{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
+  return <div className="review-pull-facts"><span className={`badge review-state-${pull.state}`}>{reviewLabel(pull.state)}</span>{pull.is_draft === true && pull.state === 'open' && <span className="badge review-state-draft">Draft</span>}{pull.state === 'merged' && pull.merged_at && <strong className="review-merged-age"><RelativeTime value={pull.merged_at} /></strong>}{pull.diff && <span className="review-diff">{pull.diff.files.toLocaleString('en-US')} files · <strong className="review-additions">+{pull.diff.additions.toLocaleString('en-US')}</strong> / <strong className="review-deletions">−{pull.diff.deletions.toLocaleString('en-US')}</strong> lines</span>}<span>CI: {reviewLabel(pull.ci_state)}</span>{pull.state !== 'merged' && <span>Mergeability: {reviewLabel(pull.mergeability)}</span>}{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
 }
 // Only a first bounded page can establish the head from its known predecessors.
 export function reviewQueueDistances(items: ReviewPullSummary[], firstPage: boolean): (number | undefined)[] {
@@ -120,7 +120,7 @@ export function groupReviewQueue(items: ReviewPullSummary[], groups: ReviewGroup
 }
 export function ReviewDetailsLink({ number, snapshot }: { number: number; snapshot: string }) {
   const { home } = useWorkspace();
-  return <Link className="review-details-link" to={reviewLink(home, 'pulls', number, snapshot)} aria-label={`Review details for PR #${number}`}><span>Review details</span><span className="review-link-arrow" aria-hidden="true">↗</span></Link>;
+  return <Link className="review-details-link" to={reviewLink(home, 'pulls', number, snapshot)} aria-label={`Review details for PR #${number}`}>Review details ↗</Link>;
 }
 function ReviewQueueRow({ pull, snapshot, distance, index, progress }: { pull: ReviewPullSummary; snapshot: string; distance?: number; index: number; progress?: ReviewProgressItem }) {
   const { session } = useWorkspace();
