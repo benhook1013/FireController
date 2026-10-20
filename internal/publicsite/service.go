@@ -373,8 +373,10 @@ func publishContent(ctx context.Context, tx *sql.Tx, r record, content string) e
 		return unavailable()
 	}
 	if previous == content {
-		_, err = tx.ExecContext(ctx, `UPDATE project_publications SET refresh_error='' WHERE project_id=?`, r.project)
-		return err
+		if _, err = tx.ExecContext(ctx, `UPDATE project_publications SET refresh_error='' WHERE project_id=?`, r.project); err != nil {
+			return unavailable()
+		}
+		return nil
 	}
 	if r.publicRevision >= math.MaxInt64 {
 		return unavailable()
