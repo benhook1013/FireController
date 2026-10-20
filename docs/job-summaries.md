@@ -2,7 +2,7 @@
 
 ## Delivery status
 
-The API, typed client, CLI, MCP and private browser implement an optional summary attached to a job. Focused normal/race checks cover guarded writes, history, scope, retry and output bounds. Combined installation and public/private browser qualification remain separate at the [delivery tracker](delivery.md). Older installed clients may omit this feature; use matching-release documentation.
+The API, typed client, CLI, MCP and private browser implement an optional summary attached to a job. Matching installed clients expose the feature, and enabled publications pin exact retained revisions wherever a summary is selected. Focused normal/race checks cover guarded writes, history, scope, retry and output bounds. Actual linked-publication preview found an older client equality bug that rejected a valid normalized manifest; source `f7aa1b2a3036b27aa6c711fc95c67b9780c1c852` fixes it, with actual client and CLI preview/apply/replay regression proof plus focused normal/race/vet checks. The updated CLI and MCP adapter are installed; the daemon bytes were unchanged. Installed public/private browser and recovery qualification are recorded at the [delivery tracker](delivery.md).
 
 ## Purpose and authority
 
