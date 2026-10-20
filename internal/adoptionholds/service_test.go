@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	h "github.com/benhook1013/FireController/internal/adoptionholds"
 	m "github.com/benhook1013/FireController/internal/adoptionholdsmodel"
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewexec"
 )
 
 type fixture struct {
@@ -227,6 +229,118 @@ func TestAdditiveResolutionExactReplayAndConservation(t *testing.T) {
 	f.validate()
 	if open, err := h.HasOpen(t.Context(), f.store.DB(), "project_one", 3251); err != nil || open {
 		t.Fatal("restart changed resolved state")
+	}
+}
+
+func TestResultHoldRemainsIndependentOfFindingResolutionWithoutNativeCredit(t *testing.T) {
+	f := fresh(t)
+	if err := reviewexec.EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	nativeTables := []string{"review_operations", "review_execution_attempts", "review_execution_evidence", "review_execution_reservations", "review_round_controls", "review_round_completions"}
+	for _, table := range nativeTables {
+		if f.count(table) != 0 {
+			t.Fatal("native fixture was not empty", table)
+		}
+	}
+	b := batch()
+	b.Obligations = []m.Obligation{b.Obligations[0], {SourceKey: "result-1", Kind: "result", AffectedPullNumbers: []int64{3251}, Summary: "PRIVATE terminal result accounting remains unsettled", Evidence: []string{"source:terminal-result-1"}, OriginalStatus: "pending"}}
+	p := f.preview(b)
+	request := m.ApplyRequest{Batch: b, PreviewSHA256: p.PreviewSHA256}
+	applied := f.call("POST", base+"/apply", f.token, "worker_one", "result-import", request)
+	if receipt := decode[m.Receipt](t, applied, 200); receipt.New != 2 || receipt.Revision != 1 {
+		t.Fatal("mixed finding/result import did not retain both originals", receipt)
+	}
+	items := f.page("?pull_number=3251").Items
+	ids := map[string]string{}
+	for _, item := range items {
+		ids[item.Kind] = item.ID
+	}
+	if len(items) != 2 || ids["finding"] == "" || ids["result"] == "" || ids["finding"] == ids["result"] {
+		t.Fatal("result and finding did not retain separate identities", items)
+	}
+	detail := decode[m.Detail](t, f.call("GET", base+"/"+ids["result"], f.token, "", "", nil), 200)
+	if !reflect.DeepEqual(detail.Original, b.Obligations[1]) || detail.Source != b.Source || detail.Status != "open" || detail.Resolution != nil {
+		t.Fatal("result original or source binding changed", detail)
+	}
+	if facts, err := h.ReadFacts(t.Context(), f.store.DB(), "project_one", 3251); err != nil || facts.Open != 2 {
+		t.Fatal("result did not participate in shared hold facts", facts, err)
+	}
+	one := int64(1)
+	resolution := m.ResolveRequest{ExpectedRevision: &one, Reason: "Finding correction verified", Evidence: []string{"commit:finding-fixed"}}
+	decode[map[string]any](t, f.call("POST", base+"/"+ids["finding"]+"/resolve", f.token, "worker_one", "finding-resolved", resolution), 200)
+	if open, err := h.HasOpen(t.Context(), f.store.DB(), "project_one", 3251); err != nil || !open {
+		t.Fatal("finding resolution incorrectly released unsettled result", err)
+	}
+	if items := f.page("?pull_number=3251").Items; len(items) != 1 || items[0].Kind != "result" || items[0].Status != "open" || items[0].Revision != 1 {
+		t.Fatal("finding resolution changed independent result hold", items)
+	}
+	if facts, err := h.ReadFacts(t.Context(), f.store.DB(), "project_one", 3251); err != nil || facts.Open != 1 {
+		t.Fatal("result-only shared hold facts changed", facts, err)
+	}
+	if replay := f.call("POST", base+"/apply", f.token, "worker_one", "result-import", request); replay.Code != 200 || replay.Body.String() != applied.Body.String() {
+		t.Fatal("finding resolution invalidated original mixed-batch replay", replay.Body.String())
+	}
+	f.validate()
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.open()
+	f.validate()
+	detail = decode[m.Detail](t, f.call("GET", base+"/"+ids["result"], f.token, "", "", nil), 200)
+	if detail.Status != "open" || !reflect.DeepEqual(detail.Original, b.Obligations[1]) {
+		t.Fatal("restart or snapshot normalization lost result hold", detail)
+	}
+	resolution.Reason, resolution.Evidence = "Destination accounting explicitly verified", []string{"native:accounting-proof"}
+	readerToken := "result-reader"
+	sum := sha256.Sum256([]byte(readerToken))
+	f.exec(`INSERT INTO credentials VALUES('cred_result_reader','principal_result_reader',?,0,0)`, hex.EncodeToString(sum[:]))
+	f.exec(`INSERT INTO grants VALUES('cred_result_reader','project_one',1,0)`)
+	decode[map[string]any](t, f.call("POST", base+"/"+ids["result"]+"/resolve", readerToken, "worker_one", "not-admin", resolution), 403)
+	resolved := f.call("POST", base+"/"+ids["result"]+"/resolve", f.token, "worker_one", "result-resolved", resolution)
+	decode[map[string]any](t, resolved, 200)
+	if open, err := h.HasOpen(t.Context(), f.store.DB(), "project_one", 3251); err != nil || open {
+		t.Fatal("explicit result resolution did not release hold", err)
+	}
+	if replay := f.call("POST", base+"/apply", f.token, "worker_one", "result-import", request); replay.Code != 200 || replay.Body.String() != applied.Body.String() {
+		t.Fatal("result resolution invalidated original batch replay", replay.Body.String())
+	}
+	detail = decode[m.Detail](t, f.call("GET", base+"/"+ids["result"], f.token, "", "", nil), 200)
+	if detail.Status != "resolved" || detail.Resolution == nil || detail.Resolution.Reason != resolution.Reason || !reflect.DeepEqual(detail.Original, b.Obligations[1]) {
+		t.Fatal("result original or explicit resolution was lost", detail)
+	}
+	for _, table := range nativeTables {
+		if f.count(table) != 0 {
+			t.Fatal("result import/resolution/replay fabricated native review or count effects", table)
+		}
+	}
+	f.validate()
+}
+
+func TestSnapshotRefusesResealedUnknownResultKind(t *testing.T) {
+	f := fresh(t)
+	b := batch()
+	b.Obligations = b.Obligations[:1]
+	b.Obligations[0].Kind = "result"
+	f.apply(b, "result")
+	f.validate()
+	b.Obligations[0].Kind = "unknown-result"
+	body := m.Encode(b)
+	original := m.Encode(b.Obligations[0])
+	f.exec(`DROP TRIGGER review_adoption_originals_immutable`)
+	f.exec(`DROP TRIGGER review_adoption_imports_immutable`)
+	f.exec(`UPDATE review_adoption_obligations SET original_json=?,original_sha256=?`, string(original), m.Digest(original))
+	f.exec(`UPDATE review_adoption_imports SET batch_json=?,batch_sha256=?`, string(body), m.Digest(body))
+	for _, statement := range h.SchemaSQL() {
+		if strings.HasPrefix(statement, "CREATE TRIGGER review_adoption_originals_immutable ") || strings.HasPrefix(statement, "CREATE TRIGGER review_adoption_imports_immutable ") {
+			f.exec(statement)
+		}
+	}
+	if err := h.ValidateSnapshot(t.Context(), f.store.DB()); err == nil {
+		t.Fatal("resealed unknown kind passed canonical snapshot normalization")
+	}
+	if _, err := h.HasOpen(t.Context(), f.store.DB(), "project_one", 3251); err == nil {
+		t.Fatal("unknown stored kind silently released result hold")
 	}
 }
 func TestStrictBoundsScopePaginationAndAuth(t *testing.T) {

@@ -224,7 +224,7 @@ func ValidateAdoptionObligationID(id string) error {
 }
 
 func validAdoptionObligationItem(item AdoptionObligationItem) bool {
-	if !validAdoptionObligationID(item.ID) || !adoptionholdsmodel.ValidSourceKey(item.Namespace) || !adoptionholdsmodel.ValidSourceKey(item.SourceKey) || item.Kind != "finding" && item.Kind != "route" || item.Status != "open" && item.Status != "resolved" || item.Revision != 1 && item.Revision != 2 || item.Status == "open" && item.Revision != 1 || item.Status == "resolved" && item.Revision != 2 || len(item.AffectedPullNumbers) < 1 || len(item.AffectedPullNumbers) > 100 {
+	if !validAdoptionObligationID(item.ID) || !adoptionholdsmodel.ValidSourceKey(item.Namespace) || !adoptionholdsmodel.ValidSourceKey(item.SourceKey) || !adoptionholdsmodel.ValidKind(item.Kind) || item.Status != "open" && item.Status != "resolved" || item.Revision != 1 && item.Revision != 2 || item.Status == "open" && item.Revision != 1 || item.Status == "resolved" && item.Revision != 2 || len(item.AffectedPullNumbers) < 1 || len(item.AffectedPullNumbers) > 100 {
 		return false
 	}
 	for index, number := range item.AffectedPullNumbers {

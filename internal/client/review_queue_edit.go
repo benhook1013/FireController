@@ -25,14 +25,17 @@ type reviewQueueEditDocument struct {
 	Retired          []reviewQueueEditRetirement `json:"retired"`
 }
 type reviewQueueEditPull struct {
-	Number       int64  `json:"number"`
-	Title        string `json:"title"`
-	State        string `json:"state"`
-	HeadSHA      string `json:"head_sha"`
-	BaseRef      string `json:"base_ref"`
-	BaseSHA      string `json:"base_sha"`
-	CIState      string `json:"ci_state"`
-	Mergeability string `json:"mergeability"`
+	Diff         *ReviewPullDiff `json:"diff,omitempty"`
+	IsDraft      *bool           `json:"is_draft,omitempty"`
+	MergedAt     string          `json:"merged_at,omitempty"`
+	Number       int64           `json:"number"`
+	Title        string          `json:"title"`
+	State        string          `json:"state"`
+	HeadSHA      string          `json:"head_sha"`
+	BaseRef      string          `json:"base_ref"`
+	BaseSHA      string          `json:"base_sha"`
+	CIState      string          `json:"ci_state"`
+	Mergeability string          `json:"mergeability"`
 }
 type reviewQueueEditRetirement struct {
 	Number int64  `json:"number"`
@@ -87,6 +90,9 @@ func reviewQueueEditDocumentValue(document json.RawMessage) (reviewQueueEditDocu
 	seen := make(map[int64]bool, count)
 	for _, pull := range value.Queue {
 		if pull.Number < 1 || pull.Number > 2147483647 || seen[pull.Number] || !cleanReviewText(pull.Title, 500, true) || !oneReviewOf(pull.State, "open", "merged", "closed", "unknown") || !validReviewSHA(pull.HeadSHA) || !cleanReviewText(pull.BaseRef, 256, false) || !validReviewSHA(pull.BaseSHA) || !oneReviewOf(pull.CIState, "unknown", "pending", "success", "failure") || !oneReviewOf(pull.Mergeability, "unknown", "mergeable", "conflicting") {
+			return value, queueEditValidation()
+		}
+		if !validReviewPullMetadata(ReviewPullSummary{State: pull.State, Diff: pull.Diff, IsDraft: pull.IsDraft, MergedAt: pull.MergedAt}) {
 			return value, queueEditValidation()
 		}
 		seen[pull.Number] = true

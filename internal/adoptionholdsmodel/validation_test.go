@@ -78,3 +78,63 @@ func TestNormalizedEncodedRecordBudgets(t *testing.T) {
 		})
 	}
 }
+
+func TestResultKindRetainsCanonicalBoundsAndUnknownKindRefusal(t *testing.T) {
+	for _, kind := range []string{"finding", "route", "result"} {
+		if !ValidKind(kind) {
+			t.Fatal("supported kind refused", kind)
+		}
+	}
+	result := Obligation{SourceKey: "terminal-result", Kind: "result", AffectedPullNumbers: []int64{9, 2}, Summary: "Terminal result accounting remains unsettled", Evidence: []string{"source:terminal-result"}, OriginalStatus: "pending"}
+	normalized, err := NormalizeObligation(result)
+	if err != nil || normalized.Kind != "result" || !reflect.DeepEqual(normalized.AffectedPullNumbers, []int64{2, 9}) || !reflect.DeepEqual(result.AffectedPullNumbers, []int64{9, 2}) {
+		t.Fatal("result normalization changed kind or caller scope", normalized, err)
+	}
+	for _, kind := range []string{"", "Result", "results", "instruction", " result"} {
+		changed := result
+		changed.Kind = kind
+		if ValidKind(kind) {
+			t.Fatal("unknown kind admitted", kind)
+		}
+		if _, err := NormalizeObligation(changed); err == nil {
+			t.Fatal("unknown obligation kind normalized", kind)
+		}
+	}
+	for name, change := range map[string]func(*Obligation){
+		"summary":          func(o *Obligation) { o.Summary = strings.Repeat("x", (16<<10)+1) },
+		"evidence-count":   func(o *Obligation) { o.Evidence = make([]string, 11) },
+		"evidence-bytes":   func(o *Obligation) { o.Evidence = []string{strings.Repeat("x", 1025)} },
+		"missing-evidence": func(o *Obligation) { o.Evidence = nil },
+		"scope-count":      func(o *Obligation) { o.AffectedPullNumbers = make([]int64, 101) },
+		"duplicate-scope":  func(o *Obligation) { o.AffectedPullNumbers = []int64{2, 2} },
+		"scope-range":      func(o *Obligation) { o.AffectedPullNumbers = []int64{2147483648} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := result
+			change(&changed)
+			if _, err := NormalizeObligation(changed); err == nil {
+				t.Fatal("result bypassed shared obligation bound")
+			}
+		})
+	}
+	zero := int64(0)
+	batch := Batch{Version: 1, Source: Source{Namespace: "sealed-source", RepositoryID: 7, SnapshotSHA256: strings.Repeat("a", 64)}, ExpectedRevision: &zero, Obligations: []Obligation{result}}
+	if got, _, err := NormalizeBatch(batch); err != nil || got.Obligations[0].Kind != "result" {
+		t.Fatal("bounded result batch refused", got, err)
+	}
+	batch.Obligations = make([]Obligation, 101)
+	for index := range batch.Obligations {
+		batch.Obligations[index] = result
+		batch.Obligations[index].SourceKey = strings.Repeat("x", index+1)
+	}
+	if _, _, err := NormalizeBatch(batch); err == nil {
+		t.Fatal("result batch count bypassed")
+	}
+	batch.Obligations = batch.Obligations[:20]
+	for index := range batch.Obligations {
+		batch.Obligations[index].Summary = strings.Repeat("x", 16<<10)
+	}
+	if _, _, err := NormalizeBatch(batch); err == nil {
+		t.Fatal("result batch wrapper budget bypassed")
+	}
+}

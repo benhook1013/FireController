@@ -101,6 +101,75 @@ func TestAdoptionHoldsIntegrationDirectAdmissionAndIsolation(t *testing.T) {
 	}
 }
 
+func TestAdoptionHoldsIntegrationFindingResolutionCannotReleaseResultAccountingHold(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	zero := int64(0)
+	batch := holdmodel.Batch{Version: 1, Source: holdmodel.Source{Namespace: "terminal-source", RepositoryID: 801, SnapshotSHA256: strings.Repeat("9", 64)}, ExpectedRevision: &zero,
+		Obligations: []holdmodel.Obligation{
+			{SourceKey: "finding-one", Kind: "finding", AffectedPullNumbers: []int64{2}, Summary: "Source correction pending", Evidence: []string{"source:finding-one"}, OriginalStatus: "pending"},
+			{SourceKey: "result-one", Kind: "result", AffectedPullNumbers: []int64{2}, Summary: "Terminal source result accounting remains unsettled", Evidence: []string{"source:result-one"}, OriginalStatus: "pending"},
+		}}
+	w := integrationHoldRequest(t, f, "POST", integrationHoldsPath+"/preview", f.admin, "", batch)
+	var preview holdmodel.Preview
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &preview) != nil || preview.New != 2 {
+		t.Fatalf("mixed hold preview: %d %s", w.Code, w.Body.String())
+	}
+	w = integrationHoldRequest(t, f, "POST", integrationHoldsPath+"/apply", f.admin, "mixed-source-holds", holdmodel.ApplyRequest{Batch: batch, PreviewSHA256: preview.PreviewSHA256})
+	if w.Code != http.StatusOK {
+		t.Fatalf("mixed hold apply: %d %s", w.Code, w.Body.String())
+	}
+	w = integrationHoldRequest(t, f, "GET", integrationHoldsPath+"?pull_number=2", f.reader, "", nil)
+	var page holdmodel.Page
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &page) != nil || len(page.Items) != 2 {
+		t.Fatalf("mixed holds read: %d %s", w.Code, w.Body.String())
+	}
+	ids := map[string]string{}
+	for _, item := range page.Items {
+		ids[item.Kind] = item.ID
+	}
+	if ids["finding"] == "" || ids["result"] == "" || ids["finding"] == ids["result"] {
+		t.Fatal("mixed obligations lost distinct kinds/identities", page.Items)
+	}
+	one := int64(1)
+	resolution := holdmodel.ResolveRequest{ExpectedRevision: &one, Reason: "Finding correction explicitly verified", Evidence: []string{"commit:source-correction"}}
+	w = integrationHoldRequest(t, f, "POST", integrationHoldsPath+"/"+ids["finding"]+"/resolve", f.admin, "resolve-source-finding", resolution)
+	if w.Code != http.StatusOK {
+		t.Fatalf("finding resolution: %d %s", w.Code, w.Body.String())
+	}
+	w = integrationHoldRequest(t, f, "GET", integrationHoldsPath+"?pull_number=2", f.reader, "", nil)
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &page) != nil || len(page.Items) != 1 || page.Items[0].Kind != "result" || page.Items[0].ID != ids["result"] {
+		t.Fatalf("finding resolution lost independent result hold: %d %s", w.Code, w.Body.String())
+	}
+	for _, channel := range []string{"cli", "hosted"} {
+		_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "result-held-"+channel, Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: channel, HeadSHA: strings.Repeat("a", 40)})
+		integrationSourceHeld(t, err)
+	}
+	for _, table := range []string{"review_operations", "review_execution_attempts", "review_execution_evidence", "review_round_completions"} {
+		if attemptCount(t, f.store, "SELECT count(*) FROM "+table) != 0 {
+			t.Fatal("result hold refusal fabricated native work or credit", table)
+		}
+	}
+	// This deliberate administrator action states that accounting was verified;
+	// the generic hold service neither computes nor creates that accounting.
+	resolution.Reason, resolution.Evidence = "Correct destination accounting explicitly verified", []string{"proof:destination-accounting"}
+	w = integrationHoldRequest(t, f, "POST", integrationHoldsPath+"/"+ids["result"]+"/resolve", f.admin, "resolve-source-result", resolution)
+	if w.Code != http.StatusOK {
+		t.Fatalf("result resolution: %d %s", w.Code, w.Body.String())
+	}
+	for _, channel := range []string{"cli", "hosted"} {
+		f.enqueue(t, attemptProject, "result-cleared-"+channel, channel, 2, 1)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 2 {
+		t.Fatal("explicit result resolution did not release both admission paths")
+	}
+	for _, table := range []string{"review_execution_attempts", "review_execution_evidence", "review_round_completions"} {
+		if attemptCount(t, f.store, "SELECT count(*) FROM "+table) != 0 {
+			t.Fatal("result resolution created native execution or completion credit", table)
+		}
+	}
+}
+
 func TestAdoptionHoldsIntegrationLatePreparationAndDispatch(t *testing.T) {
 	for _, channel := range []string{"cli", "hosted"} {
 		for _, stage := range []string{"prepared", "admitted"} {

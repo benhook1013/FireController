@@ -49,8 +49,12 @@ func ValidResolutionEvidence(refs []string) bool {
 
 func ValidPull(number int64) bool { return number >= 1 && number <= 2147483647 }
 
+func ValidKind(kind string) bool {
+	return kind == "finding" || kind == "route" || kind == "result"
+}
+
 func NormalizeObligation(obligation Obligation) (Obligation, error) {
-	if !ValidSourceKey(obligation.SourceKey) || obligation.Kind != "finding" && obligation.Kind != "route" || len(obligation.AffectedPullNumbers) < 1 || len(obligation.AffectedPullNumbers) > 100 || !ValidText(obligation.Summary, 16<<10) || !ValidEvidence(obligation.Evidence) || obligation.OriginalStatus != "pending" && obligation.OriginalStatus != "open" {
+	if !ValidSourceKey(obligation.SourceKey) || !ValidKind(obligation.Kind) || len(obligation.AffectedPullNumbers) < 1 || len(obligation.AffectedPullNumbers) > 100 || !ValidText(obligation.Summary, 16<<10) || !ValidEvidence(obligation.Evidence) || obligation.OriginalStatus != "pending" && obligation.OriginalStatus != "open" {
 		return obligation, ErrInvalid
 	}
 	obligation.AffectedPullNumbers = slices.Clone(obligation.AffectedPullNumbers)

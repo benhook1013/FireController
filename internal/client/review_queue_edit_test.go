@@ -156,6 +156,74 @@ func TestReviewQueueEditClientTransportStrictReceiptAndNoRetry(t *testing.T) {
 	}
 }
 
+func TestReviewQueueEditClientMetadataActualHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields, state, mergedAt string
+		diff                          *client.ReviewPullDiff
+		draft                         *bool
+	}{
+		{"known-zero-false", `"diff":{"files":0,"additions":0,"deletions":0},"is_draft":false,`, "open", "", &client.ReviewPullDiff{}, func() *bool { v := false; return &v }()},
+		{"merged", `"diff":{"files":3,"additions":12,"deletions":4},"merged_at":"2026-10-19T22:10:11.123456789Z",`, "merged", "2026-10-19T22:10:11.123456789Z", &client.ReviewPullDiff{Files: 3, Additions: 12, Deletions: 4}, nil},
+		{"unknown", "", "open", "", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newReviewClientFixture(t)
+			if _, err := f.store.DB().Exec(`UPDATE credentials SET is_admin=1 WHERE id='review-client-credential'`); err != nil {
+				t.Fatal(err)
+			}
+			document := json.RawMessage(strings.Replace(string(queueEditDocument(0)), `"title":`, tc.fields+`"title":`, 1))
+			document = json.RawMessage(strings.Replace(string(document), `"state":"open"`, `"state":"`+tc.state+`"`, 1))
+			handler := f.server.Config.Handler
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/queue/edits") {
+					raw, err := io.ReadAll(r.Body)
+					if err != nil || !bytes.Equal(raw, document) {
+						t.Error("queue metadata wire bytes changed", err)
+					}
+					r.Body = io.NopCloser(bytes.NewReader(raw))
+				}
+				handler.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			c, err := client.New(t.Context(), profileBinding(t, server.URL, f.store.InstanceID(), f.project))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			receipt, err := c.EditReviewQueue(t.Context(), "metadata-edit", document)
+			if err != nil || receipt.Revision != 1 {
+				t.Fatal(receipt, err)
+			}
+			pull, err := c.ReviewPull(t.Context(), 1, receipt.ID)
+			if err != nil || !reflect.DeepEqual(pull.Pull.Diff, tc.diff) || !reflect.DeepEqual(pull.Pull.IsDraft, tc.draft) || pull.Pull.MergedAt != tc.mergedAt {
+				t.Fatal("metadata lost known/unknown values", pull.Pull, err)
+			}
+		})
+	}
+}
+
+func TestReviewQueueEditClientMalformedMetadataBeforeIO(t *testing.T) {
+	var c *client.Client
+	for _, fields := range []string{
+		`"diff":null`, `"diff":[]`, `"diff":{}`, `"diff":{"files":0,"additions":0}`,
+		`"diff":{"files":null,"additions":0,"deletions":0}`, `"diff":{"files":0.5,"additions":0,"deletions":0}`,
+		`"diff":{"files":-1,"additions":0,"deletions":0}`, `"diff":{"files":2147483648,"additions":0,"deletions":0}`,
+		`"diff":{"files":0,"additions":0,"deletions":0,"extra":0}`, `"diff":{"files":0,"files":1,"additions":0,"deletions":0}`,
+		`"is_draft":null`, `"is_draft":"false"`, `"is_draft":0`, `"is_draft":false,"is_draft":true`,
+		`"merged_at":null`, `"merged_at":0`, `"merged_at":"not-an-instant"`, `"merged_at":"2026-10-19T22:10:11Z"`,
+	} {
+		document := json.RawMessage(strings.Replace(string(queueEditDocument(0)), `"title":`, fields+`,"title":`, 1))
+		if fields == `"merged_at":"not-an-instant"` {
+			document = json.RawMessage(strings.Replace(string(document), `"state":"open"`, `"state":"merged"`, 1))
+		}
+		if client.ValidateReviewQueueEditDocument(document) == nil {
+			t.Fatal("malformed metadata admitted", fields)
+		}
+		_, err := c.EditReviewQueue(t.Context(), "metadata-invalid", document)
+		checkError(t, err, "validation_failed")
+	}
+}
+
 func TestReviewQueueEditClientLostResponseCancelAndRealReplay(t *testing.T) {
 	f := newReviewClientFixture(t)
 	old := f.importSnapshot(t, func(r *domain.ObservationRequest) {
