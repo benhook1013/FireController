@@ -26,7 +26,7 @@ For a standalone host where Caddy owns the HTTP/HTTPS ports, the proxy configura
 
 ```caddyfile
 controller.example.com {
-    reverse_proxy 127.0.0.1:8080 {
+    reverse_proxy 127.0.0.1:8081 {
         flush_interval -1
     }
 }
