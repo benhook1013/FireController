@@ -52,7 +52,7 @@ func ReadSource(ctx context.Context, q Query, project, namespace string) (m.Sour
 		return out, err
 	}
 	if repository != out.Source.RepositoryID {
-		return out, unavailable()
+		return out, core.Fail("repository_changed", "The retained source belongs to a different repository.", 409)
 	}
 	return out, nil
 }
@@ -95,6 +95,12 @@ func VerifyRetainedSource(ctx context.Context, q Query, project string, source m
 	return nil
 }
 func readDetail(ctx context.Context, q Query, project, id string) (m.Detail, error) {
+	return readDetailWithSources(ctx, q, project, id, nil)
+}
+
+// A facts read may reuse successfully validated namespaces within its current
+// transaction. Originals, target lists and resolutions remain individually checked.
+func readDetailWithSources(ctx context.Context, q Query, project, id string, sources map[string]m.SourceState) (m.Detail, error) {
 	var d m.Detail
 	var namespace, body, sha string
 	err := q.QueryRowContext(ctx, `SELECT id,project_id,namespace,source_revision,CASE WHEN length(CAST(original_json AS BLOB))<=65536 THEN original_json END,original_sha256,status,revision,actor_id,worker_id,created_at FROM review_adoption_obligations WHERE project_id=? AND id=?`, project, id).Scan(&d.ID, &d.ProjectID, &namespace, &d.SourceRevision, &body, &sha, &d.Status, &d.Revision, &d.ActorID, &d.WorkerID, &d.CreatedAt)
@@ -111,9 +117,16 @@ func readDetail(ctx context.Context, q Query, project, id string) (m.Detail, err
 	if err != nil || string(encode(normalized)) != body {
 		return d, unavailable()
 	}
-	state, err := ReadSource(ctx, q, project, namespace)
-	if err != nil {
-		return d, unavailable()
+	state, found := sources[namespace]
+	if !found {
+		state, err = ReadSource(ctx, q, project, namespace)
+		if err != nil {
+			return d, retainedSourceReadError(err)
+		}
+		// Bound per-read memory; overflow namespaces are revalidated normally.
+		if sources != nil && len(sources) < 64 {
+			sources[namespace] = state
+		}
 	}
 	d.Source = state.Source
 	if d.SourceRevision < 1 || d.SourceRevision > state.Revision {
@@ -176,6 +189,7 @@ func readFacts(ctx context.Context, q Query, project string, number int64) (Fact
 		return facts, invalid()
 	}
 	after := ""
+	sources := map[string]m.SourceState{}
 	for {
 		rows, err := q.QueryContext(ctx, `SELECT obligation_id FROM review_adoption_targets WHERE project_id=? AND pull_number=? AND obligation_id>? ORDER BY obligation_id LIMIT 64`, project, number, after)
 		if err != nil {
@@ -197,9 +211,9 @@ func readFacts(ctx context.Context, q Query, project string, number int64) (Fact
 			return facts, err
 		}
 		for _, id := range ids {
-			d, err := readDetail(ctx, q, project, id)
+			d, err := readDetailWithSources(ctx, q, project, id, sources)
 			if err != nil {
-				return facts, unavailable()
+				return facts, retainedSourceReadError(err)
 			}
 			if d.Status == "open" {
 				facts.Open++
@@ -229,9 +243,19 @@ func ReadFacts(ctx context.Context, q Query, project string, number int64) (Fact
 	}
 	facts, err := readFacts(ctx, q, project, number)
 	if err != nil {
-		return Facts{}, unavailable()
+		return Facts{}, retainedSourceReadError(err)
 	}
 	return facts, nil
+}
+
+// Only the proven repository binding mismatch is a protective conflict.
+// Missing or malformed retained records and ordinary SQL failures stay unavailable.
+func retainedSourceReadError(err error) error {
+	var failure *core.Error
+	if errors.As(err, &failure) && failure.Code == "repository_changed" {
+		return err
+	}
+	return unavailable()
 }
 func HasOpen(ctx context.Context, q Query, project string, number int64) (bool, error) {
 	facts, err := ReadFacts(ctx, q, project, number)
