@@ -30,7 +30,7 @@ func queue(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "validation_failed", "limit", "cursor")
+		query, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "view")
 		if err != nil {
 			core.WriteError(w, err)
 			return
@@ -42,6 +42,20 @@ func queue(store *core.Store) http.HandlerFunc {
 		limit, err := core.PageLimit(r)
 		if err != nil {
 			core.WriteError(w, err)
+			return
+		}
+		if _, selected := query["view"]; selected {
+			view := query.Get("view")
+			if view != "recent" && view != "merged" {
+				core.WriteError(w, validationError("Use recent or merged for the queue view."))
+				return
+			}
+			response, err := readQueueWindow(r.Context(), store, scope, view, query.Get("cursor"), limit)
+			if err != nil {
+				core.WriteError(w, err)
+				return
+			}
+			core.WriteJSON(w, http.StatusOK, response)
 			return
 		}
 		filter := "reviews.queue:v1"

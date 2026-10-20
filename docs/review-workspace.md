@@ -67,7 +67,7 @@ Before provider I/O, pin each selected current entry's display facts. At publica
 
 Partial source publication does not advance the whole queue's observation timestamp. It is distinct from review history acquisition, explicit administrator queue edits and the initial missing-projection fallback. Review-front badges additionally require an authoritative per-channel selection projection; merge-head order and retained review counts cannot establish that permission.
 
-Merged PRs remain in the queue as completed history. Removing any previous queue entry requires an explicit `superseded` or `defunct` retirement, through a complete observation or the selected queue edits below. Lifecycle changes never remove entries implicitly. Snapshots and retirement provenance remain retained; this slice does not introduce a pruning or project-deletion API.
+Merged PRs remain stored in the queue as completed history. Removing any previous queue entry requires an explicit `superseded` or `defunct` retirement, through a complete observation or the selected queue edits below. Lifecycle changes never remove entries implicitly. Snapshots and retirement provenance remain retained; this slice does not introduce a pruning or project-deletion API.
 
 The browser exposes Reviews, PR history and run-finding pages, with source timestamps, incomplete or missing data, head mismatches, historical counts and source coverage limitations visible. It escapes imported text and generates external PR/commit links only from the verified project repository. It does not render imported HTML or accept arbitrary link destinations. “Refresh visible data” rereads the stored snapshot; it neither refreshes GitHub nor starts a review. These pages have no timer-based polling or new live transport. The [browser guide](browser-guide.md) owns connection privacy and packaging.
 
@@ -130,3 +130,17 @@ At clean combined checkpoint `769a5b8b65e2420a7a2b726215d75c8e37ab031e`, `make c
 ## Optional display metadata proof
 
 Focused normal and race checks cover optional bounds and known zero values, immutable pinned metadata, same-head preservation and changed-head clearing, native publication from current facts, migration from genuine schema six, and canonical backup creation/inspection/restore with genuine older schemas. An independent backend review found no additional defect. The clean packaged candidate passed private browser, retained archive, refresh, public browser, editorial browser, CLI/MCP smoke and upgrade checks. The archive verifies current metadata changes while pinned detail stays unchanged, and only two selected finding-detail reads are added to its existing twenty-one archive reads. These checks do not establish installed schema-seven migration, automatic provider-to-workspace metadata publication or human visual acceptance.
+
+## Browser queue windows
+
+The queue read accepts optional `view=recent` or `view=merged`. Omission preserves the complete configured queue and its existing cursor contract for agent clients. The browser selects the default window and separate history described by [browser experience](browser-experience.md). Filtering happens before detailed-page pagination; hidden rows never consume a visible page or remove retained records.
+
+Filtered rows include their original zero-based `queue_position`. An optional `head_position` identifies the first open row only when known stored predecessors establish that position; an earlier unknown lifecycle prevents a claimed head. These display positions never grant review permission. The existing full-queue response omits both fields. Filtered cursors bind project, principal, view and immutable snapshot; the recent cursor also retains its initial cutoff so continuation does not change when the clock or current snapshot advances.
+
+The implementation streams bounded compact metadata from the selected current snapshot to validate timestamps and find the latest two known merges, then reads only the selected page of detailed summaries. It uses exact instants and bounded memory within the ordinary read deadline, with no provider access, schema change or lifetime row limit. This scan costs O(current queue size); it does not expand run/finding archives or establish fleet throughput.
+
+### Queue window proof
+
+Ten focused real-SQLite/HTTP tests pass normally and with the race detector, including 203 retained entries, exact offset/nanosecond boundaries, latest-two ordering, original positions, view-bound continuation, retirement and unchanged full-queue bytes/cursors. TypeScript and all 530 browser tests pass. The actual packaged archive workload passes in 5.222 seconds: older merged PRs disappear from the recent view, remain in reverse-ordered history and still expose their original rounds/findings. Computed styles check square outer surfaces and rounded round pills; source details stays collapsed and the redundant Open and broad snapshot-age labels are absent. Source and executable hashes remained unchanged, with no external requests and all owned processes joined.
+
+This is controlled local proof. The fixture has no jobs or verified channel-front assessment, so job-card geometry and live Review front/Review closed/Queued integration are not claimed by that run. Installed deployment, physical-device and human visual acceptance remain separate.
