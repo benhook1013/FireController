@@ -176,6 +176,9 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 			break
 		}
 		if observed.Observation.State == "cooldown_observed" {
+			if err := RetainHostedCooldown(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture); err != nil {
+				return preparation, reviewHold("hosted_allowance_unproven")
+			}
 			return preparation, reviewHold("hosted_allowance_cooldown")
 		}
 		if observed.Reason != "allowance_not_proven" || pass == 7 {

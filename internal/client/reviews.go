@@ -473,6 +473,29 @@ func reviewShape(data []byte, typ reflect.Type) bool {
 		if json.Unmarshal(trimmed, &fields) != nil || fields == nil {
 			return false
 		}
+		if typ == reflect.TypeOf(ReviewAllowanceObservation{}) {
+			var kind string
+			if json.Unmarshal(fields["kind"], &kind) != nil {
+				return false
+			}
+			var required []string
+			switch kind {
+			case "cli_exhausted":
+				required = []string{"kind", "observed_at", "remaining", "limit", "full_capacity_in_ms", "rolling_window_ms"}
+			case "hosted_cooldown":
+				required = []string{"kind", "observed_at", "retry_not_before"}
+			default:
+				return false
+			}
+			if len(fields) != len(required) {
+				return false
+			}
+			for _, name := range required {
+				if _, ok := fields[name]; !ok {
+					return false
+				}
+			}
+		}
 		for i := 0; i < typ.NumField(); i++ {
 			field := typ.Field(i)
 			parts := strings.Split(field.Tag.Get("json"), ",")

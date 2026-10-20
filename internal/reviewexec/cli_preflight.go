@@ -38,12 +38,16 @@ type cliAllowanceRecord struct {
 }
 
 func validCLIAllowance(input CLIAllowanceObservation) bool {
+	return validCLIAllowanceObservation(input) && input.Remaining > 0
+}
+
+func validCLIAllowanceObservation(input CLIAllowanceObservation) bool {
 	if len(input.ObservedAt) > 64 || len(input.Anchor.ObservedAt) > 64 {
 		return false
 	}
 	observed, err := time.Parse(time.RFC3339Nano, input.ObservedAt)
-	return err == nil && !observed.IsZero() && input.ObservedAt == observed.UTC().Format(time.RFC3339Nano) && validEvidenceAnchor(input.Anchor) &&
-		input.Remaining >= 1 && input.Limit >= 1 && input.Limit <= 10000 && input.Remaining <= input.Limit && input.FullCapacityInMS >= 0 && input.FullCapacityInMS <= 86400000 && input.RollingWindowMS >= 1 && input.RollingWindowMS <= 86400000 && input.ChangedFiles >= 1 && input.ChangedFiles <= 100000
+	return err == nil && !observed.IsZero() && observed.Year() >= 1 && observed.Year() <= 9999 && input.ObservedAt == observed.UTC().Format(time.RFC3339Nano) && validEvidenceAnchor(input.Anchor) &&
+		input.Remaining >= 0 && input.Limit >= 1 && input.Limit <= 10000 && input.Remaining <= input.Limit && input.FullCapacityInMS >= 0 && input.FullCapacityInMS <= 86400000 && input.RollingWindowMS >= 1 && input.RollingWindowMS <= 86400000 && input.ChangedFiles >= 1 && input.ChangedFiles <= 100000
 }
 
 func freshAllowanceObservation(value string, now time.Time) bool {
@@ -55,15 +59,33 @@ func freshAllowanceObservation(value string, now time.Time) bool {
 // a local transaction. Exact replay precedes current admission and freshness
 // checks; it never authorizes another provider action or refreshes old facts.
 func (e *Engine) RecordCLIAllowance(ctx context.Context, project, attemptID string, expectedRevision int64, input CLIAllowanceObservation) error {
-	if !identifier.MatchString(project) || !identifier.MatchString(attemptID) || expectedRevision < 1 || !validCLIAllowance(input) {
+	if !validCLIAllowance(input) {
 		return invalid()
+	}
+	return e.recordCLIAllowance(ctx, project, attemptID, expectedRevision, input)
+}
+
+// RecordCLIExhaustion retains observed zero capacity without a review permit.
+func (e *Engine) RecordCLIExhaustion(ctx context.Context, project, attemptID string, expectedRevision int64, input CLIAllowanceObservation) error {
+	if input.Remaining != 0 {
+		return invalid()
+	}
+	return e.recordCLIAllowance(ctx, project, attemptID, expectedRevision, input)
+}
+
+func (e *Engine) recordCLIAllowance(ctx context.Context, project, attemptID string, expectedRevision int64, input CLIAllowanceObservation) error {
+	if !identifier.MatchString(project) || !identifier.MatchString(attemptID) || expectedRevision < 1 || !validCLIAllowanceObservation(input) {
+		return invalid()
+	}
+	if expectedRevision != 1 {
+		return conflict()
 	}
 	return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		var body string
 		err := tx.QueryRowContext(ctx, `SELECT body_json FROM review_cli_preflight WHERE project_id=? AND attempt_id=?`, project, attemptID).Scan(&body)
 		if err == nil {
 			var retained cliAllowanceRecord
-			if len(body) > 8192 || strictjson.Decode([]byte(body), &retained) != nil || retained.ProjectID != project || retained.AttemptID != attemptID || !identifier.MatchString(retained.OperationID) || !identifier.MatchString(retained.ActorID) || retained.WorkerID != "" && !identifier.MatchString(retained.WorkerID) || retained.AttemptRevision < 1 || retained.ConfigurationRevision < 1 || retained.PolicyRevision < 1 || !hash.MatchString(retained.CapabilityFingerprint) || !identifier.MatchString(retained.Provider) || !identifier.MatchString(retained.Account) || !validCLIAllowance(retained.Observation) {
+			if len(body) > 8192 || strictjson.Decode([]byte(body), &retained) != nil || retained.ProjectID != project || retained.AttemptID != attemptID || !identifier.MatchString(retained.OperationID) || !identifier.MatchString(retained.ActorID) || retained.WorkerID != "" && !identifier.MatchString(retained.WorkerID) || retained.AttemptRevision != 1 || retained.ConfigurationRevision < 1 || retained.PolicyRevision < 1 || !hash.MatchString(retained.CapabilityFingerprint) || !identifier.MatchString(retained.Provider) || !identifier.MatchString(retained.Account) || !validCLIAllowanceObservation(retained.Observation) {
 				return core.Fail("storage_unavailable", "Stored CLI allowance observation is unavailable.", 500)
 			}
 			if retained.AttemptRevision != expectedRevision || retained.Observation != input {

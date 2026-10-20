@@ -64,23 +64,34 @@ type Anchor struct {
 	ObservedAt       string `json:"observed_at"`
 }
 
+type AllowanceObservation struct {
+	Kind             string `json:"kind"`
+	ObservedAt       string `json:"observed_at"`
+	Remaining        *int64 `json:"remaining,omitempty"`
+	Limit            *int64 `json:"limit,omitempty"`
+	FullCapacityInMS *int64 `json:"full_capacity_in_ms,omitempty"`
+	RollingWindowMS  *int64 `json:"rolling_window_ms,omitempty"`
+	RetryNotBefore   string `json:"retry_not_before,omitempty"`
+}
+
 type Operation struct {
-	ID                    string `json:"id"`
-	ProjectID             string `json:"project_id"`
-	ActorID               string `json:"actor_id"`
-	WorkerID              string `json:"worker_id"`
-	ConfigurationRevision int64  `json:"configuration_revision"`
-	PolicyRevision        int64  `json:"policy_revision"`
-	CapabilityFingerprint string `json:"capability_fingerprint"`
-	PullNumber            int64  `json:"pull_number"`
-	Channel               string `json:"channel"`
-	HeadSHA               string `json:"head_sha"`
-	State                 string `json:"state"`
-	Revision              int64  `json:"revision"`
-	Reason                string `json:"reason"`
-	AttemptID             string `json:"attempt_id"`
-	CreatedAt             string `json:"created_at"`
-	UpdatedAt             string `json:"updated_at"`
+	Allowance             *AllowanceObservation `json:"allowance,omitempty"`
+	ID                    string                `json:"id"`
+	ProjectID             string                `json:"project_id"`
+	ActorID               string                `json:"actor_id"`
+	WorkerID              string                `json:"worker_id"`
+	ConfigurationRevision int64                 `json:"configuration_revision"`
+	PolicyRevision        int64                 `json:"policy_revision"`
+	CapabilityFingerprint string                `json:"capability_fingerprint"`
+	PullNumber            int64                 `json:"pull_number"`
+	Channel               string                `json:"channel"`
+	HeadSHA               string                `json:"head_sha"`
+	State                 string                `json:"state"`
+	Revision              int64                 `json:"revision"`
+	Reason                string                `json:"reason"`
+	AttemptID             string                `json:"attempt_id"`
+	CreatedAt             string                `json:"created_at"`
+	UpdatedAt             string                `json:"updated_at"`
 }
 
 type Attempt struct {

@@ -165,6 +165,14 @@ func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Sc
 }
 
 func readOperation(ctx context.Context, tx EvidenceQuery, project, id string) (Operation, error) {
+	o, err := readOperationBase(ctx, tx, project, id)
+	if err == nil {
+		o.Allowance, err = readHeldAllowance(ctx, tx, o)
+	}
+	return o, err
+}
+
+func readOperationBase(ctx context.Context, tx EvidenceQuery, project, id string) (Operation, error) {
 	var o Operation
 	err := tx.QueryRowContext(ctx, `SELECT id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at FROM review_operations WHERE project_id=? AND id=?`, project, id).Scan(&o.ID, &o.ProjectID, &o.ActorID, &o.WorkerID, &o.ConfigurationRevision, &o.PolicyRevision, &o.CapabilityFingerprint, &o.PullNumber, &o.Channel, &o.HeadSHA, &o.State, &o.Revision, &o.Reason, &o.AttemptID, &o.CreatedAt, &o.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {

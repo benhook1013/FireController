@@ -42,6 +42,9 @@ func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 			var usage atomic.Int64
 			f.driver.usage = func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error) {
 				usage.Add(1)
+				if tc.want == "allowance_exhausted" {
+					return reviewprocess.Usage{Limit: 3, RollingWindowMS: 3600000}, tc.failure
+				}
 				return reviewprocess.Usage{}, tc.failure
 			}
 			op, a, c := f.start(t, 2, 1, "prepare-usage-refusal")
@@ -54,7 +57,11 @@ func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 			if !ok || details["reason"] != tc.want || strings.Contains(failure.Error(), "private") || prepared.Anchor != (reviewexec.Anchor{}) {
 				t.Fatal("bad safe refusal", failure, prepared)
 			}
-			if usage.Load() != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+			wantRows := 0
+			if tc.want == "allowance_exhausted" {
+				wantRows = 1
+			}
+			if usage.Load() != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != wantRows || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
 				t.Fatal("refused allowance retained permission/evidence")
 			}
 			f.driver.mu.Lock()
@@ -167,7 +174,17 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 			if operation.Reason != expected || reviews.Load() != 0 || strings.Contains(operation.Reason, "private") {
 				t.Fatal("safe hold reason missing or review dispatched", operation, reviews.Load())
 			}
-			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != 0 {
+			wantRows := 0
+			if mode == "exhausted" {
+				wantRows = 1
+				v := operation.Allowance
+				if v == nil || v.Kind != "cli_exhausted" || v.Remaining == nil || *v.Remaining != 0 || v.Limit == nil || *v.Limit != 3 || v.FullCapacityInMS == nil || *v.FullCapacityInMS != 0 || v.RollingWindowMS == nil || *v.RollingWindowMS != 60000 {
+					t.Fatal("native exhausted facts lost", v)
+				}
+			} else if operation.Allowance != nil {
+				t.Fatal("unproven failure invented capacity", operation.Allowance)
+			}
+			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != wantRows {
 				t.Fatal("preparation hold retained permission/reservation/evidence")
 			}
 			var heldReason string

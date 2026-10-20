@@ -418,8 +418,21 @@ func TestHostedDriverDelayedAndUnavailableAllowanceNeverRepostsQuery(t *testing.
 					t.Fatal("indexed query source not readable", captureErr)
 				}
 			}
-			if _, stopErr := f.engine.Advance(t.Context(), f.project, a.ID, a.Revision, "held", "allowance_fixture_stopped", ""); stopErr != nil {
+			holdReason := "allowance_fixture_stopped"
+			if mode == "cooldown" {
+				holdReason = "hosted_allowance_cooldown"
+			}
+			if _, stopErr := f.engine.Advance(t.Context(), f.project, a.ID, a.Revision, "held", holdReason, ""); stopErr != nil {
 				t.Fatal(stopErr)
+			}
+			if mode == "cooldown" {
+				held, err := f.engine.ReadOperation(t.Context(), f.scope(t, f.writer, false), op.ID)
+				if err != nil || held.Allowance == nil || held.Allowance.Kind != "hosted_cooldown" || held.Allowance.RetryNotBefore == "" || held.Allowance.Remaining != nil {
+					t.Fatal("hosted held timing unavailable", held, err)
+				}
+				if _, err := f.engine.ReadHostedAllowance(t.Context(), f.project, a.ID); err == nil {
+					t.Fatal("cooldown became positive allowance")
+				}
 			}
 			eventCount := cliCount(t, f.store, `SELECT count(*) FROM events`)
 			for _, observation := range observations {

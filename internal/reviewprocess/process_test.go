@@ -299,7 +299,7 @@ func TestUnsafeBillingRefreshClearsPermitWithoutReview(t *testing.T) {
 func TestZeroIncludedUsageIsExplicitRateLimited(t *testing.T) {
 	f := newProcessFixture(t)
 	r := f.runner(t, fmt.Sprintf(`printf '%%s' %q`, usageJSON("owner/repo", "owner", 0, 5, 0, 1)))
-	if _, err := r.Usage(context.Background(), f.workspace, "owner/repo", "owner"); !errorCode(err, "rate_limited") {
+	if got, err := r.Usage(context.Background(), f.workspace, "owner/repo", "owner"); !errorCode(err, "rate_limited") || got.Remaining != 0 || got.Limit != 5 || got.FullCapacityInMS != 0 || got.RollingWindowMS != 1 {
 		t.Fatalf("zero allowance result: %v", err)
 	}
 	if _, err := r.Review(context.Background(), f.workspace); !errorCode(err, "permit_required") {
@@ -760,5 +760,20 @@ func TestUsagePrecommandContextKeepsUnclassifiedFailure(t *testing.T) {
 		if got := (&Error{Code: "usage_unavailable", FailureStage: stage}).Error(); got != "Included review allowance could not be verified." {
 			t.Fatal("stage exposed error details")
 		}
+	}
+}
+
+func TestZeroUsageVerifiesSourceBeforeExposingFacts(t *testing.T) {
+	f := newProcessFixture(t)
+	r := f.runner(t, fmt.Sprintf("printf 'tamper' > source.txt; printf '%%s' %q", usageJSON("owner/repo", "owner", 0, 3, 1234, 3600000)))
+	got, err := r.Usage(context.Background(), f.workspace, "owner/repo", "owner")
+	if !errorCode(err, "source_changed") || got != (Usage{}) {
+		t.Fatal("changed workspace exposed trusted exhausted facts", got, err)
+	}
+	r.mu.Lock()
+	permit := r.permit
+	r.mu.Unlock()
+	if permit != nil {
+		t.Fatal("zero observation issued permit")
 	}
 }

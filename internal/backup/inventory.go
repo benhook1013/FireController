@@ -948,6 +948,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return err
 		}
 	}
+	if versions["review_execution"] >= 4 {
+		if err := reviewexec.ValidateAllowanceSnapshot(ctx, tx, versions["review_execution"]); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
 	if versions["review_comparison"] > 0 {
 		if err = reviewexec.ValidateComparisonProofs(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {

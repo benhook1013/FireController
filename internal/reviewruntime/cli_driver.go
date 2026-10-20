@@ -129,6 +129,12 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 		var failure *reviewprocess.Error
 		if errors.As(err, &failure) {
 			if failure.Code == "rate_limited" {
+				if usage.Remaining != 0 {
+					return preparation, reviewHold("allowance_unavailable")
+				}
+				if err := d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}); err != nil {
+					return preparation, err
+				}
 				return preparation, reviewHold("allowance_exhausted")
 			}
 			if failure.Code == "usage_unavailable" {
