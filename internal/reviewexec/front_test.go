@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
@@ -468,5 +469,86 @@ func TestFrontsHiddenBlockerAndUnprojectedTargetAreDistinct(t *testing.T) {
 	frontSelect(t, g, "no-projection-target", "cli", &refreshTestReader{})
 	if got := frontChannel(t, frontRead(t, g), "cli"); got.State != "unknown" || got.PullNumber != 0 || got.Reason != "workspace_unavailable" {
 		t.Fatal("unprojected target claimed ready", got)
+	}
+}
+
+func TestFrontsCorruptSourceObligationIsHeldAndWorkerContinues(t *testing.T) {
+	f := frontFixture(t)
+	retainObligationSource(t, f, attemptProject, "front-source-importer", "front-source", strings.Repeat("c", 64), 0)
+	// Keep the genuine immutable source and original bytes. This schema-valid
+	// revision cannot describe an open row without a resolution; reads must refuse it.
+	admissionSQL(t, f, `UPDATE review_adoption_obligations SET revision=2 WHERE project_id=?`, attemptProject)
+	var original string
+	if err := f.store.DB().QueryRow(`SELECT original_json FROM review_adoption_obligations WHERE project_id=?`, attemptProject).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := selectionEnqueue(t, f, "corrupt-source-front", "cli", nil)
+	reader := &refreshTestReader{}
+	ctx, cancel := context.WithCancel(t.Context())
+	done, err := f.e.StartReviewRuns(ctx, map[string]TargetReader{"test-capability": reader})
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error("selection worker shutdown", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("selection worker did not stop")
+		}
+	})
+	wait := func(id string) Run {
+		t.Helper()
+		deadline := time.NewTimer(3 * time.Second)
+		defer deadline.Stop()
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			got := selectionRead(t, f, id)
+			if !runPending(got.State) {
+				return got
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("selection worker stopped on diagnostic hold: %v", err)
+			case <-deadline.C:
+				t.Fatal("selection did not settle")
+			case <-tick.C:
+			}
+		}
+	}
+	got := wait(first.ID)
+	if got.State != "held" || got.Reason != "source_obligations_unavailable" || got.OperationID != "" {
+		t.Fatal("corrupt obligation was not safely held", got)
+	}
+	if front := frontChannel(t, frontRead(t, f), "cli"); front.State != "held" || front.Reason != "source_obligations_unavailable" || front.PullNumber != 2 {
+		t.Fatal("front lost the retained blocker", front)
+	}
+	// A different selected PR can progress through the same running workers;
+	// the damaged predecessor is retained untouched, not repaired or bypassed.
+	one := int64(1)
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "next-front-config", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{4}, Channels: []string{"cli", "hosted"}}); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := selectionEnqueue(t, f, "eligible-after-corrupt-source", "cli", nil)
+	got = wait(next.ID)
+	if got.State != "selected" || got.OperationID == "" {
+		t.Fatal("next eligible selection did not progress", got)
+	}
+	op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), got.OperationID)
+	if err != nil || op.PullNumber != 4 || op.State != "queued" {
+		t.Fatal("unexpected child operation", op, err)
+	}
+	var revision int64
+	var after string
+	if err := f.store.DB().QueryRow(`SELECT revision,original_json FROM review_adoption_obligations WHERE project_id=?`, attemptProject).Scan(&revision, &after); err != nil || revision != 2 || after != original {
+		t.Fatal("selection rewrote corrupt retained obligation", revision, err)
+	}
+	if reader.calls.Load() != 4 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+		t.Fatal("selection performed review work or repeated source reads", reader.calls.Load())
 	}
 }

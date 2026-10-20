@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -31,5 +32,35 @@ func TestFrontsHTTPReadScopeSelectorsAndNoDispatch(t *testing.T) {
 	}
 	if before != selectionCounts(t, &attemptFixture{httpFixture: f}) {
 		t.Fatal("front read changed selection/operation/event/receipt counts")
+	}
+}
+
+func TestFrontsHTTPCorruptSourceObligationReturnsDiagnosticHold(t *testing.T) {
+	f := frontFixture(t)
+	reader := &refreshTestReader{}
+	frontSelect(t, f, "front-before-source-corruption", "cli", reader)
+	retainObligationSource(t, f, attemptProject, "front-source-importer", "front-source", strings.Repeat("c", 64), 0)
+	path := "/api/v1/projects/" + attemptProject + "/reviews/fronts"
+	for _, corrupt := range []bool{false, true} {
+		if corrupt {
+			admissionSQL(t, f, `UPDATE review_adoption_obligations SET revision=2 WHERE project_id=?`, attemptProject)
+		}
+		before := selectionCounts(t, f)
+		response := f.request(http.MethodGet, path, f.reader, "", "")
+		var value FrontSnapshot
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &value) != nil {
+			t.Fatalf("front read failed instead of retaining diagnostic: status=%d", response.Code)
+		}
+		reason := "source_obligations_pending"
+		if corrupt {
+			reason = "source_obligations_unavailable"
+		}
+		got := frontChannel(t, value, "cli")
+		if got.State != "held" || got.Reason != reason || got.PullNumber != 2 {
+			t.Fatal("incorrect source hold diagnostic", got)
+		}
+		if before != selectionCounts(t, f) || reader.calls.Load() != 2 {
+			t.Fatal("local front read changed state or fetched provider facts")
+		}
 	}
 }
