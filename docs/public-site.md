@@ -89,7 +89,7 @@ Preview shows normalized empty sections and the default presentation. Add only t
 
 ## Anonymous transport and retention
 
-The browser routes are `/public/{slug}` and `/public/{slug}/history/{revision}?generation={generation}`. The private workspace remains at `/`. Public transport omits credentials and never mounts the private session or query cache.
+The canonical browser root is `/projects/{handle}`, with sign-in opening the private workspace at that same address as defined by the [shared experience](shared-project-experience.md). Legacy `/public/{slug}` and `/public/{slug}/history/{revision}?generation={generation}` routes remain valid. Anonymous public transport omits credentials and never mounts the private session or query cache.
 
 Anonymous stored reads use `/api/v1/public/projects/{slug}`, `/history` and `/history/{revision}?generation={generation}`. Current responses carry a public generation/revision, publication time, cursor and approved content. History pages contain only public revision/time summaries. An unknown or disabled publication returns an opaque not-found response. Retained history is bounded to the current generation's last 1,000 snapshots and seven days; the current snapshot remains available. Merged PRs remain in the selected queue. Each current channel shows a bounded summary window; older rounds remain in the private archive, and retained published revisions can show earlier public windows. The seven-day/1,000-snapshot retention is not a lossless lifetime public round archive.
 
