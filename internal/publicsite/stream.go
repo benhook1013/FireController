@@ -121,6 +121,17 @@ func (s *Service) eventsHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return err
 	}
+	fail := func(err error) {
+		if r.Context().Err() != nil {
+			return
+		}
+		// No project, source or credential context is included in stream errors.
+		code := "resync_required"
+		if failure, ok := err.(*core.Error); ok && failure.Code == "not_found" {
+			code = "not_found"
+		}
+		_ = write([]byte("event: error\ndata: {\"error\":{\"code\":" + strconv.Quote(code) + "}}\n\n"))
+	}
 	if write([]byte(": ready\n\n")) != nil {
 		return
 	}
@@ -137,6 +148,7 @@ func (s *Service) eventsHTTP(w http.ResponseWriter, r *http.Request) {
 			after = event.Revision
 			event, found, err = s.eventAfter(r.Context(), r.PathValue("slug"), gen, after)
 			if err != nil {
+				fail(err)
 				return
 			}
 		}
@@ -150,15 +162,7 @@ func (s *Service) eventsHTTP(w http.ResponseWriter, r *http.Request) {
 		case <-hints:
 			event, found, err = s.eventAfter(r.Context(), r.PathValue("slug"), gen, after)
 			if err != nil {
-				if err == r.Context().Err() {
-					return
-				}
-				// No project, source or credential context is included in stream errors.
-				var code = "resync_required"
-				if failure, ok := err.(*core.Error); ok && failure.Code == "not_found" {
-					code = "not_found"
-				}
-				_ = write([]byte("event: error\ndata: {\"error\":{\"code\":" + strconv.Quote(code) + "}}\n\n"))
+				fail(err)
 				return
 			}
 		}
