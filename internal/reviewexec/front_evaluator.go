@@ -22,8 +22,13 @@ func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64
 		}
 		if err := requireSourceObligationsClear(ctx, q, r.ProjectID, plan.Pull.Number); err != nil {
 			var failure *core.Error
-			if errors.As(err, &failure) && failure.Code == "review_held" {
-				return evaluatedFront{state: "held", reason: "source_obligations_pending", plan: plan}, nil
+			if errors.As(err, &failure) {
+				switch failure.Code {
+				case "review_held":
+					return evaluatedFront{state: "held", reason: "source_obligations_pending", plan: plan}, nil
+				case "storage_unavailable":
+					return evaluatedFront{state: "held", reason: "source_obligations_unavailable", plan: plan}, nil
+				}
 			}
 			return evaluatedFront{}, err
 		}
