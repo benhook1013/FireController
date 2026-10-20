@@ -1,6 +1,7 @@
 # Copyright 2026 FireController contributors. SPDX-License-Identifier: Apache-2.0
 """Canonical copied-helper audit/projection proof over owned synthetic inputs."""
 import copy
+import dataclasses
 import importlib
 import importlib.util
 from pathlib import Path
@@ -74,6 +75,128 @@ class FrameTests(unittest.TestCase):
         args.update(changes)
         return acquire_frame(controller, records, policy, **args)
 
+    def test_fresh_cli_grant_with_zero_reviews_preserves_one_remaining(self):
+        state = HELPERS['sqlite_store'].SqliteStateStore(self.database).load()
+        allocation = HELPERS['state'].ReviewAllocation(pr=7, channel='cli',
+            head='a'*40, parent_identity='main', parent_head='b'*40,
+            merge_base='b'*40, patch_id='owned-patch', baseline_checkpoints=(),
+            reason='Synthetic new additional CLI grant',
+            min_additional_completed=0, max_additional_completed=1)
+        HELPERS['sqlite_store'].SqliteStateStore(self.database).update(
+            lambda _: dataclasses.replace(state, allocations={'7:cli': allocation}))
+        self.before = self.database.read_bytes()
+        with bind_source(HELPERS, common=self.common, snapshot=self.database) as (store, records):
+            controller, evidence = self.fixture(store, records)
+            evidence.rows = {'cli': [dict(pr=7, channel='cli', head='a'*40,
+                checkpoint='scope-timeline:complete', scope_timeline=True,
+                scope_timeline_complete=True, completed=False, attributable=False,
+                anchored=False, provisional=False, non_counting=True, accepted=0, raw=0)], 'hosted': []}
+            expected_rows = copy.deepcopy(evidence.rows)
+            frame = self.acquire(controller, records)
+            self.assertEqual(frame['prs'][0]['channels']['hosted'], [])
+            self.assertEqual(len(frame['prs'][0]['channels']['cli']), 1)
+            self.assertTrue(frame['prs'][0]['channels']['cli'][0]['scope_timeline_complete'])
+            self.assertFalse(frame['prs'][0]['channels']['cli'][0]['completed'])
+            helpers = dict(HELPERS, controller=controller_module, policy=policy)
+            facts = transfer.control_facts(helpers, store.load(),
+                {'pull_number':7, 'channel':'cli'}, frame['prs'][0]['channels']['cli'])
+            self.assertEqual(facts, dict(minimum_remaining=0, maximum_remaining=1,
+                initial_dry=0, taper=3, tapered=False, closed=False))
+            self.assertEqual(evidence.rows, expected_rows)
+        self.assert_conserved()
+
+    def test_empty_window_transfer_does_not_manufacture_history_or_stop(self):
+        with bind_source(HELPERS, common=self.common, snapshot=self.database) as (store, records):
+            controller, evidence = self.fixture(store, records)
+            evidence.rows = {'cli': [], 'hosted': []}
+            frame = self.acquire(controller, records)
+            self.assertEqual(frame['prs'][0]['channels'], {'cli': [], 'hosted': []})
+            self.assertGreater(evidence.audits, 0)
+            state = store.load()
+            live, reconciliation = controller._reconciliation(state, evidence_prs={7}, prefetch_complete_history=True)
+            current = controller._reconciled_anchor(7, live[7], reconciliation)
+            with self.assertRaises(controller_module.ControllerError):
+                controller._check_stop_evidence(state, 7, policy.Channel.CLI,
+                    current, reconciliation, checkpoint_pin=None)
+        self.assert_conserved()
+
+    def test_empty_window_still_refuses_raw_activity_unknown_and_movement(self):
+        with bind_source(HELPERS, common=self.common, snapshot=self.database) as (store, records):
+            cases = [
+                {'active_reservations':['active']},
+                {'unmatched_responses':['unattributed']},
+                {'unknown_review_evidence':['unknown']},
+                {'unresolved_findings':['pending'], 'finding_only_findings':['pending'], 'unknown_review_evidence':[]},
+                {'request_preparation_only':True},
+                {'complete':False},
+            ]
+            for fields in cases:
+                with self.subTest(fields=fields):
+                    controller, evidence = self.fixture(store, records)
+                    evidence.rows = {'cli': [], 'hosted': []}
+                    original = evidence.review_stop_audit
+                    def changed(*args, **kwargs):
+                        return dict(original(*args, **kwargs), **fields)
+                    evidence.review_stop_audit = changed
+                    with self.assertRaises(controller_module.ControllerError):
+                        self.acquire(controller, records)
+        self.assert_conserved()
+
+    def test_empty_selected_window_still_refuses_other_channel_pending_findings_and_capture(self):
+        with bind_source(HELPERS, common=self.common, snapshot=self.database) as (store, records):
+            for mode in ('pending_findings', 'unfinalized_capture', 'duplicate_identity'):
+                with self.subTest(mode=mode):
+                    controller, evidence = self.fixture(store, records)
+                    evidence.rows['cli'] = []
+                    if mode == 'pending_findings':
+                        evidence.rows['hosted'][0].update(accepted=1, raw=1, source_resolution_status='finding_pending')
+                    elif mode == 'unfinalized_capture':
+                        evidence.rows['hosted'][0].update(completed=False, attributable=False,
+                            checkpoint='pending-capture:fixture')
+                    else:
+                        evidence.rows['cli'] = [dict(pr=7, channel='cli', head='a'*40,
+                            checkpoint='same', completed=False, attributable=False, anchored=False,
+                            provisional=False, non_counting=True, accepted=0, raw=0)] * 2
+                    with self.assertRaises(controller_module.ControllerError):
+                        self.acquire(controller, records, selected={7: ('cli',)})
+        self.assert_conserved()
+
+    def test_empty_window_real_sqlite_incoming_and_outgoing_routes_refuse(self):
+        for source, target in ((7, 8), (8, 7)):
+            with self.subTest(source=source, target=target):
+                original = HELPERS['sqlite_store'].SqliteStateStore(self.database).load()
+                route = HELPERS['state'].FindingRoute(source_pr=source,
+                    source_channel='cli', source_review='checkpoint-route',
+                    source_finding='fixture-finding', observations=('Synthetic retained obligation',),
+                    target_pr=target)
+                HELPERS['sqlite_store'].SqliteStateStore(self.database).update(
+                    lambda _: dataclasses.replace(original, routes=(route,)))
+                self.before = self.database.read_bytes()
+                with bind_source(HELPERS, common=self.common, snapshot=self.database) as (store, records):
+                    controller, evidence = self.fixture(store, records)
+                    evidence.rows = {'cli': [], 'hosted': []}
+                    self.assertEqual(len(records.list_routes(status='open',
+                        include_legacy_routes=True)), 1)
+                    with self.assertRaises(FrameRefusal) as error:
+                        self.acquire(controller, records)
+                    self.assertEqual(error.exception.args, ('source_routes_not_clear',))
+                self.assert_conserved()
+
+    def test_transfer_capability_fallback_and_malformed_capability(self):
+        with bind_source(HELPERS, common=self.common, snapshot=self.database) as (store, records):
+            controller, evidence = self.fixture(store, records)
+            controller._check_transfer_evidence = None
+            self.assertTrue(self.acquire(controller, records)['obligations_clear'])
+            evidence.rows['cli'] = []
+            with self.assertRaises(controller_module.ControllerError):
+                self.acquire(controller, records)
+            controller, _ = self.fixture(store, records)
+            controller._check_transfer_evidence = False
+            with self.assertRaises(FrameRefusal) as error:
+                self.acquire(controller, records)
+            self.assertEqual(error.exception.args, ('source_transfer_audit_unsupported',))
+        self.assert_conserved()
+
     def test_canonical_audit_and_projection_success(self):
         with bind_source(HELPERS, common=self.common, snapshot=self.database) as (store, records):
             controller, evidence = self.fixture(store, records)
@@ -103,10 +226,12 @@ class FrameTests(unittest.TestCase):
                 class Routes:
                     def list_routes(self, **kwargs):
                         return [{'outside_queue': True}] if direction in kwargs else []
-                controller, _ = self.fixture(store, records)
+                controller, evidence = self.fixture(store, records)
+                evidence.rows['cli'] = []
                 with self.subTest(direction=direction), self.assertRaises(FrameRefusal):
                     self.acquire(controller, Routes())
             controller, evidence = self.fixture(store, records)
+            evidence.rows['cli'] = []
             evidence.requests[(7, 'hosted')] = [{'active_reservation': True}]
             with self.assertRaises(FrameRefusal):
                 self.acquire(controller, records, selected={7: ('cli',)})
@@ -137,8 +262,14 @@ class FrameTests(unittest.TestCase):
                 self.acquire(controller, records)
             controller, evidence = self.fixture(store, records)
             evidence.rows['cli'] = []
+            state = store.load()
+            cache = {}
+            live, reconciliation = controller._reconciliation(state, evidence_prs={7}, history_cache=cache, prefetch_complete_history=True)
+            current = controller._reconciled_anchor(7, live[7], reconciliation)
+            # Transfer clearance does not grant ordinary stop authority.
             with self.assertRaises(controller_module.ControllerError):
-                self.acquire(controller, records)
+                controller._check_stop_evidence(state, 7, policy.Channel.CLI,
+                    current, reconciliation, checkpoint_pin=None, history_cache=cache)
             controller, evidence = self.fixture(store, records)
             evidence.review_stop_audit = lambda *a, **kw: {'complete': False}
             with self.assertRaises(controller_module.ControllerError):
