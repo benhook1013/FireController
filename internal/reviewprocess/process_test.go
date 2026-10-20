@@ -696,3 +696,69 @@ func TestOwnedProcessConfigurationRejectsUnsupportedAndStartFailureIsSafe(t *tes
 		t.Fatal("preexisting process accepted as a new owned group", err)
 	}
 }
+
+func TestUsageFailureStagesPreserveSafeErrorsAndRevokePermit(t *testing.T) {
+	for _, tc := range []struct {
+		name, script string
+		stage        FailureStage
+	}{
+		{"not-started", "", FailureStageCommandNotStarted},
+		{"nonzero", "printf 'private provider token' >&2; exit 7", FailureStageCommandFailed},
+		{"overflow", "head -c 65537 /dev/zero", FailureStageCommandFailed},
+		{"timeout", "exec sleep 60", FailureStageTimeout},
+		{"malformed-response", "printf 'private invalid provider output'", FailureStageResponseUnproven},
+		{"caller-deadline", "exec sleep 60", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newProcessFixture(t)
+			r := f.runner(t, fmt.Sprintf("printf '%%s' %q", usageJSON("owner/repo", "owner", 1, 3, 0, 3600000)))
+			if _, err := r.Usage(t.Context(), f.workspace, "owner/repo", "owner"); err != nil {
+				t.Fatal(err)
+			}
+			if tc.name == "not-started" {
+				if err := os.Remove(r.executable); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f.executable(t, tc.script)
+			}
+			ctx := t.Context()
+			cancel := func() {}
+			if tc.name == "caller-deadline" {
+				ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
+			}
+			defer cancel()
+			started := time.Now()
+			usage, err := r.Usage(ctx, f.workspace, "owner/repo", "owner")
+			var failure *Error
+			if !errors.As(err, &failure) || failure.Code != "usage_unavailable" || failure.FailureStage != tc.stage || failure.OutcomeUnknown || usage != (Usage{}) || err.Error() != "Included review allowance could not be verified." {
+				t.Fatalf("unsafe or missing usage stage: code=%v stage=%v", errorCode(err, "usage_unavailable"), failure)
+			}
+			if tc.name == "timeout" && (time.Since(started) < usageTimeout || time.Since(started) > usageTimeout+5*time.Second) {
+				t.Fatal("internal usage deadline changed")
+			}
+			if _, err := r.Review(t.Context(), f.workspace); !errorCode(err, "permit_required") {
+				t.Fatal("failed usage retained permission", err)
+			}
+		})
+	}
+}
+
+func TestUsagePrecommandContextKeepsUnclassifiedFailure(t *testing.T) {
+	f := newProcessFixture(t)
+	r := f.runner(t, "exit 99")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, current := range []context.Context{nil, ctx} {
+		_, err := r.Usage(current, f.workspace, "owner/repo", "owner")
+		var failure *Error
+		if !errors.As(err, &failure) || failure.Code != "usage_unavailable" || failure.FailureStage != "" || failure.OutcomeUnknown {
+			t.Fatal("context failure gained a command stage", err)
+		}
+	}
+	for _, stage := range []FailureStage{FailureStageCommandNotStarted, FailureStageTimeout, FailureStageCommandFailed, FailureStageResponseUnproven, "private_path_or_token"} {
+		if got := (&Error{Code: "usage_unavailable", FailureStage: stage}).Error(); got != "Included review allowance could not be verified." {
+			t.Fatal("stage exposed error details")
+		}
+	}
+}

@@ -127,8 +127,22 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	usage, err := d.usage(ctx, workspace, plan.Repository.FullName, d.capability.Organization)
 	if err != nil {
 		var failure *reviewprocess.Error
-		if errors.As(err, &failure) && failure.Code == "rate_limited" {
-			return preparation, reviewHold("allowance_exhausted")
+		if errors.As(err, &failure) {
+			if failure.Code == "rate_limited" {
+				return preparation, reviewHold("allowance_exhausted")
+			}
+			if failure.Code == "usage_unavailable" {
+				switch failure.FailureStage {
+				case reviewprocess.FailureStageCommandNotStarted:
+					return preparation, reviewHold("allowance_command_not_started")
+				case reviewprocess.FailureStageTimeout:
+					return preparation, reviewHold("allowance_timeout")
+				case reviewprocess.FailureStageCommandFailed:
+					return preparation, reviewHold("allowance_command_failed")
+				case reviewprocess.FailureStageResponseUnproven:
+					return preparation, reviewHold("allowance_response_unproven")
+				}
+			}
 		}
 		return preparation, reviewHold("allowance_unavailable")
 	}
