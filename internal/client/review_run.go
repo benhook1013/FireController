@@ -86,7 +86,7 @@ func (c *Client) validReviewRun(s ReviewRunState) bool {
 		}
 	case "selected":
 		op := s.Operation
-		return r.Reason == "" && ValidateReviewOperationID(r.OperationID) == nil && op != nil && c.validReviewOperation(*op) && op.ID == r.OperationID && op.ProjectID == r.ProjectID && op.ActorID == r.ActorID && op.WorkerID == r.WorkerID && op.Channel == r.Channel && op.ConfigurationRevision == r.ConfigurationRevision && op.PolicyRevision == r.PolicyRevision && (r.ExpectedPullNumber == 0 || op.PullNumber == r.ExpectedPullNumber)
+		return r.Reason == "" && ValidateReviewOperationID(r.OperationID) == nil && op != nil && c.validReviewOperation(*op) && !op.AllowOutOfOrder && op.ID == r.OperationID && op.ProjectID == r.ProjectID && op.ActorID == r.ActorID && op.WorkerID == r.WorkerID && op.Channel == r.Channel && op.ConfigurationRevision == r.ConfigurationRevision && op.PolicyRevision == r.PolicyRevision && (r.ExpectedPullNumber == 0 || op.PullNumber == r.ExpectedPullNumber)
 	default:
 		return false
 	}

@@ -387,7 +387,7 @@ func reviewSourceFlags(args []string, flags ...string) (map[string]string, bool)
 }
 
 func parseReviewRequest(args []string) (*mutationInvocation, bool) {
-	allowed := map[string]bool{"--key": true, "--expect-config": true, "--channel": true, "--head": true, "--wait-seconds": true}
+	allowed := map[string]bool{"--key": true, "--expect-config": true, "--channel": true, "--head": true, "--wait-seconds": true, "--out-of-order": true}
 	values := map[string]string{}
 	var positions []string
 	for i := 0; i < len(args); i++ {
@@ -402,6 +402,16 @@ func parseReviewRequest(args []string) (*mutationInvocation, bool) {
 		if _, duplicate := values[flag]; duplicate {
 			return nil, false
 		}
+		if flag == "--out-of-order" {
+			if !assigned {
+				value = "true"
+			}
+			if value != "true" && value != "false" {
+				return nil, false
+			}
+			values[flag] = value
+			continue
+		}
 		if !assigned {
 			i++
 			if i >= len(args) {
@@ -411,7 +421,7 @@ func parseReviewRequest(args []string) (*mutationInvocation, bool) {
 		}
 		values[flag] = value
 	}
-	if len(positions) != 1 || len(values) < 4 || len(values) > 5 || !validMutationKey(values["--key"]) {
+	if len(positions) != 1 || len(values) < 4 || len(values) > 6 || !validMutationKey(values["--key"]) {
 		return nil, false
 	}
 	number, err := strconv.ParseInt(positions[0], 10, 64)
@@ -430,7 +440,7 @@ func parseReviewRequest(args []string) (*mutationInvocation, bool) {
 		}
 		seconds = parsed
 	}
-	request := client.ReviewRequest{ExpectedConfigurationRevision: revision, PullNumber: number, Channel: values["--channel"], HeadSHA: values["--head"]}
+	request := client.ReviewRequest{ExpectedConfigurationRevision: revision, PullNumber: number, Channel: values["--channel"], HeadSHA: values["--head"], AllowOutOfOrder: values["--out-of-order"] == "true"}
 	if client.ValidateReviewRequest(request) != nil {
 		return nil, false
 	}

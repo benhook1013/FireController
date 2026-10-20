@@ -40,6 +40,7 @@ type Request struct {
 	PullNumber                    int64  `json:"pull_number"`
 	Channel                       string `json:"channel"`
 	HeadSHA                       string `json:"head_sha"`
+	AllowOutOfOrder               bool   `json:"allow_out_of_order,omitempty"`
 }
 
 type Receipt struct {
@@ -75,6 +76,7 @@ type Operation struct {
 	PullNumber            int64  `json:"pull_number"`
 	Channel               string `json:"channel"`
 	HeadSHA               string `json:"head_sha"`
+	AllowOutOfOrder       bool   `json:"allow_out_of_order,omitempty"`
 	State                 string `json:"state"`
 	Revision              int64  `json:"revision"`
 	Reason                string `json:"reason"`

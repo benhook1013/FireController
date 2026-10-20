@@ -94,6 +94,7 @@ func TestReviewRunTerminalOrOriginalFlatReceipt(t *testing.T) {
 
 func TestReviewRunRejectsUnboundOrNonterminalMutationResults(t *testing.T) {
 	cases := map[string]func(*client.ReviewRunState){
+		"out-of-order-child":  func(v *client.ReviewRunState) { v.Operation.AllowOutOfOrder = true },
 		"unconfigured-policy": func(v *client.ReviewRunState) { v.Selection.PolicyRevision = 0; v.Operation.PolicyRevision = 0 },
 		"project":             func(v *client.ReviewRunState) { v.Selection.ProjectID = "foreign" }, "worker": func(v *client.ReviewRunState) { v.Selection.WorkerID = "other"; v.Operation.WorkerID = "other" }, "channel": func(v *client.ReviewRunState) { v.Selection.Channel = "hosted"; v.Operation.Channel = "hosted" }, "config": func(v *client.ReviewRunState) {
 			v.Selection.ConfigurationRevision = 8
@@ -156,10 +157,13 @@ func TestReviewRunRejectsUnboundOrNonterminalMutationResults(t *testing.T) {
 }
 
 func TestReviewRunReadsPendingAndStrictOptionalFields(t *testing.T) {
-	for _, mode := range []string{"queued", "selecting", "selected", "missing", "unknown", "null-child", "foreign", "wrong-id", "other-worker"} {
+	for _, mode := range []string{"queued", "selecting", "selected", "missing", "unknown", "null-child", "foreign", "wrong-id", "other-worker", "out-of-order-child"} {
 		t.Run(mode, func(t *testing.T) {
 			value := selectionSample()
 			value.Operation.State = "active"
+			if mode == "out-of-order-child" {
+				value.Operation.AllowOutOfOrder = true
+			}
 			if mode == "queued" || mode == "selecting" {
 				value.Selection.State = mode
 				value.Selection.OperationID = ""

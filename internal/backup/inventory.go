@@ -223,7 +223,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 7, "inbox": 1, "reviews": 7, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "review_rounds": 3, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 7, "inbox": 1, "reviews": 7, "review_policy": 1, "review_execution": 7, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "review_rounds": 3, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"project_handles":                   {"project_handles", 1, "project_id handle"},
 	"job_summaries":                     {"jobs", 7, "project_id job_id revision job_revision title body actor_id worker_id created_at"},
@@ -671,6 +671,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			if versions[spec.domain] >= 3 {
 				columns += " policy_revision"
 			}
+			if versions[spec.domain] >= 7 {
+				columns += " allow_out_of_order"
+			}
 		}
 		if name == "review_runs" && versions[spec.domain] >= 2 {
 			columns += " snapshot_revision"
@@ -731,6 +734,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if name == "review_operations" && col == "allow_out_of_order" && !reviewOrderColumn(kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			present[col] = true
 		}
 		e = columnRows.Err()
@@ -757,6 +764,11 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		}
 		if name == "job_updates" {
 			if err = validateJobUpdateIdentity(ctx, db); err != nil {
+				return nil, err
+			}
+		}
+		if name == "review_operations" && versions[spec.domain] >= 7 {
+			if err = validateReviewOrderPhysicalSchema(ctx, db); err != nil {
 				return nil, err
 			}
 		}
@@ -1014,6 +1026,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["review_selection"] > 0 {
 		if err = reviewexec.ValidateSelectionSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_execution"] >= 7 {
+		if err = validateReviewOrderRows(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
 				return unavailable()
 			}

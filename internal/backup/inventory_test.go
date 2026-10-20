@@ -587,7 +587,7 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 	}{
 		{"jobs", 1}, {"jobs", 2}, {"jobs", 3}, {"jobs", 4}, {"jobs", 5},
 		{"reviews", 1}, {"reviews", 2}, {"reviews", 3},
-		{"review_execution", 1}, {"review_execution", 2}, {"review_execution", 3}, {"review_execution", 4}, {"review_execution", 5},
+		{"review_execution", 1}, {"review_execution", 2}, {"review_execution", 3}, {"review_execution", 4}, {"review_execution", 5}, {"review_execution", 6},
 		{"review_evidence", 1}, {"review_evidence", 2}, {"review_adjudication", 1},
 		{"review_source_refresh", 1}, {"review_source_refresh", 2},
 	}
@@ -627,7 +627,10 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 					statements = append(statements, `DROP TABLE job_checkpoints`)
 				}
 			case "review_execution":
-				statements = []string{`DROP TABLE review_hosted_allowance_queries`, `DROP TABLE review_hosted_preflight`}
+				statements = []string{`ALTER TABLE review_operations DROP COLUMN allow_out_of_order`}
+				if test.version < 6 {
+					statements = append(statements, `DROP TABLE review_hosted_allowance_queries`, `DROP TABLE review_hosted_preflight`)
+				}
 				if test.version < 4 {
 					statements = append(statements, `DROP TABLE review_cli_preflight`)
 				}
