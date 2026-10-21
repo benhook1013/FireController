@@ -63,21 +63,22 @@ Routes below are relative to `/api/v1/projects/{project_id}`.
 | --- | --- |
 | `POST /jobs` | `{title, brief, worker_id?, status?}`; returns `{id, revision, outcome}`. |
 | `GET /jobs` | Compact page; optional `worker_id` and `status` filters. |
-| `GET /jobs/{job_id}` | Explicit full detail, including brief. |
-| `PATCH /jobs/{job_id}` | Required `expected_revision` plus selected `title`, `brief`, `worker_id` or `status`; compact receipt. |
+| `GET /jobs/{job_id}` | Full current brief/progress, remaining checklist/counts and compact pending exact-job notes. |
+| `PATCH /jobs/{job_id}` | Required `expected_revision` plus selected `title`, `brief`, `worker_id`, `status` or partial `progress`; compact receipt. |
 | `GET /jobs/{job_id}/history` | Explicit bounded revision history with retained full job state. |
+| `GET /jobs/{job_id}/progress/history` | Explicit bounded history of progress changes. |
 
 The list-only `status=open` filter selects `active`, `blocked` and `parked` jobs in that priority order, with IDs ordered within each status across pages. It supports the same optional worker filter; cursors remain bound to the selected filters. Omitted or specific-status filters retain ID ordering. `open` is not a stored job status and mutations refuse it. The CLI and `jobs_list`/`jobs_assigned` MCP reads accept the same filter.
 
 Statuses are `active`, `parked`, `blocked` and `completed`; creation defaults to `active`. Title is bounded to 240 bytes and brief to 32 KiB. Assignments reference workers in the selected project. Creation starts revision 1. A guarded edit atomically changes the job, appends history/event metadata and stores its receipt; a losing revision race writes none of them. An empty worker ID clears an assignment on edit.
 
-## Job checkpoints
+## Current job progress
 
-[Job checkpoints](job-checkpoints.md) add guarded progress records independently of job state. That page owns append/latest/archive endpoints, content limits, current integration status and client commands.
+[Job state](job-state.md) owns the current `summary`, `next`, `blocker` and `evidence` record, partial-update/clear semantics, limits and existing-data conversion. One guarded PATCH changes selected job fields and progress atomically. Historical checkpoint and narrative-update records remain read-only source archives, rather than alternative normal write surfaces.
 
-## Job updates and checklist
+## Job checklist
 
-[Job progress](job-progress.md) owns immutable narrative-update appends and explicit archive reads, plus independently versioned checklist replacement/current/history routes. Both preserve the job brief and revision history and require explicit mutation keys and current revision guards.
+[Job checklists](job-progress.md) owns optional independently versioned checklist replacement/current/history routes. These deliberate changes preserve the brief and current progress, with explicit mutation keys and current revision guards.
 
 ## Durable messages
 
@@ -95,7 +96,7 @@ Reads leave seen/ack state unchanged. New-key transitions that are already satis
 
 ## Output, limits and errors
 
-Lists return `{items, cursor?, has_more}` with default 20 and maximum 100 items. The cursor is omitted on the final page. Cursors are signed and bound to the instance, principal, project, route/filter and order. Job history and conversations require explicit reads; no mutation echoes the submitted brief or message body. Requests use strict JSON objects with declared, exactly cased fields, unique keys and valid Unicode, bounded to 256 KiB.
+Lists return `{items, cursor?, has_more}` with default 20 and maximum 100 items. The cursor is omitted on the final page. Cursors are signed and bound to the instance, principal, project, route/filter and order. Job history and conversations require explicit reads; no mutation echoes the submitted brief or message body. Requests use strict JSON objects with declared, exactly cased fields, unique keys and valid Unicode, bounded to 256 KiB except the combined job PATCH's 384 KiB encoded-body limit.
 
 Errors use compact JSON `{error: {code, message, details?}, request_id}`. Authentication/access failures are `unauthorized` or `forbidden`; malformed JSON, common query/cursor validation and inbox input use `validation_failed`. Jobs also return the specific input codes `invalid_title`, `invalid_brief`, `invalid_status`, `invalid_revision`, `empty_edit`, `invalid_filter`, `invalid_cursor`, `invalid_query` and `idempotency_key_required`. Unavailable resources/capabilities are `not_found`; retry-body and revision conflicts are `idempotency_conflict` and `revision_conflict`. Duplicate setup returns `repository_already_configured` (with `details.project_id` identifying the existing owner), `worker_already_configured` or `credential_already_configured`. SQL details and credentials are excluded. Callers should inspect the code and retain the same key after an uncertain write; do not blindly create a new key.
 
@@ -125,6 +126,6 @@ The [prepared coordination import](legacy-adoption.md) owns administrator previe
 
 [Deferred notes](notes.md) own `POST /notes`, `GET /notes`, `GET` and `PATCH /notes/{note_id}`, `GET /notes/{note_id}/history` and `GET /notes/{note_id}/history/{revision}`. Routes use the existing project prefix and authorization. Current/list reads do not load archives; compact history and selected full revisions require explicit reads. Status-only patches do not require resubmitting the body. Notes never consume themselves or change jobs, focus, pause or messages.
 
-## Job resume context
+## Default job context
 
-[Job resume context](job-context.md) owns `GET /jobs/{job_id}/context`, with an explicit worker binding and optional bounded limit. One authorized snapshot combines the complete current brief/latest checkpoint/checklist, worker focus/pause, selected pending-note/inbox previews and incoming-event watermark. Required content is never truncated; the response states which bodies or additional pages need explicit reads. This deliberate operation does not expand routine job reads or perform provider work.
+[Job state](job-state.md#default-reads) owns the complete working context returned by the ordinary job-detail route. It includes the current job's brief/progress, unfinished checklist items/counts and one compact pending-note page attached to that job. Required current text is never truncated. Further note pages, full note bodies, worker coordination and inbox reads remain deliberate. There is no separate `/jobs/{job_id}/context` route and no provider work during these reads.

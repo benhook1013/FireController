@@ -51,13 +51,13 @@ If automatic result delivery is unavailable, the adapter reports that limitation
 
 ## State and reconnect semantics
 
-Brief revisions, updates and checkpoints are separate explicit operations. Appending a checkpoint does not replace the current brief or change job status. The explicit [job context read](job-context.md) returns the complete selected current brief and latest checkpoint plus bounded relevant pending coordination under the completeness rules in [AI usability](ai-usability.md). Compact list summaries do not claim to contain that full context.
+[Job state](job-state.md) has one current progress record alongside the stable task brief. One guarded update changes selected fields and progress; omitted fields remain unchanged and history is automatic. The ordinary job read returns the full current brief/progress, remaining checklist/counts and pending attached-note previews under the completeness rules in [AI usability](ai-usability.md). Lists remain compact; full note bodies, additional pages, worker coordination and archives require deliberate reads.
 
-Ending a turn, closing a client or cancelling a wait does not complete or pause a job, create a checkpoint, acknowledge messages, or delete durable resources. Subscription lifetime across turns depends on the host; cancellation releases the applicable wait without acknowledging delivery or reversing committed work.
+Ending a turn, closing a client or cancelling a wait does not complete or pause a job, update progress, acknowledge messages, or delete durable resources. Subscription lifetime across turns depends on the host; cancellation releases the applicable wait without acknowledging delivery or reversing committed work.
 
-Reconnect verifies the expected instance and authenticated project/worker binding before operations resume. Valid cursors continue replay; expired retention produces the explicit snapshot/resubscribe behavior owned by [architecture](architecture.md). Reconnect or a context read does not automatically resume a paused job.
+Reconnect verifies the expected instance and authenticated project/worker binding before operations resume. Valid cursors continue replay; expired retention produces the explicit snapshot/resubscribe behavior owned by [architecture](architecture.md). Reconnect or a job read does not automatically resume a paused job.
 
-The client imposes no end-of-work checklist or checkpoint cadence. The separate [suggested agent workflow](agent-workflow.md) is optional guidance for projects and the [onboarding skill](../skills/firecontroller-onboard/SKILL.md).
+The client imposes no end-of-work checklist or progress-update cadence. The separate [suggested agent workflow](agent-workflow.md) is optional guidance for projects and the [onboarding skill](../skills/firecontroller-onboard/SKILL.md).
 
 ## CLI behavior
 
