@@ -3,9 +3,9 @@ import type { ReactNode } from 'react';
 import { ApiError } from './api';
 import type { Api } from './api';
 import type { BrowserSessionBinding } from './browser-session';
-import type { Page, Project, Worker } from './types';
+import type { Page, PresentationSnapshot, Project, Worker } from './types';
 
-export type Session = { api: Api; project: Project; instanceId: string; nonce: string; controller: AbortController; worker: Worker | null; binding: BrowserSessionBinding };
+export type Session = { api: Api; project: Project; instanceId: string; nonce: string; controller: AbortController; projectController: AbortController; presentationSnapshot: PresentationSnapshot; worker: Worker | null; binding: BrowserSessionBinding };
 export type WorkspaceValue = { session: Session; key: readonly string[]; home: string; selectWorker(worker: Worker): void; fail(error: unknown): void; ready: boolean };
 export const WorkspaceContext = createContext<WorkspaceValue | null>(null);
 export function useWorkspace(): WorkspaceValue { const value = useContext(WorkspaceContext); if (!value) throw new Error('Workspace unavailable'); return value; }

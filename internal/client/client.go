@@ -457,7 +457,7 @@ func (c *Client) safeDetails(value any, code string) any {
 	for key, item := range object {
 		switch key {
 		case "current_revision":
-			if n, ok := item.(float64); ok && (n >= 1 || n == 0 && (code == "primary_job_revision_conflict" || code == "checklist_revision_conflict" || code == "worker_pause_revision_conflict" || code == "job_workstream_revision_conflict")) && n == float64(int64(n)) && n < 1<<53 {
+			if n, ok := item.(float64); ok && (n >= 1 || n == 0 && (code == "primary_job_revision_conflict" || code == "checklist_revision_conflict" || code == "worker_pause_revision_conflict" || code == "job_workstream_revision_conflict" || code == "project_presentation_revision_conflict")) && n == float64(int64(n)) && n < 1<<53 {
 				result[key] = int64(n)
 			}
 		case "project_id":

@@ -9,9 +9,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  validate:
-    name: validate
+  linux:
+    name: Linux checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -33,6 +37,13 @@ jobs:
       - run: make check build
       - name: Smoke packaged binaries
         run: make smoke
+      - name: Install pinned Chromium
+        working-directory: webapp
+        timeout-minutes: 5
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Smoke embedded browser lifecycle
+        timeout-minutes: 2
+        run: make browser-smoke
       - name: Verify embedded browser assets match source
         run: |
           git diff --exit-code -- internal/webui/assets
@@ -45,3 +56,59 @@ jobs:
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fcd-macos ./cmd/fcd
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fcmcp-windows.exe ./cmd/fcmcp
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fcmcp-macos ./cmd/fcmcp
+
+  native-smoke:
+    name: Native smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    env:
+      CGO_ENABLED: "0"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build native packaged binaries
+        env:
+          FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
+        run: |
+          go env GOOS GOARCH GOEXE
+          mkdir -p "$FC_SMOKE_BIN_DIR"
+          exe="$(go env GOEXE)"
+          go build -trimpath -o "$FC_SMOKE_BIN_DIR/fc$exe" ./cmd/fc
+          go build -trimpath -o "$FC_SMOKE_BIN_DIR/fcd$exe" ./cmd/fcd
+          go build -trimpath -o "$FC_SMOKE_BIN_DIR/fcmcp$exe" ./cmd/fcmcp
+      - name: Smoke native coordination binaries
+        timeout-minutes: 2
+        env:
+          FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
+        run: go test -v -tags=packaged_smoke -run '^TestPackagedSmoke$' -count=1 -timeout=60s ./tools/packagedsmoke
+      - name: Smoke native upgrade binaries
+        timeout-minutes: 2
+        env:
+          FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
+        run: go test -v -tags=packaged_smoke -run '^TestPackagedUpgradeSmoke$' -count=1 -timeout=60s ./tools/packagedsmoke
+
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    needs: [linux, native-smoke]
+    if: ${{ always() }}
+    steps:
+      - name: Require Linux and both native smoke results
+        env:
+          LINUX_RESULT: ${{ needs.linux.result }}
+          NATIVE_RESULT: ${{ needs.native-smoke.result }}
+        run: |
+          test "$LINUX_RESULT" = success
+          test "$NATIVE_RESULT" = success

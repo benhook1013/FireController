@@ -99,7 +99,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	var waitMS *int
 	var dst any
 	switch name {
-	case "context", "doctor":
+	case "context", "doctor", "presentation_read":
 		dst = &struct{}{}
 	case "workers_list":
 		dst = new(pageInput)
@@ -354,6 +354,7 @@ func toolDefinitions() []definition {
 		map[string]any{"required": []string{"worker_id"}}, map[string]any{"required": []string{"status"}},
 	}
 	return append([]definition{
+		{"presentation_read", "Read the bound project appearance and metadata watermark explicitly. No ordinary job or inbox call includes settings; no provider work or mutation.", schema(map[string]any{})},
 		{"context", "Inspect the immutable local profile configuration; no service verification or credential read.", schema(map[string]any{})},
 		{"doctor", "Verify the configured service instance, project and worker without provider work.", schema(map[string]any{})},
 		{"workers_list", "Read one compact worker page in the bound project.", schema(map[string]any{"limit": limit, "cursor": cursor})},

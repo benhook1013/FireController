@@ -77,7 +77,7 @@ export class SSEParser {
 
 function abortError(): ApiError { return new ApiError('cancelled', 'The message watch was cancelled.'); }
 function isTerminal(error: ApiError): boolean {
-  return error.status === 401 || error.status === 403 || error.status === 400 || error.status === 404 || error.status === 405 || error.status === 409 && error.code !== 'resync_required' || error.code === 'invalid_response' || error.code === 'stream_frame_too_large' || error.code === 'callback_failed' || error.code === 'unauthorized' || error.code === 'forbidden' || error.code === 'validation_failed' || error.code === 'not_found';
+  return error.status === 401 || error.status === 403 || error.status === 400 || error.status === 404 || error.status === 405 || error.status === 409 && error.code !== 'resync_required' || error.code === 'invalid_response' || error.code === 'stream_frame_too_large' || error.code === 'callback_failed' || error.code === 'unauthorized' || error.code === 'forbidden' || error.code === 'validation_failed' || error.code === 'not_found' || error.code === 'instance_mismatch' || error.code === 'invalid_binding';
 }
 function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -99,37 +99,53 @@ async function readWithIdle(reader: ReadableStreamDefaultReader<Uint8Array>, sig
   finally { if (timer !== undefined) clearTimeout(timer); }
 }
 
-async function deliverSnapshot(source: MessageWatchSource, worker: string, options: InboxOptions, callbacks: WatchCallbacks, signal: AbortSignal): Promise<string> {
-  const snapshot = await source.snapshot(worker, options, signal);
+export interface EventWatchSource<S, P> {
+  snapshot(signal: AbortSignal): Promise<S>;
+  snapshotCursor(value: S): string;
+  openStream(cursor: string, signal: AbortSignal): Promise<OpenStream>;
+  readFailure(response: Response, signal: AbortSignal): Promise<ApiError>;
+  decodePage(data: string): P;
+  pageCursor(page: P): string;
+  substantive(page: P): boolean;
+  parseStreamError(data: string): ApiError;
+  event: string;
+}
+export interface EventWatchCallbacks<S, P> {
+  snapshot(value: S): void | Promise<void>;
+  events(value: P): void | Promise<void>;
+  status(value: 'connecting' | 'live' | 'reconnecting' | 'closed'): void;
+}
+async function deliverSnapshot<S, P>(source: EventWatchSource<S, P>, callbacks: EventWatchCallbacks<S, P>, signal: AbortSignal): Promise<string> {
+  const snapshot = await source.snapshot(signal);
   if (signal.aborted) throw abortError();
   try { await callbacks.snapshot(snapshot); }
-  catch (error) {
-    if (error instanceof ApiError) throw error;
-    throw new ApiError('callback_failed', 'The inbox snapshot could not be delivered to the view.');
-  }
+  catch (error) { if (error instanceof ApiError) throw error; throw new ApiError('callback_failed', 'The event snapshot could not be delivered to the view.'); }
   if (signal.aborted) throw abortError();
-  return snapshot.event_cursor;
+  return source.snapshotCursor(snapshot);
 }
-
 export async function runMessageWatch(source: MessageWatchSource, worker: string, options: InboxOptions, callbacks: WatchCallbacks, signal: AbortSignal): Promise<void> {
   const limit = options.limit ?? 20;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100 || options.unread !== undefined && typeof options.unread !== 'boolean' || options.unacknowledged !== undefined && typeof options.unacknowledged !== 'boolean') throw new ApiError('invalid_request', 'The message watch options are invalid.');
+  return runEventWatch<InboxSnapshot, MessageEventPage>({
+    snapshot: selected => source.snapshot(worker, options, selected), snapshotCursor: value => value.event_cursor,
+    openStream: (cursor, selected) => source.openStream(worker, cursor, limit, selected), readFailure: source.readFailure,
+    decodePage: data => { const value: unknown = JSON.parse(data); if (!source.validatePage(value, worker, limit)) throw new ApiError('invalid_response', 'The event stream returned an invalid event page.'); return value; },
+    pageCursor: page => page.cursor, substantive: page => page.items.length > 0, parseStreamError: source.parseStreamError, event: 'message-events',
+  }, callbacks, signal);
+}
+export async function runEventWatch<S, P>(source: EventWatchSource<S, P>, callbacks: EventWatchCallbacks<S, P>, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return;
   let cursor: string;
   callbacks.status('connecting');
-  try { cursor = await deliverSnapshot(source, worker, options, callbacks, signal); }
-  catch (error) {
-    if (signal.aborted) return;
-    callbacks.status('closed');
-    throw error instanceof ApiError ? error : new ApiError('connection_failed', 'The inbox snapshot could not be loaded.');
-  }
+  try { cursor = await deliverSnapshot(source, callbacks, signal); }
+  catch (error) { if (signal.aborted) return; callbacks.status('closed'); throw error instanceof ApiError ? error : new ApiError('connection_failed', 'The event snapshot could not be loaded.'); }
   let attempts = 0;
   while (!signal.aborted) {
     let connection: OpenStream | undefined;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let attachedAt: number | undefined;
     try {
-      connection = await source.openStream(worker, cursor, limit, signal);
+      connection = await source.openStream(cursor, signal);
       const response = connection.response;
       if (response.status === 409) throw await source.readFailure(response, signal);
       if (response.status === 401 || response.status === 403) throw await source.readFailure(response, signal);
@@ -149,13 +165,11 @@ export async function runMessageWatch(source: MessageWatchSource, worker: string
           if (frame.event === 'error') {
             throw source.parseStreamError(frame.data);
           }
-          if (frame.event !== 'message-events') throw new ApiError('invalid_response', 'The event stream returned an unsupported event.');
-          let decoded: unknown;
-          try { decoded = JSON.parse(frame.data) as unknown; }
-          catch { throw new ApiError('invalid_response', 'The event stream returned invalid JSON.'); }
-          if (!source.validatePage(decoded, worker, limit)) throw new ApiError('invalid_response', 'The event stream returned an invalid event page.');
-          const page = decoded as MessageEventPage;
-          if (frame.id === undefined || frame.id !== page.cursor) throw new ApiError('invalid_response', 'The event stream cursor did not match its page.');
+          if (frame.event !== source.event) throw new ApiError('invalid_response', 'The event stream returned an unsupported event.');
+          let page: P;
+          try { page = source.decodePage(frame.data); }
+          catch { throw new ApiError('invalid_response', 'The event stream returned an invalid event page.'); }
+          if (frame.id === undefined || frame.id !== source.pageCursor(page)) throw new ApiError('invalid_response', 'The event stream cursor did not match its page.');
           if (signal.aborted) break;
           try { await callbacks.events(page); }
           catch (error) {
@@ -163,8 +177,8 @@ export async function runMessageWatch(source: MessageWatchSource, worker: string
             throw new ApiError('callback_failed', 'The event page could not be delivered to the view.');
           }
           if (signal.aborted) break;
-          cursor = page.cursor;
-          if (page.items.length > 0) attempts = 0;
+          cursor = source.pageCursor(page);
+          if (source.substantive(page)) attempts = 0;
         }
       }
     } catch (caught) {
@@ -173,11 +187,11 @@ export async function runMessageWatch(source: MessageWatchSource, worker: string
       if (error.code === 'resync_required') {
         try {
           callbacks.status('connecting');
-          cursor = await deliverSnapshot(source, worker, options, callbacks, signal);
+          cursor = await deliverSnapshot(source, callbacks, signal);
         } catch (snapshotError) {
           if (signal.aborted) break;
           callbacks.status('closed');
-          throw snapshotError instanceof ApiError ? snapshotError : new ApiError('connection_failed', 'The inbox snapshot could not be loaded.');
+          throw snapshotError instanceof ApiError ? snapshotError : new ApiError('connection_failed', 'The event snapshot could not be loaded.');
         }
       }
       if (isTerminal(error)) { callbacks.status('closed'); throw error; }

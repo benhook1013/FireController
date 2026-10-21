@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import type { FormEvent } from 'react';
 import { Link, NavLink, Route, Routes, useLocation, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -6,8 +6,14 @@ import { Api, ApiError } from './api';
 import { WorkspaceContext, useWorkspace, signalFor, usePaging, Pager, ReadState, errorText } from './workspace';
 import type { Session } from './workspace';
 import { ProjectMap, ProjectMapEntryView, ProjectMapRevisionView, JobWorkstreamPanel } from './project-map';
+import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView, notesPath } from './coordination';
 import { refreshEventQueries } from './queries';
 import { clearBrowserSession, loadBrowserSession, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
+import { applyPresentationRoot } from './presentation';
+import { PresentationContext, usePresentation, useProjectHeading } from './presentation-context';
+import { isCurrentProjectView, refreshProjectMetadata } from './project-metadata';
+import { startMetadataAttempt } from './metadata-recovery';
+import type { Presentation } from './types';
 import flameEmber from './flame-ember.svg?no-inline';
 import type { Checkpoint, ChecklistItem, JobUpdate, InboxItem, JobSummary, LiveStatus, Project, Worker, ReviewAttemptSummary, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
 
@@ -33,6 +39,9 @@ export default function App() {
   const [reconnect, setReconnect] = useState(0);
   const [notice, setNotice] = useState('');
   const [connecting, setConnecting] = useState(false);
+  const [appearance, setAppearance] = useState<Presentation>();
+  const [metadataStatus, setMetadataStatus] = useState<LiveStatus>('connecting');
+  const [metadataRetry, setMetadataRetry] = useState<{ lifetime: AbortController; attempt: number }>();
   const clear = useCallback((message = '') => {
     const expiring = pending.current?.api ?? current.current?.api;
     if (expiring) void expiring.endBrowserSession().catch(() => {});
@@ -41,9 +50,9 @@ export default function App() {
     pending.current?.controller.abort(); pending.current?.api.close(); pending.current = null;
     const old = current.current;
     current.current = null;
-    old?.controller.abort(); old?.api.close();
+    old?.controller.abort(); old?.projectController.abort(); old?.api.close();
     if (old) { void queryClient.cancelQueries({ queryKey: ['fc', old.nonce] }); queryClient.removeQueries({ queryKey: ['fc', old.nonce] }); }
-    setSession(null); setConnecting(false); setNotice(message);
+    setSession(null); setAppearance(undefined); applyPresentationRoot(document.documentElement, document); setConnecting(false); setNotice(message);
   }, [queryClient]);
   useEffect(() => {
     if (current.current && routeProject !== current.current.project.id) clear('Connect to open this project.');
@@ -51,7 +60,8 @@ export default function App() {
   }, [routeProject, location.key, clear]);
   useEffect(() => () => {
     pending.current?.controller.abort(); pending.current?.api.close(); pending.current = null;
-    const old = current.current; old?.controller.abort(); old?.api.close();
+    const old = current.current; old?.controller.abort(); old?.projectController.abort(); old?.api.close();
+    applyPresentationRoot(document.documentElement, document);
     current.current = null;
     if (old) queryClient.removeQueries({ queryKey: ['fc', old.nonce] });
   }, [queryClient]);
@@ -79,13 +89,15 @@ export default function App() {
         if (!active()) return;
         binding = { version: 1, projectID: started.project_id, instanceID: started.instance_id, sessionID: started.session_id, expiresAt: started.expires_at, selectedworkerID: '' };
       }
+      const presentationSnapshot = await api.presentation(controller.signal);
+      if (!active()) return;
       const worker = binding.selectedworkerID ? await restoredWorker(api, binding.selectedworkerID, controller.signal) : null;
       if (!active()) return;
       binding = { ...binding, selectedworkerID: worker?.id ?? '' };
       if (!saveBrowserSession(binding)) throw new ApiError('browser_storage_unavailable', 'The browser session could not be retained safely.');
       saved.current = binding; setResumable(binding);
-      const next: Session = { api, project, instanceId: api.instanceId!, nonce: nonce(), controller, worker, binding };
-      pending.current = null; current.current = next; setSession(next); setConnecting(false);
+      const next: Session = { api, project, instanceId: api.instanceId!, nonce: nonce(), controller: new AbortController(), projectController: controller, presentationSnapshot, worker, binding };
+      pending.current = null; current.current = next; setAppearance(presentationSnapshot.presentation); setMetadataStatus('connecting'); setSession(next); setConnecting(false);
       if (routeProject !== project.id) navigate(`/projects/${encodeURIComponent(project.id)}`);
     } catch (error) {
       if (!restored) void api.endBrowserSession().catch(() => {});
@@ -116,13 +128,38 @@ export default function App() {
       navigate(`/projects/${encodeURIComponent(old.project.id)}/inbox`);
     }
   }
+  // This lifetime is project-bound: selecting an inbox worker replaces only
+  // its content/message controller and does not restart the metadata feed.
+  const projectLifetime = session?.projectController;
+  const metadataAttempt = metadataRetry?.lifetime === projectLifetime ? metadataRetry?.attempt ?? 0 : 0;
+  function reconnectProjectUpdates() {
+    const live = current.current;
+    if (!live || metadataStatus !== 'closed' || !isCurrentProjectView(live.project.id, route.current.pathname, live.projectController, projectLifetime)) return;
+    setMetadataStatus('connecting');
+    setMetadataRetry(previous => ({ lifetime: live.projectController, attempt: previous?.lifetime === live.projectController ? previous.attempt + 1 : 1 }));
+  }
+  useEffect(() => {
+    if (!session || !projectLifetime || routeProject !== session.project.id) return;
+    const api = session.api;
+    const valid = () => isCurrentProjectView(session.project.id, route.current.pathname, projectLifetime, current.current?.projectController);
+    const queryKey = () => { const live = current.current!; return ['fc', live.nonce, live.instanceId, live.project.id, live.worker?.id ?? '']; };
+    const attempt = startMetadataAttempt(api, session.presentationSnapshot, {
+      lifetime: projectLifetime.signal, current: valid, retry: metadataAttempt > 0,
+      refresh: (page, signal) => refreshProjectMetadata(queryClient, queryKey(), page, signal),
+      appearance: setAppearance, status: setMetadataStatus,
+      failure: error => { if (terminal(error)) clear(errorText(error)); },
+    });
+    return () => attempt.cancel();
+  }, [projectLifetime, metadataAttempt, routeProject, queryClient, clear]);
   const connected = session && routeProject === session.project.id;
-  return <>
-    <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />FireController</Link><span className="mast-label">Project workspace</span></div></header>
-    {connected ? <Workspace key={session.nonce} session={session} selectWorker={selectWorker} disconnect={() => { clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
+  const visibleAppearance = connected ? appearance : undefined;
+  useLayoutEffect(() => { applyPresentationRoot(document.documentElement, document, visibleAppearance); }, [visibleAppearance]);
+  return <PresentationContext.Provider value={visibleAppearance}>
+    <header className="mast"><div className="mast-inner"><Link className="brand" to={connected ? `/projects/${encodeURIComponent(session.project.id)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><span className="mast-label">{visibleAppearance?.tagline ?? 'Project workspace'}</span></div></header>
+    {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} reconnectProjectUpdates={reconnectProjectUpdates} selectWorker={selectWorker} disconnect={() => { clear(); navigate('/'); }} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
       : <Connect key={routeProject ?? 'root'} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={connect} reconnect={resumable ? () => setReconnect(value => value + 1) : undefined} cancel={() => clear('Connection cancelled.')} />}
     <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span><span>Read-only project workspace</span></footer>
-  </>;
+  </PresentationContext.Provider>;
 }
 
 function expireBinding(binding: BrowserSessionBinding): void {
@@ -165,7 +202,16 @@ function Connect({ projectId, busy, notice, onConnect, reconnect, cancel }: { pr
       </form></section></main>;
 }
 
-function Workspace({ session, selectWorker, disconnect, fail }: { session: Session; selectWorker(worker: Worker): void; disconnect(): void; fail(error: unknown): void }) {
+export function ProjectUpdateNotice({ status, reconnect }: { status: LiveStatus; reconnect(): void }) {
+  if (status === 'live') return null;
+  return <p className="notice" role="status">Project updates {status === 'connecting' ? 'connecting' : 'disconnected'}. Displayed settings and map data may be stale. {status === 'closed' && <button type="button" onClick={reconnect}>Reconnect project updates</button>}</p>;
+}
+
+function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWorker, disconnect, fail }: { session: Session; metadataStatus: LiveStatus; reconnectProjectUpdates(): void; selectWorker(worker: Worker): void; disconnect(): void; fail(error: unknown): void }) {
+  const presentation = usePresentation();
+  const jobsHeading = useProjectHeading('jobs'), workersHeading = useProjectHeading('workers'), inboxHeading = useProjectHeading('inbox'), reviewsHeading = useProjectHeading('reviews'), mapHeading = useProjectHeading('map');
+  const notesHeading = useProjectHeading('notes');
+  const heroEyebrow = useProjectHeading('hero_eyebrow'), heroTitle = useProjectHeading('hero_title'), heroDescription = useProjectHeading('hero_description');
   const queryClient = useQueryClient();
   const key = useMemo(() => ['fc', session.nonce, session.instanceId, session.project.id, session.worker?.id ?? ''] as const, [session]);
   const home = `/projects/${encodeURIComponent(session.project.id)}`;
@@ -208,33 +254,37 @@ function Workspace({ session, selectWorker, disconnect, fail }: { session: Sessi
   }, [session, key, queryClient, onFailure, attempt]);
   async function refresh() {
     setRefreshing(true);
-    try { await queryClient.invalidateQueries({ queryKey: key, refetchType: 'active' }, { throwOnError: true }); }
+    try { await refreshEventQueries(queryClient, key, session.controller.signal); }
     catch (error) { onFailure(error); }
     finally { if (!session.controller.signal.aborted) setRefreshing(false); }
   }
   const value = useMemo(() => ({ session, key, home, selectWorker, fail: onFailure, ready }), [session, key, home, selectWorker, onFailure, ready]);
   const liveLabel = !session.worker ? 'Choose a worker' : live === 'live' ? 'Live inbox connected' : live === 'reconnecting' ? 'Reconnecting inbox…' : live === 'closed' ? 'Inbox disconnected' : 'Connecting inbox…';
   return <WorkspaceContext.Provider value={value}><main className="workspace">
-    <section className="hero"><div className="hero-project"><p className="eyebrow">Project workspace <span className="read-only">Read only</span></p><h1>{session.project.name}</h1><p className="repository">{session.project.repository}</p><p className="identity">Project {session.project.id}</p></div>
-      <div className="hero-side"><div className="connection-card"><span className="eyebrow">Connected project</span><strong>Work, with context.</strong><p>Browse jobs and read worker conversations.</p><div className="hero-actions"><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh visible data'}</button><button className="quiet-button" type="button" onClick={disconnect}>Disconnect</button></div></div></div></section>
-    <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>Jobs</NavLink><NavLink to={`${home}/workers`}>Workers</NavLink><NavLink to={`${home}/inbox`}>Inbox</NavLink><NavLink to={`${home}/reviews`}>Reviews</NavLink><NavLink to={`${home}/map`}>Map</NavLink><span className="connection-note">Connected</span></nav>
+    <section className="hero"><div className="hero-project"><p className="eyebrow">{presentation?.tagline ?? 'Project workspace'} <span className="read-only">Read only</span></p><h1>{presentation?.name ?? session.project.name}</h1><p className="repository">{session.project.repository}</p><p className="identity">Project {session.project.id}</p></div>
+      <div className="hero-side"><div className="connection-card"><span className="eyebrow">{heroEyebrow}</span><strong>{heroTitle}</strong><p>{heroDescription}</p><div className="hero-actions"><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh visible data'}</button><button className="quiet-button" type="button" onClick={disconnect}>Disconnect</button></div></div></div></section>
+    <nav className="navigation" aria-label="Project navigation"><NavLink to={home} end>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink><NavLink to={`${home}/map`}>{mapHeading}</NavLink><NavLink to={`${home}/notes`}>{notesHeading}</NavLink><span className="connection-note">Connected</span></nav>
+    <ProjectUpdateNotice status={metadataStatus} reconnect={reconnectProjectUpdates} />
     <div className="workspace-grid"><aside className="sidebar"><WorkerList compact /><section className="feed-card" aria-label="Inbox connection"><span className={`status-dot ${live === 'live' && session.worker ? 'online' : ''}`} /><strong role="status">{liveLabel}</strong><p>{session.worker ? session.worker.name : 'Select a worker to follow incoming messages.'}</p>{Boolean(feedError) && <><p className="error-copy">{errorText(feedError)}</p><button type="button" onClick={() => { setReady(false); setAttempt(value => value + 1); }}>Reconnect inbox</button></>}</section></aside>
-      <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Jobs />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="/projects/:projectId/map" element={<ProjectMap />} /><Route path="/projects/:projectId/map/entries/:entryId" element={<ProjectMapEntryView />} /><Route path="/projects/:projectId/map/entries/:entryId/history/:revision" element={<ProjectMapRevisionView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to project jobs</Link></section>} /></Routes></div></div>
+      <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Jobs />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/workers/:workerId" element={<WorkerCoordinationView />} /><Route path="/projects/:projectId/notes" element={<NotesView />} /><Route path="/projects/:projectId/notes/:noteId" element={<NoteView />} /><Route path="/projects/:projectId/notes/:noteId/history/:revision" element={<NoteRevisionView />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="/projects/:projectId/map" element={<ProjectMap />} /><Route path="/projects/:projectId/map/entries/:entryId" element={<ProjectMapEntryView />} /><Route path="/projects/:projectId/map/entries/:entryId/history/:revision" element={<ProjectMapRevisionView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to project jobs</Link></section>} /></Routes></div></div>
   </main></WorkspaceContext.Provider>;
 }
 
 function WorkerList({ compact = false }: { compact?: boolean }) {
-  const { session, key, selectWorker } = useWorkspace();
+  const presentation = usePresentation();
+  const label = useProjectHeading('workers');
+  const { session, key, home, selectWorker } = useWorkspace();
   const paging = usePaging();
   const query = useQuery({ queryKey: [...key, 'workers', paging.cursor], queryFn: ({ signal }) => session.api.workers({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
-  return <section className={compact ? 'worker-panel' : 'panel'}><div className="section-heading"><div><p className="eyebrow">People & agents</p><h2>{compact ? 'Workers' : 'Project workers'}</h2></div>{compact && <span className="small-label">Select inbox</span>}</div><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul className="worker-list">{query.data?.items.map(worker => <li key={worker.id}><button type="button" aria-label={`Open ${worker.name} inbox`} aria-pressed={session.worker?.id === worker.id} onClick={() => selectWorker(worker)}><span className="worker-avatar" aria-hidden="true">{worker.name.slice(0, 2).toUpperCase()}</span><span><strong>{worker.name}</strong><small>{worker.id}</small></span><span className="worker-arrow" aria-hidden="true">↗</span></button></li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="workers" busy={query.isFetching} /></section>;
+  return <section className={compact ? 'worker-panel' : 'panel'}><div className="section-heading"><div><p className="eyebrow">People & agents</p><h2>{compact ? label : presentation?.headings.workers ?? 'Project workers'}</h2></div>{compact && <span className="small-label">Select inbox</span>}</div><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul className="worker-list">{query.data?.items.map(worker => <li key={worker.id}><button type="button" aria-label={`Open ${worker.name} inbox`} aria-pressed={session.worker?.id === worker.id} onClick={() => selectWorker(worker)}><span className="worker-avatar" aria-hidden="true">{worker.name.slice(0, 2).toUpperCase()}</span><span><strong>{worker.name}</strong><small>{worker.id}</small></span><span className="worker-arrow" aria-hidden="true">↗</span></button><Link className="worker-detail-link" to={`${home}/workers/${encodeURIComponent(worker.id)}`} aria-label={`Read ${worker.name} details`}>Worker details</Link></li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="workers" busy={query.isFetching} /></section>;
 }
-function Workers() { return <><div className="page-heading"><p className="eyebrow">Connected project</p><h2>Workers</h2><p>Select a worker to read their inbox and follow new messages.</p></div><WorkerList /></>; }
+function Workers() { const label = useProjectHeading('workers'); return <><div className="page-heading"><p className="eyebrow">Connected project</p><h2>{label}</h2><p>Select a worker to read their inbox and follow new messages.</p></div><WorkerList /></>; }
 function Jobs() {
+  const label = useProjectHeading('jobs');
   const [status, setStatus] = useState('');
   const { session } = useWorkspace();
   const [assigned, setAssigned] = useState(false);
-  return <><div className="page-heading"><p className="eyebrow">Work in motion</p><h2>Jobs</h2><p>Current work and its full context, one job at a time.</p></div><div className="filters"><label>Status<select aria-label="Job status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label>{session.worker && <label className="checkbox-label"><input type="checkbox" checked={assigned} onChange={event => setAssigned(event.target.checked)} />Assigned to {session.worker.name}</label>}</div><JobList key={`${status}/${assigned}`} status={status as JobSummary['status'] | ''} assigned={assigned} /></>;
+  return <><div className="page-heading"><p className="eyebrow">Work in motion</p><h2>{label}</h2><p>Current work and its full context, one job at a time.</p></div><div className="filters"><label>Status<select aria-label="Job status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label>{session.worker && <label className="checkbox-label"><input type="checkbox" checked={assigned} onChange={event => setAssigned(event.target.checked)} />Assigned to {session.worker.name}</label>}</div><JobList key={`${status}/${assigned}`} status={status as JobSummary['status'] | ''} assigned={assigned} /></>;
 }
 function JobList({ status, assigned }: { status: JobSummary['status'] | ''; assigned: boolean }) {
   const { session, key, home } = useWorkspace();
@@ -247,7 +297,7 @@ function JobDetail() {
   const { session, key, home } = useWorkspace();
   const query = useQuery({ queryKey: [...key, 'job', jobId], queryFn: ({ signal }) => session.api.job(jobId, signalFor(session, signal)), staleTime: Infinity });
   const job = query.data;
-  return <><Link className="back-link" to={home}>← All jobs</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{job && <><div className="page-heading"><span className={`badge status-${job.status}`}>{job.status}</span><h2>{job.title}</h2><p>{job.worker_id || 'Unassigned'} · Revision {job.revision}</p></div><section className="panel brief"><h3>Job brief</h3><p className="full-text">{job.brief || 'No brief supplied.'}</p><dl className="metadata"><div><dt>Job ID</dt><dd>{job.id}</dd></div><div><dt>Created</dt><dd>{time(job.created_at)}</dd></div><div><dt>Updated</dt><dd>{time(job.updated_at)}</dd></div></dl></section><JobWorkstreamPanel key={`workstream-${jobId}`} jobId={jobId} /><JobChecklistPanel key={`checklist-${jobId}`} jobId={jobId} jobRevision={job.revision} /><JobCheckpointPanel key={jobId} jobId={jobId} jobRevision={job.revision} /><JobUpdatesPanel key={`updates-${jobId}`} jobId={jobId} jobRevision={job.revision} /></>}</ReadState></>;
+  return <><Link className="back-link" to={home}>← All jobs</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{job && <><div className="page-heading"><span className={`badge status-${job.status}`}>{job.status}</span><h2>{job.title}</h2><p>{job.worker_id ? <Link to={`${home}/workers/${encodeURIComponent(job.worker_id)}`}>{job.worker_id}</Link> : 'Unassigned'} · Revision {job.revision}</p><Link to={notesPath(home, {job_id:job.id})}>Notes for this job</Link></div><section className="panel brief"><h3>Job brief</h3><p className="full-text">{job.brief || 'No brief supplied.'}</p><dl className="metadata"><div><dt>Job ID</dt><dd>{job.id}</dd></div><div><dt>Created</dt><dd>{time(job.created_at)}</dd></div><div><dt>Updated</dt><dd>{time(job.updated_at)}</dd></div></dl></section><JobWorkstreamPanel key={`workstream-${jobId}`} jobId={jobId} /><JobChecklistPanel key={`checklist-${jobId}`} jobId={jobId} jobRevision={job.revision} /><JobCheckpointPanel key={jobId} jobId={jobId} jobRevision={job.revision} /><JobUpdatesPanel key={`updates-${jobId}`} jobId={jobId} jobRevision={job.revision} /></>}</ReadState></>;
 }
 function ChecklistItems({ items }: { items: ChecklistItem[] }) {
   return items.length ? <ol>{items.map(item => <li key={item.id}><span className="badge neutral">{item.done ? 'Completed' : 'To do'}</span><p className="full-text">{item.text}</p></li>)}</ol> : <p className="empty">No checklist items.</p>;
@@ -328,8 +378,10 @@ function CheckpointHistory({ jobId }: { jobId: string }) {
 }
 function ChooseWorker() { return <section className="panel empty"><h3>Choose a worker to open an inbox</h3><p>Select a worker from the list. Their incoming messages will stay connected as you browse.</p></section>; }
 function Inbox() {
+  const presentation = usePresentation();
+  const label = useProjectHeading('inbox');
   const { session } = useWorkspace();
-  return <><div className="page-heading"><p className="eyebrow">Conversations</p><h2>{session.worker ? `${session.worker.name} inbox` : 'Inbox'}</h2><p>Read incoming messages without changing their seen or acknowledged state.</p></div>{session.worker ? <InboxPage /> : <ChooseWorker />}</>;
+  return <><div className="page-heading"><p className="eyebrow">Conversations</p><h2>{session.worker ? presentation?.headings.inbox ? `${session.worker.name} · ${label}` : `${session.worker.name} inbox` : label}</h2><p>Read incoming messages without changing their seen or acknowledged state.</p></div>{session.worker ? <InboxPage /> : <ChooseWorker />}</>;
 }
 function InboxPage() {
   const { session, key, home, ready } = useWorkspace();
@@ -380,13 +432,14 @@ function PullFacts({ pull }: { pull: ReviewPullSummary }) {
   return <div className="review-pull-facts"><span className={`badge ${pull.state === 'merged' ? 'neutral' : 'status-active'}`}>{pull.state}{pull.state === 'merged' ? ' · retained history' : ''}</span><span>Observed CI: {pull.ci_state}</span><span>Observed mergeability: {pull.mergeability}</span><span>{pull.run_count} runs · {pull.attempt_count} attempts</span>{!pull.complete && <span className="review-warning">Incomplete PR observation</span>}</div>;
 }
 function ReviewQueueView() {
+  const label = useProjectHeading('reviews');
   const { session, key, home } = useWorkspace();
   const paging = usePaging();
   const [continuationSnapshot, setContinuationSnapshot] = useState('current');
   const query = useQuery({ queryKey: [...key, 'reviews', paging.number === 1 ? 'current' : continuationSnapshot, 'queue', paging.cursor], queryFn: ({ signal }) => session.api.reviewQueue({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
   const page = query.data;
   const navigation = { ...paging, next: (cursor: string) => { if (page) setContinuationSnapshot(page.snapshot_id); paging.next(cursor); } };
-  return <><div className="page-heading"><p className="eyebrow">Review workspace</p><h2>Reviews</h2><p>Stored queue, review rounds and finding evidence.</p></div><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{page && (page.configured ? <><ReviewProvenance value={page} /><section className="panel"><ul className="review-queue">{page.items.map(pull => <li key={pull.number}><div className="review-pull-heading"><span className="review-number">#{pull.number}</span><h3><Link to={reviewLink(home, 'pulls', pull.number, page.snapshot_id)}>{pull.title}</Link></h3></div><PullFacts pull={pull} /><p className="review-head">Observed head: <code>{pull.head_sha || 'Unknown'}</code></p><ReviewRunsView number={pull.number} snapshot={page.snapshot_id} head={pull.head_sha} attempts={pull.latest_attempts} expected={pull.run_count} /><Link className="detail-link" to={reviewLink(home, 'pulls', pull.number, page.snapshot_id)}>Read PR #{pull.number} history →</Link></li>)}</ul>{page.items.length === 0 && <p className="empty">No pull requests in this stored queue.</p>}<Pager paging={navigation} page={page} label="review queue" busy={query.isFetching} /></section></> : <section className="panel empty"><h3>Review workspace unconfigured</h3><p>No review observation has been recorded for this project.</p></section>)}</ReadState></>;
+  return <><div className="page-heading"><p className="eyebrow">Review workspace</p><h2>{label}</h2><p>Stored queue, review rounds and finding evidence.</p></div><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{page && (page.configured ? <><ReviewProvenance value={page} /><section className="panel"><ul className="review-queue">{page.items.map(pull => <li key={pull.number}><div className="review-pull-heading"><span className="review-number">#{pull.number}</span><h3><Link to={reviewLink(home, 'pulls', pull.number, page.snapshot_id)}>{pull.title}</Link></h3></div><PullFacts pull={pull} /><p className="review-head">Observed head: <code>{pull.head_sha || 'Unknown'}</code></p><ReviewRunsView number={pull.number} snapshot={page.snapshot_id} head={pull.head_sha} attempts={pull.latest_attempts} expected={pull.run_count} /><Link className="detail-link" to={reviewLink(home, 'pulls', pull.number, page.snapshot_id)}>Read PR #{pull.number} history →</Link></li>)}</ul>{page.items.length === 0 && <p className="empty">No pull requests in this stored queue.</p>}<Pager paging={navigation} page={page} label="review queue" busy={query.isFetching} /></section></> : <section className="panel empty"><h3>Review workspace unconfigured</h3><p>No review observation has been recorded for this project.</p></section>)}</ReadState></>;
 }
 function ReviewAttempts({ attempts }: { attempts: ReviewAttemptSummary[] }) {
   return <section className="panel review-attempts"><details><summary>Attempts ({attempts.length})</summary>{attempts.length === 0 ? <p className="review-empty">No attempts recorded.</p> : <ul>{[...attempts].reverse().map(attempt => <li key={attempt.source_attempt_id}><div><span className="review-channel">{attempt.channel}</span><strong>{attempt.state.replaceAll('_', ' ')}</strong></div><div><small>Started</small>{attempt.started_at ? time(attempt.started_at) : 'Unknown'}</div><div><small>Duration</small>{attempt.duration_seconds === null ? 'Unknown' : `${attempt.duration_seconds}s`}</div><div><small>Head</small><code>{attempt.head_sha || 'Unknown'}</code></div><div><small>Source attempt / run</small><span>{attempt.source_attempt_id}</span><span>{attempt.source_run_id || 'No run attached'}</span></div></li>)}</ul>}</details></section>;

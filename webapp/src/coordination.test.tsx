@@ -1,0 +1,104 @@
+import { describe, expect, it } from 'vitest';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router';
+import { NoteContent, NoteHistoryRows, NoteRevisionContent, NoteSummaryRows, PauseContent, PrimaryContent, notesPath, parseNoteFilters } from './coordination';
+import type { Note, NoteRevision } from './types';
+
+const home = '/projects/project_one';
+const note: Note = { id: 'note_one', project_id: 'project_one', worker_id: 'worker_one', job_id: 'job_one', phase: 'Phase <literal>' + '長'.repeat(40), kind: 'source', status: 'dismissed', status_reason: 'Reason <img src=x>\nSecond line\ttab', body: 'FULL_PRIVATE_BODY <script>instruction()</script>\nExact\ttext', revision: 7, created_at: '2026-10-16T01:00:00.000000000Z', updated_at: '2026-10-16T00:00:00.000000000Z' };
+const summary = { ...note, body_preview: 'Preview <img src=x>', body_truncated: true };
+const recorded: NoteRevision = { ...note, revision: 2, body: 'CAPTURED_BODY <script>earlier()</script>', status_reason: 'CAPTURED_REASON', actor_id: 'principal_one', actor_worker_id: 'worker_actor', recorded_at: note.updated_at };
+function render(value: React.ReactNode) { return renderToStaticMarkup(<MemoryRouter>{value}</MemoryRouter>); }
+
+describe('read-only coordination rendering', () => {
+  it('keeps compact previews distinct from complete content, even when not truncated', () => {
+    const html = render(<NoteSummaryRows rows={[summary, { ...summary, id: 'note_two', body_truncated: false }]} home={home} />);
+    expect(html).toContain('source · dismissed');
+    expect(html).toContain('Revision 7');
+    expect(html).toContain('Truncated preview.');
+    expect(html).toContain('Preview.');
+    expect(html.match(/Open the note to read its full body/gu)).toHaveLength(2);
+    expect(html).toContain('Preview &lt;img src=x&gt;');
+    expect(html).toContain('href="/projects/project_one/notes/note_one"');
+    expect(html).not.toMatch(/FULL_PRIVATE_BODY|instruction|Reason|<img|<script|<button/u);
+  });
+  it('renders exact full note text, dismissal reason and all selectors without interpreting authority', () => {
+    const html = render(<NoteContent value={note} home={home} />);
+    expect(html).toContain('Full body');
+    expect(html).toContain('FULL_PRIVATE_BODY &lt;script&gt;instruction()&lt;/script&gt;\nExact\ttext');
+    expect(html).toContain('Dismissal reason');
+    expect(html).toContain('Reason &lt;img src=x&gt;\nSecond line\ttab');
+    expect(html).toContain('Worker selector');
+    expect(html).toContain('Job selector');
+    expect(html).toContain('Phase selector');
+    expect(html).toContain('Phase &lt;literal&gt;' + '長'.repeat(40));
+    expect(html).toContain('href="/projects/project_one/workers/worker_one"');
+    expect(html).toContain('href="/projects/project_one/jobs/job_one"');
+    expect(html).not.toMatch(/<script|<img|href="javascript:|<button/u);
+  });
+  it('makes empty selectors explicit without suggesting assignment ownership', () => {
+    const html = render(<NoteContent value={{ ...note, worker_id: '', job_id: '', phase: 'phase-only', status: 'pending', status_reason: '' }} home={home} />);
+    expect(html).toContain('No worker selector');
+    expect(html).toContain('No job selector');
+    expect(html).toContain('phase-only');
+    expect(html).toContain('No status reason recorded.');
+    expect(html).not.toMatch(/href=|owner|dismissed/u);
+  });
+  it('keeps history rows compact and requires an explicit captured revision read', () => {
+    const html = render(<NoteHistoryRows rows={[{ ...summary, actor_id: recorded.actor_id, actor_worker_id: recorded.actor_worker_id, recorded_at: recorded.recorded_at }]} home={home} noteId={note.id} />);
+    expect(html).toContain('Read revision 7');
+    expect(html).toContain('href="/projects/project_one/notes/note_one/history/7"');
+    expect(html).toContain('Recorded by principal_one');
+    expect(html).toContain('Worker worker_actor');
+    expect(html).toContain('Truncated preview.');
+    expect(html).not.toMatch(/FULL_PRIVATE_BODY|Reason|CAPTURED_BODY|CAPTURED_REASON/u);
+    const snapshot = render(<NoteRevisionContent value={recorded} home={home} />);
+    expect(snapshot).toContain('Captured note revision 2');
+    expect(snapshot).toContain('does not describe current state');
+    expect(snapshot).toContain('CAPTURED_BODY &lt;script&gt;earlier()&lt;/script&gt;');
+    expect(snapshot).toContain('CAPTURED_REASON');
+    expect(snapshot).toContain('href="/projects/project_one/notes/note_one"');
+    expect(snapshot).toContain('Read current note');
+    expect(snapshot).not.toMatch(/FULL_PRIVATE_BODY|<script/u);
+  });
+  it('shows explicit pause independently from primary focus and never expands a job brief', () => {
+    const paused = render(<><PauseContent value={{ worker_id: 'worker_one', revision: 4, paused: true, reason: 'Paused <script>literal</script>\nwhy' }} /><PrimaryContent value={{ worker_id: 'worker_one', revision: 2, job_id: 'job_one' }} home={home} /></>);
+    expect(paused).toContain('Pause revision 4');
+    expect(paused).toContain('Focus revision 2');
+    expect(paused).toContain('Paused &lt;script&gt;literal&lt;/script&gt;\nwhy');
+    expect(paused).toContain('not agent presence or an execution control');
+    expect(paused).toContain('href="/projects/project_one/jobs/job_one"');
+    expect(paused).not.toMatch(/<script|brief|<button/u);
+    const defaults = render(<><PauseContent value={{ worker_id: 'worker_one', revision: 0, paused: false, reason: '' }} /><PrimaryContent value={{ worker_id: 'worker_one', revision: 0, job_id: '' }} home={home} /></>);
+    expect(defaults).toContain('Not paused');
+    expect(defaults).toContain('No pause reason recorded.');
+    expect(defaults).toContain('No primary job selected.');
+    expect(defaults).toContain('Focus revision 0');
+    expect(defaults).not.toContain('href=');
+  });
+  it('builds explicit worker/job query presets without assignment expansion or cursor inheritance', () => {
+    expect(notesPath(home)).toBe(home + '/notes');
+    expect(notesPath(home, {worker_id:'worker_one'})).toBe(home + '/notes?worker_id=worker_one');
+    expect(notesPath(home, {job_id:'job_one'})).toBe(home + '/notes?job_id=job_one');
+    const url = new URL(notesPath(home, {worker_id:'literal&worker', job_id:'literal?job'}), 'https://example.invalid');
+    expect([...url.searchParams]).toEqual([['worker_id', 'literal&worker'], ['job_id', 'literal?job']]);
+    expect(url.searchParams.has('include_assigned_jobs')).toBe(false);
+    expect(url.searchParams.has('cursor')).toBe(false);
+  });
+});
+
+
+describe('note URL filter admission', () => {
+  it('rejects invalid scopes, enums, dependency flags and phase byte/control bounds locally', () => {
+    const invalid = ['worker_id=', 'worker_id=a+b', 'worker_id=_worker', 'job_id=-job', 'status=', 'status=bogus', 'kind=', 'kind=bogus', 'include_assigned_jobs=true', 'include_assigned_jobs=1', 'phase=', 'phase=+++', 'worker_id=one&worker_id=two', 'status=all&status=pending', 'include_assigned_jobs=false&include_assigned_jobs=true'];
+    for (const query of invalid) expect(parseNoteFilters(new URLSearchParams(query)), query).toBeUndefined();
+    for (const phase of ['a'.repeat(201), '長'.repeat(67), '😀'.repeat(51), 'a\nb', 'a\u0085b']) expect(parseNoteFilters(new URLSearchParams({phase}))).toBeUndefined();
+  });
+  it('preserves valid exact API filters and accepts the 200-byte unicode boundary', () => {
+    expect(parseNoteFilters(new URLSearchParams())).toEqual({});
+    const values = {worker_id:'worker_one',job_id:'job_two',phase:' phase & examine ',kind:'source',status:'all',include_assigned_jobs:'true'};
+    expect(parseNoteFilters(new URLSearchParams(values))).toEqual({...values,include_assigned_jobs:true});
+    expect(parseNoteFilters(new URLSearchParams({include_assigned_jobs:'false'}))).toEqual({include_assigned_jobs:false});
+    for (const phase of ['a'.repeat(200), '長'.repeat(66), '😀'.repeat(50), 'a\u2028b']) expect(parseNoteFilters(new URLSearchParams({phase}))).toEqual({phase});
+  });
+});

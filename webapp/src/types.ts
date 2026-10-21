@@ -49,3 +49,21 @@ export interface ReviewRunDetail extends ReviewSnapshot {pull_number: number; ru
 export interface ReviewAnchor {repository_id: number; repository: string; pull_number: number; parent_pull_number: number; candidate_sha: string; base_sha: string; parent_sha: string; merge_base_sha: string; patch_sha256: string; base_ref: string; observed_at: string}
 export interface ReviewPolicyAssessmentChannel {channel: 'cli'|'hosted'; covered: boolean; pending: boolean}
 export interface ReviewPolicyAssessment {incoming_routes_pending?:number;incoming_routes_capacity?:boolean;reason?:string;project_id: string; evidence_id: string; anchor: ReviewAnchor; source: 'captured_comparison'; policy_revision: number; evaluated_at: string; state: 'sufficient'|'held'|'unconfigured'; channels: ReviewPolicyAssessmentChannel[]}
+
+export interface Presentation {project_id: string; revision: number; name: string; brand_name: string; tagline: string; headings: Partial<Record<import('./presentation').HeadingKey, string>>; theme: Partial<Record<import('./presentation').ThemeToken, string>>; updated_at: string}
+export interface PresentationSnapshot {presentation: Presentation; event_cursor: string}
+export interface PresentationRevision {revision: number; actor_id: string; created_at: string; state: Presentation}
+export interface ProjectMetadataEvent {event_type: 'project.presentation_changed' | 'map.entry_created' | 'map.entry_updated' | 'job.workstream_changed'; resource_id: string; revision: number; event_cursor: string}
+export interface ProjectMetadataPage {items: ProjectMetadataEvent[]; event_cursor: string; has_more: boolean}
+
+export interface WorkerPrimary {worker_id: string; revision: number; job_id: string}
+export interface WorkerPrimaryHistoryEntry extends WorkerPrimary {actor_id: string; actor_worker_id: string; reason: 'selected'|'cleared'|'job_reassigned'; created_at: string}
+export interface WorkerPause {worker_id: string; revision: number; paused: boolean; reason: string}
+export interface WorkerPauseHistoryEntry extends WorkerPause {actor_id: string; actor_worker_id: string; created_at: string}
+export type NoteKind = 'reminder'|'source';
+export type NoteStatus = 'pending'|'consumed'|'dismissed';
+export interface NoteOptions extends PageOptions {worker_id?: string; job_id?: string; phase?: string; kind?: NoteKind; status?: NoteStatus|'all'; include_assigned_jobs?: boolean}
+export interface NoteSummary {id: string; project_id: string; revision: number; worker_id: string; job_id: string; phase: string; kind: NoteKind; status: NoteStatus; created_at: string; updated_at: string; body_preview: string; body_truncated: boolean}
+export interface Note {id: string; project_id: string; revision: number; worker_id: string; job_id: string; phase: string; kind: NoteKind; status: NoteStatus; created_at: string; updated_at: string; body: string; status_reason: string}
+export interface NoteHistorySummary extends NoteSummary {actor_id: string; actor_worker_id: string; recorded_at: string}
+export interface NoteRevision extends Note {actor_id: string; actor_worker_id: string; recorded_at: string}

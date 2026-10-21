@@ -116,6 +116,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.JobContext(ctx, args.id, args.limit)
 			case "note_create", "note_update", "note_read", "note_list", "note_history", "note_revision_read":
 				value, err = executeNoteTool(ctx, service, args.notes)
+			case "presentation_read":
+				value, err = service.Presentation(ctx)
 			case "doctor":
 				if _, err = service.Worker(ctx); err == nil {
 					value = struct {

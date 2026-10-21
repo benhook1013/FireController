@@ -1,0 +1,6 @@
+.coordination{min-width:0}.coordination h2,.coordination h3,.coordination h4,.coordination a,.coordination .item-meta,.coordination .metadata dd{overflow-wrap:anywhere}.coordination .full-text{white-space:pre-wrap;overflow-wrap:anywhere}.coordination-scope{display:grid;gap:8px;margin:12px 0}.coordination-scope>div{min-width:0}.coordination-scope dt{font-weight:650}.coordination-scope dd{margin:3px 0 0;overflow-wrap:anywhere}.coordination-notes>li,.coordination-history li{margin:16px 0 24px;min-width:0}.coordination-history{margin-top:20px}.coordination-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:14px;margin:20px 0}.coordination-filters label{display:flex;flex-direction:column;gap:6px;min-width:0}.coordination-filters input:not([type=checkbox]),.coordination-filters select{min-width:0;width:100%;box-sizing:border-box}.coordination-filters .checkbox-label{flex-direction:row;align-items:center}.coordination-filters button{align-self:end;justify-self:start}.coordination-filters .notice{grid-column:1/-1}
+
+.worker-list .worker-detail-link{display:inline-block;margin:0 12px 12px;max-width:100%;overflow-wrap:anywhere}
+
+.coordination>.panel{padding:28px;margin-bottom:20px}
+@media(max-width:650px){.coordination>.panel{padding:20px}}

@@ -80,6 +80,18 @@ Initial calibration candidates are 1,000 quiet subscriptions and 100 committed m
 
 Candidate latency budgets are local API send/read p95 below 200 ms and commit-to-client event p95 below 500 ms. These require calibration before becoming release gates. Measure browser transport receipt separately from model-visible delivery, which depends on the host. Record p99, errors, saturation, memory, database time, fsync/storage characteristics, CPU, process count, payload sizes, and full hardware/software versions. Do not omit failed or timed-out requests from the latency distribution.
 
+An initial actual packaged calibration used runtime `8958e68cae8f5195fdf1a8e004a13569dedf7f97`, two projects with colliding worker display names, four separately authorized principals and 48 SSE connections. It committed 120 messages at 20 per second over six seconds while making concurrent job/inbox reads, then observed 16.54 quiet seconds. All 1,440 expected deliveries, recipient attribution and reconnect replay matched; 492 JSON API attempts had zero errors or timeouts, with no implicit seen/acknowledgment, provider requests or unrelated retained-table changes. The single workload passed in 23.025 seconds; input binaries and source stayed unchanged and all owned processes/listeners/state were cleaned. One private-helper compile error was corrected before that execution; no workload was silently retried.
+
+| Client-observed sample | Count | p95 ms | p99 ms | Maximum ms |
+| --- | --- | --- | --- | --- |
+| Message send HTTP round trip | 120 | 6.855 | 12.156 | 23.235 |
+| Concurrent job reads | 180 | 1.180 | 1.447 | 20.379 |
+| Concurrent inbox reads | 180 | 1.103 | 2.947 | 3.383 |
+| Response completion to complete SSE frame, live deliveries | 1,420 | 3.107 | 3.867 | 4.972 |
+| Same frame measure including deliberately disconnected backlog | 1,440 | 3.364 | 1,197.932 | 3,998.104 |
+
+Frame timing is a signed monotonic client observation relative to completion of the send response, not an internal commit timestamp: eleven negative samples were retained, with a minimum of -2.084 ms. The twenty intentional offline-backlog samples remain in the combined distribution. The quiet interval produced zero data frames and 48 transport keepalives totaling 624 decoded SSE bytes; no model-facing host was exercised. The WSL2 Linux 6.18.40.1 sample used an i7-12700KF, ten visible logical CPUs, Go 1.27.2, daemon `GOMAXPROCS=2`, WAL and 4 KiB SQLite pages. Sampled daemon peak RSS was 28,164,096 bytes and CPU time was 1.31 seconds. Database execution time, fsync/device behavior and saturation were not measured. This small local API/SSE calibration does not establish the candidate fleet budgets, slow-subscriber/provider isolation, installed-host delivery, current-head binary behavior or supported capacity; CLI/MCP executable proof remains separately recorded.
+
 Run cold start, steady state, burst, reconnect storm, slow subscriber, provider outage, and retained-history growth cases. Provider calls must remain zero for job/messaging workloads and bounded/coalesced for explicit refresh workloads. An idle listener must produce no periodic model-facing output; document host timeout behavior and any actual rearm cost.
 
 Once a release budget is selected, failure to meet it requires an explained limitation or an approved change, not hidden retries or a bigger undeclared machine. Test multi-project fairness and verify that a review running in one project does not stall another project's communication. No multi-server throughput claim is accepted before the distributed contracts are implemented and measured.

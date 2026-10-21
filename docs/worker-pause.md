@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The worker-pause API, storage, typed client, CLI and MCP adapters are implemented. Focused normal/race tests, full combined validation and actual packaged proof pass at the checkpoints below. Browser integration remains unfinished. [Primary focus](worker-focus.md) and ordinary job status already work independently.
+The worker-pause API, storage, typed client, CLI and MCP adapters are implemented. Focused normal/race tests, full combined validation and actual packaged proof pass at the checkpoints below. Read-only [worker browser views](browser-coordination.md) expose current pause and explicit history; that owner records their separate proof. [Primary focus](worker-focus.md) and ordinary job status already work independently.
 
 ## Explicit state
 
@@ -30,7 +30,7 @@ This slice adds jobs schema five with `worker_pause_state` and `worker_pause_his
 
 Typed client operations read, replace and page history. Profile-bound CLI commands are `workers pause-state`, `workers pause-history`, `workers pause --reason TEXT --expect-revision N --key KEY`, and `workers resume --expect-revision N --key KEY`. `--reason` is explicit for pause, including an empty string. MCP tools are `worker_pause_read`, `worker_pause_replace` and `worker_pause_history`; replacement requires the same full state as the API. Tool calls inherit project/worker from the private profile. Strict validation precedes credential/network access, the existing five-second total budget applies, and uncertain responses recover with the original key. Reads perform no provider work, durable writes, automatic history reads or message acknowledgments.
 
-A later browser view shows explicit pause and its reason for the selected worker without inferring agent presence or changing job presentation. Until that integration is implemented, the API and bound tools are the pause surface. Do not add one automatic pause request per worker to routine project lists.
+The explicit [worker-details browser view](browser-coordination.md) reads pause and its reason without inferring agent presence or changing job presentation. History is deliberately opened and cursor-paged. Routine project and worker lists do not add one automatic pause request per worker.
 
 ## Required proof
 
@@ -40,7 +40,7 @@ Functional proof covers default state, pause/reason correction/resume, no-op, st
 
 Public API tests cover lifecycle and independent state, unchanged jobs/focus/inbox/review policy, paused assignments and progress, replay, races, rollback, guards, authorization, cursor binding and schema-four migration/restart. All jobs normal/race tests passed. Actual bundle tests preserve pause/history, accept older jobs schemas one through four, and reject sixteen rehashed malformed current/history table shapes before restore writes. Focused backup race tests and vet passed.
 
-Typed-client, CLI and official-SDK MCP normal/race tests pass against the actual API, including zero-revision conflict details, a lost committed response with original-key recovery, strict pre-credential validation, bounded paging, cancellation and the aggregate five-second budget. Current reads have an 8 KiB wire budget to accommodate JSON escaping of a valid 1024-byte reason. Discovery exposes fifty-six tools. Packaged execution is recorded separately below; installed pause behavior, browser integration and model-host behavior remain separate.
+Typed-client, CLI and official-SDK MCP normal/race tests pass against the actual API, including zero-revision conflict details, a lost committed response with original-key recovery, strict pre-credential validation, bounded paging, cancellation and the aggregate five-second budget. Current reads have an 8 KiB wire budget to accommodate JSON escaping of a valid 1024-byte reason. Discovery exposed fifty-six tools at that checkpoint. Packaged execution is recorded below; later [browser pause views](browser-coordination.md) and [installed pause defaults/history](hosting.md#appearance-and-coordination-qa-upgrade) have separate executed proof. These client checks do not establish model-host behavior.
 
 ## Packaged and combined proof
 
@@ -48,4 +48,4 @@ At clean source `c9df4624dd41e9b08fb7066d3548b59ebf9b1632`, full `make check bui
 
 Six actual packaged API/CLI/official-SDK MCP groups passed on the first run in 2.698 seconds. They exercised false/empty defaults and no-op receipts, a 1024-byte escaped reason, correction/resume, revision-zero conflicts, original-key recovery across adapters after a committed response was damaged, ordinary assignments/progress/focus while paused, manual history paging, access and instance refusals, restart and backup/inspection/inactive restore preserving one pause row and six history rows. The run made 42 CLI calls, four operator calls and ten helper calls, plus SDK adapter children and two owned daemons; its gateway recorded 95 HTTP requests. No external provider or Git calls occurred, and owned processes, listeners and disposable state were removed.
 
-These small local timings are not fleet or remote latency guarantees. The installed QA runtime remains the earlier job-progress checkpoint; this proof does not deploy pause state, establish browser presentation or prove host wakeup/resume. The retained old controller remains primary pending implementation completion and human GUI review.
+These small local timings are not fleet or remote latency guarantees. This historical checkpoint did not deploy pause state or establish browser presentation; later [browser coordination proof](browser-coordination.md#packaged-browser-proof) and [installed QA proof](hosting.md#appearance-and-coordination-qa-upgrade) cover those separate boundaries. Installed checks exercised pause defaults and explicit history reads without domain mutations; nonempty installed pause mutations and model-host wakeup/resume remain unproven by them. The retained old controller remains primary pending implementation completion and human GUI review.
