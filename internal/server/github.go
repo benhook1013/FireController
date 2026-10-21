@@ -69,6 +69,11 @@ func loadGitHubCredential(tokenFile string) (string, error) {
 		if err != nil || closeErr != nil || len(data) > 4096 || token == "" || strings.ContainsAny(token, " \t\r\n") {
 			return "", core.Fail("configuration_invalid", "The GitHub credential file is invalid.", 500)
 		}
+		for i := 0; i < len(token); i++ {
+			if token[i] < 0x21 || token[i] > 0x7e {
+				return "", core.Fail("configuration_invalid", "The GitHub credential file is invalid.", 500)
+			}
+		}
 	}
 	return token, nil
 }

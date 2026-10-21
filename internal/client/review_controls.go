@@ -36,6 +36,11 @@ type ReviewHostedPublication struct {
 	ReviewIDs         []int64                      `json:"review_ids"`
 	ObservedBaseSHA   string                       `json:"observed_base_sha"`
 	StandingSummary   *ReviewHostedStandingSummary `json:"standing_summary,omitempty"`
+	SubmittedReview   *ReviewHostedSubmittedReview `json:"submitted_review,omitempty"`
+}
+type ReviewHostedSubmittedReview struct {
+	ProviderRunID            string `json:"provider_run_id"`
+	AcknowledgementCommentID int64  `json:"acknowledgement_comment_id"`
 }
 type ReviewHostedStandingSummary struct {
 	CommentID     int64  `json:"comment_id"`
@@ -257,7 +262,7 @@ func validHostedControlCapture(capture ReviewEvidenceCapture, anchor ReviewAncho
 		return false
 	}
 	if summary := hosted.StandingSummary; summary != nil {
-		if hosted.PublicationID != "" || hosted.ProviderAttemptID != "" || len(hosted.ReviewIDs) != 0 || len(capture.Findings) != 0 || capture.ReportedFindings != 0 || summary.CommentID <= 0 || summary.CommentID == hosted.TriggerCommentID || !controlUUID(summary.ProviderRunID) || !controlTime(summary.UpdatedAt) {
+		if hosted.SubmittedReview != nil || hosted.PublicationID != "" || hosted.ProviderAttemptID != "" || len(hosted.ReviewIDs) != 0 || len(capture.Findings) != 0 || capture.ReportedFindings != 0 || summary.CommentID <= 0 || summary.CommentID == hosted.TriggerCommentID || !controlUUID(summary.ProviderRunID) || !controlTime(summary.UpdatedAt) {
 			return false
 		}
 		updated, _ := time.Parse(time.RFC3339Nano, summary.UpdatedAt)
@@ -265,8 +270,14 @@ func validHostedControlCapture(capture ReviewEvidenceCapture, anchor ReviewAncho
 		finished, _ := time.Parse(time.RFC3339Nano, capture.FinishedAt)
 		return updated.After(started) && !updated.After(finished)
 	}
-	if !controlUUID(hosted.PublicationID) || !controlUUID(hosted.ProviderAttemptID) || len(hosted.ReviewIDs) < 1 || len(hosted.ReviewIDs) > 200 {
-		return false
+	if submitted := hosted.SubmittedReview; submitted != nil {
+		if hosted.PublicationID != "" || hosted.ProviderAttemptID != "" || len(hosted.ReviewIDs) != 1 || len(capture.Findings) == 0 || !controlUUID(submitted.ProviderRunID) || submitted.AcknowledgementCommentID <= 0 || submitted.AcknowledgementCommentID == hosted.TriggerCommentID {
+			return false
+		}
+	} else {
+		if !controlUUID(hosted.PublicationID) || !controlUUID(hosted.ProviderAttemptID) || len(hosted.ReviewIDs) < 1 || len(hosted.ReviewIDs) > 200 {
+			return false
+		}
 	}
 	reviews := make(map[int64]bool, len(hosted.ReviewIDs))
 	for _, id := range hosted.ReviewIDs {

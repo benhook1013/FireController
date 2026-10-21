@@ -92,6 +92,9 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 	if standing := publication.StandingZero; standing != nil {
 		metadata.StandingSummary = &reviewexec.HostedStandingSummaryMetadata{CommentID: standing.Summary.ID, ProviderRunID: standing.ProviderRunID, UpdatedAt: standing.Summary.UpdatedAt.Format(time.RFC3339Nano)}
 	}
+	if submitted := publication.SubmittedReview; submitted != nil {
+		metadata.SubmittedReview = &reviewexec.HostedSubmittedReviewMetadata{ProviderRunID: submitted.ProviderRunID, AcknowledgementCommentID: submitted.Acknowledgement.ID}
+	}
 	for _, batch := range publication.Batches {
 		metadata.ReviewIDs = append(metadata.ReviewIDs, batch.ID)
 	}

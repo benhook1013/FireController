@@ -1212,6 +1212,8 @@ try {
   replyStatus = replyResponse.status(); checkpoint = 'reply-status';
   need(replyStatus===201);
   checkpoint = 'reply-binding';
+  const replyBody = await replyResponse.json();
+  need(replyBody.conversation_id===incoming.conversation_id);
   const replyRequest = replyResponse.request().postDataJSON();
   need(replyRequest.reply_to_message_id===incoming.id && replyRequest.recipient_worker_id===config.other_worker && replyRequest.body==='Browser reply <literal>');
   const originalConversation = config.origin + home + '/inbox/' + incoming.conversation_id;
