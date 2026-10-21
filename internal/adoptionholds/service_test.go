@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	h "github.com/benhook1013/FireController/internal/adoptionholds"
 	m "github.com/benhook1013/FireController/internal/adoptionholdsmodel"
@@ -669,7 +670,7 @@ func TestConcurrentExactReplayAndSourceCAS(t *testing.T) {
 	}
 	f.validate()
 }
-func TestMaximumScopeBoundAndLogicalCorruption(t *testing.T) {
+func TestAdoptionObligationsMaximumBatchUsesOrdinaryWriteBudget(t *testing.T) {
 	f := fresh(t)
 	b := batch()
 	b.Obligations = nil
@@ -680,7 +681,16 @@ func TestMaximumScopeBoundAndLogicalCorruption(t *testing.T) {
 		}
 		b.Obligations = append(b.Obligations, o)
 	}
-	receipt := f.apply(b, "maximum")
+	preview := f.preview(b)
+	input, err := json.Marshal(m.ApplyRequest{Batch: b, PreviewSHA256: preview.PreviewSHA256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	response := f.call("POST", base+"/apply", f.token, "worker_one", "maximum", input)
+	elapsed := time.Since(started)
+	receipt := decode[m.Receipt](t, response, 200)
+	t.Logf("100-obligation/10000-target HTTP apply completed in %s through ordinary core.Mutate deadline", elapsed)
 	if receipt.New != 100 || f.count("review_adoption_targets") != 10000 {
 		t.Fatal("maximum bounded batch incomplete")
 	}
@@ -689,15 +699,21 @@ func TestMaximumScopeBoundAndLogicalCorruption(t *testing.T) {
 		t.Fatal(facts, err)
 	}
 	f.validate()
+}
+
+func TestSnapshotRefusesResealedOriginalCorruption(t *testing.T) {
+	f := fresh(t)
+	f.apply(batch(), "resealed-original")
+	f.validate()
 	// Restore canonical trigger declarations after deliberately corrupting owned
 	// synthetic rows, so logical validation must detect the conflicting fact.
 	f.exec(`DROP TRIGGER review_adoption_originals_immutable`)
 	var id, raw string
-	if err = f.store.DB().QueryRow(`SELECT id,original_json FROM review_adoption_obligations LIMIT 1`).Scan(&id, &raw); err != nil {
+	if err := f.store.DB().QueryRow(`SELECT id,original_json FROM review_adoption_obligations LIMIT 1`).Scan(&id, &raw); err != nil {
 		t.Fatal(err)
 	}
 	var original m.Obligation
-	if err = json.Unmarshal([]byte(raw), &original); err != nil {
+	if err := json.Unmarshal([]byte(raw), &original); err != nil {
 		t.Fatal(err)
 	}
 	original.Summary = "rewritten original"
