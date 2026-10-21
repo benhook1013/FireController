@@ -198,6 +198,8 @@ Errors, ambiguous results and provider RetryAfter retain bounded backoff; the 20
 
 Focused normal and race proof covers more than 200 unchanged checks with no extra journal references or artifacts, recovery-worker restart, timestamp-only source changes and completion of the original attempt without reposting. The full runtime suite and vet pass. The following older checkpoint records the previous pending backoff and its original packaged proof.
 
+The same-schema Linux/amd64 update at `f9dfa59dbb60e0203dd13a0b21019856a20a2d20` installed this scheduler and capture-reuse behaviour. Actual candidate CLI/MCP and 24-worker coordination workloads passed; the installed sole-writer replacement preserved review controls, schema, private operator configuration and the existing client protocol. Both project-bound clients verified the live service afterward. The measured HTTP interruption was bounded by 4.848 seconds. No review or quota request was made to qualify the update, so it does not claim a fresh live-provider completion measurement.
+
 ### Pending scheduled-recovery proof
 
 Checkpoint `f5d764ceaa4b2b1d21a26396334564bf8cc5fc98` passed the full runtime race suite, vet, formatting/documentation checks and packaged builds. Focused scheduler regressions first reproduced both successful pending reasons using the 15-second interval. They now verify 30/60/120/240/300-second backoff, its cap and reset on completion or an empty queue. Authorization, overload, provider retry-after, reference-capacity and cancellation checks remain covered; the live dispatch loop is unchanged.
