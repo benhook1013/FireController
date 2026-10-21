@@ -64,6 +64,7 @@ type invocation struct {
 	notes        *noteInvocation
 	projectMap   *projectMapInvocation
 	presentation *presentationInvocation
+	publication  *publicationInvocation
 
 	reviewImport *reviewImportInvocation
 
@@ -98,6 +99,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.presentation != nil {
 		if err := preparePresentation(ctx, call.presentation); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+	}
+	if call.publication != nil {
+		if err := preparePublication(ctx, call.publication); err != nil {
 			return reportClientError(stderr, err, ctx)
 		}
 	}
@@ -160,6 +166,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.publication != nil {
+		return executePublication(requestCtx, ctx, service, call.publication, stdout, stderr)
+	}
 	if call.presentation != nil {
 		return executePresentation(requestCtx, ctx, service, call.presentation, stdout, stderr)
 	}
@@ -322,11 +331,16 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.setup, ok = parseProfileSetup(call.subcommand, remaining[2:])
 		return call, ok && (!call.hasProfile || validSetupText(call.profile)) && (!call.hasProfilesFile || validSetupText(call.profilesFile))
 	}
-	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" && call.command != "presentation" || len(remaining) < 2 {
+	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" && call.command != "presentation" && call.command != "publication" || len(remaining) < 2 {
 		return call, false
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if call.command == "publication" {
+		var ok bool
+		call.publication, ok = parsePublication(call.subcommand, operationArgs)
+		return call, ok
+	}
 	if call.command == "presentation" {
 		var ok bool
 		call.presentation, ok = parsePresentation(call.subcommand, operationArgs)

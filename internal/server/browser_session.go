@@ -1,39 +1,31 @@
 package server
 
 import (
+	"bytes"
+	"errors"
 	"net/http"
-	"net/url"
-	"strings"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-func browserSessionOrigin(r *http.Request) error {
-	bad := core.Fail("forbidden", "Browser session requests must use the same origin.", 403)
-	sites := r.Header.Values("Sec-Fetch-Site")
-	if len(sites) > 1 || len(sites) == 1 && sites[0] != "same-origin" && sites[0] != "same-site" && sites[0] != "none" {
-		return bad
-	}
-	origins := r.Header.Values("Origin")
-	if len(origins) == 0 {
-		return nil
-	}
-	if len(origins) != 1 {
-		return bad
-	}
-	origin, err := url.Parse(origins[0])
-	scheme := "https"
-	if core.BrowserSessionLocalHTTP(r) {
-		scheme = "http"
-	}
-	if err != nil || origin.Scheme != scheme || !strings.EqualFold(origin.Host, r.Host) || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" || origin.Opaque != "" {
-		return bad
+// A supplied null is not an omitted approval. Its bool underlying type also
+// keeps strictjson's exact-field validation applicable to the request shape.
+type browserWriteApproval bool
+
+func (approval *browserWriteApproval) UnmarshalJSON(data []byte) error {
+	switch string(bytes.TrimSpace(data)) {
+	case "true":
+		*approval = true
+	case "false":
+		*approval = false
+	default:
+		return errors.New("browser write approval must be a boolean")
 	}
 	return nil
 }
 
 func (a *api) createBrowserSession(w http.ResponseWriter, r *http.Request) {
-	if err := browserSessionOrigin(r); err != nil {
+	if err := core.BrowserSessionOrigin(r, false); err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -42,13 +34,14 @@ func (a *api) createBrowserSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		SessionID string `json:"session_id"`
+		SessionID   string               `json:"session_id"`
+		AllowWrites browserWriteApproval `json:"allow_writes"`
 	}
 	if err := core.ReadJSON(w, r, &body); err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	response, cookie, err := a.store.CreateBrowserSession(r, body.SessionID)
+	response, cookie, err := a.store.CreateBrowserSession(r, body.SessionID, bool(body.AllowWrites))
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -61,7 +54,7 @@ func (a *api) createBrowserSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) deleteBrowserSession(w http.ResponseWriter, r *http.Request) {
-	if err := browserSessionOrigin(r); err != nil {
+	if err := core.BrowserSessionOrigin(r, false); err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -84,4 +77,17 @@ func (a *api) deleteBrowserSession(w http.ResponseWriter, r *http.Request) {
 		SessionID string `json:"session_id"`
 		LoggedOut bool   `json:"logged_out"`
 	}{id, true})
+}
+
+func (a *api) currentBrowserSession(w http.ResponseWriter, r *http.Request) {
+	if _, err := core.QueryKeys(r, "validation_failed"); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	response, err := a.store.CurrentBrowserSession(r)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, 200, response)
 }

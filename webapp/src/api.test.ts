@@ -54,9 +54,7 @@ function json(value: unknown, status = 200): Response {
 function setupLocation(): void { vi.stubGlobal('location', { origin: 'https://service.example' }); }
 function api(): Api { return new Api('private-token-do-not-leak', 'project_one'); }
 async function connect(client: Api): Promise<void> {
-  vi.stubGlobal('fetch', vi.fn()
-    .mockResolvedValueOnce(json({ instance_id: 'instance_one' }))
-    .mockResolvedValueOnce(json(project)));
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/instance') ? json({ instance_id: 'instance_one' }) : String(input).endsWith('/browser-session') ? json({ session_id: 'a'.repeat(32), instance_id: 'instance_one', project_id: 'project_one', expires_at: new Date(Date.now() + 3600000).toISOString(), allow_writes: false, can_edit_presentation: false }) : json(project)));
   await client.connect();
 }
 
@@ -74,10 +72,10 @@ describe('read-only browser cookie session transport', () => {
       if (init?.method === 'POST') {
         selector = (JSON.parse(String(init.body)) as { session_id: string }).session_id;
         expect(selector).toMatch(/^[a-f0-9]{32}$/);
-        expect(JSON.parse(String(init.body))).toEqual({ session_id: selector });
+        expect(JSON.parse(String(init.body))).toEqual({ session_id: selector, allow_writes: false });
         expect(new Headers(init.headers).get('authorization')).toBe('Bearer private-token-do-not-leak');
         expect(new Headers(init.headers).has('x-fc-browser-session')).toBe(false);
-        return json({ session_id: selector, instance_id: 'instance_one', project_id: 'project_one', expires_at: new Date(Date.now() + 24 * 3600000).toISOString() });
+        return json({ session_id: selector, instance_id: 'instance_one', project_id: 'project_one', expires_at: new Date(Date.now() + 24 * 3600000).toISOString(), allow_writes: false, can_edit_presentation: false });
       }
       if (init?.method === 'DELETE') return json({ session_id: selector, logged_out: true });
       return json({ items: [worker], has_more: false });
@@ -113,20 +111,21 @@ describe('read-only browser cookie session transport', () => {
       const url = String(input);
       if (url.endsWith('/instance')) return json({ instance_id: 'instance_one' });
       if (url.endsWith('/project_one')) return json(project);
+      if (url.endsWith('/browser-session')) return json({ session_id: selector, instance_id: 'instance_one', project_id: 'project_one', expires_at: new Date(Date.now() + 3600000).toISOString(), allow_writes: false, can_edit_presentation: false });
       if (url.includes('/snapshot')) return json({ inbox: { items: [], has_more: false }, event_cursor: 'snapshot_cursor' });
       const page = { items: [], cursor: 'stream_cursor', has_more: false, timed_out: false };
       const data = `event: message-events\nid: stream_cursor\ndata: ${JSON.stringify(page)}\n\n`;
       return new Response(new ReadableStream<Uint8Array>({ start(output) { output.enqueue(new TextEncoder().encode(data)); } }), { headers: { 'content-type': 'text/event-stream' } });
     }));
     await client.watchMessages('worker_one', {}, { snapshot() {}, events() { controller.abort(); }, status() {} }, controller.signal);
-    expect(requests).toHaveLength(4);
+    expect(requests).toHaveLength(5);
     for (const init of requests) {
       expect(init.credentials).toBe('same-origin');
       expect(new Headers(init.headers).get('authorization')).toBeNull();
       expect(new Headers(init.headers).get('x-fc-browser-session')).toBe(selector);
       expect(new Headers(init.headers).get('x-fc-instance')).toBe('instance_one');
     }
-    expect(new Headers(requests[3].headers).get('x-fc-worker')).toBe('worker_one');
+    expect(new Headers(requests[4].headers).get('x-fc-worker')).toBe('worker_one');
     client.close();
   });
 
@@ -153,7 +152,7 @@ describe('read-only browser cookie session transport', () => {
       vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
         if (init?.method === 'DELETE') return json({ session_id: selector, logged_out: true });
         selector = (JSON.parse(String(init?.body)) as { session_id: string }).session_id;
-        const value: Record<string, unknown> = { session_id: selector, instance_id: 'instance_one', project_id: 'project_one', expires_at: new Date(Date.now() + 3600000).toISOString() };
+        const value: Record<string, unknown> = { session_id: selector, instance_id: 'instance_one', project_id: 'project_one', expires_at: new Date(Date.now() + 3600000).toISOString(), allow_writes: false, can_edit_presentation: false };
         if (kind === 'missing') delete value.expires_at;
         if (kind === 'null') value.expires_at = null;
         if (kind === 'unknown') value.token = 'private-token-do-not-leak';

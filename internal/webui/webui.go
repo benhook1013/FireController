@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/publicsitemodel"
 )
 
 //go:embed assets
@@ -123,6 +124,16 @@ func uiRoute(path string) bool {
 		return true
 	}
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) >= 2 && parts[0] == "public" && publicsitemodel.ValidSlug(parts[1]) {
+		if len(parts) == 2 {
+			return true
+		}
+		if len(parts) == 4 && parts[2] == "history" {
+			revision, err := strconv.ParseInt(parts[3], 10, 64)
+			return err == nil && revision > 0 && strconv.FormatInt(revision, 10) == parts[3]
+		}
+		return false
+	}
 	if len(parts) < 2 || parts[0] != "projects" || !validID(parts[1]) {
 		return false
 	}
@@ -130,7 +141,7 @@ func uiRoute(path string) bool {
 		return true
 	}
 	if len(parts) == 3 {
-		return parts[2] == "inbox" || parts[2] == "workers" || parts[2] == "reviews" || parts[2] == "map" || parts[2] == "notes"
+		return parts[2] == "inbox" || parts[2] == "workers" || parts[2] == "reviews" || parts[2] == "map" || parts[2] == "notes" || parts[2] == "settings"
 	}
 	if len(parts) == 6 && parts[2] == "notes" && validID(parts[3]) && parts[4] == "history" {
 		revision, err := strconv.ParseInt(parts[5], 10, 64)

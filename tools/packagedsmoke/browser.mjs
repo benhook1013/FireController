@@ -22,9 +22,9 @@ try {
   const prefix = '/api/v1/projects/' + config.project;
   const home = '/projects/' + config.project;
   let fixtureWrites = 0;
-  const write = async (method, path, body, status = 200) => {
+  const write = async (method, path, body, status = 200, sender = config.worker) => {
     const response = await fetch(config.origin + prefix + path, {
-      method, headers: {'Authorization':'Bearer '+admin, 'X-FC-Instance':config.instance, 'X-FC-Worker':config.worker, 'Idempotency-Key':'packaged-browser-write-' + (fixtureWrites + 1), 'Content-Type':'application/json'},
+      method, headers: {'Authorization':'Bearer '+admin, 'X-FC-Instance':config.instance, 'X-FC-Worker':sender, 'Idempotency-Key':'packaged-browser-write-' + (fixtureWrites + 1), 'Content-Type':'application/json'},
       body:JSON.stringify(body), signal:AbortSignal.timeout(5000),
     });
     need(response.status === status);
@@ -33,13 +33,15 @@ try {
     fixtureWrites++;
     return receipt;
   };
-  let sessionPosts = 0, sessionDeletes = 0, forbiddenWrites = 0, errors = 0, external = 0;
+  let sessionPosts = 0, sessionDeletes = 0, forbiddenWrites = 0, actionWrites = 0, errors = 0, external = 0;
+  let explicitActions = false, controlledMessageFailure = false;
   let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0;
   let injectedRequest;
   diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external });
   page.on('pageerror', () => errors++);
   page.on('console', value => {
     if (value.type() !== 'error') return;
+    if (controlledMessageFailure && value.location().url === config.origin + prefix + '/messages') return;
     // Only this exact controlled 400 may produce Chromium's resource-error
     // console entry. Every other console error still fails the workload.
     if (injectedRequest && injectedConsoleErrors === 0 && value.location().url === injectedRequest.url()
@@ -62,6 +64,7 @@ try {
     }
     if (url.pathname === prefix + '/browser-session' && request.method() === 'POST') sessionPosts++;
     else if (url.pathname === prefix + '/browser-session' && request.method() === 'DELETE') sessionDeletes++;
+    else if (explicitActions && ((request.method() === 'POST' && (url.pathname === prefix + '/messages' || /^messages\/[^/]+\/(?:seen|ack)$/.test(url.pathname.slice(prefix.length + 1)))) || (request.method() === 'PUT' && url.pathname === prefix + '/presentation'))) actionWrites++;
     else forbiddenWrites++;
   });
   await context.route('**/*', async route => {
@@ -267,11 +270,115 @@ try {
   await defaults();
   need((await appearance()).title === 'FireController');
   need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === null);
-  need(sessionPosts === 1 && sessionDeletes === 1 && forbiddenWrites === 0 && errors === 0 && external === 0 && injectedResponses === 1);
+  need(sessionPosts === 1 && sessionDeletes === 1 && forbiddenWrites === 0 && errors === 0 && external === 0);
+
+  const metadataCounts = {presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams};
+  phase = 'explicit-actions-connect';
+ const actionRootHistoryIndex=await page.evaluate(()=>history.state.idx);
+  explicitActions = true;
+  await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+  await page.getByLabel('Project credential', {exact:true}).fill(admin);
+  await page.getByLabel('Enable message and appearance changes', {exact:true}).check();
+  await page.getByRole('button', {name:'Connect to project',exact:true}).click();
+  await page.getByRole('heading', {name:title,exact:true}).waitFor();
+  await page.getByRole('button', {name:'Open Builder inbox',exact:true}).click();
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox',exact:true}).click();
+  const incoming = await write('POST','/messages',{recipient_worker_id:config.worker,body:'Action incoming <literal>',reply_to_message_id:''},201,config.other_worker);
+  const row = page.locator('.inbox-list > li').filter({hasText:'Action incoming <literal>'});
+  await row.waitFor();
+  need(await row.getByText('Unread',{exact:true}).count() === 1);
+  await row.getByRole('button',{name:'Mark seen',exact:true}).click();
+  await row.getByText('Seen',{exact:true}).waitFor();
+  await row.getByRole('button',{name:'Acknowledge',exact:true}).click();
+  await row.getByText('Acknowledged',{exact:true}).waitFor();
+
+  phase = 'explicit-actions-send';
+  await page.getByRole('button',{name:'New message',exact:true}).click();
+  await page.getByLabel('Recipient worker ID',{exact:true}).fill(config.other_worker);
+  await page.getByLabel('Message',{exact:true}).fill('Browser send <literal>');
+  const sent = page.waitForResponse(r=>r.request().method()==='POST' && new URL(r.url()).pathname===prefix+'/messages');
+  await page.getByRole('button',{name:'Send message',exact:true}).click();
+  need((await sent).status()===201);
+  await row.getByRole('link').click();
+  await page.getByText('Action incoming <literal>',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Reply',exact:true}).click();
+  await page.getByLabel('Reply message',{exact:true}).fill('Browser reply <literal>');
+  const replied = page.waitForResponse(r=>r.request().method()==='POST' && new URL(r.url()).pathname===prefix+'/messages');
+  await page.getByRole('button',{name:'Send reply',exact:true}).click();
+  const replyResponse = await replied;
+  need(replyResponse.status()===201 && (await replyResponse.json()).conversation_id===incoming.conversation_id);
+  await page.getByText('Browser reply <literal>',{exact:true}).waitFor();
+
+  phase = 'explicit-actions-settings';
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).click();
+  await page.getByLabel('Project name',{exact:true}).fill('Browser configured project');
+  await page.getByLabel('Brand name',{exact:true}).fill('Browser configured brand');
+  const settingsSaved = page.waitForResponse(r=>r.request().method()==='PUT' && new URL(r.url()).pathname===prefix+'/presentation');
+  await page.getByRole('button',{name:'Save appearance',exact:true}).click();
+  need((await settingsSaved).status()===200);
+  await expect.poll(async()=>(await appearance()).brand).toBe('Browser configured brand');
+  await page.reload();
+  await page.getByRole('heading',{name:'Browser configured project',exact:true}).waitFor();
+  need(new URL(page.url()).pathname===home+'/settings');
+  await page.getByLabel('Project name',{exact:true}).waitFor();
+  need(await page.locator('literal').count()===0);
+  need(!(await page.evaluate(()=>JSON.stringify(sessionStorage))).includes(admin));
+  need(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+
+  phase = 'explicit-actions-uncertain';
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
+  await page.getByRole('button',{name:'New message',exact:true}).click();
+  await page.getByLabel('Recipient worker ID',{exact:true}).fill(config.other_worker);
+  await page.getByLabel('Message',{exact:true}).fill('Uncertain browser message');
+  let committed, releaseSend;
+  const committedSend = new Promise(resolve=>{committed=resolve;});
+  const releaseResponse = new Promise(resolve=>{releaseSend=resolve;});
+  let originalWire, retryWire, heldReceipt;
+  await page.route(config.origin+prefix+'/messages',async route=>{
+    if (route.request().method()!=='POST') {await route.continue();return;}
+    const wire={key:route.request().headers()['idempotency-key'],body:route.request().postData(),worker:route.request().headers()['x-fc-worker']};
+    if (originalWire) {retryWire=wire;await route.continue();return;}
+    originalWire=wire;
+    const response=await route.fetch();
+    need(response.status()===201);
+    heldReceipt=await response.json();committed();
+    await releaseResponse;
+    await route.abort('failed').catch(()=>{});
+  });
+  controlledMessageFailure=true;
+  await page.getByRole('button',{name:'Send message',exact:true}).click();
+  await committedSend;
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Workers',exact:true}).click();
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
+  releaseSend();
+  const retry = page.getByRole('button',{name:'Retry exact send',exact:true});
+  if (!(await retry.count())) await page.getByRole('button',{name:'New message',exact:true}).click();
+  await expect(retry).toBeEnabled();
+  // Pop to the original root route: canceling the explicit discard prompt must
+  // preserve this project and the original pending key/body, without a reload.
+  const rootDelta=await page.evaluate(root=>history.state.idx-root,actionRootHistoryIndex);
+  need(rootDelta>0);
+  const exitDialog=page.waitForEvent('dialog');
+  await page.evaluate(delta=>history.go(-delta),rootDelta);
+  await (await exitDialog).dismiss();
+  await expect(retry).toBeEnabled();
+  need(new URL(page.url()).pathname===home+'/inbox');
+  const retryResponse=page.waitForResponse(r=>r.request().method()==='POST' && new URL(r.url()).pathname===prefix+'/messages');
+  await retry.click();
+  const recovered=await retryResponse;
+  need(recovered.status()===201 && (await recovered.json()).id===heldReceipt.id);
+  need(JSON.stringify(originalWire)===JSON.stringify(retryWire));
+  await page.getByRole('link',{name:'Open sent conversation',exact:true}).click();
+  await page.getByText('Uncertain browser message',{exact:true}).waitFor();
+  need(await page.getByText('Uncertain browser message',{exact:true}).count()===1);
+  controlledMessageFailure=false;
+  await page.getByRole('button',{name:'Disconnect',exact:true}).click();
+  await page.getByRole('button',{name:'Connect to project',exact:true}).waitFor();
+  need(sessionPosts===2 && sessionDeletes===2 && actionWrites===7 && forbiddenWrites===0 && errors===0 && external===0);
   await context.close();
   await browser.close(); browser = undefined;
   await server.close(); server = undefined;
-  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams}));
+  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
 } catch {
   console.log(JSON.stringify({state:'FAIL', phase, checkpoint, ...diagnostics()}));
   process.exitCode = 1;

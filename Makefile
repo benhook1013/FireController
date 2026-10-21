@@ -34,8 +34,10 @@ browser-build:
 smoke:
 	$(GO) test -v -vet=all -tags=packaged_smoke -run '^TestPackagedSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedUpgradeSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -tags=packaged_smoke -run '^TestPackagedPublicationSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 
 # Requires built fcd and the browser installed for webapp's pinned Playwright.
 browser-smoke:
 	@test "$$($(GO) env GOOS)" = linux || { printf '%s\n' 'browser-smoke requires Linux' >&2; exit 1; }
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -tags=packaged_smoke -run '^TestPackagedPublicBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke

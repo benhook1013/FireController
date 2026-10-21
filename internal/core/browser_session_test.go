@@ -18,7 +18,7 @@ func browserCoreSession(t *testing.T, s *Store) (string, *http.Cookie) {
 	r.SetPathValue("project_id", "project")
 	r.Header.Set("Authorization", "Bearer synthetic-core-stream-token-1234567")
 	r.Header.Set("X-FC-Instance", s.InstanceID())
-	response, cookie, err := s.CreateBrowserSession(r, id)
+	response, cookie, err := s.CreateBrowserSession(r, id, false)
 	if err != nil || response.ProjectID != "project" || response.SessionID != id {
 		t.Fatal("create session failed", err)
 	}

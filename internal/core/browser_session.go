@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -21,18 +22,22 @@ var browserCredentialHash = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var browserSessionIdentity = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 type browserSessionClaims struct {
-	SessionID      string `json:"session_id"`
-	InstanceID     string `json:"instance_id"`
-	ProjectID      string `json:"project_id"`
-	CredentialHash string `json:"credential_hash"`
-	ExpiresAt      int64  `json:"expires_at"`
+	SessionID           string `json:"session_id"`
+	InstanceID          string `json:"instance_id"`
+	ProjectID           string `json:"project_id"`
+	CredentialHash      string `json:"credential_hash"`
+	ExpiresAt           int64  `json:"expires_at"`
+	AllowWrites         bool   `json:"allow_writes"`
+	CanEditPresentation bool   `json:"can_edit_presentation"`
 }
 
 type BrowserSession struct {
-	SessionID  string `json:"session_id"`
-	InstanceID string `json:"instance_id"`
-	ProjectID  string `json:"project_id"`
-	ExpiresAt  string `json:"expires_at"`
+	SessionID           string `json:"session_id"`
+	InstanceID          string `json:"instance_id"`
+	ProjectID           string `json:"project_id"`
+	ExpiresAt           string `json:"expires_at"`
+	AllowWrites         bool   `json:"allow_writes"`
+	CanEditPresentation bool   `json:"can_edit_presentation"`
 }
 
 func (s *Store) browserSessionCodec() *securecookie.SecureCookie {
@@ -70,9 +75,9 @@ func browserSessionCookie(r *http.Request, id string) *http.Cookie {
 	return &http.Cookie{Name: prefix + id, Path: "/", Secure: secure, HttpOnly: true, SameSite: http.SameSiteStrictMode}
 }
 
-// CreateBrowserSession derives a read-only encrypted transport session from a
+// CreateBrowserSession derives an attenuated encrypted transport session from a
 // current bearer credential. It allocates no durable mutation or user receipt.
-func (s *Store) CreateBrowserSession(r *http.Request, id string) (BrowserSession, *http.Cookie, error) {
+func (s *Store) CreateBrowserSession(r *http.Request, id string, allowWrites bool) (BrowserSession, *http.Cookie, error) {
 	if !browserSessionID.MatchString(id) {
 		return BrowserSession{}, nil, Fail("validation_failed", "Provide a 32-character lowercase hexadecimal session identity.", 400)
 	}
@@ -86,8 +91,20 @@ func (s *Store) CreateBrowserSession(r *http.Request, id string) (BrowserSession
 	if err != nil {
 		return BrowserSession{}, nil, err
 	}
+	var writes, presentation bool
+	err = s.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		writes, presentation, err = s.browserCapabilities(ctx, tx, scope, allowWrites, true)
+		return err
+	})
+	if err != nil {
+		return BrowserSession{}, nil, err
+	}
+	if allowWrites && !writes {
+		return BrowserSession{}, nil, Fail("forbidden", "Project write permission is required to enable browser changes.", 403)
+	}
 	expires := time.Now().UTC().Truncate(time.Second).Add(browserSessionLifetime)
-	claims := browserSessionClaims{SessionID: id, InstanceID: s.instanceID, ProjectID: scope.ProjectID, CredentialHash: scope.tokenHash, ExpiresAt: expires.Unix()}
+	claims := browserSessionClaims{SessionID: id, InstanceID: s.instanceID, ProjectID: scope.ProjectID, CredentialHash: scope.tokenHash, ExpiresAt: expires.Unix(), AllowWrites: allowWrites, CanEditPresentation: presentation}
 	cookie := browserSessionCookie(r, id)
 	cookie.Value, err = s.browserSessionCodec().Encode(cookie.Name, claims)
 	if err != nil {
@@ -95,7 +112,47 @@ func (s *Store) CreateBrowserSession(r *http.Request, id string) (BrowserSession
 	}
 	cookie.MaxAge = int(browserSessionLifetime.Seconds())
 	cookie.Expires = expires
-	return BrowserSession{SessionID: id, InstanceID: s.instanceID, ProjectID: scope.ProjectID, ExpiresAt: expires.Format(time.RFC3339)}, cookie, nil
+	return BrowserSession{SessionID: id, InstanceID: s.instanceID, ProjectID: scope.ProjectID, ExpiresAt: expires.Format(time.RFC3339), AllowWrites: writes, CanEditPresentation: presentation}, cookie, nil
+}
+
+// CurrentBrowserSession returns effective capabilities of the explicitly bound
+// cookie only. A bearer credential cannot inspect or promote a browser session.
+func (s *Store) CurrentBrowserSession(r *http.Request) (BrowserSession, error) {
+	if len(r.Header.Values("Authorization")) != 0 || len(r.Header.Values("X-FC-Browser-Session")) != 1 {
+		return BrowserSession{}, Fail("unauthorized", "Select one browser session authentication method.", 401)
+	}
+	scope, claims, err := s.browserScope(r)
+	if err != nil {
+		return BrowserSession{}, err
+	}
+	out := BrowserSession{SessionID: claims.SessionID, InstanceID: claims.InstanceID, ProjectID: claims.ProjectID, ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC().Format(time.RFC3339)}
+	err = s.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		out.AllowWrites, out.CanEditPresentation, err = s.browserCapabilities(ctx, tx, scope, claims.AllowWrites, claims.CanEditPresentation)
+		return err
+	})
+	return out, err
+}
+
+func (s *Store) browserCapabilities(ctx context.Context, q querier, scope Scope, requested, allowPresentation bool) (bool, bool, error) {
+	if !requested {
+		return false, false, nil
+	}
+	// Probe original authority without widening the caller's read scope. Browser
+	// lifetime and project binding remain enforced by authorize.
+	scope.readOnly = false
+	if err := s.authorize(ctx, q, scope, "write"); err != nil {
+		var e *Error
+		if errors.As(err, &e) && e.Code == "forbidden" {
+			return false, false, nil
+		}
+		return false, false, err
+	}
+	var admin int
+	if err := q.QueryRowContext(ctx, `SELECT is_admin FROM credentials WHERE token_sha256=? AND revoked=0`, scope.tokenHash).Scan(&admin); err != nil {
+		return false, false, storageError(err)
+	}
+	return true, allowPresentation && admin == 1, nil
 }
 
 // ExpireBrowserSession clears only the explicitly selected tab's cookie. It
@@ -115,13 +172,15 @@ func ExpireBrowserSession(r *http.Request) (*http.Cookie, string, error) {
 }
 
 func (s *Store) authenticateBrowserSession(r *http.Request) (Scope, error) {
+	scope, _, err := s.browserScope(r)
+	return scope, err
+}
+
+func (s *Store) browserScope(r *http.Request) (Scope, browserSessionClaims, error) {
 	bad := Fail("unauthorized", "A valid browser session is required; connect again.", 401)
 	values := r.Header.Values("X-FC-Browser-Session")
 	if len(values) != 1 || !browserSessionID.MatchString(values[0]) {
-		return Scope{}, bad
-	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		return Scope{}, Fail("forbidden", "Browser sessions permit read operations only.", 403)
+		return Scope{}, browserSessionClaims{}, bad
 	}
 	cookie := browserSessionCookie(r, values[0])
 	matches := 0
@@ -133,42 +192,54 @@ func (s *Store) authenticateBrowserSession(r *http.Request) (Scope, error) {
 		}
 	}
 	if matches != 1 || len(value) > 4096 {
-		return Scope{}, bad
+		return Scope{}, browserSessionClaims{}, bad
 	}
 	var claims browserSessionClaims
 	if s.browserSessionCodec().Decode(cookie.Name, value, &claims) != nil || claims.SessionID != values[0] || claims.InstanceID != s.instanceID || !browserSessionIdentity.MatchString(claims.InstanceID) || !browserSessionIdentity.MatchString(claims.ProjectID) || !browserCredentialHash.MatchString(claims.CredentialHash) || claims.ExpiresAt <= time.Now().Unix() || claims.ExpiresAt > time.Now().Add(browserSessionLifetime+5*time.Second).Unix() {
-		return Scope{}, bad
+		return Scope{}, browserSessionClaims{}, bad
 	}
 	project := r.PathValue("project_id")
 	if project == "" {
 		if r.URL.Path != "/api/v1/instance" {
-			return Scope{}, Fail("forbidden", "The browser session permits only its project reads.", 403)
+			return Scope{}, browserSessionClaims{}, Fail("forbidden", "The browser session permits only its project reads.", 403)
 		}
 		project = claims.ProjectID
 	}
 	if project != claims.ProjectID {
-		return Scope{}, Fail("forbidden", "The browser session permits only its project reads.", 403)
+		return Scope{}, browserSessionClaims{}, Fail("forbidden", "The browser session permits only its project reads.", 403)
 	}
 	scope := Scope{ProjectID: project, WorkerID: r.Header.Get("X-FC-Worker"), tokenHash: claims.CredentialHash, instanceID: s.instanceID, readOnly: true, expiresAt: time.Unix(claims.ExpiresAt, 0), sessionProject: claims.ProjectID}
 	if len(r.Header.Values("X-FC-Worker")) > 1 || len(scope.WorkerID) > 128 {
-		return Scope{}, Fail("validation_failed", "Select at most one valid worker identity.", 400)
+		return Scope{}, browserSessionClaims{}, Fail("validation_failed", "Select at most one valid worker identity.", 400)
 	}
 	if len(r.Header.Values("X-FC-Instance")) != 1 {
-		return Scope{}, Fail("validation_failed", "Provide one expected instance identity.", 400)
+		return Scope{}, browserSessionClaims{}, Fail("validation_failed", "Provide one expected instance identity.", 400)
 	}
 	if err := s.checkExpectedInstance(r); err != nil {
-		return Scope{}, err
+		return Scope{}, browserSessionClaims{}, err
 	}
 	err := s.db.QueryRowContext(r.Context(), `SELECT principal_id FROM credentials WHERE token_sha256=? AND revoked=0`, scope.tokenHash).Scan(&scope.PrincipalID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Scope{}, bad
+		return Scope{}, browserSessionClaims{}, bad
 	}
 	if err != nil {
-		return Scope{}, storageError(err)
+		return Scope{}, browserSessionClaims{}, storageError(err)
 	}
-	// In particular, /instance must check the retained project's current grant.
-	if err = s.authorize(r.Context(), s.db, scope, "read"); err != nil {
-		return Scope{}, err
+	// Every read remains attenuated, including /instance and administrator
+	// credentials. Only these explicit mutation routes can widen to write.
+	permission := "read"
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if !claims.AllowWrites || !browserMutationAllowed(r, project) || r.Method == http.MethodPut && !claims.CanEditPresentation {
+			return Scope{}, browserSessionClaims{}, Fail("forbidden", "The browser session does not permit this operation.", 403)
+		}
+		if err = BrowserSessionOrigin(r, true); err != nil {
+			return Scope{}, browserSessionClaims{}, err
+		}
+		scope.readOnly = false
+		permission = "write"
 	}
-	return scope, nil
+	if err = s.authorize(r.Context(), s.db, scope, permission); err != nil {
+		return Scope{}, browserSessionClaims{}, err
+	}
+	return scope, claims, nil
 }
