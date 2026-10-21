@@ -3,8 +3,10 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/benhook1013/FireController/internal/core"
 	"strings"
 	"testing"
 	"time"
@@ -121,9 +123,18 @@ func TestExternalHostedSyncUnprovenAndOutagesKeepLifecycleAlive(t *testing.T) {
 			if len(s.accounts) != 1 {
 				t.Fatal("missing account cooldown")
 			}
+
+			diagnostic := s.due[lifecycleKey{attemptProject, 2}].lastErrorCode
+			if diagnostic == "" {
+				t.Fatal("missing per-PR held diagnostic")
+			}
 			for _, a := range s.accounts {
-				if a.lastErrorCode == "" || a.until.IsZero() {
-					t.Fatal("missing safe held diagnostic", a)
+				if failure == "partial" || failure == "oversized" {
+					if !a.until.IsZero() || a.backoff != 0 {
+						t.Fatal("local inventory held account", a)
+					}
+				} else if a.lastErrorCode == "" || a.until.IsZero() {
+					t.Fatal("provider failure lost account cooldown", a)
 				}
 			}
 			clock.Add(time.Minute)
@@ -440,5 +451,266 @@ func TestExternalHostedSyncRespectsEarlierCIRateLimit(t *testing.T) {
 	clock.Add(time.Minute)
 	if lifecycleTick(t, f, s, r) {
 		t.Fatal("account cooldown ignored")
+	}
+}
+
+func TestExternalHostedLocalInventoryDoesNotHoldSharedAccountTargets(t *testing.T) {
+	for _, otherProject := range []bool{false, true} {
+		for _, rateLimited := range []bool{false, true} {
+			t.Run(fmt.Sprintf("other-project=%t/rate-limited=%t", otherProject, rateLimited), func(t *testing.T) {
+				f, s, clock := lifecycleFixture(t)
+				nextProject, nextNumber := attemptProject, int64(4)
+				if otherProject {
+					lifecycleProject(t, f, otherAttemptProject, "test-capability", 802)
+					nextProject, nextNumber = otherAttemptProject, 2
+				} else {
+					previous := int64(2)
+					if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "two-local-inventory-targets", Configuration{ExpectedRevision: &previous, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}, Paused: true}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				r := externalReader(externalSnapshot(0, strings.Repeat("a", 40)))
+				var selectedRepository, selectedNumber int64
+				r.repository = func(_ context.Context, id int64) (reviewprovider.Repository, error) {
+					selectedRepository = id
+					return reviewprovider.Repository{ID: id, FullName: fmt.Sprintf("owner/repo%d", id), DefaultBranch: "main"}, nil
+				}
+				r.pull = func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+					selectedNumber = n
+					p := lifecyclePull(n)
+					p.RepositoryID = selectedRepository
+					return p, nil
+				}
+				r.observe = func(context.Context) (reviewprovider.HostedPublicationSnapshot, error) {
+					if selectedRepository == 801 && selectedNumber == 2 {
+						if rateLimited {
+							return reviewprovider.HostedPublicationSnapshot{}, &reviewprovider.Error{Code: "provider_rate_limited", RetryAfterSeconds: 120}
+						}
+						snapshot := r.snapshot
+						snapshot.Complete = false
+						return snapshot, nil
+					}
+					return r.snapshot, nil
+				}
+				readers := map[string]TargetReader{"test-capability": r}
+				claim := func() *lifecycleTarget {
+					t.Helper()
+					target, err := f.e.claimLifecycle(t.Context(), readers, s)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return target
+				}
+				observe := func(target *lifecycleTarget) {
+					t.Helper()
+					if target == nil {
+						t.Fatal("missing eligible target")
+					}
+					if err := f.e.observeLifecycle(t.Context(), *target, s); err != nil {
+						t.Fatal(err)
+					}
+				}
+				first := claim()
+				if first == nil || first.project != attemptProject || first.number != 2 {
+					t.Fatal("unexpected initial target", first)
+				}
+				observe(first)
+				for _, account := range s.accounts {
+					if rateLimited {
+						if account.backoff != 2*time.Minute || account.until != clock.Now().Add(2*time.Minute) {
+							t.Fatal("real rate limit not shared", account)
+						}
+					} else if account.backoff != 0 || !account.until.IsZero() {
+						t.Fatal("local inventory delayed shared account", account)
+					}
+				}
+				if rateLimited {
+					if claim() != nil {
+						t.Fatal("rate limit allowed other shared-account target")
+					}
+					clock.Add(time.Minute)
+					if claim() != nil {
+						t.Fatal("account RetryAfter expired early")
+					}
+					clock.Add(time.Minute)
+				}
+				second := claim()
+				if second == nil || second.project != nextProject || second.number != nextNumber {
+					t.Fatal("other target starved by inventory", second)
+				}
+				observe(second)
+				if rateLimited {
+					return
+				}
+				if s.due[lifecycleKey{attemptProject, 2}].lastErrorCode != "external_hosted_identity_unproven" {
+					t.Fatal("another target cleared local diagnostic")
+				}
+				if claim() != nil {
+					t.Fatal("incomplete source retried before normal cadence")
+				}
+				clock.Add(59 * time.Second)
+				if claim() != nil {
+					t.Fatal("incomplete source retried early")
+				}
+				clock.Add(time.Second)
+				again := claim()
+				if again == nil || again.project != attemptProject || again.number != 2 {
+					t.Fatal("incomplete source did not retry normally", again)
+				}
+				observe(again)
+				for _, account := range s.accounts {
+					if account.backoff != 0 || !account.until.IsZero() {
+						t.Fatal("repeated incomplete inventory escalated provider backoff", account)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestExternalHostedLocalDiagnosticPreservesRealProviderError(t *testing.T) {
+	f, s, _ := lifecycleFixture(t)
+	r := externalReader(externalSnapshot(0, strings.Repeat("a", 40)))
+	r.snapshot.Complete = false
+	r.ci = func(context.Context, reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
+		return reviewprovider.CIObservation{}, &reviewprovider.Error{Code: "provider_unavailable"}
+	}
+	lifecycleTick(t, f, s, r)
+	for _, account := range s.accounts {
+		if account.lastErrorCode != "provider_unavailable" || account.backoff != 30*time.Second || account.until.IsZero() {
+			t.Fatal("local evidence masked genuine provider failure", account)
+		}
+	}
+	if delay := lifecycleProviderDelay(externalHostedUnproven(), time.Minute); delay != 0 {
+		t.Fatal("local evidence has provider delay", delay)
+	}
+	if delay := lifecycleProviderDelay(&reviewprovider.Error{Code: "external_hosted_identity_unproven", RetryAfterSeconds: 120}, 0); delay != 2*time.Minute {
+		t.Fatal("explicit RetryAfter was ignored", delay)
+	}
+}
+
+func TestExternalHostedSyncLargeInventoryAndCapacityKeepLifecycle(t *testing.T) {
+	for _, huge := range []bool{false, true} {
+		t.Run(fmt.Sprint(huge), func(t *testing.T) {
+			f, s, _ := lifecycleFixture(t)
+			r := externalReader(externalSnapshot(2, strings.Repeat("a", 40)))
+			count, text := 20, strings.Repeat("x", 14<<10)
+			if huge {
+				count, text = 100, strings.Repeat("<", 14<<10)
+			}
+			r.snapshot.Reviews[0].Body = strings.Replace(r.snapshot.Reviews[0].Body, "posted: 0", fmt.Sprintf("posted: %d", count), 1)
+			at := r.snapshot.Reviews[0].SubmittedAt
+			for i := 0; i < count; i++ {
+				r.snapshot.ReviewComments = append(r.snapshot.ReviewComments, reviewprovider.ReviewComment{ID: int64(501 + i), ReviewID: 401, Author: r.TrustedHostedActor(), HeadSHA: strings.Repeat("a", 40), OriginalHeadSHA: strings.Repeat("a", 40), Path: "synthetic.go", CreatedAt: at, UpdatedAt: at, Body: fmt.Sprintf("_⚠️ Potential issue_ | _🟠 Major_\n\n**Independent original finding.**\n\n%s\n\n<!-- cr-comment:v1:%024x -->", text, i+1)})
+			}
+			expected, err := reviewprovider.DiscoverExternalHosted(r.snapshot, r.TrustedHostedActor())
+			if err != nil || len(expected) != 2 || !expected[0].Inventory.Complete || len(expected[0].Inventory.Findings) != count {
+				t.Fatal("fixture must be a supported complete provider inventory", err)
+			}
+			r.pull = func(context.Context, string, int64) (reviewprovider.Pull, error) {
+				p := lifecyclePull(2)
+				p.Title = "Metadata retained through large external inventory"
+				return p, nil
+			}
+			lifecycleTick(t, f, s, r)
+			if lifecycleRead(t, f).Title != "Metadata retained through large external inventory" {
+				t.Fatal("capacity failure hid lifecycle metadata")
+			}
+			want := 2
+			if huge {
+				want = 1
+			}
+			if externalArchiveCount(t, f) != want {
+				t.Fatal("large group lost or subsequent valid group blocked", externalArchiveCount(t, f))
+			}
+			var runs reviews.RunsResponse
+			projectionRead(t, f, "/pulls/2/runs", &runs)
+			for _, run := range runs.Items {
+				if run.SourceRunID == expected[0].SourceID {
+					if huge {
+						t.Fatal("overcapacity inventory was truncated into a retained run")
+					}
+					var detail reviews.RunDetailResponse
+					body := projectionRead(t, f, "/runs/"+run.ID, &detail)
+					if len(body) <= 256<<10 || detail.Run.Found != 20 || len(detail.Findings) != 20 {
+						t.Fatal("large inventory truncated", len(body), detail.Run, len(detail.Findings))
+					}
+					for i, finding := range detail.Findings {
+						if finding.Detail != expected[0].Inventory.Findings[i].Detail {
+							t.Fatal("original large finding text changed", i)
+						}
+					}
+				}
+			}
+			if huge {
+				if s.due[lifecycleKey{attemptProject, 2}].lastErrorCode != "external_hosted_identity_unproven" {
+					t.Fatal("capacity source missing local held diagnostic")
+				}
+				for _, account := range s.accounts {
+					if account.backoff != 0 || !account.until.IsZero() {
+						t.Fatal("capacity rejection delayed shared provider account")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestExternalHostedAuthoritativeCapacitySavepointPreservesMetadataAndNextRun(t *testing.T) {
+	f, s, _ := lifecycleFixture(t)
+	r := externalReader(externalSnapshot(0, strings.Repeat("a", 40)))
+	target, err := f.e.claimLifecycle(t.Context(), map[string]TargetReader{"test-capability": r}, s)
+	if err != nil || target == nil {
+		t.Fatal(target, err)
+	}
+	run := reviews.RunInput{SourceRunID: "publication:aaaaaaaa-1111-1111-1111-111111111111", HeadSHA: strings.Repeat("a", 40), Channel: "hosted", Scope: "external publication", Outcome: "completed", Complete: true, StartedAt: "2026-07-08T09:10:11Z", FinishedAt: "2026-07-08T09:10:11Z", Found: 100, CoverageLimits: []string{}, Findings: []reviews.Finding{}}
+	for i := 0; i < 100; i++ {
+		run.Findings = append(run.Findings, reviews.Finding{SourceFindingID: fmt.Sprintf("bounded-%d", i), Title: "Original finding", Severity: "medium", Disposition: "unadjudicated"})
+	}
+	body, err := json.Marshal([]reviews.RunInput{run})
+	if err != nil {
+		t.Fatal(err)
+	}
+	per := ((4 << 20) - 16 - len(body)) / 600
+	for i := range run.Findings {
+		run.Findings[i].Detail = strings.Repeat("<", per)
+	}
+	body, err = json.Marshal([]reviews.RunInput{run})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Findings[0].Detail += strings.Repeat("x", (4<<20)-16-len(body))
+	body, err = json.Marshal([]reviews.RunInput{run})
+	if err != nil || len(body) != (4<<20)-16 {
+		t.Fatal("candidate must pass initial trusted encoding guard", len(body), err)
+	}
+	good := run
+	good.SourceRunID = "publication:bbbbbbbb-1111-1111-1111-111111111111"
+	good.Found = 0
+	good.Findings = []reviews.Finding{}
+	beforeSnapshots := attemptCount(t, f.store, `SELECT count(*) FROM review_snapshots`)
+	err = f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		display := sourceDisplayPull(SourcePlan{Pull: lifecyclePull(2), ObservedAt: stamp()})
+		display.Title = "Metadata survives authoritative detail rejection"
+		if _, err := reviews.PublishSourceStatus(ctx, tx, core.Scope{ProjectID: attemptProject, PrincipalID: "service-lifecycle-sync"}, 801, target.pins, []reviews.SourceStatus{{Pull: display, Mergeability: "mergeable"}}); err != nil {
+			return err
+		}
+		held, err := publishExternalHostedInputs(ctx, tx, *target, []reviews.RunInput{run, good})
+		if !held {
+			t.Fatal("authoritative capacity not held")
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal("authoritative capacity stopped observer", err)
+	}
+	if lifecycleRead(t, f).Title != "Metadata survives authoritative detail rejection" || externalArchiveCount(t, f) != 1 {
+		t.Fatal("capacity rollback lost metadata or next result")
+	}
+	if after := attemptCount(t, f.store, `SELECT count(*) FROM review_snapshots`); after != beforeSnapshots+2 {
+		t.Fatal("failed candidate leaked snapshot", beforeSnapshots, after)
+	}
+	if count := attemptCount(t, f.store, `SELECT count(*) FROM review_finding_versions`); count != 0 {
+		t.Fatal("failed source left findings", count)
 	}
 }

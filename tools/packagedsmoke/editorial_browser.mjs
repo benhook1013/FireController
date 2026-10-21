@@ -66,7 +66,7 @@ try {
   unpublishedPath='/api/v1/public/project-locations/'+identity.handle;
   await page.getByRole('heading',{name:'Packaged smoke',exact:true}).waitFor();
   phase = 'project-editorial'; checkpoint = 'ordered-content';
-  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Project map',exact:true}).click();
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Project',exact:true}).click();
   const entries = page.locator('.project-editorial-entry');
   await expect(entries).toHaveCount(2);
   need((await entries.locator('h3').allTextContents()).join('|') === 'Project intent|Project boundaries');
@@ -87,9 +87,14 @@ try {
     const image=getComputedStyle(element.querySelector('.editorial-image-alt'));
     const inline=getComputedStyle(element.querySelector('p code'));
     const block=getComputedStyle(element.querySelector('.editorial-code-block'));
-    return style.color==='rgb(0, 0, 0)' && quote.color==='rgb(0, 0, 0)' && quote.borderLeftColor==='rgb(0, 0, 0)'
-      && image.color==='rgb(0, 0, 0)' && inline.color==='rgb(0, 0, 0)' && inline.backgroundColor==='rgb(188, 188, 188)'
-      && block.color==='rgb(0, 0, 0)' && block.backgroundColor==='rgb(188, 188, 188)';
+    const canvas=getComputedStyle(element.closest('.project-editorial'));
+    const surface=getComputedStyle(element.closest('.project-map-body.panel'));
+    const root=getComputedStyle(document.documentElement);
+    return root.getPropertyValue('--fc-surface_background').trim()==='#ffffff' && root.backgroundColor==='rgb(188, 188, 188)' && surface.backgroundColor!==root.backgroundColor
+      && canvas.color==='rgb(0, 0, 0)' && surface.backgroundColor==='rgb(255, 255, 255)'
+      && style.color==='rgb(117, 117, 117)' && quote.color==='rgb(117, 117, 117)' && quote.borderLeftColor==='rgb(117, 117, 117)'
+      && image.color==='rgb(117, 117, 117)' && inline.color==='rgb(117, 117, 117)' && inline.backgroundColor==='rgb(255, 255, 255)'
+      && block.color==='rgb(117, 117, 117)' && block.backgroundColor==='rgb(255, 255, 255)';
   }));
 
   for (const width of [1440,390,320]) {

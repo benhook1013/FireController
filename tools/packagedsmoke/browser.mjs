@@ -20,6 +20,8 @@ let workerHistoryBefore = -1, workerHistoryAfter = -1;
 let sendStatus = 0, replyStatus = 0, conversationMatch = false;
 let lastHTTPStatus = 0;
 let lastAllowWrites = false, lastCanEditPresentation = false;
+let reloadLayout = {};
+let reloadDeliveryHeld = false, reloadDeliverySettled = 0;
 let renewalProof = { renewal_response_received:false, renewal_response_ok:false, current_read_ok:false, current_shape_valid:false, current_identity_matches:false, current_read_only:false, current_expiry_valid:false, current_expiry_nondecreasing:false, storage_matches_current:false };
 let failureSnapshot = async () => ({});
 let diagnostics = () => ({});
@@ -78,6 +80,12 @@ try {
     return view;
   };
 
+  const reloadGeometry = async () => ({...await page.evaluate(() => {
+    const rect = selector => {const node=document.querySelector(selector);if(!node)return null;const box=node.getBoundingClientRect();return {top:box.top,bottom:box.bottom,left:box.left,right:box.right,height:box.height};};
+    const target=document.querySelector('#review-pr-32');
+    return {hash_matches:location.hash==='#review-pr-32',scroll_y:scrollY,scroll_height:document.documentElement.scrollHeight,viewport_height:innerHeight,margin:target?parseFloat(getComputedStyle(target).scrollMarginTop):0,target:rect('#review-pr-32'),header:rect('.mast'),hero:rect('.delivery-merge-head'),queue:rect('#review-queue')};
+  }),run_reads:reviewRunReads,delivery_reads:deliveryReads,delivery_held:reloadDeliveryHeld,delivery_settled:reloadDeliverySettled});
+
   failureSnapshot = async () => {
     const screenshot = path => page.screenshot({path,mask:[page.locator('input,textarea,code,.full-text,.message-preview')],timeout:2000});
     if (phase === 'live-reviews') {
@@ -85,7 +93,7 @@ try {
         snapshot:{phase,checkpoint,run_fetches:reviewRunReads,attempt_fetches:reviewAttemptReads,pull_fetches:reviewPullReads,operation_reads:reviewOperationReads,fallback_geometry:fallbackGeometry}, screenshot,
         collect:async snapshot => {
           snapshot.updated_pull=await page.getByRole('link',{name:'Live review updated',exact:true}).count();
-          snapshot.hosted_run_link=await page.getByRole('link',{name:'Open hosted run live-hosted-round',exact:true}).count();
+          snapshot.hosted_run_link=await page.getByRole('link',{name:/^Open hosted run live-hosted-round:/}).count();
           snapshot.history_sections=await page.locator('.review-history').count();
           snapshot.hosted_sections=await page.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).count();
           snapshot.review_alerts=await page.getByRole('alert').count();
@@ -121,8 +129,9 @@ try {
       });
     }
     if (phase === 'reload') {
-      return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'reload-failure.json', snapshot:{phase,checkpoint,...renewalProof} });
+      return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'reload-failure.json', snapshot:{phase,checkpoint,...renewalProof,layout:reloadLayout}, collect:async snapshot=>{snapshot.current_geometry=await reloadGeometry();} });
     }
+    if (phase === 'renewal-missing-cookie') return retainBrowserFailure({directory:config.diagnostic_directory,filename:'failure.json',snapshot:{phase,checkpoint,...counters(),cookie_removed:missingCookieRemoved,statuses:missingCookieStatuses},collect:async snapshot=>{snapshot.binding_present=await page.evaluate(key=>sessionStorage.getItem(key)!==null,bindingKey);}});
     if (phase !== 'explicit-actions-uncertain') return {};
     return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'failure.json', screenshot,
       snapshot:{phase,checkpoint,...counters()},
@@ -179,6 +188,8 @@ try {
  let explicitActions = false;
  let controlledMessageFailure = false;
  let controlledAccessFailure = false;
+ let missingCookieStatuses = {};
+ let missingCookieRemoved = false;
  let controlledProgressAccessFailure = false, progressAccessFailures = 0;
  const expectedMissingSessionRoute = url => { if ((!controlledAccessFailure && !controlledProgressAccessFailure) || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ((controlledAccessFailure && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname)) || (controlledProgressAccessFailure && value.pathname === prefix + '/reviews/rounds/progress')); } catch { return false; } };
  const unpublishedLocation = url => { try { const value = new URL(url); return value.origin === config.origin && value.pathname === '/api/v1/public/project-locations/' + handle && value.search === ''; } catch { return false; } };
@@ -227,6 +238,10 @@ try {
   });
   page.on('response', value => {
     const url = new URL(value.url());
+    if (controlledAccessFailure && url.origin===config.origin && value.status()>=400) {
+      const kind=url.pathname==='/api/v1/instance'?'instance':url.pathname===prefix?'project':url.pathname===prefix+'/browser-session'?'session':url.pathname==='/api/v1/public/project-locations/'+handle?'unpublished':url.pathname===prefix+'/presentation'?'presentation':'other';
+      missingCookieStatuses[kind]=value.status();
+    }
     if (value.request().method()==='GET' && url.origin===config.origin && url.pathname===prefix+'/workers/presence') { presenceResponses++; presenceHTTPStatus=value.status(); const timing=presenceTimings.get(value.request()); if(timing) timing.headers=performance.now(); }
     if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else if (value.request() === injectedRequest && value.status() === 400) injectedResponses++; else if (!(value.status() === 404 && value.request().method() === 'GET' && unpublishedLocation(value.url()))) errors++; } });
   page.on('request', request => {
@@ -854,9 +869,9 @@ try {
   // Complete observations require explicit retirement of an omitted entry.
   await write('POST', '/reviews/observations', {...observation(1, [merged, open]), retired:[{number:33,reason:'defunct'}]}, 201);
   checkpoint = 'initial-open-pull';
-  await page.getByRole('link', {name:'Live review before', exact:true}).waitFor();
+  await page.locator('#review-pr-32').getByRole('link', {name:'Live review before', exact:true}).waitFor();
   checkpoint = 'initial-merged-pull';
-  await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
+  await page.locator('#review-pr-31').getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
   const finished = new Date().toISOString();
   const run = {source_run_id:'live-hosted-round', channel:'hosted', head_sha:open.head_sha, reviewer:'Synthetic reviewer', scope:'Synthetic comparison', outcome:'completed', attributable:true, complete:true, started_at:finished, finished_at:finished, found:0, accepted:0, routed:0, finalized:true, coverage_limits:[], findings:[]};
   const reasonCode = 'hosted_finished_inventory_unproven';
@@ -866,16 +881,16 @@ try {
   checkpoint = 'updated-observation';
   await write('POST', '/reviews/observations', observation(2, [merged, {...open, title:'Live review updated', runs:[run],attempts:[uncertainAttempt]}]), 201);
   checkpoint = 'updated-open-pull';
-  await page.getByRole('link', {name:'Live review updated', exact:true}).waitFor();
+  await page.locator('#review-pr-32').getByRole('link', {name:'Live review updated', exact:true}).waitFor();
   checkpoint = 'updated-merged-pull';
-  await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
+  await page.locator('#review-pr-31').getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
   checkpoint = 'hosted-run';
-  await page.locator('#review-queue').getByRole('region', {name:'Hosted CodeRabbit', exact:true}).getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
+  await page.locator('#review-pr-32').getByRole('region', {name:'Hosted CodeRabbit', exact:true}).getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
   checkpoint = 'current-round-grants';
   await write('POST', '/reviews/rounds/32/hosted', {expected_revision:0,action:'grant',minimum:0,maximum:5}, 200);
   await write('POST', '/reviews/rounds/32/cli', {expected_revision:0,action:'grant',minimum:2,maximum:4}, 200);
-  await expect(page.locator('#review-queue [aria-label="Current hosted round limits"]')).toContainText('0 of 5 used');
-  await expect(page.locator('#review-queue [aria-label="Current cli round limits"]')).toContainText('Minimum 2 more');
+  await expect(page.locator('#review-queue [aria-label="Current hosted round limits"]')).toContainText('Up to 5 more reviews');
+  await expect(page.locator('#review-queue [aria-label="Current cli round limits"]')).toContainText('At least 2 more');
   checkpoint = 'merged-retention';
   need(await page.locator('.review-state-merged').filter({hasText:'Merged'}).count() === 1);
   checkpoint = 'delivery-queue';
@@ -889,7 +904,8 @@ try {
   await expect(deliveryQueue.getByRole('link', {name:'Live review updated', exact:true})).toBeVisible();
   await expect(deliveryQueue.locator('.review-state-merged').filter({hasText:'Merged'})).toBeVisible();
   checkpoint = 'merge-head';
-  await expect(page.getByRole('region', {name:'Merge train head'}).getByRole('link', {name:'#32 · Live review updated', exact:true})).toBeVisible();
+  await expect(page.getByRole('region', {name:'Merge train head'}).getByRole('link', {name:'#32', exact:true})).toBeVisible();
+  await expect(page.getByRole('region', {name:'Merge train head'}).getByRole('link', {name:'Live review updated', exact:true})).toBeVisible();
   checkpoint = 'hosted-summary';
   const queueHistory = deliveryQueue.getByRole('region', {name:'PR #32 review rounds', exact:true});
   const queueHosted = queueHistory.getByRole('region', {name:'Hosted CodeRabbit', exact:true});
@@ -909,9 +925,9 @@ try {
   await expect(jump).toHaveAttribute('href', `${home}#review-pr-32`);
   await expect(jump).toHaveText('Review queue ↗');
   need(await jump.locator('*').count() === 0);
-  const jumpStyle = await jump.evaluate(element => { const style = getComputedStyle(element); return {color:style.color, weight:style.fontWeight, decoration:style.textDecorationLine}; });
+  const jumpStyle = await jump.evaluate(element => { const style = getComputedStyle(element); return {color:style.color, weight:style.fontWeight, family:style.fontFamily, decoration:style.textDecorationLine}; });
   const configuredInk = [1, 3, 5].map(offset => Number.parseInt(theme.surface_text.slice(offset, offset + 2), 16)).join(', ');
-  need(jumpStyle.color === `rgb(${configuredInk})` && jumpStyle.weight === '750' && jumpStyle.decoration.includes('underline'));
+  need(jumpStyle.color === `rgb(${configuredInk})` && jumpStyle.weight === '700' && jumpStyle.family === 'ui-sans-serif, system-ui, sans-serif' && jumpStyle.decoration.includes('underline'));
   const mergedFacts = deliveryQueue.locator('#review-pr-31 .review-pull-facts');
   const openFacts = deliveryQueue.locator('#review-pr-32 .review-pull-facts');
   await expect(mergedFacts).not.toContainText('Mergeability');
@@ -919,9 +935,9 @@ try {
   await expect(mergedFacts.locator('.review-diff')).toHaveText('73 files · +6,160 / −136 lines');
   await expect(mergedFacts.locator('.review-merged-age time')).toHaveAttribute('datetime', merged.merged_at);
   await expect(mergedFacts).not.toContainText('Draft');
-  await expect(mergedFacts).toContainText('CI status is unknown.');
+  await expect(mergedFacts.locator('.review-ci')).toHaveText('CI: Unknown');
   await expect(openFacts).toContainText('Mergeability: Unknown');
-  await expect(openFacts).toContainText('Mergeability is unknown.');
+  await expect(openFacts.locator('.review-mergeability')).toHaveText('Mergeability: Unknown');
   const headRow = page.locator('#review-pr-32');
   const headJumpPosition = () => headRow.evaluate(element => {
     const box = element.getBoundingClientRect(), mast = document.querySelector('.mast').getBoundingClientRect();
@@ -933,9 +949,9 @@ try {
   const expectedHeadPosition = {belowHeader:true, inViewport:true, atRowTarget:true, margin:page.viewportSize().width <= 650 ? '160px' : '130px'};
   await expect(hero.getByRole('region', {name:'Hosted CodeRabbit', exact:true}).locator('.review-lane-heading')).toContainText('1 run');
   checkpoint = 'current-round-limits-shared';
-  await expect(hero.locator('[aria-label="Current hosted round limits"]')).toContainText('0 of 5 used');
+  await expect(hero.locator('[aria-label="Current hosted round limits"]')).toContainText('Up to 5 more reviews');
   // Imported recorded history does not count against a new native grant.
-  await expect(queueHosted.locator('[aria-label="Current hosted round limits"]')).toContainText('0 of 5 used');
+  await expect(queueHosted.locator('[aria-label="Current hosted round limits"]')).toContainText('Up to 5 more reviews');
   checkpoint = 'current-round-close-live';
   await write('POST', '/reviews/rounds/32/hosted', {expected_revision:1,action:'close'}, 200);
   await expect(hero.locator('[aria-label="Current hosted round limits"]')).toContainText('Review closed');
@@ -1007,25 +1023,53 @@ try {
   const reloadQueueGate = new Promise(resolve => { releaseReloadQueue = resolve; });
   const queuePattern = config.origin + prefix + '/reviews/queue?*';
   const holdReloadQueue = async route => { if (route.request().method() === 'GET') { reloadQueueHeld = true; await reloadQueueGate; } await route.fallback(); };
+  const deliveryPattern = url => url.origin===config.origin && url.pathname===prefix+'/delivery';
+  let releaseReloadDelivery;
+  const reloadDeliveryGate = new Promise(resolve => {releaseReloadDelivery=resolve;});
+  const holdReloadDelivery = async route => {
+    if(route.request().method()==='GET'){reloadDeliveryHeld=true;await reloadDeliveryGate;}
+    await route.fallback();
+  };
+  await page.route(deliveryPattern,holdReloadDelivery);
+  const reloadDeliveryResponse = page.waitForResponse(value=>value.request().method()==='GET'&&new URL(value.url()).pathname===prefix+'/delivery').catch(()=>undefined);
   await page.route(queuePattern, holdReloadQueue);
   const reloadQueueResponsePromise = page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/reviews/queue');
   try {
-    await page.reload();
-    checkpoint = 'reload-project-heading';
-    await page.getByRole('heading', {name:title, exact:true}).waitFor();
-    checkpoint = 'reload-queue-held';
-    await expect.poll(() => reloadQueueHeld).toBe(true);
-    checkpoint = 'reload-hash-retained';
-    need(new URL(page.url()).hash === '#review-pr-32');
-    checkpoint = 'reload-target-absent';
-    await expect(headRow).toHaveCount(0);
-  } finally { releaseReloadQueue(); }
-  checkpoint = 'reload-queue-response';
-  need((await reloadQueueResponsePromise).status() === 200);
-  checkpoint = 'reload-queue-unroute';
-  await page.unroute(queuePattern, holdReloadQueue);
-  checkpoint = 'reload-head-position';
-  await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
+    try {
+      await page.reload();
+      checkpoint = 'reload-project-heading';
+      await page.getByRole('heading', {name:title, exact:true}).waitFor();
+      checkpoint = 'reload-queue-held';
+      await expect.poll(() => reloadQueueHeld).toBe(true);
+      checkpoint = 'reload-hash-retained';
+      need(new URL(page.url()).hash === '#review-pr-32');
+      checkpoint = 'reload-target-absent';
+      await expect(headRow).toHaveCount(0);
+    } finally { releaseReloadQueue(); }
+    checkpoint = 'reload-queue-response';
+    need((await reloadQueueResponsePromise).status() === 200);
+    checkpoint = 'reload-queue-unroute';
+    await page.unroute(queuePattern, holdReloadQueue);
+    checkpoint = 'reload-delivery-held';
+    await expect.poll(()=>reloadDeliveryHeld).toBe(true);
+    checkpoint = 'reload-initial-alignment';
+    await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
+    reloadLayout.before_delivery=await reloadGeometry();
+    if(config.diagnostic_directory){await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});await fs.writeFile(config.diagnostic_directory+'/reload-layout.json',JSON.stringify(reloadLayout),{mode:0o600});}
+    releaseReloadDelivery();
+    checkpoint = 'reload-delivery-response';
+    need((await reloadDeliveryResponse)?.status()===200);reloadDeliverySettled++;
+    checkpoint = 'reload-delivery-rendered';
+    await expect(page.locator('.delivery-lane[aria-label="Inspector jobs"]').getByRole('link',{name:'Inspector active work',exact:true})).toBeVisible();
+    reloadLayout.after_delivery=await reloadGeometry();
+    if(config.diagnostic_directory){await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});await fs.writeFile(config.diagnostic_directory+'/reload-layout.json',JSON.stringify(reloadLayout),{mode:0o600});}
+    checkpoint = 'reload-head-position';
+    await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
+  } finally {
+    releaseReloadQueue();releaseReloadDelivery();
+    await page.unroute(queuePattern,holdReloadQueue);
+    await page.unroute(deliveryPattern,holdReloadDelivery);
+  }
   checkpoint = 'reload-heading-visible';
   await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(1);
   checkpoint = 'reload-session-renewed';
@@ -1328,6 +1372,8 @@ try {
   need(sessionPosts === 3 && sessionRenewals === 3);
   checkpoint = 'remove-cookie';
   await context.clearCookies({name:'fc-local-browser-' + missingBinding.sessionID});
+  missingCookieRemoved=!(await context.cookies()).some(value=>value.name==='fc-local-browser-'+missingBinding.sessionID);
+  need(missingCookieRemoved);
   controlledAccessFailure = true; checkpoint = 'reload';
   await page.reload();
   await page.getByRole('button', {name:'Connect to project',exact:true}).waitFor();

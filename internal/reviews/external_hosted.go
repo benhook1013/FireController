@@ -82,8 +82,11 @@ func PublishExternalHosted(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 		}
 	}
 	body, err := json.Marshal(p.Runs)
-	if err != nil || len(body) > maxObservationBytes {
-		return Receipt{}, false, validationError("External hosted results exceed the bounded encoded batch.")
+	if err != nil {
+		return Receipt{}, false, validationError("External hosted results cannot be encoded.")
+	}
+	if len(body) > maxRunDetailBytes {
+		return Receipt{}, false, core.Fail("workspace_capacity", "External hosted results exceed the bounded trusted run detail size; no history was dropped.", 409)
 	}
 	var frontier time.Time
 	if cutoff != "" {

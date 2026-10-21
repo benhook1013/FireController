@@ -317,9 +317,9 @@ func publishExternalHostedInputs(ctx context.Context, tx *sql.Tx, target lifecyc
 			findings += len(candidate.Findings)
 		}
 		if len(batch) == 0 {
-			held = true
-			runs = runs[1:]
-			continue
+			// The batching budget is an efficiency target, not the trusted per-run
+			// contract. The publisher checks a larger individual run in full.
+			batch = append(batch, runs[0])
 		}
 		changed, unsupported, err := publishExternalHostedBatch(ctx, tx, target, batch)
 		if err != nil {
@@ -329,6 +329,8 @@ func publishExternalHostedInputs(ctx context.Context, tx *sql.Tx, target lifecyc
 			if changed {
 				appended += len(batch)
 			}
+		} else if len(batch) == 1 {
+			held = true
 		} else {
 			held = true
 			// Invalid source facts cannot prevent a separate complete group in the same
@@ -354,7 +356,7 @@ func publishExternalHostedBatch(ctx context.Context, tx *sql.Tx, target lifecycl
 	_, changed, err = reviews.PublishExternalHosted(ctx, tx, core.Scope{ProjectID: target.project, PrincipalID: "service-hosted-observer"}, target.repository, target.number, runs)
 	if err != nil {
 		var failure *core.Error
-		if !errors.As(err, &failure) || (failure.Code != "validation_failed" && failure.Code != "invalid_request" && failure.Code != "capacity_exceeded" && failure.Code != "observation_conflict") {
+		if !errors.As(err, &failure) || (failure.Code != "validation_failed" && failure.Code != "invalid_request" && failure.Code != "capacity_exceeded" && failure.Code != "workspace_capacity" && failure.Code != "observation_conflict") {
 			return false, false, err
 		}
 		if _, err = tx.ExecContext(ctx, `ROLLBACK TO external_hosted_candidate`); err != nil {

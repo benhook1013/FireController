@@ -69,8 +69,9 @@ type lifecycleKey struct {
 	number  int64
 }
 type lifecycleDue struct {
-	next, ci time.Time
-	head     string
+	lastErrorCode string
+	next, ci      time.Time
+	head          string
 }
 type lifecycleAccount struct {
 	lastErrorCode string
@@ -306,8 +307,13 @@ func (e *Engine) claimLifecycle(ctx context.Context, readers map[string]TargetRe
 	return nil, nil
 }
 
+func lifecycleInventoryInconclusive(err error) bool {
+	var failure *reviewprovider.Error
+	return errors.As(err, &failure) && failure.Code == "external_hosted_identity_unproven" && failure.RetryAfterSeconds <= 0
+}
+
 func lifecycleProviderDelay(err error, previous time.Duration) time.Duration {
-	if err == nil {
+	if err == nil || lifecycleInventoryInconclusive(err) {
 		return 0
 	}
 	delay := min(max(previous*2, 30*time.Second), 5*time.Minute)
@@ -331,12 +337,25 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 	defer s.mu.Unlock()
 	a := s.accounts[target.account]
 	a.busy = false
+	errorCode := ""
 	if providerErr != nil {
-		a.lastErrorCode = "provider_unavailable"
+		errorCode = "provider_unavailable"
 		var failure *reviewprovider.Error
 		if errors.As(providerErr, &failure) {
-			a.lastErrorCode = failure.Code
+			errorCode = failure.Code
 		}
+	}
+	if lifecycleInventoryInconclusive(providerErr) {
+		// Incomplete local inventory is retried at this PR's normal cadence. It is
+		// not evidence that the provider account should stop serving other targets.
+		// An independently established provider cooldown still takes precedence.
+		if !now.Before(a.until) {
+			a.lastErrorCode = ""
+			a.backoff = 0
+			a.until = time.Time{}
+		}
+	} else if providerErr != nil {
+		a.lastErrorCode = errorCode
 		a.backoff = lifecycleProviderDelay(providerErr, a.backoff)
 		a.until = now.Add(a.backoff)
 		interval = max(interval, a.backoff)
@@ -348,6 +367,7 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 	s.accounts[target.account] = a
 	delete(s.busy, target.project)
 	due := target.due
+	due.lastErrorCode = errorCode
 	due.next = now.Add(interval)
 	if head != "" {
 		due.head = head

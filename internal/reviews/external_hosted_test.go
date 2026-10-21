@@ -3,6 +3,7 @@ package reviews
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -308,12 +309,87 @@ func TestExternalHostedConflictingRetainedIdentityAndEncodedBound(t *testing.T) 
 	oversized.Found = 100
 	oversized.Findings = nil
 	for i := 0; i < 100; i++ {
-		oversized.Findings = append(oversized.Findings, Finding{SourceFindingID: fmt.Sprint(i), Title: "Valid finding", Detail: strings.Repeat("<", 1000), Severity: "low"})
+		oversized.Findings = append(oversized.Findings, Finding{SourceFindingID: fmt.Sprint(i), Title: "Valid finding", Detail: strings.Repeat("<", 16<<10), Severity: "low"})
 	}
 	if _, _, err := externalPublish(f, oversized); err == nil {
-		t.Fatal("individually valid escaped findings bypassed encoded batch limit")
+		t.Fatal("individually valid escaped findings bypassed trusted detail limit")
 	}
 	if before != historyMigrationDatabaseDigest(t, f) {
 		t.Fatal("conflicting or oversized input changed retained history")
 	}
+}
+
+func TestExternalHostedTrustedLargeInventoryRetainsExactText(t *testing.T) {
+	f := newAPIFixture(t)
+	initial := historyObservationPost(t, f, reviewRequest(0, []PullInput{nativePull(1)}), "large-external-initial")
+	old := nativeSnapshotBytes(t, f, initial.ID)
+	externalInit(t, f)
+	run := externalRun(20)
+	run.Found = 20
+	run.Findings = []Finding{}
+	for i := 0; i < 20; i++ {
+		run.Findings = append(run.Findings, Finding{SourceFindingID: fmt.Sprintf("large-provider-%d", i), Title: "Original complete finding", Detail: fmt.Sprintf("Source %d: ", i) + strings.Repeat("x", 14<<10), Severity: "medium", Disposition: "unadjudicated"})
+	}
+	body, err := json.Marshal([]RunInput{run})
+	if err != nil || len(body) <= maxObservationBytes || len(body) >= maxRunDetailBytes {
+		t.Fatal("fixture must exceed import cap and fit trusted detail", len(body), err)
+	}
+	externalMustPublish(t, f, run)
+	var detail RunDetailResponse
+	nativeRead(t, f, "/runs/"+runOpaqueID(f.project, externalHostedSource, run.SourceRunID), &detail)
+	if detail.Run.Found != 20 || detail.Run.Finalized || len(detail.Findings) != 20 {
+		t.Fatal("large external source truncated", detail.Run, len(detail.Findings))
+	}
+	for i, finding := range detail.Findings {
+		if finding.Detail != run.Findings[i].Detail || finding.SourceFindingID != run.Findings[i].SourceFindingID {
+			t.Fatal("large source text changed", i)
+		}
+	}
+	if old != nativeSnapshotBytes(t, f, initial.ID) {
+		t.Fatal("large publication changed retained snapshot")
+	}
+	if counts := channelCountsPull(t, f, "").Pull.RunCounts; counts != (ChannelRunCounts{Hosted: 1}) {
+		t.Fatal("large run not counted", counts)
+	}
+}
+
+func externalNearDetailLimit(t *testing.T) RunInput {
+	t.Helper()
+	run := externalRun(30)
+	run.Found = 100
+	run.Findings = []Finding{}
+	run.CoverageLimits = []string{}
+	for i := 0; i < 100; i++ {
+		run.Findings = append(run.Findings, Finding{SourceFindingID: fmt.Sprintf("bounded-source-%d", i), Title: "Original finding", Severity: "medium", Disposition: "unadjudicated"})
+	}
+	body, err := json.Marshal([]RunInput{run})
+	if err != nil {
+		t.Fatal(err)
+	}
+	per := (maxRunDetailBytes - 16 - len(body)) / 600
+	for i := range run.Findings {
+		run.Findings[i].Detail = strings.Repeat("<", per)
+	}
+	body, err = json.Marshal([]RunInput{run})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Findings[0].Detail += strings.Repeat("x", maxRunDetailBytes-16-len(body))
+	body, err = json.Marshal([]RunInput{run})
+	if err != nil || len(body) != maxRunDetailBytes-16 {
+		t.Fatal("fixture must pass initial trusted encoding guard", len(body), err)
+	}
+	return run
+}
+func TestExternalHostedAuthoritativeDetailCapacityRollsBack(t *testing.T) {
+	f := newAPIFixture(t)
+	historyObservationPost(t, f, reviewRequest(0, []PullInput{nativePull(1)}), "external-detail-capacity")
+	externalInit(t, f)
+	before := historyMigrationDatabaseDigest(t, f)
+	_, _, err := externalPublish(f, externalNearDetailLimit(t))
+	nativeErrorCode(t, err, "workspace_capacity")
+	if before != historyMigrationDatabaseDigest(t, f) {
+		t.Fatal("detail capacity failure leaked snapshots/findings/events")
+	}
+	externalMustPublish(t, f, externalRun(31))
 }

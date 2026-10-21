@@ -473,7 +473,7 @@ func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project,
 		{`INSERT INTO review_pull_versions(project_id,number,version_revision,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json,metadata_json) VALUES(?,123,1,?,'open',?,'main',?,'unknown','unknown',1,123,123,?,?,?)`, []any{project, pull.Title, pull.HeadSHA, pull.BaseSHA, string(recentJSON), string(latestJSON), string(metadataJSON)}},
 		{`INSERT INTO review_pull_memberships(project_id,number,start_revision,end_revision,version_revision,position) VALUES(?,123,1,NULL,1,0)`, []any{project}},
 		{`INSERT INTO review_current_pulls(project_id,number,start_revision,position) VALUES(?,123,1,0)`, []any{project}},
-		{`INSERT INTO review_current_totals(project_id,pull_number,run_count,attempt_count,incomplete_run_count) VALUES(?,123,123,123,0)`, []any{project}},
+		{`INSERT INTO review_current_totals(project_id,pull_number,run_count,attempt_count,incomplete_run_count,hosted_run_count,cli_run_count,subagent_run_count,manual_run_count) VALUES(?,123,123,123,0,0,123,0,0)`, []any{project}},
 	} {
 		if _, err = tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
 			t.Fatalf("synthetic compact archive version/reference failed: %v", err)

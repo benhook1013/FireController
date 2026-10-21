@@ -67,8 +67,8 @@ try {
     need(await rounds.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).count() === 1);
     need(await rounds.getByRole('region',{name:'CLI CodeRabbit',exact:true}).count() === 1);
     need(await page.locator('.review-pull-summary').getByText(`${count} runs · ${count} attempts`,{exact:true}).count() === 0);
-    await expect(rounds.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText('20 runs shown');
-    await expect(rounds.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText('0 runs shown');
+    await expect(rounds.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText(`${count} runs`);
+    await expect(rounds.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText('0 runs');
     const stored = await page.evaluate(() => JSON.stringify({session:{...sessionStorage},local:{...localStorage}}));
     need(!stored.includes(token) && !stored.includes(admin));
     return {page,rounds,attempts,name,snapshot,home,path:canonicalPath};
@@ -80,7 +80,10 @@ try {
     await section.getByRole('button',{name:feed === 'runs' ? 'Load more review rounds' : 'Load more attempts',exact:true}).click();
     await expect.poll(() => section.locator(feed === 'runs' ? '.review-history-row' : 'li').count()).toBe(shown);
     need(requests(view,feed).length === before+1);
-    if (feed === 'runs') await expect(section.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText(`${shown} runs${shown < count ? ' shown' : ''}`);
+    if (feed === 'runs') {
+      await expect(section.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText(`${count} runs`);
+      if(shown<count) await expect(section.locator('.pager')).toContainText(`${shown} of ${count} review rounds`);
+    }
   };
   // The real head summary shares the archive fixture. Check rendered geometry,
   // not CSS declarations: a no-overflow page can still crush one round into
@@ -91,8 +94,8 @@ try {
       const head = page.getByRole('region',{name:'Merge train head',exact:true});
       await head.waitFor();
       const pills = head.locator('.review-round-pill');
-      await expect(pills).toHaveCount(3); // Three latest CLI rounds from the shared bounded page.
-      await expect(head.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText('20 runs loaded · latest 3');
+      await expect(pills).toHaveCount(6); // Shared queue row shows the latest six from the bounded archive page.
+      await expect(head.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText(`${Number(config.count)} runs`);
       for (const width of [1440,390,320]) {
         await page.setViewportSize({width,height:900});
         need(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
@@ -102,15 +105,17 @@ try {
           const identity=document.querySelector('.project-identity');
           const project=identity.querySelector('.hero-project');
           const container=element.closest('.delivery-hero');
-          const link=element.querySelector('.delivery-head-link');
+          const link=element.querySelector('[aria-label="Jump to review queue"]');
           const linkStyle=getComputedStyle(link);
-          return {head:rect(element),identity:rect(identity),project:rect(project),container:rect(container),square:getComputedStyle(container).borderTopLeftRadius === '0px' && getComputedStyle(element).borderTopLeftRadius === '0px',roundedPills:[...element.querySelectorAll('.review-round-pill')].every(pill=>parseFloat(getComputedStyle(pill).borderTopLeftRadius)>0),link:rect(link),linkText:link.textContent,linkChildren:link.childElementCount,linkWeight:linkStyle.fontWeight,linkDecoration:linkStyle.textDecorationLine,joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
+          return {head:rect(element),row:rect(element.querySelector('.review-queue-row')),identity:rect(identity),project:rect(project),container:rect(container),square:getComputedStyle(container).borderTopLeftRadius === '0px' && getComputedStyle(element).borderTopLeftRadius === '0px',roundedPills:[...element.querySelectorAll('.review-round-pill')].every(pill=>parseFloat(getComputedStyle(pill).borderTopLeftRadius)>0),link:rect(link),linkText:link.textContent,linkChildren:link.childElementCount,linkWeight:linkStyle.fontWeight,linkFamily:linkStyle.fontFamily,linkDecoration:linkStyle.textDecorationLine,joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].filter(pill=>pill.getClientRects().length>0).map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
         });
-        need(geometry.groups.length === 2);
+        if(config.proof_directory){await fs.mkdir(config.proof_directory,{recursive:true,mode:0o700});await fs.writeFile(config.proof_directory+'/merge-head-geometry.json',JSON.stringify({width,head:geometry.head,row:geometry.row,link:geometry.link,weight:geometry.linkWeight,family:geometry.linkFamily,pills:geometry.pills.map(item=>({pill:item.pill,stats:item.stats,date:item.date,statsLines:item.statsLines,dateLines:item.dateLines}))}),{mode:0o600});}
+        need(geometry.groups.length === 2 && geometry.pills.length>=1 && geometry.pills.length<=6);
         need(geometry.joined && geometry.twoTone && geometry.square && geometry.roundedPills);
         need(Math.abs((geometry.project.top+geometry.project.bottom)-(geometry.identity.top+geometry.identity.bottom)) <= 2);
-        need(geometry.linkText === 'Review queue ↗' && geometry.linkChildren === 0 && geometry.linkWeight === '750' && geometry.linkDecoration.includes('underline'));
-        need(geometry.link.right <= geometry.head.right && geometry.head.right-geometry.link.right <= 32 && geometry.link.bottom <= geometry.head.bottom && geometry.head.bottom-geometry.link.bottom <= 32);
+        need(geometry.linkText === 'Review queue ↗' && geometry.linkChildren === 0 && geometry.linkWeight === '700' && geometry.linkFamily === 'ui-sans-serif, system-ui, sans-serif' && geometry.linkDecoration.includes('underline'));
+        need(geometry.row.left >= geometry.head.left && geometry.row.right <= geometry.head.right && geometry.row.top >= geometry.head.top && geometry.row.bottom <= geometry.head.bottom);
+        need(geometry.link.right <= geometry.row.right && geometry.row.right-geometry.link.right <= 32 && geometry.link.bottom <= geometry.row.bottom && geometry.row.bottom-geometry.link.bottom <= 32);
         if (width === 1440) need(Math.abs(geometry.head.top-geometry.identity.top) <= 1 && Math.abs(geometry.head.left-geometry.identity.right) <= 1);
         else {
           // A phone must not retain the desktop panel's empty vertical space.
@@ -121,7 +126,7 @@ try {
         }
         for (const item of geometry.pills) {
           need(item.text === '0/0/0' && /^(?:Just now|Future date|\d+m ago|\d+h \d+m ago|\d+d \d+h ago)$/u.test(item.dateText));
-          need(item.pill.width >= 60 && item.statsLines === 1 && item.dateLines === 1);
+          need(item.pill.width >= Math.max(item.stats.width,item.date.width)+16 && item.statsLines === 1 && item.dateLines === 1);
           need(item.stats.left >= item.pill.left && item.stats.right <= item.pill.right && item.date.left >= item.pill.left && item.date.right <= item.pill.right);
         }
       }
@@ -195,17 +200,27 @@ try {
   await expect(queue.locator('.review-queue-row')).toHaveCount(5);
   need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-123','review-pr-203','review-pr-204','review-pr-205','review-pr-206']));
   await expect(queue.locator('.review-count-key')).toContainText('last 48 hours and the latest two known merges');
-  const provenance = queue.locator('.review-freshness');
-  need(await provenance.locator('details').getAttribute('open') === null);
+  const provenance = queue.locator('.review-technical-details');
+  need(await provenance.getAttribute('open') === null);
   need(await provenance.locator('dl').isVisible() === false && !(await provenance.innerText()).includes('As of'));
+  const technicalReads=queueReads.length;
+  await provenance.getByLabel('Technical details',{exact:true}).click();
+  await expect(provenance.getByText('Source timestamp',{exact:true})).toBeVisible();
+  await expect(provenance.getByText('Saved locally',{exact:true})).toBeVisible();
+  await current.page.keyboard.press('Escape');
+  need(await provenance.getAttribute('open') === null && queueReads.length===technicalReads);
   need(await queue.locator('.review-pull-heading .badge').count() === 0);
   need(await queue.getByText('Open',{exact:true}).count() === 0);
   for (const merged of [203,204,206]) {
     const facts = queue.locator(`#review-pr-${merged} .review-pull-facts`);
-    await expect(facts.locator(':scope > .badge')).toHaveCount(1);
-    await expect(facts.locator(':scope > .badge')).toHaveText('Merged');
+    await expect(facts.locator(':scope > .review-state-merged')).toHaveCount(1);
+    await expect(facts.locator(':scope > .review-state-merged')).toHaveText('Merged');
+    await expect(facts.locator('.review-ci')).toHaveText('CI: Success');
+    need(await facts.locator('.review-mergeability').count()===0);
   }
-  need(await queue.locator('#review-pr-205 .review-pull-facts > .badge').count() === 0);
+  need(await queue.locator('#review-pr-205 .review-pull-facts > .badge:not(.review-fact-pill)').count() === 0);
+  await expect(queue.locator('#review-pr-205 .review-ci')).toHaveText('CI: Success');
+  await expect(queue.locator('#review-pr-205 .review-mergeability')).toHaveText('Mergeability: Mergeable');
   need(await queue.locator('.review-queue-panel').evaluate(panel=>getComputedStyle(panel).borderTopLeftRadius === '0px'));
   if (config.proof_directory) for (const width of [1440,390]) {
     await current.page.setViewportSize({width,height:900});
@@ -214,7 +229,7 @@ try {
   }
   phase = 'merged-history';
   const controlsBefore = controlReads.length;
-  await queue.locator('.delivery-section-heading').getByRole('link',{name:'Queue history',exact:true}).click();
+  await queue.locator('.delivery-section-heading').getByRole('link',{name:'Queue history ↗',exact:true}).click();
   await expect(queue.getByRole('heading',{name:'Queue history',exact:true})).toBeVisible();
   await expect(queue.locator('.review-queue-row')).toHaveCount(5);
   need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-206','review-pr-204','review-pr-203','review-pr-202','review-pr-201']));
@@ -222,7 +237,7 @@ try {
   need(controlReads.length === controlsBefore);
   need(queueReads.every(read=>read.limit === 20 && read.cursor === null && (read.view === 'recent' || read.view === 'merged')));
   need(queueReads.filter(read=>read.view === 'merged').length === 1);
-  await expect(queue.getByRole('link',{name:'Back to review queue',exact:true})).toHaveAttribute('href',reviewPath);
+  await expect(queue.getByRole('link',{name:'Back to review queue ↗',exact:true})).toHaveAttribute('href',reviewPath);
   // The server must serve this route on a direct reload, before the SPA runs.
   const reloaded = await current.page.reload();
   need(reloaded.status() === 200 && reloaded.headers()['content-type'].startsWith('text/html'));

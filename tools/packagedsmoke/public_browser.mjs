@@ -127,13 +127,15 @@ try {
   await page.goto(config.origin + '/public/public-smoke');
   await page.getByRole('heading', { name: 'Public showcase', exact: true }).waitFor();
   const verify = async (page, rounds) => {
-    await expect(page.locator('[aria-label="Hosted review rounds"] li')).toHaveCount(rounds);
-    await expect(page.locator('[aria-label="CLI review rounds"] li')).toHaveCount(1);
+    const hostedLane = page.getByRole('region', {name:'Hosted review rounds',exact:true});
+    await expect(hostedLane.getByRole('link', {name:/^Published Hosted round:/})).toHaveCount(Math.min(rounds,6));
+    await expect(hostedLane.locator('.review-lane-heading')).toContainText(`${rounds} published ${rounds === 1 ? 'round' : 'rounds'}`);
+    await expect(page.getByRole('region', {name:'CLI review rounds',exact:true}).getByRole('link', {name:/^Published CLI round:/})).toHaveCount(1);
     need(await page.getByRole('heading', { name: 'Public roadmap', exact: true }).count() === 1);
     need(await page.getByRole('heading', { name: 'Published roadmap card', exact: true }).count() === 1);
     need(await page.getByRole('heading', { name: 'Public builder lane', exact: true }).count() === 1);
     need(await page.getByRole('link', { name: 'Merged public work', exact: true }).count() === 1);
-    need(await page.getByText('merged', { exact: true }).count() === 1);
+    need(await page.locator('.review-state-merged').getByText('Merged', { exact: true }).count() === 1);
     need(await page.getByLabel('Project credential', { exact: true }).count() === 0);
     need(!(await page.content()).includes('PRIVATE_') && !(await page.content()).includes(config.project) && !(await page.content()).includes(config.worker));
     need(await page.locator('literal').count() === 0);
@@ -190,9 +192,10 @@ try {
   const limited = await publicRead(publicPath), limitedReview = limited.content.reviews[0];
   need(limited.revision === 4 && limitedReview.hosted.length === 100 && limitedReview.hosted_has_more === true && limitedReview.cli.length === 1 && !limitedReview.cli_has_more);
   const hostedLane = phone.getByRole('region', { name: 'Hosted review rounds', exact: true });
-  await expect(hostedLane.getByText('Published round', { exact: true })).toHaveCount(100);
+  await expect(hostedLane.getByRole('link', {name:/^Published Hosted round:/})).toHaveCount(6);
+  await expect(hostedLane.locator('.review-lane-heading')).toContainText('100 published rounds');
   need(await hostedLane.getByText(/^Round \d+$/).count() === 0);
-  need(await phone.getByRole('region', { name: 'CLI review rounds', exact: true }).getByText('Round 1', { exact: true }).count() === 1);
+  need(await phone.getByRole('region', { name: 'CLI review rounds', exact: true }).getByRole('link', {name:/^Published CLI round:/}).count() === 1);
   need(await hostedLane.getByText('More published Hosted rounds are outside this view.', { exact: false }).count() === 1);
   need(await hostedLane.getByText('these snapshots may not contain every round.', { exact: false }).count() === 1);
   if (config.proof_directory) await phone.screenshot({ path: config.proof_directory + '/phone-window.png', fullPage: true });
