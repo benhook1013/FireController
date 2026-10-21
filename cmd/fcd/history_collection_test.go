@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -224,13 +225,76 @@ func TestHistoryCollectionDaemonStopsWhenAcquisitionLaneFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	defer cancel()
-	var out, diagnostics bytes.Buffer
-	code := run(ctx, []string{"--data-dir", f.dir, "--listen", "127.0.0.1:0", "--history-collection"}, &out, &diagnostics)
-	if code != 3 || ctx.Err() != nil || !strings.Contains(diagnostics.String(), `"code":"storage_unavailable"`) || strings.Contains(diagnostics.String(), f.token) {
-		t.Fatal("daemon kept serving after its acquisition lane failed", code)
+	// Cold schema initialization has the same independent startup budget as
+	// the other daemon fixtures. The lane's failure must not be mistaken for
+	// expiration of an owner context before the service even starts listening.
+	ctx, cancel := context.WithCancel(t.Context())
+	out, diagnostics := &output{ready: make(chan struct{})}, &output{ready: make(chan struct{})}
+	done := make(chan int, 1)
+	go func() {
+		done <- run(ctx, []string{"--data-dir", f.dir, "--listen", "127.0.0.1:0", "--history-collection"}, out, diagnostics)
+	}()
+	joined := false
+	t.Cleanup(func() {
+		cancel()
+		if !joined {
+			select {
+			case <-done:
+			case <-time.After(8 * time.Second):
+				t.Error("history failure fixture did not join its daemon and owned workers")
+			}
+		}
+	})
+	started := time.Now()
+	startup := time.NewTimer(8 * time.Second)
+	defer startup.Stop()
+	code := 0
+	select {
+	case <-out.ready:
+	case code = <-done:
+		joined = true
+	case <-startup.C:
+		t.Fatal("history failure fixture exceeded its startup budget before listening")
 	}
+	var listening struct {
+		Event      string `json:"event"`
+		Address    string `json:"address"`
+		InstanceID string `json:"instance_id"`
+	}
+	if json.Unmarshal([]byte(out.String()), &listening) != nil || listening.Event != "listening" || listening.Address == "" || listening.InstanceID != f.instance {
+		t.Fatalf("history failure fixture exited before listening, exit=%d owner_cancelled=%t", code, ctx.Err() != nil)
+	}
+	t.Logf("history failure fixture listening after %s", time.Since(started))
+	failedAt := time.Now()
+	if !joined {
+		failure := time.NewTimer(3 * time.Second)
+		defer failure.Stop()
+		select {
+		case code = <-done:
+			joined = true
+		case <-failure.C:
+			t.Fatal("listening daemon did not terminate within the acquisition failure budget")
+		}
+	}
+	var failure struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decoded := json.Unmarshal([]byte(diagnostics.String()), &failure) == nil
+	if code != 3 || ctx.Err() != nil || !decoded || failure.Error.Code != "storage_unavailable" {
+		t.Fatalf("acquisition failure settlement after %s: exit=%d owner_cancelled=%t diagnostic_decoded=%t diagnostic_code=%s", time.Since(failedAt), code, ctx.Err() != nil, decoded, failure.Error.Code)
+	}
+	if strings.Contains(out.String(), f.token) || strings.Contains(diagnostics.String(), f.token) {
+		t.Fatal("history failure fixture disclosed authority")
+	}
+	// run returns only after its HTTP server and owned workers have joined.
+	// Verify the original listener is closed while its owner is still live.
+	if conn, err := net.DialTimeout("tcp", listening.Address, time.Second); err == nil {
+		_ = conn.Close()
+		t.Fatal("daemon listener remained open after acquisition failure settlement")
+	}
+
 }
 
 // This provider is an enqueue-only fixture: acquisition is never started and

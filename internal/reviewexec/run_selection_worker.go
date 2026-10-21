@@ -13,6 +13,37 @@ import (
 	"time"
 )
 
+// runSourceBudget bounds cumulative source acquisition, excluding local SQL
+// admission and its retry backoff. It lives only for one selection phase.
+type runSourceBudget struct{ remaining time.Duration }
+
+func (b *runSourceBudget) read(ctx context.Context, read func(context.Context) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if b.remaining <= 0 {
+		return context.DeadlineExceeded
+	}
+	started := time.Now()
+	sourceCtx, cancel := context.WithTimeout(ctx, b.remaining)
+	defer cancel()
+	err := read(sourceCtx)
+	b.remaining -= time.Since(started)
+	// A reader that returns success after its deadline still has no usable
+	// source result. Parent cancellation wins; check before canceling our own
+	// context, including elapsed exhaustion before timer delivery catches up.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if sourceCtx.Err() != nil {
+		return sourceCtx.Err()
+	}
+	if b.remaining <= 0 {
+		return context.DeadlineExceeded
+	}
+	return err
+}
+
 // runReads coalesces source identities only within one bounded selection phase.
 type runReads struct {
 	reader TargetReader
@@ -90,7 +121,13 @@ func runReason(err error) string {
 
 func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader) (runChoice, error) {
 	reads := &runReads{reader: reader, repos: map[int64]reviewprovider.Repository{}, pulls: map[string]map[int64]reviewprovider.Pull{}}
-	repository, err := reads.Repository(ctx, repo)
+	source := runSourceBudget{remaining: 15 * time.Second}
+	var repository reviewprovider.Repository
+	err := source.read(ctx, func(ctx context.Context) error {
+		var err error
+		repository, err = reads.Repository(ctx, repo)
+		return err
+	})
 	if err != nil {
 		return runChoice{state: "held", reason: runReason(err), sourceReason: runReason(err)}, nil
 	}
@@ -99,10 +136,15 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 	}
 	choice := runChoice{state: "empty", reason: "queue_complete"}
 	for _, n := range c.Queue {
-		if ctx.Err() != nil {
-			return runChoice{state: "held", reason: "source_unavailable", sourceReason: "source_unavailable"}, nil
+		if err := ctx.Err(); err != nil {
+			return runChoice{}, err
 		}
-		pull, err := reads.Pull(ctx, repository.FullName, n)
+		var pull reviewprovider.Pull
+		err = source.read(ctx, func(ctx context.Context) error {
+			var err error
+			pull, err = reads.Pull(ctx, repository.FullName, n)
+			return err
+		})
 		if err != nil {
 			return runChoice{state: "held", reason: runReason(err), sourceReason: runReason(err)}, nil
 		}
@@ -111,7 +153,11 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 		}
 		plan := SourcePlan{Repository: repository, Pull: pull, ParentSHA: pull.BaseSHA, ObservedAt: stamp()}
 		if !pull.Merged && pull.State == "open" {
-			plan, err = ResolveSource(ctx, reads, repo, c, Request{PullNumber: n, HeadSHA: pull.HeadSHA, Channel: r.Channel})
+			err = source.read(ctx, func(ctx context.Context) error {
+				var err error
+				plan, err = ResolveSource(ctx, reads, repo, c, Request{PullNumber: n, HeadSHA: pull.HeadSHA, Channel: r.Channel})
+				return err
+			})
 			if err != nil {
 				return runChoice{state: "held", reason: runReason(err), sourceReason: runReason(err)}, nil
 			}
@@ -309,13 +355,7 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 		return changed != "", err
 	}
 	r := *selected
-	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	choice, readErr := e.chooseRun(readCtx, r, repo, configuration, readers[configuration.CapabilityID])
-	if readCtx.Err() != nil {
-		choice = runChoice{state: "held", reason: "source_unavailable", sourceReason: "source_unavailable"}
-		readErr = nil
-	}
-	cancel()
+	choice, readErr := e.chooseRun(ctx, r, repo, configuration, readers[configuration.CapabilityID])
 	if ctx.Err() != nil {
 		return true, nil
 	}

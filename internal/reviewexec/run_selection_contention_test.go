@@ -241,6 +241,69 @@ func TestRunSelectionContentionLocalReadRetainsSourceAndRechecksBinding(t *testi
 	}
 }
 
+func TestRunSelectionContentionLocalReadBeyondSourceBudgetRetainsFacts(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "prolonged-local-read", "cli", nil)
+	r, entered, release := selectionContentionReader()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.e.runNext(ctx, map[string]TargetReader{"test-capability": r})
+		done <- err
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("prolonged local-read selection leaked")
+		}
+	})
+	selectionContentionEntered(t, entered)
+	f.store.DB().SetMaxOpenConns(1)
+	conn, err := f.store.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	close(release)
+	// Exceed the real cumulative source budget while only the local read pool
+	// is unavailable. Already acquired source facts must not become a timeout.
+	select {
+	case err := <-done:
+		conn.Close()
+		got := selectionContentionRead(t, f, receipt.ID)
+		t.Fatal("local read contention produced an early terminal selection", got, err)
+	case <-time.After(16 * time.Second):
+	}
+	var state, operation string
+	var revision int64
+	if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT state,revision,COALESCE(operation_id,'') FROM review_selections WHERE id=?`, receipt.ID).Scan(&state, &revision, &operation)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if state != "selecting" || revision != 2 || operation != "" || r.calls.Load() != 2 {
+		t.Fatal("local contention invented a terminal result or repeated source", state, revision, operation, r.calls.Load())
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal("selection failed after local contention cleared", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("selection stranded after local contention cleared")
+	}
+	got := selectionContentionRead(t, f, receipt.ID)
+	if got.State != "selected" || got.Revision != 3 || got.OperationID == "" || r.calls.Load() != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.selection_updated'`) != 2 {
+		t.Fatal("prolonged local retry lost or duplicated selection authority", got, r.calls.Load())
+	}
+}
+
 func TestRunSelectionContentionCompletionRechecksCurrentBinding(t *testing.T) {
 	for _, change := range []string{"revoked", "configuration"} {
 		t.Run(change, func(t *testing.T) {
