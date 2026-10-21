@@ -42,9 +42,16 @@ describe('merge-head recent review rounds', () => {
     const html = markup();
     expect(links(html)).toEqual(['h3', 'h4', 'h5', 'c2', 'c3', 'c4']);
     expect(html).toContain('5 runs · latest 3'); expect(html).toContain('4 runs · latest 3');
-    expect(html).toContain('5 of 8 used · Max 3 remaining'); expect(html).toContain('Taper 2/2'); expect(html).toContain('Taper met');
+    expect(html).not.toContain('Up to 3 more reviews'); expect(html).not.toContain('5 of 8 used'); expect(html).toContain('Taper met');
     expect(html).toContain('<strong>5/2/1</strong>'); expect(html).not.toContain('Load more');
     expect(links(markup(false))).toEqual(['h1', 'h2', 'h3', 'h4', 'h5', 'c1', 'c2', 'c3', 'c4']);
+  });
+  it('caps queue previews independently at the newest six without losing producer order or totals', () => {
+    archive.items = Array.from({length:8}, (_, index) => 8-index).flatMap(index => [run(`h${index}`, 'hosted'), run(`c${index}`, 'cli')]);
+    archive.hasMore = false;
+    const html = markup(false);
+    expect(links(html)).toEqual(['h3','h4','h5','h6','h7','h8','c3','c4','c5','c6','c7','c8']);
+    expect(html).toContain('8 runs · recent'); expect(html).not.toContain('Load more');
   });
   it('keeps partial coverage, absent channels and unknown attribution honest without fetching more', () => {
     archive.items = [run('unknown', 'hosted', { head_sha: '', finished_at: '', complete: false, attributable: false, finalized: false }), run('h3', 'hosted'), run('h2', 'hosted'), run('h1', 'hosted')];

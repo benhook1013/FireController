@@ -15,11 +15,13 @@ export function useReviewProgress(pulls: number[]) {
 }
 export function ReviewProgressView({ value }: { value?: ReviewRoundProgress }) {
   if (!value?.configured) return null;
+  const finished = value.closed || value.tapered;
+  const remaining = value.maximum_unbounded || value.used < value.maximum;
   return <div className="review-current-progress" aria-label={`Current ${value.channel} round limits`}>
-    <span className="review-progress-state">{roundProgressState(value)}</span>
-    <span>{roundProgressAllowance(value)}</span>
-    {value.minimum > value.used && <span>Minimum {value.minimum - value.used} more</span>}
-    <span title="Consecutive eligible rounds with no accepted findings; a maximum can finish early after its minimum is met.">Taper {value.dry}/{value.taper}</span>
+    <span className="review-progress-state">{finished ? roundProgressState(value) : roundProgressAllowance(value)}</span>
+    {!finished && remaining && value.minimum > value.used && <span>At least {value.minimum - value.used} more</span>}
+    {!finished && remaining && <span title="Consecutive eligible rounds with no accepted findings; a maximum can finish early after its minimum is met.">Taper {value.dry}/{value.taper}</span>}
     {value.pending > 0 && <span>{value.pending} in flight</span>}
   </div>;
+
 }

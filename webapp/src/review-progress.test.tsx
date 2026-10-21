@@ -45,23 +45,29 @@ describe('current round progress', () => {
   });
   it('keeps historical run counts separate and does not turn allowance into permission to dispatch', () => {
     const html=renderToStaticMarkup(<ReviewProgressView value={current}/>);
-    expect(html).toContain('2 of 5 used');expect(html).toContain('Max 3 remaining');expect(html).toContain('1 in flight');expect(html).toContain('Taper 0/1');expect(html).not.toMatch(/Ready|Idle|run recorded|coverage/i);
+    expect(html).toContain('Up to 3 more reviews');expect(html).not.toContain('of 5 used');expect(html).toContain('1 in flight');expect(html).toContain('Taper 0/1');expect(html).not.toMatch(/Ready|Idle|run recorded|coverage/i);
     expect(renderToStaticMarkup(<ReviewProgressView value={absent}/>)).toBe('');
     expect(roundProgressState({...current,closed:true})).toBe('Review closed');
     expect(roundProgressState({...current,tapered:true,dry:1})).toBe('Taper met');
-    expect(roundProgressState({...current,used:5})).toBe('Allowance used');
-    const exact=renderToStaticMarkup(<ReviewProgressView value={{...current,minimum:5}}/>);expect(exact).toContain('Minimum 3 more');
+    expect(roundProgressState({...current,used:5})).toBe('No reviews remaining');
+    const exact=renderToStaticMarkup(<ReviewProgressView value={{...current,minimum:5}}/>);expect(exact).toContain('At least 3 more');
   });
   it('renders a minimum-only rule without fabricating an exhausted maximum', async () => {
     const value: ReviewRoundProgress = {...current,maximum_unbounded:true,maximum:0,minimum:2001,used:2000,dry:0};
     expect(validRoundProgress(value,'hosted')).toBe(true);
     expect(roundProgressState(value)).toBe('More rounds allowed');
     const html=renderToStaticMarkup(<ReviewProgressView value={value}/>);
-    expect(html).toContain('2000 used · No maximum');expect(html).toContain('Minimum 1 more');expect(html).toContain('Taper 0/1');
+    expect(html).toContain('No maximum');expect(html).toContain('At least 1 more');expect(html).toContain('Taper 0/1');
     expect(html).not.toMatch(/remaining|of 0 used|Allowance used/u);
     const api=await connected();const response={...result,items:[{pull_number:31,channels:[value,absent]}]};
     vi.stubGlobal('fetch',vi.fn(async()=>json(response)));expect(await api.reviewProgress([31])).toEqual(response);
-    expect(roundProgressState({...current,maximum:0,used:0,maximum_unbounded:false})).toBe('Allowance used');
+    expect(roundProgressState({...current,maximum:0,used:0,maximum_unbounded:false})).toBe('No reviews remaining');
+  });
+  it('does not present an adopted exhausted allowance as zero completed history', () => {
+    const tapered = renderToStaticMarkup(<ReviewProgressView value={{...current, maximum:0, used:0, dry:1, taper:1, tapered:true, pending:0}}/>);
+    expect(tapered).toContain('Taper met'); expect(tapered).not.toMatch(/of 0|remaining|Taper 1\/1/u);
+    const exhausted = renderToStaticMarkup(<ReviewProgressView value={{...current, maximum:0, used:0, pending:0}}/>);
+    expect(exhausted).toContain('No reviews remaining'); expect(exhausted).not.toMatch(/of 0|Taper 0\/1/u);
   });
   it('requires an explicit boolean and zero placeholder and rejects unsafe counters', () => {
     const value={...current,maximum_unbounded:true,maximum:0,minimum:Number.MAX_SAFE_INTEGER,used:Number.MAX_SAFE_INTEGER,dry:0};

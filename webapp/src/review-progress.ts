@@ -32,10 +32,12 @@ export function validReviewProgress(value: unknown, project: string, pulls: numb
 export function roundProgressState(c: ReviewRoundProgress): string {
   if (c.closed) return 'Review closed';
   if (c.tapered) return 'Taper met';
-  if (!c.maximum_unbounded && c.used >= c.maximum) return 'Allowance used';
+  if (!c.maximum_unbounded && c.used >= c.maximum) return 'No reviews remaining';
   return 'More rounds allowed';
 }
 
 export function roundProgressAllowance(c: ReviewRoundProgress): string {
-  return c.maximum_unbounded ? `${c.used} used · No maximum` : `${c.used} of ${c.maximum} used · Max ${c.maximum - c.used} remaining`;
+  if (c.maximum_unbounded) return 'No maximum';
+  const remaining = c.maximum - c.used;
+  return remaining > 0 ? `Up to ${remaining} more ${remaining === 1 ? 'review' : 'reviews'}` : 'No reviews remaining';
 }
