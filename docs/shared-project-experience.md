@@ -30,7 +30,7 @@ Review finding text remains captured from providers and private by default. Coun
 
 ## Efficient agent use
 
-Use briefs for standing instructions, checklists for remaining steps and a concise checkpoint or update for material progress. Do not restate each routine action across every surface. The worker doing a task can propose its summary/update with its result; the orchestrator checks and records it without spawning a separate summarization pass for every edit. These are optional workflow habits, not server-enforced rituals.
+Use briefs for standing instructions, checklists for remaining steps and one current progress record for material changes. Do not restate each routine action across every surface. The worker doing a task can propose its summary/update with its result; the orchestrator checks and records it without spawning a separate summarization pass for every edit. These are optional workflow habits, not server-enforced rituals.
 
 ## Installation and handover
 

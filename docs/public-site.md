@@ -93,6 +93,25 @@ A minimal file can select the default fire presentation with a deliberate public
 
 Preview shows normalized empty sections and the default presentation. Add only text and destinations intended for anonymous readers. Publishing a private source's title or content requires that explicit selection; importing it privately does not imply permission to publish it.
 
+## Compact linked-publication preparation
+
+For an already configured publication, prefer a short linked-record edit plan over copying the whole publication document. `fc publication prepare --file /private/changes.json --output /private/prepared-publication.json` checks the current configuration revision, preserves unmentioned approved content and calls the ordinary server preview. It writes the exact resulting complete input into a new owner-private file without overwriting an existing path. It returns a compact selection receipt with `expected_revision`, `preview_sha256` and `prepared_file`; it does not publish, enable a disabled site or change its slug.
+
+The plan contains required `expected_revision` and optional `description`, `job_refs`, `map_refs`, `worker_refs` or `reviews` edits. Each collection uses `upsert` and `remove` lists: reference upserts carry their ordinary key and explicit source revision, removals identify public keys, while review edits use PR numbers. Existing entries retain order, replacements stay in place and new selections append in plan order. Absent selections to remove, conflicting identities, null or unknown fields are refused. A job selection pins an authored shareable summary; a map selection pins that entry's approved description. Worker selections derive headlines and milestones from selected jobs. No private brief, message or latest unselected revision is substituted.
+
+For example, select one existing summary without repeating any unrelated public prose:
+
+```json
+{
+  "expected_revision": 7,
+  "job_refs": {
+    "upsert": [{ "key": "current-work", "job_id": "job_0123456789abcdef0123456789abcdef", "summary_revision": 2 }]
+  }
+}
+```
+
+Inspect the compact selection receipt; an explicit `publication preview --file /private/prepared-publication.json` exposes the full preview when needed. Publish deliberately with the existing `publication apply --file /private/prepared-publication.json --preview-sha256 HASH --key KEY`. Retain that exact prepared file, hash and key after an uncertain apply; preparing against newer state is a different action, not recovery. Ordinary workers need no extra public-maintenance step. Standalone public editorial cards remain available for genuinely independent content rather than a parallel copy of jobs or Project entries.
+
 ## Anonymous transport and retention
 
 The canonical browser root is `/projects/{handle}`, with sign-in opening the private workspace at that same address as defined by the [shared experience](shared-project-experience.md). Legacy `/public/{slug}` and `/public/{slug}/history/{revision}?generation={generation}` routes remain valid. Anonymous public transport omits credentials and never mounts the private session or query cache.

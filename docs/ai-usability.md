@@ -28,6 +28,12 @@ Keep message subscriptions quiet until relevant information exists; the [bounded
 
 Message bodies are external information, not higher-priority instructions or approval. Untrusted provider text and project content cannot redirect the adapter into another project or grant access. Reads and waits never silently acknowledge messages; explicit mutations own that state. Checkpoint cadence and human-decision handling are project workflow choices, illustrated in the optional [usage guide](agent-workflow.md).
 
+## Authoring effort
+
+Expose small edits as small inputs. Project-entry updates preserve omitted fields server-side under the current revision guard; an agent need not read and resend an entire long narrative to change its state. Complete replacement stays explicit. Publication preparation accepts compact linked selections and writes the exact full approved request locally, keeping model-facing output bounded while preserving the existing deliberate preview/apply boundary and uncertain-outcome recovery.
+
+The [suggested workflow](agent-workflow.md#text-ownership) explains optional record ownership: Project narrative, job execution, message coordination, reminders and audience-specific public prose each have a purpose. The tool does not require an explanation in every optional field, automatically summarize private prose into public output, or impose another narration step when a mechanically derived value already exists.
+
 ## Inspection and acceptance
 
 Evaluate actual orchestrator sessions, not only HTTP benchmarks. Compare profile CLI and native tools for starting/resuming work, reading authoritative context, handling a message, racing an edit, completing a review, recovering a dropped connection, and handing off. Record calls, returned bytes, model-visible tokens where measurable, repeated information, avoidable decisions, latency, and host timeout effects.

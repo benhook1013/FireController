@@ -14,6 +14,7 @@ type projectMapToolCall struct {
 	name, id, key string
 	revision      int64
 	entry         client.ProjectMapEditable
+	changes       client.ProjectMapChanges
 	association   client.ReplaceJobWorkstreamRequest
 	filter        client.ProjectMapFilter
 	page          client.PageOptions
@@ -21,13 +22,13 @@ type projectMapToolCall struct {
 
 func projectMapTool(name string) bool {
 	switch name {
-	case "map_entry_create", "map_entry_replace", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history":
+	case "map_entry_create", "map_entry_replace", "map_entry_update", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history":
 		return true
 	}
 	return false
 }
 func projectMapWrite(name string) bool {
-	return name == "map_entry_create" || name == "map_entry_replace" || name == "job_workstream_replace"
+	return name == "map_entry_create" || name == "map_entry_replace" || name == "map_entry_update" || name == "job_workstream_replace"
 }
 func projectMapArguments(name string, data json.RawMessage) (arguments, error) {
 	var args arguments
@@ -46,6 +47,8 @@ func projectMapArguments(name string, data json.RawMessage) (arguments, error) {
 	switch name {
 	case "map_entry_create":
 		required = []string{"idempotency_key", "entry"}
+	case "map_entry_update":
+		required = []string{"idempotency_key", "entry_id", "expected_revision", "changes"}
 	case "map_entry_replace":
 		required = []string{"idempotency_key", "entry_id", "expected_revision", "entry"}
 	case "map_entry_read":
@@ -83,6 +86,7 @@ func projectMapArguments(name string, data json.RawMessage) (arguments, error) {
 		JobID            string                     `json:"job_id"`
 		Key              string                     `json:"idempotency_key"`
 		Entry            *client.ProjectMapEditable `json:"entry"`
+		Changes          json.RawMessage            `json:"changes"`
 		ExpectedRevision *int64                     `json:"expected_revision"`
 		Revision         *int64                     `json:"revision"`
 		WorkstreamID     *string                    `json:"workstream_id"`
@@ -118,8 +122,18 @@ func projectMapArguments(name string, data json.RawMessage) (arguments, error) {
 			return args, invalidArguments()
 		}
 	}
+	if name == "map_entry_update" {
+		var err error
+		m.changes, err = client.DecodeProjectMapChanges(in.Changes)
+		if err != nil {
+			return args, invalidArguments()
+		}
+	}
 	if in.ExpectedRevision != nil {
 		m.revision = *in.ExpectedRevision
+	}
+	if name == "map_entry_update" && client.ValidateUpdateProjectMapEntryRequest(client.UpdateProjectMapEntryRequest{ExpectedRevision: m.revision, Changes: m.changes}) != nil {
+		return args, invalidArguments()
 	}
 	if name == "map_entry_replace" && client.ValidateReplaceProjectMapEntryRequest(client.ReplaceProjectMapEntryRequest{ExpectedRevision: m.revision, Entry: m.entry}) != nil {
 		return args, invalidArguments()
@@ -163,6 +177,8 @@ func executeProjectMapTool(ctx context.Context, c *client.Client, m *projectMapT
 	switch m.name {
 	case "map_entry_create":
 		return c.CreateProjectMapEntry(ctx, m.key, m.entry)
+	case "map_entry_update":
+		return c.UpdateProjectMapEntry(ctx, m.key, m.id, client.UpdateProjectMapEntryRequest{ExpectedRevision: m.revision, Changes: m.changes})
 	case "map_entry_replace":
 		return c.ReplaceProjectMapEntry(ctx, m.key, m.id, client.ReplaceProjectMapEntryRequest{ExpectedRevision: m.revision, Entry: m.entry})
 	case "map_entry_read":
@@ -195,13 +211,16 @@ func projectMapDefinitions() []definition {
 	phase := object(map[string]any{"id": map[string]any{"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"}, "name": text(160), "state": text(240), "archived": map[string]any{"type": "boolean"}}, "id", "name")
 	link := object(map[string]any{"label": text(120), "url": text(2048)}, "label", "url")
 	entry := object(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"workstream", "return_point", "section"}}, "title": text(240), "description": text(8192), "state": text(240), "where": text(8192), "next": text(8192), "trigger": text(8192), "phases": map[string]any{"type": []string{"array", "null"}, "items": phase, "maxItems": 64}, "links": map[string]any{"type": []string{"array", "null"}, "items": link, "maxItems": 12}, "archived": map[string]any{"type": "boolean"}, "position": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000}}, "kind", "title")
+	changes := object(map[string]any{"title": text(240), "description": text(8192), "state": text(240), "where": text(8192), "next": text(8192), "trigger": text(8192), "phases": map[string]any{"type": "array", "items": phase, "maxItems": 64}, "links": map[string]any{"type": "array", "items": link, "maxItems": 12}, "archived": map[string]any{"type": "boolean"}, "position": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000}})
+	changes["minProperties"] = 1
 	pages := func(extra map[string]any) map[string]any {
 		extra["limit"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 100}
 		extra["cursor"] = map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}
 		return extra
 	}
 	return []definition{
-		{"map_entry_create", "Create one project-scoped section, workstream or return point. Prose supports safe browser Markdown; position selects editorial order. Entry is bounded text, at most 64 KiB encoded; kind/title are required and omitted optional fields default empty. No provider work. Retain the exact key and request after an uncertain result.", object(map[string]any{"idempotency_key": id, "entry": entry}, "idempotency_key", "entry")},
+		{"map_entry_create", "Create one project-scoped entry. Prefer a narrative section with title/description; use workstream metadata only for distinct milestones, without duplicating job logs. Prose supports safe browser Markdown; position selects editorial order. Entry is bounded text, at most 64 KiB encoded; kind/title are required and omitted optional fields default empty. No provider work. Retain the exact key and request after an uncertain result.", object(map[string]any{"idempotency_key": id, "entry": entry}, "idempotency_key", "entry")},
+		{"map_entry_update", "Update only selected editable fields using the expected revision; omitted fields are preserved atomically. Explicit empty values clear where valid; kind is immutable, null is refused and phase arrays must retain every existing phase ID. No provider work or automatic publication. Retain exact key/request after uncertainty.", object(map[string]any{"idempotency_key": id, "entry_id": id, "expected_revision": revision, "changes": changes}, "idempotency_key", "entry_id", "expected_revision", "changes")},
 		{"map_entry_replace", "Replace the complete editable map entry using its expected revision; omitted optional fields clear/default. Keep every previously introduced phase ID, optionally archived. Does not change job status or provider state. Retain the exact key/request after uncertainty.", object(map[string]any{"idempotency_key": id, "entry_id": id, "expected_revision": revision, "entry": entry}, "idempotency_key", "entry_id", "expected_revision", "entry")},
 		{"map_entry_list", "Read one compact map-entry page, default 25 active entries. Optional exact kind/archived filters; no bodies, automatic pagination or provider reads.", object(pages(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"workstream", "return_point", "section"}}, "archived": map[string]any{"type": "boolean"}}))},
 		{"map_entry_read", "Read one complete current map entry in the bound project.", object(map[string]any{"entry_id": id}, "entry_id")},

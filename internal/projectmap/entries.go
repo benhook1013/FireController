@@ -17,6 +17,7 @@ func Register(mux *http.ServeMux, store *core.Store) {
 	base := "/api/v1/projects/{project_id}"
 	mux.HandleFunc("POST "+base+"/map/entries", createEntry(store))
 	mux.HandleFunc("PUT "+base+"/map/entries/{entry_id}", replaceEntry(store))
+	mux.HandleFunc("PATCH "+base+"/map/entries/{entry_id}", updateEntry(store))
 	mux.HandleFunc("GET "+base+"/map/entries", listEntries(store))
 	mux.HandleFunc("GET "+base+"/map/editorial", editorialEntries(store))
 	mux.HandleFunc("GET "+base+"/map/entries/{entry_id}", getEntry(store))

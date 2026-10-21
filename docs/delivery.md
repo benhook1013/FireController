@@ -8,6 +8,14 @@ The public repository and Apache-2.0 baseline exist. [PR #1](https://github.com/
 
 The [native review workspace](review-workspace.md) implements stored queue, PR/run/finding and fix-proof inspection, with an explicit administrator import and [profile-bound CLI/MCP review reads](review-workspace.md#agent-reads-and-restored-review-history). Integrated checks and four actual packaged API/integration groups plus three browser groups passed; a verified real-data observation is available in the native development browser. Native execution and policy implementation status is recorded in the [execution boundary](review-execution.md).
 
+## Agent text-authoring simplification
+
+Project entries now support guarded partial edits through the API, typed client, CLI and MCP. Omitted prose and metadata survive a small update, including retained phase identities and history. Ordinary narrative sections need no workstream metadata. The [Project contract](project-map.md#authoring-without-duplicate-progress) owns exact update semantics.
+
+Administrator publication preparation now consumes compact explicit linked-record edits, preserves unmentioned approved content and saves the exact full request for ordinary preview/apply recovery. It never publishes or selects private prose implicitly. The [publication owner](public-site.md#compact-linked-publication-preparation) owns the plan and approval boundary. Existing independent editorial cards remain available where their content has a separate purpose.
+
+The usage skill and optional workflow assign text a distinct purpose across Project narrative, job execution, messages, reminders and review decisions/proof. Optional public summaries serve an audience rather than another progress log. PR groups remain independent labels for review bundles; no duplicate mandatory workstream synchronisation is introduced. Existing records and public selections are preserved rather than bulk-rewritten.
+
 ## Product completion and handover
 
 Core coordination, bound CLI/MCP clients, native review execution and controls, selected retained-data migration, public/private Project views, Delivery lanes, review history and automatic GitHub observation are implemented and installed. Their owning contracts record the exact source, executable and installed proof. Ordinary reads do not depend on an agent maintaining the dashboard.

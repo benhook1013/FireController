@@ -52,6 +52,7 @@ Startup validates configuration without opening the credential or contacting the
 | `map_entry_revision_read` | Required entry_id/revision; one complete immutable editorial snapshot. |
 | `map_entry_create` | Required idempotency_key/entry; create one bounded workstream or return point. |
 | `map_entry_replace` | Required idempotency_key/entry_id/expected_revision/entry; full guarded replacement, preserving retained phase IDs. |
+| `map_entry_update` | Required entry_id, expected_revision, changes and idempotency_key; patch only selected editable fields, preserving omitted content. No provider or public publication work. |
 | `job_workstream_read` | Required job_id; independent association revision and captured-at-association title. |
 | `job_workstream_replace` | Required idempotency_key/job_id/expected_revision/workstream_id; select a scoped active workstream or explicitly clear with empty text. |
 | `job_workstream_history` | Required job_id and optional limit/cursor; one compact captured-association history page. |

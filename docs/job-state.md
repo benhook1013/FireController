@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The service, CLI, MCP adapter and browser implement the selected model below, replacing separate everyday updates and checkpoints. Source checks cover conversion, guarded updates, current-context reads, backup/restore and actual packaged clients and browser behavior. Installed migration, matching-client rollout and active-job content normalization require their own qualification. GitHub lifecycle synchronization is a separate unfinished capability; job writes do not compensate for it.
+The service, CLI, MCP adapter and browser implement the selected model below, replacing separate everyday updates and checkpoints. Source checks cover conversion, guarded updates, current-context reads, backup/restore and actual packaged clients and browser behavior. Installed migration, matching-client rollout and active-job content normalization are qualified at the delivery owner. Automatic GitHub observation is service-owned; job writes do not maintain review metadata.
 
 ## One working record
 

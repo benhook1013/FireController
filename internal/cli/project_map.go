@@ -18,13 +18,14 @@ type projectMapInvocation struct {
 	operation, id, key, file string
 	revision                 int64
 	entry                    client.ProjectMapEditable
+	changes                  client.ProjectMapChanges
 	association              client.ReplaceJobWorkstreamRequest
 	filter                   client.ProjectMapFilter
 	page                     client.PageOptions
 }
 
 func (m *projectMapInvocation) write() bool {
-	return m.operation == "create" || m.operation == "replace" || m.operation == "workstream-set"
+	return m.operation == "create" || m.operation == "replace" || m.operation == "update" || m.operation == "workstream-set"
 }
 func parseProjectMap(command, operation string, args []string) (*projectMapInvocation, bool) {
 	m := &projectMapInvocation{operation: operation, page: client.PageOptions{Limit: 25}}
@@ -33,7 +34,7 @@ func parseProjectMap(command, operation string, args []string) (*projectMapInvoc
 	switch command + " " + operation {
 	case "map create":
 		allowed["--file"], allowed["--key"] = true, true
-	case "map replace":
+	case "map replace", "map update":
 		positions = 1
 		allowed["--file"], allowed["--key"], allowed["--expect-revision"] = true, true, true
 	case "map list":
@@ -130,7 +131,7 @@ func parseProjectMap(command, operation string, args []string) (*projectMapInvoc
 	if !validMutationKey(m.key) {
 		return nil, false
 	}
-	if operation == "replace" || operation == "workstream-set" {
+	if operation == "replace" || operation == "update" || operation == "workstream-set" {
 		n, err := strconv.ParseInt(values["--expect-revision"], 10, 64)
 		if err != nil {
 			return nil, false
@@ -150,7 +151,7 @@ func parseProjectMap(command, operation string, args []string) (*projectMapInvoc
 	if len(m.file) > 4096 || !filepath.IsAbs(m.file) {
 		return nil, false
 	}
-	if operation == "replace" && (m.revision < 1 || m.revision == math.MaxInt64) {
+	if (operation == "replace" || operation == "update") && (m.revision < 1 || m.revision == math.MaxInt64) {
 		return nil, false
 	}
 	return m, true
@@ -185,6 +186,13 @@ func prepareProjectMap(ctx context.Context, m *projectMapInvocation) error {
 	if err = ctx.Err(); err != nil {
 		return err
 	}
+	if m.operation == "update" {
+		m.changes, err = client.DecodeProjectMapChanges(data)
+		if err != nil {
+			return invalid()
+		}
+		return nil
+	}
 	m.entry, err = client.DecodeProjectMapEditable(data)
 	if err != nil {
 		return invalid()
@@ -198,6 +206,8 @@ func executeProjectMap(ctx context.Context, c *client.Client, m *projectMapInvoc
 	switch m.operation {
 	case "create":
 		return c.CreateProjectMapEntry(ctx, m.key, m.entry)
+	case "update":
+		return c.UpdateProjectMapEntry(ctx, m.key, m.id, client.UpdateProjectMapEntryRequest{ExpectedRevision: m.revision, Changes: m.changes})
 	case "replace":
 		return c.ReplaceProjectMapEntry(ctx, m.key, m.id, client.ReplaceProjectMapEntryRequest{ExpectedRevision: m.revision, Entry: m.entry})
 	case "read":

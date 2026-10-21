@@ -4,7 +4,7 @@
 
 New worker/job attachment admission and contextual pending panels are implemented. Focused tests preserve retained phase-only records, their immutable revisions and exact successful receipt replay; the historical proof below records the preceding contract. Project-map entry attachments are not implemented. Their future addition must use an explicit same-project entry ID, rather than matching a phase label.
 
-The API, typed client, CLI, MCP and backup integration implement the contract below. Focused backend, client, adapter and backup tests pass, including race checks. Full combined validation and six actual packaged groups pass at the checkpoint recorded below. Read-only [browser coordination views](browser-coordination.md) expose explicit note lists, current bodies and selected history; that owner records their separate proof. [Job resume context](job-context.md) explicitly includes selected pending previews under its separate completeness and proof boundary. Existing jobs, updates, checklists, checkpoints, primary focus and worker pause remain independent.
+The API, typed client, CLI, MCP and backup integration implement the contract below. Focused backend, client, adapter and backup tests pass, including race checks. Full combined validation and six actual packaged groups pass at the checkpoint recorded below. Read-only [browser coordination views](browser-coordination.md) expose explicit note lists, current bodies and selected history; that owner records their separate proof. [Default job reads](job-state.md#default-reads) include compact pending notes attached to the selected job. Notes do not edit current job progress, checklists, primary focus, worker pause or messages.
 
 ## Scope and state
 

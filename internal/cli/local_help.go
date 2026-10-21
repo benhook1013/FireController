@@ -45,6 +45,8 @@ func localHelp() helpResponse {
 			}},
 			{"guarded changes and archives", []helpCommand{
 				{"jobs update | checklist-set | summary-set", "Deliberate job changes use explicit keys and required revision guards. See release documentation for fields and byte limits."},
+				{"map update ENTRY_ID --expect-revision N --file CHANGES_JSON --key KEY", "Change only selected Project fields; omitted content stays unchanged."},
+				{"publication prepare --file CHANGES_JSON --output NEW_PRIVATE_FILE", "Administrator linked-selection preview; writes an exact private apply file without publishing."},
 				{"jobs progress-history JOB_ID", "One explicit current-progress archive page; no automatic continuation."},
 				{"jobs history JOB_ID", "One explicit private job-history page; list/history/thread commands never silently fetch every page."},
 				{"reviews queue", "Stored review workspace only. Review requests, source refreshes and publication are separate authorized operations; help grants no permission."},
