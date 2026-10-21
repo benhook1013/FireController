@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Source implements service-owned PR lifecycle synchronization and automatic external Hosted review discovery. Focused parser, scheduler, archive, migration and backup checks pass; the combined repository checks are in progress. Matching-client installation, retained-data upgrade and installed browser qualification remain pending. These source changes are not the installed service.
+Service-owned PR lifecycle synchronization and automatic external Hosted review discovery are implemented and installed in the development service. The retained-data upgrade, matching CLI/MCP installation, backup inspection and inactive restore passed. Full repository Go tests, focused race checks, browser checks and actual packaged qualification passed. The installed browser passed private, public-preview and anonymous checks for both configured projects at desktop and phone widths. Human GUI acceptance, actual resumed-worker replies and a newly triggered external Hosted result remain separate proof boundaries; qualification requested no reviews.
 
 ## Lifecycle and CI
 
@@ -33,3 +33,11 @@ Independent CLI runs are local to the machine that runs them. They are not disco
 Focused proof covers multiple provider groups, stable identities and forged actors, zero and positive inventories, replies, partial collections, repeated observations, restart, old heads, native/external deduplication and immutable frontiers. Transaction tests must establish rollback, retained history and counts, concurrent native publication and no reactivation. Controlled provider tests must count zero review POSTs, allowance queries and CLI launches, including paused operation and restored-provider holds.
 
 Installed qualification is separate: migrate a verified retained backup, inspect and restore it, install matching clients, verify history and browser updates without agent metadata edits, and record observed update latency. Real existing GitHub results may be read for qualification; no new review is required or authorized by this feature.
+
+## Installed qualification
+
+Runtime `342985cfb2403ead25157069f2fa5b36b9277ba1` upgraded the selected installation from reviews schema eight/evidence schema three to ten/four, preserving the original data across all 100 tables apart from the two schema-version markers, with credentials, signing identity, receipts, events, policies and round controls unchanged. A new-format off-host backup passed inspection and inactive restore: all 99 remaining tables and 178 artifacts were preserved, copied credentials were revoked, the restored signing identity changed and startup refused before provider or listener setup. Twelve matched launchers retained all fifteen private bindings. Five fresh role-bound MCP processes verified identity and current job reads; ordinary CLI reads verified exact channel counts. These checks do not resume other chats.
+
+The service populated previously missing actual GitHub head, CI and mergeability facts without an agent source refresh or metadata update. Controlled provider proof covers moved heads, repeated observations, mixed native/external discovery and zero review requests. No new real external review was started for qualification, so observing a newly published manual result against the live provider remains an opportunity-driven check.
+
+The subsequent browser-only runtime `e190049cb0f360359d2a2ec56ff167529e9f05a0` preserves that API, storage and client protocol. Actual browser proof covers shared rows and exact totals, current/public Project modes, direct bookmarks, retained sessions, compact diagnostics and semantic progress colours. Both projects passed sixteen installed view checks at 1440/390 pixels with no domain writes, external page requests, anonymous private requests or browser errors. The progress-text regression also passed packaged checks at 1440/390/320 pixels. Screenshots were inspected separately; these automated and source checks do not establish physical-device or human acceptance.
