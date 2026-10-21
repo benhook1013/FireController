@@ -23,11 +23,24 @@ func validTime(s string) bool {
 	v, e := time.Parse(time.RFC3339Nano, s)
 	return e == nil && !v.IsZero() && len(s) <= 64
 }
+
+// Retained values are scanned without database/sql conversions so malformed
+// stored types are distinguished from operational query/iteration failures.
+func retainedText(value any, out *string) bool {
+	v, ok := value.(string)
+	*out = v
+	return ok
+}
+func retainedInteger(value any, out *int64) bool {
+	v, ok := value.(int64)
+	*out = v
+	return ok
+}
 func ReadSource(ctx context.Context, q Query, project, namespace string) (m.SourceState, error) {
 	var out m.SourceState
 	present, err := domainPresent(ctx, q)
 	if err != nil {
-		return out, unavailable()
+		return out, err
 	}
 	if !present {
 		return out, core.Fail("not_found", "The retained source is unavailable in this project.", 404)
@@ -37,19 +50,23 @@ func ReadSource(ctx context.Context, q Query, project, namespace string) (m.Sour
 	if !identifier.MatchString(project) || !sourceKey(namespace) {
 		return out, invalid()
 	}
-	err = q.QueryRowContext(ctx, `SELECT repository_id,snapshot_sha256,revision FROM review_adoption_sources WHERE project_id=? AND namespace=?`, project, namespace).Scan(&out.Source.RepositoryID, &out.Source.SnapshotSHA256, &out.Revision)
+	var repositoryValue, snapshotValue, revisionValue any
+	err = q.QueryRowContext(ctx, `SELECT repository_id,snapshot_sha256,revision FROM review_adoption_sources WHERE project_id=? AND namespace=?`, project, namespace).Scan(&repositoryValue, &snapshotValue, &revisionValue)
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, core.Fail("not_found", "The retained source is unavailable in this project.", 404)
 	}
 	if err != nil {
 		return out, err
 	}
-	if !validSource(out.Source) || out.Revision < 1 {
+	if !retainedInteger(repositoryValue, &out.Source.RepositoryID) || !retainedText(snapshotValue, &out.Source.SnapshotSHA256) || !retainedInteger(revisionValue, &out.Revision) || !validSource(out.Source) || out.Revision < 1 {
 		return out, unavailable()
 	}
 	var repository int64
-	if err = q.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repository); err != nil {
+	if err = q.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryValue); err != nil {
 		return out, err
+	}
+	if !retainedInteger(repositoryValue, &repository) || repository < 1 {
+		return out, unavailable()
 	}
 	if repository != out.Source.RepositoryID {
 		return out, core.Fail("repository_changed", "The retained source belongs to a different repository.", 409)
@@ -81,7 +98,11 @@ func VerifyRetainedSource(ctx context.Context, q Query, project string, source m
 		return conflict()
 	}
 	var body, sha string
-	if err = q.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(batch_json AS BLOB))<=262144 THEN batch_json END,batch_sha256 FROM review_adoption_imports WHERE project_id=? AND namespace=? AND revision=?`, project, source.Namespace, revision).Scan(&body, &sha); err != nil {
+	var bodyValue, shaValue any
+	if err = q.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(batch_json AS BLOB))<=262144 THEN batch_json END,batch_sha256 FROM review_adoption_imports WHERE project_id=? AND namespace=? AND revision=?`, project, source.Namespace, revision).Scan(&bodyValue, &shaValue); err != nil {
+		return retainedSourceReadError(err)
+	}
+	if !retainedText(bodyValue, &body) || !retainedText(shaValue, &sha) {
 		return unavailable()
 	}
 	var batch m.Batch
@@ -103,14 +124,18 @@ func readDetail(ctx context.Context, q Query, project, id string) (m.Detail, err
 func readDetailWithSources(ctx context.Context, q Query, project, id string, sources map[string]m.SourceState) (m.Detail, error) {
 	var d m.Detail
 	var namespace, body, sha string
-	err := q.QueryRowContext(ctx, `SELECT id,project_id,namespace,source_revision,CASE WHEN length(CAST(original_json AS BLOB))<=65536 THEN original_json END,original_sha256,status,revision,actor_id,worker_id,created_at FROM review_adoption_obligations WHERE project_id=? AND id=?`, project, id).Scan(&d.ID, &d.ProjectID, &namespace, &d.SourceRevision, &body, &sha, &d.Status, &d.Revision, &d.ActorID, &d.WorkerID, &d.CreatedAt)
+	var idValue, projectValue, namespaceValue, sourceRevisionValue, bodyValue, shaValue, statusValue, revisionValue, actorValue, workerValue, createdValue any
+	err := q.QueryRowContext(ctx, `SELECT id,project_id,namespace,source_revision,CASE WHEN length(CAST(original_json AS BLOB))<=65536 THEN original_json END,original_sha256,status,revision,actor_id,worker_id,created_at FROM review_adoption_obligations WHERE project_id=? AND id=?`, project, id).Scan(&idValue, &projectValue, &namespaceValue, &sourceRevisionValue, &bodyValue, &shaValue, &statusValue, &revisionValue, &actorValue, &workerValue, &createdValue)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, core.Fail("not_found", "The obligation is unavailable in this project.", 404)
 	}
 	if err != nil {
 		return d, err
 	}
-	if !identifier.MatchString(d.ID) || !identifier.MatchString(d.ActorID) || !identifier.MatchString(d.WorkerID) || !validTime(d.CreatedAt) || digest([]byte(body)) != sha || strictjson.Decode([]byte(body), &d.Original) != nil {
+	if !retainedText(idValue, &d.ID) || !retainedText(projectValue, &d.ProjectID) || !retainedText(namespaceValue, &namespace) || !retainedInteger(sourceRevisionValue, &d.SourceRevision) || !retainedText(bodyValue, &body) || !retainedText(shaValue, &sha) || !retainedText(statusValue, &d.Status) || !retainedInteger(revisionValue, &d.Revision) || !retainedText(actorValue, &d.ActorID) || !retainedText(workerValue, &d.WorkerID) || !retainedText(createdValue, &d.CreatedAt) {
+		return d, unavailable()
+	}
+	if !identifier.MatchString(d.ID) || d.ProjectID != project || !sourceKey(namespace) || !identifier.MatchString(d.ActorID) || !identifier.MatchString(d.WorkerID) || !validTime(d.CreatedAt) || digest([]byte(body)) != sha || strictjson.Decode([]byte(body), &d.Original) != nil {
 		return d, unavailable()
 	}
 	normalized, err := NormalizeObligation(d.Original)
@@ -133,7 +158,11 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 		return d, unavailable()
 	}
 	var key string
-	if err = q.QueryRowContext(ctx, `SELECT source_key FROM review_adoption_obligations WHERE id=?`, id).Scan(&key); err != nil || key != d.Original.SourceKey {
+	var keyValue any
+	if err = q.QueryRowContext(ctx, `SELECT source_key FROM review_adoption_obligations WHERE id=?`, id).Scan(&keyValue); err != nil {
+		return d, retainedSourceReadError(err)
+	}
+	if !retainedText(keyValue, &key) || key != d.Original.SourceKey {
 		return d, unavailable()
 	}
 	rows, err := q.QueryContext(ctx, `SELECT project_id,pull_number FROM review_adoption_targets WHERE obligation_id=? ORDER BY pull_number`, id)
@@ -144,7 +173,12 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 	for rows.Next() {
 		var owner string
 		var n int64
-		if err = rows.Scan(&owner, &n); err != nil || owner != project {
+		var ownerValue, numberValue any
+		if err = rows.Scan(&ownerValue, &numberValue); err != nil {
+			rows.Close()
+			return d, err
+		}
+		if !retainedText(ownerValue, &owner) || !retainedInteger(numberValue, &n) || owner != project {
 			rows.Close()
 			return d, unavailable()
 		}
@@ -160,7 +194,8 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 	}
 	var resolution m.Resolution
 	var refs string
-	err = q.QueryRowContext(ctx, `SELECT revision,reason,evidence_json,actor_id,worker_id,resolved_at FROM review_adoption_resolutions WHERE obligation_id=?`, id).Scan(&resolution.Revision, &resolution.Reason, &refs, &resolution.ActorID, &resolution.WorkerID, &resolution.ResolvedAt)
+	var reasonValue, refsValue, resolvedValue any
+	err = q.QueryRowContext(ctx, `SELECT revision,reason,evidence_json,actor_id,worker_id,resolved_at FROM review_adoption_resolutions WHERE obligation_id=?`, id).Scan(&revisionValue, &reasonValue, &refsValue, &actorValue, &workerValue, &resolvedValue)
 	if errors.Is(err, sql.ErrNoRows) {
 		if d.Status != "open" || d.Revision != 1 {
 			return d, unavailable()
@@ -169,6 +204,9 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 	}
 	if err != nil {
 		return d, err
+	}
+	if !retainedInteger(revisionValue, &resolution.Revision) || !retainedText(reasonValue, &resolution.Reason) || !retainedText(refsValue, &refs) || !retainedText(actorValue, &resolution.ActorID) || !retainedText(workerValue, &resolution.WorkerID) || !retainedText(resolvedValue, &resolution.ResolvedAt) {
+		return d, unavailable()
 	}
 	if d.Status != "resolved" || d.Revision != 2 || resolution.Revision != 2 || !text(resolution.Reason, 4096) || !identifier.MatchString(resolution.ActorID) || !identifier.MatchString(resolution.WorkerID) || !validTime(resolution.ResolvedAt) || strictjson.Decode([]byte(refs), &resolution.Evidence) != nil || !m.ValidResolutionEvidence(resolution.Evidence) || string(encode(resolution.Evidence)) != refs {
 		return d, unavailable()
@@ -198,7 +236,12 @@ func readFacts(ctx context.Context, q Query, project string, number int64) (Fact
 		ids := []string{}
 		for rows.Next() {
 			var id string
-			if err = rows.Scan(&id); err != nil {
+			var idValue any
+			if err = rows.Scan(&idValue); err != nil {
+				break
+			}
+			if !retainedText(idValue, &id) || !identifier.MatchString(id) {
+				err = unavailable()
 				break
 			}
 			ids = append(ids, id)
@@ -236,7 +279,7 @@ func ReadFacts(ctx context.Context, q Query, project string, number int64) (Fact
 	}
 	present, err := domainPresent(ctx, q)
 	if err != nil {
-		return Facts{}, unavailable()
+		return Facts{}, err
 	}
 	if !present {
 		return Facts{}, nil
@@ -248,14 +291,14 @@ func ReadFacts(ctx context.Context, q Query, project string, number int64) (Fact
 	return facts, nil
 }
 
-// Only the proven repository binding mismatch is a protective conflict.
-// Missing or malformed retained records and ordinary SQL failures stay unavailable.
+// A missing retained record is corruption. Operational errors keep their identity
+// until the transaction boundary; they must not become a successful front hold.
 func retainedSourceReadError(err error) error {
 	var failure *core.Error
-	if errors.As(err, &failure) && failure.Code == "repository_changed" {
-		return err
+	if errors.Is(err, sql.ErrNoRows) || errors.As(err, &failure) && failure.Code == "not_found" {
+		return unavailable()
 	}
-	return unavailable()
+	return err
 }
 func HasOpen(ctx context.Context, q Query, project string, number int64) (bool, error) {
 	facts, err := ReadFacts(ctx, q, project, number)

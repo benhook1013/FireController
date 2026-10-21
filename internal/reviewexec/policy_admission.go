@@ -103,14 +103,7 @@ func (e *Engine) readAdmission(ctx context.Context, read func(context.Context, *
 	if ctx.Err() != nil {
 		return core.Fail("overloaded", "Local review verification could not finish within its bounded request; retry the local check.", 503)
 	}
-	if err != nil {
-		var failure *core.Error
-		if errors.As(err, &failure) {
-			return err
-		}
-		return core.Fail("storage_unavailable", "Local review verification is unavailable.", 500)
-	}
-	return nil
+	return core.NormalizeStorageError(err)
 }
 
 // ExecutionContext rechecks a preparing operation before expensive source work.

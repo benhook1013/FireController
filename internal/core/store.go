@@ -290,6 +290,19 @@ func tokenHash(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// NormalizeStorageError classifies an operational storage failure without
+// replacing an already classified domain error or exposing driver diagnostics.
+func NormalizeStorageError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var failure *Error
+	if errors.As(err, &failure) {
+		return err
+	}
+	return storageError(err)
+}
+
 func storageError(err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return Fail("overloaded", "The operation deadline or cancellation prevented completion.", 503)

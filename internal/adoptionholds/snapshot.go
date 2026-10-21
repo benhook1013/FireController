@@ -10,7 +10,7 @@ import (
 )
 
 func domainPresent(ctx context.Context, q Query) (bool, error) {
-	var version int
+	var version any
 	err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_adoption_obligations'`).Scan(&version)
 	if errors.Is(err, sql.ErrNoRows) {
 		var count int
@@ -25,7 +25,7 @@ func domainPresent(ctx context.Context, q Query) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if version != 1 {
+	if version != "1" {
 		return false, unavailable()
 	}
 	var tables int
