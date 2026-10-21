@@ -132,9 +132,9 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 				if usage.Remaining != 0 {
 					return preparation, reviewHold("allowance_unavailable")
 				}
-				if err := d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}); err != nil {
-					return preparation, err
-				}
+				// Negative timing is optional: failure to retain it cannot turn the
+				// Runner's proven exhaustion into a different refusal or a permit.
+				_ = d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles})
 				return preparation, reviewHold("allowance_exhausted")
 			}
 			if failure.Code == "usage_unavailable" {

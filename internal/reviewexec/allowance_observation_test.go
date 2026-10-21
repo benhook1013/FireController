@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -295,5 +296,131 @@ func TestHeldAllowanceExplicitOrderHTTPReplayAndRestart(t *testing.T) {
 	}
 	if err := ValidateAllowanceSnapshot(t.Context(), f.store.DB(), 7); err != nil {
 		t.Fatal("schema-seven held snapshot rejected", err)
+	}
+}
+
+// A later held classification does not change the immutable earlier positive
+// observation into negative timing, nor make that valid source unreadable.
+func TestHeldAllowancePositiveObservationRemainsReadable(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			var f *attemptFixture
+			var a Attempt
+			var replay func() error
+			reason, table, key := "allowance_exhausted", "review_cli_preflight", "allowance-request"
+			if channel == "cli" {
+				var in CLIAllowanceObservation
+				f, a, in = cliAllowanceFixture(t)
+				replay = func() error { return f.e.RecordCLIAllowance(t.Context(), attemptProject, a.ID, 1, in) }
+			} else {
+				var in HostedAllowanceInput
+				f, a, _, in = hostedAllowanceFixture(t)
+				replay = func() error { return f.e.RecordHostedAllowance(t.Context(), attemptProject, a.ID, 1, in) }
+				reason, table, key = "hosted_allowance_cooldown", "review_hosted_preflight", "query-request"
+			}
+			if err := replay(); err != nil {
+				t.Fatal(err)
+			}
+			if err := reviews.EnsureSchema(t.Context(), f.store); err != nil {
+				t.Fatal(err)
+			}
+			bindPublisher := func() {
+				var err error
+				f.e, err = New(f.store, attemptCapabilities, WithNativeProjection())
+				if err != nil {
+					t.Fatal(err)
+				}
+				mux := http.NewServeMux()
+				f.e.Register(mux)
+				reviews.Register(mux, f.store)
+				f.handler = mux
+			}
+			bindPublisher()
+			metadata := projectionPull(2)
+			if _, err := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, &metadata); err != nil {
+				t.Fatal("initial native publication", err)
+			}
+			var body string
+			if err := f.store.DB().QueryRow(`SELECT body_json FROM `+table+` WHERE attempt_id=?`, a.ID).Scan(&body); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", reason, "")
+			if err != nil {
+				t.Fatal("valid positive observation prevented held transition/publication", err)
+			}
+			_, projected := projectedAttempt(t, f, a)
+			if projected.State != "held" || projected.Reason != reason {
+				t.Fatal("native transition projection lost hold", projected)
+			}
+			before := attemptState(t, f, a) + policyState(t, f)
+			path := "/api/v1/projects/" + attemptProject + "/reviews/operations/" + a.OperationID
+			var original []byte
+			for phase := 0; phase < 2; phase++ {
+				if phase == 1 {
+					cliAllowanceReopen(t, f)
+					bindPublisher()
+				}
+				read := f.request("GET", path, f.reader, "", "")
+				var op Operation
+				if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &op) != nil || op.State != "held" || op.Reason != reason || op.Allowance != nil || bytes.Contains(read.Body.Bytes(), []byte(`"allowance":`)) {
+					t.Fatal("positive observation became unreadable or negative timing", phase, read.Code, read.Body.String())
+				}
+				if phase == 0 {
+					original = bytes.Clone(read.Body.Bytes())
+				} else if !bytes.Equal(original, read.Body.Bytes()) {
+					t.Fatal("reopen changed held operation")
+				}
+				if err := replay(); err != nil {
+					t.Fatal("original positive replay after hold", err)
+				}
+				request := httptest.NewRequest("POST", "/api/v1/projects/"+attemptProject+"/reviews/requests", bytes.NewBufferString(encoded(Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: channel, HeadSHA: op.HeadSHA})))
+				request.Header.Set("Authorization", "Bearer "+f.writer)
+				request.Header.Set("Idempotency-Key", key)
+				request.Header.Set("Content-Type", "application/json")
+				request.Header.Set("Prefer", "wait=2")
+				result := httptest.NewRecorder()
+				f.handler.ServeHTTP(result, request)
+				if result.Code != http.StatusOK || !bytes.Equal(result.Body.Bytes(), read.Body.Bytes()) {
+					t.Fatal("exact request replay lost held result", phase, result.Code)
+				}
+				if err := ValidateAllowanceSnapshot(t.Context(), f.store.DB(), 7); err != nil {
+					t.Fatal("valid retained positive snapshot", err)
+				}
+				var after string
+				if err := f.store.DB().QueryRow(`SELECT body_json FROM `+table+` WHERE attempt_id=?`, a.ID).Scan(&after); err != nil || after != body || attemptState(t, f, a)+policyState(t, f) != before {
+					t.Fatal("read/replay/reopen changed original facts", err)
+				}
+			}
+			// Positive facts still undergo canonical and cross-owner validation
+			// before the optional negative projection is omitted.
+			for _, damage := range []string{"canonical", "actor"} {
+				bad := body + " "
+				if damage == "actor" {
+					if channel == "cli" {
+						var record cliAllowanceRecord
+						if json.Unmarshal([]byte(body), &record) != nil {
+							t.Fatal("fixture CLI record")
+						}
+						record.ActorID = "different-actor"
+						bad = encoded(record)
+					} else {
+						var record hostedAllowanceRecord
+						if json.Unmarshal([]byte(body), &record) != nil {
+							t.Fatal("fixture Hosted record")
+						}
+						record.ActorID = "different-actor"
+						bad = encoded(record)
+					}
+				}
+				if _, err := f.store.DB().Exec(`UPDATE `+table+` SET body_json=? WHERE attempt_id=?`, bad, a.ID); err != nil {
+					t.Fatal(err)
+				}
+				read := f.request("GET", path, f.reader, "", "")
+				if read.Code != http.StatusInternalServerError || !bytes.Contains(read.Body.Bytes(), []byte(`"code":"storage_unavailable"`)) || ValidateAllowanceSnapshot(t.Context(), f.store.DB(), 7) == nil {
+					t.Fatal("damaged positive observation bypassed validation", damage, read.Code)
+				}
+			}
+		})
 	}
 }

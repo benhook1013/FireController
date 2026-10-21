@@ -75,7 +75,7 @@ func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 }
 
 func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
-	for _, mode := range []string{"exhausted", "unavailable", "repository_changed", "not_started", "command_failed", "capture_failed", "timeout"} {
+	for _, mode := range []string{"exhausted", "retention_refused", "unavailable", "repository_changed", "not_started", "command_failed", "capture_failed", "timeout"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newCLIDriverFixture(t)
 			expected := "allowance_exhausted"
@@ -110,6 +110,13 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 			}
 			if mode == "not_started" {
 				if err := os.Remove(f.capability.CLIExecutable); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "retention_refused" {
+				// Refuse only the optional observation/event transaction after the
+				// real Runner has strictly parsed and verified a zero balance.
+				if _, err := f.store.DB().Exec(`CREATE TRIGGER refuse_exhaustion_event BEFORE INSERT ON events WHEN NEW.event_type='review.cli_preflight' BEGIN SELECT RAISE(ABORT,'synthetic private retention failure'); END`); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -186,6 +193,9 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 			}
 			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != wantRows {
 				t.Fatal("preparation hold retained permission/reservation/evidence")
+			}
+			if mode == "retention_refused" && cliCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.cli_preflight'`) != 0 {
+				t.Fatal("failed negative retention left an observation event")
 			}
 			var heldReason string
 			if err := f.store.DB().QueryRow(`SELECT reason FROM review_execution_transitions WHERE attempt_id=? AND state='held'`, operation.AttemptID).Scan(&heldReason); err != nil || heldReason != expected {

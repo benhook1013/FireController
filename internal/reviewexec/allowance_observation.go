@@ -108,7 +108,7 @@ func readHeldAllowance(ctx context.Context, q EvidenceQuery, o Operation) (*Allo
 		}
 		in := record.Observation
 		if in.Remaining != 0 {
-			return nil, allowanceUnavailable()
+			return nil, nil
 		}
 		return &AllowanceObservation{Kind: "cli_exhausted", ObservedAt: in.ObservedAt, Remaining: &in.Remaining, Limit: &in.Limit, FullCapacityInMS: &in.FullCapacityInMS, RollingWindowMS: &in.RollingWindowMS}, nil
 	}
@@ -120,7 +120,7 @@ func readHeldAllowance(ctx context.Context, q EvidenceQuery, o Operation) (*Allo
 		return nil, allowanceUnavailable()
 	}
 	if record.Input.Observation.State != "cooldown_observed" {
-		return nil, allowanceUnavailable()
+		return nil, nil
 	}
 	return &AllowanceObservation{Kind: "hosted_cooldown", ObservedAt: record.Input.ObservedAt, RetryNotBefore: record.Input.Observation.RetryNotBefore.Format("2006-01-02T15:04:05.999999999Z07:00")}, nil
 }
