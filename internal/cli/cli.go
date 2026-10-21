@@ -47,24 +47,25 @@ type options struct {
 
 type invocation struct {
 	options
-	command      string
-	subcommand   string
-	position     []string
-	limit        int
-	waitMS       int
-	cursor       string
-	worker       string
-	status       string
-	unread       bool
-	unack        bool
-	snapshot     string
-	pullNumber   int64
-	mutation     *mutationInvocation
-	setup        *profileSetupInvocation
-	notes        *noteInvocation
-	projectMap   *projectMapInvocation
-	presentation *presentationInvocation
-	publication  *publicationInvocation
+	command       string
+	subcommand    string
+	position      []string
+	limit         int
+	waitMS        int
+	cursor        string
+	worker        string
+	status        string
+	unread        bool
+	unack         bool
+	snapshot      string
+	pullNumber    int64
+	mutation      *mutationInvocation
+	setup         *profileSetupInvocation
+	notes         *noteInvocation
+	projectMap    *projectMapInvocation
+	presentation  *presentationInvocation
+	publication   *publicationInvocation
+	helpOperation string
 
 	reviewQueueEdit     *reviewQueueEditInvocation
 	reviewImport        *reviewImportInvocation
@@ -91,7 +92,7 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer) int {
 func RunContext(ctx context.Context, args []string, env map[string]string, stdout, stderr io.Writer) int {
 	call, ok := parseInvocation(args)
 	if !ok {
-		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", "Run the bound launcher with help to discover supported commands and matching-release documentation.")
+		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", argumentHelpAction(call))
 	}
 	if call.history != nil && call.history.operation == "export-page" {
 		if err := prepareHistoryExport(call.history.output); err != nil {
@@ -104,6 +105,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		}{Version})
 	}
 	if call.command == "help" {
+		if help, exists := operationHelp(call.helpOperation); exists {
+			return emit(stdout, stderr, help)
+		}
 		return emit(stdout, stderr, localHelp())
 	}
 	if call.mapImport != nil {
@@ -396,6 +400,11 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.command = "help"
 	}
 	if call.command == "version" || call.command == "help" {
+		if remaining[0] == "help" && len(remaining) == 3 {
+			call.helpOperation = remaining[1] + " " + remaining[2]
+			_, exists := operationHelp(call.helpOperation)
+			return call, exists && validHelpOptions(call.options)
+		}
 		return call, len(remaining) == 1 && (!call.hasProfile || validSetupText(call.profile)) && (!call.hasProfilesFile || validSetupText(call.profilesFile))
 	}
 	if call.command == "context" || call.command == "doctor" {
@@ -415,6 +424,15 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	// Help is an exact grammar, not a scan for help-looking values. In
+	// particular, --body --help remains ordinary submitted text.
+	if len(operationArgs) == 1 && operationArgs[0] == "--help" {
+		if _, exists := operationHelp(call.command + " " + call.subcommand); exists {
+			call.helpOperation = call.command + " " + call.subcommand
+			call.command = "help"
+			return call, validHelpOptions(call.options)
+		}
+	}
 	if call.command == "import" {
 		return parseCoordinationImport(call, operationArgs)
 	}

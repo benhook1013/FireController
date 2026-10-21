@@ -213,6 +213,21 @@ func projectMapDefinitions() []definition {
 	entry := object(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"workstream", "return_point", "section"}}, "title": text(240), "description": text(8192), "state": text(240), "where": text(8192), "next": text(8192), "trigger": text(8192), "phases": map[string]any{"type": []string{"array", "null"}, "items": phase, "maxItems": 64}, "links": map[string]any{"type": []string{"array", "null"}, "items": link, "maxItems": 12}, "archived": map[string]any{"type": "boolean"}, "position": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000}}, "kind", "title")
 	changes := object(map[string]any{"title": text(240), "description": text(8192), "state": text(240), "where": text(8192), "next": text(8192), "trigger": text(8192), "phases": map[string]any{"type": "array", "items": phase, "maxItems": 64}, "links": map[string]any{"type": "array", "items": link, "maxItems": 12}, "archived": map[string]any{"type": "boolean"}, "position": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000}})
 	changes["minProperties"] = 1
+	// Explain optional editorial fields where agents discover their schemas.
+	// Keep each description short; detailed workflow guidance stays in the skill.
+	for _, schema := range []map[string]any{entry, changes} {
+		properties := schema["properties"].(map[string]any)
+		for name, description := range map[string]string{
+			"description": "Optional purpose and high-level context; detailed execution belongs in linked jobs.",
+			"state":       "Optional short project-level state; omit when narrative or phases already suffice.",
+			"where":       "Optional current high-level position; omit facts already covered by description or linked jobs.",
+			"next":        "Optional next project milestone; avoid copying job steps or checklist text.",
+			"trigger":     "Optional return-point reconsideration condition; actionable reminders belong in notes or jobs.",
+			"phases":      "Optional named milestones; operational steps belong in job checklists. Retain existing phase IDs.",
+		} {
+			properties[name].(map[string]any)["description"] = description
+		}
+	}
 	pages := func(extra map[string]any) map[string]any {
 		extra["limit"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 100}
 		extra["cursor"] = map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}

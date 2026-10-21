@@ -34,6 +34,12 @@ Expose small edits as small inputs. Project-entry updates preserve omitted field
 
 The [suggested workflow](agent-workflow.md#text-ownership) explains optional record ownership: Project narrative, job execution, message coordination, reminders and audience-specific public prose each have a purpose. The tool does not require an explanation in every optional field, automatically summarize private prose into public output, or impose another narration step when a mechanically derived value already exists.
 
+## Discovery cost and local help
+
+Operation-specific CLI help supplies the routine edit syntax locally, without loading connection files or requesting service/provider data. An argument error points to that operation instead of making the caller repeat general help and search a large guide. MCP Project properties explain the distinct purpose of optional description, state, milestone and reconsideration fields at discovery time; full replacement and partial-update semantics remain explicit.
+
+A measured configured agent host exposed 22 coordination tools per worker connection while the corresponding raw server catalog contained 77 tools. The serialized baseline schemas were 15,861 bytes for that selected subset and 59,276 bytes for the complete catalog. These are transport/schema measurements, not measured model tokens or evidence that every schema enters a turn. A sampled context result carries both structured content and compatibility text; the host's final model-visible representation was not established. Preserve compatible result forms and existing host selection unless actual exposure demonstrates a useful reason to change them.
+
 ## Inspection and acceptance
 
 Evaluate actual orchestrator sessions, not only HTTP benchmarks. Compare profile CLI and native tools for starting/resuming work, reading authoritative context, handling a message, racing an edit, completing a review, recovering a dropped connection, and handing off. Record calls, returned bytes, model-visible tokens where measurable, repeated information, avoidable decisions, latency, and host timeout effects.

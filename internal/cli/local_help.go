@@ -26,7 +26,7 @@ func localHelp() helpResponse {
 		Binding: "Use the launcher assigned to this role/project. Global --profile and --profiles-file select an explicit local binding; no mutable active selection is saved.",
 		CommandGroups: []helpGroup{
 			{"local discovery", []helpCommand{
-				{"help | --help | -h", "This local orientation; no profile, credential or network reads."},
+				{"help | --help | -h", "Local orientation. jobs update, notes add/update, map update and publication prepare accept --help; no profile, credential or network reads."},
 				{"version", "Local version JSON only; no profile, credential or network reads, including with bound launcher selectors."},
 				{"context", "Read the selected local profile identity without opening credentials or contacting the service."},
 				{"doctor", "Authenticate the bound instance/project/worker; no provider requests."},

@@ -29,6 +29,10 @@ The optional [CodeRabbit golangci-lint integration](https://docs.coderabbit.ai/t
 
 Explicit [browser coordination views](browser-coordination.md) read worker pause/focus and note current/history data without mutation or automatic archive expansion.
 
+## Local operation help
+
+Routine editing operations expose compact local help: `fc jobs update --help`, `fc notes add --help`, `fc notes update --help`, `fc map update --help` and `fc publication prepare --help`. The equivalent `fc help COMMAND OPERATION` selects the same help. It explains required arguments, optional changed fields, clearing and uncertainty semantics without loading profiles, credentials, input files or contacting a service. Argument errors for these operations point to their specific help; root help remains a short orientation. Help is a distinct invocation, so a literal `--help` used as a field value does not turn a mutation into a help request.
+
 ## Private profile file
 
 Use the local [profile setup commands](onboarding.md#private-agent-setup-commands) to create a private configuration and optional POSIX bound launcher. Setup returns the configured identity with `verified: false`; `doctor` performs the separate authenticated check. Creation requires explicit profile selectors, preserves existing files, and never provisions or reads credentials.

@@ -39,4 +39,6 @@ Bootstrap a new worker with pasteable text containing its bound connection, matc
 
 ## Find exact operations
 
+Routine edit syntax is available locally with `jobs update --help`, `notes add --help`, `notes update --help`, `map update --help` and `publication prepare --help`; these calls need no connection or credential.
+
 Use the documentation shipped with the installed release or its matching source checkout: `docs/development.md` owns CLI commands, `docs/mcp.md` owns tool discovery and `docs/agent-workflow.md` offers optional working habits. Do not assume the repository's newest main branch matches an older installed binary. MCP tools may become available only after the host loads its configuration; a working CLI remains an independent route. Do not infer review-request authorization from tool availability or inspect quota while reviews are paused.
