@@ -138,6 +138,10 @@ func TestPackagedTextAuthoringSmoke(t *testing.T) {
 	call("jobs", "summary-set", job.ID, "--expect-revision", "1", "--expect-summary-revision", "0", "--title", "APPROVED_SUMMARY_ONE", "--body", "Approved audience prose", "--key", "authoring-summary-one")
 	manifest := publicsitemodel.Manifest{Slug: "authoring-smoke", Description: "Original project introduction", ProjectMap: []publicsitemodel.Card{{Key: "editorial", Title: "Unrelated editorial card", Description: "Keep independent editorial content", Links: []publicsitemodel.Link{}}}, JobRefs: []publicsitemodel.JobRef{{Key: "selected_job", JobID: job.ID, SummaryRevision: 1}}, MapRefs: []publicsitemodel.MapRef{{Key: "selected_map", EntryID: created.ID, Revision: 1}}}
 	manifest.Presentation.Name = "Authoring fixture"
+	manifest, err = publicsitemodel.NormalizeManifest(manifest)
+	if err != nil {
+		t.Fatal("publication fixture normalization failed")
+	}
 	input := client.PublicationInput{ExpectedRevision: 0, Enabled: true, Manifest: manifest}
 	initialFile := write("initial-publication.json", input)
 	var initialPreview client.PublicationPreview
