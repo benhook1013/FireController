@@ -986,6 +986,19 @@ try {
         return box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;
       }));
     }
+    const progressColors=await page.evaluate(()=>{
+      const luminance=value=>{const c=value.match(/[\d.]+/g).slice(0,3).map(v=>{const n=Number(v)/255;return n<=0.04045?n/12.92:((n+0.055)/1.055)**2.4;});return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2];};
+      const contrast=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+0.05)/(Math.min(x,y)+0.05);};
+      return ['.delivery-merge-head','#review-pr-32'].flatMap(root=>['hosted','cli'].map(channel=>{
+        const node=document.querySelector(root).querySelector(`[aria-label="Current ${channel} round limits"]`);
+        const text=getComputedStyle(node.querySelector('.review-progress-state')).color,border=getComputedStyle(node).borderTopColor;
+        let ancestor=node,background='rgba(0, 0, 0, 0)';
+        while(ancestor&&background==='rgba(0, 0, 0, 0)'){background=getComputedStyle(ancestor).backgroundColor;ancestor=ancestor.parentElement;}
+        return {text,border,background,textContrast:contrast(text,background),borderContrast:contrast(border,background)};
+      }));
+    });
+    need(progressColors.length===4&&progressColors.every(value=>value.text===`rgb(${configuredInk})`&&value.border===value.text&&value.textContrast>=4.5&&value.borderContrast>=3));
+    for(let channel=0;channel<2;channel++)need(JSON.stringify(progressColors[channel])===JSON.stringify(progressColors[channel+2]));
     need(reviewOperationReads === 0 && reviewAttemptReads === 0);
   });
   await jump.click();
