@@ -131,7 +131,7 @@ try {
     if (phase === 'reload') {
       return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'reload-failure.json', snapshot:{phase,checkpoint,...renewalProof,layout:reloadLayout}, collect:async snapshot=>{snapshot.current_geometry=await reloadGeometry();} });
     }
-    if (phase === 'renewal-missing-cookie') return retainBrowserFailure({directory:config.diagnostic_directory,filename:'failure.json',snapshot:{phase,checkpoint,...counters(),cookie_removed:missingCookieRemoved,statuses:missingCookieStatuses},collect:async snapshot=>{snapshot.binding_present=await page.evaluate(key=>sessionStorage.getItem(key)!==null,bindingKey);}});
+    if (phase === 'renewal-missing-cookie') return retainBrowserFailure({directory:config.diagnostic_directory,filename:'failure.json',snapshot:{phase,checkpoint,...counters(),cookie_removed:missingCookieRemoved,statuses:missingCookieStatuses,terminal_all:terminalResponsesAll,auth_timeline:authTimeline,auth_events:authEvents},collect:async snapshot=>{snapshot.binding_present=await page.evaluate(key=>sessionStorage.getItem(key)!==null,bindingKey);}});
     if (phase !== 'explicit-actions-uncertain') return {};
     return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'failure.json', screenshot,
       snapshot:{phase,checkpoint,...counters()},
@@ -190,6 +190,18 @@ try {
  let controlledAccessFailure = false;
  let missingCookieStatuses = {};
  let missingCookieRemoved = false;
+ let terminalResponsesAll = 0, expectedMissingSession = '';
+ const authEvents = [], authTimeline = [];
+ const retainAuthEvent = event => {if(authEvents.length<16)authEvents.push(event);};
+ const authSnapshot = async stage => {
+   const metadata=await page.evaluate(({bindingKey,home,project,instance,session})=>{
+     let binding;try{binding=JSON.parse(sessionStorage.getItem(bindingKey));}catch{}
+     return {path_matches:location.pathname===home,search_empty:location.search==='',hash_empty:location.hash==='',binding_present:!!binding,binding_project_matches:binding?.projectID===project,binding_instance_matches:binding?.instanceID===instance,binding_session_matches:binding?.sessionID===session};
+   },{bindingKey,home,project:config.project,instance:config.instance,session:expectedMissingSession});
+   if(authTimeline.length<16)authTimeline.push({stage,...metadata,session_posts:sessionPosts,session_deletes:sessionDeletes,session_renewals:sessionRenewals,terminal_all:terminalResponsesAll,terminal_controlled:terminalResponses,control_enabled:controlledAccessFailure});
+   if(config.diagnostic_directory){await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});await fs.writeFile(config.diagnostic_directory+'/auth-diagnosis.json',JSON.stringify({timeline:authTimeline,events:authEvents}),{mode:0o600});}
+   return metadata;
+ };
  let controlledProgressAccessFailure = false, progressAccessFailures = 0;
  const expectedMissingSessionRoute = url => { if ((!controlledAccessFailure && !controlledProgressAccessFailure) || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ((controlledAccessFailure && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname)) || (controlledProgressAccessFailure && value.pathname === prefix + '/reviews/rounds/progress')); } catch { return false; } };
  const unpublishedLocation = url => { try { const value = new URL(url); return value.origin === config.origin && value.pathname === '/api/v1/public/project-locations/' + handle && value.search === ''; } catch { return false; } };
@@ -238,6 +250,11 @@ try {
   });
   page.on('response', value => {
     const url = new URL(value.url());
+    if(url.origin===config.origin && [401,403].includes(value.status()) && (url.pathname==='/api/v1/instance'||url.pathname===prefix||url.pathname.startsWith(prefix+'/'))){
+      terminalResponsesAll++;
+      const kind=url.pathname==='/api/v1/instance'?'instance':url.pathname===prefix?'project':url.pathname===prefix+'/browser-session'?'session':url.pathname===prefix+'/workers/presence'?'presence':url.pathname===prefix+'/project-events/stream'?'metadata':url.pathname===prefix+'/message-events/stream'?'inbox':url.pathname===prefix+'/presentation'?'presentation':'other';
+      retainAuthEvent({kind,status:value.status(),control_enabled:controlledAccessFailure,phase_missing_cookie:phase==='renewal-missing-cookie',deletes:sessionDeletes});
+    }
     if (controlledAccessFailure && url.origin===config.origin && value.status()>=400) {
       const kind=url.pathname==='/api/v1/instance'?'instance':url.pathname===prefix?'project':url.pathname===prefix+'/browser-session'?'session':url.pathname==='/api/v1/public/project-locations/'+handle?'unpublished':url.pathname===prefix+'/presentation'?'presentation':'other';
       missingCookieStatuses[kind]=value.status();
@@ -274,7 +291,7 @@ try {
       catch { forbiddenWrites++; }
     }
     else if (url.pathname === prefix + '/browser-session/renew' && request.method() === 'POST') { sessionRenewals++; if (request.postData() !== '{}' || request.headers()['authorization'] || request.headers()['x-fc-instance'] !== config.instance) forbiddenWrites++; }
-    else if (url.pathname === prefix + '/browser-session' && request.method() === 'DELETE') sessionDeletes++;
+    else if (url.pathname === prefix + '/browser-session' && request.method() === 'DELETE') {sessionDeletes++;if(phase==='renewal-missing-cookie')retainAuthEvent({kind:'delete-request',deletes:sessionDeletes,terminal_all:terminalResponsesAll,control_enabled:controlledAccessFailure});}
     else if (explicitActions && ((request.method() === 'POST' && (url.pathname === prefix + '/messages' || /^messages\/[^/]+\/(?:seen|ack)$/.test(url.pathname.slice(prefix.length + 1)))) || (request.method() === 'PUT' && url.pathname === prefix + '/presentation'))) actionWrites++;
     else forbiddenWrites++;
   });
@@ -1368,21 +1385,38 @@ try {
   checkpoint = 'heading';
   await page.getByRole('heading', {name:'Browser configured project',exact:true}).waitFor();
   checkpoint = 'binding';
+  // A painted heading can precede canonical navigation and live setup. Bind
+  // the deliberate missing-cookie experiment to the completed current session.
+  await page.waitForURL(config.origin+home);
+  await page.locator('.mast .connection-live').waitFor();
   const missingBinding = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey));
+  expectedMissingSession=missingBinding?.sessionID;
+  const beforeRemoval=await authSnapshot('before-cookie-removal');
+  need(beforeRemoval.path_matches && beforeRemoval.search_empty && beforeRemoval.hash_empty && beforeRemoval.binding_present && beforeRemoval.binding_project_matches && beforeRemoval.binding_instance_matches && beforeRemoval.binding_session_matches);
+  need((await context.cookies()).some(value=>value.name==='fc-local-browser-'+expectedMissingSession));
   need(sessionPosts === 3 && sessionRenewals === 3);
+  // Cookie deletion can itself release an in-flight authenticated read. Arm
+  // its observer before removing authority, including across the following await.
+  controlledAccessFailure=true;
+  await authSnapshot('observer-armed');
   checkpoint = 'remove-cookie';
   await context.clearCookies({name:'fc-local-browser-' + missingBinding.sessionID});
   missingCookieRemoved=!(await context.cookies()).some(value=>value.name==='fc-local-browser-'+missingBinding.sessionID);
   need(missingCookieRemoved);
-  controlledAccessFailure = true; checkpoint = 'reload';
+  await authSnapshot('after-cookie-removal');
+  checkpoint = 'reload';
+  await authSnapshot('before-reload');
   await page.reload();
+  await authSnapshot('after-reload');
   await page.getByRole('button', {name:'Connect to project',exact:true}).waitFor();
+  await authSnapshot('connect-form');
   checkpoint = 'cleanup';
   await expect.poll(() => sessionDeletes, {timeout:5000}).toBe(3);
   checkpoint = 'storage';
   need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === null);
   checkpoint = 'counters';
   need(terminalResponses > 0 && sessionRenewals === 3 && actionWrites === 7 && forbiddenWrites === 0 && errors === 0 && external === 0);
+  await authSnapshot('cleanup-complete');
 
   phase = 'progress-access-ended'; checkpoint = 'isolated-progress-refusal';
   controlledAccessFailure = false;
