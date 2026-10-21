@@ -12,6 +12,8 @@ import (
 func (s *Store) BackgroundWrite(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
 	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
 	defer cancel()
+	changes := &eventChanges{topics: make(map[messageTopic]struct{})}
+	ctx = context.WithValue(ctx, eventChangesKey{}, changes)
 	select {
 	case s.admission <- struct{}{}:
 		defer func() { <-s.admission }()
@@ -29,7 +31,11 @@ func (s *Store) BackgroundWrite(ctx context.Context, fn func(context.Context, *s
 	if ctx.Err() != nil {
 		return storageError(ctx.Err())
 	}
-	return mutationErrorOrNil(ctx, tx.Commit())
+	if err = tx.Commit(); err != nil {
+		return mutationError(ctx, err)
+	}
+	s.notifyEvents(changes)
+	return nil
 }
 
 func mutationErrorOrNil(ctx context.Context, err error) error {

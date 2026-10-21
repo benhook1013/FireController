@@ -204,7 +204,7 @@ function Connect({ projectId, busy, notice, onConnect, reconnect, cancel }: { pr
 
 export function ProjectUpdateNotice({ status, reconnect }: { status: LiveStatus; reconnect(): void }) {
   if (status === 'live') return null;
-  return <p className="notice" role="status">Project updates {status === 'connecting' ? 'connecting' : 'disconnected'}. Displayed settings and map data may be stale. {status === 'closed' && <button type="button" onClick={reconnect}>Reconnect project updates</button>}</p>;
+  return <p className="notice" role="status">Project updates {status === 'connecting' ? 'connecting' : 'disconnected'}. Displayed project data may be stale. {status === 'closed' && <button type="button" onClick={reconnect}>Reconnect project updates</button>}</p>;
 }
 
 function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWorker, disconnect, fail }: { session: Session; metadataStatus: LiveStatus; reconnectProjectUpdates(): void; selectWorker(worker: Worker): void; disconnect(): void; fail(error: unknown): void }) {

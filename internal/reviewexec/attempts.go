@@ -146,6 +146,9 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		}
 		return e.transitionRow(ctx, tx, result, "preparing", at)
 	})
+	if err == nil {
+		e.notifyOperation(id)
+	}
 	return result, err
 }
 
@@ -248,6 +251,9 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		result = a
 		return nil
 	})
+	if err == nil {
+		e.notifyOperation(result.OperationID)
+	}
 	return result, err
 }
 
@@ -322,6 +328,9 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 		result = a
 		return nil
 	})
+	if err == nil {
+		e.notifyOperation(result.OperationID)
+	}
 	return result, err
 }
 
@@ -343,7 +352,8 @@ func allowedTransition(from, to string) bool {
 // restarts a possibly dispatched action. Hosted recovery uses its retained
 // marker; interrupted CLI work remains uncertain until evidence settles it.
 func (e *Engine) RecoverInterrupted(ctx context.Context) error {
-	return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+	var changed []string
+	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM review_execution_attempts WHERE state IN ('preparing','posting','active') ORDER BY id`)
 		if err != nil {
 			return err
@@ -400,7 +410,14 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			if err = e.transitionRow(ctx, tx, a, "supervisor_interrupted", at); err != nil {
 				return err
 			}
+			changed = append(changed, a.OperationID)
 		}
 		return nil
 	})
+	if err == nil {
+		for _, id := range changed {
+			e.notifyOperation(id)
+		}
+	}
+	return err
 }

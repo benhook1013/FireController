@@ -197,7 +197,7 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 	case "inbox seen":
 		return service.MarkSeen(ctx, call.key, call.id)
 	case "reviews request":
-		return service.RequestReview(ctx, call.key, call.reviewRequest)
+		return service.RequestReview(ctx, call.key, call.reviewRequest, call.reviewSourceWait)
 	case "reviews publish":
 		return service.RequestReviewCheckpoint(ctx, call.key, call.reviewCheckpoint, call.reviewSourceWait)
 	case "reviews publication-recover":

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 )
 
@@ -29,6 +30,23 @@ type ReviewRequestReceipt struct {
 	ID       string `json:"id"`
 	State    string `json:"state"`
 	Revision int64  `json:"revision"`
+}
+
+// ReviewRequestResult contains exactly one flat wire result: the original
+// durable receipt, or the authorized terminal operation collected by a wait.
+type ReviewRequestResult struct {
+	Receipt   *ReviewRequestReceipt
+	Operation *ReviewOperation
+}
+
+func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
+	if (r.Receipt == nil) == (r.Operation == nil) {
+		return nil, errors.New("review request result requires exactly one result")
+	}
+	if r.Operation != nil {
+		return json.Marshal(r.Operation)
+	}
+	return json.Marshal(r.Receipt)
 }
 
 type ReviewOperation struct {
@@ -105,20 +123,35 @@ func (c *Client) ReviewExecution(ctx context.Context) (ReviewExecutionConfigurat
 
 // RequestReview authorizes background provider work. It submits once and never
 // generates a key or retries an unknown outcome; callers retain the exact key.
-func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRequest) (ReviewRequestReceipt, error) {
-	if !validMutationKey(key) || ValidateReviewRequest(request) != nil {
-		return ReviewRequestReceipt{}, mutationValidation()
+func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRequest, waitSeconds int) (ReviewRequestResult, error) {
+	if !validMutationKey(key) || ValidateReviewRequest(request) != nil || ValidateReviewOperationWait(waitSeconds) != nil {
+		return ReviewRequestResult{}, mutationValidation()
 	}
 	body, err := json.Marshal(request)
 	if err != nil {
-		return ReviewRequestReceipt{}, mutationValidation()
+		return ReviewRequestResult{}, mutationValidation()
 	}
-	var result ReviewRequestReceipt
-	if err := c.requestBounded(ctx, http.MethodPost, c.projectPath("reviews", "requests"), nil, true, key, body, http.StatusAccepted, true, &result, 4<<20, decodeReviewResponse); err != nil {
-		return ReviewRequestReceipt{}, err
+	var result ReviewRequestResult
+	var status int
+	decode := func(data []byte, _ any) error {
+		if status == http.StatusOK {
+			result.Operation = &ReviewOperation{}
+			return decodeReviewResponse(data, result.Operation)
+		}
+		result.Receipt = &ReviewRequestReceipt{}
+		return decodeReviewResponse(data, result.Receipt)
 	}
-	if ValidateReviewOperationID(result.ID) != nil || result.State != "queued" || result.Revision != 1 {
-		return ReviewRequestReceipt{}, unknownMutation("invalid_response", "The service returned an invalid review request receipt; its outcome is unknown.", http.StatusAccepted)
+	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "requests"), nil, true, key, body, http.StatusAccepted, true, &result, 4<<20, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status}); err != nil {
+		return ReviewRequestResult{}, err
+	}
+	valid := false
+	if operation := result.Operation; operation != nil {
+		valid = c.validReviewOperation(*operation) && operation.WorkerID == c.identity.WorkerID && operation.PullNumber == request.PullNumber && operation.HeadSHA == request.HeadSHA && operation.Channel == request.Channel && operation.ConfigurationRevision == request.ExpectedConfigurationRevision && !oneReviewOf(operation.State, "queued", "preparing", "posting", "active")
+	} else if receipt := result.Receipt; receipt != nil {
+		valid = ValidateReviewOperationID(receipt.ID) == nil && receipt.State == "queued" && receipt.Revision == 1
+	}
+	if !valid {
+		return ReviewRequestResult{}, unknownMutation("invalid_response", "The service returned invalid review request facts; its outcome is unknown.", status)
 	}
 	return result, nil
 }
@@ -126,15 +159,26 @@ func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRe
 // ReviewOperation reads retained state in the bound project. A different worker
 // in that same project is valid attribution, rather than a binding mismatch.
 func (c *Client) ReviewOperation(ctx context.Context, id string) (ReviewOperation, error) {
-	if err := ValidateReviewOperationID(id); err != nil {
-		return ReviewOperation{}, err
+	return c.WaitReviewOperation(ctx, id, 0)
+}
+
+// WaitReviewOperation reads retained state, optionally waiting for a terminal
+// transition. Detaching a read never cancels or retries the durable operation.
+func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds int) (ReviewOperation, error) {
+	if ValidateReviewOperationID(id) != nil || ValidateReviewOperationWait(waitSeconds) != nil {
+		return ReviewOperation{}, validation()
 	}
 	var value ReviewOperation
-	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse); err != nil {
+	var status int
+	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: waitSeconds, status: &status}); err != nil {
 		return ReviewOperation{}, err
 	}
-	if value.ID != id || value.ProjectID != c.identity.ProjectID || !validExecutionIdentifier(value.ProjectID) || !validExecutionIdentifier(value.ActorID) || value.WorkerID != "" && !validExecutionIdentifier(value.WorkerID) || value.ConfigurationRevision < 1 || value.PolicyRevision < 0 || value.CapabilityFingerprint != "" && !controlHex(value.CapabilityFingerprint, 64) || !validPullNumber(value.PullNumber) || !oneReviewOf(value.Channel, "cli", "hosted") || !controlHex(value.HeadSHA, 40) || !oneReviewOf(value.State, "queued", "preparing", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "held") || value.Revision < 1 || value.Reason != "" && !validExecutionIdentifier(value.Reason) || value.AttemptID != "" && !validReviewOpaqueID(value.AttemptID, "review_attempt_") || !controlTime(value.CreatedAt) || !controlTime(value.UpdatedAt) {
+	if value.ID != id || !c.validReviewOperation(value) {
 		return ReviewOperation{}, invalidResponse()
 	}
 	return value, nil
+}
+
+func (c *Client) validReviewOperation(value ReviewOperation) bool {
+	return ValidateReviewOperationID(value.ID) == nil && value.ProjectID == c.identity.ProjectID && validExecutionIdentifier(value.ProjectID) && validExecutionIdentifier(value.ActorID) && (value.WorkerID == "" || validExecutionIdentifier(value.WorkerID)) && value.ConfigurationRevision >= 1 && value.PolicyRevision >= 0 && (value.CapabilityFingerprint == "" || controlHex(value.CapabilityFingerprint, 64)) && validPullNumber(value.PullNumber) && oneReviewOf(value.Channel, "cli", "hosted") && controlHex(value.HeadSHA, 40) && oneReviewOf(value.State, "queued", "preparing", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "held") && value.Revision >= 1 && (value.Reason == "" || validExecutionIdentifier(value.Reason)) && (value.AttemptID == "" || validReviewOpaqueID(value.AttemptID, "review_attempt_")) && controlTime(value.CreatedAt) && controlTime(value.UpdatedAt)
 }

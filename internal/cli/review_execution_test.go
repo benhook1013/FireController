@@ -52,7 +52,7 @@ func reviewExecutionFixture(t *testing.T) (*serviceFixture, string, string) {
 }
 
 func reviewRequestArgs() []string {
-	return []string{"reviews", "request", "2", "--key", "explicit-review-key", "--expect-config", "1", "--channel", "cli", "--head", strings.Repeat("a", 40)}
+	return []string{"reviews", "request", "2", "--key", "explicit-review-key", "--expect-config", "1", "--channel", "cli", "--head", strings.Repeat("a", 40), "--wait-seconds", "0"}
 }
 
 func TestReviewExecutionCLIReadsAndQueuedReceiptRemainBound(t *testing.T) {

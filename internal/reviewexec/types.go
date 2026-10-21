@@ -97,9 +97,14 @@ type Attempt struct {
 }
 
 type Engine struct {
+	operationMu                sync.Mutex
+	operationWaiters           map[string]map[*operationWaiter]struct{}
+	operationWaiterPrincipals  map[string]int
+	operationWaiterCount       int
 	attemptNow                 func() time.Time
 	routeNow                   func() time.Time
 	checkpointNow              func() time.Time
+	resultWaitLifetime         context.Context
 	checkpointWake             chan struct{}
 	checkpointRunning          atomic.Bool
 	checkpointMu               sync.Mutex
@@ -123,6 +128,12 @@ type Engine struct {
 // EngineOption composes trusted application integrations before an engine is
 // exposed to handlers or supervised workers.
 type EngineOption func(*Engine)
+
+// WithResultWaitLifetime binds only HTTP result waits to an application
+// lifecycle. It never cancels an accepted operation or its provider work.
+func WithResultWaitLifetime(ctx context.Context) EngineOption {
+	return func(e *Engine) { e.resultWaitLifetime = ctx }
+}
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 var sha = regexp.MustCompile(`^[0-9a-f]{40}$`)

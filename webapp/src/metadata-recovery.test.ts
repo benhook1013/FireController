@@ -39,7 +39,8 @@ describe('project metadata recovery owner', () => {
     }));
     client.setQueryData([...key, 'map'], 'old map');
     client.setQueryData([...key, 'map-history', 'inactive'], 'old history');
-    client.setQueryData([...key, 'reviews'], 'unchanged reviews');
+    client.setQueryData([...key, 'reviews', 'current'], 'old current summary');
+    client.setQueryData([...key, 'reviews', 'snapshot', 'private-history'], 'untouched private history');
     const observer = new QueryObserver(client, { queryKey: [...key, 'map'], queryFn: async () => { timeline.push('query'); return `map ${++mapReads}`; } });
     const unsubscribe = observer.subscribe(() => {});
     const api = new Api('synthetic-token', project.id); await api.connect();
@@ -55,16 +56,17 @@ describe('project metadata recovery owner', () => {
       await flush(); expect(opens).toBe(1); // No owner-level automatic retry.
       first.cancel(); timeline.length = 0;
       retry = startMetadataAttempt(api, initial, { ...owner, retry: true });
-      await flush();
+      await vi.waitFor(() => expect(states.at(-1)).toBe('live'));
       expect(timeline).toEqual(['snapshot', 'query', 'stream:fresh_cursor']);
       expect(states.at(-1)).toBe('live'); expect(appearances.at(-1)).toBe('Fresh brand');
       expect(client.getQueryData([...key, 'map'])).toBe('map 1');
       expect(client.getQueryState([...key, 'map-history', 'inactive'])?.isInvalidated).toBe(true);
-      expect(client.getQueryState([...key, 'reviews'])?.isInvalidated).toBe(false);
+      expect(client.getQueryState([...key, 'reviews', 'current'])?.isInvalidated).toBe(true);
+      expect(client.getQueryState([...key, 'reviews', 'snapshot', 'private-history'])?.isInvalidated).toBe(false);
       expect(opens).toBe(2); expect(streamSignal?.aborted).toBe(false);
       snapshot = { presentation: { ...fresh.presentation, revision: 2, brand_name: 'Live brand' }, event_cursor: 'live_cursor' };
       output!.enqueue(new TextEncoder().encode(`event: project-events\nid: live_cursor\ndata: ${JSON.stringify({ items: [{ event_type: 'project.presentation_changed', resource_id: project.id, revision: 2, event_cursor: 'brand_cursor' }, { event_type: 'map.entry_updated', resource_id: 'entry_one', revision: 2, event_cursor: 'live_cursor' }], event_cursor: 'live_cursor', has_more: false })}\n\n`));
-      await flush();
+      await vi.waitFor(() => expect(appearances.at(-1)).toBe('Live brand'));
       expect(presentationReads).toBe(2); expect(appearances.at(-1)).toBe('Live brand'); expect(mapReads).toBe(2);
     } finally { first.cancel(); retry?.cancel(); lifetime.abort(); await Promise.all([first.done, retry?.done]); unsubscribe(); client.clear(); api.close(); }
     expect(streamSignal?.aborted).toBe(true);

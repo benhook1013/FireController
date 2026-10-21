@@ -171,14 +171,14 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 		MetadataStreams          int    `json:"metadata_streams"`
 		InboxStreams             int    `json:"inbox_streams"`
 	}
-	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 2 || result.SessionPosts != 1 || result.SessionDeletes != 1 || !result.MetadataReconnect || result.InjectedMetadataFailures != 1 || result.InjectedConsoleErrors < 0 || result.InjectedConsoleErrors > 1 || result.PresentationReads != 4 || result.MetadataStreams != 3 || result.InboxStreams != 2 {
+	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 14 || result.SessionPosts != 1 || result.SessionDeletes != 1 || !result.MetadataReconnect || result.InjectedMetadataFailures != 1 || result.InjectedConsoleErrors < 0 || result.InjectedConsoleErrors > 1 || result.PresentationReads != 4 || result.MetadataStreams != 3 || result.InboxStreams != 2 {
 		t.Fatal("invalid packaged browser result")
 	}
 	daemon.stop(t)
 	if external.Load() != 0 {
 		t.Fatal("browser smoke attempted external HTTP")
 	}
-	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=2 session_posts=1 session_deletes=1 metadata_reconnect=true injected_metadata_failures=1 injected_console_errors=%d presentation_reads=4 metadata_streams=3 inbox_streams=2 daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.InjectedConsoleErrors, engine.Load())
+	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=14 session_posts=1 session_deletes=1 metadata_reconnect=true injected_metadata_failures=1 injected_console_errors=%d presentation_reads=4 metadata_streams=3 inbox_streams=2 daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.InjectedConsoleErrors, engine.Load())
 }
 
 // The only early driver output is its owned Chromium group ID. Keep all output
@@ -225,7 +225,7 @@ func (o *browserOutput) safePhase() string {
 			continue
 		}
 		switch record.Phase {
-		case "configuration", "launch", "connect", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "reload", "disconnect":
+		case "configuration", "launch", "connect", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "disconnect":
 			if record.Phase == "metadata-failure" {
 				switch record.Checkpoint {
 				case "metadata-notice", "metadata-initial-counts", "metadata-inbox-ready":

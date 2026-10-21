@@ -15,6 +15,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/server"
 )
 
 type output struct {
@@ -338,4 +341,141 @@ func TestHTTPShutdownDrainsRequestsBeforeForcedClose(t *testing.T) {
 			t.Fatal("forced close did not cancel request")
 		}
 	})
+}
+
+func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
+	f := newObserverTestFixture(t)
+	lifetime, cancelWaits := context.WithCancel(context.Background())
+	defer cancelWaits()
+	capabilities := []reviewexec.Capability{
+		{ID: "failed", Provider: "coderabbit", Account: "failed", Channels: []string{"hosted"}},
+		{ID: "sibling", Provider: "coderabbit", Account: "sibling", Channels: []string{"hosted"}},
+	}
+	engine, err := reviewexec.New(f.store, capabilities, reviewexec.WithResultWaitLifetime(lifetime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := server.New(f.store)
+	engine.Register(mux)
+	srv := newHTTPServer(context.Background(), mux)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- srv.Serve(listener) }()
+	defer func() {
+		_ = srv.Close()
+		_ = listener.Close()
+	}()
+
+	project := "failed"
+	postPath := "/api/v1/projects/failed/reviews/requests"
+	getReceipt, err := engine.Enqueue(t.Context(), f.scope(t, project), "shutdown-get-seed", reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 1, Channel: "hosted", HeadSHA: strings.Repeat("a", 40)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var getOperation reviewexec.Receipt
+	if json.Unmarshal(getReceipt, &getOperation) != nil {
+		t.Fatal("GET wait fixture receipt is invalid")
+	}
+	getPath := postPath[:len(postPath)-len("requests")] + "operations/" + getOperation.ID
+	body, err := json.Marshal(reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 1, Channel: "hosted", HeadSHA: strings.Repeat("b", 40)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startRequest := func(method, path, key, data string) <-chan struct {
+		status int
+		body   string
+	} {
+		done := make(chan struct {
+			status int
+			body   string
+		}, 1)
+		go func() {
+			request, requestErr := http.NewRequest(method, "http://"+listener.Addr().String()+path, strings.NewReader(data))
+			if requestErr != nil {
+				done <- struct {
+					status int
+					body   string
+				}{0, requestErr.Error()}
+				return
+			}
+			request.Header.Set("Authorization", "Bearer "+f.admin)
+			request.Header.Set("X-FC-Instance", f.store.InstanceID())
+			request.Header.Set("Prefer", "wait=900")
+			if key != "" {
+				request.Header.Set("Idempotency-Key", key)
+			}
+			response, requestErr := (&http.Client{Timeout: 8 * time.Second}).Do(request)
+			if requestErr != nil {
+				done <- struct {
+					status int
+					body   string
+				}{0, requestErr.Error()}
+				return
+			}
+			defer response.Body.Close()
+			content, _ := io.ReadAll(response.Body)
+			done <- struct {
+				status int
+				body   string
+			}{response.StatusCode, string(content)}
+		}()
+		return done
+	}
+	postDone := startRequest(http.MethodPost, postPath, "shutdown-post", string(body))
+	getDone := startRequest(http.MethodGet, getPath, "", "")
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		var count int
+		if err = f.store.DB().QueryRow(`SELECT count(*) FROM review_operations`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count == 2 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case result := <-postDone:
+		t.Fatal("long POST returned before lifecycle shutdown", result.status, result.body)
+	case result := <-getDone:
+		t.Fatal("long GET returned before lifecycle shutdown", result.status, result.body)
+	case <-time.After(40 * time.Millisecond):
+	}
+	started := time.Now()
+	cancelWaits()
+	if err = shutdownHTTPServer(srv, 5*time.Second); err != nil {
+		t.Fatal("lifecycle waits forced HTTP shutdown", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatal("wait cancellation did not make daemon shutdown prompt", elapsed)
+	}
+	for index, done := range []<-chan struct {
+		status int
+		body   string
+	}{postDone, getDone} {
+		select {
+		case result := <-done:
+			var accepted reviewexec.Receipt
+			postAccepted := index == 0 && result.status == http.StatusAccepted && json.Unmarshal([]byte(result.body), &accepted) == nil && accepted.State == "queued" && accepted.Revision == 1 && strings.HasPrefix(accepted.ID, "review_operation_") && !strings.Contains(result.body, "outcome_unknown")
+			getCanceled := index == 1 && result.status == http.StatusServiceUnavailable && strings.Contains(result.body, `"code":"overloaded"`) && !strings.Contains(result.body, `"state":"completed"`)
+			if !postAccepted && !getCanceled {
+				t.Fatal("accepted wait returned unsafe shutdown response", result.status, result.body)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("shutdown did not release a result waiter")
+		}
+	}
+	if err = <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+		t.Fatal("server did not finish graceful shutdown", err)
+	}
+	var queued, receipts int
+	if err = f.store.DB().QueryRow(`SELECT count(*) FROM review_operations WHERE state='queued'`).Scan(&queued); err != nil || queued != 2 {
+		t.Fatal("shutdown changed accepted operations", queued, err)
+	}
+	if err = f.store.DB().QueryRow(`SELECT count(*) FROM receipts WHERE operation='reviews.request'`).Scan(&receipts); err != nil || receipts != 2 {
+		t.Fatal("shutdown changed accepted receipts", receipts, err)
+	}
 }
