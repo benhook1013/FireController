@@ -468,7 +468,9 @@ try {
     checkpoint = 'presence-visible';
     await restoreContactVisibility();
     need(await page.evaluate(()=>document.visibilityState==='visible'));
+    checkpoint = 'presence-visible-response';
     await expect.poll(()=>presenceFinished,{timeout:8000}).toBe(2);
+    checkpoint = 'presence-visible-content';
     await expect(builderLane.locator('.worker-contact')).toContainText('Last contact');
     need(presenceReads===2 && presenceHeaderErrors===0 && sameContactReadBoundary());
     need(await inspectorLane.locator('.worker-contact').count()===0);

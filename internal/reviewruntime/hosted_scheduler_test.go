@@ -306,14 +306,14 @@ func TestHostedSchedulerProviderBackoffCapsAndHonorsRetryAfter(t *testing.T) {
 	p.repositoryError = nil
 	f.provider.partial = true
 	gate.resume(t)
-	// A successful but pending capture does not reset the accumulated backoff.
-	gate.interval(t, 5*time.Minute)
+	// A healthy pending result resets failure backoff without losing the attempt.
+	gate.interval(t, 30*time.Second)
 	p.repositoryError = &reviewprovider.Error{Code: "provider_rate_limited", Message: "synthetic shorter retry after pending", RetryAfterSeconds: 120}
 	gate.resume(t)
-	gate.interval(t, 5*time.Minute)
+	gate.interval(t, 120*time.Second)
 	p.repositoryError = &reviewprovider.Error{Code: "provider_unavailable", Message: "synthetic continued failure"}
 	gate.resume(t)
-	gate.interval(t, 5*time.Minute)
+	gate.interval(t, 60*time.Second)
 	if f.provider.queries != 1 || f.provider.reviews != 1 || p.currentActors.Load() != 0 {
 		t.Fatal("provider backoff invoked another action")
 	}

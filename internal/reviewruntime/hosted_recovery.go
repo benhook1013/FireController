@@ -120,6 +120,13 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	}
 	intent := reviewprovider.HostedTriggerIntent{OperationID: attempt.OperationID, AttemptID: attempt.ID, HeadSHA: anchor.CandidateSHA}
 	record := HostedCaptureRecord{RepositoryID: anchor.RepositoryID, Repository: anchor.Repository, PullNumber: anchor.PullNumber, Intent: intent, PostingActor: postingActor, ProviderActor: providerActor, EarliestPosting: bound.EarliestPosting, StartedAt: started, FinishedAt: finished, Snapshot: snapshot}
+	// Reuse immutable raw source when only our collection timestamps changed.
+	// A healthy wait must not spend the finite journal on identical responses.
+	record, err = reuseHostedCompletionObservation(ctx, captures, attempt, observations, record)
+	if err != nil {
+		result.Reason = "observation_unavailable"
+		return result, err
+	}
 	_, retained, err := retainHostedObservation(ctx, captures, engine, attempt, record)
 	if err != nil {
 		result.Reason = "observation_unavailable"

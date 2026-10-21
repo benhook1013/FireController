@@ -57,6 +57,7 @@ browser-build:
 
 # Requires the actual outputs from make build; no implicit rebuild.
 smoke:
+	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedQualificationCoordination$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -vet=all -tags=packaged_smoke -run '^TestPackagedSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedUpgradeSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedPublicationSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke

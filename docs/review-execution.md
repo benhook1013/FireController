@@ -190,6 +190,14 @@ A second case lost the response after the provider accepted the review post, ret
 
 The run made nine CLI calls, 94 loopback API calls, 27 controlled provider GETs, two metadata-query posts and two review posts. Real Git executed 123 commands with two exact canonical fetches mapped to owned local objects. The 275-file source/assets/documentation manifest stayed unchanged at SHA-256 `821b0abf54f1467a86b0740477f14c7b2cf212eb7841692bf3f3e3998480c53e`; packaged executable hashes also stayed unchanged. There were no real external requests, unexpected endpoints or remaining fixture processes/state. This proves the hosted-only packaged pipeline under synthetic provider identities and facts. The CLI pipeline has separate packaged proof above; dual-channel composition has focused tests; browser behavior, actual GitHub/CodeRabbit account behavior, physical phones, fleet throughput and operational cutover are separate boundaries.
 
+### Prompt completion observation
+
+Healthy active Hosted reviews are checked every 30 seconds. Complete provider responses with unchanged content reuse the latest immutable post-trigger capture, excluding only local collection timestamps from comparison. Provider timestamps, bodies, identities and completeness still matter; a real source change retains a new capture. Reuse preserves the original observation time and does not claim newly captured evidence or coverage. It survives process restart without a process-local digest cache.
+
+Errors, ambiguous results and provider RetryAfter retain bounded backoff; the 200-reference refusal remains a safety boundary for distinct retained observations. Idle/completed recovery uses the existing 15-second interval. The scheduler neither reposts the review nor queries a new allowance to observe completion. Polling intervals are eligible waits, not a promise about provider response time.
+
+Focused normal and race proof covers more than 200 unchanged checks with no extra journal references or artifacts, recovery-worker restart, timestamp-only source changes and completion of the original attempt without reposting. The full runtime suite and vet pass. The following older checkpoint records the previous pending backoff and its original packaged proof.
+
 ### Pending scheduled-recovery proof
 
 Checkpoint `f5d764ceaa4b2b1d21a26396334564bf8cc5fc98` passed the full runtime race suite, vet, formatting/documentation checks and packaged builds. Focused scheduler regressions first reproduced both successful pending reasons using the 15-second interval. They now verify 30/60/120/240/300-second backoff, its cap and reset on completion or an empty queue. Authorization, overload, provider retry-after, reference-capacity and cancellation checks remain covered; the live dispatch loop is unchanged.

@@ -18,6 +18,12 @@ FC_SMOKE_BIN_DIR=/absolute/private/bin make smoke
 
 Such a run proves only those supplied inputs. Build/source provenance remains the caller's responsibility.
 
+## Bounded concurrent coordination
+
+`make smoke` also runs `TestPackagedQualificationCoordination` against the supplied daemon. Two projects each have twelve distinct workers. All 24 quiet waits must establish before concurrent job writes/reads and message sends begin. Exact-key replay must preserve 24 original messages, delivery stays project/worker scoped, waits never acknowledge messages, and cross-project job reads are refused. The workload joins its waits and closes clients, proxy connections and the owned daemon; unexpected provider traffic fails the check.
+
+The case passed on Linux normally and with the race-instrumented harness: the concurrent work took 154–205 ms in the initial supplied-release checks. These are developer-machine observations for a small simultaneous workload, not a sustained throughput guarantee, model-host wakeup promise or native-platform qualification.
+
 ## Native platform gate
 
 The Linux job retains its full checks, cross-compilation and separate Chromium smoke. Native Windows and macOS jobs build all three CGO-free binaries with `-trimpath`, report `go env GOOS GOARCH GOEXE`, then run the same tagged packaged workload against those outputs. They require no Node or browser installation. The single required `validate` job succeeds only when Linux and the entire native matrix succeed; native proof is not inferred from cross-compilation or runner labels. `make workflow-check` runs pinned actionlint before the ordinary `make check` workload, checking workflow structure, expression contexts and action contracts without optional external shell/Python analyzers. The first native workflow attempt was rejected before any jobs ran because a runner path was placed at job scope; its corrected definition uses that context only at step scope.

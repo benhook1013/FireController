@@ -364,7 +364,7 @@ func (o *browserOutput) safePhase() string {
 			if record.Phase == "delivery-overview" {
 				allowed := false
 				switch record.Checkpoint {
-				case "initial-snapshot", "delivery-heading", "builder-job", "builder-primary", "inspector-paused", "inspector-pause-reason", "unassigned-job", "status-order", "latest-checkpoint-done", "latest-checkpoint-next", "latest-checkpoint", "old-checkpoint-absent", "overview-request-budget", "lane-count", "private-identifiers-absent", "presence-initial", "presence-hidden", "presence-visible", "layout-capture", "notes-nav-absent", "inbox-nav-click", "inbox-worker-selected", "worker-inbox-workers-nav", "worker-inbox-open", "worker-inbox-history", "worker-inbox-back", "worker-inbox-return", "inbox-heading", "inbox-sidebar", "inbox-readonly-composer", "inbox-readonly-writes", "default-appearance", "default-title", "default-indicator-colors", "default-indicator-contrast":
+				case "initial-snapshot", "delivery-heading", "builder-job", "builder-primary", "inspector-paused", "inspector-pause-reason", "unassigned-job", "status-order", "latest-checkpoint-done", "latest-checkpoint-next", "latest-checkpoint", "old-checkpoint-absent", "overview-request-budget", "lane-count", "private-identifiers-absent", "presence-initial", "presence-hidden", "presence-visible", "presence-visible-response", "presence-visible-content", "layout-capture", "notes-nav-absent", "inbox-nav-click", "inbox-worker-selected", "worker-inbox-workers-nav", "worker-inbox-open", "worker-inbox-history", "worker-inbox-back", "worker-inbox-return", "inbox-heading", "inbox-sidebar", "inbox-readonly-composer", "inbox-readonly-writes", "default-appearance", "default-title", "default-indicator-colors", "default-indicator-contrast":
 					allowed = true
 				}
 				valid := allowed && (record.PresenceHTTPStatus == 0 || record.PresenceHTTPStatus >= 100 && record.PresenceHTTPStatus <= 599)
@@ -404,7 +404,7 @@ func (o *browserOutput) safePhase() string {
 						name = "Other"
 					}
 					result := fmt.Sprintf("delivery-overview/%s class=%s error=%s presentation_reads=%d metadata_streams=%d inbox_streams=%d forbidden_writes=%d action_writes=%d errors=%d external=%d", record.Checkpoint, class, name, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Writes, record.ActionWrites, record.Errors, record.External)
-					if record.Checkpoint == "presence-initial" || record.Checkpoint == "presence-hidden" || record.Checkpoint == "presence-visible" {
+					if record.Checkpoint == "presence-initial" || record.Checkpoint == "presence-hidden" || record.Checkpoint == "presence-visible" || record.Checkpoint == "presence-visible-response" || record.Checkpoint == "presence-visible-content" {
 						result += fmt.Sprintf(" presence_reads=%d presence_finished=%d presence_responses=%d presence_http_status=%d presence_failed=%d presence_header_errors=%d delivery_reads=%d job_brief_reads=%d job_archive_reads=%d contact_history_reads=%d", record.PresenceReads, record.PresenceFinished, record.PresenceResponses, record.PresenceHTTPStatus, record.PresenceFailed, record.PresenceHeaderErrors, record.DeliveryReads, record.JobBriefReads, record.JobArchiveReads, record.ContactHistoryReads)
 						result += fmt.Sprintf(" presence_failure_kind=%s presence_failure_ms=%d presence_failure_headers_ms=%d presence_signal_aborts=%d presence_signal_abort_ms=%d", presenceFailureKind, presenceFailureMS, presenceFailureHeadersMS, presenceSignalAborts, presenceSignalAbortMS)
 					}
@@ -875,7 +875,7 @@ func seedBrowserReadOnlyCredential(t *testing.T, ctx context.Context, data, inst
 }
 
 func TestBrowserPresenceDiagnosticsAllowlist(t *testing.T) {
-	for _, checkpoint := range []string{"presence-initial", "presence-hidden", "presence-visible"} {
+	for _, checkpoint := range []string{"presence-initial", "presence-hidden", "presence-visible", "presence-visible-response", "presence-visible-content"} {
 		for _, tc := range []struct {
 			name       string
 			counter    any

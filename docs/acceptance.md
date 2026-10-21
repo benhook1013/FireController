@@ -76,7 +76,7 @@ Fast reads and local mutations return their useful completed outcome directly. F
 
 ## Performance proof
 
-Initial calibration candidates are 1,000 quiet subscriptions and 100 committed message sends per second for ten minutes on a recorded single-host reference machine, with concurrent job reads and simulated slow provider work. These are unmeasured workload candidates, not release gates or supported capacity claims. Measure representative AI sessions first, then set explicit release budgets in a reviewed benchmark plan.
+Initial qualification uses a bounded representative workload rather than a fleet-capacity promise. The packaged coordination smoke exercises two projects and 24 workers with simultaneous quiet subscriptions, concurrent job writes/reads, exactly replayed messages and cross-project refusals. Slow-provider responsiveness and recovery use the existing controlled execution/collection workloads. These checks establish functional concurrency and bounded responsiveness on the test host; sustained-load capacity and multiple-server deployment require measurements only when actual demand warrants them.
 
 Candidate latency budgets are local API send/read p95 below 200 ms and commit-to-client event p95 below 500 ms. These require calibration before becoming release gates. Measure browser transport receipt separately from model-visible delivery, which depends on the host. Record p99, errors, saturation, memory, database time, fsync/storage characteristics, CPU, process count, payload sizes, and full hardware/software versions. Do not omit failed or timed-out requests from the latency distribution.
 

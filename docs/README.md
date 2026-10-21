@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The service implements project-scoped jobs, durable messages and native CLI/hosted review orchestration, with profile-bound CLI and MCP clients. The embedded browser provides jobs, workers, conversations and review inspection; see the [local API](local-api.md), [browser guide](browser-guide.md) and [execution contract](review-execution.md) for exact boundaries. The [delivery plan](delivery.md) records proof and unfinished work. This project now uses the native service for development coordination and reviews; the former website remains a frozen visual reference. Actual own-project CLI/Hosted completion, finalization, browser publication and same-attempt recovery are recorded at the execution owner; wider migration, fleet qualification and human GUI acceptance remain separate.
+The service implements project-scoped jobs, durable messages and native CLI/hosted review orchestration, with profile-bound CLI and MCP clients. The embedded browser provides jobs, workers, conversations and review inspection; see the [local API](local-api.md), [browser guide](browser-guide.md) and [execution contract](review-execution.md) for exact boundaries. The [delivery plan](delivery.md) records proof and unfinished work. This project now uses the native service for development coordination and reviews; the former website remains a frozen visual reference. Actual own-project CLI/Hosted completion, finalization, browser publication and same-attempt recovery are recorded at the execution owner; the selected installation and bounded qualification are recorded in the delivery plan. GUI feedback continues through ordinary iteration rather than a completion gate.
 
 ## Documents
 
