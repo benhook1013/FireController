@@ -21,3 +21,16 @@
 
 .review-page-body{padding:18px}
 @media(max-width:650px){.review-page-body{padding:14px}}
+
+/* Show a bounded recent window; full round history belongs to review details. */
+.review-lane{container-type:inline-size}
+.review-lane .review-recent-rounds{flex-wrap:nowrap}
+.review-queue-history-link{margin:0}
+@container(max-width:480px){.review-recent-rounds>.review-round-pill:nth-last-child(n+6){display:none}}
+@container(max-width:399px){.review-recent-rounds>.review-round-pill:nth-last-child(n+5){display:none}}
+@container(max-width:318px){.review-recent-rounds>.review-round-pill:nth-last-child(n+4){display:none}}
+@container(max-width:237px){.review-recent-rounds>.review-round-pill:nth-last-child(n+3){display:none}}
+@container(max-width:156px){.review-recent-rounds>.review-round-pill:nth-last-child(n+2){display:none}}
+@media(max-width:650px){.review-recent-rounds{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.review-recent-rounds>.review-round-pill:nth-child(n){display:flex}}
+
+.review-number a{color:inherit}
