@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -363,13 +364,13 @@ func TestRetainCLIWithholdsCompleteCoverageOnCaptureOrWorkspaceMismatch(t *testi
 			name: "missing-reviewed-file",
 			prepare: func(t *testing.T, _ reviewexec.Attempt, workspace reviewworkspace.Workspace) (reviewworkspace.Workspace, reviewprocess.Capture) {
 				return workspace, makeCompleteCLICapture(t, workspace, []string{"reviewed.txt"})
-			}, outcome: "uncertain", reason: "coverage_incomplete",
+			}, outcome: "failed", reason: "coverage_incomplete",
 		},
 		{
 			name: "extra-reviewed-file",
 			prepare: func(t *testing.T, _ reviewexec.Attempt, workspace reviewworkspace.Workspace) (reviewworkspace.Workspace, reviewprocess.Capture) {
 				return workspace, makeCompleteCLICapture(t, workspace, []string{"reviewed.txt", "second.txt", "invented.txt"})
-			}, outcome: "uncertain", reason: "coverage_incomplete",
+			}, outcome: "failed", reason: "coverage_incomplete",
 		},
 		{
 			name: "malformed-structured-output",
@@ -704,5 +705,41 @@ func TestRetainCLIDoesNotMaskLedgerConflictOrStorageFailure(t *testing.T) {
 				t.Fatal("nonvalidation failure was masked or changed state", err)
 			}
 		})
+	}
+}
+
+func TestRetainCLIRenameAwareCoveragePreservesExactClaimsAndPatch(t *testing.T) {
+	f := newCLIEvidenceFixture(t)
+	source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
+	gitTestRun(t, source, "switch", "candidate")
+	gitTestRun(t, source, "mv", "reviewed.txt", "renamed.txt")
+	if err := os.WriteFile(filepath.Join(source, "renamed.txt"), []byte("base\n#x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, source, "add", "--all")
+	gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "synthetic similar rename")
+	f.headSHA = gitTestOutput(t, source, "rev-parse", "HEAD")
+	gitTestRun(t, source, "push", "cache", "candidate")
+	a, w := f.startAdmitted(t, 2)
+	if raw := mustChangedFiles(t, f.manager, w); len(raw) != 3 {
+		t.Fatal("fixture lost old/new raw paths", raw)
+	}
+	if count, err := f.manager.ReviewFileCount(t.Context(), w); err != nil || count != 2 {
+		t.Fatal("fixture rename not detected", count, err)
+	}
+	claims := []string{"renamed.txt", "second.txt"}
+	capture := makeCompleteCLICapture(t, w, claims)
+	start, finish := time.Now().Add(-time.Second).UTC(), time.Now().UTC()
+	got, err := RetainCLI(t.Context(), f.captures, f.engine, f.manager, a, w, capture, start, finish)
+	if err != nil || !got.Complete || got.Outcome != "completed" {
+		t.Fatal("proven rename old path blocked complete capture", got, err)
+	}
+	evidence, err := f.engine.ReadReviewEvidence(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), got.Receipt.ID)
+	if err != nil || !reflect.DeepEqual(evidence.Capture.Review.ReviewedFiles, claims) || len(evidence.Capture.Review.Findings) != 1 || evidence.Anchor.PatchSHA256 != w.PatchSHA256 || f.manager.Verify(t.Context(), w) != nil {
+		t.Fatal("rename proof changed capture claims, finding or patch", err)
+	}
+	again, err := RetainCLI(t.Context(), f.captures, f.engine, f.manager, a, w, capture, start, finish)
+	if err != nil || again != got {
+		t.Fatal("rename-aware exact replay changed receipt", again, err)
 	}
 }

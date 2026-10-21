@@ -940,3 +940,55 @@ func TestCLIDriverRetainedEvidenceSurvivesMissingCurrentProjection(t *testing.T)
 		})
 	}
 }
+
+func TestCLIDriverKnownEndedIncompleteScopeFailsPreservingFindingsWithoutCredit(t *testing.T) {
+	f := newCLIDriverFixture(t)
+	zero, minimum, maximum := int64(0), int64(1), int64(2)
+	if _, err := f.engine.ConfigureRoundControl(t.Context(), f.scope(t, f.admin, true), "scope-failure-grant", 2, "cli", reviewexec.RoundControlRequest{ExpectedRevision: &zero, Action: "grant", Minimum: &minimum, Maximum: &maximum}); err != nil {
+		t.Fatal(err)
+	}
+	op, a := f.prepareAdmit(t, 2, 1, "ended-scope-driver")
+	calls := 0
+	f.driver.review = func(_ context.Context, w reviewworkspace.Workspace) (reviewprocess.Capture, error) {
+		calls++
+		return makeCompleteCLICapture(t, w, []string{"reviewed.txt"}), nil
+	}
+	result, err := f.driver.Dispatch(t.Context(), op, a, nil)
+	if err != nil || result.State != "failed" || result.Reason != "coverage_incomplete" || calls != 1 {
+		t.Fatal("ended incomplete coverage remained uncertain or gained credit", result, err)
+	}
+	if _, err := f.engine.Advance(t.Context(), f.project, a.ID, a.Revision, result.State, result.Reason, ""); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err := f.store.DB().QueryRow(`SELECT id FROM review_execution_evidence WHERE attempt_id=?`, a.ID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	scope := f.scopeWithAccess(t, f.readerToken(), false, "read")
+	evidence, err := f.engine.ReadReviewEvidence(t.Context(), scope, id)
+	if err != nil || evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "failed" || len(evidence.Capture.Review.Findings) != 1 || evidence.Capture.Review.Findings[0].Title != "Synthetic finding" || len(evidence.Capture.Review.ReviewedFiles) != 1 {
+		t.Fatal("partial findings or original scope lost", err)
+	}
+	if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_round_completions`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_comparison_proofs WHERE operation_id=?`, op.ID) != 0 {
+		t.Fatal("failed capture retained reservation or gained native credit")
+	}
+	control, err := f.engine.ReadRoundControl(t.Context(), scope, 2, "cli")
+	if err != nil || control.Used != 0 || control.Dry != 0 {
+		t.Fatal("failed scope consumed round", control, err)
+	}
+	progress, err := f.engine.ReadRoundProgress(t.Context(), scope, []int64{2})
+	if err != nil || len(progress.Items) != 1 {
+		t.Fatal(progress, err)
+	}
+	for _, channel := range progress.Items[0].Channels {
+		if channel.Pending != 0 {
+			t.Fatal("failed capture retained round occupancy")
+		}
+	}
+	_, err = f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "cannot-finalize-failed-scope", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
+	assertCoreErrorCode(t, err, "review_conflict")
+	capture, _, err := f.captures.Read(t.Context(), a.ID)
+	if err != nil || !capture.Capture.Started || capture.Capture.ExitCode != 0 {
+		t.Fatal("raw ended execution lost", err)
+	}
+}

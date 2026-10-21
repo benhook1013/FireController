@@ -22,6 +22,7 @@ func TestHostedFinishedAcknowledgementDiagnosticGuards(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			s, intent, poster, bot, earliest := standingTestFixture(t)
 			s.IssueComments[1].Body = "Unsupported standing inventory"
+			s.IssueComments[2].Body = "<!-- coderabbit-ai-generated:v1 -->\n\n" + s.IssueComments[2].Body
 			trigger := s.IssueComments[0].CreatedAt
 			switch mode {
 			case "old":
@@ -91,6 +92,39 @@ func TestHostedFinishedAcknowledgementCannotCreateCleanCoverage(t *testing.T) {
 			got := resolvePublication(t, s, intent, poster, bot, earliest, "active", "publication_not_proven")
 			if got.PublicationID != "" || !got.FinishedAt.IsZero() || len(got.Batches) != 0 || len(got.Roots) != 0 {
 				t.Fatal("finished acknowledgement invented publication evidence")
+			}
+		})
+	}
+}
+
+func TestHostedFinishedAcknowledgementGeneratedV1Wrapper(t *testing.T) {
+	ack := "<!-- coderabbit-ai-generated:v1 -->\n\n" + standingTestAck()
+	for _, body := range []string{ack, strings.ReplaceAll(ack, "\n", "\r\n")} {
+		s, intent, poster, bot, earliest := standingTestFixture(t)
+		// Complete collection, exact current trigger and finished reply, but no
+		// review objects or supported standing inventory. ACK is never zero credit.
+		s.IssueComments = []IssueComment{s.IssueComments[0], s.IssueComments[2]}
+		s.IssueComments[1].Body = body
+		before := append([]IssueComment(nil), s.IssueComments...)
+		got, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+		if err != nil || got.Complete || got.Reason != "hosted_finished_inventory_unproven" || got.Publication.State != "uncertain" || !got.Publication.FinishedAt.IsZero() || got.Publication.StandingZero != nil || len(got.Findings) != 0 || !reflect.DeepEqual(before, s.IssueComments) {
+			t.Fatalf("versioned ACK created credit or changed source: %+v %v", got, err)
+		}
+	}
+	for name, body := range map[string]string{
+		"unknown version":     strings.Replace(ack, "generated:v1", "generated:v2", 1),
+		"repeated header":     "<!-- coderabbit-ai-generated:v1 -->\n" + ack,
+		"misplaced header":    standingTestAck() + "\n<!-- coderabbit-ai-generated:v1 -->",
+		"missing invocation":  strings.Replace(ack, "<!-- CodeRabbit review command invocation: v2:"+strings.Repeat("c", 64)+" -->", "", 1),
+		"bad invocation hex":  strings.Replace(ack, strings.Repeat("c", 64), strings.Repeat("g", 64), 1),
+		"short invocation":    strings.Replace(ack, strings.Repeat("c", 64), strings.Repeat("c", 63), 1),
+		"repeated invocation": strings.Replace(ack, "<details>", "<!-- CodeRabbit review command invocation: v2:"+strings.Repeat("c", 64)+" -->\n<details>", 1),
+		"trailer":             ack + "\nUnsupported outcome",
+		"oversize":            strings.Repeat("\n", githubMaxText) + ack,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if standingFinishedAck(body) {
+				t.Fatal("unsupported wrapper accepted")
 			}
 		})
 	}

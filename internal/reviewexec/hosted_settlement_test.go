@@ -101,7 +101,7 @@ func TestHostedSettlementPublicRouteReleasesOnlyStoppedCapacityAttempt(t *testin
 	if err := f.store.DB().QueryRow(`SELECT actor_id,payload_json FROM events WHERE event_type='review.hosted_settled' AND resource_id=?`, a.ID).Scan(&actor, &payload); err != nil {
 		t.Fatal(err)
 	}
-	var audit hostedSettlementAudit
+	var audit attemptSettlementAudit
 	if json.Unmarshal([]byte(payload), &audit) != nil || actor != f.scope(t, attemptProject, f.admin, true).PrincipalID || audit.Anchor != *a.Anchor || audit.ExpectedRevision != a.Revision || audit.ExternalID != a.ExternalID || !audit.ExternalActionStopped || audit.Reason != hostedSettlementBody(a)["reason"].(string) || audit.EvidenceReference != "operator-record:controlled-stop" {
 		t.Fatal("administrator audit lost original target or exact assertion")
 	}
@@ -173,7 +173,7 @@ func TestHostedSettlementStrictInputAndAuditBudgetAreAtomic(t *testing.T) {
 		t.Fatal("invalid arguments/audit budget changed ledger or reservations")
 	}
 	// Exercise the exact canonical event limit without weakening raw text bounds.
-	base := hostedSettlementAudit{AttemptID: a.ID, OperationID: a.OperationID, ExpectedRevision: a.Revision, Provider: a.Provider, Account: a.Account, Anchor: *a.Anchor, ExternalID: a.ExternalID, ExternalActionStopped: true, EvidenceReference: "operator:stop"}
+	base := attemptSettlementAudit{AttemptID: a.ID, OperationID: a.OperationID, ExpectedRevision: a.Revision, Provider: a.Provider, Account: a.Account, Anchor: *a.Anchor, ExternalID: a.ExternalID, ExternalActionStopped: true, EvidenceReference: "operator:stop"}
 	remaining := 4096 - len(encoded(base))
 	text := strings.Repeat("<", remaining/6) + strings.Repeat("x", remaining%6)
 	if len(text) > 1024 || remaining < 1 {

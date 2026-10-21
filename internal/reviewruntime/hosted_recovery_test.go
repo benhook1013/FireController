@@ -125,12 +125,16 @@ func unsupportedFinishedSnapshot(snapshot *reviewprovider.HostedPublicationSnaps
 }
 
 func TestRecoverHostedFinishedInventoryUnprovenPersistsWithoutChurn(t *testing.T) {
-	for _, state := range []string{"active", "uncertain"} {
+	for _, state := range []string{"active", "uncertain", "active_wrapped", "uncertain_wrapped"} {
 		t.Run(state, func(t *testing.T) {
-			f, captures, a, reader := recoveryRuntimeFixture(t, state)
+			f, captures, a, reader := recoveryRuntimeFixture(t, strings.TrimSuffix(state, "_wrapped"))
 			recoveryRuntimeMetadata(t, f, a)
 			complete := hostedRetainClone(t, reader.record)
 			unsupportedFinishedSnapshot(&reader.record.Snapshot, reader.record.ProviderActor, 100)
+			if strings.HasSuffix(state, "_wrapped") {
+				last := len(reader.record.Snapshot.IssueComments) - 1
+				reader.record.Snapshot.IssueComments[last].Body = "<!-- coderabbit-ai-generated:v1 -->\n\n" + reader.record.Snapshot.IssueComments[last].Body
+			}
 			beforeSource, _ := json.Marshal(reader.record)
 			got, err := recoverRuntime(t, f, captures, a, reader)
 			if err != nil || got.State != "uncertain" || got.Reason != "hosted_finished_inventory_unproven" || got.EvidenceID != "" || got.TriggerCommentID != 100 {

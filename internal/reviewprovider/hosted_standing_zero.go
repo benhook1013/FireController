@@ -400,11 +400,17 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 }
 
 func standingFinishedAck(body string) bool {
+	if len(body) > githubMaxText {
+		return false
+	}
 	var lines []string
 	for _, line := range strings.Split(body, "\n") {
 		if line = strings.TrimSuffix(line, "\r"); line != "" {
 			lines = append(lines, line)
 		}
+	}
+	if len(lines) == 7 && lines[0] == "<!-- coderabbit-ai-generated:v1 -->" {
+		lines = lines[1:]
 	}
 	return len(lines) == 6 && lines[0] == "<!-- This is an auto-generated reply by CodeRabbit -->" && standingAckInvocation.MatchString(lines[1]) && lines[2] == "<details>" && lines[3] == "<summary>✅ Action performed</summary>" && lines[4] == "Full review finished." && lines[5] == "</details>"
 }

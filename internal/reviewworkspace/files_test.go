@@ -58,6 +58,14 @@ func TestReviewFileCountRenameThresholdAtOneHundredAndCanonicalPatchUnchanged(t 
 			if err != nil || count != tc.want {
 				t.Fatal("review budget count changed", count, err)
 			}
+			claims := slices.DeleteFunc(slices.Clone(raw), func(path string) bool { return path == ".gitignore" })
+			covered, err := f.manager.CoversChangedFiles(t.Context(), w, claims)
+			if err != nil || covered != (tc.want == 100) {
+				t.Fatal("rename-aware coverage disagrees with materialized threshold", covered, err)
+			}
+			if covered, err := f.manager.CoversChangedFiles(t.Context(), w, raw); err != nil || !covered {
+				t.Fatal("complete raw coverage was lost", covered, err)
+			}
 			// Mutable source refs cannot replace the exact admitted comparison.
 			git(t, f.git, f.cache, "update-ref", "refs/heads/main", f.candidate)
 			if again, err := f.manager.ReviewFileCount(t.Context(), w); err != nil || again != count {
@@ -118,6 +126,9 @@ func TestReviewFileCountValidatesBothSidesBeforeCollapsingExactRename(t *testing
 	if count, err := m.ReviewFileCount(t.Context(), w); err == nil || count != 0 {
 		t.Fatal("an exact rename hid a nonportable original path")
 	}
+	if covered, err := m.CoversChangedFiles(t.Context(), w, []string{"portable-name"}); err == nil || covered {
+		t.Fatal("rename coverage hid a nonportable original path")
+	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("rename collapsing ran before complete old/new path validation")
 	}
@@ -130,6 +141,7 @@ func TestReviewFileCountRejectsMalformedOrForeignOutputAndFinalWorkspaceChanges(
 		mutate       bool
 	}{
 		{"unterminated", "source.txt", false},
+		{"missing_all", "", false},
 		{"empty_path", "\x00", false},
 		{"nonportable", "bad\\name\x00", false},
 		{"foreign", "not-in-raw-list\x00", false},
@@ -149,8 +161,15 @@ func TestReviewFileCountRejectsMalformedOrForeignOutputAndFinalWorkspaceChanges(
 			script += "exec /bin/cat " + reviewCountShellQuote(output)
 			m := reviewCountGit(t, f, script)
 			count, err := m.ReviewFileCount(t.Context(), w)
-			if err == nil || count != 0 || strings.Contains(err.Error(), f.root) || strings.Contains(err.Error(), tc.output) {
+			if err == nil || count != 0 || strings.Contains(err.Error(), f.root) || tc.output != "" && strings.Contains(err.Error(), tc.output) {
 				t.Fatal("invalid comparison count accepted or disclosed private details")
+			}
+			coverageWorkspace := w
+			if tc.mutate {
+				coverageWorkspace = prepare(t, f, "coverage_"+tc.name)
+			}
+			if covered, err := m.CoversChangedFiles(t.Context(), coverageWorkspace, []string{"source.txt"}); err == nil || covered {
+				t.Fatal("invalid rename scope granted coverage", covered, err)
 			}
 		})
 	}
@@ -337,5 +356,48 @@ func TestChangedFilesCountBoundReturnsNoPartialList(t *testing.T) {
 	}
 	if err := f.manager.Verify(context.Background(), w); err != nil {
 		t.Fatal("bounded read mutated the workspace")
+	}
+}
+
+func TestCoversChangedFilesStrictClaimsAndCompleteRawFastPath(t *testing.T) {
+	f := newFixture(t)
+	w := prepare(t, f, "coverage_claims")
+	raw, err := f.manager.ChangedFiles(t.Context(), w)
+	if err != nil || len(raw) != 2 {
+		t.Fatal(raw, err)
+	}
+	marker := filepath.Join(t.TempDir(), "unexpected-rename-read")
+	m := reviewCountGit(t, f, "printf entered > "+reviewCountShellQuote(marker)+"\nexit 1")
+	for _, claims := range [][]string{raw, {raw[1], raw[0]}} {
+		if covered, err := m.CoversChangedFiles(t.Context(), w, claims); err != nil || !covered {
+			t.Fatal("full raw coverage added a rename read", covered, err)
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("full raw set invoked rename detection")
+	}
+	for _, claims := range [][]string{nil, {}, {raw[0], raw[0]}, {"foreign.txt", raw[1]}, {"../invalid"}, {raw[0]}, {raw[1]}} {
+		if covered, err := f.manager.CoversChangedFiles(t.Context(), w, claims); err != nil || covered {
+			t.Fatal("unproved coverage accepted", claims, covered, err)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if covered, err := m.CoversChangedFiles(ctx, w, raw); err == nil || covered {
+		t.Fatal("cancelled coverage accepted")
+	}
+	if covered, err := m.CoversChangedFiles(nil, w, raw); err == nil || covered {
+		t.Fatal("nil coverage context accepted")
+	}
+	var absent *reviewworkspace.Manager
+	if covered, err := absent.CoversChangedFiles(t.Context(), w, raw); err == nil || covered {
+		t.Fatal("nil manager accepted")
+	}
+	empty, err := f.manager.Prepare(t.Context(), 42, "empty_coverage", f.candidate, f.candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if covered, err := f.manager.CoversChangedFiles(t.Context(), empty, nil); err != nil || covered {
+		t.Fatal("empty comparison became completed coverage", covered, err)
 	}
 }

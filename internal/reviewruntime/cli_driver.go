@@ -237,6 +237,9 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 	}
 	switch retained.Outcome {
 	case "failed", "cancelled", "rate_limited":
+		if retained.Outcome == "failed" && retained.Reason == "coverage_incomplete" {
+			return reviewexec.Result{State: "failed", Reason: retained.Reason}, nil
+		}
 		return reviewexec.Result{State: retained.Outcome, Reason: "capture_retained"}, nil
 	}
 	return reviewexec.Result{State: "uncertain", Reason: retained.Reason}, nil
