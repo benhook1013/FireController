@@ -17,7 +17,9 @@ export function ProjectMap() {
   const [archived, setArchived] = useState(false);
   const [catalogueOpen, setCatalogueOpen] = useState(false);
   return <section className="project-editorial">
-    <ProjectEditorial label={label} />
+    <header className="project-editorial-heading"><h2>{label}</h2></header>
+    <div className="panel project-map-body">
+    <ProjectEditorial />
     <details className="editorial-catalogue" onToggle={event => setCatalogueOpen(event.currentTarget.open)}>
       <summary>Browse the entry catalogue and archive</summary>
       <div className="editorial-catalogue-content">
@@ -27,10 +29,11 @@ export function ProjectMap() {
         {catalogueOpen && <MapList key={`${kind}/${archived}`} kind={kind} archived={archived} />}
       </div>
     </details>
+    </div>
   </section>;
 }
 
-function ProjectEditorial({ label }: { label: string }) {
+function ProjectEditorial() {
   const { session, key } = useWorkspace();
   const query = useInfiniteQuery({
     queryKey: [...key, 'map-editorial'],
@@ -41,9 +44,6 @@ function ProjectEditorial({ label }: { label: string }) {
   });
   const entries = query.data?.pages.flatMap(page => page.items) ?? [];
   return <>
-    <header className="project-editorial-heading">
-      <h2>{label}</h2>
-    </header>
     {entries.length > 1 && <nav className="project-editorial-nav" aria-label="Project sections">{entries.map(entry => <a key={entry.id} href={`#${entry.id}`}>{entry.title}</a>)}</nav>}
     <ReadState error={entries.length ? undefined : query.error} loading={query.isPending} empty={false}>
       {entries.length ? <div className="project-editorial-body">{entries.map(entry => <ProjectEditorialEntry key={entry.id} entry={entry} />)}</div> : <p className="editorial-empty">No Project content has been added yet.</p>}
