@@ -66,6 +66,7 @@ func Register(mux *http.ServeMux, store *core.Store, options ...Option) {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/updates", updateHistory(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checklist", getChecklist(store))
 	mux.HandleFunc("PUT /api/v1/projects/{project_id}/jobs/{job_id}/checklist", replaceChecklist(store))
+	mux.HandleFunc("PATCH /api/v1/projects/{project_id}/jobs/{job_id}/checklist/items/{item_id}", updateChecklistItem(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checklist/history", checklistHistory(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints/latest", latestCheckpoint(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints", checkpointHistory(store))

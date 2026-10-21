@@ -15,6 +15,8 @@ type mutationInvocation struct {
 	operation                string
 	key                      string
 	id                       string
+	itemID                   string
+	checklistItem            client.UpdateChecklistItemRequest
 	create                   client.CreateJobRequest
 	send                     client.SendMessageRequest
 	patch                    client.UpdateJobRequest
@@ -42,7 +44,7 @@ func isMutation(command, operation string) bool {
 	if command == "jobs" && (operation == "primary-set" || operation == "primary-clear") {
 		return true
 	}
-	if command == "jobs" && (operation == "update" || operation == "checklist-set") {
+	if command == "jobs" && (operation == "update" || operation == "checklist-set" || operation == "checklist-item") {
 		return true
 	}
 	switch command + " " + operation {
@@ -56,6 +58,9 @@ func isMutation(command, operation string) bool {
 // keys make retries recoverable across separate CLI processes without a global
 // retry identity or silently regenerated key.
 func parseMutation(command, operation string, args []string) (*mutationInvocation, bool) {
+	if command == "jobs" && operation == "checklist-item" {
+		return parseChecklistItem(args)
+	}
 	if command == "jobs" && operation == "summary-set" {
 		return parseJobSummary(args)
 	}
@@ -75,11 +80,11 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 	allowed := map[string]bool{"--key": true}
 	switch call.operation {
 	case "jobs create":
-		for _, flag := range []string{"--title", "--brief", "--worker", "--status"} {
+		for _, flag := range []string{"--title", "--brief", "--brief-file", "--worker", "--status"} {
 			allowed[flag] = true
 		}
 	case "inbox send":
-		for _, flag := range []string{"--to", "--body", "--reply-to"} {
+		for _, flag := range []string{"--to", "--body", "--body-file", "--reply-to"} {
 			allowed[flag] = true
 		}
 	}
@@ -135,6 +140,30 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 	if status, present := values["--status"]; present && !validStatus(status) {
 		return nil, false
 	}
+	files := map[string]int{}
+	if call.operation == "jobs create" {
+		files["--brief"] = 32 << 10
+	} else if call.operation == "inbox send" {
+		files["--body"] = 16 << 10
+	}
+	if !prepareTextFiles(values, files) {
+		return nil, false
+	}
+	if call.operation == "jobs create" {
+		if _, present := values["--title"]; !present {
+			return nil, false
+		}
+	} else if call.operation == "inbox send" {
+		if !validResourceID(values["--to"]) || strings.TrimSpace(values["--body"]) == "" || len(values["--body"]) > 16<<10 {
+			return nil, false
+		}
+		if reply, present := values["--reply-to"]; present && !validResourceID(reply) {
+			return nil, false
+		}
+	}
+	if !loadTextFiles(values, files) {
+		return nil, false
+	}
 	switch call.operation {
 	case "jobs create":
 		if _, present := values["--title"]; !present {
@@ -169,6 +198,8 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 		return service.CreateJob(ctx, call.key, call.create)
 	case "jobs update":
 		return service.UpdateJob(ctx, call.key, call.id, call.patch)
+	case "jobs checklist-item":
+		return service.UpdateJobChecklistItem(ctx, call.key, call.id, call.itemID, call.checklistItem)
 	case "jobs checklist-set":
 		return service.ReplaceJobChecklist(ctx, call.key, call.id, call.checklist)
 	case "inbox send":

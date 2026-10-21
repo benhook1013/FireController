@@ -24,7 +24,7 @@ func TestOperationHelpIsOfflineBoundedAndDoesNotReadFiles(t *testing.T) {
 	if err := os.WriteFile(path, before, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []string{"jobs update", "notes add", "notes update", "map update", "publication prepare"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare"} {
 		for _, spelling := range [][]string{append(strings.Fields(operation), "--help"), append([]string{"help"}, strings.Fields(operation)...)} {
 			for _, profilePath := range []string{path, filepath.Join(t.TempDir(), "missing.json")} {
 				args := append([]string{"--profile=bound-role", "--profiles-file", profilePath}, spelling...)
@@ -70,7 +70,7 @@ func TestOperationHelpRequiresExactGrammarAndValidGlobalFlags(t *testing.T) {
 }
 
 func TestOperationErrorsPointToSelectedHelpWithoutEchoingArguments(t *testing.T) {
-	for _, operation := range []string{"jobs update", "notes add", "notes update", "map update", "publication prepare"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare"} {
 		var stdout, stderr bytes.Buffer
 		args := append(strings.Fields(operation), "--private-typo=DO_NOT_ECHO")
 		if code := RunContext(t.Context(), args, map[string]string{"FC_PROFILE": "missing"}, &stdout, &stderr); code != ExitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), operation+" --help") || strings.Contains(stderr.String(), "DO_NOT_ECHO") {

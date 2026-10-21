@@ -351,6 +351,8 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value, err = service.MessageEvents(requestCtx, call.cursor, call.limit, call.waitMS)
 	case call.command == "inbox" && call.subcommand == "thread":
 		value, err = service.Conversation(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+	case call.command == "inbox" && call.subcommand == "read":
+		value, err = service.Message(requestCtx, call.position[0])
 	default:
 		return report(stderr, ExitUsage, "invalid_arguments", "The command is not supported.", "Use a documented read command.")
 	}
@@ -513,7 +515,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"] = true, true, true, true
 	case "inbox events":
 		allowed["--cursor"], allowed["--limit"], allowed["--wait-ms"] = true, true, true
-	case "workers pause-state", "jobs primary", "jobs read", "jobs checklist", "jobs summary":
+	case "workers pause-state", "jobs primary", "jobs read", "jobs checklist", "jobs summary", "inbox read":
 	default:
 		return call, false
 	}
@@ -586,7 +588,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		}
 	}
 	expected := 0
-	if call.command == "jobs" && (call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "progress-history" || call.subcommand == "checklist" || call.subcommand == "checklist-history" || call.subcommand == "summary") || call.command == "inbox" && call.subcommand == "thread" {
+	if call.command == "jobs" && (call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "progress-history" || call.subcommand == "checklist" || call.subcommand == "checklist-history" || call.subcommand == "summary") || call.command == "inbox" && (call.subcommand == "thread" || call.subcommand == "read") {
 		expected = 1
 	}
 	if len(call.position) != expected {

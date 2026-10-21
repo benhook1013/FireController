@@ -2,9 +2,6 @@ package cli
 
 import (
 	"context"
-	"io"
-	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"unicode"
@@ -223,21 +220,7 @@ func parseNotes(operation string, args []string) (*noteInvocation, bool) {
 	return n, operation == "add" && client.ValidateCreateNoteRequest(n.create) == nil || operation == "update" && client.ValidateUpdateNoteRequest(n.update) == nil
 }
 func readNoteBodyFile(path string) (string, bool) {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) || info.Size() > 16<<10 {
-		return "", false
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return "", false
-	}
-	defer f.Close()
-	info, err = f.Stat()
-	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
-		return "", false
-	}
-	b, err := io.ReadAll(io.LimitReader(f, (16<<10)+1))
-	return string(b), err == nil && len(b) <= 16<<10 && utf8.Valid(b)
+	return readPrivateTextFile(path, 16<<10)
 }
 func executeNotes(ctx context.Context, c *client.Client, n *noteInvocation) (any, error) {
 	switch n.operation {

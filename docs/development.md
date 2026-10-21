@@ -31,7 +31,11 @@ Explicit [browser coordination views](browser-coordination.md) read worker pause
 
 ## Local operation help
 
-Routine editing operations expose compact local help: `fc jobs update --help`, `fc notes add --help`, `fc notes update --help`, `fc map update --help` and `fc publication prepare --help`. The equivalent `fc help COMMAND OPERATION` selects the same help. It explains required arguments, optional changed fields, clearing and uncertainty semantics without loading profiles, credentials, input files or contacting a service. Argument errors for these operations point to their specific help; root help remains a short orientation. Help is a distinct invocation, so a literal `--help` used as a field value does not turn a mutation into a help request.
+Routine editing operations expose compact local help: `fc jobs create --help`, `fc jobs update --help`, `fc jobs checklist-item --help`, `fc inbox send --help`, `fc notes add --help`, `fc notes update --help`, `fc map update --help` and `fc publication prepare --help`. The equivalent `fc help COMMAND OPERATION` selects the same help. It explains required arguments, optional changed fields, clearing and uncertainty semantics without loading profiles, credentials, input files or contacting a service. Argument errors for these operations point to their specific help; root help remains a short orientation. Help is a distinct invocation, so a literal `--help` used as a field value does not turn a mutation into a help request.
+
+Text-file alternatives preserve exact UTF-8 content: `inbox send --body-file PATH`, `jobs create --brief-file PATH`, and `jobs update` with `--brief-file`, `--progress-file`, `--next-file` or `--blocker-file`. Each conflicts with its matching inline option. Inputs must be regular private files (no symlinks; owner-private permissions on POSIX), bounded by the matching field's byte limit: message 16 KiB, brief 32 KiB, progress/next 8 KiB, blocker 4 KiB. Progress also retains its combined limit. Empty files clear optional text where permitted; message bodies must remain nonblank. Exact bytes form the ordinary request: retain the file contents, binding and original key after an uncertain mutation. An edited file is a changed request, not a safe retry.
+
+Single checklist completion uses `fc jobs checklist-item JOB_ID ITEM_ID --done true --expect-checklist-revision N --key KEY`; see [checklists](job-progress.md) for its independent guard and restructuring alternative.
 
 ## Private profile file
 
@@ -107,6 +111,7 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc reviews run ID` | Explicit full findings, decisions and fix evidence; optional `--snapshot`. |
 | `fc inbox list` | Bound worker's compact message previews; optional unread/unacknowledged filters. |
 | `fc inbox thread ID` | Explicit bounded conversation page with full bodies. |
+| `fc inbox read MESSAGE_ID` | One full selected message, without paging older bodies or changing seen/ack state. |
 
 Administrator setup also supports [prepared review import](review-import.md) through `fc reviews import-preview --file ABSOLUTE_PATH` and `fc reviews import-apply --file ABSOLUTE_PATH --preview SHA256 --key KEY`. Preview is provider-free and read-only; apply uses the existing guarded observation receipt. These commands require deliberately selected administrator access rather than an ordinary worker credential.
 

@@ -14,7 +14,7 @@ func parseJobProgress(operation string, args []string) (*mutationInvocation, boo
 	call := &mutationInvocation{operation: "jobs " + operation}
 	allowed := map[string]bool{"--key": true, "--expect-revision": true}
 	if operation == "update" {
-		for _, flag := range []string{"--title", "--brief", "--worker", "--status", "--progress", "--next", "--blocker", "--evidence"} {
+		for _, flag := range []string{"--title", "--brief", "--brief-file", "--worker", "--status", "--progress", "--progress-file", "--next", "--next-file", "--blocker", "--blocker-file", "--evidence"} {
 			allowed[flag] = true
 		}
 	} else {
@@ -62,6 +62,10 @@ func parseJobProgress(operation string, args []string) (*mutationInvocation, boo
 	}
 	call.id, call.key = positions[0], values["--key"]
 	if operation == "update" {
+		files := map[string]int{"--brief": 32 << 10, "--progress": 8 << 10, "--next": 8 << 10, "--blocker": 4 << 10}
+		if !prepareTextFiles(values, files) {
+			return nil, false
+		}
 		call.patch = client.UpdateJobRequest{ExpectedRevision: revision}
 		for flag, dst := range map[string]**string{"--title": &call.patch.Title, "--brief": &call.patch.Brief, "--worker": &call.patch.WorkerID, "--status": &call.patch.Status} {
 			if v, ok := values[flag]; ok {
@@ -90,6 +94,15 @@ func parseJobProgress(operation string, args []string) (*mutationInvocation, boo
 		}
 		if progress.Summary != nil || progress.Next != nil || progress.Blocker != nil || progress.Evidence != nil {
 			call.patch.Progress = progress
+		}
+		if client.ValidateJobPatch(call.patch) != nil || !loadTextFiles(values, files) {
+			return nil, false
+		}
+		for flag, dst := range map[string]**string{"--brief": &call.patch.Brief, "--progress": &progress.Summary, "--next": &progress.Next, "--blocker": &progress.Blocker} {
+			if _, fromFile := values[flag+"-file"]; fromFile {
+				value := values[flag]
+				*dst = &value
+			}
 		}
 		return call, client.ValidateJobPatch(call.patch) == nil
 	}

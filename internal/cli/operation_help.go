@@ -31,11 +31,31 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	recovery := "Use an explicit --key (1-128 printable ASCII bytes without surrounding whitespace). After uncertain output retry the same key, exact request and binding; never invent a replacement key."
 	out := operationHelpResponse{Required: []string{}, Optional: []string{}}
 	switch operation {
+	case "jobs checklist-item":
+		out.Usage = "<bound launcher> jobs checklist-item JOB_ID ITEM_ID --done true|false --expect-checklist-revision N --key KEY"
+		out.Required = []string{"JOB_ID", "ITEM_ID", "--done true|false", "--expect-checklist-revision N", "--key KEY"}
+		out.Semantics = []string{"Set only one existing item's completion. Use checklist revision from the current job read; no job revision or full checklist input is required. Other items, text and order remain unchanged.", "Unrelated job progress does not invalidate the checklist guard. A stale checklist revision is refused even if the boolean already matches; a current-revision no-op adds no history.", recovery}
+		out.Example = "<bound launcher> jobs checklist-item JOB_ID verify --done true --expect-checklist-revision 2 --key checklist-verify-1"
+		out.Documentation = "docs/job-progress.md"
+	case "jobs create":
+		out.Usage = "<bound launcher> jobs create --title TEXT --key KEY [options]"
+		out.Required = []string{"--title TEXT", "--key KEY"}
+		out.Optional = []string{"--brief TEXT | --brief-file PATH", "--worker WORKER_ID", "--status active|blocked|parked|completed"}
+		out.Semantics = []string{"Brief files contain exact UTF-8 text, at most 32 KiB; empty is allowed. Use a regular file with owner-private POSIX permissions. Inline and file forms are mutually exclusive.", recovery}
+		out.Example = "<bound launcher> jobs create --title 'Implement transport' --brief-file /private/brief.md --key job-create-1"
+		out.Documentation = "docs/job-state.md"
+	case "inbox send":
+		out.Usage = "<bound launcher> inbox send --to WORKER_ID (--body TEXT | --body-file PATH) --key KEY [--reply-to MESSAGE_ID]"
+		out.Required = []string{"--to WORKER_ID", "--body TEXT | --body-file PATH", "--key KEY"}
+		out.Optional = []string{"--reply-to MESSAGE_ID"}
+		out.Semantics = []string{"The body must be nonblank UTF-8 and at most 16 KiB. Body files preserve exact text and must be regular with owner-private POSIX permissions. Inline and file forms are mutually exclusive.", "Send to a worker in this project. --reply-to retains the existing conversation; reads never mark a message seen or acknowledged.", recovery}
+		out.Example = "<bound launcher> inbox send --to WORKER_ID --body-file /private/message.md --key message-1"
+		out.Documentation = "docs/development.md"
 	case "jobs update":
 		out.Usage = "<bound launcher> jobs update JOB_ID --expect-revision N --key KEY [changes]"
 		out.Required = []string{"JOB_ID", "--expect-revision N", "--key KEY", "at least one optional edit"}
-		out.Optional = []string{"--title TEXT", "--brief TEXT", "--worker WORKER_ID", "--status active|blocked|parked|completed", "--progress TEXT", "--next TEXT", "--blocker TEXT", "--evidence REF (repeat up to 10)"}
-		out.Semantics = []string{guard, "Empty --brief, --worker, --progress, --next or --blocker clears that field; title cannot be empty. A sole --evidence '' clears evidence; otherwise supplied evidence replaces the complete reference list. History is automatic.", recovery}
+		out.Optional = []string{"--title TEXT", "--brief TEXT | --brief-file PATH", "--worker WORKER_ID", "--status active|blocked|parked|completed", "--progress TEXT | --progress-file PATH", "--next TEXT | --next-file PATH", "--blocker TEXT | --blocker-file PATH", "--evidence REF (repeat up to 10)"}
+		out.Semantics = []string{guard, "Empty --brief, --worker, --progress, --next or --blocker clears that field; title cannot be empty. A sole --evidence '' clears evidence; otherwise supplied evidence replaces the complete reference list. History is automatic.", "Text files preserve exact UTF-8; each conflicts with its matching inline flag. Use regular owner-private files. Brief: 32 KiB; progress/next: 8 KiB each; blocker: 4 KiB; combined progress including evidence: 16 KiB. Empty files clear valid fields.", recovery}
 		out.Example = "<bound launcher> jobs update JOB_ID --expect-revision 3 --key job-next-1 --next 'Run focused validation'"
 		out.Documentation = "docs/job-state.md"
 	case "notes add", "notes update":

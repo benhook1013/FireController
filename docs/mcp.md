@@ -46,6 +46,7 @@ Startup validates configuration without opening the credential or contacting the
 | `job_primary_history` | Optional limit/cursor; one page of the bound worker’s focus history. |
 | `job_checklist_read` | Required job_id; current ordered checklist, its independent checklist revision and current job revision. |
 | `job_checklist_history` | Required job_id and optional limit/cursor; one newest-first full checklist revision page. |
+| `job_checklist_item_update` | Required job_id/item_id/expected_revision/done/idempotency_key; set one existing item's completion guarded only by checklist revision, preserving other items and job text. Compact checklist receipt. |
 | `map_entry_list` | Optional kind/archived/limit/cursor; one compact map page, no phases or descriptions. |
 | `map_entry_read` | Required entry_id; one complete current workstream or return point. |
 | `map_entry_history` | Required entry_id and optional limit/cursor; compact newest-first revision summaries. |
@@ -62,6 +63,7 @@ Startup validates configuration without opening the credential or contacting the
 | `note_revision_read` | Required note_id/revision; one full immutable note revision. |
 | `inbox_list` | Optional unread/unacknowledged/limit/cursor; bound worker's compact preview page. |
 | `inbox_thread` | Required conversation_id and optional limit/cursor; explicit full-body conversation page. |
+| `inbox_message_read` | Required message_id; one full selected immutable message, without older conversation bodies or seen/ack changes. |
 | `inbox_snapshot` | Optional unread/unacknowledged/limit/cursor; one inbox page plus its atomic incoming-event watermark. |
 | `inbox_events` | Required event cursor; optional limit and wait_ms 0–4000; one bounded incoming-event page. |
 | `wait_for_messages` | Required event cursor; optional limit 1–100 and wait_seconds 1–50, default 20/25. One new-message event page or quiet timeout over a call-owned persistent stream. |

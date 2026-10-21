@@ -50,6 +50,9 @@ type threadInput struct {
 	Limit          *int   `json:"limit,omitempty"`
 	Cursor         string `json:"cursor,omitempty"`
 }
+type messageInput struct {
+	MessageID string `json:"message_id"`
+}
 
 func invalidArguments() *Diagnostic {
 	return diagnostic("invalid_arguments", "Use only the declared tool fields with valid bounded values and required keys or revisions.", "Check this tool's input schema; the startup binding cannot be overridden.")
@@ -127,6 +130,8 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		dst = new(inboxEventsInput)
 	case "inbox_thread":
 		dst = new(threadInput)
+	case "inbox_message_read":
+		dst = new(messageInput)
 	default:
 		return args, invalidArguments()
 	}
@@ -150,6 +155,8 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		limit, args.cursor, waitMS = v.Limit, v.Cursor, v.WaitMS
 	case *threadInput:
 		limit, args.cursor, args.id = v.Limit, v.Cursor, v.ConversationID
+	case *messageInput:
+		args.id = v.MessageID
 	}
 	if limit != nil {
 		if *limit < 1 || *limit > 100 {
@@ -179,7 +186,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if _, ok := fields["status"]; ok && !client.ValidJobStatusFilter(args.status) {
 		return args, invalidArguments()
 	}
-	if name == "job_read" || name == "job_history" || name == "inbox_thread" {
+	if name == "job_read" || name == "job_history" || name == "inbox_thread" || name == "inbox_message_read" {
 		if !validID(args.id) {
 			return args, invalidArguments()
 		}
@@ -191,7 +198,7 @@ func mutationTool(name string) bool {
 	if name == "review_start" || name == "review_rounds_configure" {
 		return true
 	}
-	if name == "job_summary_set" || name == "job_primary_replace" || name == "job_update" || name == "job_checklist_replace" {
+	if name == "job_summary_set" || name == "job_primary_replace" || name == "job_update" || name == "job_checklist_replace" || name == "job_checklist_item_update" {
 		return true
 	}
 	switch name {
@@ -311,6 +318,7 @@ func toolDefinitions() []definition {
 		{"inbox_snapshot", "Read one bounded compact inbox page and its explicit scoped event cursor; no cursor is saved, no messages are marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
 		{"inbox_events", "Read one bounded incoming-message event page after an explicit cursor, optionally waiting up to 4000 ms. No cursor is saved, no automatic polling or subscription occurs, messages are never marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Required explicit cursor from a scoped snapshot or replay page."}, "limit": limit, "wait_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 4000, "description": "One bounded wait; omission returns immediately."}}, "cursor")},
 		{"inbox_thread", "Read one explicit conversation page with full immutable bodies; no receipt-state change.", schema(map[string]any{"conversation_id": id, "limit": limit, "cursor": cursor}, "conversation_id")},
+		{"inbox_message_read", "Read one selected full immutable message by ID without paging older conversation bodies. Does not mark seen or acknowledged; expand conversation context explicitly when needed.", schema(map[string]any{"message_id": id}, "message_id")},
 		{"jobs_create", "Create a job in the bound project using an explicit key; return a compact receipt, without rereading brief/history.", schema(map[string]any{"idempotency_key": key, "title": title, "brief": brief, "worker_id": workerCreate, "status": status}, "idempotency_key", "title")},
 		{"inbox_send", "Send an immutable message as the bound worker with an explicit key, optionally replying to a message; return a compact receipt.", schema(map[string]any{"idempotency_key": key, "recipient_worker_id": id, "body": map[string]any{"type": "string", "minLength": 1, "maxLength": 16 << 10}, "reply_to_message_id": id}, "idempotency_key", "recipient_worker_id", "body")},
 		{"inbox_seen", "Explicitly mark a message seen as its bound recipient worker using the supplied key.", schema(map[string]any{"idempotency_key": key, "message_id": id}, "idempotency_key", "message_id")},

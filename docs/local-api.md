@@ -78,7 +78,7 @@ Statuses are `active`, `parked`, `blocked` and `completed`; creation defaults to
 
 ## Job checklist
 
-[Job checklists](job-progress.md) owns optional independently versioned checklist replacement/current/history routes. These deliberate changes preserve the brief and current progress, with explicit mutation keys and current revision guards.
+[Job checklists](job-progress.md) owns optional independently versioned checklist replacement/current/history and single-item completion routes. These deliberate changes preserve the brief and current progress, with explicit mutation keys and current revision guards.
 
 ## Durable messages
 
@@ -88,6 +88,7 @@ Statuses are `active`, `parked`, `blocked` and `completed`; creation defaults to
 | `GET /inbox/{worker_id}` | Compact previews and seen/ack state; optional `unread=true` and `unacknowledged=true` filters. |
 | `GET /conversations/{conversation_id}` | Explicit chronological full-body page with root/reply identities. |
 | `POST /messages/{message_id}/seen` | Strict `{}` body; only the selected actual recipient can mark seen. |
+| `GET /messages/{message_id}` | One full immutable message in the bound project; no older conversation bodies or seen/ack changes. |
 | `POST /messages/{message_id}/ack` | Strict `{}` body; only the selected actual recipient can acknowledge, atomically establishing seen. |
 
 Sender, recipient and reply references must belong to the selected project. Body is nonblank UTF-8, bounded to 16 KiB. Inbox previews contain at most 160 Unicode runes with explicit `preview_truncated`. Replies preserve conversation identity, and pages use a durable insertion sequence rather than timestamp ordering alone.

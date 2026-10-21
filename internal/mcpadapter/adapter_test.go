@@ -191,6 +191,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			}
 			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_snapshot": true, "inbox_events": true, "inbox_thread": true, "jobs_create": true, "job_update": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
 			expected["wait_for_messages"] = true
+			expected["inbox_message_read"], expected["job_checklist_item_update"] = true, true
 			expected["presentation_read"] = true
 			for _, name := range []string{"map_entry_create", "map_entry_replace", "map_entry_update", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history"} {
 				expected[name] = true
@@ -214,7 +215,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 				t.Fatalf("first discovery page has %d tools, expected complete inventory of %d", len(first.Tools), len(expected))
 			}
 			writes := map[string]bool{"jobs_create": true, "job_update": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
-			writes["job_primary_replace"] = true
+			writes["job_primary_replace"], writes["job_checklist_item_update"] = true, true
 			writes["review_rounds_configure"], writes["review_start"] = true, true
 			writes["map_entry_create"], writes["map_entry_replace"], writes["map_entry_update"], writes["job_workstream_replace"] = true, true, true, true
 			writes["worker_pause_replace"] = true
@@ -231,7 +232,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 				}
 				delete(expected, tool.Name)
 				a := tool.Annotations
-				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "review_rounds_configure" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "map_entry_update" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_update" || tool.Name == "job_summary_set" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
+				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "review_rounds_configure" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "map_entry_update" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_update" || tool.Name == "job_summary_set" || tool.Name == "job_checklist_replace" || tool.Name == "job_checklist_item_update" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
 					t.Fatal("untruthful operation annotation")
 				}
 				data, _ := json.Marshal(tool.InputSchema)

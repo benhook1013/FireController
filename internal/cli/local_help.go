@@ -26,7 +26,7 @@ func localHelp() helpResponse {
 		Binding: "Use the launcher assigned to this role/project. Global --profile and --profiles-file select an explicit local binding; no mutable active selection is saved.",
 		CommandGroups: []helpGroup{
 			{"local discovery", []helpCommand{
-				{"help | --help | -h", "Local orientation. jobs update, notes add/update, map update and publication prepare accept --help; no profile, credential or network reads."},
+				{"help | --help | -h", "Local orientation. Routine edit commands accept --help; no profile, credential or network reads."},
 				{"version", "Local version JSON only; no profile, credential or network reads, including with bound launcher selectors."},
 				{"context", "Read the selected local profile identity without opening credentials or contacting the service."},
 				{"doctor", "Authenticate the bound instance/project/worker; no provider requests."},
@@ -40,11 +40,12 @@ func localHelp() helpResponse {
 				{"notes list", "Compact pending-note discovery; use explicit reads for full text."},
 				{"notes read NOTE_ID", "Full current note body; history requires an explicit notes history read."},
 				{"inbox list", "Bounded incoming-message discovery; reads do not mark seen or acknowledged."},
-				{"inbox thread CONVERSATION_ID", "Explicit conversation page with full message bodies."},
+				{"inbox thread CONVERSATION_ID", "One conversation page for surrounding context; no receipt-state change."},
+				{"inbox read MESSAGE_ID", "One full selected message; no older bodies or receipt-state change. Use inbox thread for conversation context."},
 				{"inbox send --to WORKER_ID --body TEXT --key KEY", "Send one message as the bound worker; explicit mutation with a recoverable key."},
 			}},
 			{"guarded changes and archives", []helpCommand{
-				{"jobs update | checklist-set | summary-set", "Deliberate job changes use explicit keys and required revision guards. See release documentation for fields and byte limits."},
+				{"jobs update | checklist-item | checklist-set | summary-set", "Deliberate job changes use explicit keys and required revision guards. See release documentation for fields and byte limits."},
 				{"map update ENTRY_ID --expect-revision N --file CHANGES_JSON --key KEY", "Change only selected Project fields; omitted content stays unchanged."},
 				{"publication prepare --file CHANGES_JSON --output NEW_PRIVATE_FILE", "Administrator linked-selection preview; writes an exact private apply file without publishing."},
 				{"jobs progress-history JOB_ID", "One explicit current-progress archive page; no automatic continuation."},

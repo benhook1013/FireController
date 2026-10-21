@@ -8,7 +8,9 @@ A checklist is an optional ordered plan attached to a job. The [job-state contra
 
 Checklist changes do not rewrite the brief or progress. A stale guard writes nothing, and exact-key replay returns the original compact receipt after current authorization. Revision history is explicit and newest first. Default job reads include remaining items and completion counts; full completed items and history are loaded only on request.
 
-CLI uses `jobs checklist`, `jobs checklist-set` and `jobs checklist-history`. MCP uses `job_checklist_read`, `job_checklist_replace` and `job_checklist_history`. These bounded local operations perform no provider work. A job's next action can refer to an existing checklist item rather than repeat it.
+For routine completion or reopening, `PATCH /api/v1/projects/{project_id}/jobs/{job_id}/checklist/items/{item_id}` takes `{expected_revision,done}` and an explicit mutation key. The guard selects the checklist revision, not the job revision: unrelated brief/progress edits do not invalidate it. The item must already exist. Only its boolean changes; all other item text, completion, identity and ordering stay intact. A current-revision no-op adds no history/event. A stale guard rejects even when the desired boolean already matches. The compact receipt contains job ID, checklist revision, current job revision and changed/unchanged outcome. An exact-key replay returns its original receipt, even after later edits. Checklist edits do not advance the job revision.
+
+CLI uses `jobs checklist`, `jobs checklist-set`, `jobs checklist-item JOB_ID ITEM_ID --done true|false --expect-checklist-revision N --key KEY` and `jobs checklist-history`. MCP uses `job_checklist_read`, `job_checklist_replace`, `job_checklist_item_update` and `job_checklist_history`. Use the item operation with the checklist revision and remaining item IDs already present in an ordinary job read; use complete replacement when restructuring the plan. These bounded local operations perform no provider work. A job's next action can refer to an existing checklist item rather than repeat it.
 
 ## Progress history
 

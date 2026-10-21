@@ -10,7 +10,7 @@ import (
 
 func jobProgressTool(name string) bool {
 	switch name {
-	case "job_update", "job_progress_history", "job_checklist_read", "job_checklist_replace", "job_checklist_history":
+	case "job_update", "job_progress_history", "job_checklist_read", "job_checklist_replace", "job_checklist_item_update", "job_checklist_history":
 		return true
 	}
 	return false
@@ -55,6 +55,22 @@ func jobProgressArguments(name string, data json.RawMessage) (arguments, error) 
 			return args, invalidArguments()
 		}
 		args.id, args.key = in.ID, in.Key
+	case "job_checklist_item_update":
+		var in struct {
+			ID       string `json:"job_id"`
+			ItemID   string `json:"item_id"`
+			Key      string `json:"idempotency_key"`
+			Revision *int64 `json:"expected_revision"`
+			Done     *bool  `json:"done"`
+		}
+		if strictjson.Decode(data, &in) != nil || !validID(in.ID) || !client.ValidChecklistItemID(in.ItemID) || !validKey(in.Key) || in.Revision == nil || in.Done == nil {
+			return args, invalidArguments()
+		}
+		args.checklistItem = client.UpdateChecklistItemRequest{ExpectedRevision: *in.Revision, Done: *in.Done}
+		if client.ValidateChecklistItemRequest(args.checklistItem) != nil {
+			return args, invalidArguments()
+		}
+		args.id, args.itemID, args.key = in.ID, in.ItemID, in.Key
 	case "job_checklist_read":
 		var in jobInput
 		if strictjson.Decode(data, &in) != nil || !validID(in.JobID) {
@@ -105,6 +121,7 @@ func jobProgressDefinitions() []definition {
 		{"job_progress_history", "Read one explicit current-progress archive page, newest first; no automatic continuation or source-archive fanout.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
 		{"job_checklist_read", "Read the current ordered checklist and current job revision; an empty initial checklist has revision zero.", schema(map[string]any{"job_id": id}, "job_id")},
 		{"job_checklist_replace", "Replace the ordered checklist using explicit job/checklist revision guards and key; stable item IDs preserve identity across completion, reopen and reorder. Does not edit the brief.", schema(map[string]any{"job_id": id, "idempotency_key": key, "expected_job_revision": revision, "expected_revision": map[string]any{"type": "integer", "minimum": 0, "maximum": int64(math.MaxInt64 - 1)}, "items": map[string]any{"type": "array", "maxItems": 100, "items": item}}, "job_id", "idempotency_key", "expected_job_revision", "expected_revision", "items")},
+		{"job_checklist_item_update", "Complete or reopen one existing checklist item using only the checklist revision and explicit key. Preserves all text, IDs and order; unrelated job progress edits do not invalidate this guard.", schema(map[string]any{"job_id": id, "item_id": map[string]any{"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"}, "idempotency_key": key, "expected_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}, "done": map[string]any{"type": "boolean"}}, "job_id", "item_id", "idempotency_key", "expected_revision", "done")},
 		{"job_checklist_history", "Read one explicit checklist revision archive page, newest first; full prior ordered states remain available after removals.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
 	}
 }
