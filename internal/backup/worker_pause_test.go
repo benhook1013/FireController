@@ -66,7 +66,7 @@ func TestWorkerPauseOlderJobsBundlesRemainSupported(t *testing.T) {
 				job := restoreRows(t, f.store.DB(), `SELECT id FROM jobs LIMIT 1`)[0][0].(string)
 				f.request(t, "PUT", "/api/v1/projects/"+f.project+"/workers/"+f.worker+"/primary-job", map[string]any{"expected_revision": 0, "job_id": job})
 			}
-			sql := `DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history;DROP TABLE worker_pause_state;`
+			sql := `DROP TABLE job_progress_history; DROP TABLE job_progress; DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history;DROP TABLE worker_pause_state;`
 			if version < 4 {
 				sql += `DROP TABLE worker_primary_job_history;DROP TABLE worker_primary_jobs;`
 			}

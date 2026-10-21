@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -104,7 +105,7 @@ func newClient(t *testing.T, server *httptest.Server) *client.Client {
 
 func TestBoundReadsPreservePrefixHeadersQueriesAndTypedFields(t *testing.T) {
 	var calls atomic.Int64
-	job := client.Job{ID: "job:one", ProjectID: "project-one", Title: "title", Brief: "explicit full brief", WorkerID: "worker-one", Status: "active", Revision: 2, CreatedAt: "2026-10-15T00:00:00Z", UpdatedAt: "2026-10-15T00:01:00Z"}
+	job := client.Job{ID: "job:one", ProjectID: "project-one", Title: "title", Brief: "explicit full brief", WorkerID: "worker-one", Status: "active", Revision: 2, CreatedAt: "2026-10-15T00:00:00Z", UpdatedAt: "2026-10-15T00:01:00Z", Progress: client.Progress{Evidence: []string{}}, Checklist: client.JobChecklistSummary{Remaining: []client.ChecklistItem{}}, Notes: client.Page[client.NoteSummary]{Items: []client.NoteSummary{}}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		if r.Method != "GET" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("X-FC-Instance") != "instance-one" {
@@ -140,7 +141,7 @@ func TestBoundReadsPreservePrefixHeadersQueriesAndTypedFields(t *testing.T) {
 			}
 			write(w, 200, job)
 		case prefix + "/jobs/job:one/history":
-			write(w, 200, client.Page[client.JobHistoryEntry]{Items: []client.JobHistoryEntry{{Revision: 2, ActorID: "principal-one", State: job, CreatedAt: job.UpdatedAt}}})
+			write(w, 200, client.Page[client.JobHistoryEntry]{Items: []client.JobHistoryEntry{{Revision: 2, ActorID: "principal-one", State: client.JobState{ID: job.ID, ProjectID: job.ProjectID, Title: job.Title, Brief: job.Brief, WorkerID: job.WorkerID, Status: job.Status, Revision: job.Revision, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt}, CreatedAt: job.UpdatedAt}}})
 		case prefix + "/inbox/worker-one":
 			if r.URL.Query().Get("unread") != "true" || r.URL.Query().Get("unacknowledged") != "true" {
 				t.Error("inbox filters changed")
@@ -172,10 +173,10 @@ func TestBoundReadsPreservePrefixHeadersQueriesAndTypedFields(t *testing.T) {
 	if value, err := c.Jobs(context.Background(), client.PageOptions{Limit: 1, Cursor: "cursor&one=two"}, client.JobFilter{WorkerID: "worker-one", Status: "active"}); err != nil || value.Items[0].Revision != 2 || !value.HasMore || value.Cursor != "next-cursor" {
 		t.Fatalf("jobs: %v", err)
 	}
-	if value, err := c.Job(context.Background(), job.ID); err != nil || value != job {
+	if value, err := c.Job(context.Background(), job.ID); err != nil || !reflect.DeepEqual(value, job) {
 		t.Fatalf("job detail: %v", err)
 	}
-	if value, err := c.JobHistory(context.Background(), job.ID, client.PageOptions{}); err != nil || value.Items[0].State != job || value.Items[0].ActorID != "principal-one" {
+	if value, err := c.JobHistory(context.Background(), job.ID, client.PageOptions{}); err != nil || value.Items[0].State.ID != job.ID || value.Items[0].State.Brief != job.Brief || value.Items[0].ActorID != "principal-one" {
 		t.Fatalf("history: %v", err)
 	}
 	if value, err := c.Inbox(context.Background(), client.PageOptions{}, client.InboxFilter{Unread: true, Unacknowledged: true}); err != nil || !value.Items[0].PreviewTruncated || value.Items[0].Seen || value.Items[0].Acknowledged {

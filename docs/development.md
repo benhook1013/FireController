@@ -78,23 +78,20 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | --- | --- |
 | `fc doctor` | Verified instance/project/worker binding, without credentials or a PR scan. |
 | `fc workers list` | One compact worker page in the bound project. |
-| `fc jobs context JOB_ID [--limit N]` | Complete current brief/checkpoint/checklist plus bound-worker focus/pause and pending previews, explicit omissions, continuation cursors and incoming-event watermark. |
 | `fc notes read NOTE_ID` | One full current note. |
 | `fc notes list` | One compact pending page for the bound worker and its currently assigned jobs; explicit scope/filter flags narrow or broaden selection. |
 | `fc notes history NOTE_ID` | One compact immutable-revision page. |
 | `fc notes revision NOTE_ID REVISION` | One full selected revision. |
 | `fc workers pause-state` | Bound worker’s explicit pause, reason and independent revision. |
 | `fc workers pause-history` | One explicit bounded pause-history page. |
-| `fc jobs list` | One compact job page; optional worker/status filters. |
+| `fc jobs list` | One compact job page with current progress/blocker previews; optional worker/status filters. |
 | `fc jobs primary` | Bound worker’s compact primary-job selection and independent revision. |
 | `fc jobs primary-history` | One explicit bounded page of primary-job changes. |
 | `fc jobs assigned` | One compact page filtered to the bound worker; optional status filter. |
-| `fc jobs read ID` | Explicit full job detail and brief. |
+| `fc jobs read ID` | Complete current brief/progress, remaining checklist/counts and compact pending notes attached to this job; no inbox or archive expansion. |
 | `fc jobs summary ID` | Optional authored title/body and independent summary revision; private until explicitly published. |
 | `fc jobs history ID` | Explicit bounded revision-history page. |
-| `fc jobs checkpoint-latest ID` | Explicit latest checkpoint with current job revision, or an explicit null checkpoint. |
-| `fc jobs checkpoints ID` | Explicit newest-first checkpoint archive page. |
-| `fc jobs updates ID` | Explicit newest-first narrative-update page. |
+| `fc jobs progress-history ID` | One explicit newest-first page of unified progress history. |
 | `fc jobs checklist ID` | Current ordered checklist, its revision and the current job revision. |
 | `fc jobs checklist-history ID` | Explicit newest-first full checklist revision page. |
 | `fc reviews execution` | Stored project execution configuration and revision; no provider check. |
@@ -136,10 +133,8 @@ Quick local mutations use the same private profile and one five-second command b
 | `fc workers pause --reason TEXT --key KEY --expect-revision N` | Guarded bound-worker coordination pause; reason is explicit, including an empty string. |
 | `fc workers resume --key KEY --expect-revision N` | Explicitly clear the pause and reason without changing jobs or focus. |
 | `fc jobs create --key KEY --title TITLE` | Optional `--brief TEXT`, `--worker ID`, `--status STATUS`; defaults to active. |
-| `fc jobs edit ID --key KEY --expect-revision N` | At least one of `--title`, `--brief`, `--worker`, `--status`; empty brief or worker explicitly clears that field. |
 | `fc jobs summary-set ID --key KEY --expect-revision N --expect-summary-revision S --title TITLE` | Exactly one of `--body TEXT` or `--body-file PATH`; independent [summary revision](job-summaries.md), or explicit clear with empty title/body. |
-| `fc jobs checkpoint ID --key KEY --expect-revision N --done TEXT --next TEXT` | Optional `--blocker TEXT`, repeatable `--evidence REF`; append immutable progress without editing the job. |
-| `fc jobs update ID --key KEY --expect-revision N --body TEXT` | Optional repeatable `--evidence REF`; append a narrative update without editing the job or checkpoint. |
+| `fc jobs update ID --key KEY --expect-revision N` | One guarded partial update: title, brief, worker, status and/or progress/next/blocker/evidence. Omitted fields stay unchanged; history is automatic. |
 | `fc jobs checklist-set ID --key KEY --expect-revision N --expect-checklist-revision C` | Exactly one of `--items JSON` or `--items-file PATH`; guarded ordered replacement, with unchanged content reported explicitly. |
 | `fc inbox send --key KEY --to WORKER_ID --body TEXT` | Optional `--reply-to MESSAGE_ID`; the bound worker is the sender. |
 | `fc inbox seen MESSAGE_ID --key KEY` | Only the bound actual recipient can change seen state. |

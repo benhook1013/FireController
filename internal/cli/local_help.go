@@ -33,8 +33,7 @@ func localHelp() helpResponse {
 			}},
 			{"resume and jobs", []helpCommand{
 				{"jobs assigned --status open", "Compact assigned jobs; not full instructions or a complete resume context."},
-				{"jobs context JOB_ID", "Explicit current private brief, latest checkpoint and bounded pending coordination; inspect completeness and omissions."},
-				{"jobs read JOB_ID", "Full private job detail and current revision."},
+				{"jobs read JOB_ID", "Current private brief, progress, remaining checklist and exact-job pending notes; no inbox."},
 				{"jobs summary JOB_ID", "Explicit authored summary, separate from the private brief and not automatically public."},
 			}},
 			{"notes and messages", []helpCommand{
@@ -45,7 +44,8 @@ func localHelp() helpResponse {
 				{"inbox send --to WORKER_ID --body TEXT --key KEY", "Send one message as the bound worker; explicit mutation with a recoverable key."},
 			}},
 			{"guarded changes and archives", []helpCommand{
-				{"jobs edit | update | checkpoint | checklist-set | summary-set", "Deliberate job changes use explicit keys and required revision guards. See release documentation for fields and byte limits."},
+				{"jobs update | checklist-set | summary-set", "Deliberate job changes use explicit keys and required revision guards. See release documentation for fields and byte limits."},
+				{"jobs progress-history JOB_ID", "One explicit current-progress archive page; no automatic continuation."},
 				{"jobs history JOB_ID", "One explicit private job-history page; list/history/thread commands never silently fetch every page."},
 				{"reviews queue", "Stored review workspace only. Review requests, source refreshes and publication are separate authorized operations; help grants no permission."},
 			}},

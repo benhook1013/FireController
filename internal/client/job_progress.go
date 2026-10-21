@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-type AppendUpdateRequest struct {
+type updateArchiveContent struct {
 	ExpectedJobRevision int64    `json:"expected_job_revision"`
 	Body                string   `json:"body"`
 	Evidence            []string `json:"evidence"`
@@ -24,13 +24,6 @@ type Update struct {
 	Body        string   `json:"body"`
 	Evidence    []string `json:"evidence"`
 	CreatedAt   string   `json:"created_at"`
-}
-
-type UpdateReceipt struct {
-	ID          string `json:"id"`
-	Sequence    int64  `json:"sequence"`
-	JobRevision int64  `json:"job_revision"`
-	Outcome     string `json:"outcome"`
 }
 
 type ChecklistItem struct {
@@ -68,9 +61,7 @@ type ChecklistHistoryEntry struct {
 	CreatedAt   string          `json:"created_at"`
 }
 
-// ValidateJobUpdateRequest performs local admission without loading a profile,
-// reading a credential, or contacting a service. Nil evidence means no references.
-func ValidateJobUpdateRequest(request AppendUpdateRequest) error {
+func validateUpdateArchiveContent(request updateArchiveContent) error {
 	if request.ExpectedJobRevision < 1 {
 		return fail("invalid_revision", "A positive expected job revision is required.", "Read the current job revision and supply it explicitly.", 400)
 	}
@@ -144,31 +135,11 @@ func validJobProgressTime(value string) bool {
 	return err == nil && !at.IsZero()
 }
 
-func (c *Client) AppendJobUpdate(ctx context.Context, key, jobID string, request AppendUpdateRequest) (UpdateReceipt, error) {
-	if !validMutationKey(key) || !validID(jobID) {
-		return UpdateReceipt{}, mutationValidation()
-	}
-	if err := ValidateJobUpdateRequest(request); err != nil {
-		return UpdateReceipt{}, err
-	}
-	if request.Evidence == nil {
-		request.Evidence = []string{}
-	}
-	var result UpdateReceipt
-	if err := c.mutate(ctx, http.MethodPost, c.projectPath("jobs", jobID, "updates"), key, request, http.StatusCreated, &result); err != nil {
-		return UpdateReceipt{}, err
-	}
-	if !validID(result.ID) || result.Sequence < 1 || result.JobRevision != request.ExpectedJobRevision || result.Outcome != "created" {
-		return UpdateReceipt{}, unknownMutation("invalid_response", "The service returned an invalid update receipt; its outcome is unknown.", http.StatusCreated)
-	}
-	return result, nil
-}
-
 func (c *Client) validJobUpdate(update Update, jobID string) bool {
 	return validID(update.ID) && update.ProjectID == c.identity.ProjectID && update.JobID == jobID &&
 		update.Sequence > 0 && validID(update.ActorID) && (update.WorkerID == "" || validID(update.WorkerID)) &&
 		update.Evidence != nil && validJobProgressTime(update.CreatedAt) &&
-		ValidateJobUpdateRequest(AppendUpdateRequest{ExpectedJobRevision: update.JobRevision, Body: update.Body, Evidence: update.Evidence}) == nil
+		validateUpdateArchiveContent(updateArchiveContent{ExpectedJobRevision: update.JobRevision, Body: update.Body, Evidence: update.Evidence}) == nil
 }
 
 // JobUpdates fetches exactly one explicit newest-first archive page.

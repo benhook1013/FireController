@@ -57,7 +57,7 @@ func TestNotesBackupOlderJobsOneThroughFiveRemainUnmigrated(t *testing.T) {
 	for version := 1; version <= 5; version++ {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			f := newRestoreFixture(t)
-			query := `DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions;DROP TABLE notes;`
+			query := `DROP TABLE job_progress_history; DROP TABLE job_progress; DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions;DROP TABLE notes;`
 			if version < 5 {
 				query += `DROP TABLE worker_pause_history;DROP TABLE worker_pause_state;`
 			}

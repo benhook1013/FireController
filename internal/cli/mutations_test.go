@@ -64,12 +64,12 @@ func TestMutationCommandsRecoverReceiptsAndPreserveBoundIdentity(t *testing.T) {
 		t.Fatal("create receipt/replay leaked or changed")
 	}
 	id := created["id"].(string)
-	edit := mutationSuccess(t, path, "sender", "jobs", "edit", id, "--key", "edit-once", "--expect-revision", "1", "--brief", "", "--worker", "", "--status", "blocked")
+	edit := mutationSuccess(t, path, "sender", "jobs", "update", id, "--key", "edit-once", "--expect-revision", "1", "--brief", "", "--worker", "", "--status", "blocked")
 	if edit["revision"] != float64(2) || edit["outcome"] != "updated" {
 		t.Fatal("edit did not advance one revision")
 	}
-	_ = mutationSuccess(t, path, "sender", "jobs", "edit", id, "--key", "edit-once", "--expect-revision", "1", "--brief", "", "--worker", "", "--status", "blocked")
-	code, stdout, stderr := mutationInvoke(t, path, "sender", "jobs", "edit", id, "--key", "stale-edit", "--expect-revision", "1", "--status", "active")
+	_ = mutationSuccess(t, path, "sender", "jobs", "update", id, "--key", "edit-once", "--expect-revision", "1", "--brief", "", "--worker", "", "--status", "blocked")
+	code, stdout, stderr := mutationInvoke(t, path, "sender", "jobs", "update", id, "--key", "stale-edit", "--expect-revision", "1", "--status", "active")
 	if code != cli.ExitConflict || stdout != "" || !strings.Contains(stderr, `"current_revision":2`) || strings.Contains(stderr, "outcome_unknown") {
 		t.Fatalf("stale edit diagnostics: %d %s %s", code, stdout, stderr)
 	}
@@ -102,7 +102,7 @@ func TestMutationCommandsRecoverReceiptsAndPreserveBoundIdentity(t *testing.T) {
 	if reply["conversation_id"] != sent["conversation_id"] {
 		t.Fatal("reply split conversation")
 	}
-	code, stdout, stderr = mutationInvoke(t, path, "other", "jobs", "edit", id, "--key", "foreign-edit", "--expect-revision", "2", "--status", "active")
+	code, stdout, stderr = mutationInvoke(t, path, "other", "jobs", "update", id, "--key", "foreign-edit", "--expect-revision", "2", "--status", "active")
 	if code != cli.ExitService || stdout != "" || !strings.Contains(stderr, "not_found") || strings.Contains(stderr, brief) || strings.Contains(stderr, body) {
 		t.Fatal("cross-project edit or privacy failed")
 	}
@@ -126,9 +126,9 @@ func TestMutationArgumentsFailBeforeProfileCredentialsOrNetwork(t *testing.T) {
 		{"jobs", "create", "--key", "same", "--key", "other", "--title", "Task"},
 		{"jobs", "create", "--key", "bad\nkey", "--title", "Task"},
 		{"jobs", "create", "--key", "same", "--title", " "},
-		{"jobs", "edit", "job-1", "--key", "same", "--expect-revision", "1"},
-		{"jobs", "edit", "job-1", "--key", "same", "--expect-revision", "0", "--brief", ""},
-		{"jobs", "edit", "job-1", "--key", "same", "--expect-revision", "9223372036854775807", "--brief", ""},
+		{"jobs", "update", "job-1", "--key", "same", "--expect-revision", "1"},
+		{"jobs", "update", "job-1", "--key", "same", "--expect-revision", "0", "--brief", ""},
+		{"jobs", "update", "job-1", "--key", "same", "--expect-revision", "9223372036854775807", "--brief", ""},
 		{"inbox", "send", "--key", "same", "--to", "worker-1", "--body", " "},
 		{"inbox", "send", "--key", "same", "--to", "../worker", "--body", "Hello"},
 		{"inbox", "send", "--key", "same", "--to", "worker-1", "--body", string([]byte{0xff})},
@@ -240,7 +240,7 @@ func TestMutationFreeformValuesPreserveLeadingDashes(t *testing.T) {
 					t.Fatal("create changed freeform value bytes")
 				}
 				title, brief := value.title+" edited", value.brief+"\n--literal-after-edit"
-				args = []string{"jobs", "edit", jobID, "--key", key + "-edit", "--expect-revision", "1"}
+				args = []string{"jobs", "update", jobID, "--key", key + "-edit", "--expect-revision", "1"}
 				args = append(args, option("--title", title)...)
 				args = append(args, option("--brief", brief)...)
 				mutationSuccess(t, path, "sender", args...)

@@ -129,6 +129,8 @@ func TestPreparedJobInsertPreservesNativeReadsWithoutReplayEffects(t *testing.T)
 	progressOK(t, detail, 200)
 	var current map[string]any
 	decodeResponse(t, detail, &current)
+	delete(current, "checklist")
+	delete(current, "notes")
 	if current["revision"] != float64(1) || current["title"] != item.Title || current["brief"] != item.Brief ||
 		current["created_at"] != item.CreatedAt || current["updated_at"] != item.UpdatedAt || current["worker_id"] != worker || current["status"] != item.Status {
 		t.Fatal("native detail did not preserve selected state")
@@ -171,12 +173,14 @@ func TestPreparedJobInsertPreservesNativeReadsWithoutReplayEffects(t *testing.T)
 	if checkpoints.Items[0].Sequence <= checkpoints.Items[1].Sequence {
 		t.Fatal("input order did not govern native sequence")
 	}
-	context := contextRead(t, a, base, a.admin, worker)
-	if context.Job.Revision != 1 || context.Checkpoint == nil || context.Checkpoint.ID != "imported-checkpoint-two" || !context.Complete {
-		t.Fatal("native context cannot read imported state")
+	var working workingJob
+	decodeResponse(t, detail, &working)
+	if working.Revision != 1 || working.Progress.Summary != item.Checkpoints[0].Done || working.Progress.Next != item.Checkpoints[0].Next {
+		t.Fatal("default read did not seed imported progress in time order")
 	}
+
 	after := contextState(t, a)
-	for _, table := range []string{"jobs", "job_history", "job_checkpoints"} {
+	for _, table := range []string{"jobs", "job_history", "job_checkpoints", "job_progress", "job_progress_history"} {
 		delete(before, table)
 		delete(after, table)
 	}
@@ -293,5 +297,37 @@ func TestPreparedJobInsertValidationAndCallerRollback(t *testing.T) {
 	data, err := json.Marshal(normalized)
 	if err != nil || !strings.Contains(string(data), `"source_revision":42`) || !strings.Contains(string(data), `"evidence":[]`) {
 		t.Fatal("prepared wire shape", err)
+	}
+}
+
+func TestPreparedJobCanonicalProgressValidatesOriginalAfterLaterNativeChange(t *testing.T) {
+	a := setupAPI(t)
+	project := a.createProject("prepared-progress-validation", "example/prepared-progress-validation")
+	item := preparedJobSnapshot()
+	ids := []string{"source-progress-one", "source-progress-two"}
+	tx, err := a.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := jobs.InsertPreparedJob(t.Context(), tx, project, "prepared-progress-job", item, ids); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.ValidatePreparedSnapshot(t.Context(), a.store.DB(), project, "prepared-progress-job", item, ids); err != nil {
+		t.Fatal("new imported canonical history failed original validation", err)
+	}
+	base := "/api/v1/projects/" + project + "/jobs/prepared-progress-job"
+	progressOK(t, a.call("PATCH", base, a.admin, "later-native-progress", map[string]any{"expected_revision": 1, "progress": map[string]any{"summary": "Later position"}}), 200)
+	if err := jobs.ValidatePreparedSnapshot(t.Context(), a.store.DB(), project, "prepared-progress-job", item, ids); err != nil {
+		t.Fatal("current evolution invalidated original imported snapshot", err)
+	}
+	if _, err := a.store.DB().Exec(`UPDATE job_history SET state_json=json_set(state_json,'$.progress.summary','forged original') WHERE project_id=? AND job_id=? AND revision=1`, project, "prepared-progress-job"); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.ValidatePreparedSnapshot(t.Context(), a.store.DB(), project, "prepared-progress-job", item, ids); err == nil {
+		t.Fatal("forged imported original progress accepted")
 	}
 }

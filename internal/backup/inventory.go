@@ -223,8 +223,10 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 7, "inbox": 1, "reviews": 8, "review_policy": 1, "review_execution": 7, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "review_rounds": 3, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 8, "review_policy": 1, "review_execution": 7, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "review_rounds": 3, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"job_progress":                      {"jobs", 8, "project_id job_id job_revision summary next blocker evidence_json"},
+	"job_progress_history":              {"jobs", 8, "sequence id project_id job_id job_revision actor_id worker_id summary next blocker evidence_json created_at"},
 	"project_handles":                   {"project_handles", 1, "project_id handle"},
 	"job_summaries":                     {"jobs", 7, "project_id job_id revision job_revision title body actor_id worker_id created_at"},
 	"job_summary_history":               {"jobs", 7, "project_id job_id revision job_revision title body actor_id worker_id created_at"},
@@ -624,6 +626,11 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	if err = validateSharedProjectPhysicalSchema(ctx, db, versions); err != nil {
 		return nil, err
 	}
+	if versions["jobs"] >= 8 {
+		if err = validateUnifiedJobProgressPhysicalSchema(ctx, db); err != nil {
+			return nil, err
+		}
+	}
 	for name := range actual {
 		if _, ok := tables[name]; !ok {
 			return nil, invalid()
@@ -937,6 +944,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return unavailable()
 		}
 		return invalid()
+	}
+	if versions["jobs"] >= 8 {
+		if err = jobs.ValidateProgressSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
 	}
 	if versions["jobs"] >= 6 {
 		if err = jobs.ValidateNotesSnapshot(ctx, tx); err != nil {
@@ -1428,6 +1443,8 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"job_progress":                      {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"job_progress_history":              {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
 	"project_handles":                   {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"job_summaries":                     {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
 	"job_summary_history":               {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},

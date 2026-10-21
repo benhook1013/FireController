@@ -28,24 +28,13 @@ type deliveryWorker struct {
 	PauseReasonTruncated bool   `json:"pause_reason_truncated"`
 }
 
-type deliveryCheckpoint struct {
-	Sequence         int64  `json:"sequence"`
-	JobRevision      int64  `json:"job_revision"`
-	Done             string `json:"done"`
+type deliveryProgress struct {
+	Summary          string `json:"summary"`
 	Next             string `json:"next"`
 	Blocker          string `json:"blocker"`
-	DoneTruncated    bool   `json:"done_truncated"`
+	SummaryTruncated bool   `json:"summary_truncated"`
 	NextTruncated    bool   `json:"next_truncated"`
 	BlockerTruncated bool   `json:"blocker_truncated"`
-	CreatedAt        string `json:"created_at"`
-}
-
-type deliveryUpdate struct {
-	Sequence      int64  `json:"sequence"`
-	JobRevision   int64  `json:"job_revision"`
-	Body          string `json:"body"`
-	BodyTruncated bool   `json:"body_truncated"`
-	CreatedAt     string `json:"created_at"`
 }
 
 type deliveryChecklist struct {
@@ -57,19 +46,18 @@ type deliveryChecklist struct {
 }
 
 type deliveryJob struct {
-	Summary               *Summary            `json:"summary,omitempty"`
-	ID                    string              `json:"id"`
-	Title                 string              `json:"title"`
-	WorkerID              string              `json:"worker_id"`
-	WorkerName            string              `json:"worker_name"`
-	Status                string              `json:"status"`
-	Revision              int64               `json:"revision"`
-	BriefPreview          string              `json:"brief_preview"`
-	BriefPreviewTruncated bool                `json:"brief_preview_truncated"`
-	UpdatedAt             string              `json:"updated_at"`
-	Update                *deliveryUpdate     `json:"update"`
-	Checklist             *deliveryChecklist  `json:"checklist"`
-	Checkpoint            *deliveryCheckpoint `json:"checkpoint"`
+	Summary               *Summary           `json:"summary,omitempty"`
+	ID                    string             `json:"id"`
+	Title                 string             `json:"title"`
+	WorkerID              string             `json:"worker_id"`
+	WorkerName            string             `json:"worker_name"`
+	Status                string             `json:"status"`
+	Revision              int64              `json:"revision"`
+	BriefPreview          string             `json:"brief_preview"`
+	BriefPreviewTruncated bool               `json:"brief_preview_truncated"`
+	UpdatedAt             string             `json:"updated_at"`
+	Progress              deliveryProgress   `json:"progress"`
+	Checklist             *deliveryChecklist `json:"checklist"`
 }
 
 type deliveryPage[T any] struct {
@@ -228,16 +216,12 @@ func readDeliveryJobs(ctx context.Context, tx *sql.Tx, project, afterStatus, aft
 	query := `WITH candidates AS (` + strings.Join(branches, ` UNION ALL `) + `),
 		selected AS (SELECT id,status FROM candidates ORDER BY status,id LIMIT ?)
 		SELECT j.id,j.title,COALESCE(j.worker_id,''),COALESCE(w.name,''),j.status,j.revision,j.brief,j.updated_at,
-		c.sequence,c.job_revision,c.done,c.next,c.blocker,c.created_at,
-		u.sequence,u.job_revision,u.body,u.created_at,
+		p.job_revision,CASE WHEN typeof(p.summary)='text' AND length(CAST(p.summary AS BLOB))<=8192 THEN substr(p.summary,1,244) END,CASE WHEN typeof(p.next)='text' AND length(CAST(p.next AS BLOB))<=8192 THEN substr(p.next,1,244) END,CASE WHEN typeof(p.blocker)='text' AND length(CAST(p.blocker AS BLOB))<=4096 THEN substr(p.blocker,1,244) END,
 		l.revision,l.job_revision,l.items_json,l.created_at,
 		s.revision,s.title,s.body
 		FROM selected x JOIN jobs j ON j.project_id=? AND j.id=x.id
 		LEFT JOIN workers w ON w.project_id=j.project_id AND w.id=j.worker_id
-		LEFT JOIN job_checkpoints c ON c.project_id=j.project_id AND c.job_id=j.id AND c.sequence=(
-			SELECT sequence FROM job_checkpoints WHERE project_id=j.project_id AND job_id=j.id ORDER BY sequence DESC LIMIT 1)
-		LEFT JOIN job_updates u ON u.project_id=j.project_id AND u.job_id=j.id AND u.sequence=(
-			SELECT sequence FROM job_updates WHERE project_id=j.project_id AND job_id=j.id ORDER BY sequence DESC LIMIT 1)
+        LEFT JOIN job_progress p ON p.project_id=j.project_id AND p.job_id=j.id
 		LEFT JOIN job_checklists l ON l.project_id=j.project_id AND l.job_id=j.id
 		LEFT JOIN job_summaries s ON s.project_id=j.project_id AND s.job_id=j.id
 		ORDER BY x.status,x.id`
@@ -250,14 +234,14 @@ func readDeliveryJobs(ctx context.Context, tx *sql.Tx, project, afterStatus, aft
 	lastID, lastStatus := "", ""
 	for rows.Next() {
 		var item deliveryJob
-		var sequence, jobRevision sql.NullInt64
-		var done, next, blocker, checkpointAt sql.NullString
+		var progressRevision sql.NullInt64
+		var summary, next, blocker sql.NullString
 		var brief string
-		var updateSequence, updateJobRevision, checklistRevision, checklistJobRevision sql.NullInt64
-		var updateBody, updateAt, checklistRaw, checklistAt sql.NullString
+		var checklistRevision, checklistJobRevision sql.NullInt64
+		var checklistRaw, checklistAt sql.NullString
 		var summaryRevision sql.NullInt64
 		var summaryTitle, summaryBody sql.NullString
-		if err := rows.Scan(&item.ID, &item.Title, &item.WorkerID, &item.WorkerName, &item.Status, &item.Revision, &brief, &item.UpdatedAt, &sequence, &jobRevision, &done, &next, &blocker, &checkpointAt, &updateSequence, &updateJobRevision, &updateBody, &updateAt, &checklistRevision, &checklistJobRevision, &checklistRaw, &checklistAt, &summaryRevision, &summaryTitle, &summaryBody); err != nil {
+		if err := rows.Scan(&item.ID, &item.Title, &item.WorkerID, &item.WorkerName, &item.Status, &item.Revision, &brief, &item.UpdatedAt, &progressRevision, &summary, &next, &blocker, &checklistRevision, &checklistJobRevision, &checklistRaw, &checklistAt, &summaryRevision, &summaryTitle, &summaryBody); err != nil {
 			return err
 		}
 		if len(page.Items) == limit {
@@ -271,22 +255,12 @@ func readDeliveryJobs(ctx context.Context, tx *sql.Tx, project, afterStatus, aft
 			return core.Fail("storage_unavailable", "Stored delivery job state is unavailable.", http.StatusInternalServerError)
 		}
 		item.BriefPreview, item.BriefPreviewTruncated = deliveryPreview(brief)
-		if sequence.Valid || jobRevision.Valid || done.Valid || next.Valid || blocker.Valid || checkpointAt.Valid {
-			if !sequence.Valid || !jobRevision.Valid || !done.Valid || !next.Valid || !blocker.Valid || !checkpointAt.Valid || !contextTime(checkpointAt.String) || sequence.Int64 < 1 || jobRevision.Int64 < 1 || jobRevision.Int64 > item.Revision || !validCheckpointText(done.String, maxCheckpointText, true) || !validCheckpointText(next.String, maxCheckpointText, true) || !validCheckpointText(blocker.String, maxCheckpointBlocker, false) || len(done.String)+len(next.String)+len(blocker.String) > maxCheckpointAggregate {
-				return core.Fail("storage_unavailable", "Stored delivery checkpoint summary is unavailable.", http.StatusInternalServerError)
-			}
-			item.Checkpoint = &deliveryCheckpoint{Sequence: sequence.Int64, JobRevision: jobRevision.Int64, CreatedAt: checkpointAt.String}
-			item.Checkpoint.Done, item.Checkpoint.DoneTruncated = deliveryPreview(done.String)
-			item.Checkpoint.Next, item.Checkpoint.NextTruncated = deliveryPreview(next.String)
-			item.Checkpoint.Blocker, item.Checkpoint.BlockerTruncated = deliveryPreview(blocker.String)
+		if !progressRevision.Valid || progressRevision.Int64 < 1 || progressRevision.Int64 > item.Revision || !summary.Valid || !next.Valid || !blocker.Valid || !utf8.ValidString(summary.String) || !utf8.ValidString(next.String) || !utf8.ValidString(blocker.String) {
+			return progressUnavailable()
 		}
-		if updateSequence.Valid || updateJobRevision.Valid || updateBody.Valid || updateAt.Valid {
-			if !updateSequence.Valid || !updateJobRevision.Valid || !updateBody.Valid || !updateAt.Valid || updateSequence.Int64 < 1 || updateJobRevision.Int64 < 1 || updateJobRevision.Int64 > item.Revision || !validCheckpointText(updateBody.String, 8<<10, true) || !contextTime(updateAt.String) {
-				return core.Fail("storage_unavailable", "Stored delivery update summary is unavailable.", http.StatusInternalServerError)
-			}
-			item.Update = &deliveryUpdate{Sequence: updateSequence.Int64, JobRevision: updateJobRevision.Int64, CreatedAt: updateAt.String}
-			item.Update.Body, item.Update.BodyTruncated = deliveryPreview(updateBody.String)
-		}
+		item.Progress.Summary, item.Progress.SummaryTruncated = deliveryPreview(summary.String)
+		item.Progress.Next, item.Progress.NextTruncated = deliveryPreview(next.String)
+		item.Progress.Blocker, item.Progress.BlockerTruncated = deliveryPreview(blocker.String)
 		if checklistRevision.Valid || checklistJobRevision.Valid || checklistRaw.Valid || checklistAt.Valid {
 			if !checklistRevision.Valid || !checklistJobRevision.Valid || !checklistRaw.Valid || !checklistAt.Valid || checklistRevision.Int64 < 1 || checklistJobRevision.Int64 < 1 || checklistJobRevision.Int64 > item.Revision || !contextTime(checklistAt.String) {
 				return core.Fail("storage_unavailable", "Stored delivery checklist summary is unavailable.", http.StatusInternalServerError)

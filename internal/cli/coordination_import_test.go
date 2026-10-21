@@ -105,7 +105,7 @@ func TestCoordinationImportCLIRealPreviewLostResultAndExactRecovery(t *testing.T
 	}
 	// Ordinary edits and a later import do not change the original receipt or
 	// allow the original source snapshot to overwrite the newer native brief.
-	mutationSuccess(t, profiles, "admin", "jobs", "edit", id, "--expect-revision", "1", "--brief", "new native brief", "--key", "ordinary-edit")
+	mutationSuccess(t, profiles, "admin", "jobs", "update", id, "--expect-revision", "1", "--brief", "new native brief", "--key", "ordinary-edit")
 	later := coordinationCLIBatch(worker)
 	one := int64(1)
 	later.ExpectedRevision = &one

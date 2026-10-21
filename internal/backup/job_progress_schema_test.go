@@ -14,8 +14,8 @@ func TestJobProgressBackupRejectsNoncanonicalSchema(t *testing.T) {
 	f := newRestoreFixture(t)
 	job := restoreRows(t, f.store.DB(), `SELECT id FROM jobs LIMIT 1`)[0][0].(string)
 	base := "/api/v1/projects/" + f.project + "/jobs/" + job
-	f.request(t, "POST", base+"/updates", map[string]any{"expected_job_revision": 1, "body": "Retained update"})
-	f.request(t, "PUT", base+"/checklist", map[string]any{"expected_job_revision": 1, "expected_revision": 0, "items": []map[string]any{{"id": "retained", "text": "Retained item", "done": false}}})
+	f.request(t, "PATCH", base, map[string]any{"expected_revision": 1, "progress": map[string]any{"summary": "Retained progress"}})
+	f.request(t, "PUT", base+"/checklist", map[string]any{"expected_job_revision": 2, "expected_revision": 0, "items": []map[string]any{{"id": "retained", "text": "Retained item", "done": false}}})
 	for _, table := range []string{"job_updates", "job_checklists", "job_checklist_history"} {
 		defects := []string{"missing-primary-key", "wrong-revision-type", "nullable-actor", "unexpected-default"}
 		if table == "job_updates" {

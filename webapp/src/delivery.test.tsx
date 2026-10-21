@@ -11,7 +11,7 @@ import type { DeliveryJob, DeliverySnapshot, DeliveryWorker, ReviewPullSummary, 
 const home = '/projects/project_one';
 const key = ['fc', 'connection_one', 'instance_one', 'project_one', 'actor_one'] as const;
 const worker: DeliveryWorker = { id: 'worker_one', project_id: 'project_one', name: 'Builder', primary_job_id: 'job_active', paused: true, pause_reason: 'Waiting <literal>', pause_reason_truncated: true };
-const job = (id: string, status: DeliveryJob['status'], worker_id = worker.id, worker_name = worker.name): DeliveryJob => ({ id, title: id, worker_id, worker_name, status, revision: 3, brief_preview: '', brief_preview_truncated: false, updated_at: '2026-10-19T08:00:00Z', update: null, checklist: null, checkpoint: null });
+const job = (id: string, status: DeliveryJob['status'], worker_id = worker.id, worker_name = worker.name): DeliveryJob => ({ id, title: id, worker_id, worker_name, status, revision: 3, brief_preview: '', brief_preview_truncated: false, updated_at: '2026-10-19T08:00:00Z', progress: {summary:'',next:'',blocker:'',summary_truncated:false,next_truncated:false,blocker_truncated:false}, checklist: null });
 const board: DeliverySnapshot = { workers: { items: [worker, { ...worker, id: 'empty_worker', name: 'Empty worker', primary_job_id: 'outside_job', paused: false }], has_more: true, cursor: 'next_workers' }, jobs: { items: [job('job_parked', 'parked'), job('job_blocked', 'blocked'), job('job_active', 'active'), job('outside_owner_job', 'active', 'outside_owner', 'Elsewhere'), job('unassigned_job', 'active', '', '')], has_more: true, cursor: 'next_jobs' } };
 const run = (channel: 'hosted' | 'cli'): ReviewRunSummary => ({ source: 'fixture', id: 'run_' + channel, pull_number: 2, source_run_id: 'source_' + channel, channel, head_sha: 'head', reviewer: 'Reviewer', scope: 'full', coverage_limits: [], outcome: 'completed', attributable: true, complete: true, started_at: '', finished_at: '2026-10-18T00:00:00Z', found: 5, accepted: 2, routed: 1, finalized: true, fixed: 1 });
 const pull = (number: number, state: ReviewPullSummary['state']): ReviewPullSummary => ({ number, state, title: `Change ${number}`, head_sha: 'head', base_ref: 'main', base_sha: 'base', ci_state: 'success', mergeability: 'mergeable', complete: true, run_count: 2, attempt_count: 0, recent_runs: [run('hosted'), run('cli')], latest_attempts: [] });
@@ -41,15 +41,15 @@ describe('bounded Delivery board', () => {
     expect(lanes[3].jobs.map(item => item.id)).toEqual(['unassigned_job']);
     expect(board.jobs.items[0].status).toBe('parked');
   });
-  it('shows explicit pause/focus and safe checkpoint previews without implying an empty lane is idle', () => {
+  it('shows explicit pause/focus and safe progress previews without implying an empty lane is idle', () => {
     const current = job('job_active', 'active');
-    current.checkpoint = { sequence: 4, job_revision: 1, done: '<script>done</script>', next: 'Next <literal>', blocker: 'Waiting', done_truncated: true, next_truncated: false, blocker_truncated: false, created_at: '2026-10-19T08:00:00Z' };
+    current.progress = { summary: '<script>done</script>', next: 'Next <literal>', blocker: 'Waiting', summary_truncated: true, next_truncated: false, blocker_truncated: false };
     const value = { ...board, jobs: { ...board.jobs, items: [current] } };
     const html = markup(<DeliveryLanes value={value} home={home} />);
     expect(html).toContain('Primary focus');
     expect(html).toContain('Paused');
     expect(html).toContain('Waiting &lt;literal&gt;…');
-    expect(html).toContain('Checkpoint from job revision 1; current revision 3.');
+    expect(html).not.toContain('Checkpoint');
     expect(html).toContain('&lt;script&gt;done&lt;/script&gt;');
     expect(html).toContain('</div><span class="delivery-preview-truncated" aria-label="Preview truncated">…</span>');
     expect(html).toContain('>Primary job</a>');
@@ -61,13 +61,13 @@ describe('bounded Delivery board', () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-19T09:00:00Z'));
     try {
       const current = {...job('job_active','active'),brief_preview:'**literal brief** <script>bad</script>',brief_preview_truncated:true,
-        update:{sequence:9,job_revision:1,body:'**literal update** <script>bad</script>',body_truncated:true,created_at:'2026-10-19T08:30:00Z'},
+        progress:{summary:'**literal update** <script>bad</script>',next:'',blocker:'',summary_truncated:true,next_truncated:false,blocker_truncated:false},
         checklist:{revision:2,job_revision:1,total:0,done:0,created_at:'2099-01-01T00:00:00Z'}};
       const html=markup(<DeliveryLanes value={{...board,jobs:{items:[current],has_more:false}}} home={home}/>);
       expect(html).toContain('<strong>literal brief</strong> &lt;script&gt;bad&lt;/script&gt;');
       expect(html).toContain('<strong>literal update</strong> &lt;script&gt;bad&lt;/script&gt;');
-      expect(html).not.toContain('>Job revision 3'); expect(html).toContain('Edited'); expect(html).toContain('1h 0m ago'); expect(html).toContain('30m ago');
-      expect(html).toContain('Progress from job revision 1; current revision 3.'); expect(html).toContain('Checklist from job revision 1; current revision 3.');
+      expect(html).not.toContain('>Job revision 3'); expect(html).toContain('Edited'); expect(html).toContain('1h 0m ago');
+      expect(html).not.toContain('Progress from job revision'); expect(html).toContain('Checklist from job revision 1; current revision 3.');
       expect(html).toContain('Checklist 0/0 done'); expect(html).toContain('Future date'); expect(html).toContain('2099-01-01T00:00:00Z');
       expect(html).not.toContain('No checkpoint recorded.'); expect(html).not.toMatch(/<script>|<em>|Last activity/u);
     } finally {vi.useRealTimers();}
@@ -83,8 +83,7 @@ describe('bounded Delivery board', () => {
     const current = {
       ...job('job_active', 'active'),
       brief_preview: '## Goal\n\nWrite **clear** release notes.\n\n- Keep the links\n- [Guide](https://example.com/guide)', brief_preview_truncated: true,
-      update: {sequence: 1, job_revision: 3, body: '### Progress\n\nChecked `proof` and ![image](https://example.com/private.png).', body_truncated: false, created_at: '2026-10-19T08:00:00Z'},
-      checkpoint: {sequence: 2, job_revision: 3, next: '**Finish** the [review](javascript:alert%281%29)', next_truncated: true, blocker: '> Waiting on **evidence**', blocker_truncated: false, done: '<script>bad</script>\n\n```\npartial **code', done_truncated: true, created_at: '2026-10-19T08:00:00Z'},
+      progress: {summary: '### Progress\n\nChecked `proof` and ![image](https://example.com/private.png).\n\n<script>bad</script>\n\n```\npartial **code', summary_truncated: true, next: '**Finish** the [review](javascript:alert%281%29)', next_truncated: true, blocker: '> Waiting on **evidence**', blocker_truncated: false},
     };
     const html = markup(<DeliveryLanes value={{...board,jobs:{items:[current],has_more:false}}} home={home}/>);
     expect(html).toContain('<h5>Goal</h5>');
@@ -96,7 +95,7 @@ describe('bounded Delivery board', () => {
     expect(html).toContain('Image: image');
     expect(html).toContain('delivery-checkpoint-label">Next</strong>');
     expect(html).toContain('delivery-checkpoint-label">Blocker</strong>');
-    expect(html).toContain('delivery-checkpoint-label">Done</strong>');
+    expect(html).toContain('delivery-checkpoint-label">Progress</strong>');
     expect(html).toContain('<strong>Finish</strong>');
     expect(html).toContain('review</span>');
     expect(html).toContain('editorial-quote');
@@ -126,29 +125,27 @@ describe('bounded Delivery board', () => {
   ])('keeps every truncated prose marker outside the inert Markdown: %s', body => {
     const current = {
       ...job('job_active', 'active'), brief_preview: body, brief_preview_truncated: true,
-      update: {sequence: 1, job_revision: 3, body, body_truncated: true, created_at: '2026-10-19T08:00:00Z'},
-      checkpoint: {sequence: 2, job_revision: 3, next: body, next_truncated: true, blocker: body, blocker_truncated: true, done: body, done_truncated: true, created_at: '2026-10-19T08:00:00Z'},
+      progress: {summary: body, next: body, blocker: body, summary_truncated: true, next_truncated: true, blocker_truncated: true},
     };
     expect(new TextEncoder().encode(body).length).toBeLessThanOrEqual(240);
     const html = markup(<DeliveryLanes value={{...board,jobs:{items:[current],has_more:false}}} home={home}/>);
-    expect(html.match(/class="delivery-preview-truncated"/gu)).toHaveLength(5);
-    expect(html.match(/<\/div><span class="delivery-preview-truncated" aria-label="Preview truncated">…<\/span>/gu)).toHaveLength(5);
+    expect(html.match(/class="delivery-preview-truncated"/gu)).toHaveLength(4);
+    expect(html.match(/<\/div><span class="delivery-preview-truncated" aria-label="Preview truncated">…<\/span>/gu)).toHaveLength(4);
     const parsedBodies = [...html.matchAll(/class="editorial-markdown delivery-preview">([\s\S]*?)<\/div>/gu)];
-    expect(parsedBodies).toHaveLength(5);
+    expect(parsedBodies).toHaveLength(4);
     for (const match of parsedBodies) expect(match[1]).not.toContain('…');
     expect(html).not.toMatch(/<img|<script|href="javascript:|src="https:/u);
   });
-  it('retains every short list item across untruncated brief, update and checkpoint previews', () => {
+  it('retains every short list item across untruncated brief and progress previews', () => {
     const body = Array.from({length: 16}, (_, index) => `- Step ${index + 1}`).join('\n');
     expect(new TextEncoder().encode(body).length).toBeLessThan(240);
     const current = {
       ...job('job_active', 'active'), brief_preview: body, brief_preview_truncated: false,
-      update: {sequence: 1, job_revision: 3, body, body_truncated: false, created_at: '2026-10-19T08:00:00Z'},
-      checkpoint: {sequence: 2, job_revision: 3, next: body, next_truncated: false, blocker: body, blocker_truncated: false, done: body, done_truncated: false, created_at: '2026-10-19T08:00:00Z'},
+      progress: {summary: body, next: body, blocker: body, summary_truncated: false, next_truncated: false, blocker_truncated: false},
     };
     const html = markup(<DeliveryLanes value={{...board,jobs:{items:[current],has_more:false}}} home={home}/>);
     for (let step = 1; step <= 16; step++) {
-      expect(html.match(new RegExp(`<li>Step ${step}</li>`, 'gu'))).toHaveLength(5);
+      expect(html.match(new RegExp(`<li>Step ${step}</li>`, 'gu'))).toHaveLength(4);
     }
     expect(html).not.toContain('Preview truncated');
   });

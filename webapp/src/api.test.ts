@@ -7,9 +7,10 @@ const inboxItem = {
   id: 'msg_one', conversation_id: 'conv_one', sender_worker_id: 'worker_two', recipient_worker_id: 'worker_one',
   preview: 'hello', preview_truncated: false, seen: false, acknowledged: false, created_at: '2026-10-15T12:00:00Z',
 };
-const jobSummary = { id: 'job_one', title: 'Task', worker_id: 'worker_one', status: 'active', revision: 1 };
+const jobIdentity = { id: 'job_one', title: 'Task', worker_id: 'worker_one', status: 'active', revision: 1 };
+const jobSummary = {...jobIdentity, progress_summary:'',blocker:'',progress_truncated:false,blocker_truncated:false};
 const job = {
-  ...jobSummary, project_id: 'project_one', brief: 'private brief', created_at: '2026-10-15T12:00:00Z', updated_at: '2026-10-15T12:00:00Z',
+  ...jobIdentity, project_id: 'project_one', brief: 'private brief', progress:{summary:'',next:'',blocker:'',evidence:[]}, checklist:{revision:0,remaining:[],completed:0,total:0}, notes:{items:[],has_more:false}, created_at: '2026-10-15T12:00:00Z', updated_at: '2026-10-15T12:00:00Z',
 };
 const message = {
   id: 'msg_one', conversation_id: 'conv_one', sender_worker_id: 'worker_two', recipient_worker_id: 'worker_one',

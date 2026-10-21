@@ -317,8 +317,6 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value, err = service.WorkerPauseHistory(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "workers":
 		value, err = service.Workers(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
-	case call.command == "jobs" && call.subcommand == "context":
-		value, err = service.JobContext(requestCtx, call.position[0], call.limit)
 	case call.command == "jobs" && call.subcommand == "primary":
 		value, err = service.PrimaryJob(requestCtx)
 	case call.command == "jobs" && call.subcommand == "primary-history":
@@ -331,12 +329,8 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value, err = service.Job(requestCtx, call.position[0])
 	case call.command == "jobs" && call.subcommand == "history":
 		value, err = service.JobHistory(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
-	case call.command == "jobs" && call.subcommand == "checkpoint-latest":
-		value, err = service.LatestCheckpoint(requestCtx, call.position[0])
-	case call.command == "jobs" && call.subcommand == "checkpoints":
-		value, err = service.CheckpointHistory(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
-	case call.command == "jobs" && call.subcommand == "updates":
-		value, err = service.JobUpdates(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+	case call.command == "jobs" && call.subcommand == "progress-history":
+		value, err = service.JobProgressHistory(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "jobs" && call.subcommand == "summary":
 		value, err = service.JobSummary(requestCtx, call.position[0])
 	case call.command == "jobs" && call.subcommand == "checklist":
@@ -469,9 +463,6 @@ func parseInvocation(args []string) (invocation, bool) {
 	if call.command == "inbox" && call.subcommand == "wait" {
 		return parseMessageWait(call, operationArgs)
 	}
-	if call.command == "jobs" && call.subcommand == "context" {
-		return parseJobContext(call, operationArgs)
-	}
 	if call.command == "map" || call.command == "jobs" && (call.subcommand == "workstream" || call.subcommand == "workstream-set" || call.subcommand == "workstream-history") {
 		var ok bool
 		call.projectMap, ok = parseProjectMap(call.command, call.subcommand, operationArgs)
@@ -492,7 +483,7 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	allowed := map[string]bool{}
 	switch call.command + " " + call.subcommand {
-	case "workers pause-history", "jobs primary-history", "workers list", "jobs history", "jobs checkpoints", "jobs updates", "jobs checklist-history", "inbox thread":
+	case "workers pause-history", "jobs primary-history", "workers list", "jobs history", "jobs progress-history", "jobs checklist-history", "inbox thread":
 		allowed["--limit"], allowed["--cursor"] = true, true
 	case "jobs list":
 		allowed["--limit"], allowed["--cursor"], allowed["--worker"], allowed["--status"] = true, true, true, true
@@ -504,7 +495,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"] = true, true, true, true
 	case "inbox events":
 		allowed["--cursor"], allowed["--limit"], allowed["--wait-ms"] = true, true, true
-	case "workers pause-state", "jobs primary", "jobs read", "jobs checkpoint-latest", "jobs checklist", "jobs summary":
+	case "workers pause-state", "jobs primary", "jobs read", "jobs checklist", "jobs summary":
 	default:
 		return call, false
 	}
@@ -577,7 +568,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		}
 	}
 	expected := 0
-	if call.command == "jobs" && (call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "checkpoint-latest" || call.subcommand == "checkpoints" || call.subcommand == "updates" || call.subcommand == "checklist" || call.subcommand == "checklist-history" || call.subcommand == "summary") || call.command == "inbox" && call.subcommand == "thread" {
+	if call.command == "jobs" && (call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "progress-history" || call.subcommand == "checklist" || call.subcommand == "checklist-history" || call.subcommand == "summary") || call.command == "inbox" && call.subcommand == "thread" {
 		expected = 1
 	}
 	if len(call.position) != expected {

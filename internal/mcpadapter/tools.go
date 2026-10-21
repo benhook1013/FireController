@@ -36,10 +36,8 @@ type arguments struct {
 	pullNumber                 int64
 	key                        string
 	create                     client.CreateJobRequest
-	edit                       client.EditJobRequest
 	send                       client.SendMessageRequest
-	checkpoint                 client.AppendCheckpointRequest
-	update                     client.AppendUpdateRequest
+	patch                      client.UpdateJobRequest
 	checklist                  client.ReplaceChecklistRequest
 	primary                    client.ReplacePrimaryJobRequest
 	pause                      client.ReplaceWorkerPauseRequest
@@ -69,14 +67,14 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, workerPauseDefinitions()...)
 	definitions = append(definitions, noteDefinitions()...)
 	definitions = append(definitions, projectMapDefinitions()...)
-	definitions = append(definitions, jobContextDefinition(), messageWaitDefinition())
+	definitions = append(definitions, messageWaitDefinition())
 	known := make(map[string]bool)
 	transports := sessionTransports{pools: make(map[*mcp.ServerSession]*client.TransportPool)}
 	for _, tool := range definitions {
 		known[tool.name] = true
 		write := projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		openWorld := checkpointWrite(tool.name) || tool.name == "review_start" || tool.name == "review_request" || tool.name == "review_source_refresh"
-		destructive := tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_summary_set" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
+		destructive := tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_update" || tool.name == "job_summary_set" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
 			var err error
@@ -84,8 +82,6 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				args, err = projectMapArguments(tool.name, request.Params.Arguments)
 			} else if tool.name == "wait_for_messages" {
 				args, err = messageWaitArguments(request.Params.Arguments)
-			} else if tool.name == "job_context" {
-				args, err = jobContextArguments(request.Params.Arguments)
 			} else if noteTool(tool.name) {
 				args, err = noteArguments(tool.name, request.Params.Arguments)
 			} else if workerPauseTool(tool.name) {
@@ -131,8 +127,6 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = executeProjectMapTool(ctx, service, args.projectMap)
 			case "wait_for_messages":
 				value, err = service.WaitForMessages(ctx, args.cursor, args.limit, args.messageWaitSeconds)
-			case "job_context":
-				value, err = service.JobContext(ctx, args.id, args.limit)
 			case "note_create", "note_update", "note_read", "note_list", "note_history", "note_revision_read":
 				value, err = executeNoteTool(ctx, service, args.notes)
 			case "presentation_read":
@@ -224,16 +218,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.Job(ctx, args.id)
 			case "job_history":
 				value, err = service.JobHistory(ctx, args.id, options)
-			case "job_checkpoint_latest":
-				value, err = service.LatestCheckpoint(ctx, args.id)
-			case "job_checkpoint_history":
-				value, err = service.CheckpointHistory(ctx, args.id, options)
-			case "job_checkpoint_append":
-				value, err = service.AppendCheckpoint(ctx, args.key, args.id, args.checkpoint)
-			case "job_update_append":
-				value, err = service.AppendJobUpdate(ctx, args.key, args.id, args.update)
-			case "job_update_history":
-				value, err = service.JobUpdates(ctx, args.id, options)
+			case "job_update":
+				value, err = service.UpdateJob(ctx, args.key, args.id, args.patch)
+			case "job_progress_history":
+				value, err = service.JobProgressHistory(ctx, args.id, options)
 			case "job_checklist_read":
 				value, err = service.JobChecklist(ctx, args.id)
 			case "job_checklist_replace":
@@ -250,8 +238,6 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.Conversation(ctx, args.id, options)
 			case "jobs_create":
 				value, err = service.CreateJob(ctx, args.key, args.create)
-			case "job_edit":
-				value, err = service.EditJob(ctx, args.key, args.id, args.edit)
 			case "inbox_send":
 				value, err = service.SendMessage(ctx, args.key, args.send)
 			case "inbox_seen":

@@ -501,6 +501,56 @@ func TestPackagedSmoke(t *testing.T) {
 	if cliDetached.Items[0].LastSeenAt.Before(*cliContact.Items[0].LastSeenAt) || streams.Load() != 2 || applicationWrites.Load() != waitWrites {
 		t.Fatal("CLI wait/contact changed stream/write workload or lost contact")
 	}
+	// One normal update replaces the old narrative/checkpoint choice. Exercise
+	// actual CLI and MCP partial writes, then recover the original CLI key after
+	// a later MCP revision without creating another history entry.
+	progressArgs := []string{"jobs", "update", created.ID, "--expect-revision", "1", "--status", "blocked", "--progress", "Actual packaged progress", "--next", "Continue through MCP", "--blocker", "Synthetic dependency", "--key", "packaged-unified-progress"}
+	progressReceipt := cli(profileFile, "builder", progressArgs...)
+	var progressResult struct {
+		Revision int64  `json:"revision"`
+		Outcome  string `json:"outcome"`
+	}
+	decode(t, progressReceipt, &progressResult)
+	if progressResult.Revision != 2 || progressResult.Outcome != "updated" || len(progressReceipt) > 512 {
+		t.Fatal("unified CLI update did not return a compact completed result")
+	}
+	callTool(ctx, "job_update", map[string]any{"job_id": created.ID, "expected_revision": 2, "idempotency_key": "packaged-unified-mcp", "status": "active", "progress": map[string]any{"next": "Ready to resume", "blocker": "", "evidence": []string{"test:packaged"}}})
+	if !bytes.Equal(progressReceipt, cli(profileFile, "builder", progressArgs...)) {
+		t.Fatal("original update key did not replay after later progress")
+	}
+	job = cli(profileFile, "builder", "jobs", "read", created.ID)
+	var current struct {
+		Revision int64 `json:"revision"`
+		Progress struct {
+			Summary, Next, Blocker string
+			Evidence               []string
+		} `json:"progress"`
+		Checklist struct {
+			Total int `json:"total"`
+		} `json:"checklist"`
+		Notes struct {
+			Items []json.RawMessage `json:"items"`
+		} `json:"notes"`
+	}
+	decode(t, job, &current)
+	if current.Revision != 3 || current.Progress.Summary != "Actual packaged progress" || current.Progress.Next != "Ready to resume" || current.Progress.Blocker != "" || len(current.Progress.Evidence) != 1 || current.Checklist.Total != 0 || current.Notes.Items == nil {
+		t.Fatal("default job read lost current unified working state")
+	}
+	var fields map[string]json.RawMessage
+	decode(t, job, &fields)
+	for _, name := range []string{"checkpoint", "inbox", "primary", "pause", "updates"} {
+		if _, found := fields[name]; found {
+			t.Fatal("default job read expanded unrelated coordination or duplicate progress", name)
+		}
+	}
+	var archive struct {
+		Items   []json.RawMessage `json:"items"`
+		HasMore bool              `json:"has_more"`
+	}
+	decode(t, callTool(ctx, "job_progress_history", map[string]any{"job_id": created.ID}), &archive)
+	if len(archive.Items) != 2 || archive.HasMore {
+		t.Fatal("unified progress history duplicated a replay or lost a change")
+	}
 	daemon.stop(t)
 
 	restarted := startDaemon(t, ctx, binaries["fcd"], data, env)

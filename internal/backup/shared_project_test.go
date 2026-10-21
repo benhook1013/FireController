@@ -73,7 +73,7 @@ func TestSharedProjectBackupRetainsHandlesAndExactSummaryHistory(t *testing.T) {
 
 func TestSharedProjectBackupAcceptsPriorJobsSixAndAbsentHandlesWithoutMigration(t *testing.T) {
 	f := newRestoreFixture(t)
-	if _, err := f.store.DB().Exec(`DROP TABLE job_summary_history;DROP TABLE job_summaries;UPDATE metadata SET value='6' WHERE key='schema:jobs';DROP TABLE project_handles;DELETE FROM metadata WHERE key='schema:project_handles'`); err != nil {
+	if _, err := f.store.DB().Exec(`DROP TABLE job_progress_history; DROP TABLE job_progress; DROP TABLE job_summary_history;DROP TABLE job_summaries;UPDATE metadata SET value='6' WHERE key='schema:jobs';DROP TABLE project_handles;DELETE FROM metadata WHERE key='schema:project_handles'`); err != nil {
 		t.Fatal(err)
 	}
 	bundle := restoreBundle(t, f)

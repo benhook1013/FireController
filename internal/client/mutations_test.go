@@ -140,19 +140,19 @@ func TestTypedMutationsUsePublicScopedAPIAndReceipts(t *testing.T) {
 	checkError(t, err, "idempotency_conflict")
 
 	newTitle := "Ship release"
-	updated, err := c.EditJob(context.Background(), "job-edit-1", created.ID, client.EditJobRequest{ExpectedRevision: 1, Title: &newTitle})
+	updated, err := c.UpdateJob(context.Background(), "job-edit-1", created.ID, client.UpdateJobRequest{ExpectedRevision: 1, Title: &newTitle})
 	if err != nil || updated.ID != created.ID || updated.Revision != 2 || updated.Outcome != "updated" {
 		t.Fatalf("edit receipt=%+v err=%v", updated, err)
 	}
-	replayedEdit, err := c.EditJob(context.Background(), "job-edit-1", created.ID, client.EditJobRequest{ExpectedRevision: 1, Title: &newTitle})
+	replayedEdit, err := c.UpdateJob(context.Background(), "job-edit-1", created.ID, client.UpdateJobRequest{ExpectedRevision: 1, Title: &newTitle})
 	if err != nil || replayedEdit != updated {
 		t.Fatalf("edit replay=%+v err=%v", replayedEdit, err)
 	}
 	differentTitle := "different body"
-	_, err = c.EditJob(context.Background(), "job-edit-1", created.ID, client.EditJobRequest{ExpectedRevision: 1, Title: &differentTitle})
+	_, err = c.UpdateJob(context.Background(), "job-edit-1", created.ID, client.UpdateJobRequest{ExpectedRevision: 1, Title: &differentTitle})
 	checkError(t, err, "idempotency_conflict")
 	emptyBrief, emptyWorker := "", ""
-	cleared, err := c.EditJob(context.Background(), "job-edit-clear", created.ID, client.EditJobRequest{ExpectedRevision: 2, Brief: &emptyBrief, WorkerID: &emptyWorker})
+	cleared, err := c.UpdateJob(context.Background(), "job-edit-clear", created.ID, client.UpdateJobRequest{ExpectedRevision: 2, Brief: &emptyBrief, WorkerID: &emptyWorker})
 	if err != nil || cleared.Revision != 3 || cleared.Outcome != "updated" {
 		t.Fatalf("explicit clear receipt=%+v err=%v", cleared, err)
 	}
@@ -160,7 +160,7 @@ func TestTypedMutationsUsePublicScopedAPIAndReceipts(t *testing.T) {
 	if err != nil || clearedJob.Brief != "" || clearedJob.WorkerID != "" {
 		t.Fatalf("empty edit fields were omitted: %+v err=%v", clearedJob, err)
 	}
-	_, err = c.EditJob(context.Background(), "job-edit-stale", created.ID, client.EditJobRequest{ExpectedRevision: 1, Title: &newTitle})
+	_, err = c.UpdateJob(context.Background(), "job-edit-stale", created.ID, client.UpdateJobRequest{ExpectedRevision: 1, Title: &newTitle})
 	var failure *client.Error
 	if !errors.As(err, &failure) || failure.Code != "revision_conflict" || failure.OutcomeUnknown || failure.Details.(map[string]any)["current_revision"] != int64(3) {
 		t.Fatalf("stale edit classification/details: %#v, %v", failure, err)
@@ -215,8 +215,8 @@ func TestMutationValidationAndRefusalAreKnownBeforeOrAfterDispatch(t *testing.T)
 		_, err := c.CreateJob(context.Background(), key, client.CreateJobRequest{Title: "title"})
 		checkError(t, err, "validation_failed")
 	}
-	_, err := c.EditJob(context.Background(), "valid-key", "job-one", client.EditJobRequest{ExpectedRevision: 0, Title: ptr("title")})
-	checkError(t, err, "validation_failed")
+	_, err := c.UpdateJob(context.Background(), "valid-key", "job-one", client.UpdateJobRequest{ExpectedRevision: 0, Title: ptr("title")})
+	checkError(t, err, "invalid_revision")
 	_, err = c.SendMessage(context.Background(), "valid-key", client.SendMessageRequest{RecipientWorkerID: f.recipient, Body: " \n"})
 	checkError(t, err, "validation_failed")
 	canceled, cancel := context.WithCancel(context.Background())
@@ -250,7 +250,7 @@ func TestMutationsCannotCrossProjectAndReadOnlyCredentialsCannotWrite(t *testing
 	foreignWorker := f.call(t, http.MethodPost, "/api/v1/projects/"+foreignProject+"/workers", f.admin, "", map[string]string{"name": "Other"})["id"].(string)
 	foreignJob := f.call(t, http.MethodPost, "/api/v1/projects/"+foreignProject+"/jobs", f.admin, foreignWorker, map[string]string{"title": "foreign", "brief": "", "worker_id": foreignWorker, "status": "active"})["id"].(string)
 	newTitle := "cross project"
-	_, err := clientOne.EditJob(context.Background(), "cross-project-edit", foreignJob, client.EditJobRequest{ExpectedRevision: 1, Title: &newTitle})
+	_, err := clientOne.UpdateJob(context.Background(), "cross-project-edit", foreignJob, client.UpdateJobRequest{ExpectedRevision: 1, Title: &newTitle})
 	checkError(t, err, "not_found")
 	foreignMessage := f.call(t, http.MethodPost, "/api/v1/projects/"+foreignProject+"/messages", f.admin, foreignWorker, map[string]string{"recipient_worker_id": foreignWorker, "body": "foreign"})["id"].(string)
 	_, err = clientOne.SendMessage(context.Background(), "cross-project-reply", client.SendMessageRequest{RecipientWorkerID: f.recipient, Body: "cross project reply", ReplyToMessageID: foreignMessage})

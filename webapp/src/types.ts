@@ -2,14 +2,17 @@ export interface PageOptions {limit?: number; cursor?: string}
 export interface Page<T> {items: T[]; cursor?: string; has_more: boolean}
 export interface Project {handle?: string; id: string; name: string; github_repository_id: number; repository: string}
 export interface Worker {id: string; project_id: string; name: string}
-export interface JobSummary {id: string; title: string; worker_id: string; status: 'active'|'parked'|'blocked'|'completed'; revision: number}
-export interface Job extends JobSummary {project_id: string; brief: string; created_at: string; updated_at: string}
+export interface JobIdentity {id: string; title: string; worker_id: string; status: 'active'|'parked'|'blocked'|'completed'; revision: number}
+export interface JobSummary extends JobIdentity {progress_summary: string; blocker: string; progress_truncated: boolean; blocker_truncated: boolean}
+export interface JobProgress {summary: string; next: string; blocker: string; evidence: string[]}
+export interface JobProgressEntry {id: string; project_id: string; job_id: string; job_revision: number; sequence: number; actor_id: string; worker_id: string; progress: JobProgress; created_at: string}
+export interface JobChecklistSummary {revision: number; remaining: ChecklistItem[]; completed: number; total: number}
+export interface Job extends JobIdentity {project_id: string; brief: string; created_at: string; updated_at: string; progress: JobProgress; checklist: JobChecklistSummary; notes: Page<NoteSummary>}
 export interface DeliveryWorker extends Worker {primary_job_id: string; paused: boolean; pause_reason: string; pause_reason_truncated: boolean}
-export interface DeliveryCheckpoint {sequence: number; job_revision: number; done: string; next: string; blocker: string; done_truncated: boolean; next_truncated: boolean; blocker_truncated: boolean; created_at: string}
-export interface DeliveryUpdate {sequence: number; job_revision: number; body: string; body_truncated: boolean; created_at: string}
+export interface DeliveryProgress {summary: string; next: string; blocker: string; summary_truncated: boolean; next_truncated: boolean; blocker_truncated: boolean}
 export interface DeliveryChecklist {revision: number; job_revision: number; total: number; done: number; created_at: string}
 export interface JobPublicSummary {job_id: string; job_revision: number; revision: number; title: string; body: string}
-export interface DeliveryJob extends JobSummary {summary?: JobPublicSummary;worker_name: string; brief_preview: string; brief_preview_truncated: boolean; updated_at: string; update: DeliveryUpdate|null; checklist: DeliveryChecklist|null; checkpoint: DeliveryCheckpoint|null}
+export interface DeliveryJob extends JobIdentity {summary?: JobPublicSummary;worker_name: string; brief_preview: string; brief_preview_truncated: boolean; updated_at: string; progress: DeliveryProgress; checklist: DeliveryChecklist|null}
 export interface DeliverySnapshot {workers: Page<DeliveryWorker>; jobs: Page<DeliveryJob>}
 export interface DeliveryOptions {worker_limit?: number; job_limit?: number; worker_cursor?: string; job_cursor?: string}
 export interface Checkpoint {id: string; project_id: string; job_id: string; job_revision: number; sequence: number; actor_id: string; worker_id: string; done: string; next: string; blocker: string; evidence: string[]; created_at: string}

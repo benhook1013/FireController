@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { sessionIdentity } from './browser-session';
 import { PageSkeleton } from './loading';
 import { Pager, ReadState, signalFor, usePaging, useWorkspace, type Session } from './workspace';
-import type { NoteOptions, NoteSummary } from './types';
+import type { NoteOptions, NoteSummary, Page } from './types';
 import './coordination.css';
 
 type NoteTarget = { workerId: string; jobId?: never } | { jobId: string; workerId?: never };
@@ -26,18 +26,20 @@ function allNotesPath(home: string, scope: NoteScope): string {
 export function ContextualNoteRows({ notes, home }: { notes: NoteSummary[]; home: string }) {
   return <ul className="contextual-note-list">{notes.map(note => <li key={note.id}><span className="contextual-note-kind">{note.kind === 'source' ? 'Source' : 'Reminder'}</span><p className="contextual-note-preview">{note.body_preview || 'No preview available.'}</p><Link to={`${home}/notes/${encodeURIComponent(note.id)}`}>Read note</Link></li>)}</ul>;
 }
-export function ContextualNotes(target: NoteTarget) {
+export function ContextualNotes(target: NoteTarget & { initialPage?: Page<NoteSummary> }) {
   const { key } = useWorkspace();
   const scope = contextualNoteScope(target);
   if (!scope) return <p className="notice" role="alert">Choose one worker or job to view its pending notes.</p>;
   // Target/connection changes remount pagination rather than reusing a cursor.
-  return <PendingNotes key={JSON.stringify([key, scope])} scope={scope} />;
+  return <PendingNotes key={JSON.stringify([key, scope])} scope={scope} initialPage={target.initialPage} />;
 }
-function PendingNotes({ scope }: { scope: NoteScope }) {
+function PendingNotes({ scope, initialPage }: { scope: NoteScope; initialPage?: Page<NoteSummary> }) {
   const { session, key, home } = useWorkspace();
   const paging = usePaging();
-  const query = useQuery(contextualNotesQuery(session, key, scope, paging.cursor));
-  const page = query.data;
-  if (!query.isPending && !query.error && page && page.items.length === 0 && !page.has_more && paging.number === 1) return <p className="contextual-notes-history"><Link to={allNotesPath(home, scope)}>Notes history</Link></p>;
-  return <section className="panel contextual-notes" aria-label="Pending notes"><div className="contextual-notes-heading"><h3>Pending notes</h3><Link to={allNotesPath(home, scope)}>View all notes and history</Link></div><ReadState error={query.error} loading={false} empty={false}>{query.isPending ? <PageSkeleton rows={1} label="Loading pending notes" /> : page?.items.length ? <ContextualNoteRows notes={page.items} home={home} /> : <p className="contextual-notes-empty">No pending notes on this page.</p>}</ReadState>{(page && (page.items.length > 0 || page.has_more || paging.number > 1)) && <Pager paging={paging} page={page} label="pending notes" busy={query.isFetching} />}</section>;
+  const query = useQuery({ ...contextualNotesQuery(session, key, scope, paging.cursor), enabled: !initialPage || paging.cursor !== '' });
+  const page = paging.cursor === '' && initialPage ? initialPage : query.data;
+  const pending = !page && query.isPending;
+  const error = paging.cursor === '' && initialPage ? null : query.error;
+  if (!pending && !error && page && page.items.length === 0 && !page.has_more && paging.number === 1) return <p className="contextual-notes-history"><Link to={allNotesPath(home, scope)}>Notes history</Link></p>;
+  return <section className="panel contextual-notes" aria-label="Pending notes"><div className="contextual-notes-heading"><h3>Pending notes</h3><Link to={allNotesPath(home, scope)}>View all notes and history</Link></div><ReadState error={error} loading={false} empty={false}>{pending ? <PageSkeleton rows={1} label="Loading pending notes" /> : page?.items.length ? <ContextualNoteRows notes={page.items} home={home} /> : <p className="contextual-notes-empty">No pending notes on this page.</p>}</ReadState>{(page && (page.items.length > 0 || page.has_more || paging.number > 1)) && <Pager paging={paging} page={page} label="pending notes" busy={query.isFetching} />}</section>;
 }

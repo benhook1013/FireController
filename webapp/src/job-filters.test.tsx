@@ -11,7 +11,7 @@ function markup(search: string) {
   const key = ['fc', 'connection_one', 'instance_one', 'project_one', 'inbox_actor'] as const;
   client.setQueryData([...key, 'workers', 'cached_workers_page'], { items: [{ id: 'worker_one', project_id: 'project_one', name: 'Selected worker' }], has_more: false });
   client.setQueryData([...key, 'workers', ''], { items: [], has_more: false });
-  const job = { id: 'job_done', title: 'Finished selected job', worker_id: 'worker_one', status: 'completed', revision: 2 };
+  const job = { id: 'job_done', title: 'Finished selected job', worker_id: 'worker_one', status: 'completed', revision: 2, progress_summary:'A **verified** result',progress_truncated:true,blocker:'Awaiting <input>',blocker_truncated:true };
   const filters = readJobFilters(new URLSearchParams(search));
   client.setQueryData([...key, 'jobs', filters.status, filters.workerID, ''], { items: filters.status === 'open' || filters.workerID && filters.workerID !== job.worker_id ? [] : [job], has_more: false });
   const session = { worker: { id: 'inbox_actor', name: 'Inbox actor' }, controller: new AbortController(), api: {} } as Session;
@@ -26,6 +26,7 @@ describe('explicit job filter navigation', () => {
     expect(html).toContain('<option value="" selected="">All statuses</option>');
     expect(html).toContain('<option value="worker_one" selected="">Selected worker</option>');
     expect(html).toContain('Finished selected job');
+    expect(html).toContain('A <strong>verified</strong> result');expect(html).toContain('Awaiting &lt;input&gt;');expect(html).toContain('Progress preview truncated');expect(html).toContain('Blocker preview truncated');
     expect(html).toContain('aria-label="Show jobs for all workers"');
     expect(html).not.toContain('Inbox actor');
   });

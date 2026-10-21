@@ -2,13 +2,13 @@
 
 ## Implemented boundary
 
-`fcmcp` exposes the tools listed below over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Checkpoint tools](job-checkpoints.md) append immutable progress and provide explicit latest/archive reads. The [quiet message wait](message-wait.md) owns a persistent incoming stream for one bounded call. Remote MCP and automatic chat wakeups remain unimplemented.
+`fcmcp` exposes the tools listed below over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Unified job state](job-state.md) supplies one guarded update and one default working-context read; progress history is explicit. The [quiet message wait](message-wait.md) owns a persistent incoming stream for one bounded call. Remote MCP and automatic chat wakeups remain unimplemented.
 
 [Worker pause](worker-pause.md) is explicit coordination state and does not stop agents or change jobs, focus, messages or review execution.
 
-[Job resume context](job-context.md) combines authoritative current state and selected pending coordination in one deliberate read; it never substitutes previews for full bodies or hides omitted pages.
+[Default job reads](job-state.md#default-reads) return the selected brief, current progress, remaining checklist and compact pending job notes. Worker inbox, pause and focus use their own tools.
 
-[Deferred notes](notes.md) own reminder/source scope, explicit consumption, compact previews and immutable revisions. Note operations perform no provider work and never expand a job read.
+[Deferred notes](notes.md) own reminder/source scope, explicit consumption, compact previews and immutable revisions. Note operations perform no provider work. Default job reads include only compact pending notes attached to that exact job; full note bodies remain explicit.
 
 Execution tool arguments and recovery are owned by [review execution](review-execution.md#bound-execution-tools).
 
@@ -36,16 +36,14 @@ Startup validates configuration without opening the credential or contacting the
 | `worker_pause_history` | Optional limit/cursor; one explicit newest-first pause-history page. |
 | `jobs_list` | Optional worker_id/status/limit/cursor; one compact job page. |
 | `jobs_assigned` | Optional status/limit/cursor; one compact page assigned to the bound worker. |
-| `job_context` | Required job_id, optional limit; full current brief/checkpoint/checklist plus bound-worker focus/pause and compact pending notes/messages, with explicit omissions and replay watermark. |
-| `job_read` | Required job_id; explicit full job detail and brief. |
+| `job_read` | Required job_id; complete current brief/progress, remaining checklist/counts and compact pending exact-job notes. |
 | `job_summary_read` | Required job_id; current optional shareable title/body and independent summary revision; remains private. |
 | `job_summary_set` | Required job_id, expected_job_revision, expected_revision, title, body and idempotency_key; guarded summary replacement or explicit clear. |
 | `job_history` | Required job_id and optional limit/cursor; explicit full-state history page. |
-| `job_checkpoint_latest` | Required job_id; explicit latest checkpoint and current job revision, including null when none exists. |
-| `job_checkpoint_history` | Required job_id and optional limit/cursor; explicit newest-first checkpoint archive. |
+| `job_progress_history` | Required job_id and optional limit/cursor; one explicit unified progress archive page. |
+| `job_update` | Required job_id, expected_revision and idempotency_key; selected title/brief/worker_id/status and partial progress fields; one atomic update and compact receipt. |
 | `job_primary_read` | No fields; bound worker’s optional primary job and independent focus revision. |
 | `job_primary_history` | Optional limit/cursor; one page of the bound worker’s focus history. |
-| `job_update_history` | Required job_id and optional limit/cursor; one newest-first narrative-update page. |
 | `job_checklist_read` | Required job_id; current ordered checklist, its independent checklist revision and current job revision. |
 | `job_checklist_history` | Required job_id and optional limit/cursor; one newest-first full checklist revision page. |
 | `map_entry_list` | Optional kind/archived/limit/cursor; one compact map page, no phases or descriptions. |
@@ -98,11 +96,8 @@ Startup validates configuration without opening the credential or contacting the
 | `review_checkpoint_recover` | Required idempotency_key/publication_id/expected_revision; optional retry_unposted (default false) and wait_seconds. Observation-only recovery by default; uncertain posts are never blindly repeated. |
 | `review_source_readiness` | Required pull_number; compact retained observations evaluated with current local policy, without provider work or merge authorization. |
 | `jobs_create` | Required idempotency_key/title; optional brief/worker_id/status; compact job receipt. |
-| `job_edit` | Required idempotency_key/job_id/expected_revision plus selected title/brief/worker_id/status fields; compact receipt. |
-| `job_checkpoint_append` | Required idempotency_key/job_id/expected_job_revision/done/next; optional blocker/evidence; compact checkpoint receipt. |
 | `worker_pause_replace` | Required idempotency_key/expected_revision/paused/reason; guarded bound-worker pause, with empty reason required for resume. |
 | `job_primary_replace` | Required idempotency_key/expected_revision/job_id; bound worker’s guarded focus replacement, empty job ID clears. |
-| `job_update_append` | Required idempotency_key/job_id/expected_job_revision/body; optional evidence; immutable narrative update and compact receipt. |
 | `job_checklist_replace` | Required idempotency_key/job_id/expected_job_revision/expected_revision/items; guarded ordered replacement and compact changed/unchanged receipt. |
 | `note_create` | Required idempotency_key/body; optional worker_id/job_id/phase/kind; compact creation receipt. |
 | `note_update` | Required idempotency_key/note_id/expected_revision plus selected scope/kind/body/status/status_reason fields; compact changed/unchanged receipt. |

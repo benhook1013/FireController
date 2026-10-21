@@ -163,14 +163,11 @@ func requestOperation(method string, segments []string) string {
 		return "service mutation"
 	}
 	resource := segments[4:]
-	if len(resource) == 3 && resource[0] == "jobs" && resource[2] == "checkpoints" && method == http.MethodPost {
-		return "checkpoint append"
-	}
 	if len(resource) == 1 && resource[0] == "jobs" {
 		return "job creation"
 	}
 	if len(resource) == 2 && resource[0] == "jobs" && method == http.MethodPatch {
-		return "job edit"
+		return "job update"
 	}
 	if len(resource) == 1 && resource[0] == "messages" {
 		return "message send"

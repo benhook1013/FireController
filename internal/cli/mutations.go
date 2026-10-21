@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -17,10 +16,8 @@ type mutationInvocation struct {
 	key                      string
 	id                       string
 	create                   client.CreateJobRequest
-	edit                     client.EditJobRequest
 	send                     client.SendMessageRequest
-	checkpoint               client.AppendCheckpointRequest
-	update                   client.AppendUpdateRequest
+	patch                    client.UpdateJobRequest
 	checklist                client.ReplaceChecklistRequest
 	primary                  client.ReplacePrimaryJobRequest
 	pause                    client.ReplaceWorkerPauseRequest
@@ -49,7 +46,7 @@ func isMutation(command, operation string) bool {
 		return true
 	}
 	switch command + " " + operation {
-	case "reviews publish", "reviews publication-recover", "jobs create", "jobs edit", "jobs checkpoint", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews finalize", "reviews request", "reviews source-refresh", "reviews route-create", "reviews route-decide", "reviews route-fix":
+	case "reviews publish", "reviews publication-recover", "jobs create", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews finalize", "reviews request", "reviews source-refresh", "reviews route-create", "reviews route-decide", "reviews route-fix":
 		return true
 	}
 	return false
@@ -74,18 +71,12 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 	if command == "reviews" {
 		return parseReviewControl(operation, args)
 	}
-	if command == "jobs" && operation == "checkpoint" {
-		return parseCheckpoint(args)
-	}
 	call := &mutationInvocation{operation: command + " " + operation}
 	allowed := map[string]bool{"--key": true}
 	switch call.operation {
-	case "jobs create", "jobs edit":
+	case "jobs create":
 		for _, flag := range []string{"--title", "--brief", "--worker", "--status"} {
 			allowed[flag] = true
-		}
-		if operation == "edit" {
-			allowed["--expect-revision"] = true
 		}
 	case "inbox send":
 		for _, flag := range []string{"--to", "--body", "--reply-to"} {
@@ -114,7 +105,7 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 			}
 			value = args[i]
 		}
-		if !utf8.ValidString(value) || value == "" && flag != "--brief" && !(call.operation == "jobs edit" && flag == "--worker") {
+		if !utf8.ValidString(value) || value == "" && flag != "--brief" {
 			return nil, false
 		}
 		values[flag] = value
@@ -123,7 +114,7 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 	if !validMutationKey(call.key) {
 		return nil, false
 	}
-	wantsID := call.operation == "jobs edit" || call.operation == "inbox seen" || call.operation == "inbox ack"
+	wantsID := call.operation == "inbox seen" || call.operation == "inbox ack"
 	if wantsID {
 		if len(positions) != 1 || !validResourceID(positions[0]) {
 			return nil, false
@@ -150,23 +141,6 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 			return nil, false
 		}
 		call.create = client.CreateJobRequest{Title: values["--title"], Brief: values["--brief"], WorkerID: values["--worker"], Status: values["--status"]}
-	case "jobs edit":
-		revision, err := strconv.ParseInt(values["--expect-revision"], 10, 64)
-		if err != nil || revision < 1 || revision == (1<<63)-1 {
-			return nil, false
-		}
-		call.edit.ExpectedRevision = revision
-		changed := false
-		for flag, destination := range map[string]**string{"--title": &call.edit.Title, "--brief": &call.edit.Brief, "--worker": &call.edit.WorkerID, "--status": &call.edit.Status} {
-			if value, present := values[flag]; present {
-				copy := value
-				*destination = &copy
-				changed = true
-			}
-		}
-		if !changed {
-			return nil, false
-		}
 	case "inbox send":
 		if !validResourceID(values["--to"]) || strings.TrimSpace(values["--body"]) == "" || len(values["--body"]) > 16<<10 {
 			return nil, false
@@ -193,12 +167,8 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 		return service.ReplacePrimaryJob(ctx, call.key, call.primary)
 	case "jobs create":
 		return service.CreateJob(ctx, call.key, call.create)
-	case "jobs edit":
-		return service.EditJob(ctx, call.key, call.id, call.edit)
-	case "jobs checkpoint":
-		return service.AppendCheckpoint(ctx, call.key, call.id, call.checkpoint)
 	case "jobs update":
-		return service.AppendJobUpdate(ctx, call.key, call.id, call.update)
+		return service.UpdateJob(ctx, call.key, call.id, call.patch)
 	case "jobs checklist-set":
 		return service.ReplaceJobChecklist(ctx, call.key, call.id, call.checklist)
 	case "inbox send":

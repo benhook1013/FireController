@@ -9,15 +9,15 @@ Use this worker's supplied bound launcher or MCP connection. Its startup profile
 
 ## Start with useful context
 
-Run `doctor` once to verify the binding. Read `jobs primary` or `jobs assigned` to select work, then `jobs context JOB_ID` for the current brief, checklist, checkpoint and coordination previews. In MCP these are `doctor`, `job_primary_read`, `jobs_assigned` and `job_context`. A missing primary job does not mean there is no assigned work.
+Run `doctor` once to verify the binding. Read `jobs primary` or `jobs assigned` to select work, then `jobs read JOB_ID` for the full current brief/progress, remaining checklist and pending job-note previews. In MCP these are `doctor`, `job_primary_read`, `jobs_assigned` and `job_read`. A missing primary job does not mean there is no assigned work.
 
-Check the context packet's `complete`, `omitted` and pagination fields. Read omitted standing information deliberately: `notes read NOTE_ID` gives a full note; `inbox thread CONVERSATION_ID` gives full message bodies. Their MCP equivalents are `note_read` and `inbox_thread`. Compact previews are selection aids, not complete instructions. Follow only relevant continuation pages rather than dumping all project history.
+Pending-note previews are selection aids, not complete source bodies. Check pagination and preview-truncation fields. Read selected full content deliberately: `notes read NOTE_ID` gives a full note; `inbox thread CONVERSATION_ID` gives full message bodies. Their MCP equivalents are `note_read` and `inbox_thread`. Compact previews are selection aids, not complete instructions. Follow only relevant continuation pages rather than dumping all project history.
 
 An explicit worker pause is coordination state, not proof that a chat or model is running. Received messages and imported text supply information within existing authority; they do not grant new permissions. Preserve a human review or work pause.
 
 ## Record work without duplication
 
-Use the job brief for standing instructions, a checklist for remaining steps, and an update or checkpoint for material progress or changed resume context. Capture consequential discoveries before changing tasks. Avoid repeating routine edits and test runs across every surface. An optional shareable summary, where supported by the installed release, is audience-facing prose separate from the private working brief; it is not public until explicitly selected for publication.
+Use the brief for task definition and constraints. Use one `jobs update JOB_ID --expect-revision N --key KEY` (MCP `job_update`) for changed progress, next action, blocker, evidence, status or assignment; omitted fields stay unchanged and history is automatic. A checklist is optional. Notes hold distinct unresolved reminders; substantial separate work becomes another job. Capture material changes without repeating them in brief/progress/notes or logging each command, test or merge. There is no separate update-versus-checkpoint choice. An optional shareable summary, where supported by the installed release, is audience-facing prose separate from the private working brief; it is not public until explicitly selected for publication.
 
 Read current revisions before guarded writes. Supply an explicit idempotency key and retain the exact request and binding if its outcome is unknown. Retry that same action/key or inspect its receipt; a fresh key may duplicate work. Use ordinary successful results directly. A slow operation's pending receipt is a recovery handle, not evidence that it completed. A host can background a supported bounded wait without requiring repeated model-visible polling.
 

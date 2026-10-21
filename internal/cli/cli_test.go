@@ -280,7 +280,7 @@ func TestLocalHelpUsesBoundSelectorsWithoutConfigurationOrNetwork(t *testing.T) 
 		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Usage == "" || result.Binding == "" || len(result.CommandGroups) == 0 || !strings.Contains(result.Documentation.Basis, "same release") || len(result.Documentation.Paths) == 0 {
 			t.Fatalf("incomplete help: %s err=%v", &stdout, err)
 		}
-		for _, required := range []string{"doctor", "context", "jobs context JOB_ID", "notes read NOTE_ID", "inbox thread CONVERSATION_ID", "inbox send --to WORKER_ID --body TEXT --key KEY"} {
+		for _, required := range []string{"doctor", "context", "jobs read JOB_ID", "notes read NOTE_ID", "inbox thread CONVERSATION_ID", "inbox send --to WORKER_ID --body TEXT --key KEY"} {
 			found := false
 			for _, group := range result.CommandGroups {
 				for _, command := range group.Commands {

@@ -14,7 +14,9 @@ func parseJobProgress(operation string, args []string) (*mutationInvocation, boo
 	call := &mutationInvocation{operation: "jobs " + operation}
 	allowed := map[string]bool{"--key": true, "--expect-revision": true}
 	if operation == "update" {
-		allowed["--body"], allowed["--evidence"] = true, true
+		for _, flag := range []string{"--title", "--brief", "--worker", "--status", "--progress", "--next", "--blocker", "--evidence"} {
+			allowed[flag] = true
+		}
 	} else {
 		allowed["--expect-checklist-revision"], allowed["--items"], allowed["--items-file"] = true, true, true
 	}
@@ -60,8 +62,36 @@ func parseJobProgress(operation string, args []string) (*mutationInvocation, boo
 	}
 	call.id, call.key = positions[0], values["--key"]
 	if operation == "update" {
-		call.update = client.AppendUpdateRequest{ExpectedJobRevision: revision, Body: values["--body"], Evidence: evidence}
-		return call, client.ValidateJobUpdateRequest(call.update) == nil
+		call.patch = client.UpdateJobRequest{ExpectedRevision: revision}
+		for flag, dst := range map[string]**string{"--title": &call.patch.Title, "--brief": &call.patch.Brief, "--worker": &call.patch.WorkerID, "--status": &call.patch.Status} {
+			if v, ok := values[flag]; ok {
+				value := v
+				*dst = &value
+			}
+		}
+		progress := &client.ProgressPatch{}
+		for flag, dst := range map[string]**string{"--progress": &progress.Summary, "--next": &progress.Next, "--blocker": &progress.Blocker} {
+			if v, ok := values[flag]; ok {
+				value := v
+				*dst = &value
+			}
+		}
+		if _, ok := values["--evidence"]; ok {
+			if len(evidence) == 1 && evidence[0] == "" {
+				evidence = []string{}
+			} else {
+				for _, ref := range evidence {
+					if ref == "" {
+						return nil, false
+					}
+				}
+			}
+			progress.Evidence = &evidence
+		}
+		if progress.Summary != nil || progress.Next != nil || progress.Blocker != nil || progress.Evidence != nil {
+			call.patch.Progress = progress
+		}
+		return call, client.ValidateJobPatch(call.patch) == nil
 	}
 	checklistRevision, err := strconv.ParseInt(values["--expect-checklist-revision"], 10, 64)
 	if err != nil || checklistRevision < 0 || checklistRevision == 1<<63-1 {

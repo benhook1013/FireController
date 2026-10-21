@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { DeliveryBoardArchive } from './delivery-board';
 import type { DeliveryJob, DeliverySnapshot, DeliveryWorker } from './types';
 const worker = (id: string): DeliveryWorker => ({ id, project_id: 'project_one', name: id, primary_job_id: '', paused: false, pause_reason: '', pause_reason_truncated: false });
-const job = (id: string): DeliveryJob => ({ id, title: id, worker_id: 'worker_one', worker_name: 'Builder', revision: 1, status: 'active', brief_preview: '', brief_preview_truncated: false, updated_at: '2026-10-19T08:00:00Z', update: null, checklist: null, checkpoint: null });
+const job = (id: string): DeliveryJob => ({ id, title: id, worker_id: 'worker_one', worker_name: 'Builder', revision: 1, status: 'active', brief_preview: '', brief_preview_truncated: false, updated_at: '2026-10-19T08:00:00Z', progress: {summary:'',next:'',blocker:'',summary_truncated:false,next_truncated:false,blocker_truncated:false}, checklist: null });
 const first: DeliverySnapshot = { workers: { items: [worker('worker_one')], has_more: true, cursor: 'workers_next' }, jobs: { items: [job('job_one')], has_more: true, cursor: 'jobs_next' } };
 const next: DeliverySnapshot = { workers: { items: [worker('worker_two')], has_more: false }, jobs: { items: [job('job_two')], has_more: false } };
 

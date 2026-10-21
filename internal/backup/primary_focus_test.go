@@ -79,7 +79,7 @@ func TestPrimaryFocusOlderJobSchemaBundlesRemainReadOnly(t *testing.T) {
 	for _, version := range []int{1, 2, 3} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			f := newRestoreFixture(t)
-			statements := `DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; DROP TABLE worker_primary_job_history;DROP TABLE worker_primary_jobs;`
+			statements := `DROP TABLE job_progress_history; DROP TABLE job_progress; DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; DROP TABLE worker_primary_job_history;DROP TABLE worker_primary_jobs;`
 			if version < 3 {
 				statements += `DROP TABLE job_updates;DROP TABLE job_checklists;DROP TABLE job_checklist_history;`
 			}

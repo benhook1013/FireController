@@ -284,20 +284,18 @@ func TestPackagedCoordinationImportSmoke(t *testing.T) {
 	if job.Brief != batch.Jobs[0].Brief || job.Title != batch.Jobs[0].Title || job.WorkerID != worker || job.Revision != 1 || job.CreatedAt != "2024-02-01T01:02:03.123456789Z" || job.UpdatedAt != "2024-02-07T04:05:06+01:00" {
 		t.Fatal("native job lost original facts or fabricated source revisions")
 	}
-	var jobContext client.JobContextResult
-	decode(t, call("jobs", "context", jobID), &jobContext)
-	if !jobContext.Complete || jobContext.Checkpoint == nil || jobContext.Checkpoint.Done != "Second source checkpoint" || jobContext.Checkpoint.ActorID != "imported-history" || jobContext.Checkpoint.WorkerID != "" || jobContext.Checkpoint.CreatedAt != "2024-02-06T05:06:07.8Z" {
-		t.Fatal("native context lost retained checkpoint or invented author")
+	if job.Progress.Summary != "Second source checkpoint" {
+		t.Fatal("default job read lost imported current progress")
 	}
-	var checkpoints client.Page[client.Checkpoint]
-	decode(t, call("jobs", "checkpoints", jobID), &checkpoints)
-	if len(checkpoints.Items) != 2 || checkpoints.HasMore || checkpoints.Items[0].Done != "Second source checkpoint" || checkpoints.Items[1].Done != "First source checkpoint" || checkpoints.Items[1].CreatedAt != "2024-02-05T05:06:07Z" || len(checkpoints.Items[1].Evidence) != 1 || checkpoints.Items[1].Evidence[0] != `{"pr":7,"proof":["one","two"]}` {
-		t.Fatal("archive lost original sequence/text/times/pointer JSON")
+	var progress client.Page[client.ProgressHistoryEntry]
+	decode(t, call("jobs", "progress-history", jobID), &progress)
+	if len(progress.Items) != 2 || progress.HasMore || progress.Items[0].Progress.Summary != "Second source checkpoint" || progress.Items[0].ActorID != "imported-history" || progress.Items[0].CreatedAt != "2024-02-06T05:06:07.8Z" || progress.Items[1].Progress.Summary != "First source checkpoint" || progress.Items[1].CreatedAt != "2024-02-05T05:06:07Z" || len(progress.Items[1].Progress.Evidence) != 1 || progress.Items[1].Progress.Evidence[0] != `{"pr":7,"proof":["one","two"]}` {
+		t.Fatal("unified import history lost retained attribution/text/time/evidence")
 	}
-	call("jobs", "edit", jobID, "--expect-revision", "1", "--brief", "Manual native edit survives retry", "--key", "manual-edit")
+	call("jobs", "update", jobID, "--expect-revision", "1", "--brief", "Manual native edit survives retry", "--key", "manual-edit")
 	daemon.stop(t)
 	retained := readUpgradeState(t, ctx, data)
-	changed := map[string]bool{"jobs": true, "job_history": true, "job_checkpoints": true, "coordination_import_state": true, "coordination_import_records": true, "coordination_import_batches": true, "events": true, "receipts": true, "sqlite_sequence": true}
+	changed := map[string]bool{"jobs": true, "job_history": true, "job_checkpoints": true, "job_progress": true, "job_progress_history": true, "coordination_import_state": true, "coordination_import_records": true, "coordination_import_batches": true, "events": true, "receipts": true, "sqlite_sequence": true}
 	if initial.version != retained.version || !reflect.DeepEqual(initial.metadata, retained.metadata) || len(initial.tables) != len(retained.tables) {
 		t.Fatal("import changed schema/metadata")
 	}

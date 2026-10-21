@@ -76,6 +76,22 @@ describe('live private project views', () => {
       expect(f.client.getMutationCache().getAll()).toHaveLength(0);
     } finally { f.close(); }
   });
+  it('refreshes unified current progress and invalidates only its explicit history on job changes', async () => {
+    const f=fixture(), job=f.add(['job','job_one']), history=f.add(['job-progress-history','job_one',''],false), openHistory=f.add(['job-progress-history','job_one','open']), other=f.add(['job','job_two']), inbox=f.add(['inbox','']), old=f.add(['job-progress-history','job_one',''],false,['fc','old','instance','project','worker']);
+    try {
+      await refreshProjectMetadata(f.client,key,page([{event_type:'job.updated',resource_id:'job_one'}]),new AbortController().signal);
+      expect(job.reads()).toBe(1); expect(openHistory.reads()).toBe(1); expect(history.reads()).toBe(0); expect(history.state()?.isInvalidated).toBe(true);
+      for(const query of [other,inbox,old]) { expect(query.reads()).toBe(0); expect(query.state()?.isInvalidated).toBe(false); }
+    } finally {f.close();}
+  });
+  it('refreshes default attached notes through active jobs without opening histories or worker inboxes', async () => {
+    const f=fixture(), job=f.add(['job','job_one']), history=f.add(['job-progress-history','job_one',''],false), inbox=f.add(['inbox','']), other=f.add(['job','job_one'],true,['fc','session','instance','foreign','worker']);
+    try {
+      await refreshProjectMetadata(f.client,key,page([{event_type:'note.updated',resource_id:'note_one'}]),new AbortController().signal);
+      expect(job.reads()).toBe(1);
+      for(const query of [history,inbox,other]) {expect(query.reads()).toBe(0);expect(query.state()?.isInvalidated).toBe(false);}
+    } finally {f.close();}
+  });
   it('coalesces job changes into affected active reads without fetching unrelated context or archives', async () => {
     const f = fixture();
     const jobs = f.add(['jobs', '', false, '']);
@@ -105,11 +121,11 @@ describe('live private project views', () => {
     } finally { f.close(); }
   });
 
-  it.each(['job.update_appended','job.checklist_replaced'] as const)('refreshes Delivery on %s without detail or archive fanout',async event_type=>{
+  it.each(['job.update_appended','job.checklist_replaced'] as const)('refreshes Delivery and any identified current job on %s without archive fanout',async event_type=>{
     const f=fixture(), delivery=f.add(['delivery','','']), job=f.add(['job','job_one']), archive=f.add(['checkpoints','job_one',''],false);
     try {
-      await refreshProjectMetadata(f.client,key,page([{event_type,resource_id:'record_one'}]),new AbortController().signal);
-      expect(delivery.reads()).toBe(1); expect(job.reads()).toBe(0); expect(archive.reads()).toBe(0); expect(archive.state()?.isInvalidated).toBe(false);
+      await refreshProjectMetadata(f.client,key,page([{event_type,resource_id:event_type === 'job.checklist_replaced' ? 'job_one' : 'record_one'}]),new AbortController().signal);
+      expect(delivery.reads()).toBe(1); expect(job.reads()).toBe(event_type === 'job.checklist_replaced' ? 1 : 0); expect(archive.reads()).toBe(0); expect(archive.state()?.isInvalidated).toBe(false);
     } finally {f.close();}
   });
 

@@ -149,7 +149,7 @@ func TestPresentationClientActualAPIHistoryReplayRestartAndLostReceipt(t *testin
 	if e != nil {
 		t.Fatal(e)
 	}
-	ordinary, e := c.JobContext(t.Context(), job.ID, 1)
+	ordinary, e := c.Job(t.Context(), job.ID)
 	raw, _ := json.Marshal(ordinary)
 	if e != nil || strings.Contains(string(raw), `"theme"`) || strings.Contains(string(raw), `"brand_name"`) {
 		t.Fatal("appearance leaked into ordinary context", e)

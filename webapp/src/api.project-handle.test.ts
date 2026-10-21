@@ -73,7 +73,7 @@ describe('attached job summary reads',()=>{
 describe('delivery summary admission',()=>{
   it('keeps optional summaries bound to their exact job and revision without requiring fixture changes',async()=>{
     const api=await connected(), at='2026-10-20T12:00:00Z';
-    const job={id:'job_one',title:'Private task',worker_id:'',worker_name:'',status:'active',revision:4,brief_preview:'Standing private instructions',brief_preview_truncated:false,updated_at:at,update:null,checklist:null,checkpoint:null};
+    const job={id:'job_one',title:'Private task',worker_id:'',worker_name:'',status:'active',revision:4,brief_preview:'Standing private instructions',brief_preview_truncated:false,updated_at:at,progress:{summary:'',next:'',blocker:'',summary_truncated:false,next_truncated:false,blocker_truncated:false},checklist:null};
     const board=(item:unknown)=>({workers:{items:[],has_more:false},jobs:{items:[item],has_more:false}});
     for(const item of [job,{...job,summary}]){vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json(board(item))));await expect(api.delivery()).resolves.toEqual(board(item));}
     for(const item of [null,{...summary,job_id:'other'},{...summary,job_revision:5},{...summary,body:'x'.repeat(2001)}]){

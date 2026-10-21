@@ -123,29 +123,36 @@ func TestPackagedUpgradeSmoke(t *testing.T) {
 	}
 	job := prefix + "/jobs/" + created.ID
 	local("PATCH", job, worker, "upgrade-edit", []byte(`{"expected_revision":1,"brief":"Current <literal> brief"}`), 200)
-	local("POST", job+"/checkpoints", worker, "upgrade-checkpoint", []byte(`{"expected_job_revision":2,"done":"Retained checkpoint","next":"Continue explicitly","blocker":"","evidence":["synthetic-reference"]}`), 201)
+	local("PATCH", job, worker, "upgrade-progress", []byte(`{"expected_revision":2,"progress":{"summary":"Retained checkpoint","next":"Continue explicitly","blocker":"","evidence":["synthetic-reference"]}}`), 200)
+	// Build the supported older representation from the exact accepted progress
+	// facts in this stopped fixture. This is an explicit historical fixture
+	// conversion, not a claim that an older executable produced schema eight.
+	if _, err = store.DB().ExecContext(ctx, `INSERT INTO job_checkpoints(id,project_id,job_id,job_revision,actor_id,worker_id,done,next,blocker,evidence_json,created_at) SELECT ?,project_id,job_id,job_revision,actor_id,worker_id,summary,next,blocker,evidence_json,created_at FROM job_progress_history WHERE job_id=? ORDER BY sequence DESC LIMIT 1`, core.NewID("checkpoint"), created.ID); err != nil {
+		t.Fatal("historical progress fixture conversion failed", err)
+	}
 	local("POST", prefix+"/messages", worker, "upgrade-message", []byte(`{"recipient_worker_id":"`+recipient+`","body":"Retained <literal> message"}`), 201)
 	reads := []struct{ path, actor string }{{job, worker}, {job + "/history?limit=20", worker}, {job + "/checkpoints?limit=20", worker}, {prefix + "/inbox/" + recipient + "?limit=20", recipient}}
 	expected := make([][]byte, len(reads))
 	for i, r := range reads {
 		expected[i] = local("GET", r.path, r.actor, "", nil, 200)
 	}
-	// No business rows/receipts are fabricated. Only later add-only empty tables
-	// are removed, matching the existing public jobs4 migration fixture pattern.
+	// Retain the exact source-form progress archive and accepted keyed actions.
+	// Remove the schema-eight projection plus later empty coordination tables
+	// to exercise the supported jobs-four upgrade boundary.
 	for _, table := range []string{"job_summary_history", "job_summaries", "note_revisions", "notes", "worker_pause_history", "worker_pause_state"} {
 		var rows int
 		if err := store.DB().QueryRowContext(ctx, `SELECT count(*) FROM "`+table+`"`).Scan(&rows); err != nil || rows != 0 {
 			t.Fatalf("jobs4 fixture reconstruction requires empty %s", table)
 		}
 	}
-	if _, err = store.DB().ExecContext(ctx, `DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; UPDATE metadata SET value='4' WHERE key='schema:jobs'`); err != nil {
+	if _, err = store.DB().ExecContext(ctx, `DROP TABLE job_progress_history;DROP TABLE job_progress;DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; UPDATE metadata SET value='4' WHERE key='schema:jobs'`); err != nil {
 		t.Fatal("jobs4 fixture reconstruction failed")
 	}
 	if err = store.Close(); err != nil {
 		t.Fatal("stopped fixture did not close")
 	}
 	before := readUpgradeState(t, ctx, source)
-	if before.version != 2 || before.metadata["schema:jobs"] != "4" || before.counts["jobs"] != 1 || before.counts["job_history"] != 2 || before.counts["job_checkpoints"] != 1 || before.counts["inbox_messages"] != 1 || before.counts["receipts"] < 8 {
+	if before.version != 2 || before.metadata["schema:jobs"] != "4" || before.counts["jobs"] != 1 || before.counts["job_history"] != 3 || before.counts["job_checkpoints"] != 1 || before.counts["inbox_messages"] != 1 || before.counts["receipts"] < 8 {
 		t.Fatal("upgrade fixture lacks truthful retained state")
 	}
 	for _, table := range []string{"review_operations", "review_execution_attempts", "review_execution_reservations", "review_source_refreshes", "review_checkpoint_publications"} {
@@ -384,11 +391,11 @@ func readUpgradeState(t *testing.T, ctx context.Context, data string) upgradeSta
 func assertJobsFourUpgrade(t *testing.T, before, after upgradeState) {
 	t.Helper()
 	expected := maps.Clone(before.metadata)
-	expected["schema:jobs"] = "7"
+	expected["schema:jobs"] = "8"
 	if before.version != 2 || after.version != 2 || !reflect.DeepEqual(expected, after.metadata) {
 		t.Fatal("upgrade changed undeclared metadata/base")
 	}
-	added := []string{"worker_pause_state", "worker_pause_history", "notes", "note_revisions", "job_summaries", "job_summary_history"}
+	added := []string{"worker_pause_state", "worker_pause_history", "notes", "note_revisions", "job_summaries", "job_summary_history", "job_progress", "job_progress_history"}
 	if len(after.tables) != len(before.tables)+len(added) {
 		t.Fatal("upgrade table inventory differs")
 	}
@@ -396,11 +403,21 @@ func assertJobsFourUpgrade(t *testing.T, before, after upgradeState) {
 		if _, old := before.tables[name]; old {
 			t.Fatal("jobs4 fixture contains later tables")
 		}
-		if _, ok := after.tables[name]; !ok || after.counts[name] != 0 {
-			t.Fatal("upgrade invented coordination records")
+		want := 0
+		if name == "job_progress" || name == "job_progress_history" {
+			want = 1
+		}
+		if _, ok := after.tables[name]; !ok || after.counts[name] != want {
+			t.Fatal("upgrade lost converted progress or invented coordination records", name)
 		}
 	}
 	for name, hash := range before.tables {
+		if name == "sqlite_sequence" {
+			if after.counts[name] != before.counts[name]+1 {
+				t.Fatal("progress migration sequence inventory changed unexpectedly")
+			}
+			continue
+		}
 		if after.counts[name] != before.counts[name] || name != "metadata" && after.tables[name] != hash {
 			t.Fatal("upgrade changed retained table", name)
 		}

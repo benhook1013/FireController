@@ -189,8 +189,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_snapshot": true, "inbox_events": true, "inbox_thread": true, "jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
-			expected["job_context"] = true
+			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_snapshot": true, "inbox_events": true, "inbox_thread": true, "jobs_create": true, "job_update": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
 			expected["wait_for_messages"] = true
 			expected["presentation_read"] = true
 			for _, name := range []string{"map_entry_create", "map_entry_replace", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history"} {
@@ -200,8 +199,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			expected["worker_pause_read"], expected["worker_pause_replace"], expected["worker_pause_history"] = true, true, true
 			expected["job_primary_read"], expected["job_primary_replace"], expected["job_primary_history"] = true, true, true
 			expected["job_summary_read"], expected["job_summary_set"] = true, true
-			expected["job_update_append"], expected["job_update_history"], expected["job_checklist_read"], expected["job_checklist_replace"], expected["job_checklist_history"] = true, true, true, true, true
-			expected["job_checkpoint_append"], expected["job_checkpoint_latest"], expected["job_checkpoint_history"] = true, true, true
+			expected["job_update"], expected["job_progress_history"], expected["job_checklist_read"], expected["job_checklist_replace"], expected["job_checklist_history"] = true, true, true, true, true
 			expected["review_queue"], expected["review_pull"], expected["review_runs"], expected["review_run"], expected["review_attempts"] = true, true, true, true, true
 			expected["review_evidence_read"], expected["review_adjudication_read"], expected["review_finding_decide"], expected["review_finding_fix"], expected["review_source_finalize"] = true, true, true, true, true
 			expected["review_execution_read"], expected["review_operation_read"], expected["review_request"] = true, true, true
@@ -215,15 +213,15 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			if len(first.Tools) != len(expected) {
 				t.Fatalf("first discovery page has %d tools, expected complete inventory of %d", len(first.Tools), len(expected))
 			}
-			writes := map[string]bool{"jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
+			writes := map[string]bool{"jobs_create": true, "job_update": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
 			writes["job_primary_replace"] = true
 			writes["review_rounds_configure"], writes["review_start"] = true, true
 			writes["map_entry_create"], writes["map_entry_replace"], writes["job_workstream_replace"] = true, true, true
 			writes["worker_pause_replace"] = true
 			writes["note_create"], writes["note_update"] = true, true
 			writes["job_summary_set"] = true
-			writes["job_update_append"], writes["job_checklist_replace"] = true, true
-			writes["job_checkpoint_append"], writes["review_request"], writes["review_source_refresh"] = true, true, true
+			writes["job_update"], writes["job_checklist_replace"] = true, true
+			writes["review_request"], writes["review_source_refresh"] = true, true
 			writes["review_finding_decide"], writes["review_finding_fix"], writes["review_source_finalize"] = true, true, true
 			writes["review_finding_route"], writes["review_route_decide"], writes["review_route_fix"] = true, true, true
 			writes["review_checkpoint_publish"], writes["review_checkpoint_recover"] = true, true
@@ -233,7 +231,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 				}
 				delete(expected, tool.Name)
 				a := tool.Annotations
-				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "review_rounds_configure" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_edit" || tool.Name == "job_summary_set" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
+				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "review_rounds_configure" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_update" || tool.Name == "job_summary_set" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
 					t.Fatal("untruthful operation annotation")
 				}
 				data, _ := json.Marshal(tool.InputSchema)
@@ -510,7 +508,7 @@ func TestOpenJobFilterDiscoveryAndMutationRefusal(t *testing.T) {
 	}
 	checked := 0
 	for _, tool := range tools.Tools {
-		if tool.Name != "jobs_list" && tool.Name != "jobs_assigned" && tool.Name != "jobs_create" && tool.Name != "job_edit" {
+		if tool.Name != "jobs_list" && tool.Name != "jobs_assigned" && tool.Name != "jobs_create" && tool.Name != "job_update" {
 			continue
 		}
 		data, err := json.Marshal(tool.InputSchema)
@@ -546,7 +544,7 @@ func TestOpenJobFilterDiscoveryAndMutationRefusal(t *testing.T) {
 		t.Fatal("missing job schema")
 	}
 	errorResult(t, call(t, session, "jobs_create", map[string]any{"idempotency_key": "open-create", "title": "Job", "status": "open"}), "invalid_arguments")
-	errorResult(t, call(t, session, "job_edit", map[string]any{"idempotency_key": "open-edit", "job_id": "job-one", "expected_revision": 1, "status": "open"}), "invalid_arguments")
+	errorResult(t, call(t, session, "job_update", map[string]any{"idempotency_key": "open-edit", "job_id": "job-one", "expected_revision": 1, "status": "open"}), "invalid_arguments")
 	if requests.Load() != 0 {
 		t.Fatal("invalid mutation reached service")
 	}

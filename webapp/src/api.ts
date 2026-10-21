@@ -2,7 +2,7 @@ import { presenceWorkers, validWorkerPresence, type WorkerPresence } from './wor
 import type { WorkerPrimary, WorkerPrimaryHistoryEntry, WorkerPause, WorkerPauseHistoryEntry, NoteOptions, NoteSummary, Note, NoteHistorySummary, NoteRevision } from './types';
 import type {
   Checkpoint, ConversationPage, DeliverySnapshot, DeliveryOptions, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
-  JobSummary, JobPublicSummary, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
+  JobSummary, JobPublicSummary, JobProgress, JobProgressEntry, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
   Project, WatchCallbacks, Worker, ProjectMapEntry, ProjectMapSummary, ProjectMapOptions, ProjectMapHistorySummary, ProjectMapRevision, JobWorkstream, JobWorkstreamHistoryEntry,
   ReviewAttemptSummary, ReviewFinding, ReviewPull, ReviewPullSummary, ReviewQueue, ReviewRunDetail,
   ReviewRunOptions, ReviewRuns, ReviewRunSummary, ReviewPolicyAssessment, ReviewAttemptOptions, ReviewAttempts, ReviewAttemptItem,
@@ -172,7 +172,7 @@ function validWorker(value: unknown, projectId: string): value is Worker {
   return record(value) && keys(value, ['id', 'project_id', 'name']) && id(value.id) && value.project_id === projectId && displayName(value.name);
 }
 function validSummary(value: unknown): value is JobSummary {
-  return record(value) && keys(value, ['id', 'title', 'worker_id', 'status', 'revision']) && id(value.id) && contentText(value.title, 240) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0;
+  return record(value) && keys(value, ['id', 'title', 'worker_id', 'status', 'revision', 'progress_summary', 'blocker', 'progress_truncated', 'blocker_truncated']) && validProgressPreview(value) && id(value.id) && contentText(value.title, 240) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0;
 }
 function validDelivery(value: unknown, project: string, options: DeliveryOptions): value is DeliverySnapshot {
   if (!record(value) || !keys(value, ['workers', 'jobs']) || !coordinationPage(value.workers, options.worker_limit ?? 20) || !coordinationPage(value.jobs, options.job_limit ?? 50)) return false;
@@ -184,24 +184,18 @@ function validDelivery(value: unknown, project: string, options: DeliveryOptions
   const ranks: Record<string, number> = { active: 0, blocked: 1, parked: 2 };
   let previousRank = -1, previousJob = '';
   for (const job of value.jobs.items) {
-    if (!record(job) || !keys(job, ['id', 'title', 'worker_id', 'status', 'revision', 'worker_name', 'brief_preview', 'brief_preview_truncated', 'updated_at', 'update', 'checklist', 'checkpoint'], ['summary']) || !id(job.id) || !contentText(job.title, 240) || job.worker_id !== '' && !id(job.worker_id) || typeof job.status !== 'string' || !Object.hasOwn(ranks, job.status) || !positive(job.revision) || (job.worker_id === '' ? job.worker_name !== '' : !displayName(job.worker_name))) return false;
+    if (!record(job) || !keys(job, ['id', 'title', 'worker_id', 'status', 'revision', 'worker_name', 'brief_preview', 'brief_preview_truncated', 'updated_at', 'progress', 'checklist'], ['summary']) || !id(job.id) || !contentText(job.title, 240) || job.worker_id !== '' && !id(job.worker_id) || typeof job.status !== 'string' || !Object.hasOwn(ranks, job.status) || !positive(job.revision) || (job.worker_id === '' ? job.worker_name !== '' : !displayName(job.worker_name))) return false;
     if (job.summary !== undefined && (!validJobPublicSummary(job.summary, job.id) || job.summary.job_revision > Number(job.revision))) return false;
     const rank = ranks[job.status];
     if (rank < previousRank || rank === previousRank && job.id <= previousJob) return false;
     previousRank = rank; previousJob = job.id;
     if (!contentText(job.brief_preview, 240, true) || typeof job.brief_preview_truncated !== 'boolean' || job.brief_preview_truncated && !job.brief_preview || !assessmentTime(job.updated_at)) return false;
-    const update = job.update;
-    if (update !== null && (!record(update) || !keys(update, ['sequence', 'job_revision', 'body', 'body_truncated', 'created_at']) || !positive(update.sequence) || !positive(update.job_revision) || Number(update.job_revision) > Number(job.revision) || typeof update.body_truncated !== 'boolean' || !contentText(update.body, 240) || !checkpointText(update.body, 240, !update.body_truncated) || !assessmentTime(update.created_at))) return false;
     const checklist = job.checklist;
     if (checklist !== null && (!record(checklist) || !keys(checklist, ['revision', 'job_revision', 'total', 'done', 'created_at']) || !positive(checklist.revision) || !positive(checklist.job_revision) || Number(checklist.job_revision) > Number(job.revision) || !nonnegative(checklist.total) || Number(checklist.total) > 100 || !nonnegative(checklist.done) || Number(checklist.done) > Number(checklist.total) || !assessmentTime(checklist.created_at))) return false;
-    const checkpoint = job.checkpoint;
-    if (checkpoint !== null) {
-      if (!record(checkpoint) || !keys(checkpoint, ['sequence', 'job_revision', 'done', 'next', 'blocker', 'done_truncated', 'next_truncated', 'blocker_truncated', 'created_at']) || !positive(checkpoint.sequence) || !positive(checkpoint.job_revision) || Number(checkpoint.job_revision) > Number(job.revision) || !assessmentTime(checkpoint.created_at)) return false;
-      for (const field of ['done', 'next', 'blocker'] as const) {
-        const truncated = checkpoint[`${field}_truncated`], required = field !== 'blocker';
-        // A nonblank full value can have a whitespace-only bounded prefix.
-        if (typeof truncated !== 'boolean' || !checkpointText(checkpoint[field], 240, required && !truncated) || required && checkpoint[field] === '') return false;
-      }
+    const progress = job.progress;
+    if (!record(progress) || !keys(progress, ['summary', 'next', 'blocker', 'summary_truncated', 'next_truncated', 'blocker_truncated'])) return false;
+    for (const field of ['summary', 'next', 'blocker'] as const) {
+      if (!checkpointText(progress[field], 240, false) || typeof progress[`${field}_truncated`] !== 'boolean' || progress[`${field}_truncated`] && progress[field] === '') return false;
     }
   }
   return true;
@@ -209,8 +203,27 @@ function validDelivery(value: unknown, project: string, options: DeliveryOptions
 function validJobPublicSummary(value: unknown, jobId: string): value is JobPublicSummary {
   return record(value) && keys(value, ['job_id', 'job_revision', 'revision', 'title', 'body']) && value.job_id === jobId && positive(value.job_revision) && nonnegative(value.revision) && contentText(value.title, 240, true) && contentText(value.body, 2000, true) && (value.body === '' || checkpointText(value.body, 2000, true)) && (value.title === '' && value.body === '' || Number(value.revision) > 0 && typeof value.title === 'string' && value.title.trim().length > 0 && !/[\p{Cc}]/u.test(value.title) && typeof value.body === 'string' && value.body.trim().length > 0);
 }
+function validProgress(value: unknown): value is JobProgress {
+  if (!record(value) || !keys(value, ['summary', 'next', 'blocker', 'evidence']) || !checkpointText(value.summary, 8 << 10, false) || !checkpointText(value.next, 8 << 10, false) || !checkpointText(value.blocker, 4 << 10, false) || !Array.isArray(value.evidence) || value.evidence.length > 10 || !value.evidence.every(item => checkpointText(item, 1024, true))) return false;
+  return [value.summary, value.next, value.blocker, ...value.evidence].reduce((size, item) => size + new TextEncoder().encode(item).byteLength, 0) <= 16 << 10;
+}
+function validProgressPreview(value: Record<string, unknown>): boolean {
+  return checkpointText(value.progress_summary, 240, false) && checkpointText(value.blocker, 240, false) && typeof value.progress_truncated === 'boolean' && typeof value.blocker_truncated === 'boolean' && (!value.progress_truncated || value.progress_summary !== '') && (!value.blocker_truncated || value.blocker !== '');
+}
 function validJob(value: unknown, projectId: string): value is Job {
-  return record(value) && keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at']) && value.project_id === projectId && id(value.id) && contentText(value.title, 240) && contentText(value.brief, 32768, true) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && timestamp(value.created_at) && timestamp(value.updated_at);
+  if (!record(value) || !keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at', 'progress', 'checklist', 'notes']) || value.project_id !== projectId || !id(value.id) || !contentText(value.title, 240) || !contentText(value.brief, 32768, true) || !text(value.worker_id, 128, true) || typeof value.status !== 'string' || !jobStatuses.has(value.status) || !positive(value.revision) || !timestamp(value.created_at) || !timestamp(value.updated_at) || !validProgress(value.progress)) return false;
+  const checklist = value.checklist;
+  if (!record(checklist) || !keys(checklist, ['revision', 'remaining', 'completed', 'total']) || !nonnegative(checklist.revision) || !validChecklistItems(checklist.remaining) || checklist.remaining.some(item => item.done) || !nonnegative(checklist.completed) || !nonnegative(checklist.total) || checklist.total > 100 || checklist.remaining.length + checklist.completed !== checklist.total || checklist.revision === 0 && checklist.total !== 0) return false;
+  if (!coordinationPage(value.notes, 5)) return false;
+  const seen = new Set<string>(); let previous: NoteSummary | undefined;
+  for (const note of value.notes.items) {
+    if (!validNoteSummary(note, projectId) || note.job_id !== value.id || note.status !== 'pending' || seen.has(note.id) || previous && (coordinationTimeKey(note.created_at) > coordinationTimeKey(previous.created_at) || coordinationTimeKey(note.created_at) === coordinationTimeKey(previous.created_at) && note.id >= previous.id)) return false;
+    seen.add(note.id); previous = note;
+  }
+  return true;
+}
+function validProgressEntry(value: unknown, project: string, job: string): value is JobProgressEntry {
+  return record(value) && keys(value, ['id', 'project_id', 'job_id', 'job_revision', 'sequence', 'actor_id', 'worker_id', 'progress', 'created_at']) && id(value.id) && value.project_id === project && value.job_id === job && positive(value.job_revision) && positive(value.sequence) && id(value.actor_id) && (value.worker_id === '' || id(value.worker_id)) && assessmentTime(value.created_at) && validProgress(value.progress);
 }
 function checkpointText(value: unknown, max: number, required: boolean): value is string {
   if (!text(value, max, !required) || required && /^\p{White_Space}*$/u.test(value)) return false;
@@ -806,9 +819,20 @@ export class Api {
   }
   async job(jobId: string, signal?: AbortSignal): Promise<Job> {
     if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
-    const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}`), signal);
+    const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}`), signal, undefined, maxBytes, assessmentJSON);
     if (!validJob(value, this.projectId) || value.id !== jobId) throw new ApiError('invalid_response', 'The service returned a job outside this binding.');
     return value;
+  }
+  async jobProgressHistory(jobId: string, options: PageOptions = {}, signal?: AbortSignal): Promise<Page<JobProgressEntry>> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/progress/history`), pageOptions(options)), signal, undefined, 4 << 20, assessmentJSON);
+    if (!validPage(value, defaultLimit(options)) || !value.has_more && !!value.cursor) throw new ApiError('invalid_response', 'The service returned invalid progress history.');
+    let previous = Infinity; const seen = new Set<string>();
+    for (const item of value.items) {
+      if (!validProgressEntry(item, this.projectId, jobId) || item.sequence >= previous || seen.has(item.id)) throw new ApiError('invalid_response', 'The service returned invalid progress history.');
+      previous = item.sequence; seen.add(item.id);
+    }
+    return value as Page<JobProgressEntry>;
   }
   async checkpointLatest(jobId: string, signal?: AbortSignal): Promise<LatestCheckpoint> {
     if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');

@@ -177,7 +177,7 @@ func TestSummarySchemaUpgradeConservesPrivateRows(t *testing.T) {
 	a, _, token, _, base := progressFixture(t)
 	before := a.call("GET", base, token, "", nil).Body.String()
 	history := a.call("GET", base+"/history", token, "", nil).Body.String()
-	if _, err := a.store.DB().Exec(`DROP TABLE job_summary_history;DROP TABLE job_summaries;UPDATE metadata SET value='6' WHERE key='schema:jobs'`); err != nil {
+	if _, err := a.store.DB().Exec(`DROP TABLE job_progress_history; DROP TABLE job_progress; DROP TABLE job_summary_history;DROP TABLE job_summaries;UPDATE metadata SET value='6' WHERE key='schema:jobs'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := jobs.EnsureSchema(context.Background(), a.store); err != nil {
@@ -190,7 +190,7 @@ func TestSummarySchemaUpgradeConservesPrivateRows(t *testing.T) {
 		t.Fatal(s)
 	}
 	var version string
-	if err := a.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:jobs'`).Scan(&version); err != nil || version != "7" {
+	if err := a.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:jobs'`).Scan(&version); err != nil || version != "8" {
 		t.Fatal(version, err)
 	}
 }

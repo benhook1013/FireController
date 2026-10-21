@@ -95,9 +95,7 @@ func InsertPreparedJob(ctx context.Context, tx *sql.Tx, projectID, jobID string,
 	}
 	current := job{ID: jobID, ProjectID: projectID, Title: item.Title, Brief: item.Brief, WorkerID: item.WorkerID,
 		Status: item.Status, Revision: 1, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
-	if err = appendHistory(ctx, tx, core.Scope{PrincipalID: "imported-history"}, current); err != nil {
-		return err
-	}
+
 	for i, checkpoint := range item.Checkpoints {
 		evidence, err := json.Marshal(checkpoint.Evidence)
 		if err != nil {
@@ -111,5 +109,8 @@ func InsertPreparedJob(ctx context.Context, tx *sql.Tx, projectID, jobID string,
 			return err
 		}
 	}
-	return nil
+	if err := seedPreparedProgress(ctx, tx, current, checkpointIDs, item.Checkpoints); err != nil {
+		return err
+	}
+	return appendHistory(ctx, tx, core.Scope{PrincipalID: "imported-history"}, current)
 }

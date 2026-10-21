@@ -2,23 +2,22 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, createMemoryRouter, RouterProvider } from 'react-router';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
-import { cachedWorkerLabelsQuery, ChecklistItems, CheckpointContent, ConversationMessages, Inbox, JobDetail, JobUpdateContent } from './App';
+import { cachedWorkerLabelsQuery, ChecklistItems, ConversationMessages, Inbox, JobDetail, JobProgressContent } from './App';
 import { NoteContent, NoteRevisionContent, NoteSummaryRows, PauseContent } from './coordination';
 import { WorkspaceContext, type Session } from './workspace';
 import { BrowserActionMemory } from './browser-actions';
-import type { Checkpoint, Job, JobUpdate, Note, Worker } from './types';
+import type { Job, JobProgress, Note, Worker } from './types';
 
 const home = '/projects/project_one';
 const created_at = '2026-10-19T00:00:00Z';
-const checkpoint: Checkpoint = { id: 'checkpoint_one', project_id: 'project_one', job_id: 'job_one', job_revision: 3, sequence: 2, actor_id: 'actor_one', worker_id: 'worker_one', done: '', next: '', blocker: '', evidence: ['**literal evidence reference**'], created_at };
-const update: JobUpdate = { id: 'update_one', project_id: 'project_one', job_id: 'job_one', job_revision: 3, sequence: 1, actor_id: 'actor_one', worker_id: 'worker_one', body: '', evidence: ['**literal evidence reference**'], created_at };
+const progress: JobProgress = { summary: '', next: '', blocker: '', evidence: ['**literal evidence reference**'] };
 const note: Note = { id: 'note_one', project_id: 'project_one', worker_id: 'worker_one', job_id: 'job_one', phase: '', kind: 'reminder', status: 'pending', status_reason: '', body: '', revision: 2, created_at, updated_at: created_at };
 const render = (node: React.ReactNode) => renderToStaticMarkup(<MemoryRouter>{node}</MemoryRouter>);
 
 function renderJob(brief: string) {
   const client = new QueryClient();
   const key = ['fc', 'connection_one', 'instance_one', 'project_one', ''] as const;
-  const job: Job = { id: 'job_one', project_id: 'project_one', title: 'Current job', worker_id: '', status: 'active', revision: 3, brief, created_at, updated_at: created_at };
+  const job: Job = { id: 'job_one', project_id: 'project_one', title: 'Current job', worker_id: '', status: 'active', revision: 3, brief, created_at, updated_at: created_at, progress, checklist: {revision:0,remaining:[],completed:0,total:0}, notes:{items:[],has_more:false} };
   client.setQueryData([...key, 'job', job.id], job);
   client.setQueryData([...key, 'checklist-current', job.id], { job_id: job.id, job_revision: job.revision, revision: 1, items: [] });
   client.setQueryData([...key, 'checkpoint-latest', job.id], { job_id: job.id, job_revision: job.revision, checkpoint: null });
@@ -47,8 +46,7 @@ function renderConversation(body: string, configure?: (client: QueryClient) => v
 const surfaces = [
   { name: 'full job brief', render: renderJob },
   { name: 'checklist item', render: (text: string) => render(<ChecklistItems items={[{ id: 'item_one', done: false, text }]} />) },
-  { name: 'checkpoint narratives', render: (body: string) => render(<CheckpointContent checkpoint={{ ...checkpoint, done: body, next: body, blocker: body }} />) },
-  { name: 'narrative update', render: (body: string) => render(<JobUpdateContent update={{ ...update, body }} jobRevision={3} />) },
+  { name: 'current progress', render: (body: string) => render(<JobProgressContent progress={{ ...progress, summary: body, next: body, blocker: body }} />) },
   { name: 'full current note', render: (body: string) => render(<NoteContent value={{ ...note, body }} home={home} />) },
   { name: 'note status reason', render: (status_reason: string) => render(<NoteContent value={{ ...note, status_reason }} home={home} />) },
   { name: 'worker pause reason', render: (reason: string) => render(<PauseContent value={{ worker_id: 'worker_one', paused: true, revision: 2, reason }} />) },
@@ -95,7 +93,7 @@ fc inbox list
     expect(preview).toContain('**preview only**');
     expect(preview).not.toContain('<strong>preview only</strong>');
     expect(preview).toContain('Open the note to read its full body.');
-    for (const html of [render(<CheckpointContent checkpoint={checkpoint} />), render(<JobUpdateContent update={update} jobRevision={3} />)]) {
+    for (const html of [render(<JobProgressContent progress={progress} />)]) {
       expect(html).toContain('**literal evidence reference**');
       expect(html).not.toContain('<strong>literal evidence reference</strong>');
     }

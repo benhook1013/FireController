@@ -88,7 +88,7 @@ func (c *Client) Jobs(ctx context.Context, options PageOptions, filter JobFilter
 		return Page[JobSummary]{}, invalidResponse()
 	}
 	for _, item := range value.Items {
-		if !validID(item.ID) || !cleanText(item.Title, 240) || item.WorkerID != "" && !validID(item.WorkerID) || !validStatus(item.Status) || item.Revision < 1 || filter.WorkerID != "" && item.WorkerID != filter.WorkerID || filter.Status == "open" && item.Status == "completed" || filter.Status != "" && filter.Status != "open" && item.Status != filter.Status {
+		if !validProgressPreview(item.ProgressSummary, item.ProgressTruncated) || !validProgressPreview(item.Blocker, item.BlockerTruncated) || !validID(item.ID) || !cleanText(item.Title, 240) || item.WorkerID != "" && !validID(item.WorkerID) || !validStatus(item.Status) || item.Revision < 1 || filter.WorkerID != "" && item.WorkerID != filter.WorkerID || filter.Status == "open" && item.Status == "completed" || filter.Status != "" && filter.Status != "open" && item.Status != filter.Status {
 			return Page[JobSummary]{}, invalidResponse()
 		}
 	}
@@ -99,7 +99,7 @@ func (c *Client) Job(ctx context.Context, id string) (Job, error) {
 		return Job{}, validation()
 	}
 	var value Job
-	err := c.get(ctx, c.projectPath("jobs", id), nil, true, &value)
+	err := c.requestBounded(ctx, "GET", c.projectPath("jobs", id), nil, true, "", nil, 200, false, &value, 1<<20, decodeResponse)
 	if err == nil && (value.ID != id || !c.validJob(value)) {
 		err = invalidResponse()
 	}
@@ -109,7 +109,7 @@ func (c *Client) Job(ctx context.Context, id string) (Job, error) {
 	return value, nil
 }
 func (c *Client) validJob(value Job) bool {
-	return validID(value.ID) && value.ProjectID == c.identity.ProjectID && cleanText(value.Title, 240) && len(value.Brief) <= 32<<10 && (value.WorkerID == "" || validID(value.WorkerID)) && validStatus(value.Status) && value.Revision >= 1 && cleanText(value.CreatedAt, 64) && cleanText(value.UpdatedAt, 64)
+	return c.validJobCurrent(value) && validID(value.ID) && value.ProjectID == c.identity.ProjectID && cleanText(value.Title, 240) && len(value.Brief) <= 32<<10 && (value.WorkerID == "" || validID(value.WorkerID)) && validStatus(value.Status) && value.Revision >= 1 && cleanText(value.CreatedAt, 64) && cleanText(value.UpdatedAt, 64)
 }
 func (c *Client) JobHistory(ctx context.Context, id string, options PageOptions) (Page[JobHistoryEntry], error) {
 	q, err := pageQuery(options)
@@ -124,7 +124,7 @@ func (c *Client) JobHistory(ctx context.Context, id string, options PageOptions)
 		return Page[JobHistoryEntry]{}, invalidResponse()
 	}
 	for _, item := range value.Items {
-		if item.Revision < 1 || item.State.ID != id || item.State.Revision != item.Revision || !c.validJob(item.State) || !validID(item.ActorID) || !cleanText(item.CreatedAt, 64) {
+		if item.Revision < 1 || item.State.ID != id || item.State.Revision != item.Revision || !c.validJobState(item.State) || !validID(item.ActorID) || !cleanText(item.CreatedAt, 64) {
 			return Page[JobHistoryEntry]{}, invalidResponse()
 		}
 	}

@@ -153,8 +153,8 @@ func TestWorkerPauseIndependentLifecycleAndQuietReads(t *testing.T) {
 	progressOK(t, a.call("PUT", path, token, "paused-again", pauseRequest(3, true, "")), 200)
 	progressOK(t, a.call("POST", base+"/jobs", token, "new-assignment", map[string]any{"title": "New assignment", "worker_id": w}), 201)
 	progressOK(t, a.call("PATCH", base+"/jobs/"+j1, token, "blocked-while-paused", map[string]any{"expected_revision": 1, "status": "blocked"}), 200)
-	progressOK(t, a.callWorker("POST", base+"/jobs/"+j1+"/updates", token, w, "progress-while-paused", map[string]any{"expected_job_revision": 2, "body": "Still coordinated"}), 201)
-	progressOK(t, a.callWorker("POST", base+"/jobs/"+j1+"/checkpoints", token, w, "checkpoint-while-paused", map[string]any{"expected_job_revision": 2, "done": "Separate explicit checkpoint", "next": "Wait"}), 201)
+	progressOK(t, a.callWorker("PATCH", base+"/jobs/"+j1, token, w, "progress-while-paused", map[string]any{"expected_revision": 2, "progress": map[string]any{"summary": "Still coordinated", "next": "Wait"}}), 200)
+
 	if got := pauseRead(t, a, path, token); !got.Paused || got.Revision != 4 || got.Reason != "" {
 		t.Fatal("ordinary writes resumed worker", got)
 	}
@@ -332,7 +332,7 @@ func TestWorkerPauseJobsFourMigrationAndRestart(t *testing.T) {
 	a, p, token, w, _, j1, _ := primaryFixture(t)
 	path := pausePath(p, w)
 	progressOK(t, a.call("PUT", primaryPath(p, w), token, "retained-focus", primaryRequest(0, j1)), 200)
-	if _, err := a.store.DB().Exec(`DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history;DROP TABLE worker_pause_state;UPDATE metadata SET value='4' WHERE key='schema:jobs'`); err != nil {
+	if _, err := a.store.DB().Exec(`DROP TABLE job_progress_history; DROP TABLE job_progress; DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history;DROP TABLE worker_pause_state;UPDATE metadata SET value='4' WHERE key='schema:jobs'`); err != nil {
 		t.Fatal(err)
 	}
 	stable := primaryCounts(t, a)

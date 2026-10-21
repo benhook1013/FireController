@@ -46,18 +46,15 @@ function DeliveryProsePreview({ value, truncated, className = '' }: { value: str
 function snapshotLink(home: string, kind: 'pulls' | 'runs', id: number | string, snapshot: string): string {
   return `${home}/reviews/${kind}/${encodeURIComponent(String(id))}?${new URLSearchParams({ snapshot })}`;
 }
-function CheckpointPreview({ job }: { job: DeliveryJob }) {
-  const checkpoint = job.checkpoint;
-  if (!checkpoint) return job.brief_preview || job.update || job.checklist ? null : <p className="delivery-empty">No checkpoint recorded.</p>;
-  return <div className="delivery-checkpoint"><p className="delivery-context-meta">Checkpoint · <RelativeTime value={checkpoint.created_at} /></p>{checkpoint.job_revision !== job.revision && <p className="delivery-checkpoint-stale">Checkpoint from job revision {checkpoint.job_revision}; current revision {job.revision}.</p>}{checkpoint.next && <div className="delivery-checkpoint-field"><strong className="delivery-checkpoint-label">Next</strong><DeliveryProsePreview value={checkpoint.next} truncated={checkpoint.next_truncated} /></div>}{checkpoint.blocker && <div className="delivery-checkpoint-field delivery-blocker"><strong className="delivery-checkpoint-label">Blocker</strong><DeliveryProsePreview value={checkpoint.blocker} truncated={checkpoint.blocker_truncated} /></div>}{checkpoint.done && <div className="delivery-checkpoint-field"><strong className="delivery-checkpoint-label">Done</strong><DeliveryProsePreview value={checkpoint.done} truncated={checkpoint.done_truncated} /></div>}</div>;
+function ProgressPreview({ job }: { job: DeliveryJob }) {
+  return <div className="delivery-checkpoint">{(['summary', 'next', 'blocker'] as const).map(field => job.progress[field] && <div className={`delivery-checkpoint-field${field === 'blocker' ? ' delivery-blocker' : ''}`} key={field}><strong className="delivery-checkpoint-label">{field === 'summary' ? 'Progress' : field === 'next' ? 'Next' : 'Blocker'}</strong><DeliveryProsePreview value={job.progress[field]} truncated={job.progress[`${field}_truncated`]} /></div>)}</div>;
 }
 function JobContextPreview({ job }: { job: DeliveryJob }) {
   return <div className="delivery-job-context">
     {job.summary?.revision ? <div className="delivery-job-summary"><EditorialMarkdown compact>{job.summary.body}</EditorialMarkdown></div> : job.brief_preview && <DeliveryProsePreview className="delivery-brief" value={job.brief_preview} truncated={job.brief_preview_truncated} />}
     <p className="delivery-context-meta">Edited <RelativeTime value={job.updated_at} /></p>
-    {job.update && <div className="delivery-update"><p className="delivery-context-meta">Progress · <RelativeTime value={job.update.created_at} /></p><DeliveryProsePreview className="delivery-update-body" value={job.update.body} truncated={job.update.body_truncated} />{job.update.job_revision !== job.revision && <p className="delivery-checkpoint-stale">Progress from job revision {job.update.job_revision}; current revision {job.revision}.</p>}</div>}
     {job.checklist && <div className="delivery-checklist"><p><strong>Checklist {job.checklist.done}/{job.checklist.total} done</strong> · <RelativeTime value={job.checklist.created_at} /></p>{job.checklist.job_revision !== job.revision && <p className="delivery-checkpoint-stale">Checklist from job revision {job.checklist.job_revision}; current revision {job.revision}.</p>}</div>}
-    <CheckpointPreview job={job} />
+    <ProgressPreview job={job} />
   </div>;
 }
 function LaneInboxLink({ lane, home }: { lane: DeliveryLane; home: string }) {

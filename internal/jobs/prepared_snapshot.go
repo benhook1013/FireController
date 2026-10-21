@@ -1,10 +1,13 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"reflect"
+	"sort"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -27,9 +30,45 @@ func ValidatePreparedSnapshot(ctx context.Context, db PreparedSnapshotReader, pr
 	if err = db.QueryRowContext(ctx, `SELECT actor_id,state_json,created_at FROM job_history WHERE project_id=? AND job_id=? AND revision=1`, project, id).Scan(&actor, &body, &recorded); err != nil {
 		return err
 	}
-	var original job
-	if strictjson.Decode([]byte(body), &original) != nil || actor != "imported-history" || recorded != item.UpdatedAt || original != (job{ID: id, ProjectID: project, Title: item.Title, Brief: item.Brief, WorkerID: item.WorkerID, Status: item.Status, Revision: 1, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}) {
+	var fields map[string]json.RawMessage
+	if strictjson.Decode([]byte(body), &fields) != nil {
 		return preparedJobInvalid()
+	}
+	rawProgress, provided := fields["progress"]
+	delete(fields, "progress")
+	baseBody, err := json.Marshal(fields)
+	if err != nil {
+		return preparedJobInvalid()
+	}
+	var original job
+	if strictjson.Decode(baseBody, &original) != nil || actor != "imported-history" || recorded != item.UpdatedAt || original != (job{ID: id, ProjectID: project, Title: item.Title, Brief: item.Brief, WorkerID: item.WorkerID, Status: item.Status, Revision: 1, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}) {
+		return preparedJobInvalid()
+	}
+	var importedProgress progress
+	if provided && (bytes.Equal(bytes.TrimSpace(rawProgress), []byte("null")) || strictjson.Decode(rawProgress, &importedProgress) != nil) {
+		return preparedJobInvalid()
+	}
+	if provided {
+		indices := make([]int, len(item.Checkpoints))
+		for i := range indices {
+			indices[i] = i
+		}
+		sort.Slice(indices, func(a, b int) bool {
+			left, _ := time.Parse(time.RFC3339Nano, item.Checkpoints[indices[a]].CreatedAt)
+			right, _ := time.Parse(time.RFC3339Nano, item.Checkpoints[indices[b]].CreatedAt)
+			if !left.Equal(right) {
+				return left.Before(right)
+			}
+			return checkpointIDs[indices[a]] < checkpointIDs[indices[b]]
+		})
+		expected := emptyProgress()
+		if len(indices) > 0 {
+			last := item.Checkpoints[indices[len(indices)-1]]
+			expected = progress{Summary: last.Done, Next: last.Next, Blocker: last.Blocker, Evidence: last.Evidence}
+		}
+		if !validProgress(importedProgress) || !reflect.DeepEqual(importedProgress, expected) {
+			return preparedJobInvalid()
+		}
 	}
 	var lastSequence int64
 	for i, cp := range item.Checkpoints {

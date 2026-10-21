@@ -55,7 +55,7 @@ func TestJobSummaryClientIndependentStateAndLostCommittedReplay(t *testing.T) {
 		t.Fatal(retained, err)
 	}
 	private := "Private brief changed"
-	_, err = c.EditJob(t.Context(), "private-update", job.ID, client.EditJobRequest{ExpectedRevision: 1, Brief: &private})
+	_, err = c.UpdateJob(t.Context(), "private-update", job.ID, client.UpdateJobRequest{ExpectedRevision: 1, Brief: &private})
 	if err != nil {
 		t.Fatal(err)
 	}
