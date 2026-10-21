@@ -10,6 +10,8 @@ try{
   config=JSON.parse(await fs.readFile(process.argv[2],'utf8'));
   const [admin,token,targetToken,defaults]=await Promise.all([fs.readFile(config.admin_file,'utf8'),fs.readFile(config.credential_file,'utf8'),fs.readFile(config.target_credential_file,'utf8'),fs.readFile(config.defaults_file,'utf8')]);
   const prefix='/api/v1/projects/'+config.project,targetPrefix='/api/v1/projects/'+config.target_project;
+  const unpublishedPaths=new Set();let unpublishedReads=0,unpublishedConsole=0;
+  const unpublishedLocation=value=>{try{const url=new URL(value);return url.origin===config.origin&&unpublishedPaths.has(url.pathname)&&url.search==='';}catch{return false;}};
   const fixture=async(method,project,worker,path,body,status=200)=>{
     const response=await fetch(config.origin+'/api/v1/projects/'+project+path,{method,headers:{Authorization:'Bearer '+admin.trim(),'X-FC-Instance':config.instance,'X-FC-Worker':worker,'Idempotency-Key':'refresh-browser-fixture-'+(++fixtureCalls),'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(5000)});
     need(response.status===status);return response.json();
@@ -67,21 +69,29 @@ try{
     await route.continue();
   });
   page.on('pageerror',()=>errors++);
-  page.on('console',message=>{if(message.type()!=='error')return;const location=message.location().url;if(injectedRequest&&injectedConsole===0&&location===injectedRequest.url()&&/^Failed to load resource: the server responded with a status of 400 \(Bad Request\)$/u.test(message.text()))injectedConsole++;else errors++;});
-  page.on('response',response=>{if(response.status()>=400&&!(response.status()===400&&new URL(response.url()).pathname===prefix+'/project-events/stream'))errors++;});
+  page.on('console',message=>{if(message.type()!=='error')return;const location=message.location().url;if(injectedRequest&&injectedConsole===0&&location===injectedRequest.url()&&/^Failed to load resource: the server responded with a status of 400 \(Bad Request\)$/u.test(message.text()))injectedConsole++;else if(unpublishedLocation(location)&&/^Failed to load resource: the server responded with a status of 404 \(Not Found\)$/u.test(message.text()))unpublishedConsole++;else errors++;});
+  page.on('response',response=>{if(response.status()===404&&response.request().method()==='GET'&&unpublishedLocation(response.url()))unpublishedReads++;else if(response.status()>=400&&!(response.status()===400&&new URL(response.url()).pathname===prefix+'/project-events/stream'))errors++;});
   const paint=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   const screenshot=async name=>{if(config.diagnostic_directory){await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});await page.screenshot({path:config.diagnostic_directory+'/'+name+'.png',fullPage:false,mask:[page.locator('input,textarea')],timeout:2000});}};
   const connect=async(project,credential,name)=>{
-    await page.getByLabel('Project ID',{exact:true}).fill(project);await page.getByLabel('Project credential',{exact:true}).fill(credential.trim());
+    await page.getByLabel('Project',{exact:true}).fill(project);await page.getByLabel('Project credential',{exact:true}).fill(credential.trim());
+    const resolved=page.waitForResponse(response=>response.request().method()==='GET'&&new URL(response.url()).pathname==='/api/v1/projects/'+project);
     const accepted=page.waitForResponse(response=>response.request().method()==='POST'&&new URL(response.url()).pathname==='/api/v1/projects/'+project+'/browser-session');
     await page.getByRole('button',{name:'Connect to project',exact:true}).click();need((await accepted).status()===200);
+    const identityResponse=await resolved,identity=await identityResponse.json();need(identityResponse.status()===200&&identity.id===project&&typeof identity.handle==='string');
+    unpublishedPaths.add('/api/v1/public/project-locations/'+identity.handle);
     await page.getByRole('heading',{name,exact:true}).waitFor();await page.getByRole('heading',{name:'Delivery',exact:true}).waitFor();
+    await page.waitForURL(config.origin+'/projects/'+identity.handle);return identity.handle;
   };
   const disconnect=async project=>{
     const ended=page.waitForResponse(response=>response.request().method()==='DELETE'&&new URL(response.url()).pathname==='/api/v1/projects/'+project+'/browser-session');
-    await page.getByRole('button',{name:'Disconnect',exact:true}).click();need((await ended).status()===200);await page.getByRole('button',{name:'Connect to project',exact:true}).waitFor();
+    await page.getByRole('button',{name:'Sign out',exact:true}).click();need((await ended).status()===200);await page.getByRole('button',{name:'Connect to project',exact:true}).waitFor();
   };
-  phase='connect-a';await page.goto(config.origin);await connect(config.project,token,'Refresh project A');
+  phase='connect-a';await page.goto(config.origin+'/?signin=1');
+  const rootHistoryIndex=await page.evaluate(()=>{window.refreshProofDocument=true;return history.state.idx;});
+  await expect(page.locator('.mast .brand')).toHaveAttribute('href','/');await page.locator('.mast .brand').click();await page.waitForURL(config.origin+'/');
+  need(await page.evaluate(()=>history.state.idx)===rootHistoryIndex+1);
+  await connect(config.project,token,'Refresh project A');
   await page.getByRole('link',{name:'Initial A job',exact:true}).waitFor();await expect(page.locator('.brand')).toContainText('Initial brand A');
   phase='closed-feed';await page.getByText('Project updates disconnected.',{exact:false}).waitFor();need(metadataA===1&&presentationA===1&&deliveryA===1);
   phase='missed-events';
@@ -103,7 +113,11 @@ try{
   await page.setViewportSize({width:390,height:900});need(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await screenshot('refresh-recovered-a-390');
   phase='late-refresh';armHold();await refresh.click();await heldReady;await expect(refresh).toBeDisabled();
   await disconnect(config.project);
-  phase='connect-b';await connect(config.target_project,targetToken,'Refresh project B');await page.getByRole('link',{name:'B only job',exact:true}).waitFor();
+  need(await page.evaluate(()=>history.state.idx)===rootHistoryIndex+2);
+  await page.goBack();await expect.poll(()=>page.evaluate(()=>history.state.idx),{timeout:5000}).toBe(rootHistoryIndex+1);
+  await page.goBack();await page.waitForURL(config.origin+'/?signin=1');need(await page.evaluate(()=>history.state.idx)===rootHistoryIndex);
+  await expect(page.locator('.mast .brand')).toHaveAttribute('href','/');await page.locator('.mast .brand').click();await page.waitForURL(config.origin+'/');
+  phase='connect-b';const targetHandle=await connect(config.target_project,targetToken,'Refresh project B');await page.getByRole('link',{name:'B only job',exact:true}).waitFor();
   await expect(page.locator('.brand')).toContainText('Isolated brand B');
   releaseHeld();const lateResult=await heldDone;releaseHeld=undefined;need(['delivered','cancelled'].includes(lateResult));
   phase='late-result';await paint();await expect(page.getByRole('heading',{name:'Refresh project B',exact:true})).toBeVisible();await expect(page.locator('.brand')).toContainText('Isolated brand B');
@@ -111,10 +125,10 @@ try{
   need(await page.getByRole('link',{name:'Initial A job',exact:true}).count()===0&&await page.getByRole('link',{name:'A job from missed event',exact:true}).count()===0);
   need(await page.evaluate(()=>document.documentElement.style.getPropertyValue('--fc-header_background').trim())==='#e4f0e4');
   const text=await page.locator('body').innerText();need(![config.project,config.worker,initialJob.id,changedJob.id,targetJob.id].some(value=>text.includes(value)));
-  need(new URL(page.url()).pathname==='/projects/'+config.target_project&&metadataA===1&&presentationA===3);
+  need(new URL(page.url()).pathname==='/projects/'+targetHandle&&metadataA===1&&presentationA===3&&await page.evaluate(()=>window.refreshProofDocument===true));
   await page.setViewportSize({width:320,height:900});need(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await screenshot('refresh-isolated-b-320');
   phase='logout';await disconnect(config.target_project);
-  need(fixtureCalls===6&&sessionPosts===2&&sessionDeletes===2&&domainWrites===0&&errors===0&&external===0&&injectedFailures===1&&injectedConsole<=1);
+  need(fixtureCalls===6&&sessionPosts===2&&sessionDeletes===2&&domainWrites===0&&errors===0&&external===0&&injectedFailures===1&&injectedConsole<=1&&unpublishedReads===2&&unpublishedConsole<=2);
   await context.close();await browser.close();browser=undefined;await server.close();server=undefined;
   console.log(JSON.stringify({state:'PASS',fixture_calls:fixtureCalls,session_posts:sessionPosts,session_deletes:sessionDeletes,domain_writes:domainWrites,errors,external,injected_failures:injectedFailures,injected_console:injectedConsole,metadata_a:metadataA,presentation_a:presentationA,late_result:lateResult}));
 }catch(error){

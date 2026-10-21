@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 // request headers, credentials, captured response bodies or raw diagnostics.
 let server, browser;
 let phase = 'configuration';
-const need = value => { if (!value) throw new Error('assertion'); };
+const need = value => { if (!value) { const error = new Error('assertion'); Error.captureStackTrace(error,need); throw error; } };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
   const [admin, token] = await Promise.all([config.admin_file, config.credential_file].map(async file => (await fs.readFile(file, 'utf8')).trim()));
@@ -48,9 +48,14 @@ try {
       }
     });
     await page.goto(config.origin+path+(snapshot ? `?snapshot=${snapshot}` : ''));
-    await page.getByLabel('Project ID',{exact:true}).fill(config.project);
+    // The project-scoped sign-in form already binds this deep link's project.
     await page.getByLabel('Project credential',{exact:true}).fill(token);
+    const resolved = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === prefix);
     await page.getByRole('button',{name:'Connect to project',exact:true}).click();
+    const identityResponse = await resolved, identity = await identityResponse.json();
+    need(identityResponse.status() === 200 && identity.id === config.project && typeof identity.handle === 'string' && identity.handle.length > 0);
+    const home = `/projects/${encodeURIComponent(identity.handle)}`, canonicalPath = `${home}/reviews/pulls/${number}`;
+    await expect(page).toHaveURL(config.origin+canonicalPath+(snapshot ? `?snapshot=${snapshot}` : ''));
     const rounds = page.locator('.main-content').getByRole('region',{name:`PR #${number} review rounds`,exact:true});
     const attempts = page.getByRole('region',{name:`PR #${number} attempts`,exact:true});
     await rounds.waitFor(); await attempts.waitFor();
@@ -66,7 +71,7 @@ try {
     await expect(rounds.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText('0 runs shown');
     const stored = await page.evaluate(() => JSON.stringify({session:{...sessionStorage},local:{...localStorage}}));
     need(!stored.includes(token) && !stored.includes(admin));
-    return {page,rounds,attempts,name,snapshot};
+    return {page,rounds,attempts,name,snapshot,home,path:canonicalPath};
   };
   const requests = (view,feed) => archives.filter(item => item.name === view.name && item.feed === feed && (!view.snapshot || item.snapshot === view.snapshot));
   const more = async (view,feed,shown) => {
@@ -139,7 +144,7 @@ try {
   await pinnedRow.getByRole('button', {name:/^Show findings for cli run /}).click();
   await pinnedRow.getByText('No findings reported for this run.', {exact:true}).waitFor();
   need(details.length === 1 && details[0].name === 'pinned' && details[0].id === config.first_run_id && details[0].snapshot === config.snapshot);
-  need(new URL(pinned.page.url()).pathname === path);
+  need(new URL(pinned.page.url()).pathname === pinned.path);
   await pinnedRow.getByRole('button', {name:/^Hide findings for cli run /}).click();
   need(await pinnedRow.locator('.review-history-findings').count() === 0 && details.length === 1);
 
@@ -165,7 +170,7 @@ try {
   await expect(currentRow.locator('.review-history-findings strong')).toHaveText('inline detail');
   await expect(currentRow.locator('.review-history-findings li').filter({hasText:'Kept in this PR'}).last()).toHaveText('Kept in this PR');
   need(await currentRow.locator('.review-history-findings img').count() === 0 && await currentRow.locator('.review-history-findings a[href^="javascript:"]').count() === 0);
-  need(details.length === 2 && details[1].name === 'current' && details[1].snapshot !== config.snapshot && new URL(current.page.url()).pathname === path);
+  need(details.length === 2 && details[1].name === 'current' && details[1].snapshot !== config.snapshot && new URL(current.page.url()).pathname === current.path);
   await expect(current.page.locator('.review-pull-summary .review-diff')).toHaveText('73 files · +6,160 / −136 lines');
   need(await current.page.locator('.review-pull-summary .review-state-draft').count() === 0);
   await expect(pinned.page.locator('.review-pull-summary .review-diff')).toHaveText('0 files · +0 / −0 lines');
@@ -184,7 +189,7 @@ try {
   need(await currentRow.locator('.review-history-findings').count() === 0 && details.length === 2);
 
   phase = 'recent-queue';
-  const reviewPath = `/projects/${config.project}/reviews`;
+  const reviewPath = `${current.home}/reviews`;
   await current.page.locator(`nav a[href="${reviewPath}"]`).click();
   const queue = current.page.locator('#review-queue');
   await expect(queue.locator('.review-queue-row')).toHaveCount(5);
@@ -263,8 +268,11 @@ try {
   need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && archives.length >= 23 && archives.length <= 24 && details.length === 3);
   await context.close(); await browser.close(); browser=undefined; await server.close(); server=undefined;
   console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,max_limit:20,source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
-} catch {
-  console.log(JSON.stringify({state:'FAIL',phase})); process.exitCode=1;
+} catch (error) {
+  // Retain only the fixed phase and bounded source line, never error text.
+  const line = /review_archive\.mjs:(\d+):\d+/u.exec(error?.stack ?? '');
+  const driverLine = line ? Number(line[1]) : 0;
+  console.log(JSON.stringify({state:'FAIL',phase,driver_line:Number.isInteger(driverLine) && driverLine > 0 && driverLine <= 10000 ? driverLine : 0})); process.exitCode=1;
 } finally {
   if(browser) await browser.close().catch(() => {});
   if(server) await server.close().catch(() => {});

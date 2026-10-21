@@ -71,7 +71,7 @@ smoke:
 # Requires built fcd and the browser installed for webapp's pinned Playwright.
 browser-smoke:
 	@test "$$($(GO) env GOOS)" = linux || { printf '%s\n' 'browser-smoke requires Linux' >&2; exit 1; }
-	$(GO) test -tags=packaged_smoke -run '^TestBrowser.*DiagnosticsAllowlist$$' -count=1 -timeout=10s ./tools/packagedsmoke
+	$(GO) test -tags=packaged_smoke -run '^TestBrowser(.*DiagnosticsAllowlist|FailureDiagnosticsRetained)$$' -count=1 -timeout=10s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedRefreshBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedEditorialBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke

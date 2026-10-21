@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [rest, backup-0, backup-1, backup-2, backup-3, reviewexec-0, reviewexec-1, reviewruntime]
+        shard: [rest, backup-0, backup-1, backup-2, backup-3, reviewexec-0, reviewexec-1, reviewexec-2, reviewexec-3, reviewruntime]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -46,7 +46,7 @@ jobs:
                 esac ;;
               github.com/benhook1013/FireController/internal/reviewexec)
                 case "$SHARD" in
-                  reviewexec-0|reviewexec-1) shard="$SHARD" ;;
+                  reviewexec-0|reviewexec-1|reviewexec-2|reviewexec-3) shard="$SHARD" ;;
                   *) shard=reviewexec ;;
                 esac ;;
               github.com/benhook1013/FireController/internal/reviewruntime) shard=reviewruntime ;;
@@ -69,7 +69,7 @@ jobs:
           set -euo pipefail
           case "$SHARD" in
             backup-0|backup-1|backup-2|backup-3) family=backup ;;
-            reviewexec-0|reviewexec-1) family=reviewexec ;;
+            reviewexec-0|reviewexec-1|reviewexec-2|reviewexec-3) family=reviewexec ;;
             *) printf 'unknown test shard\n' >&2; exit 1 ;;
           esac
           test "$GO_TEST_PACKAGES" = "github.com/benhook1013/FireController/internal/$family"
@@ -99,7 +99,7 @@ jobs:
           names.sort(key=lambda name: name.encode("utf-8"))
           if len(names) != len(set(names)):
               raise SystemExit("duplicate Go test name")
-          count = 4 if family == "backup" else 2
+          count = 4
           partitions = {f"{family}-{index}": names[index::count] for index in range(count)}
           sets = [set(part) for part in partitions.values()]
           if any(not part for part in sets) or set().union(*sets) != set(names) or sum(map(len, sets)) != len(names):

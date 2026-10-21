@@ -316,6 +316,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	var result struct {
 		State            string `json:"state"`
 		Phase            string `json:"phase"`
+		DriverLine       int    `json:"driver_line"`
 		ArchiveRequests  int    `json:"archive_requests"`
 		MaxLimit         int    `json:"max_limit"`
 		SourceCollisions bool   `json:"source_collisions"`
@@ -340,6 +341,9 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		switch result.Phase {
 		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation", "recent-queue", "merged-history":
 			phase = result.Phase
+		}
+		if result.DriverLine > 0 && result.DriverLine <= 10000 {
+			t.Logf("safe archive failure phase=%s driver_line=%d", phase, result.DriverLine)
 		}
 		t.Fatalf("packaged archive browser failed at phase=%s; raw output withheld to protect fixture authority", phase)
 	}

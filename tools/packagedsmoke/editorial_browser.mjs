@@ -1,7 +1,8 @@
 import { chromium, expect } from '../../webapp/node_modules/@playwright/test/index.mjs';
 import fs from 'node:fs/promises';
 
-let browser, server;
+let browser, server, config;
+let failureCounts=()=>({});
 let phase = 'configuration';
 let checkpoint = '';
 let external = 0;
@@ -9,9 +10,12 @@ let editorialReads = 0, compactReads = 0, individualReads = 0;
 let sessionPosts=0,sessionDeletes=0,sessionRenewals=0,domainWrites=0,errors=0;
 const need = value => { if (!value) throw new Error('assertion'); };
 try {
-  const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
+  config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
   const [admin, token] = await Promise.all([config.admin_file, config.credential_file].map(async path => (await fs.readFile(path, 'utf8')).trim()));
   const prefix = '/api/v1/projects/' + config.project;
+  let unpublishedPath,unpublishedReads=0,unpublishedConsole=0;
+  const unpublishedLocation=value=>{try{const url=new URL(value);return url.origin===config.origin&&url.pathname===unpublishedPath&&url.search==='';}catch{return false;}};
+  failureCounts=()=>({editorial_reads:editorialReads,compact_reads:compactReads,individual_reads:individualReads,session_posts:sessionPosts,session_deletes:sessionDeletes,domain_writes:domainWrites,errors,external,unpublished_reads:unpublishedReads,unpublished_console:unpublishedConsole});
   let writes = 0;
   const create = async entry => {
     const response = await fetch(config.origin + prefix + '/map/entries', {
@@ -49,17 +53,20 @@ try {
     if(!['GET','HEAD'].includes(request.method()) && !(pathname===prefix+'/browser-session'&&['POST','DELETE'].includes(request.method())) && !(pathname===prefix+'/browser-session/renew'&&request.method()==='POST')){await route.abort();return;}
     await route.continue();
   });
-  page.on('pageerror',()=>errors++);page.on('console',message=>{if(message.type()==='error')errors++;});page.on('response',response=>{if(response.status()>=400)errors++;});
+  page.on('pageerror',()=>errors++);page.on('console',message=>{if(message.type()==='error'){if(unpublishedLocation(message.location().url)&&/^Failed to load resource: the server responded with a status of 404 \(Not Found\)$/u.test(message.text()))unpublishedConsole++;else errors++;}});page.on('response',response=>{if(response.status()===404&&response.request().method()==='GET'&&unpublishedLocation(response.url()))unpublishedReads++;else if(response.status()>=400)errors++;});
   phase = 'connect'; checkpoint = 'connect-form';
   await page.goto(config.origin);
-  await page.getByLabel('Project ID',{exact:true}).fill(config.project);
+  await page.getByLabel('Project',{exact:true}).fill(config.project);
   await page.getByLabel('Project credential',{exact:true}).fill(token);
+  const resolved=page.waitForResponse(value=>value.request().method()==='GET'&&new URL(value.url()).pathname===prefix);
   const connected = page.waitForResponse(value => value.request().method() === 'POST' && new URL(value.url()).pathname === prefix + '/browser-session');
   await page.getByRole('button',{name:'Connect to project',exact:true}).click();
   need((await connected).status() === 200);
+  const identityResponse=await resolved,identity=await identityResponse.json();need(identityResponse.status()===200&&identity.id===config.project&&typeof identity.handle==='string');
+  unpublishedPath='/api/v1/public/project-locations/'+identity.handle;
   await page.getByRole('heading',{name:'Packaged smoke',exact:true}).waitFor();
   phase = 'project-editorial'; checkpoint = 'ordered-content';
-  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Project',exact:true}).click();
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Project map',exact:true}).click();
   const entries = page.locator('.project-editorial-entry');
   await expect(entries).toHaveCount(2);
   need((await entries.locator('h3').allTextContents()).join('|') === 'Project intent|Project boundaries');
@@ -136,7 +143,8 @@ try {
   checkpoint='disconnect';
   need(domainWrites===0&&errors===0&&sessionPosts===1);
   const ended=page.waitForResponse(response=>response.request().method()==='DELETE'&&new URL(response.url()).pathname===prefix+'/browser-session');
-  await page.getByRole('button',{name:'Disconnect',exact:true}).click();await page.getByRole('button',{name:'Connect to project',exact:true}).waitFor();need((await ended).status()===200&&sessionDeletes===1);
+  const unavailable=page.waitForResponse(response=>response.status()===404&&response.request().method()==='GET'&&unpublishedLocation(response.url()));
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();await unavailable;await page.getByRole('button',{name:'Connect to project',exact:true}).waitFor();need((await ended).status()===200&&sessionDeletes===1&&unpublishedReads===1&&unpublishedConsole<=1&&errors===0);
   await context.close();
 
   // This separate, explicit fixture writer approves only authored public prose.
@@ -210,6 +218,7 @@ try {
   await anonymous.close();await browser.close(); browser = undefined; await server.close(); server = undefined;
   console.log(JSON.stringify({state:'PASS',editorial_reads:editorialReads,compact_reads:compactReads,individual_reads:individualReads,external_page_requests:external,fixture_entries:writes,appearance_fixture_calls:1,session_posts:sessionPosts,session_deletes:sessionDeletes,session_renewals:sessionRenewals,domain_writes:domainWrites,errors,publication_fixture_calls:publicationCalls,public_reads:publicReads,public_snapshots:publicSnapshots,public_history:publicHistory,public_private_requests:publicPrivateRequests,public_writes:publicWrites,public_errors:publicErrors,viewports:[1440,390,320]}));
 } catch {
+  if(config?.diagnostic_directory)await fs.writeFile(config.diagnostic_directory+'/editorial-failure.json',JSON.stringify({phase,checkpoint,...failureCounts()}),{mode:0o600}).catch(()=>{});
   console.log(JSON.stringify({state:'FAIL',phase,checkpoint}));
   process.exitCode = 1;
 } finally {
