@@ -44,7 +44,7 @@ func resolveLinkedSources(ctx context.Context, tx *sql.Tx, project string, manif
 			return Manifest{}, unavailable()
 		}
 		selectedJobs = append(selectedJobs, current)
-		resolved.Progress = append(resolved.Progress, Card{Key: ref.Key, Title: current.title, Description: current.body, Status: current.status, Links: []Link{}})
+		resolved.Progress = append(resolved.Progress, Card{Key: ref.Key, Title: current.title, Description: strings.ReplaceAll(strings.ReplaceAll(current.body, "\r\n", "\n"), "\r", "\n"), Status: current.status, Links: []Link{}})
 	}
 
 	for _, ref := range resolved.MapRefs {

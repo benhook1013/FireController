@@ -1,9 +1,12 @@
 package publicsite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -149,5 +152,95 @@ func TestResolveLinkedSourcesRejectsUnavailableSources(t *testing.T) {
 	malformed.MapRefs = []MapRef{{Key: "x", EntryID: mapID, Revision: 1}}
 	if _, err := resolveFixture(t, f, malformed); err == nil {
 		t.Fatal("malformed retained map state accepted")
+	}
+}
+
+func TestLinkedSummaryPublicationNormalizesLineEndingsWithoutChangingSource(t *testing.T) {
+	for _, tc := range []struct{ name, body, public string }{
+		{"crlf", "First paragraph.\r\n\r\n- A milestone\r\n- Tab\t雪", "First paragraph.\n\n- A milestone\n- Tab\t雪"},
+		{"lone_cr", "First paragraph.\r\r- A milestone\r- Tab\t雪", "First paragraph.\n\n- A milestone\n- Tab\t雪"},
+		{"lf_unicode_tabs", "First paragraph.\n\n- A milestone\n- Tab\t雪", "First paragraph.\n\n- A milestone\n- Tab\t雪"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPublicationFixture(t)
+			created := f.call(t, http.MethodPost, f.base()+"/jobs", f.admin, "summary-job", map[string]string{"title": "PRIVATE_JOB_TITLE", "brief": "PRIVATE_BRIEF"})
+			var job struct {
+				ID string `json:"id"`
+			}
+			if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &job) != nil || job.ID == "" {
+				t.Fatal("job setup failed", created.Code)
+			}
+			path := f.base() + "/jobs/" + job.ID + "/summary"
+			request := map[string]any{"expected_job_revision": 1, "expected_revision": 0, "title": "Approved summary", "body": tc.body}
+			if w := f.call(t, http.MethodPut, path, f.admin, "original-summary", request); w.Code != 200 {
+				t.Fatal("valid private line endings refused", w.Code, w.Body.String())
+			}
+			original := f.call(t, http.MethodGet, path+"/history/1", f.admin, "", nil)
+			var source jobs.SummaryRevision
+			if original.Code != 200 || json.Unmarshal(original.Body.Bytes(), &source) != nil || source.Body != tc.body || source.Revision != 1 {
+				t.Fatal("summary handler changed original bytes/revision")
+			}
+			var stored []byte
+			if err := f.store.DB().QueryRow(`SELECT CAST(body AS BLOB) FROM job_summary_history WHERE project_id=? AND job_id=? AND revision=1`, f.project, job.ID).Scan(&stored); err != nil || !bytes.Equal(stored, []byte(tc.body)) {
+				t.Fatal("summary history did not retain exact authored bytes", err)
+			}
+			if strings.Contains(tc.body, "\r") {
+				direct := testPublicManifest()
+				direct.Progress = []Card{{Key: "direct", Title: "Approved summary", Description: tc.body, Links: []Link{}}}
+				if _, err := NormalizeManifest(direct); err == nil {
+					t.Fatal("linked-source normalization broadened direct public text validation")
+				}
+			}
+			m := testPublicManifest()
+			m.JobRefs = []JobRef{{Key: "approved-summary", JobID: job.ID, SummaryRevision: 1}}
+			input := Approved{0, true, m}
+			preview := f.prepare(t, input)
+			if len(preview.Content.Progress) != 1 || preview.Content.Progress[0].Description != tc.public {
+				t.Fatal("preview did not normalize only line endings", preview.Content.Progress)
+			}
+			applied := f.call(t, http.MethodPut, f.base()+"/publication", f.admin, "publish-summary", map[string]any{"expected_revision": 0, "enabled": true, "manifest": m, "preview_sha256": preview.SHA256})
+			if applied.Code != 200 {
+				t.Fatal("normalized preview could not apply", applied.Code, applied.Body.String())
+			}
+			initial := f.public(t)
+			if len(initial.Content.Progress) != 1 || initial.Content.Progress[0].Description != tc.public {
+				t.Fatal("published description differs from preview")
+			}
+			if err := validatePublicationSnapshot(t, f); err != nil {
+				t.Fatal("canonical snapshot rejected normalized pinned summary", err)
+			}
+			f.refresh(t)
+			if !reflect.DeepEqual(initial, f.public(t)) {
+				t.Fatal("unchanged refresh changed normalized prose, revision or timestamp")
+			}
+			// A newer summary stays private; the selected revision remains authoritative.
+			request["expected_revision"], request["title"], request["body"] = 1, "PRIVATE_LATER_TITLE", "PRIVATE_LATER_BODY\r\n"
+			if w := f.call(t, http.MethodPut, path, f.admin, "later-summary", request); w.Code != 200 {
+				t.Fatal("later private summary failed", w.Code)
+			}
+			if w := f.call(t, http.MethodPatch, f.base()+"/jobs/"+job.ID, f.admin, "refresh-job-status", map[string]any{"expected_revision": 1, "status": "blocked"}); w.Code != 200 {
+				t.Fatal("job-triggered refresh failed", w.Code)
+			}
+			current := f.public(t)
+			if len(current.Content.Progress) != 1 || current.Content.Progress[0].Description != tc.public || current.Content.Progress[0].Title != "Approved summary" || current.Content.Progress[0].Status != "blocked" {
+				t.Fatal("refresh lost pinned prose or live status")
+			}
+			raw, _ := json.Marshal(current)
+			for _, private := range []string{job.ID, f.worker, f.project, "PRIVATE_JOB_TITLE", "PRIVATE_BRIEF", "PRIVATE_LATER_TITLE", "PRIVATE_LATER_BODY", "job_refs", "summary_revision"} {
+				if bytes.Contains(raw, []byte(private)) {
+					t.Fatal("publication disclosed private source fields", private)
+				}
+			}
+			after := f.call(t, http.MethodGet, path+"/history/1", f.admin, "", nil)
+			if after.Code != 200 || !bytes.Equal(original.Body.Bytes(), after.Body.Bytes()) {
+				t.Fatal("publication or refresh rewrote original history")
+			}
+			if err := f.store.DB().QueryRow(`SELECT CAST(body AS BLOB) FROM job_summary_history WHERE project_id=? AND job_id=? AND revision=1`, f.project, job.ID).Scan(&stored); err != nil || !bytes.Equal(stored, []byte(tc.body)) {
+				t.Fatal("source bytes changed after publication/refresh", err)
+			}
+			if err := validatePublicationSnapshot(t, f); err != nil {
+				t.Fatal("refreshed snapshot rejected original pinned revision", err)
+			}
+		})
 	}
 }
