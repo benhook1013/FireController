@@ -39,6 +39,9 @@ func TestPackagedAgentEditsSmoke(t *testing.T) {
 		t.Fatal("private agent edit fixture unavailable")
 	}
 	binDir := os.Getenv("FC_SMOKE_BIN_DIR")
+	if binDir == "" {
+		binDir, _ = filepath.Abs("../../bin")
+	}
 	if !filepath.IsAbs(binDir) {
 		t.Fatal("FC_SMOKE_BIN_DIR must select absolute frozen executables")
 	}

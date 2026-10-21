@@ -38,6 +38,9 @@ func TestPackagedUncertainUsageRecovery(t *testing.T) {
 		t.Fatal("private recovery fixture unavailable")
 	}
 	bin := os.Getenv("FC_SMOKE_BIN_DIR")
+	if bin == "" {
+		bin, _ = filepath.Abs("../../bin")
+	}
 	if !filepath.IsAbs(bin) {
 		t.Fatal("absolute frozen executable directory required")
 	}

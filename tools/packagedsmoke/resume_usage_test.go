@@ -38,12 +38,18 @@ func TestPackagedResumeAccumulatedUsage(t *testing.T) {
 		t.Fatal("private resume fixture unavailable")
 	}
 	binDir, daemonBinary := os.Getenv("FC_SMOKE_BIN_DIR"), os.Getenv("FC_RESUME_DAEMON")
-	if !filepath.IsAbs(binDir) || !filepath.IsAbs(daemonBinary) {
+	if binDir == "" {
+		binDir, _ = filepath.Abs("../../bin")
+	}
+	if !filepath.IsAbs(binDir) || daemonBinary != "" && !filepath.IsAbs(daemonBinary) {
 		t.Fatal("absolute frozen client directory and FC_RESUME_DAEMON required")
 	}
 	suffix := ""
 	if runtime.GOOS == "windows" {
 		suffix = ".exe"
+	}
+	if daemonBinary == "" {
+		daemonBinary = filepath.Join(binDir, "fcd"+suffix)
 	}
 	fc, fcmcp := filepath.Join(binDir, "fc"+suffix), filepath.Join(binDir, "fcmcp"+suffix)
 	hashes := map[string][32]byte{fc: binaryHash(t, fc), fcmcp: binaryHash(t, fcmcp), daemonBinary: binaryHash(t, daemonBinary)}
