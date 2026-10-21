@@ -27,12 +27,12 @@ func localHelp() helpResponse {
 		CommandGroups: []helpGroup{
 			{"local discovery", []helpCommand{
 				{"help | --help | -h", "Local orientation. Routine edit commands accept --help; no profile, credential or network reads."},
-				{"version", "Local version JSON only; no profile, credential or network reads, including with bound launcher selectors."},
-				{"context", "Read the selected local profile identity without opening credentials or contacting the service."},
+				{"version", "Local version and running source revision/state; no profile, credential or network reads, including with bound launcher selectors."},
+				{"context", "Read selected identity and running client revision/state without credentials or service I/O."},
 				{"doctor", "Authenticate the bound instance/project/worker; no provider requests."},
 			}},
 			{"resume and jobs", []helpCommand{
-				{"jobs assigned --status open", "Compact assigned jobs; not full instructions or a complete resume context."},
+				{"jobs assigned --status open", "Default open assigned jobs (active, blocked, parked); --all explicitly includes completed history. Not full instructions."},
 				{"jobs read JOB_ID", "Current private brief, progress, remaining checklist and exact-job pending notes; no inbox."},
 				{"jobs summary JOB_ID", "Explicit authored summary, separate from the private brief and not automatically public."},
 			}},
@@ -54,7 +54,7 @@ func localHelp() helpResponse {
 			}},
 		},
 	}
-	out.Documentation.Basis = "Use documentation from the same release as this executable; a current source checkout or server may expose newer behavior. Release provenance is separate from version JSON."
+	out.Documentation.Basis = "Use documentation from the same release as this executable; a current source checkout or server may expose newer behavior. Client source metadata does not identify the service deployment."
 	out.Documentation.Paths = []string{"docs/development.md", "docs/agent-client.md", "docs/local-api.md"}
 	return out
 }

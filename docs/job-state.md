@@ -28,6 +28,8 @@ Job lists remain compact: existing identity/title/status/worker/revision fields 
 
 `GET .../jobs/{job_id}/progress/history`, CLI `jobs progress-history` and MCP `job_progress_history` provide one explicit newest-first progress archive. Each item contains `id`, `project_id`, `job_id`, `job_revision`, `sequence`, `actor_id`, `worker_id`, `progress` and `created_at`. Archive selection is bounded and cursor-based; normal reads never walk it. Ordinary job revision history remains a separate audit of edited job state.
 
+Embedded pending-note continuation preserves exact-job selection: CLI `notes list --all-workers --job JOB_ID --cursor CURSOR`, MCP `note_list` with `job_id`, `all_workers:true` and that cursor. The normal worker-note default uses a different selection. Discover worker reminders separately; they are not implicitly included in a job read.
+
 ## Existing records
 
 Jobs schema eight adds canonical current progress and its history without changing provider/review domains. Convert retained checkpoints and narrative updates once: checkpoint done/next/blocker/evidence becomes one progress state, and a newer narrative update replaces its summary/evidence while retaining the latest known next/blocker. If a newer narrative combined with earlier next/blocker fields exceeds the progress budget, retain that complete newest narrative and evidence as current progress with empty next/blocker; the preceding complete state stays in history. Never shorten source text to fit. Preserve original identities, attribution and text in retained source archives; those archives are not a second current-state authority or normal write surface. Earlier supported backups retain their own schema and must remain inspectable without mutation.

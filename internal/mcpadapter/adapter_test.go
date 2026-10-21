@@ -536,6 +536,9 @@ func TestOpenJobFilterDiscoveryAndMutationRefusal(t *testing.T) {
 		if read {
 			wantLength = 5
 		}
+		if tool.Name == "jobs_assigned" {
+			wantLength = 6
+		}
 		if found != read || len(values) != wantLength {
 			t.Fatalf("%s status enum=%v", tool.Name, values)
 		}

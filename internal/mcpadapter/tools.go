@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/buildinfo"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/profile"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -95,7 +96,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				return resultFailure(err), nil
 			}
 			if tool.name == "context" {
-				return result(binding.Context, false), nil
+				return result(struct {
+					profile.Context
+					buildinfo.Connection
+				}{binding.Context, buildinfo.ConnectionInfo(Version)}, false), nil
 			}
 			timeout := 5 * time.Second
 			if tool.name == "wait_for_messages" {
@@ -138,7 +142,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 					value = struct {
 						profile.Context
 						Verified bool `json:"verified"`
-					}{service.Identity(), true}
+						buildinfo.Connection
+					}{service.Identity(), true, buildinfo.ConnectionInfo(Version)}
 				}
 			case "review_execution_read":
 				value, err = service.ReviewExecution(ctx)

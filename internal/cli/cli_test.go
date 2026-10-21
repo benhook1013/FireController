@@ -69,10 +69,10 @@ func response(t *testing.T, code int, stdout, stderr string) map[string]string {
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result) != 5 {
+	if len(result) != 8 {
 		t.Fatalf("unexpected context fields: %v", result)
 	}
-	for _, key := range []string{"profile", "server_url", "instance_id", "project_id", "worker_id"} {
+	for _, key := range []string{"profile", "server_url", "instance_id", "project_id", "worker_id", "client_version", "client_source_revision", "client_source_state"} {
 		if result[key] == "" {
 			t.Fatalf("missing context field %s", key)
 		}
@@ -237,7 +237,7 @@ func TestVersionDoesNotNeedOrReadConfiguration(t *testing.T) {
 			t.Fatalf("args=%v code=%d stderr=%s", args, code, &stderr)
 		}
 		var result map[string]string
-		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || len(result) != 1 || result["version"] != cli.Version {
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || len(result) != 3 || result["version"] != cli.Version || result["source_revision"] == "" || result["source_state"] == "" {
 			t.Fatalf("version=%s err=%v", &stdout, err)
 		}
 	}
@@ -775,7 +775,7 @@ func TestReadOnlyServiceCommandsUseBoundProfileAndPublicAPIs(t *testing.T) {
 	}
 
 	doctor := decodeSuccess("doctor")
-	if doctor["verified"] != true || doctor["profile"] != "alpha" || doctor["project_id"] != alphaProject || doctor["worker_id"] != alphaOverseer || len(doctor) != 6 {
+	if doctor["verified"] != true || doctor["profile"] != "alpha" || doctor["project_id"] != alphaProject || doctor["worker_id"] != alphaOverseer || len(doctor) != 9 || doctor["client_source_revision"] == nil {
 		t.Fatalf("doctor output is not the configured verified identity: %v", doctor)
 	}
 	workers := decodeSuccess("workers", "list", "--limit", "1")
@@ -955,5 +955,19 @@ func TestOpenJobsCLIUsesBoundListsAndRejectsOpenMutations(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "must-not-read-profiles")
 	for _, args := range [][]string{{"jobs", "list", "--status", "Open"}, {"jobs", "create", "--title", "Invalid", "--status", "open", "--key", "key"}, {"jobs", "list", "--status", "open", "--status", "active"}} {
 		failure(t, append([]string{"--profiles-file", missing, "--profile", "chosen"}, args...), nil, cli.ExitUsage, "invalid_arguments")
+	}
+}
+
+func TestAssignedHistorySelectionRejectsAmbiguityBeforeProfile(t *testing.T) {
+	for _, args := range [][]string{
+		{"jobs", "assigned", "--all", "--status", "open"},
+		{"jobs", "assigned", "--status", "completed", "--all"},
+		{"jobs", "assigned", "--all", "--all"},
+		{"jobs", "assigned", "--all=true"},
+	} {
+		var out, stderr bytes.Buffer
+		if code := cli.Run(args, nil, &out, &stderr); code != cli.ExitUsage || out.Len() != 0 {
+			t.Fatalf("ambiguous selection accepted: %v code=%d error=%s", args, code, &stderr)
+		}
 	}
 }

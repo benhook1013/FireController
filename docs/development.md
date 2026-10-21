@@ -29,6 +29,8 @@ The optional [CodeRabbit golangci-lint integration](https://docs.coderabbit.ai/t
 
 Explicit [browser coordination views](browser-coordination.md) read worker pause/focus and note current/history data without mutation or automatic archive expansion.
 
+CLI `version` reports the running executable’s source revision and source state (`clean`, `modified` or `unknown`) alongside its version. `context` and `doctor` include `client_version`, `client_source_revision` and `client_source_state`. Unknown build metadata is explicit. The MCP connection reports its own running client, which may differ from a newly invoked launcher after an upgrade; reconnect the host’s existing MCP session to load the replacement. This metadata identifies the client, not the service runtime.
+
 ## Local operation help
 
 Routine editing operations expose compact local help: `fc jobs create --help`, `fc jobs update --help`, `fc jobs checklist-item --help`, `fc inbox send --help`, `fc notes add --help`, `fc notes update --help`, `fc map update --help` and `fc publication prepare --help`. The equivalent `fc help COMMAND OPERATION` selects the same help. It explains required arguments, optional changed fields, clearing and uncertainty semantics without loading profiles, credentials, input files or contacting a service. Argument errors for these operations point to their specific help; root help remains a short orientation. Help is a distinct invocation, so a literal `--help` used as a field value does not turn a mutation into a help request.
@@ -36,6 +38,8 @@ Routine editing operations expose compact local help: `fc jobs create --help`, `
 Text-file alternatives preserve exact UTF-8 content: `inbox send --body-file PATH`, `jobs create --brief-file PATH`, and `jobs update` with `--brief-file`, `--progress-file`, `--next-file` or `--blocker-file`. Each conflicts with its matching inline option. Inputs must be regular private files (no symlinks; owner-private permissions on POSIX), bounded by the matching field's byte limit: message 16 KiB, brief 32 KiB, progress/next 8 KiB, blocker 4 KiB. Progress also retains its combined limit. Empty files clear optional text where permitted; message bodies must remain nonblank. Exact bytes form the ordinary request: retain the file contents, binding and original key after an uncertain mutation. An edited file is a changed request, not a safe retry.
 
 Single checklist completion uses `fc jobs checklist-item JOB_ID ITEM_ID --done true --expect-checklist-revision N --key KEY`; see [checklists](job-progress.md) for its independent guard and restructuring alternative.
+
+`jobs assigned` defaults to `--status open`; `--all` explicitly includes completed history and conflicts with `--status`. Management `jobs list` and raw HTTP/typed-client filters keep their explicit existing semantics.
 
 ## Private profile file
 

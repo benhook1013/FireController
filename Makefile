@@ -43,6 +43,8 @@ legacyimport:
 
 # Requires make build and make legacyimport; never rebuild during the workload.
 migration-smoke:
+	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedResumeAccumulatedUsage$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedUncertainUsageRecovery$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedAgentEditsSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedCoordinationImportSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedOperationalAdoptionSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke

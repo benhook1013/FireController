@@ -145,6 +145,13 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		limit, args.cursor, args.worker, args.status = v.Limit, v.Cursor, v.WorkerID, v.Status
 	case *assignedInput:
 		limit, args.cursor, args.status = v.Limit, v.Cursor, v.Status
+		if _, supplied := fields["status"]; !supplied {
+			args.status = "open"
+		} else if v.Status == "all" {
+			args.status = ""
+		} else if v.Status == "" {
+			return args, invalidArguments()
+		}
 	case *jobInput:
 		args.id = v.JobID
 	case *historyInput:
@@ -186,7 +193,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if _, ok := fields["worker_id"]; ok && !validID(args.worker) {
 		return args, invalidArguments()
 	}
-	if _, ok := fields["status"]; ok && !client.ValidJobStatusFilter(args.status) {
+	if _, ok := fields["status"]; ok && !client.ValidJobStatusFilter(args.status) && !(name == "jobs_assigned" && args.status == "") {
 		return args, invalidArguments()
 	}
 	if name == "job_read" || name == "job_history" || name == "inbox_thread" || name == "inbox_message_read" {
@@ -310,12 +317,12 @@ func toolDefinitions() []definition {
 	}
 	return append([]definition{
 		{"presentation_read", "Read the bound project appearance and metadata watermark explicitly. No ordinary job or inbox call includes settings; no provider work or mutation.", schema(map[string]any{})},
-		{"context", "Inspect the immutable local profile configuration; no service verification or credential read.", schema(map[string]any{})},
-		{"doctor", "Verify the configured service instance, project and worker without provider work.", schema(map[string]any{})},
+		{"context", "Inspect the immutable local profile and running client source revision/state; no service verification or credential read.", schema(map[string]any{})},
+		{"doctor", "Verify the configured service instance, project and worker; includes the running client source revision/state, without provider work.", schema(map[string]any{})},
 		{"workers_list", "Read one compact worker page in the bound project.", schema(map[string]any{"limit": limit, "cursor": cursor})},
 		{"jobs_list", "Read one compact job page with explicit optional worker/status filters.", schema(map[string]any{"limit": limit, "cursor": cursor, "worker_id": id, "status": statusFilter})},
-		{"jobs_assigned", "Read one compact job page assigned to the bound worker; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": statusFilter})},
-		{"job_read", "Read one current job snapshot: full private brief and progress, remaining checklist, and exact-job pending-note previews. No worker inbox or automatic continuation.", schema(map[string]any{"job_id": id}, "job_id")},
+		{"jobs_assigned", "Read one compact assigned-job page, default open (active, blocked, parked). Explicit status:all includes completed history; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": map[string]any{"type": "string", "enum": []string{"open", "active", "blocked", "parked", "completed", "all"}, "default": "open", "description": "Defaults to open; all explicitly includes completed jobs."}})},
+		{"job_read", "Read one current job snapshot: full private brief and progress, remaining checklist, and exact-job pending-note previews. No worker inbox. Continue pending job notes with note_list(job_id,all_workers:true,cursor); discover worker reminders separately with note_list().", schema(map[string]any{"job_id": id}, "job_id")},
 		{"job_history", "Read one explicit bounded full-state history page for a job.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
 		{"inbox_list", "Read one compact pending-message page for the bound worker (unacknowledged by default, including seen-but-unhandled). Set unacknowledged:false for history. Never marks seen or acknowledged.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
 		{"inbox_snapshot", "Read one bounded pending inbox page (unacknowledged by default; explicit false includes history) and its explicit scoped event cursor; no cursor is saved, no messages are marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},

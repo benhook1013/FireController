@@ -28,14 +28,14 @@ Startup validates configuration without opening the credential or contacting the
 
 | Tool | Input and result |
 | --- | --- |
-| `context` | No fields; configured local identity, without service verification. |
+| `context` | No fields; configured local identity plus running client source revision/state, without service verification. |
 | `presentation_read` | Explicit bound-project appearance snapshot and project-metadata watermark; no provider work or mutation. |
-| `doctor` | No fields; verified instance/project/worker identity. |
+| `doctor` | No fields; verified instance/project/worker identity plus running client source revision/state. |
 | `workers_list` | Optional limit/cursor; one compact worker page. |
 | `worker_pause_read` | No fields; bound worker’s explicit pause, reason and independent revision. |
 | `worker_pause_history` | Optional limit/cursor; one explicit newest-first pause-history page. |
 | `jobs_list` | Optional worker_id/status/limit/cursor; one compact job page. |
-| `jobs_assigned` | Optional status/limit/cursor; one compact page assigned to the bound worker. |
+| `jobs_assigned` | Optional status/limit/cursor; default status:open selects active/blocked/parked assignments. Explicit status:all includes completed history. |
 | `job_read` | Required job_id; complete current brief/progress, remaining checklist/counts and compact pending exact-job notes. |
 | `job_summary_read` | Required job_id; current optional shareable title/body and independent summary revision; remains private. |
 | `job_summary_set` | Required job_id, expected_job_revision, expected_revision, title, body and idempotency_key; guarded summary replacement or explicit clear. |

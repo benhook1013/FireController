@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/benhook1013/FireController/internal/buildinfo"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/profile"
 )
@@ -100,9 +101,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		}
 	}
 	if call.command == "version" {
-		return emit(stdout, stderr, struct {
-			Version string `json:"version"`
-		}{Version})
+		return emit(stdout, stderr, buildinfo.Current(Version))
 	}
 	if call.command == "help" {
 		if help, exists := operationHelp(call.helpOperation); exists {
@@ -184,7 +183,10 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		if err != nil {
 			return report(stderr, ExitConfig, err.Code, err.Message, err.Action)
 		}
-		return emit(stdout, stderr, identity)
+		return emit(stdout, stderr, struct {
+			profile.Context
+			buildinfo.Connection
+		}{identity, buildinfo.ConnectionInfo(Version)})
 	}
 
 	binding, profileErr := profile.LoadBinding(call.profilesFile, call.profile)
@@ -312,7 +314,8 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value = struct {
 			profile.Context
 			Verified bool `json:"verified"`
-		}{identity, true}
+			buildinfo.Connection
+		}{identity, true, buildinfo.ConnectionInfo(Version)}
 	case call.command == "reviews":
 		value, err = executeReview(requestCtx, service, call)
 	case call.command == "workers" && call.subcommand == "pause-state":
@@ -508,7 +511,8 @@ func parseInvocation(args []string) (invocation, bool) {
 	case "jobs list":
 		allowed["--limit"], allowed["--cursor"], allowed["--worker"], allowed["--status"] = true, true, true, true
 	case "jobs assigned":
-		allowed["--limit"], allowed["--cursor"], allowed["--status"] = true, true, true
+		allowed["--limit"], allowed["--cursor"], allowed["--status"], allowed["--all"] = true, true, true, true
+		call.status = "open"
 	case "inbox list":
 		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"], allowed["--all"] = true, true, true, true, true
 		call.unack = true
@@ -538,7 +542,11 @@ func parseInvocation(args []string) (invocation, bool) {
 			if assigned {
 				return call, false
 			}
-			call.unack = false
+			if call.command == "jobs" {
+				call.status = ""
+			} else {
+				call.unack = false
+			}
 		case "--unread":
 			if assigned {
 				return call, false
@@ -594,7 +602,7 @@ func parseInvocation(args []string) (invocation, bool) {
 			}
 		}
 	}
-	if seen["--all"] && (seen["--unread"] || seen["--unacknowledged"]) {
+	if seen["--all"] && (seen["--unread"] || seen["--unacknowledged"] || seen["--status"]) {
 		return call, false
 	}
 	expected := 0
