@@ -6,15 +6,15 @@ This is optional guidance a project may adopt in its agent instructions or usage
 
 ## Milestones and working context
 
-At a material milestone, pause, handoff, blocker, or completion, consider recording a concise job update or checkpoint with done, next step and evidence pointers. Keep standing instructions in the current brief so later workers can distinguish current direction from historical updates. Routine edits and individual test runs normally need no redundant checkpoint.
+At a material milestone, pause, handoff, blocker, or completion, consider one concise job update containing only changed progress, next step, blocker, evidence, status or assignment. Keep task definition and constraints in the brief; history is automatic. Routine edits and individual test runs normally need no redundant checkpoint.
 
-Before ending active work, a useful default is to check pending coordination once, handle it or identify what remains outstanding, and save a checkpoint if resume context changed. Cancel a turn-owned wait or preserve it only where the host supports that lifetime. There is no benefit in staying artificially busy or polling after completion.
+Before ending active work, a useful default is to check pending coordination once, handle it or identify what remains outstanding, and update current progress if resume context changed. Cancel a turn-owned wait or preserve it only where the host supports that lifetime. There is no benefit in staying artificially busy or polling after completion.
 
-On resume, select the intended private profile and retrieve the authoritative job context, including current brief, latest checkpoint and pending coordination. A compact job list is useful for selection, but may omit standing instructions. Use explicit reads for any sections reported as incomplete.
+On resume, select the intended private profile and read the job for its full current brief/progress, remaining checklist and pending attached reminders. Read worker messages separately when coordination requires them. A compact job list is useful for selection, but may omit standing instructions. Use explicit reads for any sections reported as incomplete.
 
 ## Concise records
 
-Use the brief for standing instructions, a checklist for remaining steps and a checkpoint or narrative update for meaningful progress. A shareable job summary is an optional audience-facing explanation, not a second execution log. Update it when that explanation changes. Avoid repeating the same routine edit or test across every surface. A delegated worker can return proposed concise wording with its result; the orchestrator can verify and record it with the substantive work instead of assigning another summarization pass.
+Use the brief for task definition, an optional checklist for remaining steps and the single current progress record for meaningful changes. A shareable job summary is an optional audience-facing explanation, not a second execution log. Update it when that explanation changes. Do not repeat plans, routine edits or tests across brief, progress and notes. Resolve a reminder when its obligation is handled; move substantial new work to another job. A delegated worker can return proposed concise wording with its result; the orchestrator can verify and record it with the substantive work instead of assigning another summarization pass.
 
 ## Messages and handoffs
 

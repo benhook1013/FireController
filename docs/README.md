@@ -43,11 +43,10 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Ended review settlement](hosted-settlement.md): guarded administrator recovery after verified external termination, preserving evidence and preventing automatic reposts.
 - [Native review execution](review-execution.md): durable operations, provider adapters, isolated workspaces and the remaining dispatch/cutover boundary.
 - [Source refresh and observed policy](review-source.md): explicit background source reads, retained observations and provider-free policy assessment.
-- [Job checkpoints](job-checkpoints.md): immutable progress records, guarded appends, explicit latest/archive reads and integration status.
-- [Job progress](job-progress.md): separate narrative updates and guarded checklist state, history and proof requirements.
+- [Job state](job-state.md): one current progress record, partial updates, default working-context reads and existing-data conversion.
+- [Job checklists](job-progress.md): optional ordered plans with guarded history.
 - [Worker pause state](worker-pause.md): explicit coordination pause independent of job status, focus and execution.
 - [Worker primary job](worker-focus.md): selected optional resume-focus contract, independent of concurrent jobs and status.
-- [Job resume context](job-context.md): one deliberate current brief/checkpoint and pending-coordination read with explicit completeness and continuation.
 - [Deferred notes](notes.md): scoped reminder/source records, compact reads and guarded history; the owning contract records validation status.
 - [Suggested agent workflow](agent-workflow.md): optional working practices for project instructions and a usage skill, separate from tool contracts.
 - [Product scope](product.md) defines the requirements.
