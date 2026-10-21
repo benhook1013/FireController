@@ -42,6 +42,8 @@ Native review execution includes: the daemon composes selected CLI/hosted driver
 
 ## Latest installed release proof
 
+The browser's live feed does not establish automatic GitHub freshness. Independent merge/head-change synchronization is still missing; the [source-refresh boundary](review-source.md#implemented-boundary) records the current explicit operations and manual workaround. This gap remains separate from the installed execution and backup proof below.
+
 The current installed release is source `5fb738720ee202b49ab73610912f43621314e290`, daemon SHA-256 `346699d460b5044fe3ef70fa4a52ee2494966bcdc76a894f4bd07d9e4b3e62c6`, image digest `9895822ed5f9430c4a2fb5701ea090708ff945b1058ba5326e1f43fdbdebb476`. The earlier guarded reviews-seven-to-eight migration preserved every original row across 98 tables and 119 captures before provider recovery; this later upgrade needed no schema migration. Matching CLI/MCP clients, twelve bound launchers, both HTTPS project roots and exact assets passed. The original finished Hosted review recovered without reposting, and its findings were fixed and finalized. A new canonical backup passed off-host inspection and inactive restore. The [execution owner](review-execution.md#installed-recovery-checkpoint) records the capability, failed CI gate and proof limits. Later source fixes require their own publication and installed qualification.
 
 The preceding retained-allowance release was source `033632c433501f95cbbc0b90c8c92c21a9d6a605`, followed by the rename-budget checkpoint `e96b140651c0b7ce1ddeee76f4ea0d2ca90a1bd1`. Their historical source pins and qualification remain recorded at the [allowance owner](review-execution.md#retained-allowance-timing-on-held-results).

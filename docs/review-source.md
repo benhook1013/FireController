@@ -4,6 +4,8 @@
 
 An explicit source refresh reads the selected GitHub PR and only the repository and preceding PR facts needed to identify its comparison. It durably queues the operation before provider work starts. A short default wait returns the completed result in the original call when possible; only work that remains pending returns an operation receipt. It does not request a review, invoke the CLI, inspect allowance or download completed review captures. Ordinary operation and assessment reads use stored records without contacting GitHub.
 
+Automatic GitHub lifecycle synchronization is not implemented. Source refresh workers process explicitly queued operations; they are not independent merge or head-change watchers. Native queue selection can also publish the source facts it acquires, and an administrator can explicitly update observed queue metadata. Browser live updates propagate committed controller changes, not unobserved GitHub changes. With no agent or queued source operation, a merge can therefore remain stale. Manual metadata upkeep is a workaround and must not be reported as automatic detection. Service-owned lifecycle synchronization remains unfinished work.
+
 The observed-policy assessment applies current local channel requirements and finding obligations to that stored source comparison. Its source observation time and policy evaluation time are separate. It is an as-of assessment, not a guarantee that GitHub has remained unchanged, a required-CI result or a merge-readiness verdict. The [captured-comparison assessment](review-controls.md#captured-comparison-assessment) remains available for inspecting a particular historical native capture.
 
 ## Request and recovery
