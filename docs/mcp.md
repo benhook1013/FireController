@@ -61,10 +61,10 @@ Startup validates configuration without opening the credential or contacting the
 | `note_list` | Optional worker_id/all_workers/direct_only/job_id/phase/kind/status/limit/cursor; compact notes for the bound worker and its currently assigned jobs by default. |
 | `note_history` | Required note_id and optional limit/cursor; one compact revision page. |
 | `note_revision_read` | Required note_id/revision; one full immutable note revision. |
-| `inbox_list` | Optional unread/unacknowledged/limit/cursor; bound worker's compact preview page. |
+| `inbox_list` | Optional limit/cursor/unread/unacknowledged; pending previews by default, including seen-but-unhandled. Explicit unacknowledged:false includes handled history. No receipt change. |
 | `inbox_thread` | Required conversation_id and optional limit/cursor; explicit full-body conversation page. |
 | `inbox_message_read` | Required message_id; one full selected immutable message, without older conversation bodies or seen/ack changes. |
-| `inbox_snapshot` | Optional unread/unacknowledged/limit/cursor; one inbox page plus its atomic incoming-event watermark. |
+| `inbox_snapshot` | Same pending/history selection as inbox_list, plus an explicit event cursor from the same read transaction; no receipt change. |
 | `inbox_events` | Required event cursor; optional limit and wait_ms 0–4000; one bounded incoming-event page. |
 | `wait_for_messages` | Required event cursor; optional limit 1–100 and wait_seconds 1–50, default 20/25. One new-message event page or quiet timeout over a call-owned persistent stream. |
 | `review_execution_read` | No fields; stored execution configuration and revision, without provider work. |

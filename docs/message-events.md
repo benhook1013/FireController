@@ -25,6 +25,8 @@ fc inbox snapshot --unread
 fc inbox events --cursor CURSOR --wait-ms 4000
 ```
 
+Agent CLI/MCP snapshot defaults to pending messages (unacknowledged, including seen-but-unhandled); CLI `--all` or explicit MCP `unacknowledged:false` selects history. The raw HTTP snapshot and typed-client filters remain unchanged. Inbox pagination cursors bind the effective filter; preserve the selection on continuation. Event replay cursors remain independent of inbox selection.
+
 MCP provides `inbox_snapshot` with the same filters/page fields and `inbox_events` with required cursor plus optional limit/wait_ms. Both use the shared typed client and bound worker; invalid tool arguments fail before credential/network work. These are finite explicit reads, not automatic polling or a subscription. See the [MCP guide](mcp.md).
 
 Snapshot accepts the existing inbox filters and page options. Events requires an explicit snapshot/replay cursor and accepts limit plus wait-ms. One call returns one bounded page; no cursor is saved and no automatic polling, seen or acknowledgment occurs. A five-second total budget covers identity verification and the request. The typed client rejects incomplete or mis-scoped event pages, unexpected payload fields, invalid ordering and inconsistent timeout/page state.

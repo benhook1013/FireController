@@ -39,7 +39,7 @@ func localHelp() helpResponse {
 			{"notes and messages", []helpCommand{
 				{"notes list", "Compact pending-note discovery; use explicit reads for full text."},
 				{"notes read NOTE_ID", "Full current note body; history requires an explicit notes history read."},
-				{"inbox list", "Bounded incoming-message discovery; reads do not mark seen or acknowledged."},
+				{"inbox list", "Pending messages by default, including seen-but-unhandled. --all explicitly includes handled history; reads never mark seen or acknowledged."},
 				{"inbox thread CONVERSATION_ID", "One conversation page for surrounding context; no receipt-state change."},
 				{"inbox read MESSAGE_ID", "One full selected message; no older bodies or receipt-state change. Use inbox thread for conversation context."},
 				{"inbox send --to WORKER_ID --body TEXT --key KEY", "Send one message as the bound worker; explicit mutation with a recoverable key."},

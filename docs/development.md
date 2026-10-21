@@ -109,7 +109,7 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc reviews attempts NUMBER` | One newest-first retained attempt page with original producer identity, default five; optional `--snapshot`, `--limit` and `--cursor`, without automatic paging. |
 | `fc reviews runs NUMBER` | Stored run summaries, default five; optional `--snapshot`. |
 | `fc reviews run ID` | Explicit full findings, decisions and fix evidence; optional `--snapshot`. |
-| `fc inbox list` | Bound worker's compact message previews; optional unread/unacknowledged filters. |
+| `fc inbox list` | Bound worker's pending message previews, including seen-but-unhandled; `--unread` narrows to unread, `--all` explicitly includes handled history. |
 | `fc inbox thread ID` | Explicit bounded conversation page with full bodies. |
 | `fc inbox read MESSAGE_ID` | One full selected message, without paging older bodies or changing seen/ack state. |
 
@@ -167,7 +167,7 @@ The [project-map agent commands](project-map.md#agent-commands) add explicit com
 
 ## Incoming message replay
 
-`fc inbox snapshot` and `fc inbox events` expose the scoped [message-event API](message-events.md). Snapshot includes a compact inbox page and its same-transaction event cursor. Events replays one page or waits up to four seconds for a relevant change, within the normal five-second command budget. Full message bodies and explicit seen/ack actions remain separate calls. The explicit [quiet wait](message-wait.md), `fc inbox wait --cursor CURSOR`, consumes the persistent stream and returns the first new incoming-message event page or a bounded timeout; its default wait is 25 seconds, with no intermediate heartbeat output.
+`fc inbox snapshot` and `fc inbox events` expose the scoped [message-event API](message-events.md). Snapshot includes a compact inbox page and its same-transaction event cursor. Agent `inbox list` and `inbox snapshot` default to unacknowledged messages. `--unacknowledged` remains an explicit spelling of that default; `--all` includes handled history and conflicts with `--unread`/`--unacknowledged`. Preserve the same selection on continuation; history cursors cannot substitute for pending cursors. Raw HTTP and typed-client filter semantics remain explicit and unchanged. Events replays one page or waits up to four seconds for a relevant change, within the normal five-second command budget. Full message bodies and explicit seen/ack actions remain separate calls. The explicit [quiet wait](message-wait.md), `fc inbox wait --cursor CURSOR`, consumes the persistent stream and returns the first new incoming-message event page or a bounded timeout; its default wait is 25 seconds, with no intermediate heartbeat output.
 
 ## Combined client, transport and browser proof
 

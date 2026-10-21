@@ -19,6 +19,8 @@ fc jobs assigned
 
 When the host cannot provide a repeatable per-agent environment, a generated launcher can bind the profile on every invocation, for example `fc-builder inbox list`. Explicit `fc --profile project-builder inbox list` remains available for deliberate selection or diagnosis. The [private setup commands](onboarding.md#private-agent-setup-commands) create these bindings and POSIX launchers without service or credential access; [delivery](delivery.md) records the wider implemented boundary.
 
+Agent inbox list/snapshot calls default to pending (unacknowledged) messages, including ones already seen but not handled. CLI `--all` and explicit MCP `unacknowledged:false` select handled history; keep that selection on pagination. Raw HTTP and typed clients retain their explicit filter semantics. Reads never mark seen or acknowledged.
+
 The binding belongs to that agent's client process or connection, never to a workspace-wide active profile. Worker names resolve within the bound project. Concurrent chats using one project's worker share its assignments and inbox, with distinct client connection IDs for contact attribution. A fresh CLI client has a fresh connection ID; this does not establish a stable host chat identity. See [worker contact](worker-presence.md). A named profile must never silently change another agent's current project or worker.
 
 Profile selection comes from an explicit `--profile`, or a per-process `FC_PROFILE` default. The CLI does not persist a global active profile. An explicit flag can override the process default; a generated bound launcher rejects a conflicting profile override. Unknown profiles, expected-instance mismatches, missing identity, and unauthorized project selection fail before sending a mutation.

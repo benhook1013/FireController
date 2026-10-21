@@ -38,7 +38,7 @@ type inboxInput struct {
 	Limit          *int   `json:"limit,omitempty"`
 	Cursor         string `json:"cursor,omitempty"`
 	Unread         bool   `json:"unread,omitempty"`
-	Unacknowledged bool   `json:"unacknowledged,omitempty"`
+	Unacknowledged *bool  `json:"unacknowledged,omitempty"`
 }
 type inboxEventsInput struct {
 	Cursor string `json:"cursor"`
@@ -150,7 +150,10 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	case *historyInput:
 		limit, args.cursor, args.id = v.Limit, v.Cursor, v.JobID
 	case *inboxInput:
-		limit, args.cursor, args.unread, args.unack = v.Limit, v.Cursor, v.Unread, v.Unacknowledged
+		limit, args.cursor, args.unread, args.unack = v.Limit, v.Cursor, v.Unread, true
+		if v.Unacknowledged != nil {
+			args.unack = *v.Unacknowledged
+		}
 	case *inboxEventsInput:
 		limit, args.cursor, waitMS = v.Limit, v.Cursor, v.WaitMS
 	case *threadInput:
@@ -314,8 +317,8 @@ func toolDefinitions() []definition {
 		{"jobs_assigned", "Read one compact job page assigned to the bound worker; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": statusFilter})},
 		{"job_read", "Read one current job snapshot: full private brief and progress, remaining checklist, and exact-job pending-note previews. No worker inbox or automatic continuation.", schema(map[string]any{"job_id": id}, "job_id")},
 		{"job_history", "Read one explicit bounded full-state history page for a job.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
-		{"inbox_list", "Read one compact preview page for the bound worker; never mark seen or acknowledged.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
-		{"inbox_snapshot", "Read one bounded compact inbox page and its explicit scoped event cursor; no cursor is saved, no messages are marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
+		{"inbox_list", "Read one compact pending-message page for the bound worker (unacknowledged by default, including seen-but-unhandled). Set unacknowledged:false for history. Never marks seen or acknowledged.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
+		{"inbox_snapshot", "Read one bounded pending inbox page (unacknowledged by default; explicit false includes history) and its explicit scoped event cursor; no cursor is saved, no messages are marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
 		{"inbox_events", "Read one bounded incoming-message event page after an explicit cursor, optionally waiting up to 4000 ms. No cursor is saved, no automatic polling or subscription occurs, messages are never marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Required explicit cursor from a scoped snapshot or replay page."}, "limit": limit, "wait_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 4000, "description": "One bounded wait; omission returns immediately."}}, "cursor")},
 		{"inbox_thread", "Read one explicit conversation page with full immutable bodies; no receipt-state change.", schema(map[string]any{"conversation_id": id, "limit": limit, "cursor": cursor}, "conversation_id")},
 		{"inbox_message_read", "Read one selected full immutable message by ID without paging older conversation bodies. Does not mark seen or acknowledged; expand conversation context explicitly when needed.", schema(map[string]any{"message_id": id}, "message_id")},

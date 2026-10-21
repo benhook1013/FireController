@@ -27,7 +27,7 @@ Read current revisions before guarded writes. Supply an explicit idempotency key
 
 ## Messages and handoffs
 
-Read `inbox list` for pending coordination; reads never acknowledge messages. Send with the supplied bound launcher:
+Read `inbox list` for pending coordination: it defaults to unacknowledged messages, including seen-but-unhandled ones. `inbox snapshot` uses the same default and also supplies an event cursor. In MCP, `inbox_list` and `inbox_snapshot` default `unacknowledged` to true. Use CLI `--all` or explicit MCP `unacknowledged:false` to inspect handled history; history and pending cursors are distinct. Reads never acknowledge messages. Send with the supplied bound launcher:
 
 ```sh
 BOUND_LAUNCHER inbox send --to RECIPIENT_WORKER_ID --body 'Checked my job context. Next: ... Issues: ...' --key RETAINED_MESSAGE_KEY

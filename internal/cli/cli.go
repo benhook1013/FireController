@@ -510,9 +510,11 @@ func parseInvocation(args []string) (invocation, bool) {
 	case "jobs assigned":
 		allowed["--limit"], allowed["--cursor"], allowed["--status"] = true, true, true
 	case "inbox list":
-		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"] = true, true, true, true
+		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"], allowed["--all"] = true, true, true, true, true
+		call.unack = true
 	case "inbox snapshot":
-		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"] = true, true, true, true
+		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"], allowed["--all"] = true, true, true, true, true
+		call.unack = true
 	case "inbox events":
 		allowed["--cursor"], allowed["--limit"], allowed["--wait-ms"] = true, true, true
 	case "workers pause-state", "jobs primary", "jobs read", "jobs checklist", "jobs summary", "inbox read":
@@ -532,6 +534,11 @@ func parseInvocation(args []string) (invocation, bool) {
 		}
 		seen[flag] = true
 		switch flag {
+		case "--all":
+			if assigned {
+				return call, false
+			}
+			call.unack = false
 		case "--unread":
 			if assigned {
 				return call, false
@@ -586,6 +593,9 @@ func parseInvocation(args []string) (invocation, bool) {
 				call.status = value
 			}
 		}
+	}
+	if seen["--all"] && (seen["--unread"] || seen["--unacknowledged"]) {
+		return call, false
 	}
 	expected := 0
 	if call.command == "jobs" && (call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "progress-history" || call.subcommand == "checklist" || call.subcommand == "checklist-history" || call.subcommand == "summary") || call.command == "inbox" && (call.subcommand == "thread" || call.subcommand == "read") {
