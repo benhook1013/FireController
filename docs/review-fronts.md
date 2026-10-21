@@ -41,3 +41,7 @@ The optional `review_fronts` schema version one owns a project/channel current-f
 Delivery and Reviews share one bounded local front read. A response must match the displayed current workspace and relevant PR identities before a front badge is shown. Current round closure remains separate from source position. Queued means an established position behind a channel's known front, not a promise that all provider or admission checks would pass. Historical snapshot pages do not present current front state as historical permission.
 
 Proof covers different channel fronts, blocking predecessors, incoming routes/evidence, closure/taper and policy changes, incomplete-prefix exhaustion, source failure, concurrent configuration/display changes, retirement, restart/backup/restore validation and scope isolation. Provider call counts stay unchanged. Browser proof covers mixed/unknown states, stale responses and narrow layouts; no live provider or operational cutover claim follows from synthetic fixtures.
+
+## Queue display during an operator stop
+
+An operator review-dispatch stop or absent provider frame does not erase the visible local queue position. The browser can identify each channel’s first stored open entry with remaining rounds from the matching queue snapshot and current round controls. It stops at an unloaded or unknown predecessor rather than guessing. Review front, Queued and Review closed remain queue explanations; none authorizes a request or establishes fresh provider readiness. The operator stop is not an additional ordinary PR status.

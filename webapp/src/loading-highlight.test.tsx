@@ -9,7 +9,7 @@ import { WorkspaceContext, type Session } from './workspace';
 import type { ReviewFinding, ReviewPullSummary, ReviewRunSummary, Worker } from './types';
 
 const run: ReviewRunSummary = { source: 'import', id: 'snapshot_local_run_one', pull_number: 7, source_run_id: 'original_run', channel: 'cli', head_sha: 'old_head', reviewer: 'reviewer', scope: 'patch', coverage_limits: [], outcome: 'completed', attributable: true, complete: true, started_at: '2026-10-18T00:00:00Z', finished_at: '2026-10-18T00:01:00Z', found: 2, accepted: 1, routed: 0, finalized: true, fixed: 0 };
-const pull: ReviewPullSummary = { number: 7, title: 'Project changes', state: 'open', head_sha: 'current_head', base_ref: 'main', base_sha: 'base_head', ci_state: 'pending', mergeability: 'mergeable', complete: true, run_count: 1, attempt_count: 1, recent_runs: [run], latest_attempts: [] };
+const pull: ReviewPullSummary = { number: 7, title: 'Project changes', state: 'open', head_sha: 'current_head', base_ref: 'main', base_sha: 'base_head', ci_state: 'pending', mergeability: 'mergeable', complete: true, run_count: 1, run_counts: { hosted: 0, cli: 1, subagent: 0, manual: 0 }, attempt_count: 1, recent_runs: [run], latest_attempts: [] };
 const finding: ReviewFinding = { source_finding_id: 'original_finding', title: 'Finding', detail: 'Detail', severity: 'medium', disposition: 'accepted', decision_reason: 'Verified', actor: 'Builder', decided_at: '2026-10-18T00:00:00Z', fix_sha: '', proof_note: '', resolved_at: '' };
 
 function jobsMarkup(inboxWorker: Worker | null) {

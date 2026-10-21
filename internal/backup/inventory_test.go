@@ -641,7 +641,7 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 					statements = append(statements, `ALTER TABLE review_operations DROP COLUMN capability_fingerprint`)
 				}
 			case "review_evidence":
-				statements = []string{`DROP TABLE review_hosted_observations`}
+				statements = []string{`DROP INDEX review_evidence_hosted_publication`, `DROP INDEX review_evidence_hosted_run`, `DROP TABLE review_hosted_observations`}
 				if test.version == 1 {
 					statements = append(statements, `DROP INDEX review_evidence_operation`)
 				}

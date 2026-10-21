@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { ReviewAttempts, ReviewRunsView } from './review-workspace';
+import { ReviewAttempts, ReviewQueueRow, ReviewRunsView } from './review-workspace';
+import { MergeHeadContent } from './delivery';
+import type { ReactNode } from 'react';
 import { WorkspaceContext, type Session } from './workspace';
-import type { ReviewAttemptItem, ReviewAttemptSummary, ReviewRunSummary } from './types';
+import type { ReviewAttemptItem, ReviewAttemptSummary, ReviewRunCounts, ReviewRunSummary, ReviewPullSummary, ReviewQueue } from './types';
 import type { ReviewRoundProgress } from './review-progress';
 
 // Start at the loaded view boundary, in native newest-first producer order.
@@ -24,13 +26,13 @@ const run = (id: string, channel: 'hosted' | 'cli', changes: Partial<ReviewRunSu
 });
 const progress: ReviewRoundProgress = { channel: 'hosted', configured: true, revision: 1, epoch: 1, closed: false,
   minimum: 0, maximum: 8, taper: 2, used: 5, dry: 2, tapered: true, pending: 0 };
-function markup(compact = true, attempts: ReviewAttemptSummary[] = [], expanded = false) {
+function markup(compact = true, attempts: ReviewAttemptSummary[] = [], expanded = false, channelTotals: ReviewRunCounts = { hosted: archive.items.filter(item => item.channel === 'hosted').length, cli: archive.items.filter(item => item.channel === 'cli').length, manual: 0, subagent: 0 }, content?: ReactNode) {
   const reviewRuns = vi.fn();
   const reviewAttempts = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const session = { api: { reviewRuns, reviewAttempts }, controller: new AbortController() } as unknown as Session;
+  const session = { project: {id: 'project', repository: 'example/project'}, api: { reviewRuns, reviewAttempts }, controller: new AbortController() } as unknown as Session;
   try {
-    return renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key: ['fixture'], home: '/projects/project', ready: true, fail: () => {}, selectWorker: () => {} }}>{expanded ? <ReviewAttempts number={7} snapshot="snapshot" expected={archive.items.length} /> : <ReviewRunsView number={7} snapshot="snapshot" head="head" attempts={attempts} expected={archive.items.length} compact={compact} progress={{ pull_number: 7, channels: [progress] }} />}</WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);
+    return renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key: ['fixture'], home: '/projects/project', ready: true, fail: () => {}, selectWorker: () => {} }}>{content ?? (expanded ? <ReviewAttempts number={7} snapshot="snapshot" expected={archive.items.length} /> : <ReviewRunsView number={7} snapshot="snapshot" head="head" attempts={attempts} expected={archive.items.length} compact={compact} channelTotals={channelTotals} progress={{ pull_number: 7, channels: [progress] }} />)}</WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);
   } finally { expect(reviewRuns).not.toHaveBeenCalled(); expect(reviewAttempts).not.toHaveBeenCalled(); client.clear(); }
 }
 function links(html: string) { return [...html.matchAll(/aria-label="Open (?:hosted|cli) run ([^:]+):/gu)].map(match => match[1]); }
@@ -46,19 +48,60 @@ describe('merge-head recent review rounds', () => {
     expect(html).toContain('<strong>5/2/1</strong>'); expect(html).not.toContain('Load more');
     expect(links(markup(false))).toEqual(['h1', 'h2', 'h3', 'h4', 'h5', 'c1', 'c2', 'c3', 'c4']);
   });
+  it('renders the actual normal PR item in the hero with the same six-round preview and contextual footer', () => {
+    archive.items = Array.from({length: 8}, (_, index) => run(`h${8-index}`, 'hosted'));
+    archive.hasMore = true;
+    const counts = {hosted: 27, cli: 1, manual: 8, subagent: 2};
+    const pull: ReviewPullSummary = {number: 7, title: '<Literal PR title>', state: 'open', head_sha: 'head', base_ref: 'main', base_sha: 'base', ci_state: 'success', mergeability: 'mergeable', complete: true, run_count: 38, run_counts: counts, attempt_count: 0, latest_attempts: [], recent_runs: [], diff: {files: 3, additions: 20, deletions: 4}};
+    const queue: ReviewQueue = {project_id: 'project', revision: 1, snapshot_id: 'snapshot', source: 'fixture', observed_at: '', recorded_at: '', configured: true, items: [pull], has_more: false};
+    const normal = markup(false, [], false, counts, <ul className="review-queue"><ReviewQueueRow pull={pull} snapshot="snapshot" order={{index: 0, distance: 1}} /></ul>);
+    const hero = markup(false, [], false, counts, <MergeHeadContent queue={queue} home="/projects/project" />);
+    const body = (value: string) => value.slice(value.indexOf('<div class="review-queue-content">'), value.lastIndexOf('<a class="review-details-link"'));
+    expect(body(hero)).toBe(body(normal));
+    expect(links(hero)).toEqual(['h3','h4','h5','h6','h7','h8']);
+    expect(hero).toContain('27 runs</span>'); expect(hero).toContain('Manual reviews'); expect(hero).toContain('8 runs</span>');
+    expect(hero).not.toContain(' · latest 3'); expect(hero).not.toContain('delivery-head-history');
+    expect(hero).not.toContain('review-queue-position'); expect(hero).not.toContain('id="review-pr-7"');
+    expect(normal).toContain('review-queue-position'); expect(normal).toContain('id="review-pr-7"');
+    expect(hero).toContain('&lt;Literal PR title&gt;');
+    for (const value of [normal, hero]) {
+      expect(value).toContain('class="badge review-fact-pill review-diff"');
+      expect(value).toContain('class="badge review-fact-pill review-ci"');
+      expect(value).toContain('class="badge review-fact-pill review-mergeability"');
+      expect(value).toContain('review-additions">+20'); expect(value).toContain('review-deletions">−4');
+    }
+    expect(hero).toContain('href="/projects/project#review-pr-7"'); expect(hero).toContain('>Review queue ↗</a>');
+    expect(hero).not.toContain('Review details ↗'); expect(normal).toContain('Review details ↗');
+  });
   it('caps queue previews independently at the newest six without losing producer order or totals', () => {
     archive.items = Array.from({length:8}, (_, index) => 8-index).flatMap(index => [run(`h${index}`, 'hosted'), run(`c${index}`, 'cli')]);
     archive.hasMore = false;
     const html = markup(false);
     expect(links(html)).toEqual(['h3','h4','h5','h6','h7','h8','c3','c4','c5','c6','c7','c8']);
-    expect(html).toContain('8 runs · recent'); expect(html).not.toContain('Load more');
+    expect(html).toContain('8 runs</span>'); expect(html).not.toContain(' · recent'); expect(html).not.toContain('Load more');
+  });
+  it('uses exact supplied channel totals independently of the fetched preview', () => {
+    archive.items = [run('h4', 'hosted'), run('h3', 'hosted'), run('h2', 'hosted'), run('h1', 'hosted')];
+    archive.hasMore = true;
+    const totals = { hosted: 27, cli: 1, manual: 8, subagent: 2 };
+    const hero = markup(true, [], false, totals);
+    expect(hero).toContain('27 runs · latest 3');
+    expect(hero).toContain('1 run</span>');
+    expect(hero).not.toContain('4 runs loaded');
+    expect(links(hero)).toEqual(['h2', 'h3', 'h4']);
+    const queue = markup(false, [], false, totals);
+    for (const label of ['27 runs', '1 run', '8 runs', '2 runs']) expect(queue).toContain(`${label}</span>`);
+    expect(queue).not.toContain(' · latest 3');
+    expect(queue).not.toContain(' loaded</span>');
+    expect(queue).toContain('No rounds in this preview.');
+    expect(links(queue)).toEqual(['h1', 'h2', 'h3', 'h4']);
   });
   it('keeps partial coverage, absent channels and unknown attribution honest without fetching more', () => {
     archive.items = [run('unknown', 'hosted', { head_sha: '', finished_at: '', complete: false, attributable: false, finalized: false }), run('h3', 'hosted'), run('h2', 'hosted'), run('h1', 'hosted')];
     archive.hasMore = true;
     const html = markup();
     expect(links(html)).toEqual(['h2', 'h3', 'unknown']);
-    expect(html).toContain('4 runs loaded · latest 3'); expect(html).toContain('No rounds in loaded pages. Coverage is unknown.');
+    expect(html).toContain('4 runs · latest 3'); expect(html).not.toContain(' loaded</span>'); expect(html).toContain('No rounds recorded. Coverage is unknown.');
     for (const text of ['Date unknown', 'Incomplete record', 'Counts not finalized', 'Attribution unconfirmed', 'Head association unknown']) expect(html).toContain(text);
     expect(html).not.toContain('Current cli round limits'); expect(html).not.toContain('Load more');
   });

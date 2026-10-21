@@ -42,6 +42,7 @@ type Pull struct {
 	Deletions    *int64 `json:",omitempty"`
 	IsDraft      *bool  `json:",omitempty"`
 	MergedAt     string `json:",omitempty"`
+	Mergeability string `json:",omitempty"`
 }
 
 type IssueComment struct {

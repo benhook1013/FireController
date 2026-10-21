@@ -111,6 +111,9 @@ func queue(store *core.Store) http.HandlerFunc {
 				}
 				item.Diff, item.IsDraft, item.MergedAt = m.Diff, m.IsDraft, m.MergedAt
 				item.Complete = complete != 0
+				if err := fillChannelRunCounts(ctx, tx, scope.ProjectID, meta, &item); err != nil {
+					return err
+				}
 				if err := strictStoredJSON(recentJSON, &item.RecentRuns); err != nil {
 					return err
 				}
@@ -186,6 +189,9 @@ func pull(store *core.Store) http.HandlerFunc {
 			}
 			response.Pull.Diff, response.Pull.IsDraft, response.Pull.MergedAt = m.Diff, m.IsDraft, m.MergedAt
 			response.Pull.Complete = complete != 0
+			if err := fillChannelRunCounts(ctx, tx, scope.ProjectID, meta, &response.Pull); err != nil {
+				return err
+			}
 			if err := strictStoredJSON(recentJSON, &response.Pull.RecentRuns); err != nil {
 				return err
 			}

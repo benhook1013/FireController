@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Pager, ReadState, signalFor, usePaging, useWorkspace } from './workspace';
@@ -8,16 +8,16 @@ import { EditorialMarkdown } from './editorial-markdown';
 import type { JobWorkstream, ProjectMapEntry, ProjectMapKind, ProjectMapSummary, ProjectMapHistorySummary, ProjectMapRevision } from './types';
 
 const pageSize = 20;
-const entryPath = (home: string, id: string) => `${home}/map/entries/${encodeURIComponent(id)}`;
+const entryPath = (home: string, id: string) => `${home}/project/entries/${encodeURIComponent(id)}`;
 const date = (value: string) => new Date(value).toLocaleString();
 
-export function ProjectMap() {
+export function ProjectMap({ headerActions }: { headerActions?: ReactNode }) {
   const label = useProjectHeading('map');
   const [kind, setKind] = useState<ProjectMapKind | ''>('');
   const [archived, setArchived] = useState(false);
   const [catalogueOpen, setCatalogueOpen] = useState(false);
   return <section className="project-editorial">
-    <header className="project-editorial-heading"><h2>{label}</h2></header>
+    <header className="project-editorial-heading"><h2>{label}</h2>{headerActions}</header>
     <div className="panel project-map-body">
     <ProjectEditorial />
     <details className="editorial-catalogue" onToggle={event => setCatalogueOpen(event.currentTarget.open)}>
@@ -108,7 +108,7 @@ export function ProjectMapEntryView() {
   const { session, key, home } = useWorkspace();
   const [history, setHistory] = useState(false);
   const query = useQuery({ queryKey: [...key, 'map-entry', entryId], queryFn: ({ signal }) => session.api.projectMapEntry(entryId, signalFor(session, signal)), staleTime: Infinity });
-  return <><Link className="back-link" to={`${home}/map`}>← All map entries</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <><MapEntryContent entry={query.data} /><section className="panel"><button type="button" aria-expanded={history} onClick={() => setHistory(value => !value)}>{history ? 'Close map history' : 'Show map history'}</button>{history && <MapHistory key={entryId} entryId={entryId} />}</section></>}</ReadState></>;
+  return <><Link className="back-link" to={`${home}/project`}>← Project</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <><MapEntryContent entry={query.data} /><section className="panel"><button type="button" aria-expanded={history} onClick={() => setHistory(value => !value)}>{history ? 'Close map history' : 'Show map history'}</button>{history && <MapHistory key={entryId} entryId={entryId} />}</section></>}</ReadState></>;
 }
 
 function MapHistory({ entryId }: { entryId: string }) {

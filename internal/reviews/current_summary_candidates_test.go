@@ -140,7 +140,7 @@ func TestCurrentRunOrderUpgradeBackfillAndCorruptSourceRollback(t *testing.T) {
 			t.Fatal("v5 current-order migration failed", err)
 		}
 		var version string
-		if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "8" {
+		if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "10" {
 			t.Fatal("new review schema version not installed", version, err)
 		}
 		if err := ValidateCurrentRunOrder(t.Context(), f.store.DB()); err != nil {

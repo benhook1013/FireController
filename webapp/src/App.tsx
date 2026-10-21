@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import type { FormEvent } from 'react';
-import { Link, NavLink, Route, Routes, matchPath, useBlocker, useLocation, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
+import { Link, NavLink, Navigate, Route, Routes, matchPath, useBlocker, useLocation, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
 import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Api, ApiError, type BrowserSessionView } from './api';
 import { WorkspaceContext, useWorkspace, signalFor, usePaging, Pager, ReadState, errorText } from './workspace';
@@ -15,7 +15,7 @@ import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView } from '.
 import { ContextualNotes } from './contextual-notes';
 import { EditorialMarkdown } from './editorial-markdown';
 import { githubRepositoryURL } from './github-links';
-import { Delivery, DeliveryHero } from './delivery';
+import { Delivery, DeliveryHero, DeliveryWork } from './delivery';
 import { jobFilterSearch, readJobFilters, type JobFilters } from './job-navigation';
 import { refreshEventQueries } from './queries';
 import { ReviewQueueView, ReviewPullView, ReviewRunView } from './review-workspace';
@@ -286,6 +286,22 @@ function PublishedOverviewUnavailable({ historical = false }: { historical?: boo
   return <section className="panel empty"><h2>{historical ? 'Published page unavailable' : 'No published overview'}</h2><p>{historical ? 'This revision is no longer available.' : 'This project has no published overview yet.'}</p></section>;
 }
 
+export function ProjectPage() {
+  const { session, home } = useWorkspace();
+  const [search] = useSearchParams();
+  const published = search.get('view') === 'public';
+  const label = useProjectHeading('map');
+  const actions = <div className="project-view-actions"><span className="badge neutral">{published ? 'Public version' : 'Working version'}</span><Link className="review-details-link" to={`${home}/project${published ? '' : '?view=public'}`}>{published ? 'Back to working version' : 'View public version'} ↗</Link></div>;
+  return published ? <><header className="project-editorial-heading"><h2>{label}</h2>{actions}</header><PublicProjectAddress address={projectAddress(session.project)} embedded theme={false} fallback={<PublishedOverviewUnavailable />} /></> : <><ProjectMap headerActions={actions} /><DeliveryWork /><ReviewQueueView embedded /></>;
+}
+
+function FormerProjectMap() {
+  const { home } = useWorkspace();
+  const location = useLocation();
+  const suffix = location.pathname.slice(`${home}/map`.length);
+  return <Navigate replace to={`${home}/project${suffix}${location.search}${location.hash}`} />;
+}
+
 function ProjectPublishedHistory() {
   const { session } = useWorkspace(), { revision } = useParams(), [search] = useSearchParams();
   const number = Number(revision), generation = search.get('generation') ?? undefined;
@@ -366,11 +382,13 @@ export function ProjectUpdateNotice({ status, reconnect }: { status: LiveStatus;
 
 export function Workspace({ session, metadataStatus, reconnectProjectUpdates, selectWorker, fail }: { session: Session; metadataStatus: LiveStatus; reconnectProjectUpdates(): void; selectWorker(worker: Worker | null): void; fail(error: unknown): void }) {
   const presentation = usePresentation();
-  const jobsHeading = useProjectHeading('jobs'), workersHeading = useProjectHeading('workers'), inboxHeading = useProjectHeading('inbox'), reviewsHeading = useProjectHeading('reviews'), mapHeading = useProjectHeading('map');
+  const jobsHeading = useProjectHeading('jobs'), workersHeading = useProjectHeading('workers'), inboxHeading = useProjectHeading('inbox'), reviewsHeading = useProjectHeading('reviews'), projectHeading = useProjectHeading('map');
   const queryClient = useQueryClient();
   const key = useMemo(() => ['fc', session.nonce, session.instanceId, session.project.id, session.worker?.id ?? ''] as const, [session]);
   const home = projectHome(session.project);
-  const pathname = useLocation().pathname;
+  const location = useLocation();
+  const pathname = location.pathname;
+  const publicPreview = pathname === `${home}/project` && new URLSearchParams(location.search).get('view') === 'public';
   const inboxArea = pathname === `${home}/inbox` || pathname.startsWith(`${home}/inbox/`);
   const [live, setLive] = useState<LiveStatus>('connecting');
   const [ready, setReady] = useState(false);
@@ -413,12 +431,12 @@ export function Workspace({ session, metadataStatus, reconnectProjectUpdates, se
   const value = useMemo(() => ({ session, key, home, selectWorker, fail: onFailure, ready }), [session, key, home, selectWorker, onFailure, ready]);
   const liveLabel = !session.worker ? 'Choose a worker' : live === 'live' ? 'Live inbox connected' : live === 'reconnecting' ? 'Reconnecting inbox…' : live === 'closed' ? 'Inbox disconnected' : 'Connecting inbox…';
   return <WorkspaceContext.Provider value={value}><main className="workspace">
-    <DeliveryHero><ProjectIdentityHero name={presentation?.name ?? session.project.name} repository={session.project.repository} /></DeliveryHero>
-    <nav className="navigation" aria-label="Project navigation"><NavLink to={`${home}/project`}>Project</NavLink><NavLink to={home} end>Delivery</NavLink><NavLink to={`${home}/jobs`}>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink><NavLink to={`${home}/map`}>{mapHeading === 'Project' ? 'Project map' : mapHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}</nav>
+    {!publicPreview && <DeliveryHero><ProjectIdentityHero name={presentation?.name ?? session.project.name} repository={session.project.repository} /></DeliveryHero>}
+    <nav className="navigation" aria-label="Project navigation"><NavLink to={`${home}/project`}>{projectHeading}</NavLink><NavLink to={home} end>Delivery</NavLink><NavLink to={`${home}/jobs`}>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink><NavLink to={`${home}/reviews`}>{reviewsHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}</nav>
     <ProjectUpdateNotice status={metadataStatus} reconnect={reconnectProjectUpdates} />
     {unresolved > 0 && <p className="notice" role="status">{unresolved} pending or uncertain action{unresolved === 1 ? '' : 's'} retained in this connection. Return to the original worker and view to retry before reloading or disconnecting.</p>}
     <div className={inboxArea ? 'workspace-grid' : 'project-main'}>{inboxArea && <aside className="sidebar"><WorkerList compact /><section className="feed-card" aria-label="Inbox connection"><span className={`status-dot ${live === 'live' && session.worker ? 'online' : ''}`} /><strong role="status">{liveLabel}</strong><p>{session.worker ? session.worker.name : 'Select a worker to follow incoming messages.'}</p>{Boolean(feedError) && <><p className="error-copy">{errorText(feedError)}</p><button type="button" onClick={() => { setReady(false); setAttempt(value => value + 1); }}>Reconnect inbox</button></>}</section></aside>}
-      <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Delivery />} /><Route path="/projects/:projectId/project" element={<PublicProjectAddress address={projectAddress(session.project)} embedded theme={false} fallback={<PublishedOverviewUnavailable />} />} /><Route path="/projects/:projectId/published/history/:revision" element={<ProjectPublishedHistory />} /><Route path="/projects/:projectId/jobs" element={<Jobs />} /><Route path="/projects/:projectId/settings" element={<ProjectSettings />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/workers/:workerId" element={<WorkerCoordinationView />} /><Route path="/projects/:projectId/notes" element={<NotesView />} /><Route path="/projects/:projectId/notes/:noteId" element={<NoteView />} /><Route path="/projects/:projectId/notes/:noteId/history/:revision" element={<NoteRevisionView />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/history" element={<ReviewQueueView key="history" history />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="/projects/:projectId/map" element={<ProjectMap />} /><Route path="/projects/:projectId/map/entries/:entryId" element={<ProjectMapEntryView />} /><Route path="/projects/:projectId/map/entries/:entryId/history/:revision" element={<ProjectMapRevisionView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to Delivery</Link></section>} /></Routes></div></div>
+      <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Delivery />} /><Route path="/projects/:projectId/project" element={<ProjectPage />} /><Route path="/projects/:projectId/published/history/:revision" element={<ProjectPublishedHistory />} /><Route path="/projects/:projectId/jobs" element={<Jobs />} /><Route path="/projects/:projectId/settings" element={<ProjectSettings />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/workers/:workerId" element={<WorkerCoordinationView />} /><Route path="/projects/:projectId/notes" element={<NotesView />} /><Route path="/projects/:projectId/notes/:noteId" element={<NoteView />} /><Route path="/projects/:projectId/notes/:noteId/history/:revision" element={<NoteRevisionView />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/history" element={<ReviewQueueView key="history" history />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="/projects/:projectId/map/*" element={<FormerProjectMap />} /><Route path="/projects/:projectId/project/entries/:entryId" element={<ProjectMapEntryView />} /><Route path="/projects/:projectId/project/entries/:entryId/history/:revision" element={<ProjectMapRevisionView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to Delivery</Link></section>} /></Routes></div></div>
   </main></WorkspaceContext.Provider>;
 }
 

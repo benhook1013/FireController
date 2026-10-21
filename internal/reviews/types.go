@@ -158,6 +158,7 @@ type PullSummary struct {
 	Mergeability   string           `json:"mergeability"`
 	Complete       bool             `json:"complete"`
 	RunCount       int64            `json:"run_count"`
+	RunCounts      ChannelRunCounts `json:"run_counts"`
 	AttemptCount   int64            `json:"attempt_count"`
 	RecentRuns     []RunSummary     `json:"recent_runs"`
 	LatestAttempts []AttemptSummary `json:"latest_attempts"`

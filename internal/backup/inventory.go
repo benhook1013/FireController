@@ -223,8 +223,9 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 8, "review_policy": 1, "review_execution": 7, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "review_rounds": 3, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 10, "review_policy": 1, "review_execution": 7, "review_execution_indexes": 1, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_route_policy": 1, "review_rounds": 3, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"review_hosted_discovery_state":     {"reviews", 10, "project_id repository_id pull_number cutoff_at initialized_at"},
 	"job_progress":                      {"jobs", 8, "project_id job_id job_revision summary next blocker evidence_json"},
 	"job_progress_history":              {"jobs", 8, "sequence id project_id job_id job_revision actor_id worker_id summary next blocker evidence_json created_at"},
 	"project_handles":                   {"project_handles", 1, "project_id handle"},
@@ -603,6 +604,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, err
 		}
 	}
+	if err = validateExternalHostedEvidenceIndexes(ctx, db, versions["review_evidence"]); err != nil {
+		return nil, err
+	}
 	if versions["review_comparison"] > 0 {
 		if err = validateComparisonPhysicalSchema(ctx, db); err != nil {
 			return nil, err
@@ -651,6 +655,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			continue
 		}
 		columns := spec.columns
+		if name == "review_current_totals" && versions["reviews"] >= 9 {
+			columns += " hosted_run_count cli_run_count subagent_run_count manual_run_count"
+		}
 		if name == "review_attempt_versions" && versions["reviews"] >= 8 {
 			columns += " reason"
 		}
@@ -917,6 +924,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["reviews"] >= 6 {
 		if err = reviews.ValidateCurrentRunOrder(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["reviews"] >= 10 {
+		if err = reviews.ValidateExternalHostedFrontiers(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
 				return unavailable()
 			}
@@ -1224,12 +1239,20 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version in
 	}
 	expectedTables, expectedObjects := 13, 22
 	if version >= 5 {
-		definitions = append(definitions, reviews.CurrentSummarySchemaSQL()...)
+		if version >= 9 {
+			definitions = append(definitions, reviews.CurrentSummarySchemaSQL()...)
+		} else {
+			definitions = append(definitions, reviews.CurrentSummarySchemaSQLV8()...)
+		}
 		expectedTables, expectedObjects = 15, 25
 	}
 	if version >= 6 {
 		definitions = append(definitions, reviews.CurrentRunOrderSchemaSQL()...)
 		expectedTables, expectedObjects = 16, 27
+	}
+	if version >= 10 {
+		definitions = append(definitions, reviews.ExternalHostedSchemaSQL()...)
+		expectedTables, expectedObjects = 17, 29
 	}
 	for _, definition := range definitions {
 		fields := strings.Fields(definition)
@@ -1521,6 +1544,7 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"review_current_runs":             {canonicalFK("review_run_memberships", "project_id,id,start_revision,pull_number,run_order", "project_id,id,start_revision,pull_number,run_order", "NO ACTION")},
 	"review_current_attempts":         {canonicalFK("review_attempt_memberships", "project_id,source,source_attempt_id,start_revision,pull_number,position", "project_id,source,source_attempt_id,start_revision,pull_number,position", "NO ACTION")},
 	"review_current_retired":          {canonicalFK("review_retired_memberships", "project_id,number,start_revision,position", "project_id,number,start_revision,position", "NO ACTION")},
+	"review_hosted_discovery_state":   {canonicalFK("projects", "project_id", "id", "CASCADE")},
 	"review_current_totals":           {canonicalFK("review_current_pulls", "project_id,pull_number", "project_id,number", "CASCADE")},
 	"review_current_attempt_order":    {canonicalFK("review_current_attempts", "project_id,source,source_attempt_id", "project_id,source,source_attempt_id", "CASCADE")},
 	"review_current_run_order":        {canonicalFK("review_current_runs", "project_id,id", "project_id,id", "CASCADE")},
@@ -1625,6 +1649,39 @@ func validateCoordinationMessagesPhysicalSchema(ctx context.Context, db sqlReade
 		count++
 	}
 	if rows.Err() != nil || count != 1 {
+		return invalid()
+	}
+	return nil
+}
+
+// Only schema four owns these exact JSON identity indexes. Older evidence
+// bundles keep their genuine layout and are never upgraded during inspection.
+func validateExternalHostedEvidenceIndexes(ctx context.Context, db sqlReader, version int) error {
+	expected := map[string]string{}
+	if version >= 4 {
+		for _, definition := range reviewexec.ExternalHostedEvidenceIndexSQL() {
+			fields := strings.Fields(definition)
+			if len(fields) < 3 {
+				return invalid()
+			}
+			expected[fields[2]] = historyDefinitionSQL(definition)
+		}
+	}
+	rows, err := db.QueryContext(ctx, `SELECT name,CASE WHEN length(CAST(sql AS BLOB))<=4096 THEN sql ELSE NULL END FROM sqlite_schema WHERE name IN ('review_evidence_hosted_publication','review_evidence_hosted_run') LIMIT 3`)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var name string
+		var definition sql.NullString
+		if rows.Scan(&name, &definition) != nil || !definition.Valid || seen[name] || expected[name] == "" || expected[name] != historyDefinitionSQL(definition.String) {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
 		return invalid()
 	}
 	return nil

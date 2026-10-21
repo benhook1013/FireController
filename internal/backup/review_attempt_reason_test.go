@@ -60,17 +60,18 @@ func TestReviewAttemptReasonNativeJournalBackupRetainsPinnedProjection(t *testin
 }
 
 func TestReviewAttemptReasonBackupRoundTripAndSchema7Inspection(t *testing.T) {
-	for _, version := range []string{"7", "8"} {
+	for _, version := range []string{"7", "9"} {
 		t.Run(version, func(t *testing.T) {
 			f := historyInventoryAPIFixture(t)
 			revision := int64(0)
 			p := reviews.PullInput{Number: 1, Title: "Retained attempts", State: "open", CIState: "unknown", Mergeability: "unknown", Attempts: []reviews.Attempt{{SourceAttemptID: "older", Channel: "hosted", State: "uncertain", StartedAt: "2026-01-01T00:00:00Z"}, {SourceAttemptID: "latest", Channel: "hosted", State: "held", StartedAt: "2026-01-01T00:01:00Z"}}}
-			if version == "8" {
+			if version == "9" {
 				p.Attempts[0].Reason = "hosted_finished_inventory_unproven"
 				p.Attempts[1].Reason = "repository_changed"
 			}
 			f.request(t, http.MethodPost, "/api/v1/projects/"+f.project+"/reviews/observations", reviews.ObservationRequest{ExpectedRevision: &revision, RepositoryID: 991, Source: "attempt-source", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Queue: []reviews.PullInput{p}})
 			if version == "7" {
+				removeChannelRunCountsForLegacyFixture(t, f.store)
 				for _, statement := range []string{`DROP VIEW review_attempts`, `ALTER TABLE review_attempt_versions DROP COLUMN reason`, reviews.HistoryReadViewSQLV7()["review_attempts"], `UPDATE metadata SET value='7' WHERE key='schema:reviews'`} {
 					if _, err := f.store.DB().Exec(statement); err != nil {
 						t.Fatal(err)
@@ -98,7 +99,7 @@ func TestReviewAttemptReasonBackupRoundTripAndSchema7Inspection(t *testing.T) {
 					t.Fatal("retained attempt data changed", table)
 				}
 			}
-			if version == "8" {
+			if version == "9" {
 				if err := reviews.ValidateAttemptReasonsHistory(t.Context(), db); err != nil {
 					t.Fatal(err)
 				}
@@ -110,7 +111,7 @@ func TestReviewAttemptReasonBackupRoundTripAndSchema7Inspection(t *testing.T) {
 			if !reflect.DeepEqual(before, backupRows(t, f.store.DB())) || !reflect.DeepEqual(immutable, restoreTree(t, bundle.Path)) {
 				t.Fatal("inspection changed source/bundle")
 			}
-			if version == "8" {
+			if version == "9" {
 				mutateBundleSQL(t, bundle.Path, `UPDATE review_attempt_versions SET reason=? WHERE source_attempt_id='older'`, strings.Repeat("unsafe/", 2))
 				if _, err := Inspect(t.Context(), bundle.Path); err == nil {
 					t.Fatal("rehashed nonwinning diagnostic corruption accepted")

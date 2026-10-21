@@ -17,6 +17,24 @@ type sourceReaderProvider interface {
 	SourceReader() reviewexec.TargetReader
 }
 
+type externalHostedSourceProvider interface {
+	HostedObservationReader() reviewexec.ExternalHostedReader
+}
+
+func lifecycleReader(driver reviewexec.Driver, fallback reviewexec.TargetReader) reviewexec.TargetReader {
+	if provider, ok := driver.(externalHostedSourceProvider); ok {
+		if reader := provider.HostedObservationReader(); reader != nil {
+			return reader
+		}
+	}
+	if combined, ok := driver.(*reviewChannelDriver); ok && combined.hosted != nil {
+		if reader := combined.hosted.HostedObservationReader(); reader != nil {
+			return reader
+		}
+	}
+	return fallback
+}
+
 // Review-attempt recovery commits before any observer starts. All worker
 // startup completes before HTTP accepts work; the returned owner joins the
 // supervisor, source/publication workers and observers.
@@ -72,6 +90,19 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 		}
 		if startupErr == nil {
 			done, err = execution.StartSourceRefresh(workerCtx, readers)
+			if err != nil {
+				startupErr = err
+				cancel()
+			} else if done != nil {
+				channels = append(channels, worker{done: done})
+			}
+		}
+		if startupErr == nil {
+			lifecycleReaders := make(map[string]reviewexec.TargetReader, len(readers))
+			for id, reader := range readers {
+				lifecycleReaders[id] = lifecycleReader(drivers[id], reader)
+			}
+			done, err = execution.StartLifecycleSync(workerCtx, lifecycleReaders)
 			if err != nil {
 				startupErr = err
 				cancel()

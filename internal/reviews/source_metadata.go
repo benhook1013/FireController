@@ -61,6 +61,10 @@ func PinSourceMetadata(ctx context.Context, tx *sql.Tx, project string, numbers 
 // whose display facts still match their pre-I/O pin can change. Every evidence
 // record, queue position, retirement and historical snapshot remains retained.
 func PublishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, repositoryID int64, pins map[int64]SourceMetadataPin, pulls []PullInput) (Receipt, error) {
+	return publishSourceMetadata(ctx, tx, scope, repositoryID, pins, pulls, nil)
+}
+
+func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, repositoryID int64, pins map[int64]SourceMetadataPin, pulls []PullInput, statuses map[int64]SourceStatus) (Receipt, error) {
 	if len(pulls) > maxQueuePulls {
 		return Receipt{}, validationError("Select a bounded source prefix.")
 	}
@@ -107,6 +111,9 @@ func PublishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 		if err != nil {
 			return Receipt{}, err
 		}
+		if _, err := ReadPullMetadata(old[12].(string), old[1].(string)); err != nil {
+			return Receipt{}, err
+		}
 		if sourceMetadataFingerprint(old) != pin.fingerprint {
 			continue
 		}
@@ -126,6 +133,12 @@ func PublishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 		if old[2] == pull.HeadSHA && old[3] == pull.BaseRef && old[4] == pull.BaseSHA {
 			pull.CIState, _ = old[5].(string)
 			pull.Mergeability, _ = old[6].(string)
+		}
+		if status, ok := statuses[pull.Number]; ok {
+			pull.Mergeability = status.Mergeability
+			if status.CIState != "" {
+				pull.CIState = status.CIState
+			}
 		}
 		if err = validateObservationContent([]PullInput{pull}, nil, true); err != nil {
 			return Receipt{}, err

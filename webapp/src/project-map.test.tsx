@@ -13,7 +13,7 @@ describe('read-only project map components', () => {
     expect(html).toContain('Workstream · Archived');
     expect(html).toContain('Revision 4');
     expect(html).toContain('&lt;script&gt;Literal title&lt;/script&gt;');
-    expect(html).toContain('href="/projects/project_one/map/entries/entry_one"');
+    expect(html).toContain('href="/projects/project_one/project/entries/entry_one"');
     expect(html).not.toMatch(/PRIVATE_DESCRIPTION|PRIVATE_WHERE|PRIVATE_NEXT|Earlier|https:|<script>/u);
   });
   it('shows captured editorial content and phases literally and rejects executable links', () => {
@@ -58,7 +58,7 @@ describe('read-only project map components', () => {
   it('keeps history summaries compact and labels a deliberately selected full snapshot', () => {
     const row = { revision: 4, actor_id: 'principal_one', created_at: entry.updated_at, state: entry };
     const summaries = renderToStaticMarkup(<MemoryRouter><MapHistoryRows rows={[row]} home={home} entryId={entry.id} /></MemoryRouter>);
-    expect(summaries).toContain('href="/projects/project_one/map/entries/entry_one/history/4"');
+    expect(summaries).toContain('href="/projects/project_one/project/entries/entry_one/history/4"');
     expect(summaries).toContain('Read revision 4');
     expect(summaries).not.toMatch(/PRIVATE_DESCRIPTION|Earlier|Literal title/u);
     const snapshot = renderToStaticMarkup(<MapRevisionContent value={row} />);

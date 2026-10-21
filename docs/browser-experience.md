@@ -34,6 +34,8 @@ Full job briefs, current and historical progress text, checklist text, conversat
 
 ## Editorial Project page
 
+Project is the single overview tab: current working entries when authenticated, approved publication when anonymous. A labelled public preview is available without signing out. The authenticated overview reuses the same review queue as Delivery and Reviews; public review rows reuse its presentation components with only approved public fields. The [shared experience](shared-project-experience.md#one-browser-experience) owns audience selection and publication boundaries.
+
 Project explains what the project is, its direction and progress as a coherent website. It replaces the record catalogue as the primary map presentation. Content has flexible editorial depth: a substantial Markdown section, a short update, an initiative with subsections, a milestone, or contextual deferred direction are all legitimate. Progress, dates, status labels, phases and links are optional aids, not a mandatory checklist shape.
 
 Use readable section hierarchy, generous but purposeful typography/spacing and appropriate full-width narrative, cards or columns. Render the actual content in the page rather than requiring a click through each summary. Do not present every entry as the same boxed database row or surround prose with empty metadata placeholders. Preserve project-configurable appearance, the selected default branding and platform attribution.

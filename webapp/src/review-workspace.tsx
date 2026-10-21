@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from './api';
@@ -8,6 +8,7 @@ import { usePresentation, useProjectHeading } from './presentation-context';
 import { ReviewArchive, type ReviewArchivePage } from './review-archive';
 import { PageSkeleton } from './loading';
 import { RelativeTime } from './relative-time';
+import { ReviewLaneDisplay, ReviewRoundPillDisplay, ReviewRowDisplay } from './review-display';
 import { EditorialMarkdown } from './editorial-markdown';
 import { githubRepositoryURL } from './github-links';
 import './review-queue.css';
@@ -16,7 +17,7 @@ import { useReviewProgress, ReviewProgressView } from './review-progress-view';
 import type { ReviewProgressItem, ReviewRoundProgress } from './review-progress';
 import { currentReviewFronts, reviewQueueBadges, type ReviewFronts, type ReviewQueueBadge } from './review-fronts';
 import { useReviewFronts } from './review-fronts-view';
-import type { Project, ReviewGroup, ReviewAttemptSummary, ReviewAttemptItem, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
+import type { Project, ReviewGroup, ReviewChannel, ReviewRunCounts, ReviewAttemptSummary, ReviewAttemptItem, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
 
 const pageSize = 20;
 function time(value: string): string { return new Date(value).toLocaleString(); }
@@ -48,10 +49,28 @@ function reviewAttemptReason(attempt: ReviewAttemptSummary): string | undefined 
 }
 function ReviewNotice({ history = false }: { history?: boolean }) {
   const { home } = useWorkspace();
-  return <aside className="review-guide" aria-label="Reading the review queue"><h3>Review states</h3><dl><div><dt>Active</dt><dd>Attempt preparing or running</dd></div><div><dt>Cooldown</dt><dd>Provider rate limit</dd></div><div><dt>Held</dt><dd>Attempt stopped by a hold</dd></div><div><dt>Failed / Uncertain</dt><dd>Failure or unconfirmed outcome</dd></div><div><dt>Cancelled</dt><dd>Attempt cancelled</dd></div></dl><p>Attempt states describe retained history. Limits show current settings; neither grants permission to request another review.</p><p className="review-count-key"><strong>Reading rounds:</strong> found / accepted / routed. Highlighted zero-accepted rounds have no accepted findings. {history ? 'Merged PRs are shown in reverse queue order.' : <>Merged PRs from the last 48 hours and the latest two known merges stay here. Full retained history is in <Link to={`${home}/reviews/history`}>Queue history</Link>.</>}</p></aside>;
+  return <aside className="review-guide" aria-label="Reading the review queue"><h3>Review states</h3><dl><div><dt>Active</dt><dd>Attempt preparing or running</dd></div><div><dt>Cooldown</dt><dd>Provider rate limit</dd></div><div><dt>Held</dt><dd>Attempt stopped by a hold</dd></div><div><dt>Failed / Uncertain</dt><dd>Failure or unconfirmed outcome</dd></div><div><dt>Cancelled</dt><dd>Attempt cancelled</dd></div></dl><p className="review-count-key"><strong>Reading rounds:</strong> found / accepted / routed. Highlighted zero-accepted rounds have no accepted findings. {history ? 'Merged PRs are shown in reverse queue order.' : <>Merged PRs from the last 48 hours and the latest two known merges stay here. Full retained history is in <Link to={`${home}/reviews/history`}>Queue history</Link>.</>}</p></aside>;
 }
 function ReviewProvenance({ value }: { value: ReviewSnapshot }) {
   return <div className="review-freshness"><details><summary>Source details</summary><dl><div><dt>Source</dt><dd>{value.source}</dd></div><div><dt>Observed</dt><dd>{time(value.observed_at)}</dd></div><div><dt>Recorded</dt><dd>{time(value.recorded_at)}</dd></div><div><dt>Snapshot</dt><dd><code>{value.snapshot_id}</code> · revision {value.revision}</dd></div></dl></details></div>;
+}
+function ReviewQueueTechnicalDetails({ value }: { value: ReviewSnapshot }) {
+  const details = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const outside = (event: PointerEvent) => {
+      if (details.current?.open && event.target instanceof Node && !details.current.contains(event.target)) details.current.open = false;
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !details.current?.open) return;
+      details.current.open = false;
+      details.current.querySelector('summary')?.focus();
+      event.preventDefault();
+    };
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); };
+  }, []);
+  return <details ref={details} className="review-technical-details"><summary aria-label="Technical details" title="Technical details">ⓘ</summary><dl className="review-technical-popover"><div><dt>Source</dt><dd>{value.source}</dd></div><div><dt title="Timestamp reported by this stored source; individual PR facts can have different ages.">Source timestamp</dt><dd><code>{value.observed_at}</code></dd></div><div><dt title="When this source observation was retained by FireController.">Saved locally</dt><dd><code>{value.recorded_at}</code></dd></div><div><dt>Snapshot</dt><dd><code>{value.snapshot_id}</code> · revision {value.revision}</dd></div></dl></details>;
 }
 type HighlightState = { fingerprint: string; version: number };
 export function nextSemanticHighlight(previous: HighlightState | undefined, fingerprint: string): HighlightState {
@@ -75,7 +94,7 @@ export function runDisplayFingerprint(run: ReviewRunSummary, head: string): stri
 }
 export function pullDisplayFingerprint(pull: ReviewPullSummary): string {
   return JSON.stringify([pull.number, pull.title, pull.state, pull.ci_state, pull.mergeability,
-    pull.diff, pull.is_draft, pull.merged_at, pull.complete, pull.head_sha, pull.run_count, pull.attempt_count,
+    pull.diff, pull.is_draft, pull.merged_at, pull.complete, pull.head_sha, pull.run_count, [pull.run_counts.hosted, pull.run_counts.cli, pull.run_counts.subagent, pull.run_counts.manual], pull.attempt_count,
     pull.latest_attempts.map(attempt => [attempt.channel, attempt.state, attempt.reason, attempt.finished_at || attempt.started_at]),
     pull.recent_runs.map(run => runDisplayFingerprint(run, pull.head_sha))]);
 }
@@ -97,15 +116,13 @@ export function missingPullFacts(pull: ReviewPullSummary): string[] {
   if (!pull.head_sha) missing.push('Head commit was not captured.');
   if (!pull.base_ref) missing.push('Base branch was not captured.');
   if (!pull.base_sha) missing.push('Base commit was not captured.');
-  if (pull.ci_state === 'unknown') missing.push('CI status is unknown.');
-  if (pull.state !== 'merged' && pull.mergeability === 'unknown') missing.push('Mergeability is unknown.');
   if (pull.state === 'unknown') missing.push('Open or closed state is unknown.');
-  if (!pull.complete && !missing.length) missing.push('The source marked this PR incomplete without identifying another missing field.');
+  if (!pull.complete && !missing.length && pull.ci_state !== 'unknown' && (pull.state === 'merged' || pull.mergeability !== 'unknown')) missing.push('The source marked this PR incomplete without identifying another missing field.');
   return missing;
 }
 export function ReviewPullFacts({ pull, status }: { pull: ReviewPullSummary; status?: ReviewQueueBadge }) {
   const missing = missingPullFacts(pull);
-  return <div className="review-pull-facts">{pull.state === 'merged' || pull.state === 'closed' ? <span className={`badge review-state-${pull.state}`}>{reviewLabel(pull.state)}</span> : pull.state === 'open' && status ? <span className={`badge review-position-${status.kind}`} title={status.description}>{status.text}</span> : null}{pull.is_draft === true && pull.state === 'open' && <span className="badge review-state-draft">Draft</span>}{pull.state === 'merged' && pull.merged_at && <strong className="review-merged-age"><RelativeTime value={pull.merged_at} /></strong>}{pull.diff && <span className="review-diff">{pull.diff.files.toLocaleString('en-US')} files · <strong className="review-additions">+{pull.diff.additions.toLocaleString('en-US')}</strong> / <strong className="review-deletions">−{pull.diff.deletions.toLocaleString('en-US')}</strong> lines</span>}<span>CI: {reviewLabel(pull.ci_state)}</span>{pull.state !== 'merged' && <span>Mergeability: {reviewLabel(pull.mergeability)}</span>}{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
+  return <div className="review-pull-facts">{pull.state === 'merged' || pull.state === 'closed' ? <span className={`badge review-state-${pull.state}`}>{reviewLabel(pull.state)}</span> : pull.state === 'open' && status ? <span className={`badge review-position-${status.kind}`} title={status.description}>{status.text}</span> : null}{pull.is_draft === true && pull.state === 'open' && <span className="badge review-state-draft">Draft</span>}{pull.state === 'merged' && pull.merged_at && <strong className="review-merged-age"><RelativeTime value={pull.merged_at} /></strong>}{pull.diff && <span className="badge review-fact-pill review-diff">{pull.diff.files.toLocaleString('en-US')} files · <strong className="review-additions">+{pull.diff.additions.toLocaleString('en-US')}</strong> / <strong className="review-deletions">−{pull.diff.deletions.toLocaleString('en-US')}</strong> lines</span>}<span className="badge review-fact-pill review-ci">CI: {reviewLabel(pull.ci_state)}</span>{pull.state !== 'merged' && <span className="badge review-fact-pill review-mergeability">Mergeability: {reviewLabel(pull.mergeability)}</span>}{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
 }
 // Global stored positions preserve gaps in filtered pages; legacy pages require known predecessors.
 export function reviewQueueDistances(items: ReviewPullSummary[], firstPage: boolean, headPosition?: number): (number | undefined)[] {
@@ -137,14 +154,14 @@ export function ReviewDetailsLink({ number, snapshot }: { number: number; snapsh
   const { home } = useWorkspace();
   return <Link className="review-details-link" to={reviewLink(home, 'pulls', number, snapshot)} aria-label={`Review details for PR #${number}`}>Review details ↗</Link>;
 }
-function ReviewQueueRow({ pull, snapshot, distance, index, progress, fronts }: { pull: ReviewPullSummary; snapshot: string; distance?: number; index: number; progress?: ReviewProgressItem; fronts?: ReviewFronts }) {
+export function ReviewQueueRow({ pull, snapshot, order, progress, fronts, footer, anchor = true }: { pull: ReviewPullSummary; snapshot: string; order?: { distance?: number; index: number }; progress?: ReviewProgressItem; fronts?: ReviewFronts; footer?: ReactNode; anchor?: boolean }) {
   const { session } = useWorkspace();
   const highlight = useSemanticHighlight(pullDisplayFingerprint(pull));
   const external = githubLink(session.project, `pull/${pull.number}`);
-  const position = distance === undefined ? String(index + 1).padStart(2, '0') : formatQueueDistance(distance);
-  const front = distance === 1;
+  const position = order && (order.distance === undefined ? String(order.index + 1).padStart(2, '0') : formatQueueDistance(order.distance));
+  const front = order?.distance === 1;
   const badges = reviewQueueBadges(pull,snapshot,fronts,progress);
-  return <li id={`review-pr-${pull.number}`} className={`review-queue-row review-row-${pull.state}${front ? ' review-row-front' : ''} ${highlight}`}><span className="review-queue-position" aria-label={distance === undefined ? `Stored order ${position} on this page` : `Queue distance ${position}${front ? ': first open PR' : ''}`}>{position}</span><div className="review-queue-content"><div className="review-pull-heading"><span className="review-number">{external ? <a href={external} target="_blank" rel="noopener noreferrer">#{pull.number}</a> : <>#{pull.number}</>}</span><h3>{external ? <a href={external} target="_blank" rel="noopener noreferrer">{pull.title}</a> : pull.title}</h3></div><ReviewPullFacts pull={pull} status={badges[0]} /><ReviewRunsView number={pull.number} snapshot={snapshot} head={pull.head_sha} attempts={pull.latest_attempts} expected={pull.run_count} progress={progress} /><ReviewDetailsLink number={pull.number} snapshot={snapshot} /></div></li>;
+  return <ReviewRowDisplay id={anchor ? `review-pr-${pull.number}` : undefined} lifecycle={pull.state} rail={!!order} position={position} positionLabel={order && (order.distance === undefined ? `Stored order ${position} on this page` : `Queue distance ${position}${front ? ': first open PR' : ''}`)} number={pull.number} title={pull.title} url={external} className={`${front ? 'review-row-front ' : ''}${badges[0] ? `review-status-${badges[0].kind} ` : ''}${highlight}`} facts={<ReviewPullFacts pull={pull} status={badges[0]} />} footer={footer === undefined ? <ReviewDetailsLink number={pull.number} snapshot={snapshot} /> : footer}><ReviewRunsView number={pull.number} snapshot={snapshot} head={pull.head_sha} attempts={pull.latest_attempts} expected={pull.run_count} channelTotals={pull.run_counts} progress={progress} /></ReviewRowDisplay>;
 }
 export function reviewQueueHashTarget(items: ReviewPullSummary[] | undefined, hash: string): string | undefined {
   const pull = items?.find(item => hash === `#review-pr-${item.number}`);
@@ -170,7 +187,7 @@ function ReviewQueueWindow({ embedded, history }: { embedded: boolean; history: 
   const page = query.data;
   const progress = useReviewProgress(history ? [] : page?.items.map(pull => pull.number) ?? []);
   const fronts = useReviewFronts(!history && !!page?.configured);
-  const currentFronts = !history && page ? currentReviewFronts(page.snapshot_id, page.items, fronts.error ? undefined : fronts.data) : undefined;
+  const currentFronts = !history && page ? currentReviewFronts(page.snapshot_id, page.items, fronts.error ? undefined : fronts.data, progress.error ? undefined : progress.data?.items) : undefined;
   const distances = page ? reviewQueueDistances(page.items, paging.number === 1, page.head_position) : [];
   const sections = page ? groupReviewQueue(page.items, groups) : [];
   useEffect(() => {
@@ -185,7 +202,7 @@ function ReviewQueueWindow({ embedded, history }: { embedded: boolean; history: 
     return () => cancelAnimationFrame(frame);
   }, [page, location.hash, location.key]);
   const navigation = { ...paging, next: (cursor: string) => { if (page) setContinuationSnapshot(page.snapshot_id); paging.next(cursor); } };
-  return <section id="review-queue" className={embedded ? 'delivery-reviews' : ''} aria-labelledby="review-queue-title"><div className="delivery-section-heading"><h2 id="review-queue-title">{history ? 'Queue history' : label}</h2>{history ? <Link className="review-details-link review-queue-history-link" to={`${home}/reviews`}>Back to review queue ↗</Link> : <Link className="review-details-link review-queue-history-link" to={`${home}/reviews/history`}>Queue history ↗</Link>}</div><div className={embedded ? undefined : 'panel review-page-body'}><ReadState error={query.error} loading={query.isPending} empty={false}>{page && (page.configured ? <><ReviewProvenance value={page} /><ReviewNotice history={history} />{!history && fronts.error && <p className="notice">Review position could not be loaded.</p>}{!history && progress.error && <p className="notice">Current round limits could not be loaded. Retained review history remains available.</p>}<section className={embedded ? 'panel review-queue-panel' : 'review-queue-panel'}>{sections.map((section, sectionIndex) => <section key={sectionIndex} className={`review-queue-group${section.title ? '' : ' review-queue-ungrouped'}`} {...(section.title ? { 'aria-labelledby': `review-group-${sectionIndex}` } : {})}>{section.title && <h3 id={`review-group-${sectionIndex}`} className="review-queue-group-title">{section.title}</h3>}<ul className="review-queue">{section.rows.map(({ pull, index }) => <ReviewQueueRow key={pull.number} pull={pull} snapshot={page.snapshot_id} distance={distances[index]} index={index} progress={history || progress.error ? undefined : progress.data?.items.find(item => item.pull_number === pull.number)} fronts={currentFronts} />)}</ul></section>)}{page.items.length === 0 && <p className="empty">{history ? 'No merged pull requests in queue history.' : 'No pull requests in the review queue.'}</p>}{(page.has_more || paging.number > 1) && <Pager paging={navigation} page={page} label={history ? 'queue history' : 'review queue'} busy={query.isFetching} />}</section></> : <section className="panel empty"><h3>No review queue yet</h3></section>)}</ReadState></div></section>;
+  return <section id="review-queue" className={embedded ? 'delivery-reviews' : ''} aria-labelledby="review-queue-title"><div className="delivery-section-heading"><h2 id="review-queue-title">{history ? 'Queue history' : label}</h2><div className="review-queue-tools">{history ? <Link className="review-details-link review-queue-history-link" to={`${home}/reviews`}>Back to review queue ↗</Link> : <Link className="review-details-link review-queue-history-link" to={`${home}/reviews/history`}>Queue history ↗</Link>}{page?.configured && <ReviewQueueTechnicalDetails value={page} />}</div></div><div className={embedded ? undefined : 'panel review-page-body'}><ReadState error={query.error} loading={query.isPending} empty={false}>{page && (page.configured ? <><ReviewNotice history={history} />{!history && fronts.error && <p className="notice">Review position could not be loaded.</p>}{!history && progress.error && <p className="notice">Current round limits could not be loaded. Retained review history remains available.</p>}<section className={embedded ? 'panel review-queue-panel' : 'review-queue-panel'}>{sections.map((section, sectionIndex) => <section key={sectionIndex} className={`review-queue-group${section.title ? '' : ' review-queue-ungrouped'}`} {...(section.title ? { 'aria-labelledby': `review-group-${sectionIndex}` } : {})}>{section.title && <h3 id={`review-group-${sectionIndex}`} className="review-queue-group-title">{section.title}</h3>}<ul className="review-queue">{section.rows.map(({ pull, index }) => <ReviewQueueRow key={pull.number} pull={pull} snapshot={page.snapshot_id} order={{distance: distances[index], index}} progress={history || progress.error ? undefined : progress.data?.items.find(item => item.pull_number === pull.number)} fronts={currentFronts} />)}</ul></section>)}{page.items.length === 0 && <p className="empty">{history ? 'No merged pull requests in queue history.' : 'No pull requests in the review queue.'}</p>}{(page.has_more || paging.number > 1) && <Pager paging={navigation} page={page} label={history ? 'queue history' : 'review queue'} busy={query.isFetching} />}</section></> : <section className="panel empty"><h3>No review queue yet</h3></section>)}</ReadState></div></section>;
 }
 function useReviewArchive<T extends ReviewRunSummary | ReviewAttemptItem>(feed: 'runs' | 'attempts', number: number, snapshot: string, expected: number) {
   const { session, key } = useWorkspace();
@@ -215,7 +232,7 @@ export function ReviewPullView() {
   const { session, key, home } = useWorkspace();
   const query = useQuery({ queryKey: [...key, 'reviews', snapshot ?? 'current', 'pull', number], queryFn: ({ signal }) => session.api.reviewPull(number, snapshot, signalFor(session, signal)), staleTime: Infinity });
   const value = query.data;
-  return <><Link className="back-link" to={`${home}/reviews`}>← Review queue</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">Pull request #{value.pull.number}</p><h2>{value.pull.title}</h2>{githubLink(session.project, `pull/${value.pull.number}`) && <a href={githubLink(session.project, `pull/${value.pull.number}`)} target="_blank" rel="noopener noreferrer">Open PR #{value.pull.number} on GitHub ↗</a>}</div><ReviewProvenance value={value} /><section className="panel review-pull-summary"><ReviewPullFacts pull={value.pull} /><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div></dl></section><ReviewRoundHistory key={`${number}:${value.snapshot_id}`} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} expected={value.pull.run_count} /><ReviewAttempts key={`attempts:${number}`} number={number} snapshot={value.snapshot_id} expected={value.pull.attempt_count} /></>}</ReadState></>;
+  return <><Link className="back-link" to={`${home}/reviews`}>← Review queue</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">Pull request #{value.pull.number}</p><h2>{value.pull.title}</h2>{githubLink(session.project, `pull/${value.pull.number}`) && <a href={githubLink(session.project, `pull/${value.pull.number}`)} target="_blank" rel="noopener noreferrer">Open PR #{value.pull.number} on GitHub ↗</a>}</div><ReviewProvenance value={value} /><section className="panel review-pull-summary"><ReviewPullFacts pull={value.pull} /><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div></dl></section><ReviewRoundHistory key={`${number}:${value.snapshot_id}`} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} expected={value.pull.run_count} channelTotals={value.pull.run_counts} /><ReviewAttempts key={`attempts:${number}`} number={number} snapshot={value.snapshot_id} expected={value.pull.attempt_count} /></>}</ReadState></>;
 }
 function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSummary; snapshot: string; head: string; highlights: Map<string, string> }) {
   const { home } = useWorkspace();
@@ -227,25 +244,25 @@ function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSum
     (!head || !run.head_sha) ? 'Head association unknown' : head !== run.head_sha && 'Different observed head',
   ].filter(Boolean).join('. ');
   const description = `${run.found}/${run.accepted}/${run.routed} (found / accepted / routed). ${reviewLabel(run.outcome)}. ${date ? `${run.finished_at ? 'Finished' : 'Started'} ${time(date)} (${date})` : 'Date unknown'}.${warnings ? ` ${warnings}.` : ''}`;
-  return <Link className={`review-round-pill review-pill-${run.outcome}${run.outcome === 'completed' && run.accepted === 0 ? ' review-pill-zero' : ''} ${highlight}`} to={reviewLink(home, 'runs', run.id, snapshot)} title={description} aria-label={`Open ${run.channel} run ${run.source_run_id}: ${description}`}><strong>{run.found}/{run.accepted}/{run.routed}</strong>{run.outcome !== 'completed' && <span className="review-pill-state">{reviewLabel(run.outcome)}</span>}{date ? <RelativeTime value={date} /> : <span className="review-pill-age">Date unknown</span>}</Link>;
+  return <ReviewRoundPillDisplay found={run.found} accepted={run.accepted} routed={run.routed} className={`review-pill-${run.outcome} ${highlight}`} zeroAccepted={run.outcome === 'completed' && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{run.outcome !== 'completed' && <span className="review-pill-state">{reviewLabel(run.outcome)}</span>}{date ? <RelativeTime value={date} /> : <span className="review-pill-age">Date unknown</span>}</ReviewRoundPillDisplay>;
 }
-function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, partial, highlights, compact = false, progress }: { channel: string; title: string; runs: ReviewRunSummary[]; attempts: ReviewAttemptSummary[]; snapshot: string; head: string; loading: boolean; failed: boolean; partial: boolean; highlights: Map<string, string>; compact?: boolean; progress?: ReviewRoundProgress }) {
+function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, partial, highlights, compact = false, progress, total }: { channel: ReviewChannel; title: string; runs: ReviewRunSummary[]; attempts: ReviewAttemptSummary[]; snapshot: string; head: string; loading: boolean; failed: boolean; partial: boolean; highlights: Map<string, string>; compact?: boolean; progress?: ReviewRoundProgress; total: number }) {
   const laneRuns = runs.filter(run => run.channel === channel);
   const attempt = [...attempts].reverse().find(item => item.channel === channel);
   const attemptLabel = attempt && ({ preparing: 'Active', prepared: 'Active', posting: 'Active', active: 'Active', rate_limited: 'Cooldown', held: 'Held', failed: 'Failed', uncertain: 'Uncertain', cancelled: 'Cancelled' } as Partial<Record<ReviewAttemptSummary['state'], string>>)[attempt.state];
   const reason = attempt && reviewAttemptReason(attempt);
   const attemptDescription = attemptLabel + (reason ? ` · ${reason}` : '');
-  return <section className="review-lane" aria-label={title}><div className="review-lane-heading"><h4>{title}</h4><span title="Retained review runs in this channel; not current-head coverage">{loading ? '' : failed ? 'History unavailable' : `${laneRuns.length} ${laneRuns.length === 1 ? 'run' : 'runs'}${partial ? ' loaded' : ''}${compact && laneRuns.length > 3 ? ' · latest 3' : !compact && laneRuns.length > 1 ? ' · recent' : ''}`}</span></div><ReviewProgressView value={progress} />{attemptLabel && <span className={`review-attempt-state review-attempt-${attempt!.state}`} title={`Latest retained attempt: ${attemptDescription}`} aria-label={`Latest retained ${channel} attempt: ${attemptDescription}`}>{attemptDescription}</span>}{loading ? <PageSkeleton rows={1} label="Loading retained rounds" /> : failed ? <p className="review-lane-empty">Round history could not be loaded.</p> : laneRuns.length ? <div className={compact ? 'review-round-pills' : 'review-round-pills review-recent-rounds'}>{laneRuns.slice(compact ? -3 : -6).map(run => <CompactRunPill key={JSON.stringify([run.source, run.source_run_id])} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}</div> : <p className="review-lane-empty">{partial ? 'No rounds in loaded pages. Coverage is unknown.' : 'No rounds recorded. Coverage is unknown.'}</p>}</section>;
+  return <ReviewLaneDisplay title={title} metadata={`${total} ${total === 1 ? 'run' : 'runs'}${compact && laneRuns.length > 3 ? ' · latest 3' : ''}`} metadataTitle="Retained review runs in this channel; not current-head coverage"><ReviewProgressView value={progress} />{attemptLabel && <span className={`review-attempt-state review-attempt-${attempt!.state}`} title={`Latest retained attempt: ${attemptDescription}`} aria-label={`Latest retained ${channel} attempt: ${attemptDescription}`}>{attemptDescription}</span>}{loading ? <PageSkeleton rows={1} label="Loading retained rounds" /> : failed ? <p className="review-lane-empty">Round history could not be loaded.</p> : laneRuns.length ? <div className={compact ? 'review-round-pills' : 'review-round-pills review-recent-rounds'}>{laneRuns.slice(compact ? -3 : -6).map(run => <CompactRunPill key={JSON.stringify([run.source, run.source_run_id])} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}</div> : <p className="review-lane-empty">{total > 0 ? 'No rounds in this preview.' : 'No rounds recorded. Coverage is unknown.'}</p>}</ReviewLaneDisplay>;
 }
-export function ReviewRunsView({ number, snapshot, head, attempts, expected, detail = false, compact = false, progress }: { number: number; snapshot: string; head: string; attempts: ReviewAttemptSummary[]; expected: number; detail?: boolean; compact?: boolean; progress?: ReviewProgressItem }) {
+export function ReviewRunsView({ number, snapshot, head, attempts, expected, detail = false, compact = false, progress, channelTotals }: { number: number; snapshot: string; head: string; attempts: ReviewAttemptSummary[]; expected: number; detail?: boolean; compact?: boolean; progress?: ReviewProgressItem; channelTotals: ReviewRunCounts }) {
   const archive = useReviewArchive<ReviewRunSummary>('runs', number, snapshot, expected);
   // Only semantic fingerprints survive snapshot transitions, never old rows.
   const highlights = useRef(new Map<string, string>()).current;
   // The selected newest pages retain producer order; reverse only the shown
   // slice for the established oldest-to-newest channel layout.
   const runs = [...archive.items].reverse();
-  const lane = (channel: string, title: string) => <ReviewLane key={channel} channel={channel} title={title} runs={runs} attempts={attempts} snapshot={snapshot} head={head} loading={archive.loading} failed={!!archive.error} partial={archive.hasMore || runs.length !== expected} highlights={highlights} compact={compact} progress={progress?.channels.find(item => item.channel === channel)} />;
-  const otherChannels = [['manual', 'Manual reviews'], ['subagent', 'Subagent reviews']].filter(([channel]) => runs.some(run => run.channel === channel) || attempts.some(attempt => attempt.channel === channel));
+  const lane = (channel: ReviewChannel, title: string) => <ReviewLane key={channel} channel={channel} title={title} runs={runs} attempts={attempts} snapshot={snapshot} head={head} loading={archive.loading} failed={!!archive.error} partial={archive.hasMore || runs.length !== expected} highlights={highlights} compact={compact} total={channelTotals[channel]} progress={progress?.channels.find(item => item.channel === channel)} />;
+  const otherChannels = ([['manual', 'Manual reviews'], ['subagent', 'Subagent reviews']] as const).filter(([channel]) => channelTotals[channel] > 0 || runs.some(run => run.channel === channel) || attempts.some(attempt => attempt.channel === channel));
   return <section className={compact ? 'review-history delivery-head-history' : detail ? 'panel review-history' : 'review-history'} aria-label={`PR #${number} review rounds`}>{detail && <div className="section-heading"><h3>Review rounds</h3><span className="small-label">Shown rounds · oldest to newest per channel</span></div>}{!!archive.error && <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>}<div className="review-lanes">{lane('hosted', 'Hosted CodeRabbit')}{lane('cli', 'CLI CodeRabbit')}</div>{!compact && otherChannels.length > 0 && <section className="review-other-history"><h4>Other retained reviews</h4><div className="review-lanes">{otherChannels.map(([channel, title]) => lane(channel, title))}</div></section>}{detail && !compact && <ArchiveProgress shown={runs.length} expected={expected} snapshot={snapshot} label="review rounds" hasMore={archive.hasMore} busy={archive.busy} more={archive.more} />}</section>;
 }
 
@@ -282,22 +299,22 @@ export function ReviewHistoryRow({ number, run, snapshot, head }: { number: numb
     {open && <div id={findingsID}><InlineReviewFindings number={number} run={run} snapshot={snapshot} /></div>}
   </li>;
 }
-export function ReviewHistoryGroups({ number, runs, snapshot, head, partial, loading, failed }: { number: number; runs: ReviewRunSummary[]; snapshot: string; head: string; partial: boolean; loading: boolean; failed: boolean }) {
-  const channels = [['hosted', 'Hosted CodeRabbit'], ['cli', 'CLI CodeRabbit'], ...[['manual', 'Manual reviews'], ['subagent', 'Subagent reviews']].filter(([channel]) => runs.some(run => run.channel === channel))];
+export function ReviewHistoryGroups({ number, runs, snapshot, head, partial, loading, failed, channelTotals }: { number: number; runs: ReviewRunSummary[]; snapshot: string; head: string; partial: boolean; loading: boolean; failed: boolean; channelTotals: ReviewRunCounts }) {
+  const channels = [['hosted', 'Hosted CodeRabbit'], ['cli', 'CLI CodeRabbit'], ...([['manual', 'Manual reviews'], ['subagent', 'Subagent reviews']] as const).filter(([channel]) => channelTotals[channel] > 0 || runs.some(run => run.channel === channel))] as [ReviewChannel, string][];
   return <div className="review-history-groups">{channels.map(([channel, title]) => {
     const items = runs.filter(run => run.channel === channel);
-    return <section className="review-history-channel" aria-label={title} key={channel}><div className="review-lane-heading"><h4>{title}</h4><span>{loading ? '' : failed ? 'History unavailable' : `${items.length} ${items.length === 1 ? 'run' : 'runs'}${partial ? ' shown' : ''}`}</span></div>
-      {loading ? <PageSkeleton rows={2} label="Loading retained rounds" /> : failed && !items.length ? <p className="review-empty">Round history could not be loaded.</p> : items.length ? <ul className="review-history-run-list">{items.map(run => <ReviewHistoryRow key={run.id} number={number} run={run} snapshot={snapshot} head={head} />)}</ul> : <p className="review-empty">{partial ? 'No rounds in loaded pages. Coverage is unknown.' : 'No rounds recorded. Coverage is unknown.'}</p>}
+    return <section className="review-history-channel" aria-label={title} key={channel}><div className="review-lane-heading"><h4>{title}</h4><span>{channelTotals[channel]} {channelTotals[channel] === 1 ? 'run' : 'runs'}</span></div>
+      {loading ? <PageSkeleton rows={2} label="Loading retained rounds" /> : failed && !items.length ? <p className="review-empty">Round history could not be loaded.</p> : items.length ? <ul className="review-history-run-list">{items.map(run => <ReviewHistoryRow key={run.id} number={number} run={run} snapshot={snapshot} head={head} />)}</ul> : <p className="review-empty">{channelTotals[channel] > 0 ? 'No rounds in this preview.' : 'No rounds recorded. Coverage is unknown.'}</p>}
     </section>;
   })}</div>;
 }
-function ReviewRoundHistory({ number, snapshot, head, expected }: { number: number; snapshot: string; head: string; expected: number }) {
+function ReviewRoundHistory({ number, snapshot, head, expected, channelTotals }: { number: number; snapshot: string; head: string; expected: number; channelTotals: ReviewRunCounts }) {
   const archive = useReviewArchive<ReviewRunSummary>('runs', number, snapshot, expected);
   const runs = [...archive.items].reverse();
   if (terminal(archive.error)) return <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>;
   return <section className="panel review-history review-round-history" aria-label={`PR #${number} review rounds`}><div className="section-heading"><h3>Review rounds</h3><span className="small-label">Shown rounds · oldest to newest per channel</span></div>
     {!!archive.error && <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>}
-    <ReviewHistoryGroups number={number} runs={runs} snapshot={snapshot} head={head} loading={archive.loading} failed={!!archive.error} partial={archive.hasMore || runs.length !== expected} />
+    <ReviewHistoryGroups number={number} runs={runs} snapshot={snapshot} head={head} channelTotals={channelTotals} loading={archive.loading} failed={!!archive.error} partial={archive.hasMore || runs.length !== expected} />
     <ArchiveProgress shown={runs.length} expected={expected} snapshot={snapshot} label="review rounds" hasMore={archive.hasMore} busy={archive.busy} more={archive.more} />
   </section>;
 }

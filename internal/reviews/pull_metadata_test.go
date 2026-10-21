@@ -119,7 +119,7 @@ func TestPullMetadataHTTPInvalidAndIsolation(t *testing.T) {
 }
 func TestPullMetadataSchema6UpgradePreservesIdentityAndOldFacts(t *testing.T) {
 	f := newAPIFixtureWithSchema(t, func(ctx context.Context, s *core.Store) error {
-		m := append(reviewSchemaMigrations(), historyMigrationSQL(), CurrentSummarySchemaSQL(), CurrentRunOrderSchemaSQL())
+		m := append(reviewSchemaMigrations(), historyMigrationSQL(), CurrentSummarySchemaSQLV8(), CurrentRunOrderSchemaSQL())
 		return s.EnsureSchemaWithBackfill(ctx, "reviews", m, backfillCurrentReviewIndexes)
 	})
 	var instance, signing string
@@ -156,6 +156,10 @@ func TestPullMetadataSchema6UpgradePreservesIdentityAndOldFacts(t *testing.T) {
 	if err := EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}
+	var frontiers int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_hosted_discovery_state`).Scan(&frontiers); err != nil || frontiers != 0 {
+		t.Fatal("migration fabricated discovery state", frontiers, err)
+	}
 	got := metadataRead(t, f, 1, "metadata-v6")
 	if got.Pull.Title != "Before metadata" || got.Pull.Diff != nil || got.Pull.IsDraft != nil || got.Pull.MergedAt != "" {
 		t.Fatal("old facts fabricated or changed")
@@ -164,7 +168,7 @@ func TestPullMetadataSchema6UpgradePreservesIdentityAndOldFacts(t *testing.T) {
 	f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='instance_id'`).Scan(&nextInstance)
 	f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='signing_key'`).Scan(&nextSigning)
 	f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version)
-	if version != "8" || instance != nextInstance || signing != nextSigning {
+	if version != "10" || instance != nextInstance || signing != nextSigning {
 		t.Fatal("migration changed identity/version")
 	}
 	if after := metadataLegacyRows(t, f); !reflect.DeepEqual(before, after) {
@@ -222,7 +226,7 @@ func TestPullMetadataQueueEditAndAdditivePreserve(t *testing.T) {
 // version and new metadata column; no historical body or operational row may change.
 func metadataLegacyRows(t *testing.T, f *apiFixture) map[string]string {
 	t.Helper()
-	names, err := f.store.DB().Query(`SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	names, err := f.store.DB().Query(`SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name!='review_hosted_discovery_state' ORDER BY name`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +267,7 @@ func metadataLegacyRows(t *testing.T, f *apiFixture) map[string]string {
 			}
 			var old []any
 			for i, column := range columns {
-				if column != "metadata_json" {
+				if column != "metadata_json" && !(table == "review_current_totals" && oneOf(column, "hosted_run_count", "cli_run_count", "subagent_run_count", "manual_run_count")) {
 					old = append(old, values[i])
 				}
 			}

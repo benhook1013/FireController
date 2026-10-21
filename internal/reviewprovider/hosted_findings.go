@@ -766,14 +766,21 @@ func ExtractHostedFindings(snapshot HostedPublicationSnapshot, intent HostedTrig
 		result.Reason = "publication_unavailable"
 		return result, err
 	}
+	return decodeHostedFindings(publication), nil
+}
+
+// decodeHostedFindings shares only inventory decoding; callers establish source
+// attribution independently. It performs no request/attempt or coverage action.
+func decodeHostedFindings(publication HostedPublication) HostedFindingInventory {
+	result := HostedFindingInventory{Publication: publication, Findings: []HostedFinding{}}
 	if publication.State != "attributed" {
 		result.Reason = publication.Reason
-		return result, nil
+		return result
 	}
 	if publication.StandingZero != nil {
 		result.Complete = validStandingZero(publication.StandingZero) && len(publication.Batches) == 0 && len(publication.Roots) == 0 && len(publication.EligibleReviews) == 0
 		result.Reason = "standing_zero_inventory_attributed"
-		return result, nil
+		return result
 	}
 	result.Complete = true
 	decoder := findingDecoder{inventory: &result, seen: map[string]bool{}}
@@ -790,5 +797,5 @@ func ExtractHostedFindings(snapshot HostedPublicationSnapshot, intent HostedTrig
 	if result.Complete {
 		result.Reason = "finding_inventory_complete"
 	}
-	return result, nil
+	return result
 }

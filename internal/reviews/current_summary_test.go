@@ -31,16 +31,20 @@ func assertCurrentSummaryReduction(t *testing.T, f *apiFixture, number int64) Pu
 		t.Fatalf("indexed latest attempts differ from full reduction:\ngot%+v\nwant%+v", got, want)
 	}
 	var cached summaryTotals
-	if err := f.store.DB().QueryRow(`SELECT run_count,attempt_count,incomplete_run_count FROM review_current_totals WHERE project_id=? AND pull_number=?`, f.project, number).Scan(&cached.runs, &cached.attempts, &cached.incomplete); err != nil {
+	if err := f.store.DB().QueryRow(`SELECT run_count,attempt_count,incomplete_run_count,hosted_run_count,cli_run_count,subagent_run_count,manual_run_count FROM review_current_totals WHERE project_id=? AND pull_number=?`, f.project, number).Scan(&cached.runs, &cached.attempts, &cached.incomplete, &cached.channels.Hosted, &cached.channels.CLI, &cached.channels.Subagent, &cached.channels.Manual); err != nil {
 		t.Fatal(err)
 	}
 	var incomplete int64
+	var counts ChannelRunCounts
 	for _, run := range runs.Items {
+		if err := counts.add(run.Channel, 1); err != nil {
+			t.Fatal(err)
+		}
 		if !run.Complete {
 			incomplete++
 		}
 	}
-	if cached != (summaryTotals{int64(len(runs.Items)), int64(len(attempts.Items)), incomplete}) || pull.Pull.RunCount != int64(len(runs.Items)) || pull.Pull.AttemptCount != int64(len(attempts.Items)) {
+	if cached != (summaryTotals{runs: int64(len(runs.Items)), attempts: int64(len(attempts.Items)), incomplete: incomplete, channels: counts}) || pull.Pull.RunCounts != counts || pull.Pull.RunCount != int64(len(runs.Items)) || pull.Pull.AttemptCount != int64(len(attempts.Items)) {
 		t.Fatalf("cached / compact totals differ from retained records: %+v pull%+v", cached, pull.Pull)
 	}
 	wantRecent := runs.Items
@@ -212,7 +216,7 @@ func TestCurrentSummaryVersionFourBackfillPreservesHistoricalWireAndCursors(t *t
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "8" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "10" {
 		t.Fatal("current-summary schema not installed", version, err)
 	}
 	for i, route := range routes {

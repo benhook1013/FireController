@@ -48,7 +48,7 @@ describe('per-PR inline retained review history', () => {
   });
   it('groups channels while retaining their supplied producer order and source-qualified identities', () => {
     const items = [run('first'), run('hosted', 'hosted'), { ...run('second'), source: 'producer-b', source_run_id: 'original-first' }, run('manual', 'manual')];
-    const html = markup(<ReviewHistoryGroups number={27} runs={items} snapshot={snapshot} head="head" partial={false} loading={false} failed={false} />);
+    const html = markup(<ReviewHistoryGroups number={27} runs={items} snapshot={snapshot} head="head" partial={false} loading={false} failed={false} channelTotals={{hosted: 1, cli: 2, manual: 1, subagent: 0}} />);
     expect(html).toContain('Hosted CodeRabbit'); expect(html).toContain('CLI CodeRabbit'); expect(html).toContain('Manual reviews');
     expect(html).not.toContain('Subagent reviews'); expect(html.indexOf('data-run-id="first"')).toBeLessThan(html.indexOf('data-run-id="second"'));
     expect(html).toContain('2 runs'); expect(html).not.toContain('2 runs shown');
@@ -61,8 +61,8 @@ describe('per-PR inline retained review history', () => {
     expect(missing).toContain('Date unknown'); expect(missing).toContain('Head association unknown');
   });
   it('keeps partial and failed histories distinct from confirmed empty history', () => {
-    const props = { number: 27, runs: [], snapshot, head: 'head', loading: false, failed: false };
-    expect(markup(<ReviewHistoryGroups {...props} partial />)).toContain('No rounds in loaded pages. Coverage is unknown.');
+    const props = { number: 27, runs: [], snapshot, head: 'head', loading: false, failed: false, channelTotals: {hosted: 0, cli: 0, manual: 0, subagent: 0} };
+    expect(markup(<ReviewHistoryGroups {...props} partial channelTotals={{hosted: 27, cli: 1, manual: 8, subagent: 2}} />)).toContain('No rounds in this preview.');
     expect(markup(<ReviewHistoryGroups {...props} partial={false} />)).toContain('No rounds recorded. Coverage is unknown.');
     expect(markup(<ReviewHistoryGroups {...props} partial failed />)).toContain('Round history could not be loaded.');
     expect(markup(<ReviewHistoryGroups {...props} partial loading />)).toContain('Loading retained rounds');

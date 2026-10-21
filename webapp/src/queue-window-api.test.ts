@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Api } from './api';
 const snapshot = { project_id: 'project_one', revision: 3, snapshot_id: `review_snapshot_${'a'.repeat(32)}`, source: 'native-executor', observed_at: '2026-10-17T12:00:00Z', recorded_at: '2026-10-20T03:00:00Z' };
-const pull = (number: number, position: number, state = 'merged') => ({ number, queue_position: position, state, title: `Change ${number}`, head_sha: 'a'.repeat(40), base_ref: 'main', base_sha: 'b'.repeat(40), ci_state: 'success', mergeability: 'unknown', complete: true, run_count: 0, attempt_count: 0, recent_runs: [], latest_attempts: [] });
+const pull = (number: number, position: number, state = 'merged') => ({ number, queue_position: position, state, title: `Change ${number}`, head_sha: 'a'.repeat(40), base_ref: 'main', base_sha: 'b'.repeat(40), ci_state: 'success', mergeability: 'unknown', complete: true, run_count: 0, run_counts: { hosted: 0, cli: 0, subagent: 0, manual: 0 }, attempt_count: 0, recent_runs: [], latest_attempts: [] });
 const page = (items: unknown[], head_position?: number) => ({ ...snapshot, configured: true, items, has_more: false, ...(head_position === undefined ? {} : { head_position }) });
 const response = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
 async function connected() {

@@ -8,7 +8,7 @@ const snapshot='review_snapshot_a';
 const sha='a'.repeat(40),base='b'.repeat(40),time='2026-10-19T13:00:00Z';
 const front=(channel:'cli'|'hosted',number:number)=>({channel,state:'ready' as const,pull_number:number,head_sha:sha,base_sha:base,base_ref:'main',source_observed_at:time,checked_at:time});
 const value=():ReviewFronts=>({project_id:'project_one',configured:true,repository_id:123,configuration_revision:2,policy_revision:1,snapshot_id:snapshot,queue:[1,2,3,4],channels:[front('hosted',2),front('cli',3)]});
-const pull=(number:number):ReviewPullSummary=>({number,title:'Work',state:'open',head_sha:sha,base_sha:base,base_ref:'main',ci_state:'unknown',mergeability:'unknown',complete:false,run_count:0,attempt_count:0,recent_runs:[],latest_attempts:[]});
+const pull=(number:number):ReviewPullSummary=>({number,title:'Work',state:'open',head_sha:sha,base_sha:base,base_ref:'main',ci_state:'unknown',mergeability:'unknown',complete:false,run_count:0,run_counts:{hosted:0,cli:0,subagent:0,manual:0},attempt_count:0,recent_runs:[],latest_attempts:[]});
 const control=(channel:'cli'|'hosted',closed=false):ReviewRoundProgress=>({channel,configured:true,revision:1,epoch:1,closed,minimum:0,maximum:5,taper:2,used:0,dry:0,tapered:false,pending:0});
 afterEach(()=>vi.unstubAllGlobals());
 
@@ -39,6 +39,20 @@ describe('current review position badges',()=>{
     expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review front · Hosted');
     progress.channels[0]={...progress.channels[0],tapered:true,minimum:0};
     expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review closed');
+  });
+  it('retains independent local fronts and queued labels under an operator dispatch stop',()=>{
+    const v=value();v.channels=v.channels.map(c=>({channel:c.channel,state:'held',reason:'reviews_paused'}));
+    const pulls=[{...pull(1),state:'merged' as const},pull(2),pull(3),pull(4)];
+    const progress:ReviewProgressItem[]=pulls.map(p=>({pull_number:p.number,channels:[control('hosted',p.number===2),control('cli')]}));
+    const current=currentReviewFronts(snapshot,pulls,v,progress);
+    expect(reviewQueueBadges(pull(2),snapshot,current,progress[1])[0]?.text).toBe('Review front · CLI');
+    expect(reviewQueueBadges(pull(3),snapshot,current,progress[2])[0]?.text).toBe('Review front · Hosted');
+    expect(reviewQueueBadges(pull(4),snapshot,current,progress[3])[0]?.text).toBe('Queued');
+    expect(v.channels.every(c=>c.pull_number===undefined)).toBe(true);
+    const unavailable={...v,channels:v.channels.map(c=>({...c,state:'unknown' as const,reason:'source_frame_unavailable'}))};
+    expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls,unavailable,progress),progress[2])[0]?.text).toBe('Review front · Hosted');
+    expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls.slice(2),v,progress),progress[2])).toEqual([]);
+    expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls,v),progress[2])).toEqual([]);
   });
   it('rejects another snapshot, changed source identity, retired lifecycle and unknown positions',()=>{
     expect(reviewQueueBadges(pull(2),'review_snapshot_old',value())).toEqual([]);

@@ -10,7 +10,7 @@ import type { ReviewProgressItem } from './review-progress';
 import type { Presentation, ReviewAttemptSummary, ReviewFinding, ReviewPullSummary, ReviewQueue } from './types';
 
 const key = ['fc', 'connection', 'instance', 'project', 'actor'];
-const pull = (number: number, state: ReviewPullSummary['state'] = 'open'): ReviewPullSummary => ({ number, title: `Change ${number}`, state, head_sha: 'a'.repeat(40), base_ref: 'main', base_sha: 'b'.repeat(40), ci_state: 'success', mergeability: 'mergeable', complete: true, run_count: 0, attempt_count: 0, recent_runs: [], latest_attempts: [] });
+const pull = (number: number, state: ReviewPullSummary['state'] = 'open'): ReviewPullSummary => ({ number, title: `Change ${number}`, state, head_sha: 'a'.repeat(40), base_ref: 'main', base_sha: 'b'.repeat(40), ci_state: 'success', mergeability: 'mergeable', complete: true, run_count: 0, run_counts: { hosted: 0, cli: 0, subagent: 0, manual: 0 }, attempt_count: 0, recent_runs: [], latest_attempts: [] });
 function markup(node: React.ReactNode, queue?: ReviewQueue, presentation?: Presentation, options: { history?: boolean; fronts?: ReviewFronts; progress?: ReviewProgressItem[] } = {}) {
   const api = { reviewQueue: vi.fn(), reviewRuns: vi.fn() };
   const session = { api, controller: new AbortController(), project: { repository: 'example/project' } } as unknown as Session;
@@ -103,11 +103,13 @@ describe('truthful stored review presentation', () => {
   });
   it('names only actually missing metadata and does not fabricate a missing head', () => {
     const incomplete = { ...pull(1), complete: false, base_sha: '', ci_state: 'unknown' as const };
-    expect(missingPullFacts(incomplete)).toEqual(['Base commit was not captured.', 'CI status is unknown.']);
+    expect(missingPullFacts(incomplete)).toEqual(['Base commit was not captured.']);
     const html = markup(<ReviewPullFacts pull={incomplete} />);
     expect(html).toContain('<summary>Missing PR details</summary>');
     expect(html).toContain('Base commit was not captured.'); expect(html).not.toContain('Head commit was not captured.');
     expect(html).toContain('CI: Unknown'); expect(html).toContain('Mergeability: Mergeable');
+    expect(html).toContain('class="badge review-fact-pill review-ci"');
+    expect(html).toContain('class="badge review-fact-pill review-mergeability"');
     expect(markup(<ReviewPullFacts pull={pull(1, 'merged')} />)).toContain('review-state-merged');
     expect(markup(<ReviewPullFacts pull={pull(1, 'merged')} />)).not.toContain('retained history');
   });
@@ -118,16 +120,26 @@ describe('truthful stored review presentation', () => {
     expect(html).toContain('CI: Success'); expect(html).not.toContain('Mergeability:');
     expect(html).not.toContain('Mergeability is unknown.'); expect(missingPullFacts(merged)).toEqual([]);
     const incomplete = { ...merged, complete: false, base_sha: '', ci_state: 'unknown' as const };
-    expect(missingPullFacts(incomplete)).toEqual(['Base commit was not captured.', 'CI status is unknown.']);
+    expect(missingPullFacts(incomplete)).toEqual(['Base commit was not captured.']);
     const incompleteHTML = markup(<ReviewPullFacts pull={incomplete} />);
     expect(incompleteHTML).toContain('Missing PR details'); expect(incompleteHTML).toContain('Base commit was not captured.');
-    expect(incompleteHTML).toContain('CI status is unknown.'); expect(incompleteHTML).not.toContain('Mergeability');
+    expect(incompleteHTML).toContain('CI: Unknown'); expect(incompleteHTML).not.toContain('CI status is unknown.'); expect(incompleteHTML).not.toContain('Mergeability');
   });
   it.each(['open', 'closed', 'unknown'] as const)('retains unknown mergeability for %s PRs', state => {
     const value = { ...pull(1, state), mergeability: 'unknown' as const };
-    expect(missingPullFacts(value)).toContain('Mergeability is unknown.');
+    expect(missingPullFacts(value)).toEqual(state === 'unknown' ? ['Open or closed state is unknown.'] : []);
     const html = markup(<ReviewPullFacts pull={value} />);
-    expect(html).toContain('Mergeability: Unknown'); expect(html).toContain('Mergeability is unknown.');
+    expect(html).toContain('Mergeability: Unknown'); expect(html).not.toContain('Mergeability is unknown.');
+  });
+  it('does not repeat inline unknown facts as a generic incomplete dropdown', () => {
+    const value = { ...pull(1), complete: false, ci_state: 'unknown' as const, mergeability: 'unknown' as const };
+    expect(missingPullFacts(value)).toEqual([]);
+    const html = markup(<ReviewPullFacts pull={value} />);
+    expect(html).toContain('CI: Unknown'); expect(html).toContain('Mergeability: Unknown');
+    expect(html).not.toContain('Missing PR details');
+    const explicit = { ...pull(1), complete: false };
+    expect(missingPullFacts(explicit)).toEqual(['The source marked this PR incomplete without identifying another missing field.']);
+    expect(markup(<ReviewPullFacts pull={explicit} />)).toContain('Missing PR details');
   });
   it('renders retained merged rails, explicit groups and history arrows without automatic requests', () => {
     const presentation: Presentation = { project_id: 'project', revision: 1, name: 'Project', brand_name: 'FireController', tagline: '', headings: {}, theme: {}, updated_at: '', review_groups: [{ title: 'Foundation <literal>', pull_numbers: [1, 3] }] };
@@ -154,7 +166,7 @@ describe('truthful stored review presentation', () => {
     expect(html).toContain('Queue distance −01'); expect(html).toContain('Queue distance −08');
     expect(html).toContain('Merged PRs are shown in reverse queue order.');
     expect(html).toContain('Next queue history');
-    expect(html).not.toContain('last 48 hours'); expect(html).not.toContain('review-position-front');
+    expect(html).not.toContain('Attempt states describe retained history. Limits show current settings; neither grants permission to request another review.'); expect(html).not.toContain('last 48 hours'); expect(html).not.toContain('review-position-front');
   });
   it('isolates bounded recent and merged cursor reads by view and source snapshot', async () => {
     const read = vi.fn().mockResolvedValue(queue([]));
@@ -171,7 +183,7 @@ describe('truthful stored review presentation', () => {
   });
   it('omits completed attempt prose and shows a concise retained rate-limit signal only with evidence', () => {
     const attempt: ReviewAttemptSummary = { source_attempt_id: 'attempt', channel: 'cli', head_sha: 'a'.repeat(40), state: 'completed', started_at: '', finished_at: '', duration_seconds: 1, source_run_id: '', trigger_id: '', provider_review_id: '' };
-    const props = { number: 1, snapshot: 'snapshot', head: 'a'.repeat(40), attempts: [attempt], expected: 0 };
+    const props = { number: 1, snapshot: 'snapshot', head: 'a'.repeat(40), attempts: [attempt], expected: 0, channelTotals: { hosted: 0, cli: 0, manual: 0, subagent: 0 } };
     const completed = markup(<ReviewRunsView {...props} />);
     expect(completed).not.toContain('Latest attempt:'); expect(completed).not.toContain('review-attempt-state');
     expect(markup(<ReviewRunsView {...props} attempts={[{ ...attempt, state: 'rate_limited' }]} />)).toContain('Latest retained cli attempt: Cooldown');

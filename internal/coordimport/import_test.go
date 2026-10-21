@@ -183,7 +183,7 @@ func (f *importFixture) apply(batch coordimport.Batch, preview coordimport.Previ
 func (f *importFixture) snapshot(skipReceipts bool) map[string]string {
 	f.t.Helper()
 	out := map[string]string{}
-	for _, table := range []string{"metadata", "projects", "workers", "credentials", "grants", "receipts", "events", "jobs", "job_history", "job_checkpoints", "job_updates", "job_checklists", "job_checklist_history", "worker_primary_jobs", "worker_primary_job_history", "worker_pause_state", "worker_pause_history", "notes", "note_revisions", "inbox_conversations", "inbox_messages", "inbox_recipient_state", "coordination_import_state", "coordination_import_records", "coordination_import_batches", "coordination_import_messages", "sqlite_sequence"} {
+	for _, table := range []string{"metadata", "projects", "workers", "credentials", "grants", "receipts", "events", "jobs", "job_history", "job_progress", "job_progress_history", "job_checkpoints", "job_updates", "job_checklists", "job_checklist_history", "worker_primary_jobs", "worker_primary_job_history", "worker_pause_state", "worker_pause_history", "notes", "note_revisions", "inbox_conversations", "inbox_messages", "inbox_recipient_state", "coordination_import_state", "coordination_import_records", "coordination_import_batches", "coordination_import_messages", "sqlite_sequence"} {
 		if skipReceipts && table == "receipts" {
 			continue
 		}
@@ -268,66 +268,76 @@ func TestPreparedCoordinationImportPreservesHistoryAndReplayAfterEditRestart(t *
 	}
 	id := receipt.Mappings[0].JobID
 	jobPath := "/api/v1/projects/" + f.project + "/jobs/" + id
-	var original struct {
-		ID, ProjectID, Title, Brief, WorkerID, Status, CreatedAt, UpdatedAt string
-		Revision                                                            int64
+	type progressState struct {
+		Summary  string   `json:"summary"`
+		Next     string   `json:"next"`
+		Blocker  string   `json:"blocker"`
+		Evidence []string `json:"evidence"`
 	}
-	// Decode native JSON explicitly so spelling changes cannot silently zero fields.
-	full := checked[map[string]json.RawMessage](t, f.call("GET", jobPath, f.admin, f.worker, "", nil), 200)
-	read := func(key string, out any) {
-		t.Helper()
-		if err := json.Unmarshal(full[key], out); err != nil {
-			t.Fatal(err)
-		}
-	}
-	read("id", &original.ID)
-	read("project_id", &original.ProjectID)
-	read("title", &original.Title)
-	read("brief", &original.Brief)
-	read("worker_id", &original.WorkerID)
-	read("status", &original.Status)
-	read("created_at", &original.CreatedAt)
-	read("updated_at", &original.UpdatedAt)
-	read("revision", &original.Revision)
+	original := checked[struct {
+		ID        string        `json:"id"`
+		ProjectID string        `json:"project_id"`
+		Title     string        `json:"title"`
+		Brief     string        `json:"brief"`
+		WorkerID  string        `json:"worker_id"`
+		Status    string        `json:"status"`
+		CreatedAt string        `json:"created_at"`
+		UpdatedAt string        `json:"updated_at"`
+		Revision  int64         `json:"revision"`
+		Progress  progressState `json:"progress"`
+		Checklist struct {
+			Revision  int64             `json:"revision"`
+			Remaining []json.RawMessage `json:"remaining"`
+			Completed int               `json:"completed"`
+			Total     int               `json:"total"`
+		} `json:"checklist"`
+		Notes struct {
+			Items   []json.RawMessage `json:"items"`
+			HasMore bool              `json:"has_more"`
+		} `json:"notes"`
+	}](t, f.call("GET", jobPath, f.admin, f.worker, "", nil), 200)
 	item := batch.Jobs[0]
 	if original.ID != id || original.ProjectID != f.project || original.Title != item.Title || original.Brief != item.Brief || original.WorkerID != item.WorkerID || original.Status != item.Status || original.CreatedAt != item.CreatedAt || original.UpdatedAt != item.UpdatedAt || original.Revision != 1 {
 		t.Fatal("native job changed selected historical snapshot")
 	}
-	contextResult := checked[struct {
-		Complete   bool `json:"complete"`
-		Checkpoint struct {
-			ActorID     string `json:"actor_id"`
-			WorkerID    string `json:"worker_id"`
-			Done        string `json:"done"`
-			CreatedAt   string `json:"created_at"`
-			JobRevision int64  `json:"job_revision"`
-		} `json:"checkpoint"`
-	}](t, f.call("GET", jobPath+"/context", f.admin, f.worker, "", nil), 200)
 	cp := item.Checkpoints[1]
-	if !contextResult.Complete || contextResult.Checkpoint.ActorID != cp.ActorID || contextResult.Checkpoint.WorkerID != cp.WorkerID || contextResult.Checkpoint.Done != cp.Done || contextResult.Checkpoint.CreatedAt != cp.CreatedAt || contextResult.Checkpoint.JobRevision != 1 {
-		t.Fatal("native context did not expose preserved checkpoint")
+	wantCurrent := progressState{Summary: cp.Done, Next: cp.Next, Blocker: cp.Blocker, Evidence: cp.Evidence}
+	if !reflect.DeepEqual(original.Progress, wantCurrent) {
+		t.Fatal("default job read did not expose latest imported checkpoint as current progress", original.Progress)
+	}
+	if original.Checklist.Remaining == nil || len(original.Checklist.Remaining) != 0 || original.Checklist.Revision != 0 || original.Checklist.Completed != 0 || original.Checklist.Total != 0 || original.Notes.Items == nil || len(original.Notes.Items) != 0 || original.Notes.HasMore {
+		t.Fatal("import invented checklist or attached notes")
 	}
 	page := checked[struct {
 		Items []struct {
-			ID        string   `json:"id"`
-			ActorID   string   `json:"actor_id"`
-			Done      string   `json:"done"`
-			Next      string   `json:"next"`
-			Blocker   string   `json:"blocker"`
-			Evidence  []string `json:"evidence"`
-			CreatedAt string   `json:"created_at"`
+			ID          string        `json:"id"`
+			ProjectID   string        `json:"project_id"`
+			JobID       string        `json:"job_id"`
+			JobRevision int64         `json:"job_revision"`
+			Sequence    int64         `json:"sequence"`
+			ActorID     string        `json:"actor_id"`
+			WorkerID    string        `json:"worker_id"`
+			Progress    progressState `json:"progress"`
+			CreatedAt   string        `json:"created_at"`
 		} `json:"items"`
 		HasMore bool `json:"has_more"`
-	}](t, f.call("GET", jobPath+"/checkpoints", f.admin, f.worker, "", nil), 200)
+	}](t, f.call("GET", jobPath+"/progress/history", f.admin, f.worker, "", nil), 200)
 	if len(page.Items) != 2 || page.HasMore {
-		t.Fatal("checkpoint archive incomplete")
+		t.Fatal("canonical progress archive incomplete")
 	}
 	for i, actual := range page.Items {
 		want := item.Checkpoints[1-i]
-		if actual.ID == "" || actual.ActorID != want.ActorID || actual.Done != want.Done || actual.Next != want.Next || actual.Blocker != want.Blocker || !reflect.DeepEqual(actual.Evidence, want.Evidence) || actual.CreatedAt != want.CreatedAt {
-			t.Fatal("checkpoint original facts changed")
+		expected := progressState{Summary: want.Done, Next: want.Next, Blocker: want.Blocker, Evidence: want.Evidence}
+		if actual.ID == "" || actual.ProjectID != f.project || actual.JobID != id || actual.JobRevision != 1 || actual.Sequence < 1 || actual.ActorID != want.ActorID || actual.WorkerID != want.WorkerID || !reflect.DeepEqual(actual.Progress, expected) || actual.CreatedAt != want.CreatedAt {
+			t.Fatal("converted progress changed original checkpoint facts", actual)
 		}
 	}
+	if page.Items[0].Sequence <= page.Items[1].Sequence || page.Items[0].ID == page.Items[1].ID {
+		t.Fatal("progress archive lost unique newest-first ordering")
+	}
+	// The retained source-bound validator checks both original checkpoint rows
+	// and the imported revision-one state, independently of canonical current reads.
+	assertImportSnapshot(t, f)
 	var mappedJob, sourceHash, raw string
 	if err := f.store.DB().QueryRow(`SELECT job_id,source_sha256,item_json FROM coordination_import_records WHERE project_id=? AND source=? AND source_key=?`, f.project, batch.Source, item.SourceKey).Scan(&mappedJob, &sourceHash, &raw); err != nil {
 		t.Fatal(err)
@@ -368,6 +378,7 @@ func TestPreparedCoordinationImportPreservesHistoryAndReplayAfterEditRestart(t *
 		t.Fatal("restart retry changed receipt")
 	}
 	conserved(t, afterRestart, f.snapshot(false))
+	assertImportSnapshot(t, f)
 	next := batch
 	one := int64(1)
 	next.ExpectedRevision = &one

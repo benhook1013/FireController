@@ -105,13 +105,14 @@ describe('signed-in Project publication routes', () => {
       const html = renderToStaticMarkup(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>);
       expect(fetch).not.toHaveBeenCalled(); expect(session.controller.signal.aborted).toBe(false);
       expect(router.state.location.pathname + router.state.location.search).toBe(path);
-      expect(html).toContain('aria-label="Project navigation"'); expect(html).toContain('<h1>FireMUD</h1>');
+      expect(html).toContain('aria-label="Project navigation"');
+      if (path.includes('view=public')) expect(html).not.toContain('class="delivery-hero'); else expect(html).toContain('<h1>FireMUD</h1>');
       expect(html).not.toContain('Sign in to the workspace'); expect(html).not.toContain('Project credential'); expect(html).not.toContain('href="/"');
       return html;
     } finally { router.dispose(); client.clear(); }
   }
   it.each([
-    ['/projects/firemud/project', 'No published overview', 'This project has no published overview yet.'],
+    ['/projects/firemud/project?view=public', 'No published overview', 'This project has no published overview yet.'],
     [`/projects/firemud/published/history/2?generation=${generation}`, 'Published page unavailable', 'This revision is no longer available.'],
   ])('keeps the signed-in shell when publication is missing at %s', (path, title, message) => {
     publication.state = 'missing';
@@ -120,7 +121,7 @@ describe('signed-in Project publication routes', () => {
     expect(publication.requests).toHaveLength(1); expect(publication.requests[0]).toMatchObject({ address: 'firemud', embedded: true, theme: false });
     if (path.includes('/history/')) expect(publication.requests[0]).toMatchObject({ revision: 2, generation });
   });
-  it.each(['/projects/firemud/project', `/projects/firemud/published/history/2?generation=${generation}`])('keeps available approved content in the private route at %s', path => {
+  it.each(['/projects/firemud/project?view=public', `/projects/firemud/published/history/2?generation=${generation}`])('keeps available approved content in the private route at %s', path => {
     publication.state = 'present';
     const html = privatePaint(path);
     expect(html).toContain('Approved project narrative'); expect(html).not.toContain('No published overview'); expect(html).not.toContain('Published page unavailable');

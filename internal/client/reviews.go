@@ -79,22 +79,43 @@ type ReviewRunDetail struct {
 }
 
 type ReviewPullSummary struct {
-	Diff           *ReviewPullDiff    `json:"diff,omitempty"`
-	IsDraft        *bool              `json:"is_draft,omitempty"`
-	MergedAt       string             `json:"merged_at,omitempty"`
-	Number         int64              `json:"number"`
-	Title          string             `json:"title"`
-	State          string             `json:"state"`
-	HeadSHA        string             `json:"head_sha"`
-	BaseRef        string             `json:"base_ref"`
-	BaseSHA        string             `json:"base_sha"`
-	CIState        string             `json:"ci_state"`
-	Mergeability   string             `json:"mergeability"`
-	Complete       bool               `json:"complete"`
-	RunCount       int64              `json:"run_count"`
-	AttemptCount   int64              `json:"attempt_count"`
-	RecentRuns     []ReviewRunSummary `json:"recent_runs"`
-	LatestAttempts []ReviewAttempt    `json:"latest_attempts"`
+	Diff           *ReviewPullDiff        `json:"diff,omitempty"`
+	IsDraft        *bool                  `json:"is_draft,omitempty"`
+	MergedAt       string                 `json:"merged_at,omitempty"`
+	Number         int64                  `json:"number"`
+	Title          string                 `json:"title"`
+	State          string                 `json:"state"`
+	HeadSHA        string                 `json:"head_sha"`
+	BaseRef        string                 `json:"base_ref"`
+	BaseSHA        string                 `json:"base_sha"`
+	CIState        string                 `json:"ci_state"`
+	Mergeability   string                 `json:"mergeability"`
+	Complete       bool                   `json:"complete"`
+	RunCount       int64                  `json:"run_count"`
+	RunCounts      ReviewChannelRunCounts `json:"run_counts"`
+	AttemptCount   int64                  `json:"attempt_count"`
+	RecentRuns     []ReviewRunSummary     `json:"recent_runs"`
+	LatestAttempts []ReviewAttempt        `json:"latest_attempts"`
+}
+
+type ReviewChannelRunCounts struct {
+	Hosted   int64 `json:"hosted"`
+	CLI      int64 `json:"cli"`
+	Subagent int64 `json:"subagent"`
+	Manual   int64 `json:"manual"`
+}
+
+func (v ReviewChannelRunCounts) valid(total int64) bool {
+	if total < 0 {
+		return false
+	}
+	for _, n := range []int64{v.Hosted, v.CLI, v.Subagent, v.Manual} {
+		if n < 0 || n > total {
+			return false
+		}
+		total -= n
+	}
+	return total == 0
 }
 
 type ReviewRunSummary struct {
@@ -280,7 +301,7 @@ func (c *Client) validReviewPull(value ReviewPullSummary) bool {
 	if !validPullNumber(value.Number) || !cleanReviewText(value.Title, 500, true) || !oneReviewOf(value.State, "open", "merged", "closed", "unknown") ||
 		!validReviewSHA(value.HeadSHA) || !cleanReviewText(value.BaseRef, 256, false) || !validReviewSHA(value.BaseSHA) ||
 		!oneReviewOf(value.CIState, "unknown", "pending", "success", "failure") || !oneReviewOf(value.Mergeability, "unknown", "mergeable", "conflicting") ||
-		!validReviewPullMetadata(value) || value.RunCount < 0 || value.AttemptCount < 0 ||
+		!validReviewPullMetadata(value) || value.RunCount < 0 || !value.RunCounts.valid(value.RunCount) || value.AttemptCount < 0 ||
 		value.RecentRuns == nil || len(value.RecentRuns) > 3 || int64(len(value.RecentRuns)) > value.RunCount || value.RunCount > 0 && len(value.RecentRuns) == 0 ||
 		value.LatestAttempts == nil || len(value.LatestAttempts) > 4 || int64(len(value.LatestAttempts)) > value.AttemptCount || value.AttemptCount > 0 && len(value.LatestAttempts) == 0 {
 		return false

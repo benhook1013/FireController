@@ -34,6 +34,7 @@ func installLinkedSourceFixture(t *testing.T, f *publicationFixture) (string, st
 		args  []any
 	}{
 		{`INSERT INTO jobs(project_id,id,title,brief,worker_id,status,revision,created_at,updated_at) VALUES(?,?,?,?,?,'active',2,?,?)`, []any{f.project, jobID, "PRIVATE_JOB_TITLE", "PRIVATE_BRIEF", f.worker, now, now}},
+		{`INSERT INTO job_progress(project_id,job_id,job_revision,summary,next,blocker,evidence_json) VALUES(?,?,2,'','','','[]')`, []any{f.project, jobID}},
 		{`INSERT INTO job_summary_history(project_id,job_id,revision,job_revision,title,body,actor_id,worker_id,created_at) VALUES(?,?,1,1,'Approved job title','Approved job body','principal_author',?,?),(?,?,2,2,'Later title','Later body','principal_author',?,?)`, []any{f.project, jobID, f.worker, now, f.project, jobID, f.worker, now}},
 		{`INSERT INTO job_summaries(project_id,job_id,revision,job_revision,title,body,actor_id,worker_id,created_at) VALUES(?,?,2,2,'Later title','Later body','principal_author',?,?)`, []any{f.project, jobID, f.worker, now}},
 		{`INSERT INTO project_map_entries(project_id,id,kind,title,state,archived,revision,state_json) VALUES(?,?,'workstream','PRIVATE_CURRENT_TITLE','private-current',0,1,?)`, []any{f.project, mapID, string(state)}},

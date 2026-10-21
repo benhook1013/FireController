@@ -2,6 +2,7 @@ package reviews
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -55,15 +56,15 @@ func TestCurrentSummaryFrontCacheDamageRefusesPublicationAtomically(t *testing.T
 				t.Fatal(err)
 			}
 			before := historyMigrationDatabaseDigest(t, f)
-			var pull PullResponse
-			beforeWire := nativeRead(t, f, "/pulls/1", &pull)
+			beforeRead := f.call(http.MethodGet, "/api/v1/projects/"+f.project+"/reviews/pulls/1", f.readToken, "", nil)
 			a := currentSummaryAttempt("would-hide-corrupt-cli", "subagent", "2026-10-01T01:00:00Z", "")
 			_, err := nativePublish(f, NativePublication{Pull: nativePull(1), Attempt: &a})
 			nativeErrorCode(t, err, "storage_unavailable")
 			if after := historyMigrationDatabaseDigest(t, f); after != before {
 				t.Fatal("refused native write changed canonical bodies, caches, refs, events or metadata")
 			}
-			if afterWire := nativeRead(t, f, "/pulls/1", &pull); string(afterWire) != string(beforeWire) {
+			afterRead := f.call(http.MethodGet, "/api/v1/projects/"+f.project+"/reviews/pulls/1", f.readToken, "", nil)
+			if afterRead.Code != beforeRead.Code || beforeRead.Code == http.StatusOK && afterRead.Body.String() != beforeRead.Body.String() {
 				t.Fatal("refused native write replaced previous compact response")
 			}
 		})

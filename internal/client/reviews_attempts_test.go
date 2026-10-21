@@ -142,6 +142,7 @@ func TestReviewCompactSummaryAcceptsInt64LifetimeCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	pull.Pull.RunCount, pull.Pull.AttemptCount = math.MaxInt64, math.MaxInt64
+	pull.Pull.RunCounts = client.ReviewChannelRunCounts{Manual: math.MaxInt64}
 	body, err := json.Marshal(pull)
 	if err != nil {
 		t.Fatal(err)

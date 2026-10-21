@@ -101,10 +101,11 @@ func TestCurrentSummaryBulkDeltaPlanMatchesReplacement(t *testing.T) {
 	two.Attempts = []Attempt{nativeAttempt("omitted-pull", "active")}
 	f.observe(t, reviewRequest(0, []PullInput{one, two, three}), "plan-original")
 	one.Runs = append([]RunInput(nil), one.Runs[:1]...)
+	one.Runs[0].SourceRunID, one.Runs[0].Channel = "replacement-channel", "hosted"
 	one.Runs[0].Complete, one.Runs[0].Outcome = true, "completed"
 	one.Runs[0].StartedAt, one.Runs[0].FinishedAt = "2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z"
 	one.Attempts = append([]Attempt(nil), one.Attempts[:1]...)
-	three.Runs = []RunInput{{SourceRunID: "new", Channel: "cli", Scope: "plan", Outcome: "active"}}
+	three.Runs = []RunInput{{SourceRunID: "new", Channel: "subagent", Scope: "plan", Outcome: "active"}}
 	three.Attempts = []Attempt{nativeAttempt("new", "active")}
 	req := reviewRequest(1, []PullInput{one, three, nativePull(4)})
 	if err := validateObservation(&req); err != nil {

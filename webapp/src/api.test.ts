@@ -43,7 +43,7 @@ const reviewAttempt = {
 };
 const reviewPull = {
   number: 1, title: 'Retained merged work', state: 'merged', head_sha: reviewRun.head_sha, base_ref: 'main', base_sha: 'e'.repeat(40),
-  ci_state: 'success', mergeability: 'unknown', complete: true, run_count: 1, attempt_count: 1,
+  ci_state: 'success', mergeability: 'unknown', complete: true, run_count: 1, run_counts: { hosted: 1, cli: 0, subagent: 0, manual: 0 }, attempt_count: 1,
   recent_runs: [reviewRun], latest_attempts: [reviewAttempt],
 };
 const reviewQueue = { ...reviewSnapshot, configured: true, items: [reviewPull], has_more: false };
@@ -483,11 +483,41 @@ describe('Api stored review workspace', () => {
     for (const call of fetchMock.mock.calls) expect(call[1].method ?? 'GET').toBe('GET');
   });
 
+  it('requires exact per-channel totals on both current queue and pinned pull reads', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    const counts = { hosted: 27, cli: 1, manual: 8, subagent: 2 };
+    const pull = { ...reviewPull, run_count: 38, run_counts: counts };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await client.reviewQueue()).items[0].run_counts).toEqual(counts);
+    expect((await client.reviewPull(1, reviewSnapshot.snapshot_id)).pull.run_counts).toEqual(counts);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(String(fetchMock.mock.calls[1][0])).searchParams.get('snapshot')).toBe(reviewSnapshot.snapshot_id);
+    const { run_counts: _counts, ...missing } = reviewPull;
+    const invalid = [missing, ...[
+      null, [], {}, { hosted: 1, cli: 0, manual: 0 },
+      { ...reviewPull.run_counts, extra: 0 }, { ...reviewPull.run_counts, hosted: null },
+      { ...reviewPull.run_counts, hosted: -1 }, { ...reviewPull.run_counts, hosted: 0.5 },
+      { ...reviewPull.run_counts, hosted: Number.MAX_SAFE_INTEGER + 1 },
+      { ...reviewPull.run_counts, hosted: 2 },
+      // The aggregate still matches, but the observed Hosted row exceeds its channel total.
+      { hosted: 0, cli: 1, manual: 0, subagent: 0 },
+    ].map(run_counts => ({ ...reviewPull, run_counts }))];
+    for (const value of invalid) {
+      vi.stubGlobal('fetch', vi.fn(async () => json({ ...reviewQueue, items: [value] })));
+      await expect(client.reviewQueue()).rejects.toMatchObject({ code: 'invalid_response' });
+      vi.stubGlobal('fetch', vi.fn(async () => json({ ...reviewSnapshot, pull: value })));
+      await expect(client.reviewPull(1, reviewSnapshot.snapshot_id)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
+
   it('retains genuinely empty zero-count review histories', async () => {
     setupLocation();
     const client = api();
     await connect(client);
-    const pull = { ...reviewPull, run_count: 0, attempt_count: 0, recent_runs: [], latest_attempts: [] };
+    const pull = { ...reviewPull, run_count: 0, run_counts: { hosted: 0, cli: 0, subagent: 0, manual: 0 }, attempt_count: 0, recent_runs: [], latest_attempts: [] };
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
       .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
@@ -548,7 +578,7 @@ describe('Api stored review workspace', () => {
     setupLocation();
     const client = api();
     await connect(client);
-    const pulls = Array.from({ length: 21 }, (_, index) => ({ ...reviewPull, number: index + 1, run_count: 0, recent_runs: [], attempt_count: 0, latest_attempts: [] }));
+    const pulls = Array.from({ length: 21 }, (_, index) => ({ ...reviewPull, number: index + 1, run_count: 0, run_counts: { hosted: 0, cli: 0, subagent: 0, manual: 0 }, recent_runs: [], attempt_count: 0, latest_attempts: [] }));
     const runs = Array.from({ length: 21 }, (_, index) => ({ ...reviewRun, id: `review_run_${index.toString(16).padStart(32, '0')}`, source_run_id: `run-${index}` }));
     for (const kind of ['queue', 'runs']) {
       const page = { ...reviewSnapshot, ...(kind === 'queue' ? { configured: true } : {}), items: kind === 'queue' ? pulls : runs, has_more: false };

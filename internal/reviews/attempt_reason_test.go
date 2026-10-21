@@ -101,14 +101,15 @@ func TestAttemptReasonPopulatedSchema7UpgradeKeepsOldWire(t *testing.T) {
 	p.Attempts = []Attempt{nativeAttempt("schema-seven-old", "uncertain"), nativeAttempt("schema-seven-new", "held")}
 	p.Attempts[1].StartedAt = "2026-01-01T00:01:00Z"
 	snapshot := f.observe(t, reviewRequest(0, []PullInput{p}), "schema-seven")["id"].(string)
-	removeReasonForPre8Fixture(t, f.store)
-	if _, err := f.store.DB().Exec(`UPDATE metadata SET value='7' WHERE key='schema:reviews'`); err != nil {
-		t.Fatal(err)
-	}
 	routes := []string{"/pulls/1", "/pulls/1/attempts?snapshot=" + snapshot}
 	before := make([][]byte, len(routes))
 	for i, path := range routes {
 		before[i] = []byte(historyMigrationRead(t, f, path).Body)
+	}
+	// Capture retained wire before reconstructing the genuine old physical schema.
+	removeReasonForPre8Fixture(t, f.store)
+	if _, err := f.store.DB().Exec(`UPDATE metadata SET value='7' WHERE key='schema:reviews'`); err != nil {
+		t.Fatal(err)
 	}
 	if err := EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)

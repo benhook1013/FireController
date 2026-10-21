@@ -283,6 +283,8 @@ func TestHostedObservationSchemaTwoMigrationPreservesFinalEvidenceAndReplay(t *t
 	}
 	before := evidenceState(t, f, a)
 	admissionSQL(t, f, `DROP TABLE review_hosted_observations`)
+	admissionSQL(t, f, `DROP INDEX review_evidence_hosted_publication`)
+	admissionSQL(t, f, `DROP INDEX review_evidence_hosted_run`)
 	admissionSQL(t, f, `UPDATE metadata SET value='2' WHERE key='schema:review_evidence'`)
 	cliAllowanceReopen(t, f)
 	if err := EnsureEvidenceSchema(t.Context(), f.store); err != nil {
@@ -292,7 +294,7 @@ func TestHostedObservationSchemaTwoMigrationPreservesFinalEvidenceAndReplay(t *t
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_evidence'`).Scan(&version); err != nil || version != "3" || evidenceState(t, f, a) != before {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_evidence'`).Scan(&version); err != nil || version != "4" || evidenceState(t, f, a) != before {
 		t.Fatal("migration changed retained evidence", version, err)
 	}
 	replay, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, input)

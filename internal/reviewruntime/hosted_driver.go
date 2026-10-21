@@ -95,6 +95,15 @@ func (d *HostedDriver) providerActor() reviewprovider.Author {
 	return reviewprovider.Author{ID: d.capability.Hosted.ProviderActorID, Login: d.capability.Hosted.ProviderLogin, Kind: "Bot"}
 }
 
+// HostedObservationReader exposes only stored-source collection and the
+// operator's trusted bot identity, independently of review dispatch or pause.
+func (d *HostedDriver) HostedObservationReader() reviewexec.ExternalHostedReader {
+	if d == nil || d.provider == nil || !validHostedSettings(d.capability.Hosted) {
+		return nil
+	}
+	return &hostedArchiveSource{provider: d.provider, actor: d.providerActor()}
+}
+
 func (d *HostedDriver) checkIdle(ctx context.Context, plan reviewexec.SourcePlan) error {
 	settings := d.capability.Hosted
 	observation, err := d.provider.ObserveHostedActivity(ctx, plan.Repository.FullName, plan.Pull.HeadSHA, reviewprovider.HostedActivitySelector{Mode: settings.ProgressMode, ProviderActorID: settings.ProviderActorID, AppID: settings.ProgressAppID})

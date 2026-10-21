@@ -33,6 +33,9 @@ func (w *historySnapshotWrite) observation(ctx context.Context, tx *sql.Tx, req 
 	for position, pull := range req.Queue {
 		total := summaryTotals{runs: int64(len(pull.Runs)), attempts: int64(len(pull.Attempts))}
 		for _, run := range pull.Runs {
+			if err := total.channels.add(run.Channel, 1); err != nil {
+				return err
+			}
 			if !run.Complete {
 				total.incomplete++
 			}

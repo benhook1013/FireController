@@ -7,7 +7,7 @@ const metadata = { project_id: project.id, revision: 1, snapshot_id: snapshot, s
 const attempt = { source: 'original-producer-a', source_attempt_id: 'local-attempt', channel: 'hosted', head_sha: 'a'.repeat(40), state: 'completed', started_at: '2026-10-17T23:00:00Z', finished_at: '2026-10-17T23:01:00Z', duration_seconds: 60, source_run_id: 'source-run', trigger_id: '', provider_review_id: '' };
 const { source: _source, ...compactAttempt } = attempt;
 const run = { source: attempt.source, id: `review_run_${'b'.repeat(32)}`, pull_number: 123, source_run_id: 'source-run', channel: 'hosted', head_sha: attempt.head_sha, reviewer: 'Reviewer', scope: 'selected patch', coverage_limits: [], outcome: 'completed', attributable: true, complete: true, started_at: attempt.started_at, finished_at: attempt.finished_at, found: 0, accepted: 0, routed: 0, finalized: true, fixed: 0 };
-const pull = { number: 123, title: 'Large retained history', state: 'merged', head_sha: attempt.head_sha, base_ref: 'main', base_sha: 'c'.repeat(40), ci_state: 'unknown', mergeability: 'unknown', complete: true, run_count: 137, attempt_count: 137, recent_runs: [run], latest_attempts: [compactAttempt] };
+const pull = { number: 123, title: 'Large retained history', state: 'merged', head_sha: attempt.head_sha, base_ref: 'main', base_sha: 'c'.repeat(40), ci_state: 'unknown', mergeability: 'unknown', complete: true, run_count: 137, run_counts: { hosted: 137, cli: 0, subagent: 0, manual: 0 }, attempt_count: 137, recent_runs: [run], latest_attempts: [compactAttempt] };
 const clients: Api[] = [];
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } }); }
 async function connected() {
@@ -65,7 +65,7 @@ describe('bounded review archive API', () => {
   it('accepts safe lifetime totals beyond100 but requires compact PR detail without its old attempts field', async () => {
     const api = await connected();
     for (const count of [137, Number.MAX_SAFE_INTEGER]) {
-      vi.stubGlobal('fetch', vi.fn(async () => json({ ...metadata, pull: { ...pull, run_count: count, attempt_count: count } })));
+      vi.stubGlobal('fetch', vi.fn(async () => json({ ...metadata, pull: { ...pull, run_count: count, run_counts: { hosted: count, cli: 0, subagent: 0, manual: 0 }, attempt_count: count } })));
       expect((await api.reviewPull(123, snapshot)).pull.attempt_count).toBe(count);
     }
     for (const value of [{ ...metadata, pull, attempts: [] }, ...[-1, 1.5, Number.MAX_SAFE_INTEGER + 1].map(count => ({ ...metadata, pull: { ...pull, attempt_count: count } }))]) {

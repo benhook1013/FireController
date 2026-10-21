@@ -17,6 +17,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Legacy adoption](legacy-adoption.md): optional source-specific tooling, selected retention and guarded native historical coordination imports, with explicit implementation gaps.
 - [Unfinished adoption obligations](adoption-obligations.md): native source-bound finding, route and unsettled-result holds, explicit resolution and minimum-only policy; source-owner export and installed cutover proof remain separate.
 - [Stored review fronts](review-fronts.md): bounded verified source frames, current local channel assessment and honest browser front/queued/closed labels.
+- [Automatic GitHub observation](github-observation.md): service-owned PR/CI updates and pickup of Hosted reviews started directly on GitHub, independent of review requests.
 - [Per-PR review rounds](review-round-controls.md): retained round limits, taper, channel closure and independent queue scheduling for adoption.
 - [Public project website](public-site.md): shareable project showcase, publication selection and the public/private field boundary.
 - [Project presentation and metadata](project-presentation.md): selected appearance records, semantic theme validation and isolated live project updates.

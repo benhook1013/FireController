@@ -15,7 +15,7 @@ describe('public project browser', () => {
     const expected = render(old), flagged = fixture();
     flagged.content.reviews[0].cli_has_more = false; flagged.content.reviews[0].hosted_has_more = false;
     expect(render(flagged)).toBe(expected); expect(JSON.stringify(old)).toBe(before);
-    expect(expected).toContain('Round 1'); expect(expected).not.toContain('outside this view');
+    expect(expected).toContain('<strong>0/0/0</strong>'); expect(expected).not.toContain('outside this view');
   });
   it('shows a bounded channel window without lifetime ordinals or complete-archive promises', () => {
     const value = fixture(), review = value.content.reviews[0];
@@ -24,11 +24,11 @@ describe('public project browser', () => {
     const html = renderToStaticMarkup(<MemoryRouter><PublicSnapshotView snapshot={value} /></MemoryRouter>);
     const hosted = html.match(/<section class="review-lane" aria-label="Hosted review rounds">([\s\S]*?)<\/section>/u)![1];
     const cli = html.match(/<section class="review-lane" aria-label="CLI review rounds">([\s\S]*?)<\/section>/u)![1];
-    expect(hosted).toContain('100 published rounds'); expect(hosted.match(/>Published round</gu)).toHaveLength(100);
+    expect(hosted).toContain('100 published rounds'); expect(hosted.match(/class="review-round-pill /gu)).toHaveLength(6);
     expect(hosted).toContain('More published Hosted rounds are outside this view');
     expect(hosted).toContain('href="#published-history"'); expect(html).toContain('id="published-history"');
     expect(hosted).toContain('these snapshots may not contain every round'); expect(hosted).not.toMatch(/>Round \d|all rounds|complete archive/iu);
-    expect(cli).toContain('Round 1'); expect(cli).not.toContain('outside this view');
+    expect(cli).toContain('<strong>1/1/0</strong>'); expect(cli).not.toContain('outside this view');
     expect(html).toContain('merged'); expect(html).not.toMatch(/project_id|snapshot_id|review_evidence_/u);
   });
   it('connects the window notice to the existing revision browser action', () => {
@@ -37,7 +37,7 @@ describe('public project browser', () => {
     function visit(node: ReactNode): void {
       Children.forEach(node, child => {
         if (!isValidElement<Record<string, unknown>>(child)) return;
-        if (child.props.hasMore === true && typeof child.type === 'function') {
+        if (typeof child.type === 'function' && ['PublicReviews', 'ReviewRowDisplay', 'PublicReviewLane', 'ReviewLaneDisplay'].includes(child.type.name)) {
           visit((child.type as (props: Record<string, unknown>) => ReactNode)(child.props));
         } else if (child.type === 'a' && child.props.href === '#published-history' && typeof child.props.onClick === 'function') {
           child.props.onClick();

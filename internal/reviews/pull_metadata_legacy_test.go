@@ -302,6 +302,14 @@ func metadataPre8Attempts(store *core.Store) http.HandlerFunc {
 
 func removeReasonForPre8Fixture(t *testing.T, store *core.Store) {
 	t.Helper()
+	if _, err := store.DB().Exec(`DROP INDEX IF EXISTS review_run_versions_external_source; DROP TABLE IF EXISTS review_hosted_discovery_state`); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range channelRunCountNames {
+		if _, err := store.DB().Exec(`ALTER TABLE review_current_totals DROP COLUMN ` + name); err != nil {
+			t.Fatal("genuine predecessor count fixture", err)
+		}
+	}
 	for _, statement := range []string{`DROP VIEW review_attempts`, `ALTER TABLE review_attempt_versions DROP COLUMN reason`, HistoryReadViewSQLV7()["review_attempts"]} {
 		if _, err := store.DB().Exec(statement); err != nil {
 			t.Fatal("genuine predecessor reason fixture", err)

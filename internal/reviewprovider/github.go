@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -35,6 +36,10 @@ type GitHub struct {
 	token      string
 	baseURL    string
 	httpClient *http.Client
+	cacheMu    sync.Mutex
+	cache      map[string]conditionalEntry
+	cacheBytes int
+	cacheClock uint64
 }
 
 // NewGitHub creates the production GitHub API adapter. An empty token permits
@@ -264,6 +269,19 @@ func (g *GitHub) requestJSON(ctx context.Context, method, path string, query url
 	if g == nil || g.httpClient == nil || !validBaseURL(g.baseURL) || path == "" || path[0] != '/' {
 		return providerError("provider_unavailable", "The provider adapter is unavailable.", 0, 0, false)
 	}
+	if method == http.MethodGet && expectedStatus == http.StatusOK {
+		data, headers, status, err := g.requestBytes(ctx, method, path, query, body)
+		if err != nil {
+			return err
+		}
+		if status != expectedStatus {
+			return statusError(&http.Response{StatusCode: status, Header: headers}, false)
+		}
+		if decodeProviderJSON(data, dst) != nil {
+			return invalidResponse(false, status)
+		}
+		return nil
+	}
 	requestURL := strings.TrimRight(g.baseURL, "/") + path
 	if len(query) != 0 {
 		requestURL += "?" + query.Encode()
@@ -369,11 +387,18 @@ func (g *GitHub) requestBytes(ctx context.Context, method, path string, query ur
 	if g.token != "" {
 		request.Header.Set("Authorization", "Bearer "+g.token)
 	}
+	cached, conditional := g.conditionalRequest(request)
 	response, err := g.httpClient.Do(request)
 	if err != nil {
 		return nil, nil, 0, providerError("provider_unavailable", "The provider request failed.", 0, 0, false)
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotModified {
+		if !conditional {
+			return nil, nil, 0, invalidResponse(false, response.StatusCode)
+		}
+		return cached.body, cached.headers.Clone(), http.StatusOK, nil
+	}
 	if response.StatusCode != http.StatusOK {
 		return nil, response.Header.Clone(), response.StatusCode, nil
 	}
@@ -381,6 +406,7 @@ func (g *GitHub) requestBytes(ctx context.Context, method, path string, query ur
 	if err != nil || len(data) > githubMaxBody {
 		return nil, nil, 0, invalidResponse(false, response.StatusCode)
 	}
+	g.rememberConditional(request, response, data)
 	return data, response.Header.Clone(), response.StatusCode, nil
 }
 
@@ -741,6 +767,7 @@ type githubPull struct {
 	Deletions    *int64  `json:"deletions"`
 	Draft        *bool   `json:"draft"`
 	MergedAt     *string `json:"merged_at"`
+	Mergeable    *bool   `json:"mergeable"`
 }
 
 type githubIssueComment struct {
@@ -925,7 +952,14 @@ func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
 			return Pull{}, errors.New("GitHub merge time is invalid.")
 		}
 	}
-	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles, Additions: raw.Additions, Deletions: raw.Deletions, IsDraft: raw.Draft, MergedAt: mergedAt}, nil
+	mergeability := "unknown"
+	if raw.Mergeable != nil {
+		mergeability = "conflicting"
+		if *raw.Mergeable {
+			mergeability = "mergeable"
+		}
+	}
+	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles, Additions: raw.Additions, Deletions: raw.Deletions, IsDraft: raw.Draft, MergedAt: mergedAt, Mergeability: mergeability}, nil
 }
 
 func normalizeIssueComment(raw githubIssueComment) (IssueComment, error) {
