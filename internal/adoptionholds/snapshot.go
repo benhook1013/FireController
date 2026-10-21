@@ -41,7 +41,7 @@ func domainPresent(ctx context.Context, q Query) (bool, error) {
 // ValidateSnapshot checks this optional domain's physical and logical graph.
 // Runtime scoped reads never invoke this repository-wide maintenance traversal.
 func ValidateSnapshot(ctx context.Context, q Query) error {
-	var version int
+	var version any
 	err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_adoption_obligations'`).Scan(&version)
 	if errors.Is(err, sql.ErrNoRows) {
 		var count int
@@ -56,7 +56,7 @@ func ValidateSnapshot(ctx context.Context, q Query) error {
 	if err != nil {
 		return err
 	}
-	if version != 1 {
+	if version != "1" {
 		return unavailable()
 	}
 	expected := map[string]string{}
