@@ -120,7 +120,12 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	if _, ok := initial.tables["review_front_frames"]; !ok || initial.counts["review_front_frames"] != 0 {
 		t.Fatal("fresh packaged front cache is absent or already populated")
 	}
+	// The enabled automatic observer starts independently of explicit selection.
+	// Hold its first source GET before submitting any selection, so that exact
+	// selection counts and metadata conservation have a deterministic boundary.
+	firstObserver := provider.holdNextObserver(t)
 	daemon := startDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogPath)
+	firstObserver.awaitStarted(t, ctx)
 	target, _ := url.Parse("http://" + daemon.address)
 	var targetMu sync.RWMutex
 	forward := httputil.NewSingleHostReverseProxy(target)
@@ -370,10 +375,13 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	}
 	closeMCP()
 	daemon.stop(t)
+	firstObserver.awaitCancelled(t, ctx)
 	beforeRestart := readUpgradeState(t, ctx, data)
 	seedRunSelectionConfiguration(t, ctx, data, catalogPath, project, worker, strings.TrimSpace(string(admin)), 1, []int64{3, 2}, false)
 	afterConfig := readUpgradeState(t, ctx, data)
+	secondObserver := provider.holdNextObserver(t)
 	restarted := startDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogPath)
+	secondObserver.awaitStarted(t, ctx)
 	if restarted.instance != bootstrap.instance {
 		t.Fatal("restart changed instance")
 	}
@@ -405,6 +413,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 		t.Fatal("restart or replay launched another Git command")
 	}
 	restarted.stop(t)
+	secondObserver.awaitCancelled(t, ctx)
 	final := readUpgradeState(t, ctx, data)
 	if !reflect.DeepEqual(final, afterConfig) {
 		t.Fatal("restart/recovery/read altered retained tables")
@@ -432,10 +441,14 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 			t.Fatal("private immutable fixture input changed")
 		}
 	}
+	expectedTotal := map[string]int{"GET /repositories/991": 5, "GET /repos/synthetic/packaged-smoke/pulls/2": 2, "GET /repos/synthetic/packaged-smoke/pulls/3": 3}
+	if provider.observerRequests.Load() != 2 || !reflect.DeepEqual(provider.totalInventory(), expectedTotal) {
+		t.Fatalf("selection and held observer total inventory differs: %v", provider.totalInventory())
+	}
 	if frontReads != 2 || unexpected.Load() != 0 || provider.forbidden.Load() != 0 {
 		t.Fatal("fixture observed unexpected method/route/origin")
 	}
-	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d local_front_reads=2 loopback_github_gets=8 git_stub_calls=1 cli_review_calls=0 native_operations=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load())
+	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d local_front_reads=2 loopback_github_gets=10 selection_source_gets=8 held_observer_gets=2 git_stub_calls=1 cli_review_calls=0 native_operations=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load())
 }
 
 func runSelectionShellQuote(value string) string {
@@ -502,13 +515,72 @@ func seedRunSelectionConfiguration(t *testing.T, ctx context.Context, data, cata
 }
 
 type runSelectionHTTPSFixture struct {
-	proxy, ca string
-	mu        sync.Mutex
-	paths     map[string]int
-	forbidden atomic.Int64
+	proxy, ca        string
+	mu               sync.Mutex
+	paths            map[string]int
+	forbidden        atomic.Int64
+	observerRequests atomic.Int64
+	nextObserver     *runSelectionObserverGate
+	stopObservers    chan struct{}
+}
+
+type runSelectionObserverGate struct {
+	started, finished chan struct{}
+	cancelled         atomic.Bool
+}
+
+func (f *runSelectionHTTPSFixture) holdNextObserver(t *testing.T) *runSelectionObserverGate {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.nextObserver != nil {
+		t.Fatal("previous observer gate was not consumed")
+	}
+	gate := &runSelectionObserverGate{started: make(chan struct{}), finished: make(chan struct{})}
+	f.nextObserver = gate
+	return gate
+}
+
+func (g *runSelectionObserverGate) awaitStarted(t *testing.T, ctx context.Context) {
+	t.Helper()
+	waitCtx, cancel := context.WithTimeout(ctx, stepTimeout)
+	defer cancel()
+	select {
+	case <-g.started:
+	case <-waitCtx.Done():
+		t.Fatal("automatic observer did not reach its controlled source gate")
+	}
+}
+
+func (g *runSelectionObserverGate) awaitCancelled(t *testing.T, ctx context.Context) {
+	t.Helper()
+	waitCtx, cancel := context.WithTimeout(ctx, stepTimeout)
+	defer cancel()
+	select {
+	case <-g.finished:
+		if !g.cancelled.Load() {
+			t.Fatal("observer source gate was released without daemon cancellation")
+		}
+	case <-waitCtx.Done():
+		t.Fatal("automatic observer source request did not join after daemon shutdown")
+	}
 }
 
 func (f *runSelectionHTTPSFixture) inventory() map[string]int {
+	out := f.totalInventory()
+	// Only explicitly armed startup requests can enter this separate inventory.
+	// The final total assertion still accounts for every provider request.
+	if observed := int(f.observerRequests.Load()); observed != 0 {
+		key := "GET /repositories/991"
+		out[key] -= observed
+		if out[key] == 0 {
+			delete(out, key)
+		}
+	}
+	return out
+}
+
+func (f *runSelectionHTTPSFixture) totalInventory() map[string]int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := map[string]int{}
@@ -519,7 +591,7 @@ func (f *runSelectionHTTPSFixture) inventory() map[string]int {
 }
 func newRunSelectionHTTPSFixture(t *testing.T, private, token string) *runSelectionHTTPSFixture {
 	t.Helper()
-	f := &runSelectionHTTPSFixture{paths: map[string]int{}}
+	f := &runSelectionHTTPSFixture{paths: map[string]int{}, stopObservers: make(chan struct{})}
 	cert, ca := historyCollectionCertificate(t)
 	f.ca = filepath.Join(private, "fixture-ca.pem")
 	if os.WriteFile(f.ca, ca, 0600) != nil {
@@ -533,6 +605,25 @@ func newRunSelectionHTTPSFixture(t *testing.T, private, token string) *runSelect
 		refuse := func() { f.forbidden.Add(1); w.WriteHeader(502) }
 		if r.Method != "GET" || r.Host != "api.github.com" || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("Accept") != "application/vnd.github+json" || r.Header.Get("X-GitHub-Api-Version") != "2022-11-28" || r.ContentLength > 0 {
 			refuse()
+			return
+		}
+		f.mu.Lock()
+		gate := f.nextObserver
+		if r.URL.Path != "/repositories/991" {
+			gate = nil
+		} else if gate != nil {
+			f.nextObserver = nil
+			f.observerRequests.Add(1)
+		}
+		f.mu.Unlock()
+		if gate != nil {
+			close(gate.started)
+			select {
+			case <-r.Context().Done():
+				gate.cancelled.Store(true)
+			case <-f.stopObservers:
+			}
+			close(gate.finished)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -610,5 +701,6 @@ func newRunSelectionHTTPSFixture(t *testing.T, private, token string) *runSelect
 			t.Error("owned selection CONNECT handlers did not join")
 		}
 	})
+	t.Cleanup(func() { close(f.stopObservers) })
 	return f
 }

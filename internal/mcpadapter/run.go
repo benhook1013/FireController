@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/profile"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -100,7 +101,10 @@ func Run(ctx context.Context, args []string, env map[string]string, stdin io.Rea
 	if !ok {
 		reader = io.NopCloser(stdin)
 	}
-	if err = server.Run(ctx, &mcp.IOTransport{Reader: reader, Writer: writerCloser{stdout}, MaxLineLength: 256 << 10}); err != nil {
+	// The largest admitted body is the combined job PATCH. Leave bounded space
+	// for its tool selectors and JSON-RPC envelope; per-tool parsers retain their
+	// own smaller limits for every other operation.
+	if err = server.Run(ctx, &mcp.IOTransport{Reader: reader, Writer: writerCloser{stdout}, MaxLineLength: client.JobPatchMaxEncodedBytes + 16<<10}); err != nil {
 		if ctx.Err() != nil {
 			return 6
 		}

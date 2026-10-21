@@ -4,7 +4,8 @@ GO_TEST_PACKAGES ?= ./...
 GO_TEST_RUN ?= .
 REVIEW_TRANSFER_BUDGET_TEST := TestReviewTransferMaximumBatchUsesOrdinaryWriteBudget
 ADOPTION_OBLIGATIONS_BUDGET_TEST := TestAdoptionObligationsMaximumBatchUsesOrdinaryWriteBudget
-ORDINARY_WRITE_BUDGET_TESTS := $(REVIEW_TRANSFER_BUDGET_TEST)|$(ADOPTION_OBLIGATIONS_BUDGET_TEST)
+EXTERNAL_HOSTED_BUDGET_TEST := TestExternalHostedMaximumInventoryUsesOrdinaryWriteBudget
+ORDINARY_WRITE_BUDGET_TESTS := $(REVIEW_TRANSFER_BUDGET_TEST)|$(ADOPTION_OBLIGATIONS_BUDGET_TEST)|$(EXTERNAL_HOSTED_BUDGET_TEST)
 ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
 .PHONY: check workflow-check fmt-check test build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke source-converter-check
@@ -24,6 +25,7 @@ test:
 		case "$$package" in \
 			github.com/benhook1013/FireController/internal/reviews) budget_test='$(REVIEW_TRANSFER_BUDGET_TEST)' ;; \
 			github.com/benhook1013/FireController/internal/adoptionholds) budget_test='$(ADOPTION_OBLIGATIONS_BUDGET_TEST)' ;; \
+			github.com/benhook1013/FireController/internal/reviewexec) budget_test='$(EXTERNAL_HOSTED_BUDGET_TEST)' ;; \
 			*) continue ;; \
 		esac; \
 		names="$$( $(GO) test -race=false -list "^$$budget_test$$" "$$package" )" || exit $$?; \
@@ -43,9 +45,6 @@ legacyimport:
 
 # Requires make build and make legacyimport; never rebuild during the workload.
 migration-smoke:
-	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedResumeAccumulatedUsage$$' -count=1 -timeout=60s ./tools/packagedsmoke
-	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedUncertainUsageRecovery$$' -count=1 -timeout=60s ./tools/packagedsmoke
-	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedAgentEditsSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedCoordinationImportSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedOperationalAdoptionSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 
@@ -60,6 +59,10 @@ browser-build:
 
 # Requires the actual outputs from make build; no implicit rebuild.
 smoke:
+	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedResumeAccumulatedUsage$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedUncertainUsageRecovery$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedAgentEditsSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedCombinedJobPatchRecovery$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedTextAuthoringSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedQualificationCoordination$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -vet=all -tags=packaged_smoke -run '^TestPackagedSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
@@ -82,6 +85,7 @@ browser-smoke:
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedEditorialBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedPublicBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedReviewArchiveSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedAccumulatedBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 
 # Optional source adapters: no installed source root is discovered by tests.
 source-converter-check:

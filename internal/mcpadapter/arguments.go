@@ -67,6 +67,10 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if mutationTool(name) {
 		bound = 256 << 10
 	}
+	if name == "job_update" {
+		// Tool selectors and the key sit outside the public PATCH body.
+		bound = client.JobPatchMaxEncodedBytes + 1024
+	}
 	if len(data) > bound || strictjson.Validate(data) != nil {
 		return args, invalidArguments()
 	}

@@ -111,7 +111,9 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 			t.Fatal("unbounded or private transport output")
 		}
 	}
+	firstObserver := provider.holdNextObserver(t)
 	daemon := startDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogFile)
+	firstObserver.awaitStarted(t, ctx)
 	target, _ := url.Parse("http://" + daemon.address)
 	var targetMu sync.RWMutex
 	forward := httputil.NewSingleHostReverseProxy(target)
@@ -291,11 +293,14 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 	}
 	closeMCP()
 	daemon.stop(t)
+	firstObserver.awaitCancelled(t, ctx)
 	retained := readUpgradeState(t, ctx, data)
 	if retained.counts["review_operations"] != 2 || retained.counts["review_execution_attempts"] != 2 || retained.counts["review_execution_reservations"] != 0 || retained.counts["review_selections"] != 0 || retained.counts["review_execution_evidence"] != 0 || retained.counts["review_round_completions"] != 0 || retained.tables["review_execution_config"] != initial.tables["review_execution_config"] || retained.tables["review_round_controls"] != initial.tables["review_round_controls"] {
 		t.Fatal("explicit request fabricated credit, selection or configuration changes")
 	}
+	secondObserver := provider.holdNextObserver(t)
 	restarted := startDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogFile)
+	secondObserver.awaitStarted(t, ctx)
 	next, _ := url.Parse("http://" + restarted.address)
 	targetMu.Lock()
 	target = next
@@ -304,11 +309,16 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 		t.Fatal("restart changed retained intent or original replay")
 	}
 	restarted.stop(t)
+	secondObserver.awaitCancelled(t, ctx)
 	if !reflect.DeepEqual(retained, readUpgradeState(t, ctx, data)) || !reflect.DeepEqual(providerBefore, provider.inventory()) {
 		t.Fatal("replay/read/restart changed native state or reacquired source")
 	}
 	if body, err := os.ReadFile(gitLog); err != nil || !bytes.Equal(body, gitBefore) {
 		t.Fatal("replay/read/restart launched Git again")
+	}
+	expectedTotal := map[string]int{"GET /repositories/991": 4, "GET /repos/synthetic/packaged-smoke/pulls/3": 2}
+	if provider.observerRequests.Load() != 2 || !reflect.DeepEqual(provider.totalInventory(), expectedTotal) {
+		t.Fatalf("explicit selection and held observer total inventory differs: %v", provider.totalInventory())
 	}
 	if _, err := os.Stat(reviewLog); !errors.Is(err, os.ErrNotExist) || provider.forbidden.Load() != 0 || unexpected.Load() != 0 || posts.Load() != 7 || binaryHash(t, profiles) != profileHash {
 		t.Fatal("unexpected review execution, request or profile mutation")
@@ -318,5 +328,5 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 			t.Fatal("immutable fixture input changed")
 		}
 	}
-	t.Logf("packaged explicit order passed: total=%s cli_calls=%d mcp_calls=%d application_http=%d request_posts=7 loopback_source_gets=4 git_stub_calls=2 review_calls=0 native_operations=2 owned_processes=0", time.Since(started).Round(time.Millisecond), cliCalls, mcpCalls, requests.Load())
+	t.Logf("packaged explicit order passed: total=%s cli_calls=%d mcp_calls=%d application_http=%d request_posts=7 loopback_source_gets=6 selected_source_gets=4 held_observer_gets=2 git_stub_calls=2 review_calls=0 native_operations=2 owned_processes=0", time.Since(started).Round(time.Millisecond), cliCalls, mcpCalls, requests.Load())
 }

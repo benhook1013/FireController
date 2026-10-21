@@ -45,6 +45,10 @@ type ProgressHistoryEntry struct {
 	CreatedAt   string   `json:"created_at"`
 }
 
+// JobPatchMaxEncodedBytes admits the combined brief and progress limits after
+// ordinary JSON escaping, matching the public job PATCH request boundary.
+const JobPatchMaxEncodedBytes = 384 << 10
+
 func validProgress(p Progress) bool {
 	if p.Evidence == nil || !checkpointText(p.Summary, 8<<10, false) || !checkpointText(p.Next, 8<<10, false) || !checkpointText(p.Blocker, 4<<10, false) || len(p.Evidence) > 10 {
 		return false
@@ -119,7 +123,7 @@ func ValidateJobPatch(p UpdateJobRequest) error { _, err := normalizeJobPatch(p)
 // DecodeJobPatch admits only declared supplied fields, without loading credentials.
 func DecodeJobPatch(data []byte) (UpdateJobRequest, error) {
 	var p UpdateJobRequest
-	if len(data) > 256<<10 || strictjson.Decode(data, &p) != nil || !nonnullJobPatch(data) {
+	if len(data) > JobPatchMaxEncodedBytes || strictjson.Decode(data, &p) != nil || !nonnullJobPatch(data) {
 		return p, mutationValidation()
 	}
 	_, err := normalizeJobPatch(p)
