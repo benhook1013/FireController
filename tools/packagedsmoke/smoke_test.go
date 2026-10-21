@@ -432,7 +432,6 @@ func TestPackagedSmoke(t *testing.T) {
 		t.Fatal("MCP wait/contact changed write workload or lost contact")
 	}
 	checkJob(t, callTool(ctx, "job_read", map[string]any{"job_id": created.ID}), created.ID, project, worker)
-	closeMCP()
 	cliWaitCtx, stopCLIWait := context.WithCancel(ctx)
 	defer stopCLIWait()
 	cliWait := exec.CommandContext(cliWaitCtx, binaries["fc"], "--profiles-file", profileFile, "--profile", "builder", "inbox", "wait", "--cursor", snapshot.EventCursor, "--wait-seconds", "50")
@@ -551,6 +550,7 @@ func TestPackagedSmoke(t *testing.T) {
 	if len(archive.Items) != 2 || archive.HasMore {
 		t.Fatal("unified progress history duplicated a replay or lost a change")
 	}
+	closeMCP()
 	daemon.stop(t)
 
 	restarted := startDaemon(t, ctx, binaries["fcd"], data, env)

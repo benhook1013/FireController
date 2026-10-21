@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The selected model below replaces separate everyday updates and checkpoints. Implementation, existing-data conversion and installed qualification are in progress. GitHub lifecycle synchronization is a separate unfinished capability; job writes do not compensate for it.
+The service, CLI, MCP adapter and browser implement the selected model below, replacing separate everyday updates and checkpoints. Source checks cover conversion, guarded updates, current-context reads, backup/restore and actual packaged clients and browser behavior. Installed migration, matching-client rollout and active-job content normalization require their own qualification. GitHub lifecycle synchronization is a separate unfinished capability; job writes do not compensate for it.
 
 ## One working record
 
