@@ -123,7 +123,7 @@ export function DeliveryWork() {
   const board = useSyncExternalStore(archive.subscribe, archive.snapshot, archive.snapshot);
   useLayoutEffect(() => { archive.reset(query.data); }, [archive, query.data, query.dataUpdatedAt]);
   useEffect(() => { const cancel = () => archive.cancel(); session.controller.signal.addEventListener('abort', cancel, { once: true }); return () => { session.controller.signal.removeEventListener('abort', cancel); cancel(); }; }, [archive, session.controller]);
-  useEffect(() => { if (location.hash === '#review-queue') { const frame = requestAnimationFrame(() => document.getElementById('review-queue')?.scrollIntoView()); return () => cancelAnimationFrame(frame); } }, [location.hash, location.key]);
+  useEffect(() => { if (!query.isPending && location.hash === '#review-queue') { const frame = requestAnimationFrame(() => document.getElementById('review-queue')?.scrollIntoView()); return () => cancelAnimationFrame(frame); } }, [location.hash, location.key, query.isPending]);
   const value = board.value ?? query.data;
   const contact = useWorkerPresence(value?.workers.items.map(worker => worker.id) ?? []);
   const more = Boolean(value && (value.workers.has_more || value.jobs.has_more));
