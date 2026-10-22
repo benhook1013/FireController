@@ -45,8 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # Leave hosted capacity for the independent quick/build/native jobs.
-      max-parallel: 14
+      # Use available hosted capacity without the previous tail of queued slices.
+      max-parallel: 20
       matrix:
         shard: [backup-0, reviewexec-0, reviews-0, reviewruntime-0, rest-0, backup-1, reviewexec-1, reviews-1, reviewruntime-1, rest-1, backup-2, reviewexec-2, reviews-2, backup-3, reviewexec-3, reviews-3, backup-4, reviewexec-4, backup-5, reviewexec-5, backup-6, backup-7]
     steps:
