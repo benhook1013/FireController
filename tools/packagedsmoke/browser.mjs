@@ -469,7 +469,10 @@ try {
     await restoreContactVisibility();
     need(await page.evaluate(()=>document.visibilityState==='visible'));
     checkpoint = 'presence-visible-response';
-    await expect.poll(()=>presenceFinished,{timeout:8000}).toBe(2);
+    // A transport completion event alone is not the user-visible success
+    // boundary. Require the real response and newly delivered contact below.
+    await expect.poll(()=>presenceResponses,{timeout:8000}).toBe(2);
+    need(presenceHTTPStatus===200);
     checkpoint = 'presence-visible-content';
     await expect(builderLane.locator('.worker-contact')).toContainText('Last contact');
     need(presenceReads===2 && presenceHeaderErrors===0 && sameContactReadBoundary());
@@ -1013,11 +1016,11 @@ try {
   }
   checkpoint = 'attempt-reason-detail';
   const reasonReadBoundary = {pull:reviewPullReads,attempts:reviewAttemptReads,runs:reviewRunReads};
-  const attemptArchiveResponse = page.waitForResponse(response => response.request().method()==='GET' && new URL(response.url()).pathname===prefix+'/reviews/pulls/32/attempts');
+  const attemptArchiveResponse = page.waitForResponse(response => response.request().method()==='GET' && new URL(response.url()).pathname===prefix+'/reviews/pulls/32/attempts').then(async response => ({status:response.status(),body:await response.json()}));
   await headRow.getByRole('link',{name:'Review details for PR #32',exact:true}).click();
   const attemptArchive = await attemptArchiveResponse;
-  need(attemptArchive.status() === 200);
-  const retainedAttempts = await attemptArchive.json();
+  need(attemptArchive.status === 200);
+  const retainedAttempts = attemptArchive.body;
   need(retainedAttempts.items.length === 1 && retainedAttempts.items[0].source_attempt_id === uncertainAttempt.source_attempt_id && retainedAttempts.items[0].state === 'uncertain' && retainedAttempts.items[0].reason === reasonCode);
   checkpoint = 'attempt-reason-expanded';
   const attemptsPanel = page.getByRole('region',{name:'PR #32 attempts',exact:true});

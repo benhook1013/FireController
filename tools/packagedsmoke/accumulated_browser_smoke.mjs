@@ -43,7 +43,11 @@ try {
  await page.getByRole('button',{name:'Load more work',exact:true}).click(); await expect(page.locator('.delivery-job-list > li')).toHaveCount(55);
  checks.push('Delivery appends 55 jobs and remaining workers');
  phase='jobs filter'; await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Jobs',exact:true}).click();
- await page.getByLabel('Job worker',{exact:true}).selectOption(config.worker); await page.getByLabel('Job status',{exact:true}).selectOption('');
+ const workerFilter=page.getByLabel('Job worker',{exact:true});
+ // This fixture has25 workers. Its random target identity may be on page two.
+ await expect.poll(()=>workerFilter.locator('option').count()).toBeGreaterThan(1);
+ if(await workerFilter.locator(`option[value="${config.worker}"]`).count()===0)await page.getByRole('button',{name:'More workers',exact:true}).click();
+ await workerFilter.selectOption(config.worker); await page.getByLabel('Job status',{exact:true}).selectOption('');
  await expect(page.locator('.job-list > li')).toHaveCount(20); await page.getByRole('button',{name:'Next jobs',exact:true}).click(); await expect(page.locator('.job-list > li')).toHaveCount(7);
  const detail=page.locator('.job-list .job-title').first();await detail.click();await expect(page.getByRole('heading',{name:'Job brief',exact:true})).toBeVisible();
  await page.getByRole('link',{name:'Back to jobs',exact:false}).click(); await expect(page.getByLabel('Job worker',{exact:true})).toHaveValue(config.worker);await expect(page.getByLabel('Job status',{exact:true})).toHaveValue('');

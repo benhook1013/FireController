@@ -75,10 +75,11 @@ try{
   const screenshot=async name=>{if(config.diagnostic_directory){await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});await page.screenshot({path:config.diagnostic_directory+'/'+name+'.png',fullPage:false,mask:[page.locator('input,textarea')],timeout:2000});}};
   const connect=async(project,credential,name)=>{
     await page.getByLabel('Project',{exact:true}).fill(project);await page.getByLabel('Project credential',{exact:true}).fill(credential.trim());
-    const resolved=page.waitForResponse(response=>response.request().method()==='GET'&&new URL(response.url()).pathname==='/api/v1/projects/'+project);
+    // Capture the body when the response arrives, before login navigation retires its CDP handle.
+    const resolved=page.waitForResponse(response=>response.request().method()==='GET'&&new URL(response.url()).pathname==='/api/v1/projects/'+project).then(async response=>({status:response.status(),identity:await response.json()}));
     const accepted=page.waitForResponse(response=>response.request().method()==='POST'&&new URL(response.url()).pathname==='/api/v1/projects/'+project+'/browser-session');
     await page.getByRole('button',{name:'Connect to project',exact:true}).click();need((await accepted).status()===200);
-    const identityResponse=await resolved,identity=await identityResponse.json();need(identityResponse.status()===200&&identity.id===project&&typeof identity.handle==='string');
+    const {status,identity}=await resolved;need(status===200&&identity.id===project&&typeof identity.handle==='string');
     unpublishedPaths.add('/api/v1/public/project-locations/'+identity.handle);
     await page.getByRole('heading',{name,exact:true}).waitFor();await page.getByRole('heading',{name:'Delivery',exact:true}).waitFor();
     await page.waitForURL(config.origin+'/projects/'+identity.handle);return identity.handle;

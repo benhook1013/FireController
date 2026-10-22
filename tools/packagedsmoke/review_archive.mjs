@@ -50,9 +50,10 @@ try {
     await page.goto(config.origin+path+(snapshot ? `?snapshot=${snapshot}` : ''));
     // The project-scoped sign-in form already binds this deep link's project.
     await page.getByLabel('Project credential',{exact:true}).fill(token);
-    const resolved = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === prefix);
+    // Read while this login's response is current, before canonical navigation.
+    const resolved = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === prefix).then(async response => ({response, identity:await response.json()}));
     await page.getByRole('button',{name:'Connect to project',exact:true}).click();
-    const identityResponse = await resolved, identity = await identityResponse.json();
+    const {response:identityResponse, identity} = await resolved;
     need(identityResponse.status() === 200 && identity.id === config.project && typeof identity.handle === 'string' && identity.handle.length > 0);
     const home = `/projects/${encodeURIComponent(identity.handle)}`, canonicalPath = `${home}/reviews/pulls/${number}`;
     await expect(page).toHaveURL(config.origin+canonicalPath+(snapshot ? `?snapshot=${snapshot}` : ''));
