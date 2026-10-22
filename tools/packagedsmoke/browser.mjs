@@ -1039,7 +1039,10 @@ try {
   checkpoint = 'sanitized-literal';
   need(await page.locator('literal').count() === 0);
   checkpoint = 'reviews-url';
-  need(new URL(page.url()).pathname === home + '/reviews');
+  await expect.poll(() => {
+    const url = new URL(page.url());
+    return url.pathname + url.hash;
+  }).toBe(home + '#review-queue');
   checkpoint = 'reload-head-spa';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
   await jump.click();
