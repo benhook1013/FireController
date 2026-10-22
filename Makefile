@@ -9,18 +9,28 @@ MCP_HISTORY_BUDGET_TEST := TestJobHistoryEncodedPagesAcrossCLIAndSDK
 ORDINARY_BUDGET_TESTS := $(REVIEW_TRANSFER_BUDGET_TEST)|$(ADOPTION_OBLIGATIONS_BUDGET_TEST)|$(EXTERNAL_HOSTED_BUDGET_TEST)|$(MCP_HISTORY_BUDGET_TEST)
 ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-.PHONY: check workflow-check fmt-check test build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke source-converter-check
+.PHONY: check workflow-check ci-selection-check fmt-check test test-race test-budgets vet build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke source-converter-check
 
-check: workflow-check browser-check fmt-check test docs-check source-converter-check
+check: workflow-check ci-selection-check browser-check fmt-check test docs-check source-converter-check
 
 workflow-check:
 	$(ACTIONLINT) -shellcheck="" -pyflakes="" .github/workflows/ci.yml
 
+ci-selection-check:
+	python3 -m unittest discover -s tools/ci -p 'test_*.py'
+
 fmt-check:
 	@files="$$($(GOFMT) -l cmd internal tools)" || exit $$?; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi
 
-test:
-	$(GO) test -race -p=2 -timeout=20m -run '$(GO_TEST_RUN)' -skip '^($(ORDINARY_BUDGET_TESTS))$$' $(GO_TEST_PACKAGES)
+# Keep deadline gates after race work, including with a parallel outer make.
+test: test-race
+	$(MAKE) test-budgets
+	$(MAKE) vet
+
+test-race:
+	$(GO) test -race -count=1 -p=2 -timeout=20m -run '$(GO_TEST_RUN)' -skip '^($(ORDINARY_BUDGET_TESTS))$$' $(GO_TEST_PACKAGES)
+
+test-budgets:
 	@packages="$$( $(GO) list $(GO_TEST_PACKAGES) )" || exit $$?; \
 	for package in $$packages; do \
 		case "$$package" in \
@@ -34,6 +44,8 @@ test:
 		printf '%s\n' "$$names" | grep -Fx -- "$$budget_test" >/dev/null || { printf '%s\n' 'Ordinary runtime budget test was not discovered.' >&2; exit 1; }; \
 		$(GO) test -race=false -v -count=1 -timeout=20m -run "^$$budget_test$$" "$$package" || exit $$?; \
 	done
+
+vet:
 	$(GO) vet $(GO_TEST_PACKAGES)
 
 build: browser-build

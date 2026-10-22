@@ -14,13 +14,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  linux:
-    name: Linux checks (${{ matrix.shard }})
+  static:
+    name: Source and browser checks
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [rest, backup-0, backup-1, backup-2, backup-3, reviewexec-0, reviewexec-1, reviewexec-2, reviewexec-3, reviewruntime]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -29,90 +25,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - name: Select Go packages
-        id: packages
-        env:
-          SHARD: ${{ matrix.shard }}
-        run: |
-          set -euo pipefail
-          go list ./... > "$RUNNER_TEMP/firecontroller-go-packages"
-          selected=()
-          while IFS= read -r package; do
-            case "$package" in
-              github.com/benhook1013/FireController/internal/backup)
-                case "$SHARD" in
-                  backup-0|backup-1|backup-2|backup-3) shard="$SHARD" ;;
-                  *) shard=backup ;;
-                esac ;;
-              github.com/benhook1013/FireController/internal/reviewexec)
-                case "$SHARD" in
-                  reviewexec-0|reviewexec-1|reviewexec-2|reviewexec-3) shard="$SHARD" ;;
-                  *) shard=reviewexec ;;
-                esac ;;
-              github.com/benhook1013/FireController/internal/reviewruntime) shard=reviewruntime ;;
-              *) shard=rest ;;
-            esac
-            if [ "$shard" = "$SHARD" ]; then
-              selected+=("$package")
-            fi
-          done < "$RUNNER_TEMP/firecontroller-go-packages"
-          test "${#selected[@]}" -gt 0
-          printf 'packages=%s\n' "${selected[*]}" >> "$GITHUB_OUTPUT"
-      - name: Select complementary package tests
-        id: partition
-        if: startsWith(matrix.shard, 'backup-') || startsWith(matrix.shard, 'reviewexec-')
-        env:
-          SHARD: ${{ matrix.shard }}
-          GO_TEST_PACKAGES: ${{ steps.packages.outputs.packages }}
-          LC_ALL: C
-        run: |
-          set -euo pipefail
-          case "$SHARD" in
-            backup-0|backup-1|backup-2|backup-3) family=backup ;;
-            reviewexec-0|reviewexec-1|reviewexec-2|reviewexec-3) family=reviewexec ;;
-            *) printf 'unknown test shard\n' >&2; exit 1 ;;
-          esac
-          test "$GO_TEST_PACKAGES" = "github.com/benhook1013/FireController/internal/$family"
-          go test -race -p=2 -list . "$GO_TEST_PACKAGES" > "$RUNNER_TEMP/firecontroller-$family-tests"
-          python3 - "$RUNNER_TEMP/firecontroller-$family-tests" <<'PY'
-          import os
-          import re
-          import sys
-
-          shard = re.fullmatch(r"(backup|reviewexec)-([0-3])", os.environ["SHARD"])
-          if not shard:
-              raise SystemExit("unknown test shard")
-          family = shard[1]
-          package = "github.com/benhook1013/FireController/internal/" + family
-          if os.environ["GO_TEST_PACKAGES"] != package:
-              raise SystemExit("test shard/package mismatch")
-          names = []
-          for line in open(sys.argv[1], encoding="utf-8"):
-              name = line.rstrip("\n")
-              if re.fullmatch(r"(?:Test|Example|Fuzz)\w*", name):
-                  names.append(name)
-              elif re.fullmatch(r"Benchmark\w*", name) or re.fullmatch(r"ok\s+" + re.escape(package) + r"\s+.*", name):
-                  continue
-              else:
-                  raise SystemExit("unexpected Go test discovery output")
-          # UTF-8 byte ordering matches LC_ALL=C, independent of locale.
-          names.sort(key=lambda name: name.encode("utf-8"))
-          if len(names) != len(set(names)):
-              raise SystemExit("duplicate Go test name")
-          count = 4
-          partitions = {f"{family}-{index}": names[index::count] for index in range(count)}
-          sets = [set(part) for part in partitions.values()]
-          if any(not part for part in sets) or set().union(*sets) != set(names) or sum(map(len, sets)) != len(names):
-              raise SystemExit("incomplete test partition")
-          selected = partitions.get(os.environ["SHARD"])
-          if not selected:
-              raise SystemExit("unknown or empty test shard")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write("run=^(" + "|".join(map(re.escape, selected)) + ")$\n")
-          print(f"Selected {len(selected)} of {len(names)} {family} tests")
-          PY
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: matrix.shard == 'rest'
         with:
           node-version: 22
           cache: npm
@@ -120,43 +33,110 @@ jobs:
             package-lock.json
             webapp/package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
-        if: matrix.shard == 'rest'
       - run: npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
-        if: matrix.shard == 'rest'
-      - name: Test isolated Go package
-        if: matrix.shard != 'rest'
+      - run: make workflow-check ci-selection-check fmt-check docs-check source-converter-check browser-check browser-build
+      - name: Verify embedded browser assets match source
+        run: |
+          git diff --exit-code -- internal/webui/assets
+          test -z "$(git ls-files --others --exclude-standard -- internal/webui/assets)"
+
+  linux:
+    name: Go race (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Leave hosted capacity for the independent quick/build/native jobs.
+      max-parallel: 14
+      matrix:
+        shard: [backup-0, reviewexec-0, reviews-0, reviewruntime-0, rest-0, backup-1, reviewexec-1, reviews-1, reviewruntime-1, rest-1, backup-2, reviewexec-2, reviews-2, backup-3, reviewexec-3, reviews-3, backup-4, reviewexec-4, backup-5, reviewexec-5, backup-6, backup-7]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Isolate the race build cache
+        run: printf 'GOCACHE=%s/firecontroller-go-race\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Select Go packages
+        id: packages
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          go list ./... > "$RUNNER_TEMP/firecontroller-go-packages"
+          python3 tools/ci/select-go-tests.py "$SHARD" "$RUNNER_TEMP/firecontroller-go-packages" >> "$GITHUB_OUTPUT"
+      - name: Select complementary package tests
+        id: partition
+        if: steps.packages.outputs.partitioned == 'true'
+        env:
+          SHARD: ${{ matrix.shard }}
+          GO_TEST_PACKAGES: ${{ steps.packages.outputs.packages }}
+        run: |
+          set -euo pipefail
+          go test -race -p=2 -list . "$GO_TEST_PACKAGES" > "$RUNNER_TEMP/firecontroller-go-tests"
+          python3 tools/ci/select-go-tests.py "$SHARD" "$RUNNER_TEMP/firecontroller-go-packages" --tests "$RUNNER_TEMP/firecontroller-go-tests" >> "$GITHUB_OUTPUT"
+      - name: Run fresh race tests and vet
         env:
           GO_TEST_PACKAGES: ${{ steps.packages.outputs.packages }}
           GO_TEST_RUN: ${{ steps.partition.outputs.run || '.' }}
-        run: make test
-      - name: Check and build remaining packages and browser
-        if: matrix.shard == 'rest'
-        env:
-          GO_TEST_PACKAGES: ${{ steps.packages.outputs.packages }}
-        run: make check build
-      - name: Smoke packaged binaries
-        if: matrix.shard == 'rest'
-        run: make smoke
-      - name: Smoke selected legacy job adoption
-        if: matrix.shard == 'rest'
-        run: make legacyimport migration-smoke
+        run: make test-race vet
+
+  qualification:
+    name: Packaged qualification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - run: npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
+      - name: Build packaged binaries
+        run: make build legacyimport
+      - name: Verify embedded browser assets match source
+        run: |
+          git diff --exit-code -- internal/webui/assets
+          test -z "$(git ls-files --others --exclude-standard -- internal/webui/assets)"
+      - name: Check ordinary-runtime limits
+        run: make test-budgets
+      - name: Smoke packaged binaries and legacy adoption
+        run: make smoke migration-smoke
       - name: Install pinned Chromium
-        if: matrix.shard == 'rest'
         working-directory: webapp
         timeout-minutes: 5
         run: npx --no-install playwright install --with-deps chromium
       - name: Smoke embedded browser lifecycle
-        if: matrix.shard == 'rest'
         timeout-minutes: 2
         run: make browser-smoke
-      - name: Verify embedded browser assets match source
-        if: matrix.shard == 'rest'
+      - name: Check standalone Windows and macOS builds
         run: |
-          git diff --exit-code -- internal/webui/assets
-          test -z "$(git ls-files --others --exclude-standard -- internal/webui/assets)"
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fc-windows.exe ./cmd/fc
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fc-macos ./cmd/fc
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fcd-windows.exe ./cmd/fcd
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fcd-macos ./cmd/fcd
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fcmcp-windows.exe ./cmd/fcmcp
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fcmcp-macos ./cmd/fcmcp
+
+  container:
+    name: Container runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Build and check provider container runtime
-        if: matrix.shard == 'rest'
-        timeout-minutes: 10
         run: |
           docker build --platform linux/amd64 -t firecontroller:ci .
           docker run --rm --pull=never --network none --read-only \
@@ -170,16 +150,6 @@ jobs:
               test -s /etc/ssl/certs/ca-certificates.crt
               git init --bare --template= /tmp/source.git
             '
-      - name: Check standalone Windows and macOS builds
-        if: matrix.shard == 'rest'
-        run: |
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fc-windows.exe ./cmd/fc
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fc-macos ./cmd/fc
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fcd-windows.exe ./cmd/fcd
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fcd-macos ./cmd/fcd
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fcmcp-windows.exe ./cmd/fcmcp
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fcmcp-macos ./cmd/fcmcp
-
   native-smoke:
     name: Native smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -200,7 +170,8 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
+          cache-dependency-path: go.sum
       - name: Build native packaged binaries
         env:
           FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
@@ -225,13 +196,19 @@ jobs:
   validate:
     name: validate
     runs-on: ubuntu-latest
-    needs: [linux, native-smoke]
+    needs: [static, linux, qualification, container, native-smoke]
     if: ${{ always() }}
     steps:
-      - name: Require all Linux shards and both native smoke results
+      - name: Require every check family
         env:
+          STATIC_RESULT: ${{ needs.static.result }}
           LINUX_RESULT: ${{ needs.linux.result }}
+          QUALIFICATION_RESULT: ${{ needs.qualification.result }}
+          CONTAINER_RESULT: ${{ needs.container.result }}
           NATIVE_RESULT: ${{ needs.native-smoke.result }}
         run: |
+          test "$STATIC_RESULT" = success
           test "$LINUX_RESULT" = success
+          test "$QUALIFICATION_RESULT" = success
+          test "$CONTAINER_RESULT" = success
           test "$NATIVE_RESULT" = success
