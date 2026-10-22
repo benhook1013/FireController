@@ -195,7 +195,11 @@ try {
 
   phase = 'recent-queue';
   const reviewPath = `${current.home}/reviews`;
-  await current.page.locator(`nav a[href="${reviewPath}"]`).click();
+  await current.page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
+  await expect.poll(() => {
+    const url = new URL(current.page.url());
+    return url.pathname + url.hash;
+  }).toBe(`${current.home}#review-queue`);
   const queue = current.page.locator('#review-queue');
   await expect(queue.locator('.review-queue-row')).toHaveCount(5);
   need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-123','review-pr-203','review-pr-204','review-pr-205','review-pr-206']));
