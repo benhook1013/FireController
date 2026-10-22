@@ -10,6 +10,8 @@ The [container runtime guide](container-runtime.md) provides the supported Linux
 
 ## A single authoritative installation
 
+Plain HTTP browser connections use HTTP/1.1. Chromium typically limits an origin to six simultaneous connections; each open live view can retain one project stream and another for a selected inbox. Enough simultaneous live views can therefore block further browser navigation even while the API remains healthy. Close extra live views or serve the installation through a TLS proxy that negotiates HTTP/2, which multiplexes those streams. This is a browser transport constraint, independent of project authorization and the eight-session cookie-retention policy. A focused Chromium check reproduced six active HTTP/1.1 project streams blocking a seventh document, with direct API access still successful and navigation recovering after one view closed. The hosted deployment negotiated HTTP/2 in the corresponding check. Ordinary hidden-tab lifecycle behavior and physical-device limits were not established by that experiment.
+
 Run one active service replica with SQLite on the server's local filesystem. One instance can serve multiple projects; each client retains its explicit instance, project, worker and credential binding. Clients use the API rather than opening the database or requiring a server checkout.
 
 An installation may run on one personal computer or an always-on server. Keeping a local development installation does not make it a synchronized replica of a remote instance. Remote clients depend on network availability and latency; local benchmark results do not establish remote response times.

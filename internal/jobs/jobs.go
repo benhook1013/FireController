@@ -525,8 +525,9 @@ func jobHistory(store *core.Store) http.HandlerFunc {
 				return
 			}
 		}
-		query := `SELECT revision,actor_id,state_json,created_at FROM job_history WHERE project_id=? AND job_id=? AND revision>? ORDER BY revision LIMIT ?`
-		rows, err := store.DB().QueryContext(r.Context(), query, scope.ProjectID, jobID, afterRevision, limit+1)
+		// Refuse damaged oversized stored text without materializing it in Go.
+		query := `SELECT revision,actor_id,CASE WHEN length(CAST(state_json AS BLOB))<=? THEN state_json END,created_at FROM job_history WHERE project_id=? AND job_id=? AND revision>? ORDER BY revision LIMIT ?`
+		rows, err := store.DB().QueryContext(r.Context(), query, maxJobContext, scope.ProjectID, jobID, afterRevision, limit+1)
 		if err != nil {
 			core.WriteError(w, err)
 			return
@@ -534,18 +535,45 @@ func jobHistory(store *core.Store) http.HandlerFunc {
 		defer rows.Close()
 		result := historyPage{Items: make([]historyEntry, 0, limit)}
 		var last int64
+		encodedItems := 0
 		for rows.Next() {
 			var item historyEntry
-			var state string
+			var state sql.NullString
 			if err := rows.Scan(&item.Revision, &item.ActorID, &state, &item.CreatedAt); err != nil {
 				core.WriteError(w, err)
 				return
 			}
-			item.State = json.RawMessage(state)
 			if len(result.Items) == limit {
 				result.HasMore = true
 				break
 			}
+			item.State = json.RawMessage(state.String)
+			if !state.Valid || !validStoredJobHistory(item, scope.ProjectID, jobID) {
+				core.WriteError(w, jobHistoryUnavailable())
+				return
+			}
+			encoded, err := json.Marshal(item)
+			if err != nil {
+				core.WriteError(w, jobHistoryUnavailable())
+				return
+			}
+			// Reserve the exact continuation envelope for this candidate page.
+			// The final page can only be smaller, as it omits the cursor.
+			envelope, err := json.Marshal(historyPage{Items: []historyEntry{}, HasMore: true, Cursor: store.Cursor(scope, filter, fmt.Sprint(item.Revision))})
+			if err != nil {
+				core.WriteError(w, jobHistoryUnavailable())
+				return
+			}
+			separators := len(result.Items)
+			if len(envelope)+encodedItems+len(encoded)+separators+1 > maxProgressHistory {
+				if len(result.Items) == 0 {
+					core.WriteError(w, jobHistoryUnavailable())
+					return
+				}
+				result.HasMore = true
+				break
+			}
+			encodedItems += len(encoded)
 			last = item.Revision
 			result.Items = append(result.Items, item)
 		}
@@ -556,7 +584,7 @@ func jobHistory(store *core.Store) http.HandlerFunc {
 		if result.HasMore && last > 0 {
 			result.Cursor = store.Cursor(scope, filter, fmt.Sprint(last))
 		}
-		core.WriteJSON(w, http.StatusOK, result)
+		writeProgressJSON(w, result, maxProgressHistory)
 	}
 }
 
