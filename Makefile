@@ -2,6 +2,7 @@ GO ?= go
 GOFMT ?= gofmt
 GO_TEST_PACKAGES ?= ./...
 GO_TEST_RUN ?= .
+RCLONE ?= rclone
 REVIEW_TRANSFER_BUDGET_TEST := TestReviewTransferMaximumBatchUsesOrdinaryWriteBudget
 ADOPTION_OBLIGATIONS_BUDGET_TEST := TestAdoptionObligationsMaximumBatchUsesOrdinaryWriteBudget
 EXTERNAL_HOSTED_BUDGET_TEST := TestExternalHostedMaximumInventoryUsesOrdinaryWriteBudget
@@ -9,7 +10,7 @@ MCP_HISTORY_BUDGET_TEST := TestJobHistoryEncodedPagesAcrossCLIAndSDK
 ORDINARY_BUDGET_TESTS := $(REVIEW_TRANSFER_BUDGET_TEST)|$(ADOPTION_OBLIGATIONS_BUDGET_TEST)|$(EXTERNAL_HOSTED_BUDGET_TEST)|$(MCP_HISTORY_BUDGET_TEST)
 ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-.PHONY: check workflow-check ci-selection-check fmt-check test test-race test-budgets vet build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke source-converter-check
+.PHONY: check workflow-check ci-selection-check fmt-check test test-race test-budgets vet build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke source-converter-check offsite-smoke
 
 check: workflow-check ci-selection-check browser-check fmt-check test docs-check source-converter-check
 
@@ -70,6 +71,11 @@ browser-check:
 
 browser-build:
 	npm --prefix webapp run build
+
+# Explicit opt-in: actual packaged operator commands and rclone over loopback S3.
+# The default fixture is disposable; FC_TEST_S3_ENDPOINT can select local MinIO.
+offsite-smoke:
+	FC_TEST_RCLONE="$(RCLONE)" FC_TEST_FCD="$(CURDIR)/bin/fcd" $(GO) test -tags=offsite_integration -run '^TestOffsiteRealRcloneS3AndCryptRecovery$$' -count=1 -timeout=180s ./internal/offsite
 
 # Requires the actual outputs from make build; no implicit rebuild.
 smoke:

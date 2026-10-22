@@ -40,6 +40,9 @@ func main() {
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode int) {
 	stderr = &daemonDiagnosticWriter{writer: stderr}
+	if len(args) > 0 && (args[0] == "backup-push" || args[0] == "backup-fetch" || args[0] == "backup-offsite-status") {
+		return runOffsiteCommand(ctx, args[0], args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "restore-resume-providers" {
 		return runProviderResumptionCommand(ctx, args[1:], stdout, stderr)
 	}

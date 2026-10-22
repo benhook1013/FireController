@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "source_root": "/var/lib/firecontroller/managed-backups",
+  "instance_id": "instance_00000000000000000000000000000000",
+  "state_dir": "/var/lib/firecontroller-offsite/state",
+  "rclone_binary": "/usr/local/lib/firecontroller/rclone",
+  "rclone_config": "/var/lib/firecontroller-offsite/rclone.conf",
+  "remote": "encrypted:firecontroller",
+  "keep": 24,
+  "timeout": "15m",
+  "max_bundle_bytes": 1073741824
+}

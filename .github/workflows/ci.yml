@@ -112,6 +112,24 @@ jobs:
         run: make test-budgets
       - name: Smoke packaged binaries and legacy adoption
         run: make smoke migration-smoke
+      - name: Install pinned optional backup transport
+        env:
+          RCLONE_VERSION: v1.75.2
+          RCLONE_SHA256: 349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
+        run: |
+          curl --fail --silent --show-error --location --max-time 90 "https://downloads.rclone.org/$RCLONE_VERSION/rclone-$RCLONE_VERSION-linux-amd64.zip" --output "$RUNNER_TEMP/rclone.zip"
+          python3 - <<'PY'
+          import hashlib, os, pathlib, zipfile
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          archive = root / 'rclone.zip'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == os.environ['RCLONE_SHA256']
+          with zipfile.ZipFile(archive) as zipped:
+              (root / 'rclone').write_bytes(zipped.read('rclone-' + os.environ['RCLONE_VERSION'] + '-linux-amd64/rclone'))
+          (root / 'rclone').chmod(0o755)
+          PY
+      - name: Smoke offsite S3 transfer and encrypted recovery
+        timeout-minutes: 4
+        run: make offsite-smoke RCLONE="$RUNNER_TEMP/rclone"
       - name: Install pinned Chromium
         working-directory: webapp
         timeout-minutes: 5
