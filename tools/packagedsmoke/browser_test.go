@@ -179,7 +179,7 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 		if output.browserPID() > 1 {
 			stage = "after-browser-start"
 		}
-		t.Fatalf("packaged browser failed at phase=%s stage=%s stderr_bytes=%d driver_exit=%t; raw output withheld to protect fixture credentials", output.safePhase(), stage, stderr.len(), err != nil)
+		t.Fatalf("packaged browser failed at phase=%s stage=%s stderr_bytes=%d driver_exit=%t last_observed=%s; raw output withheld to protect fixture credentials", output.safePhase(), stage, stderr.len(), err != nil, safeBrowserProgress(config["progress_file"], time.Now()))
 	}
 	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
 	var result struct {
@@ -447,7 +447,7 @@ func (o *browserOutput) safePhase() string {
 			}
 			if record.Phase == "reload" {
 				switch record.Checkpoint {
-				case "reload-before", "reload-after-navigation", "reload-project-heading", "reload-queue-held", "reload-hash-retained", "reload-target-absent", "reload-queue-response", "reload-queue-unroute", "reload-head-position", "reload-heading-visible", "reload-session-renewed", "reload-current-authority", "reload-expiry-persistence", "reload-expiry-evidence", "reload-binding-retained", "reload-expiry-window", "reload-cookie-rotated", "reload-presentation-restored", "reload-sidebar-absent", "reload-connection-live", "reload-metadata-live", "reload-reader-counts":
+				case "reload-before", "reload-after-navigation", "reload-project-heading", "reload-queue-held", "reload-hash-retained", "reload-target-absent", "reload-queue-response", "reload-queue-unroute", "reload-delivery-held", "reload-initial-alignment", "reload-delivery-response", "reload-delivery-rendered", "reload-head-position", "reload-heading-visible", "reload-session-renewed", "reload-current-authority", "reload-expiry-persistence", "reload-expiry-evidence", "reload-binding-retained", "reload-expiry-window", "reload-cookie-rotated", "reload-presentation-restored", "reload-sidebar-absent", "reload-connection-live", "reload-metadata-live", "reload-reader-counts":
 					class := "driver"
 					if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
 						class = record.FailureClass
@@ -788,7 +788,7 @@ func TestBrowserProgressDiagnosticsAllowlist(t *testing.T) {
 }
 
 func TestBrowserReloadDiagnosticsAllowlist(t *testing.T) {
-	for _, checkpoint := range []string{"reload-project-heading", "reload-queue-held", "reload-hash-retained", "reload-target-absent", "reload-queue-response", "reload-queue-unroute", "reload-head-position"} {
+	for _, checkpoint := range []string{"reload-project-heading", "reload-queue-held", "reload-hash-retained", "reload-target-absent", "reload-queue-response", "reload-queue-unroute", "reload-delivery-held", "reload-initial-alignment", "reload-delivery-response", "reload-delivery-rendered", "reload-head-position"} {
 		for _, class := range []string{"timeout", "assertion", "driver", "PRIVATE_SENTINEL"} {
 			t.Run(checkpoint+"/"+class, func(t *testing.T) {
 				body, err := json.Marshal(map[string]any{"state": "FAIL", "phase": "reload", "checkpoint": checkpoint, "failure_class": class, "body": "PRIVATE_SENTINEL", "url": "PRIVATE_SENTINEL", "credential": "PRIVATE_SENTINEL", "error": "PRIVATE_SENTINEL"})
