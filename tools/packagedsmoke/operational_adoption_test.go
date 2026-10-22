@@ -375,7 +375,15 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 		t.Fatal("historical thread lost exact times/text/reply")
 	}
 	var rootInbox, pending client.Page[client.InboxItem]
+	// Pending discovery deliberately omits already handled source messages;
+	// retained history is a separate explicit read, including after restart.
 	decode(t, call("builder", "inbox", "list"), &rootInbox)
+	for _, item := range rootInbox.Items {
+		if item.ID == root.MessageID {
+			t.Fatal("acknowledged source message returned as pending")
+		}
+	}
+	decode(t, call("builder", "inbox", "list", "--all"), &rootInbox)
 	if len(rootInbox.Items) != 1 || rootInbox.Items[0].ID != root.MessageID || !rootInbox.Items[0].Seen || !rootInbox.Items[0].Acknowledged {
 		t.Fatal("known source handling was not retained")
 	}
@@ -394,10 +402,16 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 	}
 	ackArgs := []string{"inbox", "ack", reply.MessageID, "--key", "adoption-later-ack"}
 	ackBytes := call("inspector", ackArgs...)
+	decode(t, call("inspector", "inbox", "list"), &pending)
+	for _, item := range pending.Items {
+		if item.ID == reply.MessageID {
+			t.Fatal("native acknowledgment did not remove reply from pending discovery")
+		}
+	}
 	if !bytes.Equal(importedBytes, call("builder", messageApply...)) {
 		t.Fatal("message replay changed original receipt")
 	}
-	decode(t, call("inspector", "inbox", "list"), &pending)
+	decode(t, call("inspector", "inbox", "list", "--all"), &pending)
 	found = false
 	for _, item := range pending.Items {
 		if item.ID == reply.MessageID {
@@ -456,7 +470,7 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 	if !bytes.Equal(adoptedBytes, call("builder", applyControl...)) || readRound("2", "cli") != replaced || !bytes.Equal(importedBytes, call("builder", messageApply...)) || !bytes.Equal(ackBytes, call("inspector", ackArgs...)) {
 		t.Fatal("restart lost original receipts or overwritten state")
 	}
-	decode(t, call("inspector", "inbox", "list"), &pending)
+	decode(t, call("inspector", "inbox", "list", "--all"), &pending)
 	found = false
 	for _, item := range pending.Items {
 		if item.ID == reply.MessageID {
