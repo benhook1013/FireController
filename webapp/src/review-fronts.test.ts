@@ -15,8 +15,10 @@ afterEach(()=>vi.unstubAllGlobals());
 describe('current review position badges',()=>{
   it('keeps channel fronts independent and only marks established later positions queued',()=>{
     expect(reviewQueueBadges(pull(1),snapshot,value())).toEqual([]);
-    expect(reviewQueueBadges(pull(2),snapshot,value())[0]?.text).toBe('Review front · Hosted');
-    expect(reviewQueueBadges(pull(3),snapshot,value())[0]?.text).toBe('Review front · CLI');
+    expect(reviewQueueBadges(pull(2),snapshot,value())[0]?.text).toBe('Review front');
+    expect(reviewQueueBadges(pull(3),snapshot,value())[0]?.text).toBe('Review front');
+    expect(reviewQueueBadges(pull(2),snapshot,value())[0]?.channels).toEqual(['hosted']);
+    expect(reviewQueueBadges(pull(3),snapshot,value())[0]?.channels).toEqual(['cli']);
     expect(reviewQueueBadges(pull(4),snapshot,value())[0]?.text).toBe('Queued');
   });
   it('rejects a contradictory loaded front for all later positions in that channel',()=>{
@@ -36,7 +38,7 @@ describe('current review position badges',()=>{
   });
   it('does not close an unbounded grant at its required zero placeholder',()=>{
     const progress:ReviewProgressItem={pull_number:2,channels:[{...control('hosted'),maximum_unbounded:true,maximum:0,minimum:3000,used:2000},control('cli',true)]};
-    expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review front · Hosted');
+    expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review front');
     progress.channels[0]={...progress.channels[0],tapered:true,minimum:0};
     expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review closed');
   });
@@ -45,12 +47,12 @@ describe('current review position badges',()=>{
     const pulls=[{...pull(1),state:'merged' as const},pull(2),pull(3),pull(4)];
     const progress:ReviewProgressItem[]=pulls.map(p=>({pull_number:p.number,channels:[control('hosted',p.number===2),control('cli')]}));
     const current=currentReviewFronts(snapshot,pulls,v,progress);
-    expect(reviewQueueBadges(pull(2),snapshot,current,progress[1])[0]?.text).toBe('Review front · CLI');
-    expect(reviewQueueBadges(pull(3),snapshot,current,progress[2])[0]?.text).toBe('Review front · Hosted');
+    expect(reviewQueueBadges(pull(2),snapshot,current,progress[1])[0]?.text).toBe('Review front');
+    expect(reviewQueueBadges(pull(3),snapshot,current,progress[2])[0]?.text).toBe('Review front');
     expect(reviewQueueBadges(pull(4),snapshot,current,progress[3])[0]?.text).toBe('Queued');
     expect(v.channels.every(c=>c.pull_number===undefined)).toBe(true);
     const unavailable={...v,channels:v.channels.map(c=>({...c,state:'unknown' as const,reason:'source_frame_unavailable'}))};
-    expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls,unavailable,progress),progress[2])[0]?.text).toBe('Review front · Hosted');
+    expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls,unavailable,progress),progress[2])[0]?.text).toBe('Review front');
     expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls.slice(2),v,progress),progress[2])).toEqual([]);
     expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls,v),progress[2])).toEqual([]);
   });

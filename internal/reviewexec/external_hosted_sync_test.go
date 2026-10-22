@@ -152,11 +152,20 @@ func TestExternalHostedSyncMoreThanOneHundredGroupsAndBadGroupIsolation(t *testi
 	r := externalReader(externalSnapshot(102, strings.Repeat("a", 40)))
 	r.snapshot.Reviews[0].Body = strings.Replace(r.snapshot.Reviews[0].Body, "batch=1/1", "batch=1/2", 1)
 	lifecycleTick(t, f, s, r)
-	if externalArchiveCount(t, f) != 100 {
-		t.Fatal("bounded groups truncated or unsupported source froze others", externalArchiveCount(t, f))
+	if got := externalArchiveCount(t, f); got == 0 || got > 100 {
+		t.Fatal("bounded groups made no progress or exceeded the append ceiling", got)
 	}
-	clock.Add(time.Minute)
-	lifecycleTick(t, f, s, r)
+	// A slow/instrumented writer may reduce its batch to keep the existing
+	// transaction deadline. Every committed tick must still make progress.
+	for got := externalArchiveCount(t, f); got < 101; {
+		clock.Add(time.Minute)
+		lifecycleTick(t, f, s, r)
+		next := externalArchiveCount(t, f)
+		if next <= got || next-got > 100 {
+			t.Fatalf("bounded tick did not progress: %d -> %d", got, next)
+		}
+		got = next
+	}
 	if externalArchiveCount(t, f) != 101 {
 		t.Fatal("next bounded tick starved later groups")
 	}

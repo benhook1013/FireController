@@ -24,7 +24,8 @@ describe('queue-only technical details control', () => {
     const html = queueMarkup(true, history);
     const control = html.indexOf('<details class="review-technical-details"'), body = html.indexOf('panel review-page-body');
     expect(control).toBeGreaterThan(0); expect(control).toBeLessThan(body);
-    expect(html).toContain('<summary aria-label="Technical details" title="Technical details">ⓘ</summary>');
+    expect(html).toContain('<summary aria-label="Technical details" title="Technical details"><svg aria-hidden="true"');
+    expect(html).not.toContain('ⓘ');
     expect(html).not.toContain('review-technical-details" open'); expect(html).not.toContain('review-freshness');
     expect(html).toContain('Source timestamp'); expect(html).toContain('individual PR facts can have different ages.');
     expect(html).toContain('Saved locally'); expect(html).toContain('2026-10-21T10:00:00Z'); expect(html).toContain('2026-10-21T11:00:00Z');

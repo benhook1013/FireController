@@ -14,6 +14,17 @@ import (
 )
 
 func TestJobHistoryEncodedPagesAcrossCLIAndSDK(t *testing.T) {
+	testJobHistoryPagesAcrossCLIAndSDK(t, 32<<10, 8<<10, "")
+}
+
+// Keep ordinary paging, cursor reuse and session recovery under the race
+// detector. The maximum encoded response is a separate ordinary-runtime gate.
+func TestJobHistoryPagesAcrossCLIAndSDK(t *testing.T) {
+	testJobHistoryPagesAcrossCLIAndSDK(t, 512, 256, "2")
+}
+
+func testJobHistoryPagesAcrossCLIAndSDK(t *testing.T, briefBytes, progressBytes int, initialLimit string) {
+	t.Helper()
 	f := mutationFixture(t)
 	service := httptest.NewServer(f.handler)
 	defer service.Close()
@@ -21,11 +32,11 @@ func TestJobHistoryEncodedPagesAcrossCLIAndSDK(t *testing.T) {
 	base := []string{"--profiles-file", path, "--profile", "chosen"}
 	session := reviewControlsStdio(t, path, "chosen")
 	var job client.JobReceipt
-	decodeResult(t, call(t, session, "jobs_create", map[string]any{"idempotency_key": "second-history-create", "title": "History", "brief": strings.Repeat("<", 32<<10)}), &job)
+	decodeResult(t, call(t, session, "jobs_create", map[string]any{"idempotency_key": "second-history-create", "title": "History", "brief": strings.Repeat("<", briefBytes)}), &job)
 	for revision := 1; revision <= 16; revision++ {
 		args := map[string]any{"job_id": job.ID, "idempotency_key": fmt.Sprintf("second-history-%d", revision), "expected_revision": revision, "title": fmt.Sprintf("History %d", revision)}
 		if revision == 1 {
-			args["progress"] = map[string]any{"summary": strings.Repeat("<", 8<<10), "next": strings.Repeat("&", 8<<10)}
+			args["progress"] = map[string]any{"summary": strings.Repeat("<", progressBytes), "next": strings.Repeat("&", progressBytes)}
 		}
 		var receipt client.JobReceipt
 		decodeResult(t, call(t, session, "job_update", args), &receipt)
@@ -63,9 +74,12 @@ func TestJobHistoryEncodedPagesAcrossCLIAndSDK(t *testing.T) {
 		defer reader.Close()
 		args := map[string]any{"job_id": job.ID}
 		if limit != "" {
-			if limit == "100" {
+			switch limit {
+			case "100":
 				args["limit"] = 100
-			} else {
+			case "2":
+				args["limit"] = 2
+			default:
 				args["limit"] = 1
 			}
 		}
@@ -76,7 +90,7 @@ func TestJobHistoryEncodedPagesAcrossCLIAndSDK(t *testing.T) {
 		decodeResult(t, call(t, reader, "job_history", args), &page)
 		return page
 	}
-	original := readMCP("", "")
+	original := readMCP(initialLimit, "")
 	if !original.HasMore || len(original.Items) == 0 || len(original.Items) >= 17 {
 		t.Fatal("expected encoded-budget continuation")
 	}

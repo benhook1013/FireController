@@ -300,11 +300,15 @@ func externalCapturedIdentity(captures []externalNativeCapture, run reviewprovid
 // rollback lifecycle metadata or discard another complete independent group.
 // Savepoints also protect against later validation changes in the publisher.
 func publishExternalHostedInputs(ctx context.Context, tx *sql.Tx, target lifecycleTarget, runs []reviews.RunInput) (bool, error) {
+	return publishExternalHostedInputsBounded(ctx, tx, target, runs, 100)
+}
+
+func publishExternalHostedInputsBounded(ctx context.Context, tx *sql.Tx, target lifecycleTarget, runs []reviews.RunInput, limit int) (bool, error) {
 	held, appended := false, 0
-	for len(runs) > 0 && appended < 100 {
+	for len(runs) > 0 && appended < limit {
 		batch := []reviews.RunInput{}
 		findings := 0
-		for len(batch) < len(runs) && len(batch) < 100-appended {
+		for len(batch) < len(runs) && len(batch) < limit-appended {
 			candidate := runs[len(batch)]
 			if findings+len(candidate.Findings) > 1000 {
 				break

@@ -28,6 +28,35 @@ const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: f
 const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main' }] });
 
 describe('truthful stored review presentation', () => {
+  it('keeps the row front concise and places independent front markers on channel headings', () => {
+    const both = fronts(); both.channels.push({ ...both.channels[0], channel: 'cli' });
+    const html = markup(<ReviewQueueView />, queue([pull(1, 'merged'), pull(2), pull(3)]), undefined, { fronts: both });
+    expect(html).not.toContain('Review front ·');
+    const row = html.match(/<li id="review-pr-2"[\s\S]*?<\/li>/u)![0];
+    expect(row).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Up next</span>');
+    expect(row).toContain('CLI CodeRabbit<span class="badge review-channel-position">Up next</span>');
+    const independent = markup(<ReviewQueueView />, queue([pull(1, 'merged'), pull(2), pull(3)]), undefined, { fronts: fronts() });
+    const selected = independent.match(/<li id="review-pr-2"[\s\S]*?<\/li>/u)![0];
+    expect(selected).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Up next</span>');
+    expect(selected).not.toContain('CLI CodeRabbit<span class="badge review-channel-position">Up next</span>');
+  });
+  it('distinguishes current-head reviewing from a retained attempt on another head', () => {
+    const attempt = { channel: 'hosted', head_sha: pull(2).head_sha, state: 'active', finished_at: '', started_at: '2026-10-22T00:00:00Z', source_attempt_id: 'active' } as ReviewAttemptSummary;
+    const html = markup(<ReviewQueueView />, queue([pull(1, 'merged'), { ...pull(2), latest_attempts: [attempt] }]), undefined, { fronts: fronts() });
+    expect(html).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Reviewing</span>');
+    expect(html).not.toContain('>Up next</span>');
+    const stale = markup(<ReviewQueueView />, queue([pull(1, 'merged'), { ...pull(2), latest_attempts: [{ ...attempt, head_sha: 'c'.repeat(40) }] }]), undefined, { fronts: fronts() });
+    expect(stale).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Up next</span>');
+    expect(stale).not.toContain('>Reviewing</span>');
+  });
+  it.each([
+    ['success', 'mergeable'], ['pending', 'conflicting'], ['failure', 'unknown'], ['unknown', 'unknown'],
+  ] as const)('colors observed CI %s and mergeability %s without changing their labels', (ci_state, mergeability) => {
+    const html = markup(<ReviewPullFacts pull={{ ...pull(2), ci_state, mergeability }} />);
+    expect(html).toContain(`review-ci review-fact-${ci_state}`);
+    expect(html).toContain(`review-mergeability review-fact-${mergeability}`);
+  });
+
   it('renders observed diff size and actual merge time without inventing values for old snapshots', () => {
     const merged = { ...pull(1, 'merged'), diff: { files: 73, additions: 6160, deletions: 136 }, merged_at: '2026-10-19T11:00:00Z' };
     const html = markup(<ReviewPullFacts pull={merged} />);
@@ -61,7 +90,7 @@ describe('truthful stored review presentation', () => {
     const rows = [...html.matchAll(/<li id="review-pr-\d+"[\s\S]*?<\/li>/gu)].map(match => match[0]);
     expect(rows).toHaveLength(3);
     expect(rows[0]).toContain('review-state-merged');
-    expect(rows[1].match(/>Review front · Hosted<\/span>/gu)).toHaveLength(1);
+    expect(rows[1].match(/>Review front<\/span>/gu)).toHaveLength(1);
     expect(rows[1]).toContain('review-pull-facts"><span class="badge review-position-front"');
     expect(rows[1]).toContain('>Draft</span>');
     expect(rows[2].match(/>Queued<\/span>/gu)).toHaveLength(1);
@@ -108,8 +137,8 @@ describe('truthful stored review presentation', () => {
     expect(html).toContain('<summary>Missing PR details</summary>');
     expect(html).toContain('Base commit was not captured.'); expect(html).not.toContain('Head commit was not captured.');
     expect(html).toContain('CI: Unknown'); expect(html).toContain('Mergeability: Mergeable');
-    expect(html).toContain('class="badge review-fact-pill review-ci"');
-    expect(html).toContain('class="badge review-fact-pill review-mergeability"');
+    expect(html).toContain('class="badge review-fact-pill review-ci review-fact-unknown"');
+    expect(html).toContain('class="badge review-fact-pill review-mergeability review-fact-mergeable"');
     expect(markup(<ReviewPullFacts pull={pull(1, 'merged')} />)).toContain('review-state-merged');
     expect(markup(<ReviewPullFacts pull={pull(1, 'merged')} />)).not.toContain('retained history');
   });

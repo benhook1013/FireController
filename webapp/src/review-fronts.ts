@@ -11,7 +11,7 @@ export interface ReviewFronts {
   configuration_revision: number; policy_revision: number; snapshot_id?: string;
   queue: number[]; channels: ReviewFrontChannel[];
 }
-export interface ReviewQueueBadge { kind: 'front' | 'closed' | 'queued'; text: string; description: string }
+export interface ReviewQueueBadge { kind: 'front' | 'closed' | 'queued'; text: string; description: string; channels?: ('hosted' | 'cli')[] }
 
 // A contradictory loaded blocker invalidates that whole channel's explanation,
 // including later Queued labels. An unloaded predecessor can still be a hold.
@@ -49,7 +49,7 @@ export function reviewQueueBadges(pull: ReviewPullSummary, snapshot: string, fro
   };
   if (fronts.channels.length > 0 && fronts.channels.every(channel => closed(channel.channel))) return [{kind:'closed',text:'Review closed',description:'Current configured channels allow no further rounds; this is not a merge-readiness verdict.'}];
   const matching = fronts.channels.filter(channel => (channel.state === 'ready' || channel.state === 'held' && ['reviews_paused','local_queue_position'].includes(channel.reason ?? '')) && channel.pull_number === pull.number && channel.head_sha === pull.head_sha && channel.base_sha === pull.base_sha && channel.base_ref === pull.base_ref && !closed(channel.channel));
-  if (matching.length) return [{kind:'front',text:`Review front · ${names(matching.map(channel => channel.channel))}`,description:'Next position under the stored queue and local round controls; requests still recheck source and admission.'}];
+  if (matching.length) return [{kind:'front',text:'Review front',channels:matching.map(channel => channel.channel),description:'Next position under the stored queue and local round controls; requests still recheck source and admission.'}];
   const position = fronts.queue.indexOf(pull.number);
   const ahead = fronts.channels.filter(channel => !closed(channel.channel) && (channel.state === 'ready' || channel.state === 'held') && channel.pull_number !== undefined && fronts.queue.indexOf(channel.pull_number) >= 0 && fronts.queue.indexOf(channel.pull_number) < position);
   return ahead.length ? [{kind:'queued',text:'Queued',description:`Behind the established ${names(ahead.map(channel => channel.channel))} front; provider and admission checks remain separate.`}] : [];

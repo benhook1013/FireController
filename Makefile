@@ -5,7 +5,8 @@ GO_TEST_RUN ?= .
 REVIEW_TRANSFER_BUDGET_TEST := TestReviewTransferMaximumBatchUsesOrdinaryWriteBudget
 ADOPTION_OBLIGATIONS_BUDGET_TEST := TestAdoptionObligationsMaximumBatchUsesOrdinaryWriteBudget
 EXTERNAL_HOSTED_BUDGET_TEST := TestExternalHostedMaximumInventoryUsesOrdinaryWriteBudget
-ORDINARY_WRITE_BUDGET_TESTS := $(REVIEW_TRANSFER_BUDGET_TEST)|$(ADOPTION_OBLIGATIONS_BUDGET_TEST)|$(EXTERNAL_HOSTED_BUDGET_TEST)
+MCP_HISTORY_BUDGET_TEST := TestJobHistoryEncodedPagesAcrossCLIAndSDK
+ORDINARY_BUDGET_TESTS := $(REVIEW_TRANSFER_BUDGET_TEST)|$(ADOPTION_OBLIGATIONS_BUDGET_TEST)|$(EXTERNAL_HOSTED_BUDGET_TEST)|$(MCP_HISTORY_BUDGET_TEST)
 ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
 .PHONY: check workflow-check fmt-check test build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke source-converter-check
@@ -19,17 +20,18 @@ fmt-check:
 	@files="$$($(GOFMT) -l cmd internal tools)" || exit $$?; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi
 
 test:
-	$(GO) test -race -p=2 -timeout=20m -run '$(GO_TEST_RUN)' -skip '^($(ORDINARY_WRITE_BUDGET_TESTS))$$' $(GO_TEST_PACKAGES)
+	$(GO) test -race -p=2 -timeout=20m -run '$(GO_TEST_RUN)' -skip '^($(ORDINARY_BUDGET_TESTS))$$' $(GO_TEST_PACKAGES)
 	@packages="$$( $(GO) list $(GO_TEST_PACKAGES) )" || exit $$?; \
 	for package in $$packages; do \
 		case "$$package" in \
 			github.com/benhook1013/FireController/internal/reviews) budget_test='$(REVIEW_TRANSFER_BUDGET_TEST)' ;; \
 			github.com/benhook1013/FireController/internal/adoptionholds) budget_test='$(ADOPTION_OBLIGATIONS_BUDGET_TEST)' ;; \
 			github.com/benhook1013/FireController/internal/reviewexec) budget_test='$(EXTERNAL_HOSTED_BUDGET_TEST)' ;; \
+			github.com/benhook1013/FireController/internal/mcpadapter) budget_test='$(MCP_HISTORY_BUDGET_TEST)' ;; \
 			*) continue ;; \
 		esac; \
 		names="$$( $(GO) test -race=false -list "^$$budget_test$$" "$$package" )" || exit $$?; \
-		printf '%s\n' "$$names" | grep -Fx -- "$$budget_test" >/dev/null || { printf '%s\n' 'Ordinary write deadline test was not discovered.' >&2; exit 1; }; \
+		printf '%s\n' "$$names" | grep -Fx -- "$$budget_test" >/dev/null || { printf '%s\n' 'Ordinary runtime budget test was not discovered.' >&2; exit 1; }; \
 		$(GO) test -race=false -v -count=1 -timeout=20m -run "^$$budget_test$$" "$$package" || exit $$?; \
 	done
 	$(GO) vet $(GO_TEST_PACKAGES)

@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
@@ -90,7 +91,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	if ctx.Err() != nil {
 		return nil
 	}
-	return retrySourceRefreshLocal(ctx, func() error {
+	return retryLifecyclePublication(ctx, func(appendLimit int) error {
 		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			bound, err := e.lifecycleBinding(ctx, tx, target)
 			if err != nil || !bound {
@@ -101,6 +102,12 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 				return err
 			}
 			if externalErr == nil && len(external) > 0 {
+				if appendLimit == 0 {
+					if providerErr == nil {
+						providerErr = externalHostedUnproven()
+					}
+					return nil
+				}
 				runs, held, err := e.externalHostedInputs(ctx, tx, target, external)
 				if err != nil {
 					return err
@@ -109,7 +116,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 					providerErr = externalHostedUnproven()
 				}
 				if len(runs) > 0 {
-					unsupported, err := publishExternalHostedInputs(ctx, tx, target, runs)
+					unsupported, err := publishExternalHostedInputsBounded(ctx, tx, target, runs, appendLimit)
 					if unsupported && providerErr == nil {
 						providerErr = externalHostedUnproven()
 					}
@@ -118,6 +125,22 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			}
 			return nil
 		})
+	})
+}
+
+// A locally expensive batch must not monopolize a scheduler worker by retrying
+// the same rolled-back transaction forever. Reduce the append budget after an
+// overload, ultimately retaining lifecycle metadata alone. Deferred external
+// results remain discoverable at the next tick. Never repeat provider reads.
+func retryLifecyclePublication(ctx context.Context, publish func(int) error) error {
+	limit := 100
+	return retrySourceRefreshLocal(ctx, func() error {
+		err := publish(limit)
+		var failure *core.Error
+		if limit > 0 && errors.As(err, &failure) && failure.Code == "overloaded" {
+			limit /= 2
+		}
+		return err
 	})
 }
 

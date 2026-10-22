@@ -26,14 +26,15 @@ export function ReviewRowDisplay({ id, lifecycle, position, positionLabel, rail 
   </li>;
 }
 
-export function ReviewLaneDisplay({ title, label = title, metadata, metadataTitle, children }: {
+export function ReviewLaneDisplay({ title, label = title, metadata, metadataTitle, status, children }: {
   title: string;
   label?: string;
   metadata: ReactNode;
   metadataTitle?: string;
+  status?: ReactNode;
   children: ReactNode;
 }) {
-  return <section className="review-lane" aria-label={label}><div className="review-lane-heading"><h4>{title}</h4><span title={metadataTitle}>{metadata}</span></div>{children}</section>;
+  return <section className="review-lane" aria-label={label}><div className="review-lane-heading"><h4>{title}{status}</h4><span title={metadataTitle}>{metadata}</span></div>{children}</section>;
 }
 
 type RoundPillContent = { className: string; title: string; 'aria-label': string; children: ReactNode };

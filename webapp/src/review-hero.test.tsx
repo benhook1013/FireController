@@ -66,8 +66,8 @@ describe('merge-head recent review rounds', () => {
     expect(hero).toContain('&lt;Literal PR title&gt;');
     for (const value of [normal, hero]) {
       expect(value).toContain('class="badge review-fact-pill review-diff"');
-      expect(value).toContain('class="badge review-fact-pill review-ci"');
-      expect(value).toContain('class="badge review-fact-pill review-mergeability"');
+      expect(value).toContain('class="badge review-fact-pill review-ci review-fact-success"');
+      expect(value).toContain('class="badge review-fact-pill review-mergeability review-fact-mergeable"');
       expect(value).toContain('review-additions">+20'); expect(value).toContain('review-deletions">−4');
     }
     expect(hero).toContain('href="/projects/project#review-pr-7"'); expect(hero).toContain('>Review queue ↗</a>');
