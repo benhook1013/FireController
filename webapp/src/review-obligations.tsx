@@ -97,7 +97,7 @@ function ReviewObligationList({ number }: { number: number }) {
   const paging = usePaging();
   const query = useQuery({
     queryKey: [...key, 'reviews', 'current', 'adoption-obligations', number, paging.cursor],
-    queryFn: ({ signal }) => session.api.reviewObligations(number, { status: 'open', limit: 20, cursor: paging.cursor }, signalFor(session, signal)),
+    queryFn: ({ signal }) => session.api.reviewObligations(number, { status: 'open', limit: 20, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)),
     staleTime: Infinity, retry: false,
   });
   useEffect(() => { if (query.error) fail(query.error); }, [query.error, fail]);

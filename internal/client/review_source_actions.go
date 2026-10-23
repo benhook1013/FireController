@@ -8,7 +8,7 @@ func sourceHoldAction(state, reason string) string {
 	case "default_base_changed":
 		return "This comparison has no selected unmerged parent, but the PR targets a branch other than the repository default. Check the PR base and current default branch; reconcile/retarget the PR as authorized, then refresh its current head with a new key. This is a PR comparison hold, not an identity or dashboard-refresh failure."
 	case "parent_moved":
-		return "The PR base no longer matches the selected parent head. Reconcile the branch with its intended parent, then refresh the current comparison with a new key."
+		return "The published PR comparison no longer matches the selected parent head. Reconcile and publish the branch repair under existing project authorization and active-review safety, then refresh the new published head with a new key. Source refresh checks review comparisons; it is not permission to push and cannot approve an unpublished local candidate."
 	case "target_changed":
 		return "The PR state or head differs from the requested comparison. Read the current queue/source facts and refresh the intended current open head with a new key."
 	case "parent_unavailable", "parent_identity_changed":

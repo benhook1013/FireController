@@ -129,7 +129,7 @@ func TestExternalHostedSyncUnprovenAndOutagesKeepLifecycleAlive(t *testing.T) {
 				t.Fatal("missing per-PR held diagnostic")
 			}
 			for _, a := range s.accounts {
-				if failure == "partial" || failure == "oversized" {
+				if failure != "outage" {
 					if !a.until.IsZero() || a.backoff != 0 {
 						t.Fatal("local inventory held account", a)
 					}
@@ -465,8 +465,9 @@ func TestExternalHostedSyncRespectsEarlierCIRateLimit(t *testing.T) {
 
 func TestExternalHostedLocalInventoryDoesNotHoldSharedAccountTargets(t *testing.T) {
 	for _, otherProject := range []bool{false, true} {
-		for _, rateLimited := range []bool{false, true} {
-			t.Run(fmt.Sprintf("other-project=%t/rate-limited=%t", otherProject, rateLimited), func(t *testing.T) {
+		for _, failureCode := range []string{"external_hosted_identity_unproven", "provider_invalid_response", "provider_rate_limited"} {
+			t.Run(fmt.Sprintf("other-project=%t/failure=%s", otherProject, failureCode), func(t *testing.T) {
+				rateLimited := failureCode == "provider_rate_limited"
 				f, s, clock := lifecycleFixture(t)
 				nextProject, nextNumber := attemptProject, int64(4)
 				if otherProject {
@@ -494,6 +495,9 @@ func TestExternalHostedLocalInventoryDoesNotHoldSharedAccountTargets(t *testing.
 					if selectedRepository == 801 && selectedNumber == 2 {
 						if rateLimited {
 							return reviewprovider.HostedPublicationSnapshot{}, &reviewprovider.Error{Code: "provider_rate_limited", RetryAfterSeconds: 120}
+						}
+						if failureCode == "provider_invalid_response" {
+							return reviewprovider.HostedPublicationSnapshot{}, &reviewprovider.Error{Code: failureCode}
 						}
 						snapshot := r.snapshot
 						snapshot.Complete = false
@@ -551,7 +555,7 @@ func TestExternalHostedLocalInventoryDoesNotHoldSharedAccountTargets(t *testing.
 				if rateLimited {
 					return
 				}
-				if s.due[lifecycleKey{attemptProject, 2}].lastErrorCode != "external_hosted_identity_unproven" {
+				if s.due[lifecycleKey{attemptProject, 2}].lastErrorCode != failureCode {
 					t.Fatal("another target cleared local diagnostic")
 				}
 				if claim() != nil {

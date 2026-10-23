@@ -30,10 +30,14 @@ export function validReviewProgress(value: unknown, project: string, pulls: numb
   return value.items.every((item, index) => object(item) && fields(item, ['pull_number','channels']) && item.pull_number === pulls[index] && Array.isArray(item.channels) && item.channels.length === 2 && validRoundProgress(item.channels[0], 'hosted') && validRoundProgress(item.channels[1], 'cli'));
 }
 export function roundProgressState(c: ReviewRoundProgress): string {
-  if (c.closed) return 'Review closed';
+  return roundProgressStopReason(c) ? 'No reviews remaining' : 'More rounds allowed';
+}
+
+export function roundProgressStopReason(c: ReviewRoundProgress): string | undefined {
+  if (c.closed) return 'Manually closed';
   if (c.tapered) return 'Taper met';
-  if (!c.maximum_unbounded && c.used >= c.maximum) return 'No reviews remaining';
-  return 'More rounds allowed';
+  if (!c.maximum_unbounded && c.used >= c.maximum) return 'Maximum reached';
+  return undefined;
 }
 
 export function roundProgressAllowance(c: ReviewRoundProgress): string {

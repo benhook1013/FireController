@@ -26,28 +26,29 @@ func externalHostedUnproven() error {
 	return &reviewprovider.Error{Code: "external_hosted_identity_unproven", Message: "Some external hosted inventory is incomplete, unsupported, over the current collection budget or has unresolved native identity."}
 }
 
-func collectExternalHosted(ctx context.Context, target lifecycleTarget, repository string, earlier error) ([]reviewprovider.ExternalHostedRun, error) {
+func collectExternalHosted(ctx context.Context, target lifecycleTarget, repository string, earlier error) ([]reviewprovider.ExternalHostedRun, bool, error) {
 	reader, ok := target.reader.(ExternalHostedReader)
 	if !ok {
-		return nil, nil
+		return nil, false, nil
 	}
 	var limited *reviewprovider.Error
 	if errors.As(earlier, &limited) && (limited.RetryAfterSeconds > 0 || limited.Code == "provider_rate_limited") {
-		return nil, earlier
+		return nil, false, earlier
 	}
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	snapshot, err := reader.ObserveHosted(readCtx, repository, target.number)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	if !snapshot.Complete {
-		return nil, externalHostedUnproven()
+		return nil, true, externalHostedUnproven()
 	}
-	return reviewprovider.DiscoverExternalHosted(snapshot, reader.TrustedHostedActor())
+	runs, err := reviewprovider.DiscoverExternalHosted(snapshot, reader.TrustedHostedActor())
+	return runs, true, err
 }
 
-func (e *Engine) externalHostedInputs(ctx context.Context, tx *sql.Tx, target lifecycleTarget, external []reviewprovider.ExternalHostedRun) ([]reviews.RunInput, bool, error) {
+func (e *Engine) externalHostedInputs(ctx context.Context, tx *sql.Tx, target lifecycleTarget, external []reviewprovider.ExternalHostedRun, limit int) ([]reviews.RunInput, bool, error) {
 	cutoff, err := reviews.InitializeExternalHostedFrontier(ctx, tx, target.project, target.repository, target.number)
 	if err != nil {
 		return nil, false, err
@@ -62,6 +63,11 @@ func (e *Engine) externalHostedInputs(ctx context.Context, tx *sql.Tx, target li
 	runs := []reviews.RunInput{}
 	held := false
 	for _, run := range external {
+		// Stop before mapping records that this transaction cannot append. The
+		// next tick skips retained identities and continues with the same frontier.
+		if len(runs) >= limit {
+			return runs, true, nil
+		}
 		if !run.FinishedAt.After(floor) {
 			continue
 		}

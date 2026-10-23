@@ -177,10 +177,17 @@ func assessmentFacts(inventory CIResultInventory, actions, latest ActionsHeadInv
 	return facts, nil
 }
 
+// Skipped checks do not execute. GitHub can return a synthetic start after
+// their completion; preserve those timestamps without treating them as duration
+// or current-attempt evidence. Actual execution intervals remain ordered.
+func validCIInterval(status, conclusion string, start, end time.Time) bool {
+	return start.IsZero() || end.IsZero() || !end.Before(start) || status == "completed" && conclusion == "skipped"
+}
+
 // Unknown provider lifecycle tokens remain unproven, but malformed temporal or
 // textual facts cannot participate in an assessment at all.
 func validCIStateFacts(status, conclusion string, start, end time.Time) bool {
-	if !validIdentifierText(status, 64) || conclusion != "" && !validIdentifierText(conclusion, 64) || !start.IsZero() && !end.IsZero() && end.Before(start) {
+	if !validIdentifierText(status, 64) || conclusion != "" && !validIdentifierText(conclusion, 64) || !validCIInterval(status, conclusion, start, end) {
 		return false
 	}
 	if status == "completed" {
@@ -196,6 +203,22 @@ func assessRequiredEntry(required RequiredCheck, facts ciAssessmentFacts) Requir
 	out := RequiredCIAssessmentCheck{Context: required.Context, AppID: required.AppID, State: "satisfied"}
 	count := 0
 	supersededWorkflows, currentChecks := map[int64]bool{}, map[int64]bool{}
+	// A rerun keeps completed checks from earlier attempts in the same suite.
+	// Only an exact current-attempt job/check match for this context and App
+	// can exclude those retained terminal checks. Missing or ambiguous current
+	// evidence never inherits an earlier attempt's result.
+	currentAttemptScopes := map[[2]int64]bool{}
+	for _, check := range facts.checks[required.Context] {
+		if required.AppID != 0 && check.AppID != required.AppID {
+			continue
+		}
+		run, known := facts.suites[check.SuiteID]
+		attempt, observed := facts.attempts[check.SuiteID]
+		job, exists := facts.jobs[check.SuiteID][check.ID]
+		if known && run.ID == facts.latest[run.WorkflowID].ID && run.RunAttempt > 1 && run.Event != "workflow_dispatch" && run.Event != "workflow_run" && observed && attempt.State == "complete" && exists && job.Status == check.Status && job.Conclusion == check.Conclusion {
+			currentAttemptScopes[[2]int64{check.SuiteID, check.AppID}] = true
+		}
+	}
 	for _, check := range facts.checks[required.Context] {
 		if required.AppID != 0 && check.AppID != required.AppID {
 			continue
@@ -205,6 +228,11 @@ func assessRequiredEntry(required RequiredCheck, facts ciAssessmentFacts) Requir
 		if known && run.ID != facts.latest[run.WorkflowID].ID {
 			supersededWorkflows[run.WorkflowID] = true
 			continue
+		}
+		if check.Status == "completed" && currentAttemptScopes[[2]int64{check.SuiteID, check.AppID}] {
+			if _, current := facts.jobs[check.SuiteID][check.ID]; !current {
+				continue
+			}
 		}
 		// A legacy same-name status cannot replace a check positively known to
 		// belong to a workflow whose latest run has not supplied its own check.

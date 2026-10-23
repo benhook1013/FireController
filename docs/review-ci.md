@@ -28,6 +28,8 @@ For GitHub Actions, workflow identity and provider run number select the newest 
 
 Required check runs must bind positively to the selected workflow run, its current numbered attempt and the actual job's check-run identity. Partial reruns do not inherit earlier successful jobs without that proof. Unsupported provider currentness, missing job identity and ambiguous duplicate contexts remain unproven. Commit statuses retain the provider's newest-first ordering; matching status and check contexts must both satisfy their applicable requirements.
 
+A rerun may retain completed check records from earlier attempts in the same suite. An exact current-attempt job/check match for the same context and App can exclude those older completed records; missing, pending, conflicting or duplicate current evidence remains unproven. Completed skipped jobs may contain synthetic provider start times later than their completion. Preserve those timestamps without deriving execution duration or attempt identity from them; actual executed intervals must remain ordered.
+
 Collection is finite: at most 128 required contexts and sixteen relevant workflows, in addition to each provider reader's page, item and response-size bounds. Optional workflows do not cause job-fetch fanout. Exceeding a supported boundary is explicit rather than truncating evidence.
 
 ## Stored assessment

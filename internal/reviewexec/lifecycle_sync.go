@@ -316,7 +316,7 @@ func (e *Engine) claimLifecycle(ctx context.Context, readers map[string]TargetRe
 
 func lifecycleInventoryInconclusive(err error) bool {
 	var failure *reviewprovider.Error
-	return errors.As(err, &failure) && failure.Code == "external_hosted_identity_unproven" && failure.RetryAfterSeconds <= 0
+	return errors.As(err, &failure) && (failure.Code == "external_hosted_identity_unproven" || failure.Code == "provider_invalid_response") && failure.RetryAfterSeconds <= 0
 }
 
 func lifecycleProviderDelay(err error, previous time.Duration) time.Duration {
@@ -353,7 +353,7 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 		}
 	}
 	if lifecycleInventoryInconclusive(providerErr) {
-		// Incomplete local inventory is retried at this PR's normal cadence. It is
+		// Unsupported or malformed inventory is retried at this PR's normal cadence. It is
 		// not evidence that the provider account should stop serving other targets.
 		// An independently established provider cooldown still takes precedence.
 		if !now.Before(a.until) {

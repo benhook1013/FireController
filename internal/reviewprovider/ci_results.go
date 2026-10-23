@@ -273,7 +273,7 @@ func normalizeCICheck(raw githubCICheck, head string) (CICheckRun, bool) {
 	}
 	if raw.CompletedAt != nil {
 		row.CompletedAt, ok = actionsTime(*raw.CompletedAt)
-		if !ok || !row.StartedAt.IsZero() && row.CompletedAt.Before(row.StartedAt) {
+		if !ok || !validCIInterval(raw.Status, conclusion, row.StartedAt, row.CompletedAt) {
 			return CICheckRun{}, false
 		}
 	}

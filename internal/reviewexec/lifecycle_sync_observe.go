@@ -91,14 +91,18 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	if ctx.Err() != nil {
 		return nil
 	}
-	external, externalErr := collectExternalHosted(ctx, target, repo.FullName, providerErr)
+	external, hostedCollected, externalErr := collectExternalHosted(ctx, target, repo.FullName, providerErr)
 	if externalErr != nil && (providerErr == nil || lifecycleProviderDelay(externalErr, 0) > lifecycleProviderDelay(providerErr, 0)) {
 		providerErr = externalErr
 	}
 	if ctx.Err() != nil {
 		return nil
 	}
+	externalDeferred := false
+	collectionErr := providerErr
 	err = retryLifecyclePublication(ctx, func(appendLimit int) error {
+		externalDeferred = false
+		providerErr = collectionErr
 		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			bound, err := e.lifecycleBinding(ctx, tx, target)
 			if err != nil || !bound {
@@ -110,23 +114,26 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			}
 			if externalErr == nil && len(external) > 0 {
 				if appendLimit == 0 {
+					externalDeferred = true
 					if providerErr == nil {
 						providerErr = externalHostedUnproven()
 					}
 					return nil
 				}
-				runs, held, err := e.externalHostedInputs(ctx, tx, target, external)
+				runs, held, err := e.externalHostedInputs(ctx, tx, target, external, appendLimit)
 				if err != nil {
 					return err
 				}
 				if held && providerErr == nil {
 					providerErr = externalHostedUnproven()
 				}
+				externalDeferred = held
 				if len(runs) > 0 {
 					unsupported, err := publishExternalHostedInputsBounded(ctx, tx, target, runs, appendLimit)
 					if unsupported && providerErr == nil {
 						providerErr = externalHostedUnproven()
 					}
+					externalDeferred = externalDeferred || unsupported
 					return err
 				}
 			}
@@ -141,9 +148,12 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			target.due.ciCheckedAt = s.options.Now()
 			target.due.ciError = ciReason
 		}
-		if _, ok := target.reader.(ExternalHostedReader); ok {
+		if hostedCollected {
 			target.due.hostedCheckedAt = s.options.Now()
 			target.due.hostedError = lifecycleErrorCode(externalErr)
+			if externalErr == nil && externalDeferred {
+				target.due.hostedError = lifecycleErrorCode(externalHostedUnproven())
+			}
 		}
 	}
 	return err

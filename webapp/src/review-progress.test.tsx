@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Api } from './api';
-import { roundProgressState, validRoundProgress, type ReviewRoundProgress } from './review-progress';
+import { roundProgressState, roundProgressStopReason, validRoundProgress, type ReviewRoundProgress } from './review-progress';
 import { ReviewProgressView } from './review-progress-view';
 
 const project = { id: 'project_one', name: 'Progress', github_repository_id: 1, repository: 'owner/project' };
@@ -47,8 +47,8 @@ describe('current round progress', () => {
     const html=renderToStaticMarkup(<ReviewProgressView value={current}/>);
     expect(html).toContain('Up to 3 more reviews');expect(html).not.toContain('of 5 used');expect(html).toContain('1 in flight');expect(html).toContain('Taper 0/1');expect(html).not.toMatch(/Ready|Idle|run recorded|coverage/i);
     expect(renderToStaticMarkup(<ReviewProgressView value={absent}/>)).toBe('');
-    expect(roundProgressState({...current,closed:true})).toBe('Review closed');
-    expect(roundProgressState({...current,tapered:true,dry:1})).toBe('Taper met');
+    expect(roundProgressState({...current,closed:true})).toBe('No reviews remaining');
+    expect(roundProgressState({...current,tapered:true,dry:1})).toBe('No reviews remaining');
     expect(roundProgressState({...current,used:5})).toBe('No reviews remaining');
     const exact=renderToStaticMarkup(<ReviewProgressView value={{...current,minimum:5}}/>);expect(exact).toContain('At least 3 more');
   });
@@ -65,7 +65,7 @@ describe('current round progress', () => {
   });
   it('does not present an adopted exhausted allowance as zero completed history', () => {
     const tapered = renderToStaticMarkup(<ReviewProgressView value={{...current, maximum:0, used:0, dry:1, taper:1, tapered:true, pending:0}}/>);
-    expect(tapered).toContain('Taper met'); expect(tapered).not.toMatch(/of 0|remaining|Taper 1\/1/u);
+    expect(tapered).toContain('No reviews remaining'); expect(tapered).toContain('Taper met'); expect(tapered).not.toMatch(/of 0|Taper 1\/1/u);
     const exhausted = renderToStaticMarkup(<ReviewProgressView value={{...current, maximum:0, used:0, pending:0}}/>);
     expect(exhausted).toContain('No reviews remaining'); expect(exhausted).not.toMatch(/of 0|Taper 0\/1/u);
   });
@@ -73,6 +73,25 @@ describe('current round progress', () => {
     const value={...current,maximum_unbounded:true,maximum:0,minimum:Number.MAX_SAFE_INTEGER,used:Number.MAX_SAFE_INTEGER,dry:0};
     expect(validRoundProgress(value,'hosted')).toBe(true);
     for(const bad of [{...value,maximum:1},{...value,maximum_unbounded:false},{...value,maximum_unbounded:null},{...value,maximum_unbounded:1},{...value,used:Number.MAX_SAFE_INTEGER+1},{...value,dry:Number.MAX_SAFE_INTEGER+1},{...absent,maximum_unbounded:true}]) expect(validRoundProgress(bad,bad.channel)).toBe(false);
+  });
+
+  it('uses one stopped label with a distinct accessible reason for each channel stop', () => {
+    const cases: [ReviewRoundProgress, string][] = [
+      [{ ...current, closed: true }, 'Manually closed'],
+      [{ ...current, tapered: true, dry: 1 }, 'Taper met'],
+      [{ ...current, used: 5 }, 'Maximum reached'],
+      [{ ...current, closed: true, tapered: true, dry: 1, used: 5 }, 'Manually closed'],
+    ];
+    for (const [value, reason] of cases) {
+      const html = renderToStaticMarkup(<ReviewProgressView value={value} />);
+      expect(roundProgressState(value)).toBe('No reviews remaining');
+      expect(roundProgressStopReason(value)).toBe(reason);
+      expect(html).toContain('<details><summary class="review-progress-state">No reviews remaining</summary><span>' + reason + '</span></details>');
+      expect(html.match(/No reviews remaining/gu)).toHaveLength(1);
+      expect(html).not.toMatch(/Up to|At least|Taper 0\/1|Review closed/);
+    }
+    expect(roundProgressStopReason(current)).toBeUndefined();
+    expect(roundProgressStopReason({ ...current, maximum_unbounded: true, maximum: 0 })).toBeUndefined();
   });
 
 });

@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
-import { ApiError } from './api';
+import { Api, ApiError } from './api';
 import { WorkspaceContext, type Session } from './workspace';
 import { CarriedObligationContent, ReviewObligations, type AdoptionObligationDetail, type AdoptionObligationPage } from './review-obligations';
 
@@ -15,16 +15,43 @@ const detail: AdoptionObligationDetail = {
   status: 'open', revision: 1, actor_id: 'principal_one', worker_id: 'worker_one', created_at: '2026-10-16T01:00:00Z', resolution: null,
 };
 
-function fixture(page?: AdoptionObligationPage) {
+function fixture(page?: AdoptionObligationPage, selectedApi?: Api) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (page) client.setQueryData(listKey, page);
   const api = { reviewObligations: vi.fn(), reviewObligation: vi.fn() };
-  const session = { api, controller: new AbortController() } as unknown as Session;
+  const session = { api: selectedApi ?? api, controller: new AbortController() } as unknown as Session;
   const render = (content: ReactNode = <ReviewObligations number={3251} />) => renderToStaticMarkup(<QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key, home: '/projects/project_one', selectWorker: () => {}, fail: () => {}, ready: true }}>{content}</WorkspaceContext.Provider></QueryClientProvider>);
   return { client, api, render };
 }
 
 describe('private carried review work', () => {
+  it('loads the initial component page through the real API without an empty cursor or detail fanout', async () => {
+    vi.stubGlobal('location', { origin: 'https://service.example' });
+    const api = new Api('private-obligations-token', 'project_one');
+    const project = { id: 'project_one', name: 'Project', github_repository_id: 17, repository: 'owner/project' };
+    const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/instance') ? json({ instance_id: 'instance_one' }) : json(project)));
+    let f: ReturnType<typeof fixture> | undefined;
+    try {
+      await api.connect();
+      const page: AdoptionObligationPage = { items: [{ ...item, id: 'adoption_obligation_' + 'a'.repeat(32), affected_pull_numbers: [3251] }] };
+      const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json(page));
+      vi.stubGlobal('fetch', fetch);
+      f = fixture(undefined, api);
+      f.render();
+      const query = f.client.getQueryCache().find({ queryKey: listKey })!;
+      expect(await f.client.fetchQuery({ ...query.options, queryKey: listKey })).toEqual(page);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const url = new URL(String(fetch.mock.calls[0][0]));
+      expect(url.pathname).toBe('/api/v1/projects/project_one/reviews/adoption-obligations');
+      expect(url.searchParams.get('pull_number')).toBe('3251');
+      expect(url.searchParams.get('status')).toBe('open');
+      expect(url.searchParams.get('limit')).toBe('20');
+      expect(url.searchParams.has('cursor')).toBe(false);
+      expect(fetch.mock.calls[0][1]?.method ?? 'GET').toBe('GET');
+    } finally { f?.client.clear(); api.close(); vi.unstubAllGlobals(); }
+  });
+
   it('shows carried findings and unsettled results separately without eagerly expanding private evidence', () => {
     const f = fixture({ items: [{ ...item, affected_pull_numbers: [3251] }, { ...item, id: 'obligation_result', source_key: 'result-1', kind: 'result', affected_pull_numbers: [3251] }] });
     try {

@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,5 +78,60 @@ func TestObservationHealthUnchangedPollFailureRecoveryAndRestart(t *testing.T) {
 	f.e.lifecycleRunning.Store(true)
 	if got := read(); got.State != "waiting" || got.LastSuccessAt != "" {
 		t.Fatal("restart claimed old check", got)
+	}
+}
+
+func TestObservationHealthSeparatesCIHostedFailureAndSkippedCollection(t *testing.T) {
+	f, s, clock := lifecycleFixture(t)
+	f.e.lifecycleSchedule = s
+	f.e.lifecycleRunning.Store(true)
+	r := externalReader(externalSnapshot(0, strings.Repeat("a", 40)))
+	ciErr := error(&reviewprovider.Error{Code: "provider_invalid_response"})
+	r.ci = func(context.Context, reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
+		return reviewprovider.CIObservation{}, ciErr
+	}
+	read := func() reviews.PullObservationHealth {
+		t.Helper()
+		_, items, err := f.e.ObservationHealth(t.Context(), attemptProject, []reviews.PullSummary{lifecycleRead(t, f)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return items[2]
+	}
+	lifecycleTick(t, f, s, r)
+	first := read()
+	if first.CIError != "provider_invalid_response" || first.HostedError != "" || first.HostedCheckedAt == "" || first.LastSuccessAt == "" || r.archiveCalls != 1 {
+		t.Fatal("independent successful Hosted inventory was hidden by CI failure", first)
+	}
+	for _, account := range s.accounts {
+		if account.backoff != 0 || !account.until.IsZero() {
+			t.Fatal("one malformed CI inventory delayed unrelated account targets", account)
+		}
+	}
+	clock.Add(5 * time.Minute)
+	ciErr = &reviewprovider.Error{Code: "provider_rate_limited", RetryAfterSeconds: 120}
+	lifecycleTick(t, f, s, r)
+	limited := read()
+	if limited.CIError != "provider_rate_limited" || limited.HostedCheckedAt != first.HostedCheckedAt || limited.HostedError != first.HostedError || r.archiveCalls != 1 {
+		t.Fatal("skipped Hosted read fabricated a new check", first, limited)
+	}
+	clock.Add(5 * time.Minute)
+	ciErr = nil
+	r.ci = nil
+	r.observe = func(context.Context) (reviewprovider.HostedPublicationSnapshot, error) {
+		return reviewprovider.HostedPublicationSnapshot{}, &reviewprovider.Error{Code: "provider_invalid_response"}
+	}
+	lifecycleTick(t, f, s, r)
+	hosted := read()
+	if hosted.HostedError != "provider_invalid_response" || hosted.HostedCheckedAt == first.HostedCheckedAt || hosted.CIError != "" {
+		t.Fatal("Hosted failure did not retain its independent diagnostic", hosted)
+	}
+	for _, account := range s.accounts {
+		if account.backoff != 0 || !account.until.IsZero() {
+			t.Fatal("malformed Hosted inventory delayed unrelated account targets", account)
+		}
+	}
+	if delay := lifecycleProviderDelay(&reviewprovider.Error{Code: "provider_invalid_response", RetryAfterSeconds: 120}, 0); delay != 2*time.Minute {
+		t.Fatal("explicit provider cooldown ignored", delay)
 	}
 }
