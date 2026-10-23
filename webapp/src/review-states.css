@@ -5,7 +5,7 @@
 .review-status-front .review-queue-position,.review-pull-facts .review-position-front{background:var(--fc-hero_background,#d62828);color:var(--fc-hero_text,#fff)}
 .review-pull-facts .review-position-queued{background:var(--fc-surface_background,#f0f0f0);color:var(--fc-surface_muted,#58616d);border:1px solid var(--fc-surface_border,#c7ccd4)}
 .review-pull-facts .review-position-closed{background:var(--fc-canvas_background,#e7e9ed);color:var(--fc-canvas_text,#454b56);border:1px solid var(--fc-canvas_border,#b9bec7)}
-.review-status-closed .review-queue-position{background:repeating-linear-gradient(135deg,var(--fc-canvas_text,#242832) 0 4px,var(--fc-hero_background,#d62828) 4px 14px);color:var(--fc-hero_text,#fff);text-shadow:0 1px 2px var(--fc-canvas_text,#242832)}
+.review-status-closed .review-queue-position{background:repeating-linear-gradient(135deg,var(--fc-canvas_text,#242832) 0 4px,var(--fc-hero_background,#d62828) 4px 10px);color:var(--fc-hero_text,#fff);text-shadow:0 1px 2px var(--fc-canvas_text,#242832)}
 .review-queue>li.review-row-closed{background:var(--fc-canvas_background,#e8eaed)}
 
 .review-fact-pill.review-fact-success,.review-fact-pill.review-fact-mergeable{background:var(--fc-completed_background,#e1e7db);color:var(--fc-completed_text,#597048)}
