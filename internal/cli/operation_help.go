@@ -75,11 +75,16 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"The body must be nonblank UTF-8 and at most 16 KiB. Body files preserve exact text and must be regular with owner-private POSIX permissions. Inline and file forms are mutually exclusive.", "Send to a worker in this project. --reply-to retains the existing conversation; reads never mark a message seen or acknowledged.", recovery}
 		out.Example = "<bound launcher> inbox send --to WORKER_ID --body-file /private/message.md --key message-1"
 		out.Documentation = "docs/development.md"
-	case "inbox snapshot":
-		out.Usage = "<bound launcher> inbox snapshot [--limit N] [--cursor CURSOR] [--unread] [--unacknowledged] | <bound launcher> inbox snapshot [--limit N] [--cursor CURSOR] --all"
+	case "inbox list", "inbox snapshot":
+		out.Usage = "<bound launcher> " + operation + " [--limit N] [--cursor CURSOR] [--unread] [--unacknowledged] | <bound launcher> " + operation + " [--limit N] [--cursor CURSOR] --all"
 		out.Optional = []string{"--limit N (1-100)", "--cursor CURSOR (inbox pagination)", "--unread", "--unacknowledged (default)", "--all (cannot combine with --unread or --unacknowledged)"}
-		out.Semantics = []string{"Reads one compact inbox page for the bound worker plus event_cursor from the same snapshot. Defaults to pending, unacknowledged messages, including seen-but-unhandled messages; --unread narrows that selection. --all includes handled history.", "Continue inbox.has_more with inbox.cursor and the same filters. event_cursor is a separate watermark for inbox events or inbox wait; it is not an inbox pagination cursor.", "No provider work, automatic pagination, message seen update or acknowledgment occurs. Read selected full message bodies with inbox read MESSAGE_ID."}
-		out.Example = "<bound launcher> inbox snapshot --unacknowledged --limit 20"
+		out.Semantics = []string{"Reads one compact inbox page for the bound worker. Defaults to pending, unacknowledged messages, including seen-but-unhandled messages; --unread narrows to unseen pending messages, not all pending work. --all includes handled history.", "Pages use durable insertion order, oldest first; no recent-first option exists. Continue has_more with cursor and the same filters. inbox snapshot also returns event_cursor for later arrivals via inbox events or inbox wait; this is not an inbox pagination cursor.", "No provider work, automatic pagination, message seen update or acknowledgment occurs. Read selected full message bodies with inbox read MESSAGE_ID."}
+		out.Example = "<bound launcher> " + operation + " --unread --limit 20"
+		if operation == "inbox snapshot" {
+			out.Semantics[0] = "Reads one compact inbox page plus event_cursor from the same snapshot. Defaults to pending, unacknowledged messages, including seen-but-unhandled messages; --unread narrows to unseen pending messages, not all pending work. --all includes handled history."
+			out.Semantics[1] = "Pages use durable insertion order, oldest first; no recent-first option exists. Continue inbox.has_more with inbox.cursor and the same filters. event_cursor is a separate watermark for inbox events or inbox wait to discover later arrivals; it is not an inbox pagination cursor."
+			out.Example = "<bound launcher> inbox snapshot --unacknowledged --limit 20"
+		}
 		out.Documentation = "docs/message-events.md"
 	case "jobs update":
 		out.Usage = "<bound launcher> jobs update JOB_ID --expect-revision N --key KEY [changes]"
