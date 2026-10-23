@@ -93,6 +93,9 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer) int {
 func RunContext(ctx context.Context, args []string, env map[string]string, stdout, stderr io.Writer) int {
 	call, ok := parseInvocation(args)
 	if !ok {
+		if call.mutation != nil && call.mutation.argumentDiagnostic != nil {
+			return reportDetails(stderr, ExitUsage, *call.mutation.argumentDiagnostic)
+		}
 		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", argumentHelpAction(call))
 	}
 	if call.history != nil && call.history.operation == "export-page" {

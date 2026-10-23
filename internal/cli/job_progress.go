@@ -95,8 +95,12 @@ func parseJobProgress(operation string, args []string) (*mutationInvocation, boo
 		if progress.Summary != nil || progress.Next != nil || progress.Blocker != nil || progress.Evidence != nil {
 			call.patch.Progress = progress
 		}
-		if client.ValidateJobPatch(call.patch) != nil || !loadTextFiles(values, files) {
+		if client.ValidateJobPatch(call.patch) != nil {
 			return nil, false
+		}
+		if ok, failure := loadTextFiles(values, files); !ok {
+			call.argumentDiagnostic = failure
+			return call, false
 		}
 		for flag, dst := range map[string]**string{"--brief": &call.patch.Brief, "--progress": &progress.Summary, "--next": &progress.Next, "--blocker": &progress.Blocker} {
 			if _, fromFile := values[flag+"-file"]; fromFile {

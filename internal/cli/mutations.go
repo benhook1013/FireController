@@ -9,6 +9,7 @@ import (
 )
 
 type mutationInvocation struct {
+	argumentDiagnostic       *diagnostic
 	summary                  client.SetJobSummaryRequest
 	reviewCheckpoint         client.ReviewCheckpointRequest
 	reviewCheckpointRecovery client.ReviewCheckpointRecovery
@@ -161,8 +162,9 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 			return nil, false
 		}
 	}
-	if !loadTextFiles(values, files) {
-		return nil, false
+	if ok, failure := loadTextFiles(values, files); !ok {
+		call.argumentDiagnostic = failure
+		return call, false
 	}
 	switch call.operation {
 	case "jobs create":
