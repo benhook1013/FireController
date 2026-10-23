@@ -127,6 +127,9 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 		return MessageEventPage{}, fail("redirect_rejected", "The service attempted an unsupported redirect.", "Configure the final service address; credentials are not forwarded through redirects.", response.StatusCode)
 	}
 	media, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if response.StatusCode >= 500 && response.StatusCode < 600 && (err != nil || media != "application/json" || response.Header.Get("Content-Encoding") != "") {
+		return MessageEventPage{}, fail("service_unavailable", "The service returned an HTTP server error.", "Retry the wait using the saved cursor, or read the bound-worker inbox; messages remain unacknowledged.", response.StatusCode)
+	}
 	if err != nil || response.Header.Get("Content-Encoding") != "" {
 		return MessageEventPage{}, invalidResponse()
 	}

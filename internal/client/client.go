@@ -370,6 +370,12 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	}
 	media, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" || response.Header.Get("Content-Encoding") != "" {
+		if response.StatusCode >= 500 && response.StatusCode < 600 {
+			if mutation {
+				return unknownRequest("service_unavailable", operation, "returned a service error", response.StatusCode)
+			}
+			return fail("service_unavailable", "The service returned an HTTP server error.", "Check the service and retry the read when it is available.", response.StatusCode)
+		}
 		if mutation {
 			return unknownRequest("invalid_response", operation, "response was invalid", response.StatusCode)
 		}

@@ -352,6 +352,43 @@ func TestMalformedMutationReceiptIsUnknownAndDeadlinesAreClassified(t *testing.T
 
 func ptr(value string) *string { return &value }
 
+func TestNonJSONMutationServerErrorsRetainUncertaintyWithoutRetry(t *testing.T) {
+	for _, status := range []int{200, 403, 502, 503, 504} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var calls atomic.Int64
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				calls.Add(1)
+				if r.Method != http.MethodPost || r.Header.Get("Idempotency-Key") != "same-key" {
+					t.Error("mutation identity changed")
+				}
+				w.Header().Set("Content-Type", "text/html")
+				w.Header().Set("X-Request-ID", "PRIVATE_PROXY_REQUEST")
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte("<html>PRIVATE_PROXY_BODY " + testToken + "</html>"))
+			}))
+			defer service.Close()
+			c := newClient(t, service)
+			receipt, err := c.CreateJob(context.Background(), "same-key", client.CreateJobRequest{Title: "request title"})
+			wantCode := "invalid_response"
+			if status >= 500 {
+				wantCode = "service_unavailable"
+			}
+			checkError(t, err, wantCode, "PRIVATE_PROXY_BODY", "PRIVATE_PROXY_REQUEST")
+			var failure *client.Error
+			if !errors.As(err, &failure) || failure.Status != status || !failure.OutcomeUnknown || failure.RequestID != "" || failure.Details != nil || calls.Load() != 1 || receipt != (client.JobReceipt{}) {
+				t.Fatalf("mutation error classification or no-retry changed: %#v calls=%d", failure, calls.Load())
+			}
+			if !strings.Contains(failure.Action, "exact same idempotency key, request body and selected binding") {
+				t.Fatal("uncertain mutation lost same-key recovery guidance")
+			}
+		})
+	}
+}
+
 func TestMutationServiceErrorsPreserveSafeDiagnosticsAndUncertainty(t *testing.T) {
 	for _, test := range []struct {
 		name     string

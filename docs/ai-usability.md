@@ -16,6 +16,8 @@ The default [job read](job-state.md#default-reads) provides the complete brief a
 
 Responses do not echo credentials, profile files, submitted large text, redundant timestamps, or long invocation examples. Errors state the stable cause, whether retry is safe, the conflicting revision or held operation where relevant, and the smallest useful next action. Verbose traces are opt-in. A transient provider issue does not bury an unrelated successful job update under diagnostics.
 
+A non-JSON HTTP 5xx response from the service or its proxy reports `service_unavailable` with the original status, rather than implying oversized data or client incompatibility. Finite reads can be retried when service is available; message waits retain their saved cursor. A mutation retains its unknown-outcome classification and exact-key recovery instructions. Clients do not retry automatically or expose the proxy response body. Successful-response validation and structured JSON error handling remain unchanged.
+
 ## Calls and attention
 
 Profiles and verified tool connections provide repeatable identity selection without repeated project/worker flags. The [client contract](agent-client.md) owns identity binding; saving flags never justifies ambiguous routing. Bounded batching is useful where operations share a real scope, but arbitrary command scripts and giant all-state endpoints are not required.

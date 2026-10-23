@@ -299,6 +299,54 @@ func TestStrictAndBoundedResponsesCannotRepairOrBroadenResults(t *testing.T) {
 
 const maxBodyForTest = 4 << 20
 
+func TestNonJSONServerErrorsRetainStatusAndSafeReadRecovery(t *testing.T) {
+	for _, status := range []int{200, 403, 502, 503, 504} {
+		for _, read := range []string{"worker", "inbox_snapshot"} {
+			t.Run(http.StatusText(status)+"/"+read, func(t *testing.T) {
+				var calls atomic.Int64
+				service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/api/v1/instance" {
+						handshake(w)
+						return
+					}
+					calls.Add(1)
+					if r.Method != http.MethodGet {
+						t.Error("read changed method")
+					}
+					if read == "inbox_snapshot" && (r.URL.Path != "/api/v1/projects/project-one/inbox/worker-one/snapshot" || r.URL.RawQuery != "limit=5&unread=true") {
+						t.Error("snapshot selection changed")
+					}
+					w.Header().Set("Content-Type", "text/html")
+					w.Header().Set("X-Request-ID", "PRIVATE_PROXY_REQUEST")
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte("<html>PRIVATE_PROXY_BODY " + testToken + "</html>"))
+				}))
+				defer service.Close()
+				c := newClient(t, service)
+				var err error
+				if read == "inbox_snapshot" {
+					_, err = c.InboxSnapshot(context.Background(), client.PageOptions{Limit: 5}, client.InboxFilter{Unread: true})
+				} else {
+					_, err = c.Worker(context.Background())
+				}
+				wantCode := "invalid_response"
+				wantStatus := 0
+				if status >= 500 {
+					wantCode, wantStatus = "service_unavailable", status
+				}
+				checkError(t, err, wantCode, "PRIVATE_PROXY_BODY", "PRIVATE_PROXY_REQUEST")
+				var failure *client.Error
+				if !errors.As(err, &failure) || failure.Status != wantStatus || failure.OutcomeUnknown || failure.RequestID != "" || failure.Details != nil || calls.Load() != 1 {
+					t.Fatalf("read error classification or no-retry changed: %#v calls=%d", failure, calls.Load())
+				}
+				if status >= 500 && (!strings.Contains(failure.Action, "retry the read") || strings.Contains(failure.Action, "compatibility")) {
+					t.Fatal("server outage lost read recovery guidance")
+				}
+			})
+		}
+	}
+}
+
 func TestServiceErrorsStayBoundedSafeAndStructured(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/instance" {

@@ -38,7 +38,7 @@ func retainHostedAllowance(ctx context.Context, captures *HostedCaptureStore, en
 		!sameHostedQueryTarget(anchor, query.Anchor) || record.PostingActor.ID != query.PostingActor.ID || record.PostingActor.Kind != query.PostingActor.Kind || record.ProviderActor.ID != query.ProviderActor.ID || record.ProviderActor.Kind != query.ProviderActor.Kind || !record.EarliestPosting.Equal(earliest.Truncate(time.Second)) {
 		return core.Fail("review_held", "The query capture does not match its original hosted source and actors.", 409)
 	}
-	observation, err := reviewprovider.ResolveHostedAllowance(reviewprovider.HostedAllowanceSnapshot{IssueComments: record.Snapshot.IssueComments, Complete: record.Snapshot.Complete, ObservedAt: record.Snapshot.ObservedAt}, intent, query.PostingActor, query.ProviderActor, record.EarliestPosting)
+	observation, err := resolveRetainedHostedAllowance(ctx, captures, engine, attempt, query, reference, record)
 	if err != nil {
 		return err
 	}
