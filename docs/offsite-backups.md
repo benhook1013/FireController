@@ -54,3 +54,17 @@ To check an independent local S3 implementation, supply `FC_TEST_S3_ENDPOINT=htt
 Exercise actual rclone upload/download against a disposable local S3-compatible service, including encrypted transport, unchanged-source retry, restart after an uncertain publication, independent retention, corruption, permission/authentication failure and bounded cancellation. Download and inspect a complete native bundle and restore it inactive with source data unavailable. Keep fixture credentials and containers private and remove owned test resources afterward. These checks establish the common transfer boundary, not AWS-specific behavior, physical durability or real OneDrive/Google Drive/MEGA account authorization. Live cloud upload/download/restore remains pending until an account is connected.
 
 Google account connection and maintainer branding are described in [Google Drive setup](google-drive-setup.md).
+
+## Website reporting
+
+An operator can publish a small redacted report from the existing local transfer ledger:
+
+```sh
+fcd backup-offsite-status --config /private/offsite.json --health-file /private/reports/onedrive.json --health-label OneDrive --health-max-age 3h
+```
+
+`--health-file` is accepted only by the status command. The optional label defaults to `Offsite backup`; the maximum snapshot age defaults to three hours and can be selected from one minute through thirty days. These reporting options never start an upload, download or remote verification. Existing status output and transfer ownership remain unchanged.
+
+Publish into a dedicated existing private directory and make the resulting owner-private regular file readable by the daemon's operating-system user. Mount only that redacted directory into a container, read-only. Never mount the rclone configuration or transfer state into the serving daemon. Select each report explicitly with repeated daemon `--backup-offsite-health-file /private/reports/onedrive.json` flags, up to eight reports. Use a small deployment timer to republish once a minute; reporting older than five minutes is unavailable even if the last retained snapshot is recent. A publisher failure leaves the prior report to age out. The mirror binds the source instance, so a restore cannot silently claim a predecessor's offsite protection.
+
+The site separately considers snapshot age, recent failed attempts and retention failures. An unchanged transfer does not reverify remote bytes, and publishing a new report does not update the successful snapshot's time. The status is evidence of recorded successful backups, rather than continuous cloud integrity verification.

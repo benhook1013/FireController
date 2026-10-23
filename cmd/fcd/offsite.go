@@ -6,7 +6,9 @@ import (
 	"flag"
 	"io"
 	"strings"
+	"time"
 
+	"github.com/benhook1013/FireController/internal/backuphealth"
 	"github.com/benhook1013/FireController/internal/offsite"
 )
 
@@ -14,7 +16,13 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 	flags := flag.NewFlagSet("fcd "+command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	config := flags.String("config", "", "private offsite configuration")
-	var id, destination string
+	var id, destination, healthFile, healthLabel string
+	var healthMaxAge time.Duration
+	if command == "backup-offsite-status" {
+		flags.StringVar(&healthFile, "health-file", "", "optional private redacted status output")
+		flags.StringVar(&healthLabel, "health-label", "Offsite backup", "plain display label, maximum 80 bytes")
+		flags.DurationVar(&healthMaxAge, "health-max-age", 3*time.Hour, "maximum completed snapshot age")
+	}
 	if command == "backup-fetch" {
 		flags.StringVar(&id, "id", "", "selected remote backup identity")
 		flags.StringVar(&destination, "destination", "", "new private destination root")
@@ -43,6 +51,12 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 	if flags.Parse(args) != nil || flags.NArg() != 0 || *config == "" || command == "backup-fetch" && destination == "" {
 		return invalid()
 	}
+	if (seen["health-label"] || seen["health-max-age"]) && healthFile == "" {
+		return invalid()
+	}
+	if healthFile != "" && (backuphealth.ValidateFiles([]string{healthFile}) != nil || !backuphealth.ValidLabel(healthLabel) || healthMaxAge < time.Minute || healthMaxAge > 30*24*time.Hour || healthMaxAge%time.Second != 0) {
+		return invalid()
+	}
 	var value any
 	var err error
 	switch command {
@@ -51,7 +65,11 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 	case "backup-fetch":
 		value, err = offsite.Fetch(ctx, *config, id, destination)
 	case "backup-offsite-status":
-		value, err = offsite.ReadStatus(ctx, *config)
+		if healthFile != "" {
+			value, err = offsite.ReadStatusAndWriteHealth(ctx, *config, healthFile, healthLabel, healthMaxAge)
+		} else {
+			value, err = offsite.ReadStatus(ctx, *config)
+		}
 	default:
 		return invalid()
 	}

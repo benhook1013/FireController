@@ -21,9 +21,11 @@ type RepositoryIdentity struct {
 type RepositoryResolver func(context.Context, string) (RepositoryIdentity, error)
 type Option func(*api)
 type api struct {
-	store    *core.Store
-	resolver RepositoryResolver
-	browser  http.Handler
+	store              *core.Store
+	resolver           RepositoryResolver
+	browser            http.Handler
+	backupHealthFiles  []string
+	backupHealthReader BackupHealthReader
 }
 
 func WithRepositoryResolver(resolver RepositoryResolver) Option {
@@ -61,6 +63,7 @@ func New(store *core.Store, options ...Option) *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/projects", a.createProject)
 	mux.HandleFunc("GET /api/v1/projects", a.listProjects)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}", a.project)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/backup-health", a.backupHealth)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/browser-session", a.createBrowserSession)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/browser-session", a.currentBrowserSession)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/browser-session/renew", a.renewBrowserSession)

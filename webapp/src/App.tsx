@@ -29,6 +29,7 @@ import { startMetadataAttempt } from './metadata-recovery';
 import { createAppearanceAcceptor, refreshProjectView } from './appearance-refresh';
 import type { Presentation } from './types';
 import flameEmber from './flame-ember.svg?no-inline';
+import { BackupHealthIndicator } from './backup-health';
 import type { ChecklistItem, JobProgress, JobProgressEntry, JobChecklistSummary, InboxItem, LiveStatus, Page, Project, Worker } from './types';
 
 const pageSize = 20;
@@ -277,7 +278,7 @@ function PrivateApp() {
     {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} reconnectProjectUpdates={reconnectProjectUpdates} selectWorker={selectWorker} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
       : session || restoring || resumable ? <OpeningProject sidebar={Boolean(matchPath('/projects/:projectId/inbox/*', location.pathname))} busy={Boolean(session) || restoring || connecting} notice={notice} retry={() => setReconnect(value => value + 1)} cancel={() => clear('Connection cancelled.')} />
       : publicRoute && routeProject && validPublicAddress(routeProject) && validHistory ? <>{signIn && login}<PublicProjectAddress key={`${routeProject}:${historyRevision ?? ''}:${historyGeneration ?? ''}`} address={routeProject} revision={historyRevision} generation={historyGeneration} embedded fallback={signIn ? <p className="empty">This project has no published overview.</p> : login} /></> : login}
-    <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span></footer>
+    <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span>{connected && <BackupHealthIndicator key={session.nonce} session={session} />}</footer>
   </PresentationContext.Provider>;
 }
 

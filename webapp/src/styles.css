@@ -63,3 +63,18 @@
 @media(max-width:650px){:root{--review-anchor-clearance:160px}}
 
 .project-signin{max-width:1280px;margin:24px auto;padding:0 30px}.project-signin .connect-card{max-width:560px;margin:0 auto}.mast-meta>button{white-space:nowrap}.delivery-job-summary .editorial-markdown{font-size:.9rem}@media(max-width:760px){.project-signin{padding:0 15px}.project-signin .connect-card{padding:24px}}
+
+/* Recorded backup health is private to the signed-in workspace. */
+.backup-health{position:relative;max-width:100%;margin-left:auto;color:var(--fc-canvas_text,#343641)}
+.backup-health>summary{display:flex;align-items:center;gap:7px;cursor:pointer;font-weight:650;list-style:none}
+.backup-health>summary::-webkit-details-marker{display:none}
+.backup-health>summary:focus-visible{outline:3px solid var(--fc-focus,#e68151);outline-offset:4px}
+.backup-health-dot{width:7px;height:7px;border-radius:50%;background:var(--fc-canvas_muted,#777);flex:none}
+.backup-health-healthy .backup-health-dot{background:var(--fc-completed_text,#467343)}
+.backup-health-failed .backup-health-dot{background:var(--fc-accent_background,#a51e28)}
+.backup-health-running .backup-health-dot{background:#a46a16}
+.backup-health-details{position:absolute;bottom:calc(100% + 10px);right:0;z-index:20;width:min(360px,calc(100vw - 36px));padding:16px;border:1px solid var(--fc-surface_border,#cfccc7);background:var(--fc-surface_background,#f7f6f3);color:var(--fc-surface_text,#343641);box-shadow:0 3px 12px #0002;font-size:.8rem}
+.backup-health-details ul{margin-top:12px}.backup-health-details li{display:flex;flex-wrap:wrap;gap:5px 12px;padding:9px 0;border-top:1px solid var(--fc-surface_border,#cfccc7)}
+.backup-health-details li strong{flex:1}.backup-health-details li>span:last-child:not(:nth-child(2)){width:100%;color:var(--fc-surface_muted,#666874)}
+.backup-health-details p{margin:12px 0 0;color:var(--fc-surface_muted,#666874);line-height:1.4}
+@media(max-width:650px){.backup-health{margin-left:0;margin-top:7px}.backup-health-details{right:auto;left:0}}

@@ -59,6 +59,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	backupDestination := flags.String("backup-destination", "", "explicit managed backup root")
 	backupInterval := flags.Duration("backup-interval", 0, "managed backup interval, 1m through 720h")
 	backupKeep := flags.Int("backup-keep", 0, "managed verified bundles to retain, 1 through 1000")
+	var backupHealthFiles server.BackupHealthFiles
+	flags.Var(&backupHealthFiles, "backup-offsite-health-file", "optional redacted offsite status file (repeatable, maximum eight)")
 	backupTimeout := flags.Duration("backup-timeout", 0, "managed attempt deadline, default 5m and maximum 24h")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -207,7 +209,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
-	mux := server.New(store, server.WithRepositoryResolver(resolver), server.WithBrowser(webui.Handler()))
+	mux := server.New(store, server.WithRepositoryResolver(resolver), server.WithBrowser(webui.Handler()), server.WithBackupHealthFiles(backupHealthFiles), server.WithBackupHealthReader(backup.ReadHealthRecord))
 	jobs.Register(mux, store, jobs.WithPublicProjection(func(ctx context.Context, tx *sql.Tx, project, job string) error {
 		return publicsite.RefreshForJob(ctx, tx, project, job, reviews.PublicSiteReviewFacts)
 	}))

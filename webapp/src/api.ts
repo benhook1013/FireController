@@ -14,6 +14,7 @@ import { progressPulls, validReviewProgress, type ReviewProgress } from './revie
 import type { ReviewFronts } from './review-fronts';
 import type { PresentationSnapshot, PresentationRevision, ProjectMetadataPage } from './types';
 import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
+import { validBackupHealth, type BackupHealth } from './backup-health-model';
 
 const maxBytes = 1 << 20;
 const maxItems = 100;
@@ -712,6 +713,12 @@ export class Api {
       const failure = this.transportError(error, budget.expired(), budget.signal);
       throw new ApiError(failure.code, failure.message, failure.status, dispatched && !knownRefusal);
     } finally { budget.close(); }
+  }
+
+  async backupHealth(signal?: AbortSignal): Promise<BackupHealth> {
+    const value = await this.finiteGet(this.projectRoute('backup-health'), signal, undefined, 16384, assessmentJSON);
+    if (!validBackupHealth(value)) throw new ApiError('invalid_response', 'Backup status is unavailable.');
+    return value;
   }
 
   async workers(options: PageOptions = {}, signal?: AbortSignal): Promise<Page<Worker>> {
