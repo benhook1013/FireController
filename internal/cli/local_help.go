@@ -51,7 +51,8 @@ func localHelp() helpResponse {
 				{"jobs progress-history JOB_ID", "One explicit current-progress archive page; no automatic continuation."},
 				{"jobs history JOB_ID", "One explicit private job-history page; list/history/thread commands never silently fetch every page."},
 				{"reviews queue", "Stored review workspace only. Review requests, source refreshes and publication are separate authorized operations; help grants no permission."},
-				{"reviews evidence | adjudication | decide | fix | finalize", "Native evidence reads and guarded finding decisions/fix proof. reviews fix --help explains revision and existing-SHA guards; see docs/review-controls.md."},
+				{"reviews help", "Local review command discovery; decide, fix, finalize and publish each accept --help with exact fields, guards and side effects."},
+				{"reviews evidence | adjudication | decide | fix | finalize", "Native evidence reads and guarded finding decisions/fix proof; see docs/review-controls.md. reviews publish --help explains the separate GitHub checkpoint action."},
 			}},
 		},
 	}

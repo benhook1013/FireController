@@ -24,7 +24,7 @@ func TestOperationHelpIsOfflineBoundedAndDoesNotReadFiles(t *testing.T) {
 	if err := os.WriteFile(path, before, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews fix"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews fix", "reviews decide", "reviews finalize", "reviews publish"} {
 		for _, spelling := range [][]string{append(strings.Fields(operation), "--help"), append([]string{"help"}, strings.Fields(operation)...)} {
 			for _, profilePath := range []string{path, filepath.Join(t.TempDir(), "missing.json")} {
 				args := append([]string{"--profile=bound-role", "--profiles-file", profilePath}, spelling...)
@@ -61,6 +61,8 @@ func TestOperationHelpRequiresExactGrammarAndValidGlobalFlags(t *testing.T) {
 		{"help", "jobs", "update", "--unknown"}, {"help", "unknown", "operation"},
 		{"notes", "update", "NOTE_ID", "--help"},
 		{"publication", "prepare", "--file", "/private/not-read", "--help"},
+		{"reviews", "help", "extra"}, {"help", "reviews", "extra"},
+		{"reviews", "--help", "--unknown"}, {"reviews", "help", "--profile= padded "},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := RunContext(t.Context(), args, nil, &stdout, &stderr); code != ExitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), "invalid_arguments") {
@@ -69,8 +71,49 @@ func TestOperationHelpRequiresExactGrammarAndValidGlobalFlags(t *testing.T) {
 	}
 }
 
+func TestReviewHelpDiscoveryIsLocalAndKeepsOperationSemantics(t *testing.T) {
+	for _, args := range [][]string{{"reviews", "help"}, {"reviews", "--help"}, {"help", "reviews"}} {
+		args = append(args, "--profiles-file", filepath.Join(t.TempDir(), "missing.json"), "--profile", "bound")
+		var stdout, stderr bytes.Buffer
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		var result operationHelpResponse
+		if code := RunContext(ctx, args, nil, &stdout, &stderr); code != ExitSuccess || stderr.Len() != 0 || stdout.Len() > 2048 || json.Unmarshal(stdout.Bytes(), &result) != nil || result.Usage != "<bound launcher> reviews help" || !strings.Contains(stdout.String(), "publish --help") {
+			t.Fatalf("review help read configuration or failed discovery: %v %s %s", args, &stdout, &stderr)
+		}
+	}
+	evidence := "review_evidence_0123456789abcdef0123456789abcdef"
+	for _, args := range [][]string{
+		{"reviews", "decide", evidence, "--key", "decision", "--expect-revision", "0", "--finding", "0", "--disposition", "accepted", "--reason", "Verified against current source"},
+		{"reviews", "decide", evidence, "--key", "decision", "--expect-revision", "2", "--finding", "0", "--disposition", "rejected", "--reason", "Wrong target", "--expect-route-revision", "1"},
+		{"reviews", "finalize", evidence, "--key", "finalize", "--expect-revision", "2"},
+		{"reviews", "publish", evidence, "--key", "checkpoint", "--expect-revision", "3", "--wait-seconds", "0"},
+	} {
+		call, ok := parseInvocation(args)
+		if !ok || call.mutation == nil || call.helpOperation != "" || call.mutation.operation != "reviews "+args[1] {
+			t.Fatalf("help advertises invalid or misdirected edit: %v", args)
+		}
+	}
+	for operation, expected := range map[string][]string{
+		"reviews decide":   {"accepted|rejected", "zero-based", "--expect-route-revision", "route-create", "no provider"},
+		"reviews finalize": {"zero-finding", "Freezes original", "awaiting fixes", "reviews publish"},
+		"reviews publish":  {"GitHub", "current source adjudication", "pending receipt", "reviews publication"},
+	} {
+		help, ok := operationHelp(operation)
+		b, _ := json.Marshal(help)
+		if !ok {
+			t.Fatal("missing review help", operation)
+		}
+		for _, term := range expected {
+			if !strings.Contains(string(b), term) {
+				t.Fatalf("%s omits essential semantic %q", operation, term)
+			}
+		}
+	}
+}
+
 func TestOperationErrorsPointToSelectedHelpWithoutEchoingArguments(t *testing.T) {
-	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare", "reviews fix"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare", "reviews fix", "reviews decide", "reviews finalize", "reviews publish"} {
 		var stdout, stderr bytes.Buffer
 		args := append(strings.Fields(operation), "--private-typo=DO_NOT_ECHO")
 		if code := RunContext(t.Context(), args, map[string]string{"FC_PROFILE": "missing"}, &stdout, &stderr); code != ExitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), operation+" --help") || strings.Contains(stderr.String(), "DO_NOT_ECHO") {

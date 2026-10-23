@@ -31,6 +31,33 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	recovery := "Use an explicit --key (1-128 printable ASCII bytes without surrounding whitespace). After uncertain output retry the same key, exact request and binding; never invent a replacement key."
 	out := operationHelpResponse{Required: []string{}, Optional: []string{}}
 	switch operation {
+	case "reviews help":
+		out.Usage = "<bound launcher> reviews help"
+		out.Optional = []string{"reviews decide --help", "reviews fix --help", "reviews finalize --help", "reviews publish --help", "reviews request --help", "reviews operation --help"}
+		out.Semantics = []string{"Read retained findings with reviews evidence EVIDENCE_ID and current decisions/revision with reviews adjudication EVIDENCE_ID.", "decide, fix and finalize are guarded local evidence changes. publish explicitly requests a historical-count checkpoint comment on GitHub; request explicitly requests a review. Neither is implied by adjudication or help.", "Use the help for the selected operation; all help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
+		out.Example = "<bound launcher> reviews decide --help"
+		out.Documentation = "docs/review-controls.md"
+		out.Next = "docs/review-publication.md describes GitHub checkpoint publication; docs/review-execution.md describes review requests and retained operations."
+	case "reviews decide":
+		out.Usage = "<bound launcher> reviews decide EVIDENCE_ID --key KEY --expect-revision N --finding INDEX --disposition accepted|rejected --reason TEXT [--expect-route-revision N]"
+		out.Required = []string{"EVIDENCE_ID", "--key KEY", "--expect-revision N (current adjudication revision, initially 0)", "--finding INDEX (zero-based, 0-99)", "--disposition accepted|rejected", "--reason TEXT (nonblank, up to 2048 UTF-8 bytes)"}
+		out.Optional = []string{"--expect-route-revision N (current route revision when replacing a routed decision)"}
+		out.Semantics = []string{"Read reviews evidence EVIDENCE_ID for finding text and reviews adjudication EVIDENCE_ID for current revision and dispositions. Use the returned revision for each subsequent edit.", "accepted means the finding is useful work; rejected records why it is not accepted. Create routed findings with reviews route-create, not --disposition routed. An accepted finding with fix proof cannot be silently rejected.", "Decisions retain captured text and original finalized counts; no provider work, new review, publication or allowance change occurs.", recovery}
+		out.Example = "<bound launcher> reviews decide review_evidence_0123456789abcdef0123456789abcdef --key decision-1 --expect-revision 0 --finding 0 --disposition accepted --reason 'Verified against current source'"
+		out.Documentation = "docs/review-controls.md"
+	case "reviews finalize":
+		out.Usage = "<bound launcher> reviews finalize EVIDENCE_ID --expect-revision N --key KEY"
+		out.Required = []string{"EVIDENCE_ID", "--expect-revision N (current adjudication revision)", "--key KEY"}
+		out.Semantics = []string{"Requires a completed attempt, complete retained capture and a decision for every finding; a complete zero-finding review is valid. Read reviews adjudication EVIDENCE_ID for the current revision.", "Freezes original found/accepted/routed source counts. A finalized review can contain accepted findings awaiting fixes; finalization is not a clean-review or merge-readiness verdict.", "Later supported decision/fix corrections preserve frozen source counts. No GitHub comment, source refresh or new review is requested; reviews publish is separate.", recovery}
+		out.Example = "<bound launcher> reviews finalize review_evidence_0123456789abcdef0123456789abcdef --expect-revision 2 --key finalize-1"
+		out.Documentation = "docs/review-controls.md"
+	case "reviews publish":
+		out.Usage = "<bound launcher> reviews publish EVIDENCE_ID --expect-revision N --key KEY [--wait-seconds N]"
+		out.Required = []string{"EVIDENCE_ID", "--expect-revision N (current source adjudication revision)", "--key KEY"}
+		out.Optional = []string{"--wait-seconds N (0-900, default 2)"}
+		out.Semantics = []string{"Explicitly requests a GitHub checkpoint comment for complete finalized native evidence, subject to existing publication authority. Uses original frozen counts and captured head; it does not publish finding bodies or current fix proof.", "A pending receipt is not confirmation. Read reviews publication PUBLICATION_ID to recover stored state without provider work. Publication does not request a review, refresh source or change allowances; local source finalization alone does not post a comment.", recovery}
+		out.Example = "<bound launcher> reviews publish review_evidence_0123456789abcdef0123456789abcdef --expect-revision 3 --key checkpoint-1 --wait-seconds 0"
+		out.Documentation = "docs/review-publication.md"
 	case "reviews fix":
 		out.Usage = "<bound launcher> reviews fix EVIDENCE_ID --key KEY --expect-revision N --finding INDEX --expect-sha SHA --fix-sha SHA --proof TEXT"
 		out.Required = []string{"EVIDENCE_ID", "--key KEY", "--expect-revision N", "--finding INDEX (zero-based, 0-99)", "--expect-sha SHA (use --expect-sha= when no fix exists)", "--fix-sha SHA (40 lowercase hexadecimal characters)", "--proof TEXT (nonblank, up to 2048 UTF-8 bytes)"}
