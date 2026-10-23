@@ -47,7 +47,7 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 			baselineLoaded = true
 		}
 	}
-	if !inventory.Complete && (inventory.Publication.State == "active" || inventory.Publication.State == "uncertain" && inventory.Reason == "hosted_finished_inventory_unproven") && inventory.Publication.Trigger.State == "adopted" {
+	if !inventory.Complete && (inventory.Publication.State == "active" || inventory.Publication.State == "uncertain" && (inventory.Reason == "hosted_finished_inventory_unproven" || inventory.Reason == "attribution_window_closed")) && inventory.Publication.Trigger.State == "adopted" {
 		loadBaseline()
 		if baselineErr != nil {
 			result.Reason = "standing_baseline_unproven"
@@ -55,7 +55,7 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		}
 		if baselineReason == "" {
 			fallback, err := reviewprovider.ExtractHostedFindingsWithBaseline(retained.Snapshot, baseline.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
-			if err == nil && fallback.Complete && fallback.Publication.StandingZero != nil {
+			if err == nil && fallback.Complete {
 				inventory = fallback
 			}
 		}
