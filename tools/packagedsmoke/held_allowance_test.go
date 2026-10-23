@@ -206,7 +206,7 @@ func seedHeldAllowance(t *testing.T, ctx context.Context, data, project, worker,
 	if _, err = engine.Configure(ctx, scope, "held-config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "held-proof", Mode: "independent", Queue: []int64{1}, Channels: []string{"cli"}}); err != nil {
 		t.Fatal("fixture configuration rejected", err)
 	}
-	if _, err = engine.ConfigurePolicy(ctx, scope, "held-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli"}, PausedChannels: []string{}}); err != nil {
+	if _, err = engine.ConfigurePolicy(ctx, scope, "held-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli"}}); err != nil {
 		t.Fatal("fixture policy rejected", err)
 	}
 	raw, err := engine.Enqueue(ctx, scope, "held-request", reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 1, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})

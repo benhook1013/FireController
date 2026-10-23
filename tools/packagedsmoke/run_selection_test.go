@@ -498,7 +498,7 @@ func seedRunSelectionConfiguration(t *testing.T, ctx context.Context, data, cata
 	}
 	prefix := "/api/v1/projects/" + project + "/reviews"
 	if initial {
-		call(prefix+"/policy", "policy", map[string]any{"expected_revision": 0, "required_channels": []string{"cli"}, "paused_channels": []string{}, "max_review_files": 0})
+		call(prefix+"/policy", "policy", map[string]any{"expected_revision": 0, "required_channels": []string{"cli"}, "max_review_files": 0})
 	}
 	call(prefix+"/execution/configuration", fmt.Sprintf("configuration-%d", previous), map[string]any{"expected_revision": previous, "capability_id": cap.ID, "mode": "independent", "queue": queue, "channels": []string{"cli"}, "paused": false})
 	if initial {

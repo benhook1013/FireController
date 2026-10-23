@@ -125,7 +125,7 @@ func TestCLIAllowanceReplayAfterSettlementAccessAndPolicyChanges(t *testing.T) {
 	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision+1, "completed", "retained", ""); err != nil {
 		t.Fatal(err)
 	}
-	admissionPolicy(t, f, 1, "cli")
+	admissionPolicy(t, f, 1)
 	f.configure(t, attemptProject, "other-account", 1, true)
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 	before := cliAllowanceState(t, f, a)
@@ -230,8 +230,10 @@ func TestCLIAllowanceRechecksCurrentAdmissionBeforeFirstRecord(t *testing.T) {
 		"channel": {func(t *testing.T, f *attemptFixture, a Attempt) {
 			admissionSQL(t, f, `UPDATE review_operations SET channel='hosted' WHERE id=?`, a.OperationID)
 		}, "review_conflict"},
-		"policy":        {func(t *testing.T, f *attemptFixture, a Attempt) { admissionPolicy(t, f, 1) }, "review_conflict"},
-		"paused-policy": {func(t *testing.T, f *attemptFixture, a Attempt) { admissionPolicy(t, f, 1, "cli") }, "review_conflict"},
+		"policy": {func(t *testing.T, f *attemptFixture, a Attempt) { admissionPolicy(t, f, 1) }, "review_conflict"},
+		"project-pause": {func(t *testing.T, f *attemptFixture, a Attempt) {
+			f.configure(t, attemptProject, "test-capability", 1, true)
+		}, "review_conflict"},
 		"configuration": {func(t *testing.T, f *attemptFixture, a Attempt) {
 			f.configure(t, attemptProject, "test-capability", 1, false)
 		}, "review_conflict"},

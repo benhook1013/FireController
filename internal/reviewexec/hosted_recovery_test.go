@@ -71,7 +71,7 @@ func TestReadHostedRecoveryRetainsPostingBoundaryAndCopiesAcrossStates(t *testin
 func TestReadHostedRecoveryObservesAfterRevocationPauseAndReconfiguration(t *testing.T) {
 	f, a, admitted := hostedRecoveryFixture(t)
 	f.configure(t, attemptProject, "other-account", 1, true)
-	admissionPolicy(t, f, 1, "hosted")
+	admissionPolicy(t, f, 1)
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 	admissionSQL(t, f, `DELETE FROM grants WHERE credential_id='exec-writer-cred'`)
 	// A repository spelling change does not rewrite the original immutable anchor.

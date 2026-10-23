@@ -153,11 +153,8 @@ func (e *Engine) ReadRoundControl(ctx context.Context, scope core.Scope, pull in
 }
 
 func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, key string, pull int64, channel string, input RoundControlRequest) (json.RawMessage, error) {
-	// A pinned administrator scope ensures Store also requires current admin
-	// authority when it replays a receipt without invoking the callback.
-	if !scope.Administrative() {
-		return nil, core.Fail("forbidden", "Administrative permission is required.", 403)
-	}
+	// Store.Mutate rechecks current project write permission transactionally,
+	// including exact-key receipt replay before the callback is considered.
 	if !roundScope(scope.ProjectID, pull, channel) || input.ExpectedRevision == nil || *input.ExpectedRevision < 0 || *input.ExpectedRevision == math.MaxInt64 {
 		return nil, invalid()
 	}

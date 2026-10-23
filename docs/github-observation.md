@@ -14,6 +14,10 @@ Repository identity, current enrollment, capability binding and visible/nonretir
 
 Authenticated conditional GETs revalidate cached response bodies with GitHub. The cache is isolated to the adapter's credential and bounded to 256 entries and 16 MiB; it never supplies an unvalidated stale response or caches a write. Its cadence, cache and backoff are process-local. Restored provider holds prevent observation until the operator releases the restored installation.
 
+## Freshness in ordinary reads
+
+Current CLI/MCP and browser queue reads request `include_observation=true`; the queue API then returns `observer` runtime state and each enrolled row's `observation`: last attempt, last successful retained lifecycle check, next eligible check, safe retry/error code and separately checked CI/Hosted-inventory times and reasons. These are process-local health facts, reset at startup. An unchanged successful poll advances these check times without a new immutable snapshot, event or history row. `observed_at` remains the snapshot origin timestamp and must not be interpreted as the last automatic check. A restarted observer reports waiting until it has checked the PR; a stopped/unconfigured observer, a retry/backoff, an overdue check, a different comparison and an unenrolled row remain distinguishable. Unknown CI with a successful collection means the required-CI evidence was unproven, not that the worker must maintain the queue manually. Ordinary reads make no provider calls.
+
 ## Hosted reviews started outside FireController
 
 Completed CodeRabbit reviews started directly on GitHub are discovered automatically for those same enrolled PRs. Discovery only reads GitHub. It never posts a review command, queries review allowance, launches a CLI process or creates a controller execution attempt. Deferring review work or enabling the operator's review-request pause does not disable this observation.

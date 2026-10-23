@@ -75,8 +75,12 @@ func (s *Service) applyHTTP(w http.ResponseWriter, r *http.Request) {
 	core.WriteJSON(w, 200, out)
 }
 func (s *Service) resolveHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, ok := s.scope(w, r, true)
-	if !ok {
+	scope, err := s.store.Scope(r, "write")
+	if err == nil {
+		_, err = core.QueryKeys(r, "validation_failed")
+	}
+	if err != nil {
+		core.WriteError(w, err)
 		return
 	}
 	var input m.ResolveRequest

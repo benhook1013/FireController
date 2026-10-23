@@ -52,3 +52,5 @@ To check an independent local S3 implementation, supply `FC_TEST_S3_ENDPOINT=htt
 ## Required proof
 
 Exercise actual rclone upload/download against a disposable local S3-compatible service, including encrypted transport, unchanged-source retry, restart after an uncertain publication, independent retention, corruption, permission/authentication failure and bounded cancellation. Download and inspect a complete native bundle and restore it inactive with source data unavailable. Keep fixture credentials and containers private and remove owned test resources afterward. These checks establish the common transfer boundary, not AWS-specific behavior, physical durability or real OneDrive/Google Drive/MEGA account authorization. Live cloud upload/download/restore remains pending until an account is connected.
+
+Google account connection and maintainer branding are described in [Google Drive setup](google-drive-setup.md).

@@ -31,9 +31,6 @@ func boundPolicy(ctx context.Context, tx *sql.Tx, operation Operation) (PolicyRe
 		}
 		return PolicyRecord{}, "", err
 	}
-	if slices.Contains(policy.Policy.PausedChannels, operation.Channel) {
-		return policy, "policy_paused", nil
-	}
 	if policy.Revision != operation.PolicyRevision {
 		return policy, "policy_changed", nil
 	}
@@ -41,7 +38,7 @@ func boundPolicy(ctx context.Context, tx *sql.Tx, operation Operation) (PolicyRe
 }
 
 func policyAdmissionConflict() error {
-	return core.Fail("review_conflict", "The bound project review policy is unavailable, changed or paused; request review again.", 409)
+	return core.Fail("review_conflict", "The bound project review policy is unavailable or changed; request review again.", 409)
 }
 
 func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operation Operation) (ExecutionContext, error) {

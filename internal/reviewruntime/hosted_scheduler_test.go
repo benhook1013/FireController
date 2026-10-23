@@ -134,7 +134,7 @@ func TestHostedSchedulerAdoptsPendingThenCompletesWithOriginalActor(t *testing.T
 	// A paused/reconfigured project and revoked initiating actor cannot erase an
 	// already issued review. Recovery must use original query identity, not /user.
 	one := int64(1)
-	if _, err := f.engine.ConfigurePolicy(t.Context(), f.scope(t, f.admin, true), "scheduler-pause-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &one, RequiredChannels: []string{"hosted"}, PausedChannels: []string{"hosted"}}); err != nil {
+	if _, err := f.engine.ConfigurePolicy(t.Context(), f.scope(t, f.admin, true), "scheduler-pause-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &one, RequiredChannels: []string{"hosted"}, MaxReviewFiles: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.engine.Configure(t.Context(), f.scope(t, f.admin, true), "scheduler-pause-config", reviewexec.Configuration{ExpectedRevision: &one, CapabilityID: f.capability.ID, Mode: "independent", Queue: []int64{2}, Channels: []string{"hosted"}, Paused: true}); err != nil {

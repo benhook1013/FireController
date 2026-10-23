@@ -18,7 +18,7 @@ describe('bounded recent and merged queue reads', () => {
     const fetch = vi.fn().mockResolvedValueOnce(response(recent)).mockResolvedValueOnce(response(merged)); vi.stubGlobal('fetch', fetch);
     expect(await api.reviewQueue({ view: 'recent', limit: 2 })).toEqual(recent);
     expect(await api.reviewQueue({ view: 'merged', limit: 2, cursor: 'prior_history_cursor' })).toEqual(merged);
-    expect(fetch.mock.calls.map(call => String(call[0]))).toEqual(['https://service.example/api/v1/projects/project_one/reviews/queue?limit=2&view=recent', 'https://service.example/api/v1/projects/project_one/reviews/queue?limit=2&cursor=prior_history_cursor&view=merged']); api.close();
+    expect(fetch.mock.calls.map(call => String(call[0]))).toEqual(['https://service.example/api/v1/projects/project_one/reviews/queue?limit=2&view=recent&include_observation=true', 'https://service.example/api/v1/projects/project_one/reviews/queue?limit=2&cursor=prior_history_cursor&view=merged&include_observation=true']); api.close();
   });
   it.each([
     ['recent', page([pull(2, 2), pull(1, 1)])], ['merged', page([pull(1, 1), pull(2, 2)])],

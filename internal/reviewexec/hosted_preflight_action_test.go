@@ -70,7 +70,7 @@ func TestHostedAllowanceFinalGuardAndReadReplayAfterSettlement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	admissionPolicy(t, f, 1, "hosted")
+	admissionPolicy(t, f, 1)
 	f.configure(t, attemptProject, "other-account", 1, true)
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 	before = hostedAllowanceState(t, f, a)
@@ -147,7 +147,9 @@ func TestHostedAllowanceFinalGuardRejectsInvalidCurrentBinding(t *testing.T) {
 			admissionSQL(t, f, `DELETE FROM review_execution_reservations WHERE attempt_id=?`, a.ID)
 		}, "review_conflict"},
 		"policy changed": {func(t *testing.T, f *attemptFixture, _ *Attempt) { admissionPolicy(t, f, 1) }, "review_conflict"},
-		"policy paused":  {func(t *testing.T, f *attemptFixture, _ *Attempt) { admissionPolicy(t, f, 1, "hosted") }, "review_conflict"},
+		"project paused": {func(t *testing.T, f *attemptFixture, _ *Attempt) {
+			f.configure(t, attemptProject, "test-capability", 1, true)
+		}, "review_conflict"},
 		"authorization": {func(t *testing.T, f *attemptFixture, _ *Attempt) {
 			admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 		}, "forbidden"},

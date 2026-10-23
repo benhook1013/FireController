@@ -40,7 +40,7 @@ func (e *Engine) readRoundControlHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) configureRoundControlHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, err := e.store.AdminScope(r)
+	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
 		return

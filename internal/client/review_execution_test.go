@@ -110,7 +110,7 @@ func executionFixture(t *testing.T) (*mutationFixture, *reviewexec.Engine) {
 	e.Register(mux)
 	f.handler = mux
 	base := "/api/v1/projects/" + f.project + "/reviews"
-	f.call(t, "POST", base+"/policy", f.admin, f.sender, map[string]any{"expected_revision": 0, "required_channels": []string{"cli", "hosted"}, "paused_channels": []string{}, "max_review_files": 0})
+	f.call(t, "POST", base+"/policy", f.admin, f.sender, map[string]any{"expected_revision": 0, "required_channels": []string{"cli", "hosted"}, "max_review_files": 0})
 	f.call(t, "POST", base+"/execution/configuration", f.admin, f.sender, map[string]any{"expected_revision": 0, "capability_id": "synthetic-cli", "mode": "independent", "queue": []int64{2, 4}, "channels": []string{"cli"}, "paused": false})
 	return f, e
 }

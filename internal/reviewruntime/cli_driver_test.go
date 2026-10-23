@@ -331,7 +331,7 @@ func TestCLIDriverFinalGuardsPreventProcessStart(t *testing.T) {
 				f.reader.pulls[2] = func() reviewprovider.Pull { p := f.reader.pulls[2]; p.HeadSHA = strings.Repeat("f", 40); return p }()
 			case "policy":
 				previous := int64(1)
-				if _, err := f.engine.ConfigurePolicy(context.Background(), f.scope(t, f.admin, true), "changed-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &previous, RequiredChannels: []string{"cli"}, PausedChannels: []string{}, MaxReviewFiles: 1}); err != nil {
+				if _, err := f.engine.ConfigurePolicy(context.Background(), f.scope(t, f.admin, true), "changed-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &previous, RequiredChannels: []string{"cli"}, MaxReviewFiles: 1}); err != nil {
 					t.Fatal(err)
 				}
 			case "revocation":
@@ -370,7 +370,7 @@ func TestCLIDriverGitFileCeilingAndPreparationBinding(t *testing.T) {
 				if mode == "two-files" {
 					limit = 2
 				}
-				if _, err := f.store.DB().Exec(`UPDATE review_policy_config SET body_json=? WHERE project_id=?`, fmt.Sprintf(`{"required_channels":["cli"],"paused_channels":[],"max_review_files":%d}`, limit), f.project); err != nil {
+				if _, err := f.store.DB().Exec(`UPDATE review_policy_config SET body_json=? WHERE project_id=?`, fmt.Sprintf(`{"required_channels":["cli"],"max_review_files":%d}`, limit), f.project); err != nil {
 					t.Fatal(err)
 				}
 			}

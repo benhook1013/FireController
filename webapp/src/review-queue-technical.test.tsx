@@ -27,10 +27,10 @@ describe('queue-only technical details control', () => {
     expect(html).toContain('<summary aria-label="Technical details" title="Technical details"><svg aria-hidden="true"');
     expect(html).not.toContain('ⓘ');
     expect(html).not.toContain('review-technical-details" open'); expect(html).not.toContain('review-freshness');
-    expect(html).toContain('Source timestamp'); expect(html).toContain('individual PR facts can have different ages.');
+    expect(html).toContain('Snapshot origin timestamp'); expect(html).toContain('individual PR facts can have different ages.');
     expect(html).toContain('Saved locally'); expect(html).toContain('2026-10-21T10:00:00Z'); expect(html).toContain('2026-10-21T11:00:00Z');
     expect(html).toContain('snapshot&lt;literal&gt;'); expect(html).toContain('retained &lt;source&gt;'); expect(html).toContain('revision 7');
-    expect(html.slice(body)).not.toContain('Source timestamp'); expect(html.slice(body)).not.toContain('Saved locally');
+    expect(html.slice(body)).not.toContain('Snapshot origin timestamp'); expect(html.slice(body)).not.toContain('Saved locally');
     expect(html).toContain(history ? 'Back to review queue ↗' : 'Queue history ↗');
   });
   it('does not fabricate diagnostics when there is no configured queue', () => {

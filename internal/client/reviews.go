@@ -32,16 +32,17 @@ type ReviewRunOptions struct {
 }
 
 type ReviewQueue struct {
-	ProjectID  string              `json:"project_id"`
-	Configured bool                `json:"configured"`
-	Revision   int64               `json:"revision"`
-	SnapshotID string              `json:"snapshot_id"`
-	Source     string              `json:"source"`
-	ObservedAt string              `json:"observed_at"`
-	RecordedAt string              `json:"recorded_at"`
-	Items      []ReviewPullSummary `json:"items"`
-	Cursor     string              `json:"cursor,omitempty"`
-	HasMore    bool                `json:"has_more"`
+	Observer   *ReviewObserverHealth `json:"observer,omitempty"`
+	ProjectID  string                `json:"project_id"`
+	Configured bool                  `json:"configured"`
+	Revision   int64                 `json:"revision"`
+	SnapshotID string                `json:"snapshot_id"`
+	Source     string                `json:"source"`
+	ObservedAt string                `json:"observed_at"`
+	RecordedAt string                `json:"recorded_at"`
+	Items      []ReviewPullSummary   `json:"items"`
+	Cursor     string                `json:"cursor,omitempty"`
+	HasMore    bool                  `json:"has_more"`
 }
 
 type ReviewPull struct {
@@ -79,23 +80,24 @@ type ReviewRunDetail struct {
 }
 
 type ReviewPullSummary struct {
-	Diff           *ReviewPullDiff        `json:"diff,omitempty"`
-	IsDraft        *bool                  `json:"is_draft,omitempty"`
-	MergedAt       string                 `json:"merged_at,omitempty"`
-	Number         int64                  `json:"number"`
-	Title          string                 `json:"title"`
-	State          string                 `json:"state"`
-	HeadSHA        string                 `json:"head_sha"`
-	BaseRef        string                 `json:"base_ref"`
-	BaseSHA        string                 `json:"base_sha"`
-	CIState        string                 `json:"ci_state"`
-	Mergeability   string                 `json:"mergeability"`
-	Complete       bool                   `json:"complete"`
-	RunCount       int64                  `json:"run_count"`
-	RunCounts      ReviewChannelRunCounts `json:"run_counts"`
-	AttemptCount   int64                  `json:"attempt_count"`
-	RecentRuns     []ReviewRunSummary     `json:"recent_runs"`
-	LatestAttempts []ReviewAttempt        `json:"latest_attempts"`
+	Observation    *ReviewPullObservationHealth `json:"observation,omitempty"`
+	Diff           *ReviewPullDiff              `json:"diff,omitempty"`
+	IsDraft        *bool                        `json:"is_draft,omitempty"`
+	MergedAt       string                       `json:"merged_at,omitempty"`
+	Number         int64                        `json:"number"`
+	Title          string                       `json:"title"`
+	State          string                       `json:"state"`
+	HeadSHA        string                       `json:"head_sha"`
+	BaseRef        string                       `json:"base_ref"`
+	BaseSHA        string                       `json:"base_sha"`
+	CIState        string                       `json:"ci_state"`
+	Mergeability   string                       `json:"mergeability"`
+	Complete       bool                         `json:"complete"`
+	RunCount       int64                        `json:"run_count"`
+	RunCounts      ReviewChannelRunCounts       `json:"run_counts"`
+	AttemptCount   int64                        `json:"attempt_count"`
+	RecentRuns     []ReviewRunSummary           `json:"recent_runs"`
+	LatestAttempts []ReviewAttempt              `json:"latest_attempts"`
 }
 
 type ReviewChannelRunCounts struct {
@@ -175,9 +177,13 @@ func (c *Client) ReviewQueue(ctx context.Context, options PageOptions) (ReviewQu
 	if err != nil {
 		return ReviewQueue{}, err
 	}
+	query.Set("include_observation", "true")
 	var value ReviewQueue
 	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "queue"), query, true, "", nil, http.StatusOK, false, &value, maxReviewListResponse, decodeReviewResponse); err != nil {
 		return ReviewQueue{}, err
+	}
+	if !validObserverHealth(value.Observer) {
+		return ReviewQueue{}, invalidResponse()
 	}
 	if !c.validReviewMeta(value.ProjectID, value.Revision, value.SnapshotID, value.Source, value.ObservedAt, value.RecordedAt, value.Configured) {
 		if value.ProjectID != c.identity.ProjectID || value.Configured || value.Revision != 0 || value.SnapshotID != "" || value.Source != "" || value.ObservedAt != "" || value.RecordedAt != "" {
@@ -298,6 +304,9 @@ func (c *Client) validReviewMeta(project string, revision int64, snapshot, sourc
 }
 
 func (c *Client) validReviewPull(value ReviewPullSummary) bool {
+	if !validPullObservationHealth(value.Observation) {
+		return false
+	}
 	if !validPullNumber(value.Number) || !cleanReviewText(value.Title, 500, true) || !oneReviewOf(value.State, "open", "merged", "closed", "unknown") ||
 		!validReviewSHA(value.HeadSHA) || !cleanReviewText(value.BaseRef, 256, false) || !validReviewSHA(value.BaseSHA) ||
 		!oneReviewOf(value.CIState, "unknown", "pending", "success", "failure") || !oneReviewOf(value.Mergeability, "unknown", "mergeable", "conflicting") ||

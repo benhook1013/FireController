@@ -69,6 +69,7 @@ type ReviewSourceObservation struct {
 }
 
 type ReviewSourceOperation struct {
+	Action                string                          `json:"action,omitempty"`
 	ID                    string                          `json:"id"`
 	ProjectID             string                          `json:"project_id"`
 	PullNumber            int64                           `json:"pull_number"`
@@ -165,6 +166,7 @@ func (c *Client) RefreshReviewSource(ctx context.Context, key string, request Re
 	}
 	if value.Operation != nil {
 		operation := value.Operation
+		operation.Action = sourceHoldAction(operation.State, operation.Reason)
 		if !c.validSourceOperation(*operation) || operation.PullNumber != request.PullNumber || operation.HeadSHA != request.HeadSHA || operation.ConfigurationRevision != request.ExpectedConfigurationRevision || operation.IncludeCI != request.IncludeCI || operation.IncludeReadiness != request.IncludeReadiness || !oneReviewOf(operation.State, "completed", "held") {
 			return ReviewSourceResult{}, unknownMutation("invalid_response", "The service returned invalid source refresh facts; its outcome is unknown.", status)
 		}
@@ -185,6 +187,7 @@ func (c *Client) ReviewSourceOperation(ctx context.Context, id string) (ReviewSo
 	if value.ID != id || !c.validSourceOperation(value) {
 		return ReviewSourceOperation{}, invalidResponse()
 	}
+	value.Action = sourceHoldAction(value.State, value.Reason)
 	return value, nil
 }
 

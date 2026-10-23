@@ -155,9 +155,11 @@ func (s *Service) Apply(ctx context.Context, scope core.Scope, key string, input
 	})
 }
 func (s *Service) Resolve(ctx context.Context, scope core.Scope, id, key string, input m.ResolveRequest) (json.RawMessage, error) {
-	if err := administrative(scope); err != nil {
-		return nil, err
+	if scope.WorkerID == "" {
+		return nil, core.Fail("forbidden", "Project worker attribution is required.", 403)
 	}
+	// Mutate rechecks project write authority before both first writes and
+	// retained receipt replay; import itself remains administrator-only.
 	if !identifier.MatchString(id) {
 		return nil, invalid()
 	}

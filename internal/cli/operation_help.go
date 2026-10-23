@@ -31,6 +31,16 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	recovery := "Use an explicit --key (1-128 printable ASCII bytes without surrounding whitespace). After uncertain output retry the same key, exact request and binding; never invent a replacement key."
 	out := operationHelpResponse{Required: []string{}, Optional: []string{}}
 	switch operation {
+	case "reviews obligations":
+		out.Usage = "<bound launcher> reviews obligations list --pr NUMBER [--status open|resolved] [--limit N] [--cursor CURSOR] | read OBLIGATION_ID --pr NUMBER"
+		out.Semantics = []string{"Reads carried unfinished findings, routes and unsettled review results. They are retained obligations, not newly verified current code defects. Open obligations remain pending until deliberately resolved with evidence.", "Project writers can resolve an obligation using its current revision and an explicit key; imports require administrator access. No provider refresh or review request is performed.", recovery}
+		out.Example = "<bound launcher> reviews obligations list --pr 3251 --status open"
+		out.Documentation = "docs/adoption-obligations.md"
+	case "reviews source-refresh":
+		out.Usage = "<bound launcher> reviews source-refresh --pr NUMBER --head SHA --expect-config N --key KEY [--ci] [--readiness] [--wait-seconds N]"
+		out.Semantics = []string{"Explicitly observe the exact comparison; does not request a review. Routine queue freshness is maintained by the automatic observer, not by this command.", "Held default_base_changed means there is no selected unmerged parent but the PR targets a nondefault branch. Check and reconcile the PR base with its intended default branch, then refresh the new comparison. Do not change worker credentials for a comparison hold.", recovery}
+		out.Example = "<bound launcher> reviews source-operation REFRESH_ID"
+		out.Documentation = "docs/review-source.md"
 	case "jobs checklist-item":
 		out.Usage = "<bound launcher> jobs checklist-item JOB_ID ITEM_ID --done true|false --expect-checklist-revision N --key KEY"
 		out.Required = []string{"JOB_ID", "ITEM_ID", "--done true|false", "--expect-checklist-revision N", "--key KEY"}

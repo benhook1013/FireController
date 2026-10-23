@@ -101,7 +101,7 @@ func newRestoreFixture(t *testing.T) *restoreFixture {
 	if _, err = e.Configure(ctx, scope, "restore-config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "restore-cap", Mode: "independent", Queue: []int64{2}, Channels: []string{"hosted"}}); err != nil {
 		t.Fatal("configure", err)
 	}
-	if _, err = e.ConfigurePolicy(ctx, scope, "restore-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"hosted"}, PausedChannels: []string{}, MaxReviewFiles: 0}); err != nil {
+	if _, err = e.ConfigurePolicy(ctx, scope, "restore-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"hosted"}, MaxReviewFiles: 0}); err != nil {
 		t.Fatal("policy", err)
 	}
 	raw, err := e.Enqueue(ctx, scope, "restore-original-request", reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "hosted", HeadSHA: strings.Repeat("a", 40)})

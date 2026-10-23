@@ -122,7 +122,7 @@ func TestFrontsSourceFailureReplacesSuccessAndRetainsNoRichProviderData(t *testi
 	}
 }
 func TestFrontsBindingPauseRecoveryAndMetadataFences(t *testing.T) {
-	for _, which := range []string{"head", "base", "lifecycle", "retired", "configuration", "repository", "pause", "policy-pause", "recovery"} {
+	for _, which := range []string{"head", "base", "lifecycle", "retired", "configuration", "repository", "pause", "recovery"} {
 		t.Run(which, func(t *testing.T) {
 			f := frontFixture(t)
 			frontSelect(t, f, "front-before-change", "cli", &refreshTestReader{})
@@ -161,11 +161,6 @@ func TestFrontsBindingPauseRecoveryAndMetadataFences(t *testing.T) {
 				f.configure(t, attemptProject, "test-capability", 1, which == "pause")
 			case "repository":
 				admissionSQL(t, f, `UPDATE projects SET github_repository_id=902 WHERE id=?`, attemptProject)
-			case "policy-pause":
-				one := int64(1)
-				if _, err := f.e.ConfigurePolicy(t.Context(), f.scope(t, attemptProject, f.admin, true), "front-policy-pause", PolicyConfiguration{ExpectedRevision: &one, RequiredChannels: []string{"cli"}, PausedChannels: []string{"cli"}, MaxReviewFiles: 100}); err != nil {
-					t.Fatal(err)
-				}
 			case "recovery":
 				admissionSQL(t, f, `INSERT INTO metadata(key,value) VALUES('restore:provider_state','held')`)
 			}
@@ -173,7 +168,7 @@ func TestFrontsBindingPauseRecoveryAndMetadataFences(t *testing.T) {
 			if got.State == "ready" || got.PullNumber != 0 {
 				t.Fatal("changed binding reported ready", which, got)
 			}
-			if which == "pause" || which == "policy-pause" || which == "recovery" {
+			if which == "pause" || which == "recovery" {
 				if got.State != "held" {
 					t.Fatal(got)
 				}

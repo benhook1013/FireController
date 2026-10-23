@@ -57,19 +57,26 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		mergeability = "unknown"
 	}
 	ciState := ""
+	ciReason := ""
 	// CI is less frequent than lifecycle reads. Same-comparison retained status
 	// is not refreshed by a cheap poll; a new head always requires fresh evidence.
 	collectCI := state == "open" && (target.due.head != head || !s.options.Now().Before(target.due.ci))
 	if collectCI {
 		ciCollected = true
 		ciState = "unknown"
+		ciReason = "ci_reader_unavailable"
 		if reader, ok := target.reader.(sourceCIReader); ok {
 			ciCtx, ciCancel := context.WithTimeout(ctx, 30*time.Second)
 			observation, readErr := reader.ObserveRequiredCI(ciCtx, sourceCITarget(sourcePlanObservation(plan)))
 			ciCancel()
 			if readErr != nil {
 				providerErr = readErr
+				ciReason = lifecycleErrorCode(readErr)
 			} else if validSourceCI(observation, sourcePlanObservation(plan)) && !observation.StartedAt.Before(mustLifecycleTime(plan.ObservedAt)) && !observation.ObservedAt.Before(observation.StartedAt) && !observation.ObservedAt.After(time.Now().Add(5*time.Second)) {
+				ciReason = observation.Reason
+				if ciReason == "" && observation.State == "unproven" {
+					ciReason = "ci_unproven"
+				}
 				switch observation.State {
 				case "satisfied":
 					ciState = "success"
@@ -91,7 +98,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	if ctx.Err() != nil {
 		return nil
 	}
-	return retryLifecyclePublication(ctx, func(appendLimit int) error {
+	err = retryLifecyclePublication(ctx, func(appendLimit int) error {
 		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			bound, err := e.lifecycleBinding(ctx, tx, target)
 			if err != nil || !bound {
@@ -126,6 +133,20 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			return nil
 		})
 	})
+	if err == nil {
+		target.due.successAt = s.options.Now()
+		target.due.baseSHA = pull.BaseSHA
+		target.due.baseRef = pull.BaseRef
+		if collectCI {
+			target.due.ciCheckedAt = s.options.Now()
+			target.due.ciError = ciReason
+		}
+		if _, ok := target.reader.(ExternalHostedReader); ok {
+			target.due.hostedCheckedAt = s.options.Now()
+			target.due.hostedError = lifecycleErrorCode(externalErr)
+		}
+	}
+	return err
 }
 
 // A locally expensive batch must not monopolize a scheduler worker by retrying

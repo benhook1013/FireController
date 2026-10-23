@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"slices"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -96,7 +95,7 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 			case recoveryHeld:
 				value.State = "held"
 				value.Reason = "restore_recovery_held"
-			case c.Paused || slices.Contains(policy.Policy.PausedChannels, channel):
+			case c.Paused:
 				value.State = "held"
 				value.Reason = "reviews_paused"
 			case e.validateConfiguration(c) != nil:

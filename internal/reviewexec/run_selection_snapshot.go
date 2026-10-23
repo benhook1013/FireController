@@ -81,8 +81,8 @@ func ValidateSelectionSnapshot(ctx context.Context, q EvidenceQuery) error {
 			if err = q.QueryRowContext(ctx, `SELECT CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=1024 THEN body_json END FROM review_policy_config WHERE project_id=? AND revision=?`, r.ProjectID, r.PolicyRevision).Scan(&policyBody); err != nil {
 				return runUnavailable()
 			}
-			var p Policy
-			if strictjson.Decode([]byte(policyBody), &p) != nil || !validPolicy(p) || slices.Contains(p.PausedChannels, r.Channel) {
+			_, legacyPauses, policyErr := decodeRetainedPolicy(policyBody)
+			if policyErr != nil || slices.Contains(legacyPauses, r.Channel) {
 				return runUnavailable()
 			}
 			if r.State == "selected" {

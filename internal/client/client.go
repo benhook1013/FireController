@@ -453,6 +453,10 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	result := fail(value.Error.Code, "The service refused this scoped request.", "Check the selected instance, project, worker and current access.", status)
 	result.RequestID = value.RequestID
 	result.Details = c.safeDetails(value.Error.Details, result.Code)
+	if result.Code == "reviews_readiness_unavailable" {
+		result.Message = "No completed source refresh with readiness is available for this PR."
+		result.Action = "Read the last source-refresh operation. If held, resolve its reason first; then refresh the current comparison with include_readiness and assess the completed result. Do not change credentials after a successful identity check."
+	}
 	if result.Code == "instance_mismatch" {
 		result.Message = "The service instance does not match the selected profile."
 		result.Action = "Verify the service and explicitly update the private profile if its identity changed."

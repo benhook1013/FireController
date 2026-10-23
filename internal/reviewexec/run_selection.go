@@ -137,9 +137,6 @@ func (e *Engine) EnqueueRun(ctx context.Context, scope core.Scope, key string, i
 		if policy.Revision < 1 {
 			return nil, core.Fail("reviews_policy_unconfigured", "Configure project review requirements before selecting a review.", 409)
 		}
-		if slices.Contains(policy.Policy.PausedChannels, input.Channel) {
-			return nil, core.Fail("reviews_paused", "The requested review channel is paused.", 409)
-		}
 		var busy bool
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND channel=? AND state IN ('queued','selecting'))`, scope.ProjectID, input.Channel).Scan(&busy); err != nil {
 			return nil, err
@@ -195,7 +192,7 @@ func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configurati
 	if err != nil {
 		return c, 0, "", err
 	}
-	if policy.Revision != r.PolicyRevision || slices.Contains(policy.Policy.PausedChannels, r.Channel) {
+	if policy.Revision != r.PolicyRevision {
 		return c, 0, "policy_changed", nil
 	}
 	var repository int64

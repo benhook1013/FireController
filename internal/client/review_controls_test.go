@@ -55,7 +55,7 @@ func TestReviewControlsNativeHTTPReceiptsReplayAndReadIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	zero := int64(0)
-	_, err = e.ConfigurePolicy(ctx, scope, "seed-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli", "hosted"}, PausedChannels: []string{}, MaxReviewFiles: 0})
+	_, err = e.ConfigurePolicy(ctx, scope, "seed-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli", "hosted"}, MaxReviewFiles: 0})
 	if err != nil {
 		t.Fatal(err)
 	}

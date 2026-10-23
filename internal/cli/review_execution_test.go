@@ -37,7 +37,7 @@ func reviewExecutionFixture(t *testing.T) (*serviceFixture, string, string) {
 		t.Fatal(err)
 	}
 	zero := int64(0)
-	if _, err := engine.ConfigurePolicy(t.Context(), scope, "policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli"}, PausedChannels: []string{}, MaxReviewFiles: 0}); err != nil {
+	if _, err := engine.ConfigurePolicy(t.Context(), scope, "policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli"}, MaxReviewFiles: 0}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := engine.Configure(t.Context(), scope, "config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "fixture", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}}); err != nil {

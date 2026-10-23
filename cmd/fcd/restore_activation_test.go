@@ -128,7 +128,7 @@ func newActivationCommandFixture(t *testing.T) activationCommandFixture {
 	if _, err = e.Configure(t.Context(), scope, "activation-config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "activation-cap", Mode: "independent", Queue: []int64{1, 2, 3, 4, 5}, Channels: []string{"cli", "hosted"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.ConfigurePolicy(t.Context(), scope, "activation-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli", "hosted"}, PausedChannels: []string{}, MaxReviewFiles: 0}); err != nil {
+	if _, err = e.ConfigurePolicy(t.Context(), scope, "activation-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli", "hosted"}, MaxReviewFiles: 0}); err != nil {
 		t.Fatal(err)
 	}
 	configurationRevision := int64(1)

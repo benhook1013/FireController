@@ -143,6 +143,7 @@ type RunSummary struct {
 }
 
 type PullSummary struct {
+	Observation *PullObservationHealth `json:"observation,omitempty"`
 	// QueuePosition is the original zero-based position, only on selected views.
 	QueuePosition  *int             `json:"queue_position,omitempty"`
 	Diff           *PullDiff        `json:"diff,omitempty"`
@@ -165,6 +166,7 @@ type PullSummary struct {
 }
 
 type QueueResponse struct {
+	Observer *ObserverHealth `json:"observer,omitempty"`
 	// HeadPosition is set only on selected views whose first nonmerged/nonclosed
 	// entry is known open. Unknown predecessors cannot establish an open head.
 	HeadPosition *int          `json:"head_position,omitempty"`

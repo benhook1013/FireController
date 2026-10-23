@@ -215,7 +215,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	presentation.Register(mux, store)
 	inbox.Register(mux, store)
 	coordimport.Register(mux, store)
-	reviews.Register(mux, store)
+	reviews.Register(mux, store, execution.ObservationHealth)
+	for _, path := range []string{"/about", "/privacy", "/backup-info.css"} {
+		mux.Handle(path, webui.BackupInfoHandler())
+	}
 	publicsite.New(store, reviews.PublicSiteReviewFacts).Register(mux, ctx)
 	execution.Register(mux)
 	collection.Register(mux)

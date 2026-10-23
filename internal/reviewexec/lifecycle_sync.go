@@ -69,9 +69,12 @@ type lifecycleKey struct {
 	number  int64
 }
 type lifecycleDue struct {
-	lastErrorCode string
-	next, ci      time.Time
-	head          string
+	checkedAt, successAt, ciCheckedAt, hostedCheckedAt time.Time
+	ciError, hostedError                               string
+	baseSHA, baseRef                                   string
+	lastErrorCode                                      string
+	next, ci                                           time.Time
+	head                                               string
 }
 type lifecycleAccount struct {
 	lastErrorCode string
@@ -80,6 +83,7 @@ type lifecycleAccount struct {
 	busy          bool
 }
 type lifecycleSchedule struct {
+	startedAt   time.Time
 	claim       chan struct{}
 	mu          sync.Mutex
 	lastProject string
@@ -100,7 +104,7 @@ type lifecycleTarget struct {
 }
 
 func newLifecycleSchedule(c LifecycleSyncOptions) *lifecycleSchedule {
-	return &lifecycleSchedule{claim: make(chan struct{}, 1), lastPull: map[string]int64{}, busy: map[string]bool{}, due: map[lifecycleKey]lifecycleDue{}, accounts: map[string]lifecycleAccount{}, options: c}
+	return &lifecycleSchedule{startedAt: c.Now(), claim: make(chan struct{}, 1), lastPull: map[string]int64{}, busy: map[string]bool{}, due: map[lifecycleKey]lifecycleDue{}, accounts: map[string]lifecycleAccount{}, options: c}
 }
 
 // StartLifecycleSync observes only already visible, configured PRs. It creates
@@ -128,6 +132,9 @@ func (e *Engine) StartLifecycleSync(ctx context.Context, readers map[string]Targ
 		return nil, conflict()
 	}
 	s := newLifecycleSchedule(c)
+	e.lifecycleMu.Lock()
+	e.lifecycleSchedule = s
+	e.lifecycleMu.Unlock()
 	done := make(chan error, 1)
 	go func() {
 		workerCtx, cancel := context.WithCancel(ctx)
@@ -367,6 +374,7 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 	s.accounts[target.account] = a
 	delete(s.busy, target.project)
 	due := target.due
+	due.checkedAt = now
 	due.lastErrorCode = errorCode
 	due.next = now.Add(interval)
 	if head != "" {

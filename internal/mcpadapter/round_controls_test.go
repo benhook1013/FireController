@@ -73,7 +73,7 @@ func TestReviewRoundsMCPActualAuthorityGrantCloseAndReplay(t *testing.T) {
 		t.Fatal("CLI closure changed hosted")
 	}
 	ordinary := reviewControlsStdio(t, reviewControlsProfile(t, f, server.URL), "chosen")
-	diagnosticResult(t, call(t, ordinary, "review_rounds_configure", map[string]any{"pull_number": 2, "channel": "hosted", "expected_revision": 0, "idempotency_key": "nonadmin", "action": "close"}), "forbidden", false)
+	decodeResult(t, call(t, ordinary, "review_rounds_configure", map[string]any{"pull_number": 2, "channel": "hosted", "expected_revision": 0, "idempotency_key": "nonadmin", "action": "close"}), &receipt)
 	var count int
 	if err := f.store.DB().QueryRowContext(context.Background(), `SELECT count(*) FROM review_operations`).Scan(&count); err != nil || count != 1 {
 		t.Fatal("controls dispatched or queued provider work", err, count)

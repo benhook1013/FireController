@@ -23,17 +23,25 @@ type snapshotMeta struct {
 	RecordedAt string `json:"recorded_at"`
 }
 
-func queue(store *core.Store) http.HandlerFunc {
+func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		scope, err := store.Scope(r, "read")
 		if err != nil {
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "view")
+		query, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "view", "include_observation")
 		if err != nil {
 			core.WriteError(w, err)
 			return
+		}
+		if selected, ok := query["include_observation"]; ok && (len(selected) != 1 || selected[0] != "true") {
+			core.WriteError(w, validationError("Use include_observation=true for runtime observer health."))
+			return
+		}
+		selectedHealth := health
+		if query.Get("include_observation") != "true" {
+			selectedHealth = nil
 		}
 		if len(r.URL.RawQuery) > 4096 {
 			core.WriteError(w, validationError("The query exceeds its bounded size."))
@@ -51,6 +59,9 @@ func queue(store *core.Store) http.HandlerFunc {
 				return
 			}
 			response, err := readQueueWindow(r.Context(), store, scope, view, query.Get("cursor"), limit)
+			if err == nil {
+				err = attachObservationHealth(r.Context(), scope.ProjectID, &response, selectedHealth)
+			}
 			if err != nil {
 				core.WriteError(w, err)
 				return
@@ -135,6 +146,10 @@ func queue(store *core.Store) http.HandlerFunc {
 			return nil
 		})
 		if err != nil {
+			core.WriteError(w, err)
+			return
+		}
+		if err := attachObservationHealth(r.Context(), scope.ProjectID, &response, selectedHealth); err != nil {
 			core.WriteError(w, err)
 			return
 		}

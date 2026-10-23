@@ -191,6 +191,6 @@ func TestHostedAdmissionStackChecksAllFreshPlansAndLateFixCorrection(t *testing.
 	hostedAdmissionVerify(t, f, child, "review_held", "predecessor_unfinished", plans...)
 	coverageFix(t, f, id, "hosted-stack-fix", 5, 0, "")
 	hostedAdmissionVerify(t, f, child, "", "", plans...)
-	admissionPolicy(t, f, 1, "hosted")
+	admissionPolicy(t, f, 1)
 	hostedAdmissionVerify(t, f, child, "review_conflict", "", plans...)
 }

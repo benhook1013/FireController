@@ -226,7 +226,7 @@ func TestExplicitOrderFinalGuardRetainsTargetGuardsBothChannels(t *testing.T) {
 				case "configuration":
 					f.configure(t, attemptProject, "test-capability", 1, true)
 				case "policy":
-					admissionPolicy(t, f, 1, channel)
+					admissionPolicy(t, f, 1)
 				case "actor":
 					admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 					code = "forbidden"

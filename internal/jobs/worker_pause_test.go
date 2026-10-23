@@ -85,7 +85,7 @@ func TestWorkerPauseIndependentLifecycleAndQuietReads(t *testing.T) {
 	}
 	engine.Register(a.mux)
 	progressOK(t, a.callWorker("POST", base+"/messages", token, other, "private-message", map[string]any{"recipient_worker_id": w, "body": "Pending coordination"}), 201)
-	progressOK(t, a.call("POST", base+"/reviews/policy", a.admin, "review-policy", map[string]any{"expected_revision": 0, "required_channels": []string{"hosted", "cli"}, "paused_channels": []string{}, "max_review_files": 0}), 200)
+	progressOK(t, a.call("POST", base+"/reviews/policy", a.admin, "review-policy", map[string]any{"expected_revision": 0, "required_channels": []string{"hosted", "cli"}, "max_review_files": 0}), 200)
 	progressOK(t, a.call("PUT", primaryPath(p, w), token, "focus", primaryRequest(0, j1)), 200)
 	routes := []string{base + "/jobs/" + j1, base + "/jobs/" + j1 + "/history", base + "/jobs/" + j1 + "/checkpoints", base + "/jobs/" + j1 + "/updates", base + "/jobs/" + j1 + "/checklist", primaryPath(p, w), base + "/inbox/" + w, base + "/reviews/policy"}
 	stable := map[string]string{}

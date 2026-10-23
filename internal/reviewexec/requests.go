@@ -147,9 +147,6 @@ func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Sc
 	if err != nil {
 		return Receipt{}, err
 	}
-	if slices.Contains(policy.Policy.PausedChannels, r.Channel) {
-		return Receipt{}, core.Fail("reviews_paused", "Review execution is paused for this channel.", 409)
-	}
 	var local, total int
 	if err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN project_id=? THEN 1 ELSE 0 END),0) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain')`, scope.ProjectID).Scan(&total, &local); err != nil {
 		return Receipt{}, err

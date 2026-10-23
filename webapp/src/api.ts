@@ -1,3 +1,4 @@
+import type { AdoptionObligationPage, AdoptionObligationDetail } from './review-obligations';
 import { presenceWorkers, validWorkerPresence, type WorkerPresence } from './worker-presence';
 import type { WorkerPrimary, WorkerPrimaryHistoryEntry, WorkerPause, WorkerPauseHistoryEntry, NoteOptions, NoteSummary, Note, NoteHistorySummary, NoteRevision } from './types';
 import type {
@@ -438,8 +439,18 @@ function validReviewAttemptItem(value: unknown): value is ReviewAttemptItem {
   const { source: _source, ...attempt } = value;
   return validReviewAttempt(attempt);
 }
+function validObservationHealth(value: unknown): boolean {
+ if (!record(value) || !keys(value,['state'],['checked_at','last_success_at','next_check_at','error','ci_checked_at','ci_error','hosted_checked_at','hosted_error']) || !['not_enrolled','unavailable','waiting','current','comparison_changed','overdue','retrying'].includes(String(value.state))) return false;
+ for (const field of ['checked_at','last_success_at','next_check_at','ci_checked_at','hosted_checked_at']) if (Object.hasOwn(value,field) && !assessmentTime(value[field])) return false;
+ for (const field of ['error','ci_error','hosted_error']) if (Object.hasOwn(value,field) && (typeof value[field]!=='string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(value[field]))) return false;
+ return (!['current','comparison_changed'].includes(String(value.state)) || typeof value.last_success_at==='string') && (value.state!=='retrying' || typeof value.error==='string');
+}
+function validObserver(value: unknown): boolean {
+ return record(value) && keys(value,['state'],['started_at']) && ['running','unavailable','unconfigured'].includes(String(value.state)) && (value.state==='running' ? assessmentTime(value.started_at) : !Object.hasOwn(value,'started_at'));
+}
 function validReviewPull(value: unknown): value is ReviewPullSummary {
-  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'run_counts', 'attempt_count', 'recent_runs', 'latest_attempts'], ['diff', 'is_draft', 'merged_at', 'queue_position']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || !nonnegative(value.attempt_count) || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(validReviewAttempt) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
+  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'run_counts', 'attempt_count', 'recent_runs', 'latest_attempts'], ['diff', 'is_draft', 'merged_at', 'queue_position', 'observation']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || !nonnegative(value.attempt_count) || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(validReviewAttempt) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
+  if (Object.hasOwn(value,'observation') && !validObservationHealth(value.observation)) return false;
   if (!record(value.run_counts) || !keys(value.run_counts, ['hosted', 'cli', 'subagent', 'manual']) || !Object.values(value.run_counts).every(nonnegative) || Object.values(value.run_counts).reduce<number>((sum, count) => sum + Number(count), 0) !== value.run_count) return false;
   for (const channel of ['hosted', 'cli', 'subagent', 'manual']) if (value.recent_runs.filter(item => item.channel === channel).length > Number(value.run_counts[channel])) return false;
   if (Object.hasOwn(value, 'diff') && (!record(value.diff) || !keys(value.diff, ['files', 'additions', 'deletions']) || ![value.diff.files, value.diff.additions, value.diff.deletions].every(count => nonnegative(count) && count <= 2147483647))) return false;
@@ -978,13 +989,28 @@ export class Api {
     if (value.channels.some(channel => record(channel) && channel.state === 'ready') && (!value.snapshot_id || !positive(value.policy_revision))) throw bad();
     return value as unknown as ReviewFronts;
   }
+  async reviewObligations(number: number, options: {cursor?: string; limit?: number; status:'open'}, signal?: AbortSignal): Promise<AdoptionObligationPage> {
+    if (!pullNumber(number) || options.status!=='open') throw new ApiError('invalid_request','Select one PR and open carried obligations.');
+    const query=pageOptions(options);query.set('pull_number',String(number));query.set('status',options.status);
+    const value=await this.finiteGet(withQuery(this.projectRoute('reviews/adoption-obligations'),query),signal);
+    if (!record(value) || !keys(value,['items'],['next_cursor']) || !Array.isArray(value.items) || value.items.length>(options.limit??20) || (value.next_cursor!==undefined && !cursor(value.next_cursor)) || !value.items.every(item=>validObligationItem(item,number)) || new Set(value.items.map(item=>(item as {id:string}).id)).size!==value.items.length) throw new ApiError('invalid_response','The service returned invalid carried obligations.');
+    return value as unknown as AdoptionObligationPage;
+  }
+  async reviewObligation(selected: string, signal?: AbortSignal): Promise<AdoptionObligationDetail> {
+    if (!obligationID(selected)) throw new ApiError('invalid_request','Select a carried obligation.');
+    const value=await this.finiteGet(this.projectRoute(`reviews/adoption-obligations/${encodeURIComponent(selected)}`),signal);
+    if (!validObligationDetail(value,this.projectId,selected)) throw new ApiError('invalid_response','The service returned an invalid carried obligation.');
+    return value as unknown as AdoptionObligationDetail;
+  }
   async reviewQueue(options: PageOptions & {view?: 'recent'|'merged'} = {}, signal?: AbortSignal): Promise<ReviewQueue> {
     if (options.view !== undefined && options.view !== 'recent' && options.view !== 'merged') throw new ApiError('invalid_request', 'Choose a supported review queue view.');
     const query = pageOptions(options);
     if (options.view) query.set('view', options.view);
+    query.set('include_observation','true');
     const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), query), signal);
-    if (!record(value) || !keys(value, [...reviewMetadata, 'configured', 'items', 'has_more'], ['cursor', 'head_position']) || typeof value.configured !== 'boolean' || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options)) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
+    if (!record(value) || !keys(value, [...reviewMetadata, 'configured', 'items', 'has_more'], ['cursor', 'head_position', 'observer']) || typeof value.configured !== 'boolean' || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options)) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
     if (value.configured ? !validReviewSnapshot(value, this.projectId) : value.project_id !== this.projectId || value.revision !== 0 || value.snapshot_id !== '' || value.source !== '' || value.observed_at !== '' || value.recorded_at !== '' || value.items.length !== 0 || value.has_more) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
+    if (Object.hasOwn(value,'observer') && !validObserver(value.observer)) throw new ApiError('invalid_response','The service returned invalid observation health.');
     if (!value.items.every(validReviewPull) || new Set(value.items.map(item => item.number)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
     if (Object.hasOwn(value, 'head_position') && (!options.view || !nonnegative(value.head_position) || Number(value.head_position) > 2147483647 || !value.configured)) throw new ApiError('invalid_response', 'The service returned an invalid review queue position.');
     const positions = value.items.map(item => (item as ReviewPullSummary).queue_position);
@@ -1179,4 +1205,17 @@ export class Api {
   private ensureOpen(): void {
     if (this.closed) throw new ApiError('cancelled', 'This service session is closed.');
   }
+}
+
+function obligationID(value:unknown):value is string {return typeof value==='string' && /^adoption_obligation_[a-f0-9]{32}$/u.test(value);}
+function obligationPulls(value:unknown):value is number[] {return Array.isArray(value) && value.length>0 && value.length<=100 && value.every(pullNumber) && new Set(value).size===value.length;}
+function validObligationItem(value:unknown,number:number):boolean {
+ return record(value) && keys(value,['id','namespace','source_key','kind','status','revision','affected_pull_numbers']) && obligationID(value.id) && checkpointText(value.namespace,200,true) && checkpointText(value.source_key,512,true) && ['finding','route','result'].includes(String(value.kind)) && value.status==='open' && positive(value.revision) && obligationPulls(value.affected_pull_numbers) && value.affected_pull_numbers.includes(number);
+}
+function validObligationDetail(value:unknown,project:string,selected:string):boolean {
+ if (!record(value) || !keys(value,['id','project_id','source','source_revision','original','status','revision','actor_id','worker_id','created_at','resolution']) || value.id!==selected || value.project_id!==project || !positive(value.source_revision) || !positive(value.revision) || !id(value.actor_id) || !id(value.worker_id) || !assessmentTime(value.created_at) || !['open','resolved'].includes(String(value.status))) return false;
+ const source=value.source, original=value.original;
+ if (!record(source) || !keys(source,['namespace','repository_id','snapshot_sha256']) || !checkpointText(source.namespace,200,true) || !positive(source.repository_id) || typeof source.snapshot_sha256!=='string' || !/^[a-f0-9]{64}$/u.test(source.snapshot_sha256) || !record(original) || !keys(original,['source_key','kind','affected_pull_numbers','summary','evidence','original_status']) || !checkpointText(original.source_key,512,true) || !['finding','route','result'].includes(String(original.kind)) || !obligationPulls(original.affected_pull_numbers) || !checkpointText(original.summary,16 << 10,true) || !Array.isArray(original.evidence) || original.evidence.length>100 || !original.evidence.every(x=>checkpointText(x,4096,true)) || !['open','pending'].includes(String(original.original_status))) return false;
+ const resolution=value.resolution;
+ return value.status==='open' ? resolution===null : record(resolution) && keys(resolution,['revision','reason','evidence','actor_id','worker_id','resolved_at']) && resolution.revision===value.revision && checkpointText(resolution.reason,8192,true) && Array.isArray(resolution.evidence) && resolution.evidence.length<=100 && resolution.evidence.every(x=>checkpointText(x,4096,true)) && id(resolution.actor_id) && id(resolution.worker_id) && assessmentTime(resolution.resolved_at);
 }

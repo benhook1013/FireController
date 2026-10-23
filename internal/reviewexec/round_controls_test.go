@@ -158,13 +158,13 @@ func TestRoundControlsGrantCloseScopeReplayAndAuthority(t *testing.T) {
 	}
 	zero, min, max := int64(0), int64(0), int64(4)
 	request := RoundControlRequest{ExpectedRevision: &zero, Action: "grant", Minimum: &min, Maximum: &max}
-	admin := f.scope(t, attemptProject, f.admin, true)
-	first, err := f.e.ConfigureRoundControl(t.Context(), admin, "original", 2, "cli", request)
+	writer := f.scope(t, attemptProject, f.writer, false)
+	first, err := f.e.ConfigureRoundControl(t.Context(), writer, "original", 2, "cli", request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c = roundRead(t, f, 2, "cli")
-	if c.Revision != 1 || c.Epoch != 1 || c.Closed || c.Minimum != 0 || c.Maximum != 4 || c.Taper != 3 || c.Used != 0 || c.Dry != 0 || c.Tapered || c.ActorID != admin.PrincipalID || c.CreatedAt == "" || c.UpdatedAt == "" {
+	if c.Revision != 1 || c.Epoch != 1 || c.Closed || c.Minimum != 0 || c.Maximum != 4 || c.Taper != 3 || c.Used != 0 || c.Dry != 0 || c.Tapered || c.ActorID != writer.PrincipalID || c.CreatedAt == "" || c.UpdatedAt == "" {
 		t.Fatal("new grant baseline incorrect")
 	}
 	roundGrant(t, f, 2, "hosted", 0, 0, 3, "hosted")
@@ -172,7 +172,7 @@ func TestRoundControlsGrantCloseScopeReplayAndAuthority(t *testing.T) {
 		t.Fatal("hosted default taper")
 	}
 	revision := int64(1)
-	_, err = f.e.ConfigureRoundControl(t.Context(), admin, "close", 2, "cli", RoundControlRequest{ExpectedRevision: &revision, Action: "close"})
+	_, err = f.e.ConfigureRoundControl(t.Context(), writer, "close", 2, "cli", RoundControlRequest{ExpectedRevision: &revision, Action: "close"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,22 +181,24 @@ func TestRoundControlsGrantCloseScopeReplayAndAuthority(t *testing.T) {
 		t.Fatal("closure changed unrelated scope or allowance")
 	}
 	before = roundTables(t, f)
-	replay, err := f.e.ConfigureRoundControl(t.Context(), admin, "original", 2, "cli", request)
+	replay, err := f.e.ConfigureRoundControl(t.Context(), writer, "original", 2, "cli", request)
 	if err != nil || string(replay) != string(first) || roundTables(t, f) != before {
 		t.Fatal("exact old grant replay changed closed current state")
 	}
-	_, err = f.e.ConfigureRoundControl(t.Context(), admin, "stale", 2, "cli", request)
+	_, err = f.e.ConfigureRoundControl(t.Context(), writer, "stale", 2, "cli", request)
 	attemptCode(t, err, "review_round_revision_conflict")
 	changed := int64(5)
 	request.Maximum = &changed
-	_, err = f.e.ConfigureRoundControl(t.Context(), admin, "original", 2, "cli", request)
+	_, err = f.e.ConfigureRoundControl(t.Context(), writer, "original", 2, "cli", request)
 	attemptCode(t, err, "idempotency_conflict")
-	writer := f.scope(t, attemptProject, f.writer, false)
-	_, err = f.e.ConfigureRoundControl(t.Context(), writer, "writer-denied", 4, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"})
+	reader := evidenceReadScope(t, f, attemptProject, f.reader)
+	_, err = f.e.ConfigureRoundControl(t.Context(), reader, "reader-denied", 4, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"})
 	attemptCode(t, err, "forbidden")
 	foreign := evidenceReadScope(t, f, otherAttemptProject, f.other)
 	foreign.ProjectID = attemptProject
 	_, err = f.e.ReadRoundControl(t.Context(), foreign, 2, "cli")
+	attemptCode(t, err, "forbidden")
+	_, err = f.e.ConfigureRoundControl(t.Context(), foreign, "foreign-denied", 2, "cli", request)
 	attemptCode(t, err, "forbidden")
 	if roundTables(t, f) != before {
 		t.Fatal("refused mutations changed state")
@@ -206,19 +208,27 @@ func TestRoundControlsGrantCloseScopeReplayAndAuthority(t *testing.T) {
 	if c.Epoch != 2 || c.Closed || c.Used != 0 || c.Dry != 0 || c.Tapered || c.CreatedAt != closed.CreatedAt {
 		t.Fatal("new grant failed to reset only its epoch")
 	}
-	// Keep ordinary project access while withdrawing the current admin role.
-	if _, err = f.store.DB().Exec(`INSERT INTO grants SELECT id,?,1,1 FROM credentials WHERE principal_id=?`, attemptProject, admin.PrincipalID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = f.store.DB().Exec(`UPDATE credentials SET is_admin=0 WHERE principal_id=?`, admin.PrincipalID); err != nil {
+	// A scope obtained before write permission was withdrawn cannot recover an
+	// old successful receipt or make another change with its cached authority.
+	if _, err = f.store.DB().Exec(`UPDATE grants SET can_write=0 WHERE credential_id=(SELECT id FROM credentials WHERE principal_id=?) AND project_id=?`, writer.PrincipalID, attemptProject); err != nil {
 		t.Fatal(err)
 	}
 	before = roundTables(t, f)
 	request.Maximum = &max
-	_, err = f.e.ConfigureRoundControl(t.Context(), admin, "original", 2, "cli", request)
+	_, err = f.e.ConfigureRoundControl(t.Context(), writer, "original", 2, "cli", request)
+	attemptCode(t, err, "forbidden")
+	_, err = f.e.ConfigureRoundControl(t.Context(), writer, "after-write-revocation", 4, "cli", request)
 	attemptCode(t, err, "forbidden")
 	if roundTables(t, f) != before {
-		t.Fatal("downgraded-admin replay changed state")
+		t.Fatal("write-revoked scope changed state or replayed a receipt")
+	}
+	if _, err = f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE principal_id=?`, writer.PrincipalID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.e.ConfigureRoundControl(t.Context(), writer, "original", 2, "cli", request)
+	attemptCode(t, err, "unauthorized")
+	if roundTables(t, f) != before {
+		t.Fatal("revoked credential changed state")
 	}
 }
 

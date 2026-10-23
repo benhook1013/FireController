@@ -53,7 +53,7 @@ func newHTTPFixtureWithPolicy(t *testing.T, configured bool) *httpFixture {
 	}
 	if configured {
 		for _, project := range []string{attemptProject, otherAttemptProject} {
-			if _, err := store.DB().Exec(`INSERT INTO review_policy_config(project_id,revision,body_json,actor_id,created_at) VALUES(?,1,?,'synthetic-admin',?)`, project, encoded(Policy{RequiredChannels: []string{"cli", "hosted"}, PausedChannels: []string{}}), stamp()); err != nil {
+			if _, err := store.DB().Exec(`INSERT INTO review_policy_config(project_id,revision,body_json,actor_id,created_at) VALUES(?,1,?,'synthetic-admin',?)`, project, encoded(Policy{RequiredChannels: []string{"cli", "hosted"}}), stamp()); err != nil {
 				t.Fatalf("fixture seed rows after %s: %v", time.Since(phaseStarted), err)
 			}
 		}

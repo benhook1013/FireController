@@ -363,7 +363,7 @@ func TestSourceRefreshCurrentAssessmentUsesNativeCoverageAndCurrentPolicy(t *tes
 	if err != nil || assessment.State != "held" || assessment.Channels[1].Covered {
 		t.Fatal("imported history credited hosted", assessment, err)
 	}
-	assessmentPolicy(t, f, 1, []string{"cli"}, []string{"cli"})
+	assessmentPolicy(t, f, 1, []string{"cli"})
 	assessment, err = f.e.ReadSourcePolicyAssessment(t.Context(), scope, 2)
 	if err != nil || assessment.State != "sufficient" || assessment.PolicyRevision != 2 || assessment.Channels[0].Pending {
 		t.Fatal("current paused policy erased credit", assessment, err)
@@ -648,7 +648,7 @@ func TestSourceRefreshMovedHeadStillReportsOlderPendingNativeEvidence(t *testing
 	cancel, done := refreshStart(t, f, reader)
 	refreshWait(t, f, receipt.ID, "completed")
 	refreshStop(t, cancel, done)
-	assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+	assessmentPolicy(t, f, 1, []string{"cli"})
 	scope := evidenceReadScope(t, f, attemptProject, f.reader)
 	value, err := f.e.ReadSourcePolicyAssessment(t.Context(), scope, 2)
 	if err != nil || value.State != "held" || value.Target.HeadSHA != request.HeadSHA || !value.Channels[0].Pending || value.Channels[0].Covered {

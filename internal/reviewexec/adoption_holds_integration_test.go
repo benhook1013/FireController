@@ -334,7 +334,7 @@ func TestAdoptionHoldsIntegrationCaptureFinalizationPolicyAndResolution(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+	assessmentPolicy(t, f, 1, []string{"cli"})
 	input.Review.Findings, input.Review.ReportedFindings = []reviewprovider.ParsedFinding{}, 0
 	before := attemptState(t, f, a)
 	request, originalReceipt, hold := integrationImportHold(t, f, 2)
@@ -357,7 +357,7 @@ func TestAdoptionHoldsIntegrationCaptureFinalizationPolicyAndResolution(t *testi
 	integrationSourceHeld(t, err)
 	resolve := holdmodel.ResolveRequest{ExpectedRevision: &hold.Revision, Reason: "Explicit synthetic correction established", Evidence: []string{"proof:synthetic-correction"}}
 	path := integrationHoldsPath + "/" + hold.ID + "/resolve"
-	for _, token := range []string{f.reader, f.writer} {
+	for _, token := range []string{f.reader} {
 		w := integrationHoldRequest(t, f, "POST", path, token, "unauthorized-resolution", resolve)
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("ordinary credential resolved hold: %d %s", w.Code, w.Body.String())

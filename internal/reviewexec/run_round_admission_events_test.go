@@ -29,7 +29,6 @@ func TestRunSelectionPausedAndUnconfiguredAdmissionErrors(t *testing.T) {
 		{"unconfigured channel", false, false, false, "review_not_configured"},
 		{"paused project", true, true, false, "reviews_paused"},
 		{"paused project and unconfigured channel", false, true, false, "reviews_paused"},
-		{"policy paused channel", true, false, true, "reviews_paused"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := selectionFixture(t)
@@ -43,7 +42,7 @@ func TestRunSelectionPausedAndUnconfiguredAdmissionErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.policyPause {
-				admissionPolicy(t, f, 1, "hosted")
+				f.configure(t, attemptProject, "test-capability", 1, true)
 			}
 			before := selectionCounts(t, f) + roundTables(t, f)
 			scope := selectionScope(t, f, attemptProject, f.writer, "write")

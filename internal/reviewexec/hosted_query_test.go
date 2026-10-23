@@ -96,7 +96,7 @@ func TestHostedQueryMigrationConcurrentBeginAndRetainedReplay(t *testing.T) {
 	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, 1, "cancelled", "user_cancelled", ""); err != nil {
 		t.Fatal(err)
 	}
-	admissionPolicy(t, f, 1, "hosted")
+	admissionPolicy(t, f, 1)
 	f.configure(t, attemptProject, "other-account", 1, true)
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 	cliAllowanceReopen(t, f)
@@ -193,8 +193,8 @@ func TestHostedQueryRejectsNewIneligibleInputWithoutEffects(t *testing.T) {
 		"revoked": {func(t *testing.T, f *attemptFixture, _ *Attempt, _ *Anchor, _, _ *reviewprovider.Author) {
 			admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 		}, "forbidden"},
-		"policy paused": {func(t *testing.T, f *attemptFixture, _ *Attempt, _ *Anchor, _, _ *reviewprovider.Author) {
-			admissionPolicy(t, f, 1, "hosted")
+		"project paused": {func(t *testing.T, f *attemptFixture, _ *Attempt, _ *Anchor, _, _ *reviewprovider.Author) {
+			f.configure(t, attemptProject, "test-capability", 1, true)
 		}, "review_conflict"},
 		"configuration paused": {func(t *testing.T, f *attemptFixture, _ *Attempt, _ *Anchor, _, _ *reviewprovider.Author) {
 			f.configure(t, attemptProject, "test-capability", 1, true)
