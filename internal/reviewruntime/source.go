@@ -40,6 +40,23 @@ func operationRequest(operation reviewexec.Operation) reviewexec.Request {
 	return reviewexec.Request{ExpectedConfigurationRevision: operation.ConfigurationRevision, PullNumber: operation.PullNumber, HeadSHA: operation.HeadSHA, Channel: operation.Channel, AllowOutOfOrder: operation.AllowOutOfOrder}
 }
 
+func samePreparedSource(left, right reviewexec.SourcePlan) bool {
+	return left.Repository == right.Repository && left.Pull.Number == right.Pull.Number && left.Pull.RepositoryID == right.Pull.RepositoryID && left.Pull.HeadSHA == right.Pull.HeadSHA && left.Pull.BaseSHA == right.Pull.BaseSHA && left.Pull.BaseRef == right.Pull.BaseRef && left.ParentSHA == right.ParentSHA && left.ParentPullNumber == right.ParentPullNumber
+}
+
+// Slow cold materialization must not turn an aged observation into fresh facts.
+// Read the provider again and require the exact comparison we materialized.
+func refreshMaterializedSource(ctx context.Context, reader reviewexec.TargetReader, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation, prepared reviewexec.SourcePlan) (reviewexec.SourcePlan, error) {
+	current, err := reviewexec.ResolveSource(ctx, newSourceReads(reader), repositoryID, configuration, operationRequest(operation))
+	if err != nil {
+		return reviewexec.SourcePlan{}, err
+	}
+	if !samePreparedSource(current, prepared) {
+		return reviewexec.SourcePlan{}, reviewHold("source_changed")
+	}
+	return current, nil
+}
+
 // Each phase has its own memoizer. Repeated stack-resolution reads within one
 // phase share facts, while Dispatch cannot reuse Prepare's provider observation.
 type sourceReads struct {

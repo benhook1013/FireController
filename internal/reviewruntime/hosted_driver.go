@@ -170,6 +170,10 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	if err != nil {
 		return preparation, err
 	}
+	plan, err = refreshMaterializedSource(ctx, d.provider, current.RepositoryID, current.Configuration, current.Operation, plan)
+	if err != nil {
+		return preparation, err
+	}
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
 	actor, err := d.provider.CurrentActor(ctx)
 	if err != nil {
@@ -245,7 +249,7 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 	}
 	// Preserve the exact semantic comparison checked by RecheckSource while
 	// keeping the current plan and using this phase's single provider read set.
-	if currentSource.Repository != prepared.plan.Repository || currentSource.Pull.Number != prepared.plan.Pull.Number || currentSource.Pull.RepositoryID != prepared.plan.Pull.RepositoryID || currentSource.Pull.HeadSHA != prepared.plan.Pull.HeadSHA || currentSource.Pull.BaseSHA != prepared.plan.Pull.BaseSHA || currentSource.Pull.BaseRef != prepared.plan.Pull.BaseRef || currentSource.ParentSHA != prepared.plan.ParentSHA || currentSource.ParentPullNumber != prepared.plan.ParentPullNumber {
+	if !samePreparedSource(currentSource, prepared.plan) {
 		return failed("source_changed")
 	}
 	if err := d.verify(ctx, prepared.workspace); err != nil {
