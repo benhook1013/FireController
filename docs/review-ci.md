@@ -12,6 +12,8 @@ Source-only collection retains its fifteen-second provider budget. A refresh inc
 
 Successful source collection remains useful when CI cannot be established. The operation retains its source comparison and an explicit unproven CI outcome. Provider failure, incomplete pagination, unsupported identity or exceeded capacity never becomes an empty passing result. Raw provider errors and full inventories stay out of ordinary agent responses.
 
+Failed collection retains a bounded reason when known: collection deadline or cancellation, provider rate limit, authorization refusal, missing resource, invalid response, HTTP timeout, server error or redirect. Unknown transport/adapter failures retain `ci_provider_unavailable`; this does not establish a network regression or its cause. No raw error text or partial CI inventory is adopted. Old generic failures remain unchanged. Reading or replaying a completed refresh does not retry collection; a subsequent ordinary collection can capture current facts without changing review allowances or CI producer configuration.
+
 ## Authority and candidate
 
 Required checks come from the selected base branch's complete applicable branch protection and active repository rules. Exact context and expected GitHub App identity matter. An unavailable or ambiguous authority remains unproven. An explicitly complete empty requirement set means `not_required`, without fetching check runs or workflow jobs.

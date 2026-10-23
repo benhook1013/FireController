@@ -68,7 +68,7 @@ func observeSourceCI(ctx context.Context, reader TargetReader, plan SourcePlan) 
 	}
 	observation, err := ciReader.ObserveRequiredCI(ctx, target)
 	if err != nil {
-		return unavailableSourceCI(target, started, "ci_provider_unavailable")
+		return unavailableSourceCI(target, started, sourceCIErrorReason(ctx, err))
 	}
 	body, err := json.Marshal(observation)
 	if err != nil {
@@ -93,6 +93,34 @@ func observeSourceCI(ctx context.Context, reader TargetReader, plan SourcePlan) 
 		return unavailableSourceCI(target, started, "ci_observation_unproven")
 	}
 	return &owned
+}
+
+// Retain only known safe classes. Adapter messages, URLs and partial inventories
+// are not evidence of a complete CI collection and never enter this outcome.
+func sourceCIErrorReason(ctx context.Context, err error) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return "ci_collection_deadline"
+	}
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return "ci_collection_canceled"
+	}
+	var failure *reviewprovider.Error
+	if errors.As(err, &failure) && failure != nil {
+		switch failure.Code {
+		case "provider_rate_limited", "provider_unauthorized", "provider_not_found", "provider_invalid_response":
+			return "ci_" + failure.Code
+		case "provider_unavailable":
+			switch {
+			case failure.Status == 408:
+				return "ci_provider_timeout"
+			case failure.Status >= 500 && failure.Status <= 599:
+				return "ci_provider_server_error"
+			case failure.Status >= 300 && failure.Status <= 399:
+				return "ci_provider_redirect"
+			}
+		}
+	}
+	return "ci_provider_unavailable"
 }
 
 func decodeSourceCI(body string, r *sourceRefresh) error {
