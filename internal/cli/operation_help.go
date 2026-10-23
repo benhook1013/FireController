@@ -31,6 +31,12 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	recovery := "Use an explicit --key (1-128 printable ASCII bytes without surrounding whitespace). After uncertain output retry the same key, exact request and binding; never invent a replacement key."
 	out := operationHelpResponse{Required: []string{}, Optional: []string{}}
 	switch operation {
+	case "reviews fix":
+		out.Usage = "<bound launcher> reviews fix EVIDENCE_ID --key KEY --expect-revision N --finding INDEX --expect-sha SHA --fix-sha SHA --proof TEXT"
+		out.Required = []string{"EVIDENCE_ID", "--key KEY", "--expect-revision N", "--finding INDEX (zero-based, 0-99)", "--expect-sha SHA (use --expect-sha= when no fix exists)", "--fix-sha SHA (40 lowercase hexadecimal characters)", "--proof TEXT (nonblank, up to 2048 UTF-8 bytes)"}
+		out.Semantics = []string{"Read reviews adjudication EVIDENCE_ID for the current revision and finding fix SHA. Record a verified published fix for an accepted finding; use the returned revision for the next edit. Existing source finalization does not prevent fix proof.", "Empty --expect-sha= asserts no fix is recorded; replacing proof requires its exact current SHA. Retains original finding text, disposition, finalized counts and history. No provider work, source refresh, new review or allowance change.", recovery}
+		out.Example = "<bound launcher> reviews fix review_evidence_0123456789abcdef0123456789abcdef --key fix-1 --expect-revision 4 --finding 0 --expect-sha= --fix-sha 0123456789abcdef0123456789abcdef01234567 --proof 'Verified published fix and focused test'"
+		out.Documentation = "docs/review-controls.md"
 	case "reviews operation":
 		out.Usage = "<bound launcher> reviews operation OPERATION_ID [--wait-seconds N]"
 		out.Required = []string{"OPERATION_ID"}

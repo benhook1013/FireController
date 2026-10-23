@@ -26,7 +26,7 @@ func localHelp() helpResponse {
 		Binding: "Use the launcher assigned to this role/project. Global --profile and --profiles-file select an explicit local binding; no mutable active selection is saved.",
 		CommandGroups: []helpGroup{
 			{"local discovery", []helpCommand{
-				{"help | --help | -h", "Local orientation. Routine edit commands accept --help; no profile, credential or network reads."},
+				{"help | --help | -h", "Local orientation. Selected commands accept --help; use matching release docs for other operations. No profile, credential or network reads."},
 				{"version", "Local version and running source revision/state; no profile, credential or network reads, including with bound launcher selectors."},
 				{"context", "Read selected identity and running client revision/state without credentials or service I/O."},
 				{"doctor", "Authenticate the bound instance/project/worker; no provider requests."},
@@ -51,6 +51,7 @@ func localHelp() helpResponse {
 				{"jobs progress-history JOB_ID", "One explicit current-progress archive page; no automatic continuation."},
 				{"jobs history JOB_ID", "One explicit private job-history page; list/history/thread commands never silently fetch every page."},
 				{"reviews queue", "Stored review workspace only. Review requests, source refreshes and publication are separate authorized operations; help grants no permission."},
+				{"reviews evidence | adjudication | decide | fix | finalize", "Native evidence reads and guarded finding decisions/fix proof. reviews fix --help explains revision and existing-SHA guards; see docs/review-controls.md."},
 			}},
 		},
 	}

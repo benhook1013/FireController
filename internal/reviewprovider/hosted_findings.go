@@ -253,7 +253,7 @@ func findingLocation(first, last string) (*int64, *int64, bool) {
 }
 
 func findingSourceMetadata(text string) bool {
-	return text == "" || strings.HasPrefix(text, "_Source: ") && strings.HasSuffix(text, "_")
+	return text == "" || (strings.HasPrefix(text, "_Source: ") || strings.HasPrefix(text, "_Sources: ")) && strings.HasSuffix(text, "_")
 }
 
 // An edited provider acknowledgement is metadata only. Require the complete

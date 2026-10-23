@@ -34,7 +34,7 @@ func batchedFiveBotFixture(t *testing.T) hfFixture {
 
 func TestHostedBaselineBotRefreshPreservesCompleteInventory(t *testing.T) {
 	for _, kind := range []string{"standing_zero", "submitted_positive", "batched_five"} {
-		for _, edit := range []string{"generated_report", "same_body", "after_ack", "multiple_reports"} {
+		for _, edit := range []string{"generated_report", "same_body", "after_ack", "multiple_reports", "plural_sources"} {
 			t.Run(kind+"/"+edit, func(t *testing.T) {
 				s, intent, poster, bot, earliest := standingTestFixture(t)
 				if kind != "standing_zero" {
@@ -43,6 +43,9 @@ func TestHostedBaselineBotRefreshPreservesCompleteInventory(t *testing.T) {
 						f = batchedFiveBotFixture(t)
 					}
 					s, intent, poster, bot, earliest = f.snapshot, f.intent, f.poster, f.bot, f.earliest
+				}
+				if edit == "plural_sources" && kind != "standing_zero" {
+					s.ReviewComments[0].Body += "\n\n_Sources: Coding guidelines, Learnings_"
 				}
 				want, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
 				if err != nil || !want.Complete {
