@@ -937,7 +937,7 @@ func TestCLIDriverRetainedEvidenceSurvivesMissingCurrentProjection(t *testing.T)
 			if mode == "publication_storage_failure" {
 				want, reservations = "uncertain", 1
 			}
-			if operation.State != want || mode == "missing_current_pull" && operation.Reason != "capture_retained" || mode == "publication_storage_failure" && operation.Reason != "capture_retention_failed" {
+			if operation.State != want || mode == "missing_current_pull" && operation.Reason != "capture_retained" || mode == "publication_storage_failure" && operation.Reason != "capture_publication_pending" {
 				t.Fatal("publication error changed retained execution outcome", operation.State, operation.Reason)
 			}
 			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, operation.AttemptID) != reservations || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, operation.AttemptID) != 1 {

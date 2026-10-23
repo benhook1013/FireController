@@ -31,6 +31,13 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	recovery := "Use an explicit --key (1-128 printable ASCII bytes without surrounding whitespace). After uncertain output retry the same key, exact request and binding; never invent a replacement key."
 	out := operationHelpResponse{Required: []string{}, Optional: []string{}}
 	switch operation {
+	case "reviews operation":
+		out.Usage = "<bound launcher> reviews operation OPERATION_ID [--wait-seconds N]"
+		out.Required = []string{"OPERATION_ID"}
+		out.Optional = []string{"--wait-seconds N (0-900, default 0)"}
+		out.Semantics = []string{"Reads the original retained operation without provider work, retrying or requesting a review. An uncertain result is not proof the external review failed or completed.", "Hosted hosted_observation_pending means the original review trigger was issued and scheduled observation owns its result. Do not repost. CLI capture_retention_failed does not prove output was lost; capture_publication_pending identifies a retained result awaiting browser publication. The local observer can finish complete retained CLI evidence without rerunning the process.", "Use reviews runs PR and reviews run RUN_ID for published history; reviews evidence EVIDENCE_ID reads known native evidence. There is no reviews attempt command. If uncertain work has no discoverable result, report the original operation/attempt IDs to the maintainer; do not invent evidence IDs or start a replacement."}
+		out.Example = "<bound launcher> reviews operation review_operation_0123456789abcdef0123456789abcdef --wait-seconds 40"
+		out.Documentation = "docs/review-execution.md"
 	case "reviews request":
 		out.Usage = "<bound launcher> reviews request NUMBER --expect-config N --channel cli|hosted --head SHA --key KEY [options]"
 		out.Required = []string{"NUMBER", "--expect-config N", "--channel cli|hosted", "--head SHA", "--key KEY"}

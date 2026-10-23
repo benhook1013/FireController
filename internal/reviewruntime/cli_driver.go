@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -17,18 +18,20 @@ import (
 // CLIDriver composes one trusted operator capability. Runtime ownership of its
 // concrete manager, runner, engine and store is established by the caller.
 type CLIDriver struct {
-	store      *core.Store
-	engine     *reviewexec.Engine
-	capability OperatorCapability
-	manager    *reviewworkspace.Manager
-	captures   *CaptureStore
-	reader     reviewexec.TargetReader
-	fetch      func(context.Context, int64, string, string, string, string) error
-	verify     func(context.Context, reviewworkspace.Workspace) error
-	usage      func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error)
-	review     func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error)
-	mu         sync.Mutex
-	prepared   map[string]*cliPrepared
+	store        *core.Store
+	engine       *reviewexec.Engine
+	capability   OperatorCapability
+	manager      *reviewworkspace.Manager
+	captures     *CaptureStore
+	reader       reviewexec.TargetReader
+	fetch        func(context.Context, int64, string, string, string, string) error
+	verify       func(context.Context, reviewworkspace.Workspace) error
+	usage        func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error)
+	review       func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error)
+	mu           sync.Mutex
+	prepared     map[string]*cliPrepared
+	recovering   atomic.Bool
+	recoveryWait func(context.Context, time.Duration) error
 }
 
 func (*CLIDriver) String() string     { return "CLIDriver{private}" }
@@ -205,10 +208,16 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 	}
 	// Local capture retention remains finite but survives caller cancellation.
 	retentionCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	retained, err := RetainCLI(retentionCtx, d.captures, d.engine, d.manager, attempt, prepared.workspace, capture, started, finished)
+	cancel()
+	failureReason := "capture_retention_failed"
 	if err == nil {
-		_, err = d.engine.PublishEvidence(retentionCtx, operation.ProjectID, retained.Receipt.ID, nil)
+		// Retention/Git verification must not consume publication's own bounded
+		// local budget. A later observer can finish from this exact final ledger.
+		publicationCtx, cancelPublication := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err = d.engine.PublishEvidence(publicationCtx, operation.ProjectID, retained.Receipt.ID, nil)
+		cancelPublication()
+		failureReason = "capture_publication_pending"
 		// Authoritative retained evidence remains usable when current browser
 		// metadata disappeared. Other publication failures remain conservative.
 		var missing *core.Error
@@ -221,7 +230,7 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 		if possibleStart {
 			state = "uncertain"
 		}
-		return reviewexec.Result{State: state, Reason: "capture_retention_failed"}, nil
+		return reviewexec.Result{State: state, Reason: failureReason}, nil
 	}
 	if executionErr != nil {
 		if possibleStart {

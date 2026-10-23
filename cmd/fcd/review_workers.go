@@ -13,6 +13,10 @@ type reviewRecoveryStarter interface {
 	StartRecovery(context.Context) (<-chan error, error)
 }
 
+type cliRecoveryStarter interface {
+	StartCLIRecovery(context.Context) (<-chan error, error)
+}
+
 type sourceReaderProvider interface {
 	SourceReader() reviewexec.TargetReader
 }
@@ -56,6 +60,18 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 	channels := []worker{{done: supervisor}}
 	var startupErr error
 	for capabilityID, driver := range drivers {
+		if starter, ok := driver.(cliRecoveryStarter); ok {
+			done, err := starter.StartCLIRecovery(workerCtx)
+			if err != nil || done == nil {
+				startupErr = err
+				if startupErr == nil {
+					startupErr = core.Fail("configuration_invalid", "The retained CLI recovery observer could not be started.", 500)
+				}
+				cancel()
+				break
+			}
+			channels = append(channels, worker{done: done, recoveryObserver: true, capabilityID: capabilityID})
+		}
 		if starter, ok := driver.(reviewRecoveryStarter); ok {
 			done, err := starter.StartRecovery(workerCtx)
 			if err != nil || done == nil {
@@ -133,7 +149,7 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 				// never the retained error's provider text or private details.
 				if workerCtx.Err() == nil {
 					mu.Lock()
-					diagnostic(diagnostics, "review_recovery_stopped", "The native hosted recovery observer for capability "+owned.capabilityID+" stopped; inspect retained uncertain work before recovery.")
+					diagnostic(diagnostics, "review_recovery_stopped", "The native review recovery observer for capability "+owned.capabilityID+" stopped; inspect retained uncertain work before recovery.")
 					mu.Unlock()
 				}
 				return
