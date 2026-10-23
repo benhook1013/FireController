@@ -109,7 +109,7 @@ func decodeSourceCI(body string, r *sourceRefresh) error {
 		return refreshStorageError()
 	}
 	var observation reviewprovider.CIObservation
-	if (strictjson.Validate([]byte(body)) != nil || json.Unmarshal([]byte(body), &observation) != nil) || !validSourceCI(observation, *r.Observation) {
+	if (strictjson.Validate([]byte(body)) != nil || json.Unmarshal([]byte(body), &observation) != nil) || !validSourceCIWithRetainedAssessment(observation, *r.Observation, true) {
 		return refreshStorageError()
 	}
 	// Canonical server-owned JSON also rejects removed required keys and nulls
@@ -125,6 +125,10 @@ func decodeSourceCI(body string, r *sourceRefresh) error {
 }
 
 func validSourceCI(o reviewprovider.CIObservation, source SourceObservation) bool {
+	return validSourceCIWithRetainedAssessment(o, source, false)
+}
+
+func validSourceCIWithRetainedAssessment(o reviewprovider.CIObservation, source SourceObservation, allowLegacyOriginHold bool) bool {
 	if !refreshTime(source.ObservedAt) || o.Target != sourceCITarget(source) || o.StartedAt.IsZero() || o.ObservedAt.IsZero() || o.Reason != "" && !identifier.MatchString(o.Reason) {
 		return false
 	}
@@ -197,10 +201,17 @@ func validSourceCI(o reviewprovider.CIObservation, source SourceObservation) boo
 			actions = *o.Actions
 		}
 		assessment, err := reviewprovider.AssessRequiredCI(o.Authority, inventory, actions, o.Attempts)
-		if err != nil || !reflect.DeepEqual(assessment, o.Assessment) {
+		if err != nil {
 			return false
 		}
-		if o.State != "unproven" && (o.State != assessment.State || o.Reason != assessment.Reason) {
+		matches := reflect.DeepEqual(assessment, o.Assessment)
+		if !matches && allowLegacyOriginHold {
+			matches = reviewprovider.ValidRetainedRequiredCIAssessment(o.Authority, inventory, actions, o.Attempts, o.Assessment)
+		}
+		if !matches {
+			return false
+		}
+		if o.State != "unproven" && (o.State != o.Assessment.State || o.Reason != o.Assessment.Reason) {
 			return false
 		}
 	} else if o.State != "unproven" {

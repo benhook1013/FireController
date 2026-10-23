@@ -203,7 +203,7 @@ func TestAssessRequiredCIStatusesUseProviderOrderAndBothKinds(t *testing.T) {
 	}
 	f.Authority.Checks[0].AppID = 400
 	v, err = f.assess()
-	if err != nil || v.State != "unproven" || v.Checks[0].Reason != "ci_status_origin_unproven" {
+	if err != nil || v.State != "pending" || v.Checks[0].Reason != "ci_check_pending" {
 		t.Fatal(v, err)
 	}
 }

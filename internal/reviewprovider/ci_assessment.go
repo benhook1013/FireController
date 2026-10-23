@@ -2,6 +2,7 @@ package reviewprovider
 
 import (
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -41,6 +42,35 @@ type ciAssessmentFacts struct {
 // Status ordering is retained provider order, never reconstructed from clocks or
 // IDs. Actions job identity comes only from an exact current numbered attempt.
 func AssessRequiredCI(authority RequiredCheckAuthority, inventory CIResultInventory, actions ActionsHeadInventory, attempts []ActionsAttempt) (RequiredCIAssessment, error) {
+	return assessRequiredCI(authority, inventory, actions, attempts, false)
+}
+
+// ValidRetainedRequiredCIAssessment accepts exact current facts, or the exact
+// older conservative App-bound status-origin hold. It never upgrades retained
+// results or accepts an arbitrary unknown assessment in place of source proof.
+func ValidRetainedRequiredCIAssessment(authority RequiredCheckAuthority, inventory CIResultInventory, actions ActionsHeadInventory, attempts []ActionsAttempt, retained RequiredCIAssessment) bool {
+	current, err := AssessRequiredCI(authority, inventory, actions, attempts)
+	if err != nil {
+		return false
+	}
+	if reflect.DeepEqual(current, retained) {
+		return true
+	}
+	if retained.State != "unproven" || retained.Reason != "ci_required_checks_unproven" {
+		return false
+	}
+	originHold := false
+	for _, check := range retained.Checks {
+		originHold = originHold || check.AppID > 0 && check.StatusID > 0 && check.State == "unproven" && check.Reason == "ci_status_origin_unproven"
+	}
+	if !originHold {
+		return false
+	}
+	legacy, err := assessRequiredCI(authority, inventory, actions, attempts, true)
+	return err == nil && reflect.DeepEqual(legacy, retained)
+}
+
+func assessRequiredCI(authority RequiredCheckAuthority, inventory CIResultInventory, actions ActionsHeadInventory, attempts []ActionsAttempt, legacyStatusOrigin bool) (RequiredCIAssessment, error) {
 	result := RequiredCIAssessment{State: "unproven", Reason: "ci_authority_unproven", Checks: []RequiredCIAssessmentCheck{}}
 	bad := func() (RequiredCIAssessment, error) {
 		return RequiredCIAssessment{State: "unproven", Reason: "ci_facts_invalid", Checks: []RequiredCIAssessmentCheck{}}, invalidResponse(false, http.StatusOK)
@@ -102,7 +132,7 @@ func AssessRequiredCI(authority RequiredCheckAuthority, inventory CIResultInvent
 	}
 	result.State, result.Reason = "satisfied", ""
 	for _, required := range authority.Checks {
-		entry := assessRequiredEntry(required, facts)
+		entry := assessRequiredEntry(required, facts, legacyStatusOrigin)
 		result.Checks = append(result.Checks, entry)
 		if ciAssessmentRank(entry.State) > ciAssessmentRank(result.State) {
 			result.State, result.Reason = entry.State, "ci_required_checks_"+entry.State
@@ -199,7 +229,7 @@ func validCIStateFacts(status, conclusion string, start, end time.Time) bool {
 	return true
 }
 
-func assessRequiredEntry(required RequiredCheck, facts ciAssessmentFacts) RequiredCIAssessmentCheck {
+func assessRequiredEntry(required RequiredCheck, facts ciAssessmentFacts, legacyStatusOrigin bool) RequiredCIAssessmentCheck {
 	out := RequiredCIAssessmentCheck{Context: required.Context, AppID: required.AppID, State: "satisfied"}
 	count := 0
 	supersededWorkflows, currentChecks := map[int64]bool{}, map[int64]bool{}
@@ -284,11 +314,17 @@ func assessRequiredEntry(required RequiredCheck, facts ciAssessmentFacts) Requir
 			break
 		}
 	}
+	// A commit status cannot identify the required App. Even a successful
+	// status needs its own current App-bound check/workflow proof first.
+	if !legacyStatusOrigin && required.AppID > 0 && count == 0 && out.State == "satisfied" {
+		out.State, out.Reason = "unproven", "ci_required_check_missing"
+	}
 	status, hasStatus := facts.statuses[required.Context]
 	if hasStatus {
 		out.StatusID = status.ID
 		statusState, reason := "unproven", "ci_status_origin_unproven"
-		if required.AppID == 0 {
+		if !legacyStatusOrigin || required.AppID == 0 {
+			// A same-name status is a separate barrier, never App identity.
 			switch status.State {
 			case "success":
 				statusState, reason = "satisfied", ""
