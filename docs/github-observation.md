@@ -30,6 +30,10 @@ When the observer and native executor retain the same provider publication, curr
 
 On first observation of a PR, the service freezes a durable discovery frontier from its latest already retained non-observer Hosted completion, before making provider calls. Automatic discovery considers later results. The frontier never advances when a new native review completes or the service restarts, so late-arriving external results remain discoverable. Existing older history remains retained; historical gaps before that frontier use explicit collection/import rather than duplicating imported runs whose original provider IDs were not retained.
 
+Unknown provider groups with a valid finish time at or before the frozen discovery frontier are outside automatic discovery, including unsupported historical groups. They neither create rounds nor mark current discovery incomplete. Missing timestamps and incomplete relevant newer groups remain explicit diagnostics. Already retained source identities still undergo identity checks and exact native reconciliation on either side of the frontier; the boundary cannot hide an identity contradiction or discard historical evidence.
+
+The browser labels an incomplete Hosted-inventory diagnostic as **Hosted history: Incomplete**, with the last successful PR check in its details. Provider outages and rate limits remain GitHub retry diagnostics. Incomplete Hosted history does not imply that successful PR metadata checks stopped.
+
 An external history record does not assert a controller-issued review, consumed controller round, current coverage, completed adjudication or merge readiness. Native decision/fix/routing controls currently require admitted execution evidence; automatically archived external history does not fabricate that evidence. These controls remain distinct from capturing and displaying an external result.
 
 Independent CLI runs are local to the machine that runs them. They are not discoverable through GitHub and need an explicit submission/import path; CLI reviews requested through FireController already retain their results normally.

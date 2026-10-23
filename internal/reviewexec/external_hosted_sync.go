@@ -68,11 +68,6 @@ func (e *Engine) externalHostedInputs(ctx context.Context, tx *sql.Tx, target li
 		if len(runs) >= limit {
 			return runs, true, nil
 		}
-		if !run.Inventory.Complete || run.FinishedAt.IsZero() || len(run.Inventory.Findings) > 100 {
-			held = true
-			continue
-		}
-
 		// Retained identities do not spend append capacity, but may need exact
 		// native reconciliation. Refuse any immutable identity contradiction
 		// before allowing that current-membership change.
@@ -80,6 +75,19 @@ func (e *Engine) externalHostedInputs(ctx context.Context, tx *sql.Tx, target li
 		var channel, head string
 		err := tx.QueryRowContext(ctx, `SELECT pull_number,channel,head_sha FROM review_run_versions INDEXED BY review_run_versions_external_source WHERE project_id=? AND source_run_id=? LIMIT 1`, target.project, run.SourceID).Scan(&owner, &channel, &head)
 		known := err == nil
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, false, err
+		}
+		// Unknown dated results outside the frozen discovery scope do not need
+		// supported inventories. Retained identities still require validation and
+		// may need exact reconciliation on either side of the frontier.
+		if !known && cutoff != "" && !run.FinishedAt.IsZero() && !run.FinishedAt.After(floor) {
+			continue
+		}
+		if !run.Inventory.Complete || run.FinishedAt.IsZero() || len(run.Inventory.Findings) > 100 {
+			held = true
+			continue
+		}
 		if known {
 			var conflicting bool
 			if owner != target.number || channel != "hosted" || head != run.HeadSHA {
@@ -102,13 +110,6 @@ func (e *Engine) externalHostedInputs(ctx context.Context, tx *sql.Tx, target li
 			if !currentObserver {
 				continue
 			}
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return nil, false, err
-		}
-		// A frozen discovery frontier still prevents importing earlier results.
-		// Exact already-retained duplicates may be reconciled on either side.
-		if !known && !run.FinishedAt.After(floor) {
-			continue
 		}
 		captures, uncertain, err := externalNativeCaptures(ctx, tx, target, run)
 		if err != nil {

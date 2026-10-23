@@ -28,6 +28,18 @@ const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: f
 const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main' }] });
 
 describe('truthful stored review presentation', () => {
+  it('identifies incomplete Hosted history without calling healthy PR checks a GitHub retry', () => {
+    const observation = { state: 'retrying' as const, checked_at: '2026-10-23T13:24:02Z', last_success_at: '2026-10-23T13:24:02Z', error: 'external_hosted_identity_unproven', hosted_error: 'external_hosted_identity_unproven' };
+    const html = markup(<ReviewPullFacts pull={{ ...pull(2), observation }} />);
+    expect(html).toContain('Hosted history: Incomplete'); expect(html).toContain('Some Hosted review history could not yet be imported.');
+    expect(html).toContain('Last successful PR check:'); expect(html).not.toContain('GitHub: Retrying');
+    for (const error of ['provider_unavailable', 'provider_rate_limited']) {
+      const failed = markup(<ReviewPullFacts pull={{ ...pull(2), observation: { ...observation, error } }} />);
+      expect(failed).toContain('GitHub: Retrying'); expect(failed).not.toContain('Hosted history: Incomplete');
+    }
+    expect(markup(<ReviewPullFacts pull={{ ...pull(2), observation: { ...observation, state: 'current', error: undefined, hosted_error: undefined } }} />)).not.toContain('GitHub:');
+  });
+
   it('keeps the row front concise and places independent front markers on channel headings', () => {
     const both = fronts(); both.channels.push({ ...both.channels[0], channel: 'cli' });
     const html = markup(<ReviewQueueView />, queue([pull(1, 'merged'), pull(2), pull(3)]), undefined, { fronts: both });
