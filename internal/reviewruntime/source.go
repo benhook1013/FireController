@@ -141,6 +141,9 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 // reading provider metadata or obtaining any channel's allowance.
 func prepareReviewWorkspace(ctx context.Context, fetch func(context.Context, int64, string, string, string, string) error, verify func(context.Context, reviewworkspace.Workspace) error, manager *reviewworkspace.Manager, credential string, current reviewexec.ExecutionContext, plan reviewexec.SourcePlan, attemptID string) (reviewworkspace.Workspace, int64, error) {
 	if err := fetch(ctx, current.RepositoryID, plan.Repository.FullName, plan.Pull.HeadSHA, plan.Pull.BaseSHA, credential); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return reviewworkspace.Workspace{}, 0, reviewHold("source_fetch_timeout")
+		}
 		return reviewworkspace.Workspace{}, 0, reviewHold("source_unavailable")
 	}
 	workspace, err := manager.Prepare(ctx, current.RepositoryID, attemptID, plan.Pull.HeadSHA, plan.Pull.BaseSHA)

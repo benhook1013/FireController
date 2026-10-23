@@ -93,7 +93,7 @@ describe('merge-head recent review rounds', () => {
     for (const label of ['27 runs', '1 run', '8 runs', '2 runs']) expect(queue).toContain(`${label}</span>`);
     expect(queue).not.toContain(' · latest 3');
     expect(queue).not.toContain(' loaded</span>');
-    expect(queue).toContain('No rounds in this preview.');
+    expect(queue).toContain('Round history could not be loaded.');
     expect(links(queue)).toEqual(['h1', 'h2', 'h3', 'h4']);
   });
   it('keeps partial coverage, absent channels and unknown attribution honest without fetching more', () => {

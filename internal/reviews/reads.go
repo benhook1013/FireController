@@ -233,7 +233,7 @@ func runs(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "validation_failed", "snapshot", "limit", "cursor")
+		query, err := core.QueryKeys(r, "validation_failed", "snapshot", "limit", "cursor", "channel")
 		if err != nil {
 			core.WriteError(w, err)
 			return
@@ -252,7 +252,15 @@ func runs(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
+		channel := query.Get("channel")
+		if _, selected := query["channel"]; selected && !oneOf(channel, "hosted", "cli", "subagent", "manual") {
+			core.WriteError(w, validationError("Select hosted, cli, subagent or manual for the runs channel."))
+			return
+		}
 		filter := fmt.Sprintf("reviews.runs:%d:v1", number)
+		if channel != "" {
+			filter += ":channel=" + channel
+		}
 		after, err := store.ParseCursor(scope, filter, query.Get("cursor"))
 		if err != nil {
 			core.WriteError(w, err)
@@ -286,6 +294,10 @@ func runs(store *core.Store) http.HandlerFunc {
 			}
 			querySQL := `SELECT id,pull_number,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json,run_order FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=?`
 			args := []any{scope.ProjectID, meta.SnapshotID, number}
+			if channel != "" {
+				querySQL += ` AND channel=?`
+				args = append(args, channel)
+			}
 			if cursorSnapshot != "" {
 				querySQL += ` AND run_order<?`
 				args = append(args, cursorOrder)

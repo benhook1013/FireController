@@ -69,6 +69,22 @@ describe('current round progress', () => {
     const exhausted = renderToStaticMarkup(<ReviewProgressView value={{...current, maximum:0, used:0, pending:0}}/>);
     expect(exhausted).toContain('No reviews remaining'); expect(exhausted).not.toMatch(/of 0|Taper 0\/1/u);
   });
+  it('keeps an added minimum visible when the retained clean streak already meets its target', () => {
+    for (const dry of [1, 2]) {
+      const value: ReviewRoundProgress = { ...current, minimum: 1, used: 0, dry, taper: 1, tapered: false, pending: 0 };
+      expect(validRoundProgress(value, 'hosted')).toBe(true);
+      const html = renderToStaticMarkup(<ReviewProgressView value={value} />);
+      expect(html).toContain('Up to 5 more reviews');
+      expect(html).toContain('At least 1 more');
+      expect(html).toContain('Clean streak target met');
+      expect(html).toContain(`title="Consecutive eligible rounds with no accepted findings: ${dry}; target 1.`);
+      expect(html).not.toMatch(/Taper [12]\/1|No reviews remaining|Taper met/u);
+    }
+    const pendingStreak = renderToStaticMarkup(<ReviewProgressView value={{ ...current, minimum: 1, used: 0, dry: 1, taper: 2, pending: 0 }} />);
+    expect(pendingStreak).toContain('Taper 1/2');
+    expect(pendingStreak).toContain('At least 1 more');
+    expect(pendingStreak).not.toContain('Clean streak target met');
+  });
   it('requires an explicit boolean and zero placeholder and rejects unsafe counters', () => {
     const value={...current,maximum_unbounded:true,maximum:0,minimum:Number.MAX_SAFE_INTEGER,used:Number.MAX_SAFE_INTEGER,dry:0};
     expect(validRoundProgress(value,'hosted')).toBe(true);

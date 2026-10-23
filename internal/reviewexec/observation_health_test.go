@@ -135,3 +135,52 @@ func TestObservationHealthSeparatesCIHostedFailureAndSkippedCollection(t *testin
 		t.Fatal("explicit provider cooldown ignored", delay)
 	}
 }
+
+func TestObservationHealthEnrichmentPreCollectionFailurePreservesMetadataEvidence(t *testing.T) {
+	f, s, clock := lifecycleFixture(t)
+	f.e.lifecycleSchedule = s
+	f.e.lifecycleRunning.Store(true)
+	r := &sourceCITestReader{refreshTestReader: refreshTestReader{pull: func(context.Context, string, int64) (reviewprovider.Pull, error) { return lifecyclePull(2), nil }}}
+	readers := map[string]TargetReader{"test-capability": r}
+	tick := func(lane lifecycleLane) {
+		t.Helper()
+		target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lane)
+		if err != nil || target == nil {
+			t.Fatal("missing eligible lane", lane, target, err)
+		}
+		if err := f.e.observeLifecycle(t.Context(), *target, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() reviews.PullObservationHealth {
+		t.Helper()
+		_, items, err := f.e.ObservationHealth(t.Context(), attemptProject, []reviews.PullSummary{lifecycleRead(t, f)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return items[2]
+	}
+	tick(lifecycleMetadata)
+	metadata := read()
+	clock.Add(5 * time.Second)
+	r.repository = func(context.Context, int64) (reviewprovider.Repository, error) {
+		return reviewprovider.Repository{}, &reviewprovider.Error{Code: "provider_unavailable", Message: "PRIVATE provider details"}
+	}
+	tick(lifecycleEnrichment)
+	failed := read()
+	if failed.State != "retrying" || failed.Error != "provider_unavailable" || failed.CheckedAt != metadata.CheckedAt || failed.LastSuccessAt != metadata.LastSuccessAt || failed.CICheckedAt != "" || failed.HostedCheckedAt != "" || r.ciCalls.Load() != 0 {
+		t.Fatal("pre-collection failure hidden or metadata evidence replaced", metadata, failed)
+	}
+	clock.Add(time.Minute)
+	r.repository = nil
+	tick(lifecycleMetadata)
+	metadata = read()
+	if metadata.Error != "provider_unavailable" || metadata.LastSuccessAt != observationTime(clock.Now()) {
+		t.Fatal("metadata success hid unresolved enrichment failure", metadata)
+	}
+	tick(lifecycleEnrichment)
+	recovered := read()
+	if recovered.State != "current" || recovered.Error != "" || recovered.CheckedAt != metadata.CheckedAt || recovered.LastSuccessAt != metadata.LastSuccessAt || recovered.CICheckedAt == "" {
+		t.Fatal("enrichment recovery changed metadata evidence or retained stale failure", metadata, recovered)
+	}
+}

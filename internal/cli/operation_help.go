@@ -31,6 +31,20 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	recovery := "Use an explicit --key (1-128 printable ASCII bytes without surrounding whitespace). After uncertain output retry the same key, exact request and binding; never invent a replacement key."
 	out := operationHelpResponse{Required: []string{}, Optional: []string{}}
 	switch operation {
+	case "reviews request":
+		out.Usage = "<bound launcher> reviews request NUMBER --expect-config N --channel cli|hosted --head SHA --key KEY [options]"
+		out.Required = []string{"NUMBER", "--expect-config N", "--channel cli|hosted", "--head SHA", "--key KEY"}
+		out.Optional = []string{"--wait-seconds N (0-900, default 2)", "--out-of-order"}
+		out.Semantics = []string{"Explicitly requests one review against the asserted current target and configuration; requires existing project authority. Out-of-order skips queue scheduling only, preserving target source, findings, limits and provider checks.", "A pending receipt is not completion. Read the retained operation by ID; a held operation does not automatically retry or establish review credit.", recovery}
+		out.Example = "<bound launcher> reviews request 42 --expect-config 3 --channel hosted --head 0123456789abcdef0123456789abcdef01234567 --key review-42-hosted"
+		out.Documentation = "docs/review-execution.md"
+	case "reviews start":
+		out.Usage = "<bound launcher> reviews start --channel cli|hosted --key KEY [--expect-pr NUMBER] [--wait-seconds N]"
+		out.Required = []string{"--channel cli|hosted", "--key KEY"}
+		out.Optional = []string{"--expect-pr NUMBER", "--wait-seconds N (0-900, default 2)"}
+		out.Semantics = []string{"Selects the channel front and requests at most one review. An expected PR is an assertion, not permission to redirect selection. Does not accept --out-of-order.", "Retain the selection receipt and follow its original operation link; a pending receipt does not mean a review completed.", recovery}
+		out.Example = "<bound launcher> reviews start --channel hosted --expect-pr 42 --key next-hosted-review"
+		out.Documentation = "docs/review-round-controls.md"
 	case "reviews obligations":
 		out.Usage = "<bound launcher> reviews obligations list --pr NUMBER [--status open|resolved] [--limit N] [--cursor CURSOR] | read OBLIGATION_ID --pr NUMBER"
 		out.Semantics = []string{"Reads carried unfinished findings, routes and unsettled review results. They are retained obligations, not newly verified current code defects. Open obligations remain pending until deliberately resolved with evidence.", "Project writers can resolve an obligation using its current revision and an explicit key; imports require administrator access. No provider refresh or review request is performed.", recovery}

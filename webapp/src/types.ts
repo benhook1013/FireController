@@ -57,7 +57,7 @@ export interface ReviewFinding {route?:ReviewFindingRoute;source_finding_id: str
 export interface ReviewSnapshot {project_id: string; revision: number; snapshot_id: string; source: string; observed_at: string; recorded_at: string}
 export interface ReviewQueue extends ReviewSnapshot, Page<ReviewPullSummary> {observer?:ReviewObserverHealth;configured: boolean; head_position?: number}
 export interface ReviewPull extends ReviewSnapshot {pull: ReviewPullSummary}
-export interface ReviewRunOptions extends PageOptions {snapshot?: string}
+export interface ReviewRunOptions extends PageOptions {snapshot?: string; channel?: ReviewChannel}
 export interface ReviewRuns extends ReviewSnapshot, Page<ReviewRunSummary> {}
 export interface ReviewAttemptItem extends ReviewAttemptSummary {source: string}
 export interface ReviewAttemptOptions extends PageOptions {snapshot?: string}

@@ -40,17 +40,20 @@ func lifecyclePull(n int64) reviewprovider.Pull {
 }
 func lifecycleTick(t *testing.T, f *attemptFixture, s *lifecycleSchedule, r TargetReader) bool {
 	t.Helper()
-	target, err := f.e.claimLifecycle(t.Context(), map[string]TargetReader{"test-capability": r}, s)
-	if err != nil {
-		t.Fatal(err)
+	metadata := false
+	for _, lane := range []lifecycleLane{lifecycleMetadata, lifecycleEnrichment} {
+		target, err := f.e.claimLifecycleLane(t.Context(), map[string]TargetReader{"test-capability": r}, s, lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if target != nil {
+			metadata = metadata || lane == lifecycleMetadata
+			if err = f.e.observeLifecycle(t.Context(), *target, s); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
-	if target == nil {
-		return false
-	}
-	if err = f.e.observeLifecycle(t.Context(), *target, s); err != nil {
-		t.Fatal(err)
-	}
-	return true
+	return metadata
 }
 func lifecycleRead(t *testing.T, f *attemptFixture) reviews.PullSummary {
 	t.Helper()
@@ -83,8 +86,8 @@ func TestLifecycleSyncPausedNoopHeadCloseMergeAndReopen(t *testing.T) {
 	r.ci = func(context.Context, reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
 		return reviewprovider.CIObservation{}, errors.New("PRIVATE provider failure")
 	}
-	if !lifecycleTick(t, f, s, r) {
-		t.Fatal("head change not observed")
+	if !lifecycleTick(t, f, s, r) || r.ciCalls.Load() != 2 {
+		t.Fatal("head change did not trigger fresh CI before its ordinary interval")
 	}
 	got := lifecycleRead(t, f)
 	if got.HeadSHA != pull.HeadSHA || got.Title != pull.Title || got.CIState != "unknown" || got.Complete {

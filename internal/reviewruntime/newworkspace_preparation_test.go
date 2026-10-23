@@ -76,7 +76,7 @@ func TestPrepareReviewWorkspaceStopsAtOriginalGuardAndRetainsSafeReason(t *testi
 		name, reason string
 		verify       bool
 	}{
-		{"fetch", "source_unavailable", false}, {"missing_commit", "workspace_unavailable", false}, {"repository_binding", "workspace_unavailable", false}, {"verify", "workspace_changed", true}, {"empty_comparison", "comparison_unavailable", true}, {"dirty_after_verify", "comparison_unavailable", true}, {"file_ceiling", "project_file_limit", true},
+		{"fetch", "source_unavailable", false}, {"fetch_timeout", "source_fetch_timeout", false}, {"missing_commit", "workspace_unavailable", false}, {"repository_binding", "workspace_unavailable", false}, {"verify", "workspace_changed", true}, {"empty_comparison", "comparison_unavailable", true}, {"dirty_after_verify", "comparison_unavailable", true}, {"file_ceiling", "project_file_limit", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCLIDriverFixture(t)
@@ -96,6 +96,9 @@ func TestPrepareReviewWorkspaceStopsAtOriginalGuardAndRetainsSafeReason(t *testi
 				fetches++
 				if tc.name == "fetch" {
 					return errors.New("private transport details")
+				}
+				if tc.name == "fetch_timeout" {
+					return errors.Join(errors.New("private transport details"), context.DeadlineExceeded)
 				}
 				return nil
 			}

@@ -15,7 +15,8 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	state, head := "", ""
 	var providerErr error
 	ciCollected := false
-	defer func() { s.finish(target, state, head, ciCollected, providerErr) }()
+	published := false
+	defer func() { s.finish(target, state, head, ciCollected, published, providerErr) }()
 	// Recheck selected configuration before provider work. A pause-only change
 	// is intentionally harmless; changing repository, enrollment or capability holds.
 	var bound bool
@@ -56,11 +57,51 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	if mergeability != "mergeable" && mergeability != "conflicting" {
 		mergeability = "unknown"
 	}
+	target.due.baseSHA, target.due.baseRef = pull.BaseSHA, pull.BaseRef
+	if target.lane == lifecycleMetadata {
+		err = retrySourceRefreshLocal(ctx, func() error {
+			published = false
+			return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+				bound, err := e.lifecycleBinding(ctx, tx, target)
+				if err != nil || !bound {
+					return err
+				}
+				current, err := readLifecycleComparison(ctx, tx, target.project, target.number)
+				if err != nil || current != target.comparison {
+					return err
+				}
+				// Enrichment may update CI while this cheap provider read runs.
+				// Re-pin that unchanged comparison instead of losing this poll.
+				pins, err := reviews.PinSourceMetadata(ctx, tx, target.project, []int64{target.number})
+				if err != nil {
+					return err
+				}
+				_, err = reviews.PublishSourceStatus(ctx, tx, core.Scope{ProjectID: target.project, PrincipalID: "service-lifecycle-sync"}, target.repository, pins, []reviews.SourceStatus{{Pull: display, Mergeability: mergeability}})
+				published = err == nil
+				return err
+			})
+		})
+		if err == nil && published {
+			target.due.successAt = s.options.Now()
+		}
+		return err
+	}
+	// A fresh enrichment read is not permission to move the stored comparison.
+	// Let the independent metadata lane publish movement first, then collect
+	// expensive evidence for exactly that retained comparison.
+	err = e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		bound, err = e.lifecycleEnrichmentCurrent(ctx, tx, target, lifecycleComparison{head, pull.BaseSHA, pull.BaseRef, state})
+		return err
+	})
+	if err != nil || !bound {
+		return err
+	}
 	ciState := ""
 	ciReason := ""
 	// CI is less frequent than lifecycle reads. Same-comparison retained status
 	// is not refreshed by a cheap poll; a new head always requires fresh evidence.
-	collectCI := state == "open" && (target.due.head != head || !s.options.Now().Before(target.due.ci))
+	collectCI := state == "open" && (target.due.ciHead != head || target.due.ciBaseSHA != pull.BaseSHA || target.due.ciBaseRef != pull.BaseRef || !s.options.Now().Before(target.due.ci))
 	if collectCI {
 		ciCollected = true
 		ciState = "unknown"
@@ -103,8 +144,13 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	err = retryLifecyclePublication(ctx, func(appendLimit int) error {
 		externalDeferred = false
 		providerErr = collectionErr
+		published = false
 		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			bound, err := e.lifecycleBinding(ctx, tx, target)
+			if err != nil || !bound {
+				return err
+			}
+			bound, err = e.lifecycleEnrichmentCurrent(ctx, tx, target, lifecycleComparison{head, pull.BaseSHA, pull.BaseRef, state})
 			if err != nil || !bound {
 				return err
 			}
@@ -112,6 +158,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			if err != nil {
 				return err
 			}
+			published = true
 			if externalErr == nil && len(external) > 0 {
 				if appendLimit == 0 {
 					externalDeferred = true
@@ -140,10 +187,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			return nil
 		})
 	})
-	if err == nil {
-		target.due.successAt = s.options.Now()
-		target.due.baseSHA = pull.BaseSHA
-		target.due.baseRef = pull.BaseRef
+	if err == nil && published {
 		if collectCI {
 			target.due.ciCheckedAt = s.options.Now()
 			target.due.ciError = ciReason
@@ -157,6 +201,15 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		}
 	}
 	return err
+}
+
+func (e *Engine) lifecycleEnrichmentCurrent(ctx context.Context, tx *sql.Tx, target lifecycleTarget, comparison lifecycleComparison) (bool, error) {
+	current, err := readLifecycleComparison(ctx, tx, target.project, target.number)
+	if err != nil || current != comparison {
+		return false, err
+	}
+	pins, err := reviews.PinSourceMetadata(ctx, tx, target.project, []int64{target.number})
+	return err == nil && len(pins) == 1 && pins[target.number] == target.pins[target.number], err
 }
 
 // A locally expensive batch must not monopolize a scheduler worker by retrying

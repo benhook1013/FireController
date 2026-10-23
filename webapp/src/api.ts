@@ -1027,10 +1027,12 @@ export class Api {
   }
   async reviewRuns(number: number, options: ReviewRunOptions = {}, signal?: AbortSignal): Promise<ReviewRuns> {
     if (!pullNumber(number)) throw new ApiError('invalid_request', 'The pull request number is invalid.');
+    if (options.channel !== undefined && !['hosted', 'cli', 'subagent', 'manual'].includes(options.channel)) throw new ApiError('invalid_request', 'Choose a valid review channel.');
     const query = pageOptions(options);
+    if (options.channel !== undefined) query.set('channel', options.channel);
     for (const [name, value] of reviewQuery(options.snapshot)) query.set(name, value);
     const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}/runs`), query), signal);
-    if (!record(value) || !keys(value, [...reviewMetadata, 'items', 'has_more'], ['cursor']) || !validReviewSnapshot(value, this.projectId, options.snapshot) || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options) || !value.items.every(item => validReviewRun(item, number)) || new Set(value.items.map(item => item.id)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review run page.');
+    if (!record(value) || !keys(value, [...reviewMetadata, 'items', 'has_more'], ['cursor']) || !validReviewSnapshot(value, this.projectId, options.snapshot) || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options) || !value.items.every(item => validReviewRun(item, number) && (options.channel === undefined || item.channel === options.channel)) || new Set(value.items.map(item => item.id)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review run page.');
     return value as unknown as ReviewRuns;
   }
   async reviewAttempts(number: number, options: ReviewAttemptOptions = {}, signal?: AbortSignal): Promise<ReviewAttempts> {

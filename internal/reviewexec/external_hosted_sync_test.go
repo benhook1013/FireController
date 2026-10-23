@@ -124,7 +124,7 @@ func TestExternalHostedSyncUnprovenAndOutagesKeepLifecycleAlive(t *testing.T) {
 				t.Fatal("missing account cooldown")
 			}
 
-			diagnostic := s.due[lifecycleKey{attemptProject, 2}].lastErrorCode
+			diagnostic := s.due[lifecycleKey{attemptProject, 2}].enrichmentError
 			if diagnostic == "" {
 				t.Fatal("missing per-PR held diagnostic")
 			}
@@ -508,7 +508,7 @@ func TestExternalHostedLocalInventoryDoesNotHoldSharedAccountTargets(t *testing.
 				readers := map[string]TargetReader{"test-capability": r}
 				claim := func() *lifecycleTarget {
 					t.Helper()
-					target, err := f.e.claimLifecycle(t.Context(), readers, s)
+					target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -555,7 +555,7 @@ func TestExternalHostedLocalInventoryDoesNotHoldSharedAccountTargets(t *testing.
 				if rateLimited {
 					return
 				}
-				if s.due[lifecycleKey{attemptProject, 2}].lastErrorCode != failureCode {
+				if s.due[lifecycleKey{attemptProject, 2}].enrichmentError != failureCode {
 					t.Fatal("another target cleared local diagnostic")
 				}
 				if claim() != nil {
@@ -656,7 +656,7 @@ func TestExternalHostedSyncLargeInventoryAndCapacityKeepLifecycle(t *testing.T) 
 				}
 			}
 			if huge {
-				if s.due[lifecycleKey{attemptProject, 2}].lastErrorCode != "external_hosted_identity_unproven" {
+				if s.due[lifecycleKey{attemptProject, 2}].enrichmentError != "external_hosted_identity_unproven" {
 					t.Fatal("capacity source missing local held diagnostic")
 				}
 				for _, account := range s.accounts {
@@ -672,7 +672,7 @@ func TestExternalHostedSyncLargeInventoryAndCapacityKeepLifecycle(t *testing.T) 
 func TestExternalHostedAuthoritativeCapacitySavepointPreservesMetadataAndNextRun(t *testing.T) {
 	f, s, _ := lifecycleFixture(t)
 	r := externalReader(externalSnapshot(0, strings.Repeat("a", 40)))
-	target, err := f.e.claimLifecycle(t.Context(), map[string]TargetReader{"test-capability": r}, s)
+	target, err := f.e.claimLifecycleLane(t.Context(), map[string]TargetReader{"test-capability": r}, s, lifecycleEnrichment)
 	if err != nil || target == nil {
 		t.Fatal(target, err)
 	}

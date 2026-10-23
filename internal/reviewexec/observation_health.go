@@ -74,6 +74,12 @@ func (e *Engine) ObservationHealth(ctx context.Context, project string, pulls []
 			s.mu.Unlock()
 			now := s.options.Now()
 			h = reviews.PullObservationHealth{State: "waiting", CheckedAt: observationTime(due.checkedAt), LastSuccessAt: observationTime(due.successAt), NextCheckAt: observationTime(due.next), Error: due.lastErrorCode, CICheckedAt: observationTime(due.ciCheckedAt), CIError: due.ciError, HostedCheckedAt: observationTime(due.hostedCheckedAt), HostedError: due.hostedError}
+			if h.Error == "" {
+				// Repository/pull reads and local publication can fail before an
+				// enrichment collector has a channel-specific diagnostic. Keep
+				// that failure visible without replacing lifecycle check times.
+				h.Error = due.enrichmentError
+			}
 			if !due.successAt.IsZero() {
 				h.State = "current"
 			}

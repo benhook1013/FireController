@@ -20,7 +20,7 @@ func TestExternalHostedMaximumInventoryUsesOrdinaryWriteBudget(t *testing.T) {
 	if err != nil || len(discovered) != 10000 {
 		t.Fatalf("fixture must be fully supported provider inventory: %d %v", len(discovered), err)
 	}
-	target, err := f.e.claimLifecycle(t.Context(), map[string]TargetReader{"test-capability": r}, s)
+	target, err := f.e.claimLifecycleLane(t.Context(), map[string]TargetReader{"test-capability": r}, s, lifecycleEnrichment)
 	if err != nil || target == nil {
 		t.Fatal(target, err)
 	}

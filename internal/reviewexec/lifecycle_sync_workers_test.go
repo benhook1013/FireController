@@ -67,6 +67,9 @@ func (r *lifecycleBlockingReader) Pull(_ context.Context, repo string, n int64) 
 	p.RepositoryID = id
 	return p, nil
 }
+func (r *lifecycleBlockingReader) ObserveRequiredCI(_ context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
+	return sourceCITestObservation(target, "satisfied"), nil
+}
 func lifecycleWorkerStart(t *testing.T, f *attemptFixture, readers map[string]TargetReader) (context.CancelFunc, <-chan error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -86,28 +89,28 @@ func lifecycleWorkerStart(t *testing.T, f *attemptFixture, readers map[string]Ta
 	return cancel, done
 }
 
-func TestLifecycleSyncWorkersFairAcrossProjectsAndSerializeAccount(t *testing.T) {
+func TestLifecycleSyncWorkersFairAcrossProjectsAndSerializeEachAccountLane(t *testing.T) {
 	f := attemptProjectionFixture(t, true)
 	lifecycleProject(t, f, otherAttemptProject, "other-account", 802)
 	lifecycleProject(t, f, "exec-project-three", "test-capability", 803)
 	gate := make(chan struct{})
 	r := &lifecycleBlockingReader{perProject: map[int64]int{}, entered: make(chan int64, 16), blocked: map[int64]<-chan struct{}{801: gate, 803: gate}}
 	cancel, done := lifecycleWorkerStart(t, f, map[string]TargetReader{"test-capability": r, "other-account": r})
-	seen := map[int64]bool{}
-	for len(seen) < 2 {
+	seen := map[int64]int{}
+	for range 4 {
 		select {
 		case id := <-r.entered:
-			seen[id] = true
+			seen[id]++
 		case <-time.After(2 * time.Second):
 			t.Fatal("independent account did not progress", seen)
 		}
 	}
-	if !seen[801] || !seen[802] || seen[803] {
-		t.Fatal("same account took another slot", seen)
+	if seen[801] != 2 || seen[802] != 2 || seen[803] != 0 {
+		t.Fatal("independent lanes did not progress or account took another slot", seen)
 	}
 	select {
 	case id := <-r.entered:
-		t.Fatal("duplicate tick or same-account read", id)
+		t.Fatal("duplicate tick or third same-account read", id)
 	case <-time.After(30 * time.Millisecond):
 	}
 	if duplicate, err := f.e.StartLifecycleSync(t.Context(), map[string]TargetReader{"test-capability": r}); err == nil || duplicate != nil {
@@ -117,7 +120,7 @@ func TestLifecycleSyncWorkersFairAcrossProjectsAndSerializeAccount(t *testing.T)
 	refreshStop(t, cancel, done)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.active != 0 || r.maximum > 4 || r.perProject[801] != 1 || r.perProject[802] != 1 || r.perProject[803] != 0 {
+	if r.active != 0 || r.maximum > 4 || r.perProject[801] != 2 || r.perProject[802] != 2 || r.perProject[803] != 0 {
 		t.Fatal("worker ownership or coalescing", r.active, r.maximum, r.perProject)
 	}
 }

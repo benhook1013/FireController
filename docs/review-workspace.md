@@ -29,13 +29,15 @@ All paths below are relative to `/api/v1/projects/{project_id}`. Existing instan
 | `GET /reviews/fronts` | Provider-free current per-channel assessment over a bounded verified source frame; see [fronts](review-fronts.md). |
 | `GET /reviews/queue` | Compact ordered PR summaries, including merged and closed history. |
 | `GET /reviews/pulls/{number}` | One compact PR summary, including latest attempt facts per channel. |
-| `GET /reviews/pulls/{number}/runs` | Newest-first run summaries with cursor pagination. |
+| `GET /reviews/pulls/{number}/runs` | Newest-first run summaries with cursor pagination and optional channel selection. |
 | `GET /reviews/pulls/{number}/attempts` | Newest-first attempt archive with original producer and cursor pagination. |
 | `GET /reviews/runs/{run_id}` | One run with its recorded findings, decisions and fix evidence. |
 
 Queue, run and attempt lists default to 20 items and accept `limit` up to 100 and an optional signed `cursor`. Pull and run detail accept an optional `snapshot`; run and attempt lists accept it too. Each configured response identifies its project, revision, snapshot, source, observed time and recorded time. An unconfigured queue has `configured:false`, revision zero, empty metadata and an empty item list. No empty result implies passing coverage. PR detail never embeds the attempt archive; use its explicit page route. Each archive item includes its original producer in `source`, distinct from the snapshot publisher. Attempt identity is `(source, source_attempt_id)` within a project; external IDs may coincide across producers.
 
-Cursors bind the principal, project, route, order and retained snapshot. New imports cannot change a continuation page from an older snapshot. Detail links retain that snapshot for consistent drill-down. Access is checked again on every request, including historical reads and exact mutation retries. Unknown, duplicate and malformed query fields are rejected. PR numbers use canonical positive decimal values through 2147483647.
+Run lists may select exactly one nonempty `channel` from `hosted`, `cli`, `subagent` and `manual`. Selection filters the retained snapshot before applying the page limit, so activity in another channel cannot hide its older rounds. Omission keeps the complete mixed-channel archive and the existing cursor identity. The response shape is unchanged.
+
+Cursors bind the principal, project, route, order and retained snapshot. A selected run-channel cursor additionally binds that exact channel; it cannot be reused for another channel or an unfiltered request. New imports cannot change a continuation page from an older snapshot. Detail links retain that snapshot for consistent drill-down. Access is checked again on every request, including historical reads and exact mutation retries. Unknown, duplicate and malformed query fields are rejected. PR numbers use canonical positive decimal values through 2147483647.
 
 ## Administrator observations
 

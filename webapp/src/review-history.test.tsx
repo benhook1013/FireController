@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiError } from './api';
-import { InlineReviewFindings, ReviewHistoryGroups, ReviewHistoryRow } from './review-workspace';
+import { InlineReviewFindings, ReviewHistoryGroups, ReviewHistoryRow, ReviewRunsView } from './review-workspace';
 import { WorkspaceContext, type Session } from './workspace';
 import type { ReviewRunDetail, ReviewRunSummary } from './types';
 
@@ -50,8 +50,17 @@ describe('per-PR inline retained review history', () => {
     const items = [run('first'), run('hosted', 'hosted'), { ...run('second'), source: 'producer-b', source_run_id: 'original-first' }, run('manual', 'manual')];
     const html = markup(<ReviewHistoryGroups number={27} runs={items} snapshot={snapshot} head="head" partial={false} loading={false} failed={false} channelTotals={{hosted: 1, cli: 2, manual: 1, subagent: 0}} />);
     expect(html).toContain('Hosted CodeRabbit'); expect(html).toContain('CLI CodeRabbit'); expect(html).toContain('Manual reviews');
-    expect(html).not.toContain('Subagent reviews'); expect(html.indexOf('data-run-id="first"')).toBeLessThan(html.indexOf('data-run-id="second"'));
+    expect(html).not.toContain('Subagent Reviews'); expect(html.indexOf('data-run-id="first"')).toBeLessThan(html.indexOf('data-run-id="second"'));
     expect(html).toContain('2 runs'); expect(html).not.toContain('2 runs shown');
+  });
+  it('uses the same capitalized Subagent Reviews heading in queue lanes and full history', () => {
+    const totals = { hosted: 0, cli: 0, manual: 0, subagent: 1 };
+    const history = markup(<ReviewHistoryGroups number={27} runs={[run('subagent', 'subagent')]} snapshot={snapshot} head="head" partial={false} loading={false} failed={false} channelTotals={totals} />);
+    const lanes = markup(<ReviewRunsView number={27} snapshot={snapshot} head="head" attempts={[]} expected={1} channelTotals={totals} />);
+    for (const html of [history, lanes]) {
+      expect(html).toContain('<h4>Subagent Reviews</h4>');
+      expect(html).not.toContain('Subagent reviews');
+    }
   });
   it('keeps unfinalized, incomplete, unattributed and mismatched records visibly qualified', () => {
     const value = { ...run('pending'), outcome: 'failed' as const, complete: false, attributable: false, finalized: false, finished_at: '' };
@@ -62,7 +71,7 @@ describe('per-PR inline retained review history', () => {
   });
   it('keeps partial and failed histories distinct from confirmed empty history', () => {
     const props = { number: 27, runs: [], snapshot, head: 'head', loading: false, failed: false, channelTotals: {hosted: 0, cli: 0, manual: 0, subagent: 0} };
-    expect(markup(<ReviewHistoryGroups {...props} partial channelTotals={{hosted: 27, cli: 1, manual: 8, subagent: 2}} />)).toContain('No rounds in this preview.');
+    expect(markup(<ReviewHistoryGroups {...props} partial channelTotals={{hosted: 27, cli: 1, manual: 8, subagent: 2}} />)).toContain('Round history could not be loaded.');
     expect(markup(<ReviewHistoryGroups {...props} partial={false} />)).toContain('No rounds recorded. Coverage is unknown.');
     expect(markup(<ReviewHistoryGroups {...props} partial failed />)).toContain('Round history could not be loaded.');
     expect(markup(<ReviewHistoryGroups {...props} partial loading />)).toContain('Loading retained rounds');
