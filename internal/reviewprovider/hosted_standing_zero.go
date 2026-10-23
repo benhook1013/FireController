@@ -1,6 +1,7 @@
 package reviewprovider
 
 import (
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ var standingIgnoredFile = regexp.MustCompile("^\\* `([^`]+)` is excluded by `[^`
 var standingCoverage = regexp.MustCompile(`^<!-- final_review_risk_coverage:\{"sourceCommitId":"([a-f0-9]{40})","coveredCommitId":"([a-f0-9]{40})","kind":"reviewed"\} -->$`)
 var standingAckInvocation = regexp.MustCompile(`^<!-- CodeRabbit review command invocation: v2:[a-f0-9]{64} -->$`)
 var standingAvailability = regexp.MustCompile(`^\*\*Included review availability:\*\* This review used your included allowance\. Your plan provides up to [1-9][0-9]{0,4} included reviews? per hour; (0|[1-9][0-9]{0,4}) remain after this review\.$`)
+var standingConfigurationLink = regexp.MustCompile(`^\[([^\[\]\r\n]+)\]\((?:<([^<>\r\n]+)>|([^()<>\r\n]+))\)$`)
 var standingFindingClaim = regexp.MustCompile(`(?i)\b(?:comments?|findings?)\s*[:(]\s*[0-9]`)
 var standingRiskLabel = regexp.MustCompile(`^<summary><strong>Merge Risk:</strong> <strong>(?:🔵 Low|⚪ Minimal|🟡 Moderate)</strong> · up to <code>([a-f0-9]{5})</code></summary>$`)
 
@@ -309,6 +311,35 @@ func (p *standingRecentParser) noReviewableFiles(selected map[string]bool) bool 
 	return int64(len(seen)) == count && p.close()
 }
 
+// Structured source metadata cannot contradict the independently declared
+// comparison head. It is not a substitute for comparison or completion proof.
+func standingConfigurationHead(value, kind string) (string, bool) {
+	match := standingConfigurationLink.FindStringSubmatch(value)
+	if match == nil {
+		return "", false
+	}
+	raw := match[2]
+	if raw == "" {
+		raw = match[3]
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host != "github.com" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" {
+		return "", false
+	}
+	parts := strings.Split(u.Path, "/")
+	if len(parts) < 5 || parts[0] != "" || !validRepositorySelector(parts[1]+"/"+parts[2]) || parts[3] != kind || !validSHA(parts[4]) || parts[4] != strings.ToLower(parts[4]) {
+		return "", false
+	}
+	if kind == "commit" {
+		if len(parts) != 5 || len(match[1]) < 7 || !strings.HasPrefix(parts[4], match[1]) {
+			return "", false
+		}
+	} else if kind != "blob" || len(parts) < 6 || !validRepoPath(strings.Join(parts[5:], "/")) {
+		return "", false
+	}
+	return parts[4], true
+}
+
 func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 	if !validBody(body) {
 		return zero, false
@@ -339,9 +370,33 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 	if !p.take("No actionable comments were generated in the recent review. 🎉") || !p.block("ℹ️ Recent review info") || !p.block("⚙️ Run configuration") {
 		return zero, false
 	}
-	for _, prefix := range []string{"- **Configuration used**: ", "- **Review profile**: ", "- **Plan**: "} {
-		if p.at >= len(p.lines) || !strings.HasPrefix(p.lines[p.at], prefix) || !validPlainText(strings.TrimPrefix(p.lines[p.at], prefix), 1000) || strings.TrimSpace(strings.TrimPrefix(p.lines[p.at], prefix)) == "" {
+	prefixes := []string{"- **Configuration used**: ", "- **Review profile**: ", "- **Plan**: "}
+	configurationCommit, configurationFile := "", ""
+	if p.at < len(p.lines) && strings.HasPrefix(p.lines[p.at], "- **Source mode**: ") {
+		// A second observed closed metadata grammar; never skip arbitrary lines
+		// or finding sections while searching for the authoritative Run ID.
+		if !p.take("- **Source mode**: Auto") {
 			return zero, false
+		}
+		prefixes = []string{"- **Repository**: ", "- **Branch**: ", "- **File**: ", "- **Commit**: ", "- **Layers**: ", "- **Review profile**: ", "- **Plan**: "}
+	}
+	for _, prefix := range prefixes {
+		if p.at >= len(p.lines) || !strings.HasPrefix(p.lines[p.at], prefix) {
+			return zero, false
+		}
+		value := strings.TrimPrefix(p.lines[p.at], prefix)
+		if !validPlainText(value, 1000) || strings.TrimSpace(value) == "" {
+			return zero, false
+		}
+		switch prefix {
+		case "- **Commit**: ":
+			if configurationCommit, valid = standingConfigurationHead(value, "commit"); !valid {
+				return zero, false
+			}
+		case "- **File**: ":
+			if configurationFile, valid = standingConfigurationHead(value, "blob"); !valid {
+				return zero, false
+			}
 		}
 		p.at++
 	}
@@ -363,6 +418,9 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 	}
 	p.at++
 	zero.BaseSHA, zero.HeadSHA = strings.Trim(comparison[1], "`"), strings.Trim(comparison[2], "`")
+	if configurationCommit != "" && configurationCommit != zero.HeadSHA || configurationFile != "" && configurationFile != zero.HeadSHA {
+		return zero, false
+	}
 	if !p.close() {
 		return zero, false
 	}

@@ -168,6 +168,8 @@ The run made twelve CLI commands, 208 local API requests, 53 controlled provider
 
 ### Current standing-format proof
 
+The standing zero-result parser supports both the original single configuration-description line and the structured source-mode/repository/branch/file/commit/layers configuration block. Configuration display metadata does not replace the exact comparison, provider run identity, file inventory, coverage and completed-trigger acknowledgment. Contradictory commit identities, missing or unknown fields and incomplete inventories remain unproven.
+
 Focused provider and real-SQLite retainer regressions cover a `Moderate` risk envelope with an optional counted no-reviewable-changes subset. They preserve the complete baseline, new-run, actor, trigger-window and immutable-capture guards. A private probe composes the actual retained provider response and its qualified pre-admission baseline through the normal extractor; this proves interpretation of those saved inputs, not installed recovery or a new provider review.
 
 Checkpoint `48bb91deffcd890fd96d56a6fd6e4c226d57fe9e` adds the observed `Minimal` envelope and omitted zero ignored-files section. Both variants reproduced refusals before the fix; the full provider normal/race tests and vet pass afterward, including exact counts, unsafe/duplicate paths, malformed or leftover ignored metadata and coverage-envelope negatives. A private probe accepts the saved current provider body with 85 selected files and no ignored section; its acknowledgment is synthetic and grants no native credit.
