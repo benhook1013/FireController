@@ -976,8 +976,12 @@ try {
   await expect(queueHosted.locator('[aria-label="Current hosted round limits"]')).toContainText('Up to 5 more reviews');
   checkpoint = 'current-round-close-live';
   await write('POST', '/reviews/rounds/32/hosted', {expected_revision:1,action:'close'}, 200);
-  await expect(hero.locator('[aria-label="Current hosted round limits"]')).toContainText('Review closed');
-  await expect(queueHosted.locator('[aria-label="Current hosted round limits"]')).toContainText('Review closed');
+  for (const limits of [hero.locator('[aria-label="Current hosted round limits"]'), queueHosted.locator('[aria-label="Current hosted round limits"]')]) {
+    await expect(limits.locator('summary')).toHaveText('No reviews remaining');
+    await limits.locator('summary').click();
+    await expect(limits.locator('details')).toContainText('Manually closed');
+    await limits.locator('summary').click();
+  }
   await expect(queueHosted.locator('.review-lane-heading')).toContainText('1 run');
   const age = queueHosted.locator('.review-round-pill time');
   await expect(age).toHaveText(/^(?:Just now|Future date|\d+m ago|\d+h \d+m ago|\d+d \d+h ago)$/u);
@@ -1017,9 +1021,17 @@ try {
   checkpoint = 'attempt-reason-detail';
   const reasonReadBoundary = {pull:reviewPullReads,attempts:reviewAttemptReads,runs:reviewRunReads};
   const attemptArchiveResponse = page.waitForResponse(response => response.request().method()==='GET' && new URL(response.url()).pathname===prefix+'/reviews/pulls/32/attempts').then(async response => ({status:response.status(),body:await response.json()}));
+  // The detail view has its own bounded channel history page, distinct from
+  // the six-round overview. Opening it does not fetch finding bodies.
+  const roundArchiveResponse = page.waitForResponse(response => {
+    const url=new URL(response.url());
+    return response.request().method()==='GET' && url.pathname===prefix+'/reviews/pulls/32/runs' && url.searchParams.get('channel')==='hosted' && url.searchParams.get('limit')==='25';
+  }).then(async response => ({status:response.status(),url:new URL(response.url()),body:await response.json()}));
   await headRow.getByRole('link',{name:'Review details for PR #32',exact:true}).click();
   const attemptArchive = await attemptArchiveResponse;
   need(attemptArchive.status === 200);
+  const roundArchive = await roundArchiveResponse;
+  need(roundArchive.status===200 && roundArchive.url.searchParams.get('snapshot')===new URL(page.url()).searchParams.get('snapshot') && !roundArchive.url.searchParams.has('cursor') && roundArchive.body.items.length===1 && roundArchive.body.items[0].source_run_id===run.source_run_id);
   const retainedAttempts = attemptArchive.body;
   need(retainedAttempts.items.length === 1 && retainedAttempts.items[0].source_attempt_id === uncertainAttempt.source_attempt_id && retainedAttempts.items[0].state === 'uncertain' && retainedAttempts.items[0].reason === reasonCode);
   checkpoint = 'attempt-reason-expanded';
@@ -1032,7 +1044,7 @@ try {
   await expect(attemptsPanel.locator('li strong')).toHaveText('Uncertain');
   need(await page.locator('literal').count() === 0 && await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   checkpoint = 'attempt-reason-reads';
-  need(reviewPullReads === reasonReadBoundary.pull+1 && reviewAttemptReads === reasonReadBoundary.attempts+1 && reviewRunReads === reasonReadBoundary.runs && reviewOperationReads === 0);
+  need(reviewPullReads === reasonReadBoundary.pull+1 && reviewAttemptReads === reasonReadBoundary.attempts+1 && reviewRunReads === reasonReadBoundary.runs+1 && reviewOperationReads === 0);
   checkpoint = 'reviews-return';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
   checkpoint = 'reviews-heading';
