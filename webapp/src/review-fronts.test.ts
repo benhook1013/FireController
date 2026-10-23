@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Api } from './api';
-import { currentReviewFronts, reviewQueueBadges, type ReviewFronts } from './review-fronts';
+import { currentReviewFronts, reviewQueueBadges, reviewChannelPosition, type ReviewFronts } from './review-fronts';
 import type { ReviewPullSummary } from './types';
 import type { ReviewProgressItem, ReviewRoundProgress } from './review-progress';
 
@@ -13,6 +13,20 @@ const control=(channel:'cli'|'hosted',closed=false):ReviewRoundProgress=>({chann
 afterEach(()=>vi.unstubAllGlobals());
 
 describe('current review position badges',()=>{
+  it('distinguishes a verified front, local queue position and carried admission hold',()=>{
+    const v=value();v.channels=[front('hosted',2)];
+    expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)?.text).toBe('Up next');
+    v.channels=[{...front('hosted',2),state:'held',reason:'source_obligations_pending'}];
+    expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)).toMatchObject({text:'Carried work',description:expect.stringContaining('holds new reviews')});
+    expect(reviewQueueBadges(pull(2),snapshot,v)).toEqual([]);
+    const stopped={...v,channels:[{channel:'hosted' as const,state:'unknown' as const,reason:'source_frame_unavailable'}]};
+    const progress:ReviewProgressItem[]=[1,2].map(n=>({pull_number:n,channels:[control('hosted',n===1)]}));
+    const local=currentReviewFronts(snapshot,[pull(1),pull(2)],stopped,progress);
+    expect(reviewChannelPosition(pull(2),snapshot,'hosted',local)).toMatchObject({text:'Queue position',description:expect.stringContaining('have not been verified')});
+    for (const changed of [{...pull(2),head_sha:'c'.repeat(40)},{...pull(2),base_sha:'c'.repeat(40)},{...pull(2),base_ref:'other'},{...pull(2),state:'merged' as const}]) expect(reviewChannelPosition(changed,snapshot,'hosted',v)).toBeUndefined();
+    expect(reviewChannelPosition(pull(2),'other-snapshot','hosted',v)).toBeUndefined();
+    expect(reviewChannelPosition(pull(2),snapshot,'cli',v)).toBeUndefined();
+  });
   it('keeps channel fronts independent and only marks established later positions queued',()=>{
     expect(reviewQueueBadges(pull(1),snapshot,value())).toEqual([]);
     expect(reviewQueueBadges(pull(2),snapshot,value())[0]?.text).toBe('Review front');

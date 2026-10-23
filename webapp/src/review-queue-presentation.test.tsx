@@ -61,6 +61,29 @@ describe('truthful stored review presentation', () => {
     expect(stale).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Up next</span>');
     expect(stale).not.toContain('>Reviewing</span>');
   });
+  it('shows carried admission work without claiming Up next, and keeps independent channel readiness', () => {
+    const held=fronts();held.channels[0]={...held.channels[0],state:'held',reason:'source_obligations_pending'};
+    held.channels.push({...held.channels[0],channel:'cli',state:'ready',reason:undefined});
+    const html=markup(<ReviewQueueView />,queue([pull(2)]),undefined,{fronts:held});
+    expect(html).toMatch(/Hosted CodeRabbit<span class="badge review-channel-position" title="[^"]*holds new reviews[^"]*">Carried work<\/span>/u);
+    expect(html).toContain('CLI CodeRabbit<span class="badge review-channel-position">Up next</span>');
+    expect(html).not.toContain('Hosted CodeRabbit<span class="badge review-channel-position">Up next</span>');
+    const attempt={channel:'hosted',head_sha:pull(2).head_sha,state:'active',finished_at:'',started_at:'2026-10-22T00:00:00Z',source_attempt_id:'active'} as ReviewAttemptSummary;
+    const running=markup(<ReviewQueueView />,queue([{...pull(2),latest_attempts:[attempt]}]),undefined,{fronts:held});
+    expect(running).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Reviewing</span>');
+    expect(running).not.toContain('>Carried work</span>');
+    const stale=markup(<ReviewQueueView />,queue([pull(2)]),undefined,{fronts:{...held,snapshot_id:'old'}});
+    expect(stale).not.toContain('>Carried work</span>');
+  });
+  it('labels a locally derived queue position without claiming verified admission', () => {
+    const missing=fronts();missing.channels=[{channel:'hosted',state:'unknown',reason:'source_frame_unavailable'}];
+    const progress:ReviewProgressItem={pull_number:2,channels:[{channel:'hosted',configured:true,revision:1,epoch:1,closed:false,minimum:1,maximum:3,taper:2,used:0,dry:0,tapered:false,pending:0}]};
+    missing.queue=[2];
+    const html=markup(<ReviewQueueView />,queue([pull(2)]),undefined,{fronts:missing,progress:[progress]});
+    expect(html).toContain('>Queue position</span>');
+    expect(html).toContain('Source and admission have not been verified.');
+    expect(html).not.toContain('>Up next</span>');
+  });
   it.each([
     ['success', 'mergeable'], ['pending', 'conflicting'], ['failure', 'unknown'], ['unknown', 'unknown'],
   ] as const)('colors observed CI %s and mergeability %s without changing their labels', (ci_state, mergeability) => {

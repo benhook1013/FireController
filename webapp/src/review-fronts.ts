@@ -12,6 +12,30 @@ export interface ReviewFronts {
   queue: number[]; channels: ReviewFrontChannel[];
 }
 export interface ReviewQueueBadge { kind: 'front' | 'closed' | 'queued'; text: string; description: string; channels?: ('hosted' | 'cli')[] }
+export interface ReviewChannelPosition { text: string; description?: string }
+
+// Queue position is useful even without a source frame, but is not admission.
+// Keep an established hold visible instead of suggesting another request.
+export function reviewChannelPosition(pull: ReviewPullSummary, snapshot: string, channel: 'hosted' | 'cli', fronts?: ReviewFronts, progress?: ReviewProgressItem): ReviewChannelPosition | undefined {
+  if (pull.state !== 'open' || !fronts?.configured || fronts.snapshot_id !== snapshot || !fronts.queue.includes(pull.number)) return undefined;
+  const front = fronts.channels.find(item => item.channel === channel);
+  if (!front || front.pull_number !== pull.number || front.head_sha !== pull.head_sha || front.base_sha !== pull.base_sha || front.base_ref !== pull.base_ref) return undefined;
+  if (front.state === 'held' && !['reviews_paused', 'local_queue_position'].includes(front.reason ?? '')) {
+    const held = new Map<string, ReviewChannelPosition>([
+      ['source_obligations_pending', {text:'Carried work',description:'Unresolved work carried over at cutover holds new reviews. Read the carried work in Review details.'}],
+      ['source_obligations_unavailable', {text:'Held',description:'Carried review work could not be checked. New reviews remain held.'}],
+      ['routed_findings_pending', {text:'Findings pending',description:'Incoming routed findings hold new reviews.'}],
+      ['review_evidence_pending', {text:'Results pending',description:'Retained review results still need to be settled before another review.'}],
+      ['predecessor_unfinished', {text:'Dependency pending',description:'This PR depends on unfinished predecessor work.'}],
+    ]);
+    return held.get(front.reason ?? '') ?? {text:'Held',description:'The stored admission check holds new reviews. Check review details before requesting another review.'};
+  }
+  const rounds = progress?.pull_number === pull.number ? progress.channels.find(item => item.channel === channel) : undefined;
+  if (rounds?.configured && (rounds.closed || rounds.tapered || !rounds.maximum_unbounded && rounds.used >= rounds.maximum)) return undefined;
+  if (front.state === 'ready') return {text:'Up next'};
+  if (front.state === 'held' && ['reviews_paused', 'local_queue_position'].includes(front.reason ?? '')) return {text:'Queue position',description:front.reason === 'reviews_paused' ? 'First remaining position in this channel; review dispatch is stopped.' : 'First remaining position in this channel. Source and admission have not been verified.'};
+  return undefined;
+}
 
 // A contradictory loaded blocker invalidates that whole channel's explanation,
 // including later Queued labels. An unloaded predecessor can still be a hold.
