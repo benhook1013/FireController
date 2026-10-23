@@ -23,6 +23,7 @@ import (
 type refreshTestReader struct {
 	repository func(context.Context, int64) (reviewprovider.Repository, error)
 	pull       func(context.Context, string, int64) (reviewprovider.Pull, error)
+	parents    map[string]reviewprovider.Pull
 	calls      atomic.Int64
 }
 
@@ -39,6 +40,17 @@ func (r *refreshTestReader) Pull(ctx context.Context, repository string, number 
 		return r.pull(ctx, repository, number)
 	}
 	return reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+}
+
+// Only explicitly published head branches resolve parents; the fake never
+// guesses from the execution queue or enumerates unrelated pull requests.
+func (r *refreshTestReader) ParentPull(_ context.Context, _ string, branch string) (reviewprovider.Pull, error) {
+	r.calls.Add(1)
+	pull, ok := r.parents[branch]
+	if !ok || pull.HeadRef != branch {
+		return reviewprovider.Pull{}, sourceHold("parent_unavailable")
+	}
+	return pull, nil
 }
 func refreshRequest() SourceRefreshRequest {
 	return SourceRefreshRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, HeadSHA: strings.Repeat("a", 40)}
@@ -560,7 +572,7 @@ func TestSourceRefreshFIFOAndRelevantStackParentOnly(t *testing.T) {
 	receipt := refreshEnqueue(t, f, "selected-stack", r)
 	var mu sync.Mutex
 	var numbers []int64
-	reader := &refreshTestReader{pull: func(ctx context.Context, repository string, number int64) (reviewprovider.Pull, error) {
+	reader := &refreshTestReader{parents: map[string]reviewprovider.Pull{"source-parent": {Number: 2, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("b", 40), HeadRef: "source-parent", BaseSHA: strings.Repeat("c", 40), BaseRef: "main", ChangedFiles: 1}}, pull: func(ctx context.Context, repository string, number int64) (reviewprovider.Pull, error) {
 		mu.Lock()
 		numbers = append(numbers, number)
 		mu.Unlock()
@@ -568,12 +580,12 @@ func TestSourceRefreshFIFOAndRelevantStackParentOnly(t *testing.T) {
 		if number == 2 {
 			head = strings.Repeat("b", 40)
 		}
-		return reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", HeadSHA: head, BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+		return reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", HeadSHA: head, BaseSHA: strings.Repeat("b", 40), BaseRef: "source-parent", ChangedFiles: 1}, nil
 	}}
 	cancel, done := refreshStart(t, f, reader)
 	got := refreshWait(t, f, receipt.ID, "completed")
 	refreshStop(t, cancel, done)
-	if got.Observation.ParentPullNumber != 2 || !reflect.DeepEqual(numbers, []int64{4, 2}) || reader.calls.Load() != 3 {
+	if got.Observation.ParentPullNumber != 2 || !reflect.DeepEqual(numbers, []int64{4}) || reader.calls.Load() != 3 {
 		t.Fatal("source refresh read unrelated queue entries or lost effective parent", numbers, got)
 	}
 }

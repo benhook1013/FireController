@@ -46,9 +46,10 @@ func (b *runSourceBudget) read(ctx context.Context, read func(context.Context) e
 
 // runReads coalesces source identities only within one bounded selection phase.
 type runReads struct {
-	reader TargetReader
-	repos  map[int64]reviewprovider.Repository
-	pulls  map[string]map[int64]reviewprovider.Pull
+	reader  TargetReader
+	repos   map[int64]reviewprovider.Repository
+	pulls   map[string]map[int64]reviewprovider.Pull
+	parents map[string]reviewprovider.Pull
 }
 
 func (r *runReads) Repository(ctx context.Context, id int64) (reviewprovider.Repository, error) {
@@ -73,6 +74,31 @@ func (r *runReads) Pull(ctx context.Context, repo string, n int64) (reviewprovid
 		r.pulls[repo][n] = v
 	}
 	return v, err
+}
+
+func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (reviewprovider.Pull, error) {
+	key := repository + "\x00" + branch
+	if value, ok := r.parents[key]; ok {
+		return value, nil
+	}
+	reader, ok := r.reader.(ParentReader)
+	if !ok {
+		return reviewprovider.Pull{}, sourceHold("parent_unavailable")
+	}
+	value, err := reader.ParentPull(ctx, repository, branch)
+	if err == nil {
+		if r.parents == nil {
+			r.parents = map[string]reviewprovider.Pull{}
+		}
+		r.parents[key] = value
+		if value.Number > 0 {
+			if r.pulls[repository] == nil {
+				r.pulls[repository] = map[int64]reviewprovider.Pull{}
+			}
+			r.pulls[repository][value.Number] = value
+		}
+	}
+	return value, err
 }
 
 type runChoice struct {
@@ -159,14 +185,23 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 				return err
 			})
 			if err != nil {
-				return runChoice{state: "held", reason: runReason(err), sourceReason: runReason(err)}, nil
+				reason := runReason(err)
+				var refusal *core.Error
+				if !errors.As(err, &refusal) || refusal.Code != "review_held" || !perPullSourceHold(reason) {
+					return runChoice{state: "held", reason: reason, sourceReason: reason}, nil
+				}
+				// The failed comparison stays an explicit held row. It supplies
+				// no coverage, but cannot block an unrelated verified candidate.
+				plan = SourcePlan{Repository: repository, Pull: pull, ParentSHA: pull.BaseSHA, ObservedAt: stamp(), SourceReason: reason}
 			}
 		}
 		choice.prefix = append(choice.prefix, plan)
 		var target int64
 		var reason string
+		bindingHeld := false
 		err = retryRunSelectionLocal(ctx, func() error {
 			target, reason = 0, ""
+			bindingHeld = false
 			return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 				current, err := readRun(ctx, tx, r.ProjectID, r.ID)
 				if err != nil {
@@ -184,9 +219,10 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 				}
 				if bindingReason != "" {
 					reason = bindingReason
+					bindingHeld = true
 					return nil
 				}
-				target, reason, err = e.runFront(ctx, tx, current, repo, []SourcePlan{plan})
+				target, reason, err = e.runFront(ctx, tx, current, repo, choice.prefix)
 				return err
 			})
 		})
@@ -195,14 +231,24 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 		}
 		if reason != "" {
 			choice.state, choice.reason = "held", reason
-			return choice, nil
+			if bindingHeld || globalFrontHold(reason) {
+				return choice, nil
+			}
+			continue
 		}
+		choice.state, choice.reason = "empty", "queue_complete"
 		if target != 0 {
 			if r.ExpectedPullNumber != 0 && r.ExpectedPullNumber != target {
 				choice.state, choice.reason = "held", "expected_pr_mismatch"
 				return choice, nil
 			}
-			choice.state, choice.reason, choice.number, choice.head = "selected", "", target, pull.HeadSHA
+			choice.state, choice.reason, choice.number = "selected", "", target
+			for _, selected := range choice.prefix {
+				if selected.Pull.Number == target {
+					choice.head = selected.Pull.HeadSHA
+					break
+				}
+			}
 			return choice, nil
 		}
 	}
@@ -439,4 +485,14 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 		}
 	}
 	return true, err
+}
+
+// Only comparison-local refusals can be skipped for another independent PR.
+// Transport, account and configuration failures retain the global source hold.
+func perPullSourceHold(reason string) bool {
+	switch reason {
+	case "parent_moved", "parent_unavailable", "parent_identity_changed", "default_base_changed", "target_changed":
+		return true
+	}
+	return false
 }

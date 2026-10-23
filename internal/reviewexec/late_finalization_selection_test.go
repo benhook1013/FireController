@@ -39,8 +39,17 @@ func TestLateFinalizationSelectionRemainsChannelLocalAcrossHeadMove(t *testing.T
 	}
 	cli, _ := selectionEnqueue(t, f, "audit-closed-cli-selection", "cli", nil)
 	selectionNext(t, f, reader)
-	if got := selectionRead(t, f, cli.ID); got.State != "held" || got.Reason != "review_evidence_pending" || got.OperationID != "" {
-		t.Fatal("head movement/closure bypassed pending old-head native capture", got)
+	cliSelected := selectionRead(t, f, cli.ID)
+	cliOperation, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), cliSelected.OperationID)
+	if err != nil || cliSelected.State != "selected" || cliOperation.PullNumber != 4 {
+		t.Fatal("pending evidence blocked an independent later PR", cliSelected, cliOperation, err)
+	}
+	plan := SourcePlan{Repository: reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, Pull: lifecyclePull(2), ParentSHA: lifecyclePull(2).BaseSHA, ObservedAt: stamp()}
+	plan.Pull.HeadSHA = strings.Repeat("c", 40)
+	plan.Pull.ChangedFiles = 1
+	state, err := f.e.Comparison(t.Context(), attemptProject, plan, "cli")
+	if err != nil || !state.Pending {
+		t.Fatal("independent selection erased the original PR obligation", state, err)
 	}
 	hosted, _ := selectionEnqueue(t, f, "audit-independent-hosted-selection", "hosted", nil)
 	selectionNext(t, f, reader)
@@ -50,18 +59,19 @@ func TestLateFinalizationSelectionRemainsChannelLocalAcrossHeadMove(t *testing.T
 		t.Fatal("external archive manufactured native coverage or other channel blocked selection", selected, op, err)
 	}
 	progress := readProgress(t, f, 2).Items[0].Channels
-	if progress[0].Used != 0 || progress[0].Pending != 1 || progress[1].Used != 0 || progress[1].Pending != 0 {
+	if progress[0].Used != 0 || progress[0].Pending != 1 || progress[1].Used != 0 || progress[1].Pending != 1 {
 		t.Fatal("archive/pending evidence supplied native completion credit", progress)
 	}
 	roundFinalize(t, f, a, evidence, 710, false)
 	if got := roundRead(t, f, 2, "cli"); !got.Closed || got.Used != 1 {
 		t.Fatal("late original-grant finalization not credited under closure", got)
 	}
-	after, _ := selectionEnqueue(t, f, "audit-cli-after-finalization", "cli", nil)
-	selectionNext(t, f, reader)
-	result := selectionRead(t, f, after.ID)
-	op, err = f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), result.OperationID)
-	if err != nil || result.State != "selected" || op.PullNumber != 4 {
-		t.Fatal("finalized closed front did not advance independently", result, op, err)
+	state, err = f.e.Comparison(t.Context(), attemptProject, plan, "cli")
+	if err != nil || state.Pending || !state.RoundsComplete {
+		t.Fatal("late finalization did not settle the original closed rule", state, err)
+	}
+	retained, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), cliSelected.OperationID)
+	if err != nil || retained.ID != cliOperation.ID || retained.PullNumber != 4 || retained.HeadSHA != cliOperation.HeadSHA {
+		t.Fatal("late finalization changed the independently selected operation", retained, err)
 	}
 }

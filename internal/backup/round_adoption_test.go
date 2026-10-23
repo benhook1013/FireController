@@ -24,9 +24,6 @@ func roundAdoptionInventoryFixture(t *testing.T, replace bool) *restoreFixture {
 	}
 	scope := routePolicyInventoryScope(t, f)
 	one := int64(1)
-	if _, err = e.Configure(t.Context(), scope, "adoption-queue", reviewexec.Configuration{ExpectedRevision: &one, CapabilityID: "adoption-cli", Mode: "independent", Queue: []int64{4}, Channels: []string{"cli"}}); err != nil {
-		t.Fatal(err)
-	}
 	zero := int64(0)
 	p := roundadoptionmodel.Prepared{Version: 1, RepositoryID: 991, ExpectedRevision: &zero, PullNumber: 4, Channel: "cli", Source: "original-source", SourceKey: "original-rule", SourceSHA256: strings.Repeat("a", 64), MaximumRemaining: 4, InitialDry: 2, Taper: 3}
 	preview, err := e.PreviewRoundAdoption(t.Context(), scope, p)
@@ -34,6 +31,10 @@ func roundAdoptionInventoryFixture(t *testing.T, replace bool) *restoreFixture {
 		t.Fatal(err)
 	}
 	if _, err = e.ApplyRoundAdoption(t.Context(), scope, "adopt", roundadoptionmodel.ApplyRequest{PreviewSHA256: preview.PreviewSHA256, Control: p}); err != nil {
+		t.Fatal(err)
+	}
+	// Import before enrollment so product defaults preserve the source-owned rule.
+	if _, err = e.Configure(t.Context(), scope, "adoption-queue", reviewexec.Configuration{ExpectedRevision: &one, CapabilityID: "adoption-cli", Mode: "independent", Queue: []int64{4}, Channels: []string{"cli"}}); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := e.Enqueue(t.Context(), scope, "new-native-round", reviewexec.Request{ExpectedConfigurationRevision: 2, PullNumber: 4, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
@@ -167,9 +168,6 @@ func TestRoundAdoptionInventoryStickyMinimumBaselineRestored(t *testing.T) {
 	}
 	scope := routePolicyInventoryScope(t, f)
 	one := int64(1)
-	if _, err = e.Configure(t.Context(), scope, "minimum-queue", reviewexec.Configuration{ExpectedRevision: &one, CapabilityID: "minimum-cli", Mode: "independent", Queue: []int64{4}, Channels: []string{"cli"}}); err != nil {
-		t.Fatal(err)
-	}
 	zero := int64(0)
 	p := roundadoptionmodel.Prepared{Version: 1, RepositoryID: 991, ExpectedRevision: &zero, PullNumber: 4, Channel: "cli", Source: "minimum-source", SourceKey: "minimum-rule", SourceSHA256: strings.Repeat("a", 64), MinimumRemaining: 2, MaximumRemaining: 4, Taper: 3, Tapered: true}
 	preview, err := e.PreviewRoundAdoption(t.Context(), scope, p)
@@ -177,6 +175,10 @@ func TestRoundAdoptionInventoryStickyMinimumBaselineRestored(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = e.ApplyRoundAdoption(t.Context(), scope, "sticky-minimum", roundadoptionmodel.ApplyRequest{PreviewSHA256: preview.PreviewSHA256, Control: p}); err != nil {
+		t.Fatal(err)
+	}
+	// Import before enrollment so product defaults preserve the source-owned rule.
+	if _, err = e.Configure(t.Context(), scope, "minimum-queue", reviewexec.Configuration{ExpectedRevision: &one, CapabilityID: "minimum-cli", Mode: "independent", Queue: []int64{4}, Channels: []string{"cli"}}); err != nil {
 		t.Fatal(err)
 	}
 	original, err := e.ReadRoundControl(t.Context(), scope, 4, "cli")

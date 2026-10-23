@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -96,7 +97,7 @@ func newCLIEvidenceFixture(t *testing.T) *cliEvidenceFixture {
 	}
 	gitTestRun(t, filepath.Join(root, "fixture-source"), "remote", "add", "cache", cache)
 	gitTestRun(t, filepath.Join(root, "fixture-source"), "push", "cache", "main", "candidate")
-	f.seedConfiguration(t)
+	f.seedLegacyConfiguration(t)
 	return f
 }
 
@@ -115,7 +116,9 @@ func (f *cliEvidenceFixture) addCredential(t *testing.T, id, principal, token st
 	}
 }
 
-func (f *cliEvidenceFixture) seedConfiguration(t *testing.T) {
+// Capture/credit fixtures represent a predecessor installation without implicit
+// round grants. Product enrollment defaults have separate real-Configure proof.
+func (f *cliEvidenceFixture) seedLegacyConfiguration(t *testing.T) {
 	t.Helper()
 	queue := make([]int64, 0, 8)
 	for number := int64(2); number <= 9; number++ {
@@ -123,7 +126,20 @@ func (f *cliEvidenceFixture) seedConfiguration(t *testing.T) {
 	}
 	previous := int64(0)
 	configuration := reviewexec.Configuration{ExpectedRevision: &previous, CapabilityID: "runtime-capability", Mode: "independent", Queue: queue, Channels: []string{"cli", "hosted"}}
-	if _, err := f.engine.Configure(context.Background(), f.scope(t, f.admin, true), "runtime-config-key", configuration); err != nil {
+	scope := f.scope(t, f.admin, true)
+	body, err := json.Marshal(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Mutate(t.Context(), scope, core.Mutation{Operation: "reviews.configure", Target: "configuration", Key: "runtime-config-key", Request: configuration}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,1,?)`, f.project, string(body)); err != nil {
+			return nil, err
+		}
+		if err := core.AppendEvent(ctx, tx, scope, "reviews.configured", f.project, 1, map[string]any{"revision": int64(1), "paused": false}); err != nil {
+			return nil, err
+		}
+		return reviewexec.Receipt{ID: f.project, State: "configured", Revision: 1}, nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

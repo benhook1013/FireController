@@ -157,6 +157,9 @@ func TestResolveReviewSourceHostedStackAndPhaseLocalReads(t *testing.T) {
 			p = f.reader.pulls[4]
 			p.HeadSHA, p.BaseSHA, p.BaseRef = strings.Repeat("9", 40), f.headSHA, "parent-branch"
 			f.reader.pulls[4] = p
+			parent := f.reader.pulls[2]
+			parent.HeadRef = "parent-branch"
+			f.reader.pulls[2] = parent
 			config := sourceConfiguration("stacked", 2, 3, 4)
 			operation := sourceOperation(f, 4, "hosted")
 			before := sourceState(t, f)
@@ -169,7 +172,7 @@ func TestResolveReviewSourceHostedStackAndPhaseLocalReads(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || len(predecessors) != 2 || predecessors[0].Pull.Number != 2 || predecessors[1].Pull.Number != 3 || !predecessors[1].Pull.Merged || plan.ParentPullNumber != 2 {
+			if err != nil || len(predecessors) != 1 || predecessors[0].Pull.Number != 2 || plan.ParentPullNumber != 2 {
 				t.Fatal("hosted stack scope/order changed", plan, predecessors, err)
 			}
 			// Recheck and repeated selection share only this phase's provider facts.
@@ -179,10 +182,10 @@ func TestResolveReviewSourceHostedStackAndPhaseLocalReads(t *testing.T) {
 			if _, _, err = resolveReviewSource(t.Context(), f.engine, reads, 901, config, operation); err != nil {
 				t.Fatal(err)
 			}
-			if f.reader.repositoryCalls != 1 || len(f.reader.calls) != 3 {
+			if f.reader.repositoryCalls != 1 || len(f.reader.calls) != 2 {
 				t.Fatal("unbounded source calls", f.reader.repositoryCalls, f.reader.calls)
 			}
-			for _, number := range []int64{2, 3, 4} {
+			for _, number := range []int64{2, 4} {
 				if f.reader.calls[number] != 1 {
 					t.Fatal("repeated reads within phase", f.reader.calls)
 				}
@@ -193,7 +196,7 @@ func TestResolveReviewSourceHostedStackAndPhaseLocalReads(t *testing.T) {
 			f.reader.pulls[4] = p
 			_, _, err = resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, config, operation)
 			sourceHoldReason(t, err, "target_changed")
-			if f.reader.repositoryCalls != 2 || f.reader.calls[4] != 2 || f.reader.calls[2] != 1 || f.reader.calls[3] != 1 {
+			if f.reader.repositoryCalls != 2 || f.reader.calls[4] != 2 || f.reader.calls[2] != 1 || f.reader.calls[3] != 0 {
 				t.Fatal("new phase reused old facts or read unrelated targets", f.reader.repositoryCalls, f.reader.calls)
 			}
 			if sourceState(t, f) != before {

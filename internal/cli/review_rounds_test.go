@@ -59,10 +59,15 @@ func TestReviewRoundsCLIRealHTTPGrantReadCloseAndReplay(t *testing.T) {
 		}
 		return value
 	}
-	if read("cli").Configured {
-		t.Fatal("implicit round grant")
+	initial := read("cli")
+	if !initial.Configured || initial.Revision != 1 || initial.Epoch != 1 || initial.Minimum != 2 || initial.Maximum != 6 || initial.Taper != 3 || initial.Used != 0 || initial.Dry != 0 {
+		t.Fatal("new CLI enrollment lost product defaults", initial)
 	}
-	args := []string{"reviews", "rounds", "grant", "--pr", "2", "--channel", "cli", "--expected-revision", "0", "--max", "8", "--key", "round-grant"}
+	initialHosted := read("hosted")
+	if !initialHosted.Configured || initialHosted.Revision != 1 || initialHosted.Minimum != 2 || initialHosted.Maximum != 3 || initialHosted.Taper != 1 {
+		t.Fatal("new Hosted enrollment lost product defaults", initialHosted)
+	}
+	args := []string{"reviews", "rounds", "grant", "--pr", "2", "--channel", "cli", "--expected-revision", "1", "--max", "8", "--key", "round-grant"}
 	beforeProvider := f.resolverHit.Load()
 	before := calls.Load()
 	first := roundSuccess(t, path, "builder", args...)
@@ -73,23 +78,23 @@ func TestReviewRoundsCLIRealHTTPGrantReadCloseAndReplay(t *testing.T) {
 		t.Fatal("grant retry changed result")
 	}
 	state := read("cli")
-	if !state.Configured || state.Revision != 1 || state.Epoch != 1 || state.Minimum != 0 || state.Maximum != 8 || state.Taper != 3 {
+	if !state.Configured || state.Revision != 2 || state.Epoch != 1 || state.Minimum != 0 || state.Maximum != 8 || state.Taper != 3 {
 		t.Fatal("bad grant state", state)
 	}
-	closeArgs := []string{"reviews", "rounds", "close", "--pr", "2", "--channel", "cli", "--expected-revision", "1", "--key", "round-close"}
+	closeArgs := []string{"reviews", "rounds", "close", "--pr", "2", "--channel", "cli", "--expected-revision", "2", "--key", "round-close"}
 	drop.Store(true)
 	code, out, stderr := mutationInvoke(t, path, "builder", closeArgs...)
 	if code == 0 || out != "" || !strings.Contains(stderr, `"outcome_unknown":true`) {
 		t.Fatal("lost committed close not recoverable", code, stderr)
 	}
 	closed := roundSuccess(t, path, "builder", closeArgs...)
-	if closed["outcome"] != "closed" || closed["revision"] != float64(2) || !read("cli").Closed {
+	if closed["outcome"] != "closed" || closed["revision"] != float64(3) || !read("cli").Closed {
 		t.Fatal("close recovery failed")
 	}
-	if read("hosted").Configured {
-		t.Fatal("channel leaked")
+	if hosted := read("hosted"); hosted != initialHosted {
+		t.Fatal("CLI controls changed Hosted defaults", hosted)
 	}
-	exact := roundSuccess(t, path, "builder", "reviews", "rounds", "grant", "--pr", "2", "--channel", "hosted", "--expected-revision", "0", "--exact", "2", "--key", "hosted-exact")
+	exact := roundSuccess(t, path, "builder", "reviews", "rounds", "grant", "--pr", "2", "--channel", "hosted", "--expected-revision", "1", "--exact", "2", "--key", "hosted-exact")
 	if exact["epoch"] != float64(1) {
 		t.Fatal(exact)
 	}

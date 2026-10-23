@@ -63,6 +63,7 @@ type sourceReads struct {
 	reader       reviewexec.TargetReader
 	repositories map[int64]reviewprovider.Repository
 	pulls        map[sourcePullKey]reviewprovider.Pull
+	parents      map[string]reviewprovider.Pull
 }
 type sourcePullKey struct {
 	repository string
@@ -70,7 +71,7 @@ type sourcePullKey struct {
 }
 
 func newSourceReads(reader reviewexec.TargetReader) *sourceReads {
-	return &sourceReads{reader: reader, repositories: map[int64]reviewprovider.Repository{}, pulls: map[sourcePullKey]reviewprovider.Pull{}}
+	return &sourceReads{reader: reader, repositories: map[int64]reviewprovider.Repository{}, pulls: map[sourcePullKey]reviewprovider.Pull{}, parents: map[string]reviewprovider.Pull{}}
 }
 func (r *sourceReads) Repository(ctx context.Context, id int64) (reviewprovider.Repository, error) {
 	if value, ok := r.repositories[id]; ok {
@@ -90,6 +91,25 @@ func (r *sourceReads) Pull(ctx context.Context, repository string, number int64)
 	value, err := r.reader.Pull(ctx, repository, number)
 	if err == nil {
 		r.pulls[key] = value
+	}
+	return value, err
+}
+
+func (r *sourceReads) ParentPull(ctx context.Context, repository, branch string) (reviewprovider.Pull, error) {
+	key := repository + "\x00" + branch
+	if value, ok := r.parents[key]; ok {
+		return value, nil
+	}
+	reader, ok := r.reader.(reviewexec.ParentReader)
+	if !ok {
+		return reviewprovider.Pull{}, reviewHold("parent_unavailable")
+	}
+	value, err := reader.ParentPull(ctx, repository, branch)
+	if err == nil {
+		r.parents[key] = value
+		if value.Number > 0 {
+			r.pulls[sourcePullKey{repository, value.Number}] = value
+		}
 	}
 	return value, err
 }
@@ -119,9 +139,18 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 	if configuration.Mode != "stacked" || operation.AllowOutOfOrder {
 		return plan, nil, nil
 	}
-	position := slices.Index(configuration.Queue, operation.PullNumber)
-	predecessors := make([]reviewexec.SourcePlan, 0, position)
-	for _, number := range configuration.Queue[:position] {
+
+	predecessors := []reviewexec.SourcePlan{}
+	seen := map[int64]bool{operation.PullNumber: true}
+	number := plan.ParentPullNumber
+	for number != 0 {
+		if seen[number] || len(predecessors) >= 100 {
+			return plan, nil, reviewHold("predecessor_identity_changed")
+		}
+		seen[number] = true
+		if !slices.Contains(configuration.Queue, number) {
+			return plan, nil, reviewHold("predecessor_unfinished")
+		}
 		pull, err := reads.Pull(ctx, plan.Repository.FullName, number)
 		if err != nil {
 			return plan, nil, err
@@ -129,11 +158,7 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 		if pull.RepositoryID != repositoryID || pull.Number != number {
 			return plan, nil, reviewHold("predecessor_identity_changed")
 		}
-		if pull.Merged {
-			predecessors = append(predecessors, reviewexec.SourcePlan{Repository: plan.Repository, Pull: pull, ObservedAt: plan.ObservedAt})
-			continue
-		}
-		if pull.State != "open" {
+		if pull.State != "open" || pull.Merged {
 			return plan, nil, reviewHold("predecessor_unavailable")
 		}
 		request := operationRequest(operation)
@@ -150,7 +175,9 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 			return plan, nil, reviewHold("predecessor_unfinished")
 		}
 		predecessors = append(predecessors, preceding)
+		number = preceding.ParentPullNumber
 	}
+
 	return plan, predecessors, nil
 }
 

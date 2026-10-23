@@ -60,9 +60,6 @@ func newAdoptionBackupFixture(t *testing.T) *adoptionBackupFixture {
 	f := &adoptionBackupFixture{restoreFixture: base, engine: engine, service: adoptionholds.New(base.store), scope: routePolicyInventoryScope(t, base), source: m.Source{Namespace: "sealed-source", RepositoryID: 991, SnapshotSHA256: strings.Repeat("b", 64)}}
 	native := adoptionNativeRows(t, base.store.DB())
 	one, zero := int64(1), int64(0)
-	if _, err = engine.Configure(t.Context(), f.scope, "backup-unbounded-queue", reviewexec.Configuration{ExpectedRevision: &one, CapabilityID: "backup-unbounded", Mode: "independent", Queue: []int64{4, 5, 7}, Channels: []string{"cli"}}); err != nil {
-		t.Fatal(err)
-	}
 	batch := m.Batch{Version: 1, Source: f.source, ExpectedRevision: &zero, Obligations: []m.Obligation{{SourceKey: "finding-one", Kind: "finding", AffectedPullNumbers: []int64{4}, Summary: "Original pending finding", Evidence: []string{"source://finding-one"}, OriginalStatus: "pending"}, {SourceKey: "route-one", Kind: "route", AffectedPullNumbers: []int64{4, 5}, Summary: "Original unresolved source route", Evidence: []string{}, OriginalStatus: "open"}}}
 	applyBackupObligations(t, f, batch, "backup-source-one")
 	page, err := f.service.List(t.Context(), f.scope, 4, "open", 10, "")
@@ -89,6 +86,10 @@ func newAdoptionBackupFixture(t *testing.T) *adoptionBackupFixture {
 	if _, err = engine.ApplyRoundAdoption(t.Context(), f.scope, "backup-linked-policy", roundadoptionmodel.ApplyRequest{PreviewSHA256: preview.PreviewSHA256, Control: f.prepared}); err != nil {
 		t.Fatal(err)
 	}
+	// Imported PR4 controls precede enrollment; new PR5/7 still receive defaults.
+	if _, err = engine.Configure(t.Context(), f.scope, "backup-unbounded-queue", reviewexec.Configuration{ExpectedRevision: &one, CapabilityID: "backup-unbounded", Mode: "independent", Queue: []int64{4, 5, 7}, Channels: []string{"cli"}}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = engine.ConfigureRoundControl(t.Context(), f.scope, "backup-close-policy", 4, "cli", reviewexec.RoundControlRequest{ExpectedRevision: &one, Action: "close"}); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +99,8 @@ func newAdoptionBackupFixture(t *testing.T) *adoptionBackupFixture {
 	batch.Obligations = []m.Obligation{{SourceKey: "later-finding", Kind: "finding", AffectedPullNumbers: []int64{7}, Summary: "Later additive obligation", Evidence: []string{"source://later"}, OriginalStatus: "open"}}
 	applyBackupObligations(t, f, batch, "backup-source-two")
 	stale := f.prepared
-	stale.PullNumber = 5
+	// Preview a future, unconfigured target; enrolled PR5/7 have native defaults.
+	stale.PullNumber = 8
 	stale.SourceKey = "stale-next-policy"
 	if _, err = engine.PreviewRoundAdoption(t.Context(), f.scope, stale); err == nil {
 		t.Fatal("new policy admitted against stale current source revision")

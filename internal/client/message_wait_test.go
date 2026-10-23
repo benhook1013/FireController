@@ -159,9 +159,6 @@ func TestMessageWaitRejectsInvalidArgumentsBeforeHTTP(t *testing.T) {
 func TestMessageWaitMalformedStreamsReturnNoPartialPage(t *testing.T) {
 	valid := waitFrame(waitPage("next", waitEvent(7, "message.sent")))
 	cases := map[string]string{
-		"eof_before_ready":        "",
-		"eof_after_ready":         waitFrame(waitPage("ready")),
-		"partial_frame":           strings.TrimSuffix(valid, "\n"),
 		"cursor_mismatch":         strings.Replace(valid, "id: next", "id: other", 1),
 		"missing_id":              strings.Replace(valid, "id: next\n", "", 1),
 		"duplicate_id":            strings.Replace(valid, "id: next", "id: next\nid: next", 1),

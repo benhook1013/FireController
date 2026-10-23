@@ -64,8 +64,8 @@ func roundInventoryFixture(t *testing.T, late bool) *restoreFixture {
 		t.Fatal(err)
 	}
 	if late {
-		if c.Epoch != 2 || c.Used != 0 || c.Dry != 0 || c.Closed {
-			t.Fatal("late old grant changed new grant", c)
+		if c.Epoch != 1 || c.Used != 1 || c.Dry != 1 || c.Closed {
+			t.Fatal("same-epoch late completion lost cumulative grant credit", c)
 		}
 	} else if c.Epoch != 1 || c.Used != 1 || c.Dry != 1 || !c.Closed {
 		t.Fatal("completed closed grant not retained", c)
@@ -283,7 +283,7 @@ func TestRoundInventoryAcceptedPendingCaptureCountsWithoutReadyCredit(t *testing
 		t.Fatal(err)
 	}
 	c, err := e.ReadRoundControl(t.Context(), scope, 4, "cli")
-	if err != nil || c.Epoch != 2 || c.Used != 1 || c.Dry != 0 {
+	if err != nil || c.Epoch != 1 || c.Used != 2 || c.Dry != 0 {
 		t.Fatal("accepted source round not counted", c, err)
 	}
 	plan := reviewexec.SourcePlan{Repository: reviewprovider.Repository{ID: 991, FullName: "synthetic/restore", DefaultBranch: "main"}, Pull: reviewprovider.Pull{Number: 4, RepositoryID: 991, State: "open", HeadSHA: anchor.CandidateSHA, BaseSHA: anchor.BaseSHA, BaseRef: "main", ChangedFiles: 1}, ParentSHA: anchor.ParentSHA, ObservedAt: anchor.ObservedAt}

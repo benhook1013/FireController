@@ -205,8 +205,8 @@ func TestRoundControlsGrantCloseScopeReplayAndAuthority(t *testing.T) {
 	}
 	roundGrant(t, f, 2, "cli", 2, 1, 2, "reopen")
 	c = roundRead(t, f, 2, "cli")
-	if c.Epoch != 2 || c.Closed || c.Used != 0 || c.Dry != 0 || c.Tapered || c.CreatedAt != closed.CreatedAt {
-		t.Fatal("new grant failed to reset only its epoch")
+	if c.Epoch != 1 || c.Closed || c.Used != 0 || c.Dry != 0 || c.Tapered || c.CreatedAt != closed.CreatedAt {
+		t.Fatal("new limits failed to preserve the epoch")
 	}
 	// A scope obtained before write permission was withdrawn cannot recover an
 	// old successful receipt or make another change with its cached authority.
@@ -254,7 +254,7 @@ func TestRoundControlsInitialCloseAndValidation(t *testing.T) {
 	}
 }
 
-func TestRoundControlsInflightRefusesNewGrant(t *testing.T) {
+func TestRoundControlsInflightPreservesBindingAcrossLimitEdit(t *testing.T) {
 	for _, state := range []string{"queued", "preparing", "posting", "active", "uncertain"} {
 		t.Run(state, func(t *testing.T) {
 			f := roundFixture(t)
@@ -284,12 +284,18 @@ func TestRoundControlsInflightRefusesNewGrant(t *testing.T) {
 					}
 				}
 			}
-			before := roundTables(t, f)
 			revision, min, max := int64(1), int64(0), int64(2)
 			_, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "replacement", 2, channel, RoundControlRequest{ExpectedRevision: &revision, Action: "grant", Minimum: &min, Maximum: &max})
-			attemptCode(t, err, "review_round_inflight")
-			if before != roundTables(t, f) {
-				t.Fatal("in-flight refusal lost grant/binding")
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := roundRead(t, f, 2, channel)
+			var boundRevision int64
+			if err = f.store.DB().QueryRow(`SELECT grant_revision FROM review_round_operation_bindings WHERE operation_id=?`, receipt.ID).Scan(&boundRevision); err != nil || boundRevision != 1 || c.Epoch != 1 || c.Maximum != 2 {
+				t.Fatal("limit edit changed active binding", c, boundRevision, err)
+			}
+			if _, err = f.e.RoundAdmission(t.Context(), attemptProject, receipt.ID); err != nil {
+				t.Fatal("original request lost current admission", err)
 			}
 		})
 	}
@@ -373,7 +379,7 @@ func TestRoundControlsFrozenAcceptedDryStreakAndTaperLatch(t *testing.T) {
 
 func TestRoundControlsExactMinimumAndLateOldEpochCompletion(t *testing.T) {
 	f := roundFixture(t)
-	roundGrant(t, f, 2, "cli", 0, 3, 3, "exact")
+	seedLegacyRoundGrant(t, f, 2, "cli", 0, 3, 3, "exact")
 	for i := 0; i < 3; i++ {
 		a, id := roundCapture(t, f, i, false)
 		roundFinalize(t, f, a, id, i, false)
@@ -382,14 +388,14 @@ func TestRoundControlsExactMinimumAndLateOldEpochCompletion(t *testing.T) {
 			t.Fatal("exact grant ended before its minimum")
 		}
 	}
-	roundGrant(t, f, 2, "cli", 1, 0, 2, "next-epoch")
+	seedLegacyRoundGrant(t, f, 2, "cli", 1, 0, 2, "next-epoch")
 	a, id := roundCapture(t, f, 4, true)
 	// The completed operation is terminal but source decisions remain pending.
 	c := roundRead(t, f, 2, "cli")
 	if c.Used != 0 {
 		t.Fatal("unfinalized native result supplied a round")
 	}
-	roundGrant(t, f, 2, "cli", 2, 0, 2, "fresh-epoch")
+	seedLegacyRoundGrant(t, f, 2, "cli", 2, 0, 2, "fresh-epoch")
 	current := roundRead(t, f, 2, "cli")
 	roundFinalize(t, f, a, id, 4, true)
 	if got := roundRead(t, f, 2, "cli"); !reflect.DeepEqual(got, current) {

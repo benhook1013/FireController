@@ -16,16 +16,23 @@ type TargetReader interface {
 	Pull(context.Context, string, int64) (reviewprovider.Pull, error)
 }
 
+// ParentReader resolves a published base branch to its unique open PR in the
+// same repository. Queue position never supplies repository dependency identity.
+type ParentReader interface {
+	ParentPull(context.Context, string, string) (reviewprovider.Pull, error)
+}
+
 type SourcePlan struct {
 	Repository       reviewprovider.Repository
 	Pull             reviewprovider.Pull
 	ParentPullNumber int64
 	ParentSHA        string
 	ObservedAt       string
+	SourceReason     string
 }
 
-// ResolveSource refreshes only the asserted target and preceding PR facts
-// needed to find its effective parent. This supplies source facts, not review
+// ResolveSource refreshes only the asserted target and its actual base-branch
+// parent when present. This supplies source facts, not review
 // policy, activity, allowance or permission to dispatch an external action.
 func ResolveSource(ctx context.Context, reader TargetReader, repositoryID int64, c Configuration, request Request) (SourcePlan, error) {
 	return resolveSource(ctx, reader, repositoryID, c, request, true)
@@ -56,8 +63,7 @@ func resolveSource(ctx context.Context, reader TargetReader, repositoryID int64,
 		}
 		channels[channel] = true
 	}
-	position := slices.Index(c.Queue, request.PullNumber)
-	if position < 0 {
+	if !slices.Contains(c.Queue, request.PullNumber) {
 		return SourcePlan{}, core.Fail("review_not_configured", "The asserted review target is not configured.", 409)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -78,25 +84,22 @@ func resolveSource(ctx context.Context, reader TargetReader, repositoryID int64,
 		return SourcePlan{}, sourceHold("target_changed")
 	}
 	plan := SourcePlan{Repository: repo, Pull: pull, ParentSHA: pull.BaseSHA, ObservedAt: observed}
-	if c.Mode == "stacked" {
-		for i := position - 1; i >= 0; i-- {
-			parent, err := reader.Pull(ctx, repo.FullName, c.Queue[i])
-			if err != nil {
-				return SourcePlan{}, err
-			}
-			if !sameTarget(parent, repositoryID, c.Queue[i]) {
-				return SourcePlan{}, sourceHold("parent_identity_changed")
-			}
-			if parent.Merged {
-				continue
-			}
-			if parent.State != "open" {
-				return SourcePlan{}, sourceHold("parent_unavailable")
-			}
-			plan.ParentPullNumber = parent.Number
-			plan.ParentSHA = parent.HeadSHA
-			break
+	if c.Mode == "stacked" && pull.BaseRef != repo.DefaultBranch {
+		parents, ok := reader.(ParentReader)
+		if !ok {
+			return SourcePlan{}, sourceHold("parent_unavailable")
 		}
+		parent, err := parents.ParentPull(ctx, repo.FullName, pull.BaseRef)
+		if err != nil {
+			return SourcePlan{}, err
+		}
+		if parent.Number <= 0 || parent.State != "open" || parent.Merged {
+			return SourcePlan{}, sourceHold("parent_unavailable")
+		}
+		if !sameTarget(parent, repositoryID, parent.Number) || parent.Number == pull.Number || parent.HeadRef != pull.BaseRef {
+			return SourcePlan{}, sourceHold("parent_identity_changed")
+		}
+		plan.ParentPullNumber, plan.ParentSHA = parent.Number, parent.HeadSHA
 	}
 	if plan.ParentPullNumber == 0 && pull.BaseRef != repo.DefaultBranch {
 		return SourcePlan{}, sourceHold("default_base_changed")

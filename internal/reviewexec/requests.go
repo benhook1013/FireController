@@ -72,6 +72,31 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 		if revision != *c.ExpectedRevision {
 			return nil, conflict()
 		}
+		var previous Configuration
+		if revision > 0 {
+			var err error
+			previous, _, err = readConfiguration(ctx, tx, scope.ProjectID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		// Enrolling a new PR/channel installs the product plan atomically.
+		// Existing pairs are deliberately untouched by pause/order/capability
+		// edits, including installations upgraded from unconfigured controls.
+		for _, pull := range c.Queue {
+			for _, channel := range c.Channels {
+				if slices.Contains(previous.Queue, pull) && slices.Contains(previous.Channels, channel) {
+					continue
+				}
+				maximum := int64(6)
+				if channel == "hosted" {
+					maximum = 3
+				}
+				if err := initializeRoundControl(ctx, tx, scope, pull, channel, 2, maximum); err != nil {
+					return nil, err
+				}
+			}
+		}
 		revision++
 		if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,?,?)`, scope.ProjectID, revision, encoded(c)); err != nil {
 			return nil, err

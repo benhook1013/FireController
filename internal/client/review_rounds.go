@@ -109,7 +109,7 @@ func (c *Client) validRoundControl(r ReviewRoundControl, pull int64, channel str
 	} else if r.MaximumUnbounded || r.InitialDry != 0 || r.InitiallyTapered || r.Taper != taper {
 		return false
 	}
-	return r.Revision >= 1 && r.Epoch >= 1 && r.Epoch <= r.Revision && r.Minimum >= 0 && r.Used >= 0 && r.Used <= 9007199254740991 && r.Dry >= 0 && r.Dry <= 9007199254740991 && r.Dry <= r.Used+r.InitialDry && (r.MaximumUnbounded && r.Maximum == 0 && r.Minimum <= 9007199254740991 || !r.MaximumUnbounded && r.Maximum >= maximumMinimum && r.Maximum <= 1000 && r.Minimum <= r.Maximum && r.Used <= r.Maximum) && (!r.Tapered || r.Used >= r.Minimum && (r.InitiallyTapered || r.Dry >= r.Taper)) && (!r.InitiallyTapered || r.Used < r.Minimum || r.Tapered) && validID(r.ActorID) && controlTime(r.CreatedAt) && controlTime(r.UpdatedAt)
+	return r.Revision >= 1 && r.Epoch >= 1 && r.Epoch <= r.Revision && r.Minimum >= 0 && r.Used >= 0 && r.Used <= 9007199254740991 && r.Dry >= 0 && r.Dry <= 9007199254740991 && r.Dry <= r.Used+r.InitialDry && (r.MaximumUnbounded && r.Maximum == 0 && r.Minimum <= 9007199254740991 || !r.MaximumUnbounded && r.Maximum >= maximumMinimum && r.Maximum <= 9007199254740991 && r.Minimum <= r.Maximum && r.Used <= r.Maximum) && (!r.Tapered || r.Used >= r.Minimum && (r.InitiallyTapered || r.Dry >= r.Taper)) && validID(r.ActorID) && controlTime(r.CreatedAt) && controlTime(r.UpdatedAt)
 }
 
 func (c *Client) ConfigureReviewRoundControl(ctx context.Context, pull int64, channel, key string, input ConfigureReviewRoundControlRequest) (ReviewRoundControlReceipt, error) {

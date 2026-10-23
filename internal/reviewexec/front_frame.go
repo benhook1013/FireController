@@ -27,6 +27,7 @@ type frontPull struct {
 	ParentPullNumber     int64  `json:"parent_pull_number"`
 	ParentSHA            string `json:"parent_sha"`
 	ObservedAt           string `json:"observed_at"`
+	SourceReason         string `json:"source_reason,omitempty"`
 }
 type frontFrame struct {
 	repository, configuration           int64
@@ -38,7 +39,7 @@ type frontFrame struct {
 func (f frontFrame) plans() []SourcePlan {
 	out := make([]SourcePlan, 0, len(f.prefix))
 	for _, p := range f.prefix {
-		out = append(out, SourcePlan{Repository: reviewprovider.Repository{ID: f.repository}, Pull: reviewprovider.Pull{RepositoryID: f.repository, Number: p.Number, State: p.State, Merged: p.Merged, HeadSHA: p.HeadSHA, BaseSHA: p.BaseSHA, BaseRef: p.BaseRef}, ParentPullNumber: p.ParentPullNumber, ParentSHA: p.ParentSHA, ObservedAt: p.ObservedAt})
+		out = append(out, SourcePlan{Repository: reviewprovider.Repository{ID: f.repository}, Pull: reviewprovider.Pull{RepositoryID: f.repository, Number: p.Number, State: p.State, Merged: p.Merged, HeadSHA: p.HeadSHA, BaseSHA: p.BaseSHA, BaseRef: p.BaseRef}, ParentPullNumber: p.ParentPullNumber, ParentSHA: p.ParentSHA, ObservedAt: p.ObservedAt, SourceReason: p.SourceReason})
 	}
 	return out
 }
@@ -52,26 +53,20 @@ func validFrontFrame(f frontFrame, c Configuration, channel string) bool {
 	observed := ""
 	var latest time.Time
 	for i, p := range f.prefix {
-		if p.Number != c.Queue[i] || (p.State != "open" && p.State != "closed") || p.Merged && p.State != "closed" || !sha.MatchString(p.HeadSHA) || !sha.MatchString(p.BaseSHA) || !sha.MatchString(p.ParentSHA) || p.ParentSHA != p.BaseSHA || p.BaseRef == "" || !safeText(p.BaseRef, 256) || !roundTime(p.ObservedAt) {
+		if p.Number != c.Queue[i] || (p.State != "open" && p.State != "closed") || p.Merged && p.State != "closed" || !sha.MatchString(p.HeadSHA) || !sha.MatchString(p.BaseSHA) || !sha.MatchString(p.ParentSHA) || p.ParentSHA != p.BaseSHA || p.BaseRef == "" || !safeText(p.BaseRef, 256) || !roundTime(p.ObservedAt) || p.SourceReason != "" && !perPullSourceHold(p.SourceReason) {
 			return false
 		}
-		parent := int64(0)
-		parentSHA := p.BaseSHA
-		if p.State == "open" && c.Mode == "stacked" {
-			for j := i - 1; j >= 0; j-- {
-				if !f.prefix[j].Merged {
-					if f.prefix[j].State != "open" {
-						return false
-					}
-					parent = f.prefix[j].Number
-					parentSHA = f.prefix[j].HeadSHA
-					break
+		if p.ParentPullNumber < 0 || p.ParentPullNumber > 2147483647 || p.ParentPullNumber == p.Number || c.Mode == "independent" && p.ParentPullNumber != 0 {
+			return false
+		}
+		if p.ParentPullNumber != 0 {
+			for _, parent := range f.prefix {
+				if parent.Number == p.ParentPullNumber && (parent.State != "open" || parent.Merged || parent.HeadSHA != p.ParentSHA) {
+					return false
 				}
 			}
 		}
-		if p.ParentPullNumber != parent || p.ParentSHA != parentSHA {
-			return false
-		}
+
 		at, _ := time.Parse(time.RFC3339Nano, p.ObservedAt)
 		if observed == "" || at.After(latest) {
 			latest = at
@@ -93,7 +88,7 @@ func writeFrontFrame(ctx context.Context, tx *sql.Tx, r Run, repo int64, c Confi
 				return err
 			}
 		}
-		f.prefix = append(f.prefix, frontPull{Number: p.Pull.Number, VisibleAtAcquisition: visible, State: p.Pull.State, Merged: p.Pull.Merged, HeadSHA: p.Pull.HeadSHA, BaseSHA: p.Pull.BaseSHA, BaseRef: p.Pull.BaseRef, ParentPullNumber: p.ParentPullNumber, ParentSHA: p.ParentSHA, ObservedAt: p.ObservedAt})
+		f.prefix = append(f.prefix, frontPull{Number: p.Pull.Number, VisibleAtAcquisition: visible, State: p.Pull.State, Merged: p.Pull.Merged, HeadSHA: p.Pull.HeadSHA, BaseSHA: p.Pull.BaseSHA, BaseRef: p.Pull.BaseRef, ParentPullNumber: p.ParentPullNumber, ParentSHA: p.ParentSHA, ObservedAt: p.ObservedAt, SourceReason: p.SourceReason})
 		if f.observedAt == "" {
 			f.observedAt = p.ObservedAt
 		} else {

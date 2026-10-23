@@ -237,3 +237,53 @@ func TestReviewRoundsReadUnboundedSafeCounters(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewRoundsCumulativeFiniteBoundsAndAcceptedReset(t *testing.T) {
+	for _, mode := range []string{"cumulative", "safe-edge", "accepted-reset", "legacy-carried", "unsafe-maximum", "minimum-over-maximum", "used-over-maximum", "unproven-taper"} {
+		t.Run(mode, func(t *testing.T) {
+			value := roundControlSample()
+			value.Closed = false
+			value.Minimum, value.Maximum, value.Used, value.Dry = 1001, 2000, 1000, 2
+			switch mode {
+			case "safe-edge":
+				value.Minimum, value.Maximum, value.Used, value.Dry = 9007199254740990, 9007199254740991, 9007199254740990, 0
+			case "accepted-reset", "legacy-carried":
+				value.OriginSource, value.OriginKey, value.OriginSHA256 = "original-controller", "2-cli", strings.Repeat("a", 64)
+				value.InitiallyTapered = true
+				value.InitialDry = 2
+				value.Minimum, value.Used, value.Dry = 1, 1, 0
+				if mode == "legacy-carried" {
+					value.Tapered = true
+				}
+			case "unsafe-maximum":
+				value.Maximum = 9007199254740992
+			case "minimum-over-maximum":
+				value.Minimum = value.Maximum + 1
+			case "used-over-maximum":
+				value.Used = value.Maximum + 1
+			case "unproven-taper":
+				value.Minimum = 0
+				value.Dry = 0
+				value.Tapered = true
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/instance") {
+					handshake(w)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(value)
+			}))
+			defer server.Close()
+			got, err := newClient(t, server).ReviewRoundControl(context.Background(), 2, "cli")
+			switch mode {
+			case "cumulative", "safe-edge", "accepted-reset", "legacy-carried":
+				if err != nil || got != value {
+					t.Fatal("lost valid cumulative or carried control", got, err)
+				}
+			default:
+				checkError(t, err, "invalid_response")
+			}
+		})
+	}
+}

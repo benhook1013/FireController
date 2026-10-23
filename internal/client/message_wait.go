@@ -155,6 +155,10 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 			return interrupted()
 		}
 		if err != nil {
+			var transport net.Error
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &transport) {
+				return MessageEventPage{}, fail("connection_failed", "The message connection was lost.", "Retry the wait using the saved cursor, or read the bound-worker inbox; messages remain unacknowledged.", 0)
+			}
 			return MessageEventPage{}, invalidResponse()
 		}
 		if frame.event == "error" {

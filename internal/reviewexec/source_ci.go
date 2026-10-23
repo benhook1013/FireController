@@ -217,6 +217,8 @@ func validSourceCI(o reviewprovider.CIObservation, source SourceObservation) boo
 
 func summarizeSourceCI(o reviewprovider.CIObservation) SourceCISummary {
 	s := SourceCISummary{State: o.State, Reason: o.Reason, Selection: o.Selection, SelectedCommitSHA: o.SelectedCommitSHA, MergeState: o.MergeState, ObservedAt: o.ObservedAt.UTC().Format(time.RFC3339Nano)}
+	var unprovenReason string
+	uniformReason := true
 	for _, check := range o.Assessment.Checks {
 		s.Required++
 		switch check.State {
@@ -228,7 +230,18 @@ func summarizeSourceCI(o reviewprovider.CIObservation) SourceCISummary {
 			s.Pending++
 		default:
 			s.Unproven++
+			if s.Unproven == 1 {
+				unprovenReason = check.Reason
+			} else if check.Reason != unprovenReason {
+				uniformReason = false
+			}
+			if check.State != "unproven" || check.Reason == "" {
+				uniformReason = false
+			}
 		}
+	}
+	if s.State == "unproven" && s.Reason == "ci_required_checks_unproven" && s.Unproven > 0 && uniformReason {
+		s.Reason = unprovenReason
 	}
 	return s
 }

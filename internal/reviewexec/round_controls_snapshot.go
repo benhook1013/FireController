@@ -18,7 +18,7 @@ func ValidateRoundSnapshot(ctx context.Context, q EvidenceQuery) error {
 	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_rounds'`).Scan(&version); err != nil {
 		return err
 	}
-	if version != 1 && version != 2 && version != 3 {
+	if version != 1 && version != 2 && version != 3 && version != 4 {
 		return roundUnavailable()
 	}
 	if err := validateRoundPhysicalVersion(ctx, q, version); err != nil {
@@ -82,7 +82,7 @@ func ValidateRoundSnapshot(ctx context.Context, q EvidenceQuery) error {
 // Physical validation precedes keyset traversal: SQLite TEXT affinity alone
 // permits BLOB keys that cannot be resumed using a scanned Go string cursor.
 func validateRoundPhysical(ctx context.Context, q EvidenceQuery) error {
-	return validateRoundPhysicalVersion(ctx, q, 3)
+	return validateRoundPhysicalVersion(ctx, q, 4)
 }
 func validateRoundPhysicalVersion(ctx context.Context, q EvidenceQuery, version int) error {
 	expected := map[string]string{}
@@ -91,6 +91,8 @@ func validateRoundPhysicalVersion(ctx context.Context, q EvidenceQuery, version 
 		definitions = RoundSchemaV1SQL()
 	} else if version == 2 {
 		definitions = RoundSchemaV2SQL()
+	} else if version == 3 {
+		definitions = RoundSchemaV3SQL()
 	}
 	for _, statement := range definitions {
 		fields := strings.Fields(statement)
@@ -279,6 +281,9 @@ func roundEpochProgress(ctx context.Context, q EvidenceQuery, grant RoundControl
 }
 
 func validateRoundHistory(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string, version int) error {
+	if version >= 4 {
+		return validateCumulativeRoundHistory(ctx, q, project, pull, channel)
+	}
 	current, err := readRoundRecordVersion(ctx, q, project, pull, channel, version)
 	if err != nil {
 		return err
@@ -314,7 +319,7 @@ func validateRoundHistory(ctx context.Context, q EvidenceQuery, project string, 
 		}
 		for _, v := range page {
 			var c RoundControl
-			if v.revision != revision+1 || strictjson.Decode([]byte(v.body), &c) != nil || encoded(c) != v.body || !validRoundControl(c) || version < 3 && c.MaximumUnbounded || c.ProjectID != project || c.PullNumber != pull || c.Channel != channel || c.Revision != v.revision || c.Epoch != v.epoch || v.worker != "" && !identifier.MatchString(v.worker) {
+			if v.revision != revision+1 || strictjson.Decode([]byte(v.body), &c) != nil || encoded(c) != v.body || !validLegacyRoundControl(c) || version < 3 && c.MaximumUnbounded || c.ProjectID != project || c.PullNumber != pull || c.Channel != channel || c.Revision != v.revision || c.Epoch != v.epoch || v.worker != "" && !identifier.MatchString(v.worker) {
 				return roundUnavailable()
 			}
 			if revision == 0 {
@@ -414,7 +419,8 @@ func validateRoundBindings(ctx context.Context, q EvidenceQuery) error {
 			if !identifier.MatchString(b.id) || !roundScope(b.project, b.pull, b.channel) {
 				return roundUnavailable()
 			}
-			if _, err := readRoundGrant(ctx, q, b.project, b.pull, b.channel, b.grant, b.epoch); err != nil {
+			original, err := readRoundGrant(ctx, q, b.project, b.pull, b.channel, b.grant, b.epoch)
+			if err != nil {
 				return err
 			}
 			expected, _, err := roundCompletionAuthority(ctx, q, b.project, b.id)
@@ -422,7 +428,8 @@ func validateRoundBindings(ctx context.Context, q EvidenceQuery) error {
 				return err
 			}
 			var actual string
-			err = q.QueryRowContext(ctx, `SELECT evidence_id FROM review_round_completions WHERE operation_id=?`, b.id).Scan(&actual)
+			var ordinal int64
+			err = q.QueryRowContext(ctx, `SELECT evidence_id,ordinal FROM review_round_completions WHERE operation_id=?`, b.id).Scan(&actual, &ordinal)
 			if expected == "" {
 				if !errors.Is(err, sql.ErrNoRows) {
 					if err != nil {
@@ -430,7 +437,7 @@ func validateRoundBindings(ctx context.Context, q EvidenceQuery) error {
 					}
 					return roundUnavailable()
 				}
-			} else if err != nil || actual != expected {
+			} else if err != nil || actual != expected || ordinal <= original.Used {
 				if err != nil {
 					return err
 				}

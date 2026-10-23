@@ -216,9 +216,6 @@ func TestExplicitOrderFinalGuardRetainsTargetGuardsBothChannels(t *testing.T) {
 				hostedAdmissionNoHTTP(t)
 				f := newAttemptFixture(t)
 				explicitOrderConfigure(t, f)
-				if mode == "round-closed" {
-					roundGrant(t, f, 4, channel, 0, 0, 3, "initial-grant")
-				}
 				a := explicitOrderAdmit(t, f, f.start(t, attemptProject, explicitOrderEnqueue(t, f, "guarded-explicit", channel, true, 1)), channel)
 				code := "review_conflict"
 				reason := ""

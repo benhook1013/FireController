@@ -18,9 +18,13 @@ import (
 )
 
 func selectionFixture(t *testing.T) *attemptFixture {
+	return selectionFixtureWithQueue(t, []int64{2, 4})
+}
+func selectionFixtureWithQueue(t *testing.T, queue []int64) *attemptFixture {
 	t.Helper()
 	f := newAttemptFixture(t)
-	f.configure(t, attemptProject, "test-capability", 0, false)
+	zero := int64(0)
+	seedLegacyExecutionConfiguration(t, f, attemptProject, "config-exec-project-one-0", Configuration{ExpectedRevision: &zero, CapabilityID: "test-capability", Mode: "independent", Queue: queue, Channels: []string{"cli", "hosted"}})
 	for _, p := range []string{attemptProject, otherAttemptProject} {
 		if _, err := f.store.DB().Exec(`INSERT INTO workers(project_id,id,name) VALUES(?,'selection-worker','Selector')`, p); err != nil {
 			t.Fatal(err)
@@ -218,15 +222,11 @@ func TestRunSelectionFrontPrefixAndExpectedAssertion(t *testing.T) {
 			got := selectionRead(t, f, r.ID)
 			want := int64(2)
 			wantCalls := []int64{2}
-			if mode == "merged-prefix" || mode == "stopped-prefix" {
+			if mode == "merged-prefix" || mode == "stopped-prefix" || mode == "closed-prefix" {
 				want = 4
 				wantCalls = []int64{2, 4}
 			}
 			switch mode {
-			case "closed-prefix":
-				if got.State != "held" || got.Reason != "front_unavailable" {
-					t.Fatal(got)
-				}
 			case "expected-mismatch":
 				if got.State != "held" || got.Reason != "expected_pr_mismatch" {
 					t.Fatal(got)
@@ -251,7 +251,13 @@ func TestRunSelectionFrontPrefixAndExpectedAssertion(t *testing.T) {
 func TestRunSelectionPendingNativeEvidenceAndLiveActionHold(t *testing.T) {
 	for _, mode := range []string{"queued-native", "pending-capture", "dirty-proof"} {
 		t.Run(mode, func(t *testing.T) {
-			f := selectionFixture(t)
+			queue := []int64{2, 4}
+			if mode == "pending-capture" {
+				// Exercise this target's pending capture, not unrelated independent
+				// queue work that is now correctly allowed to progress.
+				queue = []int64{2}
+			}
+			f := selectionFixtureWithQueue(t, queue)
 			if mode == "queued-native" {
 				f.enqueue(t, attemptProject, "native", "cli", 2, 1)
 			} else {

@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -22,7 +23,10 @@ func runRouteSetup(t *testing.T) (*attemptFixture, string) {
 func runRouteQueue(t *testing.T, f *attemptFixture, queue []int64) {
 	t.Helper()
 	revision := int64(2)
-	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "selection-route-queue", Configuration{ExpectedRevision: &revision, CapabilityID: "test-capability", Mode: "independent", Queue: queue, Channels: []string{"cli", "hosted"}}); err != nil {
+	if err := f.store.DB().QueryRow(`SELECT MAX(revision) FROM review_execution_config WHERE project_id=?`, attemptProject).Scan(&revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), fmt.Sprintf("selection-route-queue-%d", revision), Configuration{ExpectedRevision: &revision, CapabilityID: "test-capability", Mode: "independent", Queue: queue, Channels: []string{"cli", "hosted"}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -34,7 +38,7 @@ func TestRunSelectionReceivingRoutesHoldCoveredOrClosedFront(t *testing.T) {
 			route := routeCreate(t, f, sourceID, "incoming-selection-route", routeRequest(0, 0, 4))
 			// The routed source is outside the selected queue. Its receiving
 			// obligation still belongs to the covered/finished front.
-			runRouteQueue(t, f, []int64{4, 6})
+			runRouteQueue(t, f, []int64{4})
 			if closed {
 				revision := int64(0)
 				if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close-receiver", 4, "cli", RoundControlRequest{ExpectedRevision: &revision, Action: "close"}); err != nil {
@@ -54,6 +58,8 @@ func TestRunSelectionReceivingRoutesHoldCoveredOrClosedFront(t *testing.T) {
 				}
 			}
 			routeFix(t, f, route.ID, "receiving-route-fixed", 2, "", strings.Repeat("d", 40))
+			// Once the target's own route is fixed, include independent later work.
+			runRouteQueue(t, f, []int64{4, 6})
 			r, _ := selectionEnqueue(t, f, "after-receiving-fix", "cli", nil)
 			reader := &refreshTestReader{}
 			selectionNext(t, f, reader)
@@ -79,7 +85,7 @@ func TestRunSelectionReceivingRouteArrivingDuringSourcePreventsChild(t *testing.
 			p.State, p.Merged = "closed", true
 		}
 		if n == 6 {
-			routeCreate(t, f, sourceID, "late-route-write", routeRequest(0, 0, 4))
+			routeCreate(t, f, sourceID, "late-route-write", routeRequest(0, 0, 6))
 		}
 		return p, nil
 	}}

@@ -125,19 +125,26 @@ func (g *GitHub) Repository(ctx context.Context, id int64) (Repository, error) {
 }
 
 func (g *GitHub) Pull(ctx context.Context, repository string, number int64) (Pull, error) {
+	pull, _, err := g.pullWithIdentity(ctx, repository, number)
+	return pull, err
+}
+
+// Keep the ordinary Pull read/normalization identical while letting a bounded
+// parent lookup verify the fresh wire repository identity before discarding it.
+func (g *GitHub) pullWithIdentity(ctx context.Context, repository string, number int64) (Pull, githubPull, error) {
 	if !validRepositorySelector(repository) || !validPullNumber(number) {
-		return Pull{}, invalidSelector()
+		return Pull{}, githubPull{}, invalidSelector()
 	}
 	path := "/repos/" + repository + "/pulls/" + strconv.FormatInt(number, 10)
 	var raw githubPull
 	if err := g.getJSON(ctx, path, nil, &raw); err != nil {
-		return Pull{}, err
+		return Pull{}, githubPull{}, err
 	}
 	pull, err := normalizePull(raw, number)
 	if err != nil {
-		return Pull{}, invalidResponse(false, 200)
+		return Pull{}, githubPull{}, invalidResponse(false, 200)
 	}
-	return pull, nil
+	return pull, raw, nil
 }
 
 func (g *GitHub) IssueComments(ctx context.Context, repository string, number int64) ([]IssueComment, error) {
@@ -755,6 +762,7 @@ type githubPull struct {
 	Merged bool   `json:"merged,required"`
 	Head   struct {
 		SHA  string            `json:"sha,required"`
+		Ref  *string           `json:"ref"`
 		Repo *githubRepository `json:"repo,required"`
 	} `json:"head,required"`
 	Base struct {
@@ -924,6 +932,13 @@ func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
 	if !validPlainText(raw.Title, 4096) || strings.TrimSpace(raw.Title) == "" || raw.Number != expectedNumber || raw.ChangedFiles < 0 || raw.ChangedFiles > 1000000 || raw.State != "open" && raw.State != "closed" || raw.Merged && raw.State != "closed" || raw.Base.Repo.ID <= 0 || !validSHA(raw.Head.SHA) || !validSHA(raw.Base.SHA) || !validPlainText(raw.Base.Ref, 255) || strings.TrimSpace(raw.Base.Ref) == "" {
 		return Pull{}, errors.New("invalid pull")
 	}
+	headRef := ""
+	if raw.Head.Ref != nil {
+		headRef = *raw.Head.Ref
+		if !validRequiredBranch(headRef) {
+			return Pull{}, errors.New("invalid head branch")
+		}
+	}
 	if _, err := normalizeRepository(raw.Base.Repo, 0); err != nil {
 		return Pull{}, errors.New("invalid base repository")
 	}
@@ -959,7 +974,7 @@ func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
 			mergeability = "mergeable"
 		}
 	}
-	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles, Additions: raw.Additions, Deletions: raw.Deletions, IsDraft: raw.Draft, MergedAt: mergedAt, Mergeability: mergeability}, nil
+	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, HeadRef: headRef, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles, Additions: raw.Additions, Deletions: raw.Deletions, IsDraft: raw.Draft, MergedAt: mergedAt, Mergeability: mergeability}, nil
 }
 
 func normalizeIssueComment(raw githubIssueComment) (IssueComment, error) {

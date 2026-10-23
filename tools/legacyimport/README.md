@@ -85,6 +85,8 @@ Large capture sets can use explicit `--max-capture-bytes` and `--max-capture-ent
 
 ## Prepare effective review controls
 
+Apply verified source-owned controls before execution enrollment. Enrollment preserves those controls and initializes product defaults only for absent newly enrolled PR/channel pairs; see the [native control contract](../../docs/review-round-controls.md#operational-controls). Do not grant temporary defaults and then overwrite them as part of adoption.
+
 The separate stdlib Python adapter uses an explicitly supplied trusted source package and an owner-exported canonical effective-history frame. Source code is executable input. It never discovers an installation, constructs live provider/Git adapters, or obtains that frame itself. A source owner must acquire and seal the complete frame while operations are quiescent; a main SQLite file or ordinary status output alone is insufficient. The source owner must also establish authoritative accepted-finding resolution and incoming/outgoing routed-obligation clearance; unavailable or unknown clearance is not clear. This settled prerequisite is independent of quiescence. The completeness, quiescence and `obligations_clear` assertions are checked as input fields and recorded in private provenance, not independently established by this adapter; the tool does not acquire the audit.
 
 ```sh

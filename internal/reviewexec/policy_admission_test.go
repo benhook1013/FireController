@@ -406,7 +406,7 @@ func TestVerifyActionAlreadyCoveredAndHostedIndependent(t *testing.T) {
 	}
 }
 
-func TestVerifyActionStackedRequiresCompleteOrderedFreshPredecessors(t *testing.T) {
+func TestVerifyActionStackedRequiresExactActualParentWitness(t *testing.T) {
 	f, prior, id, open := coverageFixture(t, 1, false)
 	adjudicationDecide(t, f, id, "reject-predecessor", 0, 0, "rejected")
 	coverageFinalize(t, f, prior, id, 1)
@@ -424,27 +424,27 @@ func TestVerifyActionStackedRequiresCompleteOrderedFreshPredecessors(t *testing.
 	merged := open
 	merged.Pull.Number, merged.Pull.Merged, merged.Pull.State = 3, true, "closed"
 	merged.ParentSHA, merged.ParentPullNumber = "", 0
-	dependencies := []SourcePlan{open, merged}
+	open.Pull.HeadRef = "parent-branch"
+	dependencies := []SourcePlan{open}
 	before := adjudicationState(t, f, child)
 	if err := f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, dependencies...); err != nil {
-		t.Fatal("valid covered/merged stack failed", err)
+		t.Fatal("valid covered actual parent failed", err)
 	}
 	for _, test := range []struct {
 		name   string
 		change func([]SourcePlan) []SourcePlan
 	}{
 		{"missing-all", func([]SourcePlan) []SourcePlan { return nil }},
-		{"missing-merged", func(in []SourcePlan) []SourcePlan { return in[:1] }},
-		{"extra", func(in []SourcePlan) []SourcePlan { return append(in, in[0]) }},
-		{"reordered", func(in []SourcePlan) []SourcePlan { return []SourcePlan{in[1], in[0]} }},
-		{"duplicate", func(in []SourcePlan) []SourcePlan { in[1] = in[0]; return in }},
+		{"unrelated-merged-prefix", func(in []SourcePlan) []SourcePlan { return append(in, merged) }},
+		{"duplicate", func(in []SourcePlan) []SourcePlan { return append(in, in[0]) }},
+		{"wrong-parent-number", func(in []SourcePlan) []SourcePlan { in[0].Pull.Number = 3; return in }},
 		{"foreign-repository", func(in []SourcePlan) []SourcePlan { in[0].Repository.ID = 802; return in }},
-		{"foreign-pull-repository", func(in []SourcePlan) []SourcePlan { in[1].Pull.RepositoryID = 802; return in }},
-		{"malformed-merged-head", func(in []SourcePlan) []SourcePlan { in[1].Pull.HeadSHA = "bad"; return in }},
-		{"malformed-merged-lifecycle", func(in []SourcePlan) []SourcePlan { in[1].Pull.State = "open"; return in }},
+		{"foreign-pull-repository", func(in []SourcePlan) []SourcePlan { in[0].Pull.RepositoryID = 802; return in }},
+		{"malformed-head", func(in []SourcePlan) []SourcePlan { in[0].Pull.HeadSHA = "bad"; return in }},
+		{"closed-unmerged", func(in []SourcePlan) []SourcePlan { in[0].Pull.State = "closed"; return in }},
+		{"merged", func(in []SourcePlan) []SourcePlan { in[0].Pull.State, in[0].Pull.Merged = "closed", true; return in }},
 		{"malformed-open-parent", func(in []SourcePlan) []SourcePlan { in[0].ParentSHA = strings.Repeat("9", 40); return in }},
-		{"closed-unmerged", func(in []SourcePlan) []SourcePlan { in[1].Pull.Merged = false; return in }},
-		{"missing-observation", func(in []SourcePlan) []SourcePlan { in[1].ObservedAt = ""; return in }},
+		{"missing-observation", func(in []SourcePlan) []SourcePlan { in[0].ObservedAt = ""; return in }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plans := test.change(append([]SourcePlan(nil), dependencies...))
@@ -456,9 +456,9 @@ func TestVerifyActionStackedRequiresCompleteOrderedFreshPredecessors(t *testing.
 	}
 	uncovered := append([]SourcePlan(nil), dependencies...)
 	uncovered[0].Pull.HeadSHA = strings.Repeat("9", 40)
-	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, uncovered...), "review_held")
+	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, uncovered...), "validation_failed")
 	if adjudicationState(t, f, child) != before {
-		t.Fatal("uncovered predecessor refusal changed retained state")
+		t.Fatal("moved actual parent refusal changed retained state")
 	}
 	// The proof was ready at preparation, but a real current correction now needs
 	// a fix. The final guard must check predecessors and target in the same read.

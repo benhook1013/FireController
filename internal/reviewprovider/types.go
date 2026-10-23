@@ -35,6 +35,7 @@ type Pull struct {
 	State        string
 	Merged       bool
 	HeadSHA      string
+	HeadRef      string `json:",omitempty"`
 	BaseSHA      string
 	BaseRef      string
 	ChangedFiles int64

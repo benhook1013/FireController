@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/adoptionholds"
@@ -57,13 +56,9 @@ func (e *Engine) admitRoundAdoption(ctx context.Context, tx *sql.Tx, scope core.
 			return err
 		}
 	}
-	config, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
-	if err != nil {
-		return err
-	}
-	if revision < 1 || !slices.Contains(config.Queue, p.PullNumber) || !slices.Contains(config.Channels, p.Channel) {
-		return roundDenied("review_not_configured", "The selected PR and channel must be configured before adoption.")
-	}
+	// A verified prepared control may be installed before execution enrollment.
+	// This lets enrollment preserve source-owned limits rather than first
+	// granting defaults that adoption would then have to overwrite.
 	c, err := readRoundRecord(ctx, tx, scope.ProjectID, p.PullNumber, p.Channel)
 	if err != nil {
 		return err

@@ -152,13 +152,13 @@ func TestRoundProgressClosedCurrentEpochCountsAllLiveStates(t *testing.T) {
 
 func TestRoundProgressEpochProjectPullAndUnboundIsolation(t *testing.T) {
 	f := roundFixture(t)
-	roundGrant(t, f, 2, "cli", 0, 0, 4, "epoch-one")
+	seedLegacyRoundGrant(t, f, 2, "cli", 0, 0, 4, "epoch-one")
 	old := f.enqueue(t, attemptProject, "old-epoch", "cli", 2, 1)
 	a := f.start(t, attemptProject, old)
 	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", "fixture_stop", ""); err != nil {
 		t.Fatal(err)
 	}
-	roundGrant(t, f, 2, "cli", 1, 1, 2, "epoch-two")
+	seedLegacyRoundGrant(t, f, 2, "cli", 1, 1, 2, "epoch-two")
 	current := f.enqueue(t, attemptProject, "current-epoch", "cli", 2, 1)
 	// This retained-row fixture makes old-epoch filtering observable; ordinary
 	// grant replacement refuses live work and is proved in its owning tests.

@@ -45,7 +45,7 @@ func TestMixedProducerArchiveFailureAndRecovery(t *testing.T) {
 	if !lifecycleTick(t, f, schedule, r) || externalArchiveCount(t, f) != 1 {
 		t.Fatal("partial independent group blocked supported positive source")
 	}
-	if got := schedule.due[lifecycleKey{attemptProject, 2}].lastErrorCode; got != "external_hosted_identity_unproven" {
+	if got := schedule.due[lifecycleKey{attemptProject, 2}].enrichmentError; got != "external_hosted_identity_unproven" {
 		t.Fatal("partial group lost diagnostic", got)
 	}
 	clock.Add(time.Minute)

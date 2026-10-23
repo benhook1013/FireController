@@ -14,6 +14,7 @@ func configureExplicitStack(t *testing.T, f *cliDriverFixture) {
 	t.Helper()
 	parent := f.reader.pulls[3]
 	parent.HeadSHA = f.baseSHA
+	parent.HeadRef = "synthetic-parent"
 	f.reader.pulls[3] = parent
 	target := f.reader.pulls[4]
 	target.BaseSHA, target.BaseRef = parent.HeadSHA, "synthetic-parent"
@@ -56,8 +57,8 @@ func TestExplicitOrderSkipsOnlyPredecessorCompletionTraversal(t *testing.T) {
 			plan, predecessors, err := resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, sourceConfiguration("stacked", 2, 3, 4), operation)
 			if !explicit {
 				sourceHoldReason(t, err, "predecessor_unfinished")
-				if plan.Pull.Number != 4 || predecessors != nil || f.reader.calls[2] != 1 {
-					t.Fatal("ordinary request did not retain the completion prefix", plan, predecessors, f.reader.calls)
+				if plan.Pull.Number != 4 || predecessors != nil || f.reader.calls[3] != 1 || f.reader.calls[2] != 0 {
+					t.Fatal("ordinary request did not check its actual parent only", plan, predecessors, f.reader.calls)
 				}
 				return
 			}
@@ -114,7 +115,9 @@ func TestExplicitOrderRunsSyntheticCLIAndHostedDrivers(t *testing.T) {
 		if err != nil || result.State != "completed" || f.provider.reviews != 1 {
 			t.Fatal("explicit Hosted target did not run", result, err, f.provider.reviews)
 		}
-		if f.reader.calls[2] != 0 || f.reader.calls[3] != 2 || f.reader.calls[4] != 2 {
+		// Hosted refreshes exact target/parent after Git materialization, then
+		// again at dispatch. It must never inspect the unrelated queue prefix.
+		if f.reader.calls[2] != 0 || f.reader.calls[3] != 3 || f.reader.calls[4] != 3 {
 			t.Fatal("Hosted inspected the completion prefix or lost fresh target/parent reads", f.reader.calls)
 		}
 	})

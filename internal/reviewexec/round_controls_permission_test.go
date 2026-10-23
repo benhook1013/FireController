@@ -26,7 +26,7 @@ func TestRoundControlsHTTPOrdinaryWriterGrantCloseReopenAndReplay(t *testing.T) 
 		t.Fatal("writer original-key replay changed closed control", replay.Body.String())
 	}
 	evidenceHTTPRequire(t, f.request("POST", path, f.writer, "writer-reopen", `{"expected_revision":2,"action":"grant","minimum":1,"maximum":2}`), 200, "")
-	if got := roundRead(t, f, 2, "hosted"); got.Closed || got.Epoch != 2 || got.Minimum != 1 {
+	if got := roundRead(t, f, 2, "hosted"); got.Closed || got.Epoch != 1 || got.Minimum != 1 {
 		t.Fatal("ordinary writer did not reopen", got)
 	}
 	before = roundTables(t, f)

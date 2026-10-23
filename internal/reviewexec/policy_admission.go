@@ -169,7 +169,7 @@ func (e *Engine) verifyAction(ctx context.Context, tx *sql.Tx, project, attemptI
 	if reserved != 1 {
 		return conflict()
 	}
-	if err := verifyPredecessors(ctx, tx, project, current, predecessors); err != nil {
+	if err := verifyPredecessors(ctx, tx, project, current, *attempt.Anchor, predecessors); err != nil {
 		return err
 	}
 	state, err := comparison(ctx, tx, project, current.RepositoryID, operation.PullNumber, *attempt.Anchor, operation.Channel)
@@ -191,46 +191,49 @@ func (e *Engine) verifyAction(ctx context.Context, tx *sql.Tx, project, attemptI
 
 // verifyPredecessors uses the final action's existing SQL snapshot. Fresh
 // provider facts are supplied by the driver; no provider work occurs here.
-func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current ExecutionContext, predecessors []SourcePlan) error {
+func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current ExecutionContext, target Anchor, predecessors []SourcePlan) error {
 	if current.Operation.AllowOutOfOrder || current.Configuration.Mode == "independent" {
 		if len(predecessors) != 0 {
 			return invalid()
 		}
 		return nil
 	}
-	position := slices.Index(current.Configuration.Queue, current.Operation.PullNumber)
-	if position < 0 || len(predecessors) != position {
+	if !slices.Contains(current.Configuration.Queue, current.Operation.PullNumber) || len(predecessors) > 100 {
 		return invalid()
 	}
-	for i, plan := range predecessors {
-		number := current.Configuration.Queue[i]
-		observed, err := time.Parse(time.RFC3339Nano, plan.ObservedAt)
-		if err != nil || observed.IsZero() || plan.Repository.ID != current.RepositoryID || !repository.MatchString(plan.Repository.FullName) || plan.Repository.DefaultBranch == "" || !safeText(plan.Repository.DefaultBranch, 256) || !sameTarget(plan.Pull, current.RepositoryID, number) {
+	number, head := target.ParentPullNumber, target.ParentSHA
+	seen := map[int64]bool{current.Operation.PullNumber: true}
+	for _, plan := range predecessors {
+		if number == 0 || seen[number] || !slices.Contains(current.Configuration.Queue, number) || plan.Pull.Number != number || plan.Pull.HeadSHA != head {
 			return invalid()
 		}
-		if plan.Pull.Merged {
-			if err := requireSourceObligationsClear(ctx, tx, project, number); err != nil {
-				return err
-			}
-			if plan.Pull.State != "closed" {
-				return invalid()
-			}
-			continue
-		}
-		if !validCoverageSource(plan) {
+		seen[number] = true
+		observed, err := time.Parse(time.RFC3339Nano, plan.ObservedAt)
+		if err != nil || observed.IsZero() || plan.Repository.ID != current.RepositoryID || !repository.MatchString(plan.Repository.FullName) || plan.Repository.DefaultBranch == "" || !safeText(plan.Repository.DefaultBranch, 256) || !sameTarget(plan.Pull, current.RepositoryID, number) || !validCoverageSource(plan) || plan.Pull.Merged {
 			return invalid()
 		}
 		if err := requireSourceObligationsClear(ctx, tx, project, number); err != nil {
 			return err
 		}
-		anchor := Anchor{RepositoryID: current.RepositoryID, PullNumber: number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef}
-		comparison, err := comparison(ctx, tx, project, current.RepositoryID, number, anchor, current.Operation.Channel)
+		routes, err := pendingIncomingRoutes(ctx, tx, project, number)
 		if err != nil {
 			return err
 		}
-		if comparison.Pending || comparison.RoundsConfigured && !comparison.RoundsComplete || !comparison.RoundsConfigured && !comparison.Covered {
+		if routes > 0 {
 			return sourceHold("predecessor_unfinished")
 		}
+		anchor := Anchor{RepositoryID: current.RepositoryID, PullNumber: number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef}
+		state, err := comparison(ctx, tx, project, current.RepositoryID, number, anchor, current.Operation.Channel)
+		if err != nil {
+			return err
+		}
+		if state.Pending || state.RoundsConfigured && !state.RoundsComplete || !state.RoundsConfigured && !state.Covered {
+			return sourceHold("predecessor_unfinished")
+		}
+		number, head = plan.ParentPullNumber, plan.ParentSHA
+	}
+	if number != 0 {
+		return invalid()
 	}
 	return nil
 }

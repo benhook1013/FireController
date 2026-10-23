@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-An explicit source refresh reads the selected GitHub PR and only the repository and preceding PR facts needed to identify its comparison. It durably queues the operation before provider work starts. A short default wait returns the completed result in the original call when possible; only work that remains pending returns an operation receipt. It does not request a review, invoke the CLI, inspect allowance or download completed review captures. Ordinary operation and assessment reads use stored records without contacting GitHub.
+An explicit source refresh reads the selected GitHub PR and only the repository and actual published base-branch parent needed to identify its comparison. It durably queues the operation before provider work starts. A short default wait returns the completed result in the original call when possible; only work that remains pending returns an operation receipt. It does not request a review, invoke the CLI, inspect allowance or download completed review captures. Ordinary operation and assessment reads use stored records without contacting GitHub.
 
 [Automatic GitHub observation](github-observation.md) maintains enrolled PR lifecycle, mergeability, CI and externally started Hosted review history in the background. Ordinary queue reads expose observer health and per-PR check times independently of immutable snapshot origin timestamps. An explicit source refresh selects an exact comparison for policy/readiness assessment; it is not required to keep the dashboard current.
 

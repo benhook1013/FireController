@@ -24,13 +24,13 @@ func TestUnboundedRoundsCanonicalBackupRetainsExplicitNoMaximum(t *testing.T) {
 	defer db.Close()
 	var minimum, maximum, flag, used, dry, closed, changes int64
 	var body string
-	if err = db.QueryRow(`SELECT minimum,maximum,maximum_unbounded,used,dry,closed FROM review_round_controls`).Scan(&minimum, &maximum, &flag, &used, &dry, &closed); err != nil || minimum != 1001 || maximum != 0 || flag != 1 || used != 0 || dry != 2 || closed != 1 {
+	if err = db.QueryRow(`SELECT minimum,maximum,maximum_unbounded,used,dry,closed FROM review_round_controls WHERE project_id=? AND pull_number=4 AND channel='cli'`, f.project).Scan(&minimum, &maximum, &flag, &used, &dry, &closed); err != nil || minimum != 1001 || maximum != 0 || flag != 1 || used != 0 || dry != 2 || closed != 1 {
 		t.Fatal("unbounded minimum-only rule changed", minimum, maximum, flag, used, dry, closed, err)
 	}
-	if err = db.QueryRow(`SELECT prepared_json FROM review_round_adoptions`).Scan(&body); err != nil || !strings.Contains(body, `"maximum_unbounded":true`) || !strings.Contains(body, `"snapshot_sha256":"`+f.source.SnapshotSHA256+`"`) {
+	if err = db.QueryRow(`SELECT prepared_json FROM review_round_adoptions WHERE project_id=? AND pull_number=4 AND channel='cli'`, f.project).Scan(&body); err != nil || !strings.Contains(body, `"maximum_unbounded":true`) || !strings.Contains(body, `"snapshot_sha256":"`+f.source.SnapshotSHA256+`"`) {
 		t.Fatal("prepared explicit bound/source linkage lost", err)
 	}
-	if err = db.QueryRow(`SELECT count(*) FROM review_round_changes`).Scan(&changes); err != nil || changes != 2 {
+	if err = db.QueryRow(`SELECT count(*) FROM review_round_changes WHERE project_id=? AND pull_number=4 AND channel='cli'`, f.project).Scan(&changes); err != nil || changes != 2 {
 		t.Fatal("policy change history lost", changes, err)
 	}
 	if restoreRows(t, db, `SELECT count(*) FROM review_round_completions`)[0][0] != int64(0) {

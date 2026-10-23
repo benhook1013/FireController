@@ -9,7 +9,7 @@ import (
 
 func validCoverageSource(current SourcePlan) bool {
 	observed, err := time.Parse(time.RFC3339Nano, current.ObservedAt)
-	return err == nil && !observed.IsZero() && current.Repository.ID > 0 && repository.MatchString(current.Repository.FullName) && current.Repository.DefaultBranch != "" && safeText(current.Repository.DefaultBranch, 256) &&
+	return err == nil && !observed.IsZero() && current.SourceReason == "" && current.Repository.ID > 0 && repository.MatchString(current.Repository.FullName) && current.Repository.DefaultBranch != "" && safeText(current.Repository.DefaultBranch, 256) &&
 		sameTarget(current.Pull, current.Repository.ID, current.Pull.Number) && current.Pull.Number > 0 && current.Pull.Number <= 2147483647 && current.Pull.State == "open" && !current.Pull.Merged && current.Pull.ChangedFiles > 0 &&
 		current.Pull.BaseRef != "" && safeText(current.Pull.BaseRef, 256) && sha.MatchString(current.ParentSHA) && current.ParentSHA == current.Pull.BaseSHA && current.ParentPullNumber >= 0 && current.ParentPullNumber <= 2147483647 && current.ParentPullNumber != current.Pull.Number &&
 		(current.ParentPullNumber != 0 || current.Pull.BaseRef == current.Repository.DefaultBranch)

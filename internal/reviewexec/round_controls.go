@@ -13,7 +13,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
-	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 type RoundControlRequest struct {
@@ -59,6 +58,7 @@ type RoundControlReceipt struct {
 type roundRecord struct {
 	RoundControl
 	grantRevision int64
+	cumulative    bool
 }
 
 const roundColumnsV1 = `project_id,pull_number,channel,revision,epoch,grant_revision,closed,minimum,maximum,taper,used,dry,tapered,actor_id,created_at,updated_at`
@@ -102,11 +102,11 @@ func validRoundControl(c RoundControl) bool {
 	if origin {
 		baseline = validRoundOrigin(c) && c.Maximum >= 0 && c.Taper >= 1 && c.Taper <= 1000 && c.InitialDry >= 0 && c.InitialDry <= 1000 && (c.InitialDry < c.Taper || c.InitiallyTapered)
 	}
-	return baseline && roundScope(c.ProjectID, c.PullNumber, c.Channel) && c.Configured && c.Revision >= 1 && c.Epoch >= 1 && c.Epoch <= c.Revision && c.Minimum >= 0 && c.Used >= 0 && c.Used <= roundSafeInteger && c.Dry >= 0 && c.Dry <= roundSafeInteger && c.Dry <= c.Used+c.InitialDry && (c.MaximumUnbounded && c.Maximum == 0 && c.Minimum <= roundSafeInteger || !c.MaximumUnbounded && c.Minimum <= c.Maximum && c.Maximum <= 1000 && c.Used <= c.Maximum) && (!c.Tapered || c.Used >= c.Minimum && (c.InitiallyTapered || c.Dry >= c.Taper)) && (!c.InitiallyTapered || c.Used < c.Minimum || c.Tapered) && identifier.MatchString(c.ActorID) && roundTime(c.CreatedAt) && roundTime(c.UpdatedAt)
+	return baseline && roundScope(c.ProjectID, c.PullNumber, c.Channel) && c.Configured && c.Revision >= 1 && c.Epoch >= 1 && c.Epoch <= c.Revision && c.Minimum >= 0 && c.Used >= 0 && c.Used <= roundSafeInteger && c.Dry >= 0 && c.Dry <= roundSafeInteger && c.Dry <= c.Used+c.InitialDry && (c.MaximumUnbounded && c.Maximum == 0 && c.Minimum <= roundSafeInteger || !c.MaximumUnbounded && c.Minimum <= c.Maximum && c.Maximum <= roundSafeInteger && c.Used <= c.Maximum) && (!c.Tapered || c.Used >= c.Minimum && (c.InitiallyTapered || c.Dry >= c.Taper)) && identifier.MatchString(c.ActorID) && roundTime(c.CreatedAt) && roundTime(c.UpdatedAt)
 }
 
 func readRoundRecord(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string) (roundRecord, error) {
-	return readRoundRecordVersion(ctx, q, project, pull, channel, 3)
+	return readRoundRecordVersion(ctx, q, project, pull, channel, 4)
 }
 func readRoundRecordVersion(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string, version int) (roundRecord, error) {
 	c := roundRecord{RoundControl: RoundControl{ProjectID: project, PullNumber: pull, Channel: channel}}
@@ -127,7 +127,19 @@ func readRoundRecordVersion(ctx context.Context, q EvidenceQuery, project string
 		return c, err
 	}
 	c.Configured = true
-	if !validRoundControl(c.RoundControl) || c.grantRevision < 1 || c.grantRevision > c.Revision {
+	var grantBody string
+	if err := q.QueryRowContext(ctx, `SELECT body_json FROM review_round_changes WHERE project_id=? AND pull_number=? AND channel=? AND revision=? AND epoch=?`, project, pull, channel, c.grantRevision, c.Epoch).Scan(&grantBody); err != nil {
+		return roundRecord{}, err
+	}
+	var bound RoundControl
+	bound, c.cumulative, err = decodeRoundHistory(grantBody)
+	if err != nil {
+		return roundRecord{}, err
+	}
+	if bound.ProjectID != project || bound.PullNumber != pull || bound.Channel != channel || bound.Revision != c.grantRevision || bound.Epoch != c.Epoch {
+		return roundRecord{}, roundUnavailable()
+	}
+	if !validRoundControl(c.RoundControl) || c.grantRevision < 1 || c.grantRevision > c.Revision || version < 4 && (c.cumulative || c.Maximum > 1000) || c.cumulative && c.Tapered != cumulativeTapered(c.RoundControl) || !c.cumulative && !validLegacyRoundControl(c.RoundControl) {
 		return roundRecord{}, roundUnavailable()
 	}
 	return c, nil
@@ -181,7 +193,7 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 		if c.Revision != previous {
 			return nil, &core.Error{Code: "review_round_revision_conflict", Message: "Reload the current review round control before changing it.", Status: 409, Details: map[string]int64{"current_revision": c.Revision}}
 		}
-		if c.Revision == math.MaxInt64 || input.Action == "grant" && c.Epoch == math.MaxInt64 {
+		if c.Revision == math.MaxInt64 {
 			return nil, roundDenied("review_round_revision_exhausted", "The retained round control cannot advance.")
 		}
 		at := stamp()
@@ -189,29 +201,37 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 			c.Configured = true
 			c.CreatedAt = at
 			c.Taper = roundTaper(channel)
+			c.Epoch = 1
 		}
 		c.Revision++
 		c.ActorID = scope.PrincipalID
 		c.UpdatedAt = at
 		if input.Action == "grant" {
-			var pending bool
-			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND pull_number=? AND channel=? AND state IN `+roundPendingStates+`)`, scope.ProjectID, pull, channel).Scan(&pending); err != nil {
+			if c.Used > roundSafeInteger-*input.Maximum {
+				return nil, roundDenied("review_round_capacity", "The cumulative review limit cannot advance safely.")
+			}
+			if !c.cumulative {
+				c.Dry, err = cumulativeLegacyDry(ctx, tx, c)
+				if err != nil {
+					return nil, err
+				}
+			}
+			c.cumulative = true
+			occupied, err := roundOccupied(ctx, tx, c, "")
+			if err != nil {
 				return nil, err
 			}
-			if pending {
-				return nil, roundDenied("review_round_inflight", "Finish or safely settle the existing request before granting more rounds.")
+			if occupied > *input.Maximum {
+				return nil, roundDenied("review_round_inflight", "The requested maximum is below review work already underway.")
 			}
-			c.Epoch++
-			c.grantRevision = c.Revision
-			c.Closed = false
-			c.Minimum, c.Maximum = *input.Minimum, *input.Maximum
+			c.Minimum, c.Maximum = c.Used+*input.Minimum, c.Used+*input.Maximum
 			c.MaximumUnbounded = false
-			c.Used, c.Dry, c.Tapered = 0, 0, false
-			c.InitialDry, c.InitiallyTapered, c.OriginSource, c.OriginKey, c.OriginSHA256 = 0, false, "", "", ""
-			c.Taper = roundTaper(channel)
+			c.Closed = false
+			c.grantRevision = c.Revision
+			c.cumulative = true
+			c.Tapered = cumulativeTapered(c.RoundControl)
 		} else {
-			if c.Epoch == 0 {
-				c.Epoch = 1
+			if c.grantRevision == 0 {
 				c.grantRevision = c.Revision
 				c.Minimum, c.Maximum = 0, 1
 			}
@@ -220,7 +240,7 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 		if !validRoundControl(c.RoundControl) {
 			return nil, roundUnavailable()
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_round_changes(project_id,pull_number,channel,revision,epoch,action,body_json,worker_id) VALUES(?,?,?,?,?,?,?,?)`, c.ProjectID, c.PullNumber, c.Channel, c.Revision, c.Epoch, input.Action, encoded(c.RoundControl), scope.WorkerID); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO review_round_changes(project_id,pull_number,channel,revision,epoch,action,body_json,worker_id) VALUES(?,?,?,?,?,?,?,?)`, c.ProjectID, c.PullNumber, c.Channel, c.Revision, c.Epoch, input.Action, encodeRoundHistory(c.RoundControl, c.cumulative), scope.WorkerID); err != nil {
 			return nil, err
 		}
 		if err = storeRoundRecord(ctx, tx, c); err != nil {
@@ -262,6 +282,13 @@ func roundOccupied(ctx context.Context, tx *sql.Tx, c roundRecord, excluding str
 	if err != nil {
 		return 0, err
 	}
+	if c.cumulative {
+		pending, err := roundUnfinalizedOccupancy(ctx, tx, c, excluding)
+		if err != nil {
+			return 0, err
+		}
+		occupied += pending
+	}
 	return occupied, nil
 }
 
@@ -288,8 +315,16 @@ func bindRoundControl(ctx context.Context, tx *sql.Tx, operation Operation) erro
 	var epoch, grant int64
 	err = tx.QueryRowContext(ctx, `SELECT epoch,grant_revision FROM review_round_operation_bindings WHERE operation_id=?`, operation.ID).Scan(&epoch, &grant)
 	if err == nil {
-		if epoch != c.Epoch || grant != c.grantRevision {
+		if epoch != c.Epoch || !c.cumulative && grant != c.grantRevision {
 			return roundDenied("review_round_changed", "The request belongs to a different round grant.")
+		}
+		if c.cumulative {
+			if grant > c.grantRevision {
+				return roundUnavailable()
+			}
+			if _, err := readRoundGrant(ctx, tx, c.ProjectID, c.PullNumber, c.Channel, grant, epoch); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -329,8 +364,16 @@ func admitRoundControl(ctx context.Context, tx *sql.Tx, operation Operation) (bo
 	if !c.Configured || project != operation.ProjectID || pull != operation.PullNumber || channel != operation.Channel {
 		return false, roundUnavailable()
 	}
-	if epoch != c.Epoch || grant != c.grantRevision {
+	if epoch != c.Epoch || !c.cumulative && grant != c.grantRevision {
 		return false, roundDenied("review_round_changed", "The request belongs to a different round grant.")
+	}
+	if c.cumulative {
+		if grant > c.grantRevision {
+			return false, roundUnavailable()
+		}
+		if _, err := readRoundGrant(ctx, tx, c.ProjectID, c.PullNumber, c.Channel, grant, epoch); err != nil {
+			return false, err
+		}
 	}
 	if err = checkRoundOpen(c.RoundControl); err != nil {
 		return false, err
@@ -350,8 +393,8 @@ func readRoundGrant(ctx context.Context, q EvidenceQuery, project string, pull i
 	if err := q.QueryRowContext(ctx, `SELECT action,body_json FROM review_round_changes WHERE project_id=? AND pull_number=? AND channel=? AND revision=? AND epoch=?`, project, pull, channel, revision, epoch).Scan(&action, &body); err != nil {
 		return RoundControl{}, err
 	}
-	var c RoundControl
-	if len(body) > 4096 || strictjson.Decode([]byte(body), &c) != nil || !validRoundControl(c) || c.ProjectID != project || c.PullNumber != pull || c.Channel != channel || c.Revision != revision || c.Epoch != epoch || action != "grant" || c.Closed || hasRoundOrigin(c) && roundDone(c) || c.Used != 0 || c.Dry != c.InitialDry || c.Tapered != (c.InitiallyTapered && c.Minimum == 0) {
+	c, cumulative, err := decodeRoundHistory(body)
+	if err != nil || c.ProjectID != project || c.PullNumber != pull || c.Channel != channel || c.Revision != revision || c.Epoch != epoch || action != "grant" || c.Closed || cumulative && roundDone(c) || !cumulative && (hasRoundOrigin(c) && roundDone(c) || c.Used != 0 || c.Dry != c.InitialDry || c.Tapered != (c.InitiallyTapered && c.Minimum == 0)) {
 		return RoundControl{}, roundUnavailable()
 	}
 	return c, nil
@@ -417,27 +460,28 @@ func completeRoundControl(ctx context.Context, tx *sql.Tx, project, operationID 
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_round_completions WHERE project_id=? AND pull_number=? AND channel=? AND epoch=?`, project, pull, channel, epoch).Scan(&used); err != nil {
 		return err
 	}
-	if used >= roundSafeInteger || !original.MaximumUnbounded && used >= original.Maximum {
+	c, err := readRoundRecord(ctx, tx, project, pull, channel)
+	if err != nil {
+		return err
+	}
+	if !c.Configured || c.Epoch < epoch || c.Epoch == epoch && grant > c.grantRevision {
+		return roundUnavailable()
+	}
+	if original.Used > used {
+		return roundUnavailable()
+	}
+	if used >= roundSafeInteger || (!c.cumulative || c.Epoch > epoch) && !original.MaximumUnbounded && used >= original.Maximum {
 		return roundUnavailable()
 	}
 	at := stamp()
 	if _, err = tx.ExecContext(ctx, `INSERT INTO review_round_completions(operation_id,evidence_id,project_id,pull_number,channel,epoch,ordinal,accepted,completed_at) VALUES(?,?,?,?,?,?,?,?,?)`, operationID, proof.evidence, project, pull, channel, epoch, used+1, state.FrozenCounts.Accepted, at); err != nil {
 		return err
 	}
-	c, err := readRoundRecord(ctx, tx, project, pull, channel)
-	if err != nil {
-		return err
-	}
-	if !c.Configured {
-		return roundUnavailable()
-	}
-	if c.Epoch < epoch {
-		return roundUnavailable()
-	}
+
 	if c.Epoch > epoch {
 		return nil
 	}
-	if c.grantRevision != grant || c.Used != used || (!c.MaximumUnbounded && c.Used >= c.Maximum) || c.Used >= roundSafeInteger {
+	if !c.cumulative && c.grantRevision != grant || c.Used != used || (!c.MaximumUnbounded && c.Used >= c.Maximum) || c.Used >= roundSafeInteger {
 		return roundUnavailable()
 	}
 	done := roundDone(c.RoundControl)
@@ -445,7 +489,17 @@ func completeRoundControl(ctx context.Context, tx *sql.Tx, project, operationID 
 		return roundUnavailable()
 	}
 	c.Used++
-	if !done {
+	if c.cumulative {
+		if state.FrozenCounts.Accepted == 0 {
+			if c.Dry >= roundSafeInteger {
+				return roundUnavailable()
+			}
+			c.Dry++
+		} else {
+			c.Dry = 0
+		}
+		c.Tapered = cumulativeTapered(c.RoundControl)
+	} else if !done {
 		if state.FrozenCounts.Accepted == 0 {
 			c.Dry++
 		} else {

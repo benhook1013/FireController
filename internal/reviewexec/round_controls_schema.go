@@ -10,7 +10,7 @@ import (
 // EnsureRoundSchema installs explicit additional-round accounting. It never
 // derives grants or completion credit from existing execution/imported history.
 func EnsureRoundSchema(ctx context.Context, store *core.Store) error {
-	return store.EnsureSchema(ctx, "review_rounds", RoundSchemaV1SQL(), roundV2MigrationSQL(), roundV3MigrationSQL())
+	return store.EnsureSchema(ctx, "review_rounds", RoundSchemaV1SQL(), roundV2MigrationSQL(), roundV3MigrationSQL(), roundV4MigrationSQL())
 }
 
 var roundSchemaV1SQL = []string{
@@ -64,8 +64,8 @@ func roundV2MigrationSQL() []string {
 	}
 }
 
-// RoundSchemaSQL is the current schema; predecessor declarations stay exact.
-func RoundSchemaSQL() []string {
+// RoundSchemaV3SQL preserves the exact unbounded-adoption predecessor.
+func RoundSchemaV3SQL() []string {
 	out := RoundSchemaV2SQL()
 	out[0] = roundControlV3SQL()
 	out[4] = strings.Replace(out[4], "ordinal BETWEEN 1 AND 1000", "ordinal BETWEEN 1 AND 9007199254740991", 1)
@@ -81,7 +81,7 @@ func roundControlV3SQL() string {
 	return s
 }
 func roundV3MigrationSQL() []string {
-	schema := RoundSchemaSQL()
+	schema := RoundSchemaV3SQL()
 	return []string{
 		`ALTER TABLE review_round_controls RENAME TO legacy_review_round_controls_v2`,
 		schema[0],
@@ -91,5 +91,21 @@ func roundV3MigrationSQL() []string {
 		schema[4],
 		`INSERT INTO review_round_completions SELECT * FROM legacy_review_round_completions_v2`,
 		`DROP TABLE legacy_review_round_completions_v2`,
+	}
+}
+
+// RoundSchemaSQL is the current cumulative-threshold schema. Predecessor
+// declarations remain exact for upgrade and historical backup inspection.
+func RoundSchemaSQL() []string {
+	out := RoundSchemaV3SQL()
+	out[0] = strings.Replace(out[0], "maximum BETWEEN 0 AND 1000", "maximum BETWEEN 0 AND 9007199254740991", 1)
+	return out
+}
+func roundV4MigrationSQL() []string {
+	return []string{
+		`ALTER TABLE review_round_controls RENAME TO legacy_review_round_controls_v3`,
+		RoundSchemaSQL()[0],
+		`INSERT INTO review_round_controls(` + roundColumns + `) SELECT ` + roundColumns + ` FROM legacy_review_round_controls_v3`,
+		`DROP TABLE legacy_review_round_controls_v3`,
 	}
 }

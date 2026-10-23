@@ -90,7 +90,7 @@ func historySide(value string) *string {
 func validHistoryPull(p Pull) bool {
 	// The normalized Pull retains only repository identity, not the provider's
 	// repository-name/default-branch object; validate only its retained fields.
-	return validPullNumber(p.Number) && p.RepositoryID > 0 && validPlainText(p.Title, 4096) && strings.TrimSpace(p.Title) != "" && (p.State == "open" || p.State == "closed") && (!p.Merged || p.State == "closed") && validSHA(p.HeadSHA) && validSHA(p.BaseSHA) && validPlainText(p.BaseRef, 255) && strings.TrimSpace(p.BaseRef) != "" && p.ChangedFiles >= 0 && p.ChangedFiles <= 1000000 && validPullDisplayMetadata(p)
+	return validPullNumber(p.Number) && p.RepositoryID > 0 && validPlainText(p.Title, 4096) && strings.TrimSpace(p.Title) != "" && (p.State == "open" || p.State == "closed") && (!p.Merged || p.State == "closed") && validSHA(p.HeadSHA) && (p.HeadRef == "" || validRequiredBranch(p.HeadRef)) && validSHA(p.BaseSHA) && validPlainText(p.BaseRef, 255) && strings.TrimSpace(p.BaseRef) != "" && p.ChangedFiles >= 0 && p.ChangedFiles <= 1000000 && validPullDisplayMetadata(p)
 }
 
 // Unlike provider wire decoding, retained facts have an exact, fully emitted

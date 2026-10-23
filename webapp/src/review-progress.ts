@@ -22,7 +22,7 @@ export function validRoundProgress(value: unknown, channel: string): value is Re
   const c = value as unknown as ReviewRoundProgress;
   if (!c.configured) return !c.maximum_unbounded && !c.closed && !c.tapered && numbers.every(key => c[key] === 0);
   // Adopted grants may start with no allowance or with a prior dry streak.
-  return c.revision > 0 && c.epoch > 0 && c.epoch <= c.revision && (c.maximum_unbounded ? c.maximum === 0 : c.maximum <= 1000 && c.minimum <= c.maximum && c.used <= c.maximum) && c.taper >= 1 && c.taper <= 1000 && c.dry - c.used <= 1000 && c.pending <= 32 &&
+  return c.revision > 0 && c.epoch > 0 && c.epoch <= c.revision && (c.maximum_unbounded ? c.maximum === 0 : c.minimum <= c.maximum && c.used <= c.maximum) && c.taper >= 1 && c.taper <= 1000 && c.dry - c.used <= 1000 && c.pending <= 32 &&
     (!c.tapered || c.used >= c.minimum);
 }
 export function validReviewProgress(value: unknown, project: string, pulls: number[]): value is ReviewProgress {

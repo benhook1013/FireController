@@ -81,8 +81,8 @@ func TestRoundAdoptionCarriedDryNativeCompletionAndReset(t *testing.T) {
 			adoptionValid(t, f)
 			roundGrant(t, f, 2, "cli", 2, 1, 2, "replacement")
 			c = roundRead(t, f, 2, "cli")
-			if c.InitialDry != 0 || c.InitiallyTapered || c.OriginSource != "" || c.OriginKey != "" || c.OriginSHA256 != "" || c.Dry != 0 || c.Tapered || c.Taper != 3 {
-				t.Fatal("replacement retained old carry", c)
+			if c.InitialDry != 2 || c.InitiallyTapered || c.OriginSource != p.Source || c.OriginKey != p.SourceKey || c.OriginSHA256 != p.SourceSHA256 || c.Used != 1 || c.Minimum != 2 || c.Maximum != 3 || c.Epoch != 1 || c.Tapered || c.Taper != 3 || !accepted && c.Dry != 3 || accepted && c.Dry != 0 {
+				t.Fatal("limit edit lost carried baseline or native progress", c)
 			}
 			adoptionValid(t, f)
 		})
@@ -200,7 +200,7 @@ func TestRoundAdoptionReplayAdmissionAndAtomicity(t *testing.T) {
 	}
 }
 func TestRoundAdoptionAdmissionRecheckedAfterPreview(t *testing.T) {
-	for _, kind := range []string{"repository", "queue", "pending"} {
+	for _, kind := range []string{"repository", "authority", "pending"} {
 		t.Run(kind, func(t *testing.T) {
 			f := adoptionFixture(t)
 			p := adoptionPrepared()
@@ -214,10 +214,8 @@ func TestRoundAdoptionAdmissionRecheckedAfterPreview(t *testing.T) {
 				if _, err = f.store.DB().Exec(`UPDATE projects SET github_repository_id=999 WHERE id=?`, attemptProject); err != nil {
 					t.Fatal(err)
 				}
-			case "queue":
-				one := int64(1)
-				_, err = f.e.Configure(t.Context(), scope, "new-queue", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{4}, Channels: []string{"cli", "hosted"}})
-				if err != nil {
+			case "authority":
+				if _, err = f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE principal_id=?`, scope.PrincipalID); err != nil {
 					t.Fatal(err)
 				}
 			case "pending":
@@ -249,7 +247,7 @@ func TestRoundAdoptionHTTPStrictShape(t *testing.T) {
 }
 func TestRoundAdoptionVersionOneUpgradeConservesHistory(t *testing.T) {
 	f := adoptionFixture(t)
-	roundGrant(t, f, 2, "cli", 0, 0, 4, "old-native")
+	seedLegacyRoundGrant(t, f, 2, "cli", 0, 0, 4, "old-native")
 	a, id := roundCapture(t, f, 0, false)
 	roundFinalize(t, f, a, id, 0, false)
 	original := roundRead(t, f, 2, "cli")

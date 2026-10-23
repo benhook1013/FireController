@@ -19,6 +19,15 @@ import (
 
 func reviewExecutionFixture(t *testing.T) (*serviceFixture, string, string) {
 	t.Helper()
+	f, project, worker, enroll := reviewExecutionBeforeEnrollmentFixture(t)
+	enroll()
+	return f, project, worker
+}
+
+// Adoption is naturally applied before queue enrollment. Keep the public
+// handlers available at that boundary without deleting product-created defaults.
+func reviewExecutionBeforeEnrollmentFixture(t *testing.T) (*serviceFixture, string, string, func()) {
+	t.Helper()
 	f := setupServiceFixture(t)
 	project := f.project(t, "execution-fixture")
 	worker := f.worker(t, project, "Builder")
@@ -40,15 +49,18 @@ func reviewExecutionFixture(t *testing.T) (*serviceFixture, string, string) {
 	if _, err := engine.ConfigurePolicy(t.Context(), scope, "policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli"}, MaxReviewFiles: 0}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := engine.Configure(t.Context(), scope, "config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "fixture", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}}); err != nil {
-		t.Fatal(err)
+	enroll := func() {
+		t.Helper()
+		if _, err := engine.Configure(t.Context(), scope, "config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "fixture", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// Reads and enqueue are public handlers, without a provider driver/supervisor.
 	mux := http.NewServeMux()
 	mux.Handle("/", f.handler)
 	engine.Register(mux)
 	f.handler = mux
-	return f, project, worker
+	return f, project, worker, enroll
 }
 
 func reviewRequestArgs() []string {

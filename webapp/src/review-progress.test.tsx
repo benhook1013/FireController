@@ -91,6 +91,26 @@ describe('current round progress', () => {
     for(const bad of [{...value,maximum:1},{...value,maximum_unbounded:false},{...value,maximum_unbounded:null},{...value,maximum_unbounded:1},{...value,used:Number.MAX_SAFE_INTEGER+1},{...value,dry:Number.MAX_SAFE_INTEGER+1},{...absent,maximum_unbounded:true}]) expect(validRoundProgress(bad,bad.channel)).toBe(false);
   });
 
+  it('accepts cumulative finite ceilings while retaining safe bounds and comparison guards', async () => {
+    const value: ReviewRoundProgress = {...current,minimum:1001,maximum:2001,used:1000,dry:2,pending:0};
+    expect(validRoundProgress(value,'hosted')).toBe(true);
+    const api=await connected();const response={...result,items:[{pull_number:31,channels:[value,absent]}]};
+    vi.stubGlobal('fetch',vi.fn(async()=>json(response)));expect(await api.reviewProgress([31])).toEqual(response);
+    const edge: ReviewRoundProgress={...value,minimum:Number.MAX_SAFE_INTEGER-1,maximum:Number.MAX_SAFE_INTEGER,used:Number.MAX_SAFE_INTEGER-1,dry:0};
+    expect(validRoundProgress(edge,'hosted')).toBe(true);
+    expect(renderToStaticMarkup(<ReviewProgressView value={edge}/>)).toContain('Up to 1 more review');
+    for(const bad of [{...value,maximum:Number.MAX_SAFE_INTEGER+1},{...value,minimum:value.maximum+1},{...value,used:value.maximum+1},{...value,pending:33},{...value,epoch:value.revision+1}]) expect(validRoundProgress(bad,'hosted')).toBe(false);
+  });
+
+  it('renders accepted findings resetting a retained streak without resetting cumulative use', () => {
+    const value: ReviewRoundProgress={...current,channel:'cli',minimum:1001,maximum:1002,used:1001,dry:0,taper:3,tapered:false,pending:0};
+    expect(validRoundProgress(value,'cli')).toBe(true);
+    expect(roundProgressState(value)).toBe('More rounds allowed');
+    const html=renderToStaticMarkup(<ReviewProgressView value={value}/>);
+    expect(html).toContain('Up to 1 more review');expect(html).toContain('Taper 0/3');
+    expect(html).not.toMatch(/Taper met|Clean streak target met|No reviews remaining/u);
+  });
+
   it('uses one stopped label with a distinct accessible reason for each channel stop', () => {
     const cases: [ReviewRoundProgress, string][] = [
       [{ ...current, closed: true }, 'Manually closed'],

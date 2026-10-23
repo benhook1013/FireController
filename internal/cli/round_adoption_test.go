@@ -22,7 +22,7 @@ func cliAdoptionControl() client.PreparedReviewRoundControl {
 }
 
 func TestRoundAdoptionCLIActualPreviewReplayAndRead(t *testing.T) {
-	f, project, worker := reviewExecutionFixture(t)
+	f, project, worker, enroll := reviewExecutionBeforeEnrollmentFixture(t)
 	var posts atomic.Int64
 	var drop atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -79,13 +79,24 @@ func TestRoundAdoptionCLIActualPreviewReplayAndRead(t *testing.T) {
 	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &value) != nil || value.InitialDry != 2 || value.Dry != 2 || value.Used != 0 || value.Maximum != 4 || value.OriginSHA256 != control.SourceSHA256 || count() != committed {
 		t.Fatal("carried control lost provenance/created credit", code, out, stderr)
 	}
-	// A later ordinary grant clears the seed, but replay of the original adoption
-	// remains its original receipt and cannot undo that new operational decision.
+	enroll()
+	code, out, stderr = mutationInvoke(t, profiles, "admin", "reviews", "rounds", "read", "--pr", "2", "--channel", "cli")
+	var enrolled client.ReviewRoundControl
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &enrolled) != nil || enrolled != value {
+		t.Fatal("enrollment replaced the adopted control", code, out, stderr)
+	}
+	// A later ordinary edit preserves earned source progress. Original adoption
+	// replay remains its receipt and cannot undo that operational decision.
 	code, _, stderr = mutationInvoke(t, profiles, "admin", "reviews", "rounds", "grant", "--pr", "2", "--channel", "cli", "--expected-revision", "1", "--max", "7", "--key", "new-native-grant")
 	if code != 0 || stderr != "" {
 		t.Fatal("replacement grant failed", code, stderr)
 	}
 	afterGrant := count()
+	code, out, stderr = mutationInvoke(t, profiles, "admin", "reviews", "rounds", "read", "--pr", "2", "--channel", "cli")
+	var revised client.ReviewRoundControl
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &revised) != nil || revised.Revision != 2 || revised.Epoch != value.Epoch || revised.InitialDry != value.InitialDry || revised.Dry != value.Dry || revised.OriginSHA256 != value.OriginSHA256 || revised.Used != value.Used || revised.Maximum != 7 || count() != afterGrant {
+		t.Fatal("ordinary edit discarded carried progress or created credit", code, out, stderr)
+	}
 	code, out, stderr = mutationInvoke(t, profiles, "admin", args...)
 	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &receipt) != nil || receipt.Revision != 1 || count() != afterGrant {
 		t.Fatal("adoption replay undid later grant", code, stderr)
@@ -137,7 +148,7 @@ func TestRoundAdoptionCLIFileAndSyntaxBeforeCredentials(t *testing.T) {
 }
 
 func TestRoundAdoptionCLIV2UnboundedReadAndExplicitFiniteReplacement(t *testing.T) {
-	f, project, worker := reviewExecutionFixture(t)
+	f, project, worker, enroll := reviewExecutionBeforeEnrollmentFixture(t)
 	server := httptest.NewServer(f.handler)
 	defer server.Close()
 	profiles := mutationProfiles(t, f, server.URL, map[string][2]string{"admin": {project, worker}})
@@ -163,6 +174,7 @@ func TestRoundAdoptionCLIV2UnboundedReadAndExplicitFiniteReplacement(t *testing.
 	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &got) != nil || !got.MaximumUnbounded || got.Maximum != 0 || got.Minimum != 1001 || got.Used != 0 {
 		t.Fatal("read invented finite maximum", code, stderr)
 	}
+	enroll()
 	code, _, stderr = mutationInvoke(t, profiles, "admin", "reviews", "rounds", "grant", "--pr", "2", "--channel", "cli", "--expected-revision", "1", "--max", "5", "--key", "finite-again")
 	if code != 0 || stderr != "" {
 		t.Fatal("finite replacement refused", code, stderr)
