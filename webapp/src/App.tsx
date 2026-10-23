@@ -20,7 +20,7 @@ import { jobFilterSearch, readJobFilters, type JobFilters } from './job-navigati
 import { refreshEventQueries } from './queries';
 import { ReviewQueueView, ReviewPullView, ReviewRunView } from './review-workspace';
 import { PageSkeleton, WorkspaceSkeleton } from './loading';
-import { browserSessionKey, clearBrowserSession, loadBrowserSession, renewedBrowserSessionBinding, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
+import { clearBrowserSession, hasBrowserSession, loadBrowserSession, renewedBrowserSessionBinding, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
 import { BrowserSessionRenewal, listenForSessionActivity } from './session-renewal';
 import { applyPresentationRoot } from './presentation';
 import { PresentationContext, usePresentation, useProjectHeading } from './presentation-context';
@@ -49,11 +49,6 @@ export default function App() {
 
 // Presence controls only the initial loading shell. Validation, expiry and
 // discarded-session cleanup stay in the effect, never in a render initializer.
-function hasSavedBrowserBinding(): boolean {
-  try { return Boolean(globalThis.sessionStorage?.getItem(browserSessionKey)); }
-  catch { return false; }
-}
-
 function PrivateApp() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -74,7 +69,7 @@ function PrivateApp() {
   const [reconnect, setReconnect] = useState(0);
   const [notice, setNotice] = useState('');
   const [connecting, setConnecting] = useState(false);
-  const [restoring, setRestoring] = useState(hasSavedBrowserBinding);
+  const [restoring, setRestoring] = useState(() => hasBrowserSession(routeProject));
   const [appearance, setAppearance] = useState<Presentation>();
   const appearanceAcceptor = useRef<ReturnType<typeof createAppearanceAcceptor> | null>(null);
   const [metadataStatus, setMetadataStatus] = useState<LiveStatus>('connecting');

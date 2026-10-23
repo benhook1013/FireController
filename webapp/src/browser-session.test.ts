@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { browserSessionKey, clearBrowserSession, loadBrowserSession, renewedBrowserSessionBinding, saveBrowserSession, sessionExpiry, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
+import { browserSessionKey, browserRecoveryKey, clearBrowserSession, hasBrowserSession, loadBrowserSession, renewedBrowserSessionBinding, saveBrowserSession, sessionExpiry, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
 
 function memoryStorage() {
   const values = new Map<string, string>();
@@ -10,6 +10,59 @@ const binding: BrowserSessionBinding = { version: 1, projectID: 'project_one', i
 afterEach(() => vi.useRealTimers());
 
 describe('per-tab browser session binding', () => {
+  it('recovers a recreated tab by exact project or handle using public metadata only', () => {
+    const tab = memoryStorage(), recovery = memoryStorage();
+    const friendly = { ...binding, projectHandle: 'firemud' };
+    expect(saveBrowserSession(friendly, tab, recovery)).toBe(true);
+    tab.values.clear();
+    expect(hasBrowserSession('firemud', tab, recovery)).toBe(true);
+    expect(tab.values.size).toBe(0); // first paint is read-only
+    expect(loadBrowserSession('other-project', undefined, tab, recovery)).toBeNull();
+    expect(loadBrowserSession(undefined, undefined, tab, recovery)).toBeNull();
+    expect(loadBrowserSession('firemud', undefined, tab, recovery)).toEqual(friendly);
+    expect(JSON.parse(tab.getItem(browserSessionKey)!)).toEqual(friendly);
+    expect(JSON.parse(recovery.getItem(browserRecoveryKey)!)).toEqual([friendly]);
+    expect(recovery.getItem(browserRecoveryKey)).not.toMatch(/credential|token|allow_writes|can_edit_presentation/u);
+    clearBrowserSession(tab, recovery);
+    expect(hasBrowserSession('firemud', tab, recovery)).toBe(false);
+    expect(loadBrowserSession('firemud', undefined, tab, recovery)).toBeNull();
+  });
+
+  it('keeps existing tab identities authoritative and other project recovery independent', () => {
+    const one = memoryStorage(), two = memoryStorage(), recovery = memoryStorage();
+    const newer = { ...binding, sessionID: 'b'.repeat(32), selectedworkerID: 'worker_two' };
+    const other = { ...binding, projectID: 'project_two', projectHandle: 'other', sessionID: 'c'.repeat(32) };
+    saveBrowserSession(binding, one, recovery);
+    saveBrowserSession(newer, two, recovery);
+    expect(loadBrowserSession(binding.projectID, undefined, one, recovery)).toEqual(binding);
+    clearBrowserSession(one, recovery); // an older tab cannot erase a newer login's hint
+    expect(loadBrowserSession(binding.projectID, undefined, one, recovery)).toEqual(newer);
+    saveBrowserSession(other, two, recovery);
+    clearBrowserSession(one, recovery);
+    one.values.clear(); two.values.clear();
+    expect(loadBrowserSession(binding.projectID, undefined, one, recovery)).toBeNull();
+    expect(loadBrowserSession('other', undefined, two, recovery)).toEqual(other);
+  });
+
+  it('bounds recovery metadata and tolerates unavailable durable storage', () => {
+    const tab = memoryStorage(), recovery = memoryStorage();
+    for (let index = 0; index < 10; index++) saveBrowserSession({ ...binding, projectID: `project_${index}` }, tab, recovery);
+    const retained = JSON.parse(recovery.getItem(browserRecoveryKey)!) as BrowserSessionBinding[];
+    expect(retained).toHaveLength(8);
+    expect(retained[0].projectID).toBe('project_2');
+    tab.values.clear();
+    expect(loadBrowserSession('project_0', undefined, tab, recovery)).toBeNull();
+    expect(loadBrowserSession('project_9', undefined, tab, recovery)?.projectID).toBe('project_9');
+    const denied = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); }, removeItem() { throw new Error('blocked'); } };
+    expect(saveBrowserSession(binding, tab, denied)).toBe(true);
+    expect(loadBrowserSession(binding.projectID, undefined, tab, denied)).toEqual(binding);
+    for (const raw of ['{', 'x'.repeat(16385), JSON.stringify([{ ...binding, credential: 'secret' }]), JSON.stringify([binding, binding])]) {
+      tab.values.clear(); recovery.setItem(browserRecoveryKey, raw);
+      expect(hasBrowserSession(binding.projectID, tab, recovery)).toBe(false);
+      expect(loadBrowserSession(binding.projectID, undefined, tab, recovery)).toBeNull();
+    }
+  });
+
   it('restores only bounded public binding metadata across reload without credential or private data', () => {
     const storage = memoryStorage();
     expect(saveBrowserSession(binding, storage)).toBe(true);

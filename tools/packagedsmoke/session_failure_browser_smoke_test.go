@@ -179,7 +179,7 @@ func TestPackagedSessionFailureBrowserSmoke(t *testing.T) {
 			CookiePeak         int `json:"eviction_cookie_peak"`
 		} `json:"facts"`
 	}
-	if json.Unmarshal(lines[len(lines)-1], &result) != nil || result.State != "PASS" || len(result.Checks) != 6 || result.Facts.Requests == 0 || result.Facts.FixtureWrites != 4 || result.Facts.PageErrors != 0 || result.Facts.External != 0 || result.Facts.DomainWrites != 0 || result.Facts.Renewals != 2 || result.Facts.FailedRenewals != 1 || result.Facts.Logouts != 5 || result.Facts.APICreatedSessions != 9 || result.Facts.EvictedSessions < 1 || result.Facts.EvictedSessions >= 9 || result.Facts.CookiePeak < 1 || result.Facts.CookiePeak > 8 {
+	if json.Unmarshal(lines[len(lines)-1], &result) != nil || result.State != "PASS" || len(result.Checks) != 7 || result.Facts.Requests == 0 || result.Facts.FixtureWrites != 4 || result.Facts.PageErrors != 0 || result.Facts.External != 0 || result.Facts.DomainWrites != 0 || result.Facts.Renewals != 3 || result.Facts.FailedRenewals != 1 || result.Facts.Logouts != 5 || result.Facts.APICreatedSessions != 9 || result.Facts.EvictedSessions < 1 || result.Facts.EvictedSessions >= 9 || result.Facts.CookiePeak < 1 || result.Facts.CookiePeak > 8 {
 		t.Fatal("second session browser proof receipt invalid")
 	}
 

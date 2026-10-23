@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import App, { OpeningProject } from './App';
 import { Api } from './api';
-import { browserSessionKey, type BrowserSessionBinding } from './browser-session';
+import { browserSessionKey, browserRecoveryKey, type BrowserSessionBinding } from './browser-session';
 
 const binding: BrowserSessionBinding = {
   version: 1, projectID: 'project_one', instanceID: 'instance_one', sessionID: 'a'.repeat(32),
@@ -26,6 +26,16 @@ function firstPaint(path = '/projects/project_one/jobs/job_one') {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('private connection first paint', () => {
+  it('shows the restoring shell for a recreated tab with only durable project metadata', () => {
+    storage(null);
+    const setItem = vi.fn(), removeItem = vi.fn();
+    vi.stubGlobal('localStorage', {getItem: (key: string) => key === browserRecoveryKey ? JSON.stringify([binding]) : null, setItem, removeItem});
+    expect(firstPaint()).toContain('workspace-skeleton');
+    expect(firstPaint()).not.toContain('Project credential');
+    expect(firstPaint('/projects/project_other/jobs')).toContain('Project credential');
+    expect(setItem).not.toHaveBeenCalled();
+    expect(removeItem).not.toHaveBeenCalled();
+  });
   it('renders a neutral stable skeleton before effects can resume saved access', () => {
     const saved = storage(JSON.stringify(binding));
     const resume = vi.spyOn(Api, 'resume');
