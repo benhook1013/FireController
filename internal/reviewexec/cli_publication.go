@@ -82,11 +82,22 @@ func (e *Engine) PublishEvidence(ctx context.Context, project, evidenceID string
 		if err != nil {
 			return err
 		}
+		scope := core.Scope{ProjectID: project, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}
+		externalSourceID := nativeHostedExternalSourceID(evidence.Capture.Hosted)
 		if exists {
 			receipt = current
+			if externalSourceID != "" {
+				reconciled, changed, reconcileErr := reviews.ReconcileNativeHostedSource(ctx, tx, scope, pull.Number, run.HeadSHA, evidence.ID, externalSourceID)
+				if reconcileErr != nil {
+					return reconcileErr
+				}
+				if changed {
+					receipt = reconciled
+				}
+			}
 			return nil
 		}
-		receipt, err = reviews.PublishNative(ctx, tx, core.Scope{ProjectID: project, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}, reviews.NativePublication{Pull: pull, Run: &run})
+		receipt, err = reviews.PublishNative(ctx, tx, scope, reviews.NativePublication{Pull: pull, Run: &run, ExternalHostedSourceID: externalSourceID})
 		return err
 	})
 	if err != nil {
@@ -206,4 +217,22 @@ func publicationReplay(ctx context.Context, tx *sql.Tx, project string, number i
 	}
 	receipt.Outcome = "observed"
 	return receipt, true, nil
+}
+
+// Only validated native capture identity supplies the observer alias. The
+// current pull head/title/ordering and publication times are not identities.
+func nativeHostedExternalSourceID(hosted *HostedEvidenceMetadata) string {
+	if hosted == nil {
+		return ""
+	}
+	if hosted.PublicationID != "" {
+		return "publication:" + hosted.PublicationID
+	}
+	if hosted.SubmittedReview != nil {
+		return "run:" + hosted.SubmittedReview.ProviderRunID
+	}
+	if hosted.StandingSummary != nil {
+		return "run:" + hosted.StandingSummary.ProviderRunID
+	}
+	return ""
 }

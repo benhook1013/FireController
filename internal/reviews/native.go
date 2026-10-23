@@ -22,6 +22,9 @@ type NativePublication struct {
 	Pull    PullInput
 	Attempt *Attempt
 	Run     *RunInput
+	// ExternalHostedSourceID is an exact provider alias proven by the trusted
+	// native capture owner, never a caller-authored import identity.
+	ExternalHostedSourceID string
 }
 
 // PublishNative advances the immutable browser projection inside the caller's
@@ -31,6 +34,9 @@ type NativePublication struct {
 func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePublication) (Receipt, error) {
 	if len(p.Pull.Runs) != 0 || len(p.Pull.Attempts) != 0 || p.Attempt == nil && p.Run == nil {
 		return Receipt{}, validationError("Publish one selected native attempt or run without replacing history.")
+	}
+	if p.ExternalHostedSourceID != "" && (p.Run == nil || !validNativeHostedAlias(*p.Run, p.ExternalHostedSourceID)) {
+		return Receipt{}, validationError("Hosted reconciliation requires complete attributable native evidence and its exact provider identity.")
 	}
 	var repositoryID int64
 	if err := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, scope.ProjectID).Scan(&repositoryID); err != nil {
@@ -91,6 +97,11 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 	}
 	if p.Run != nil {
 		if err = appendNativeRun(ctx, tx, write, pull.Number, pull.Runs[0]); err != nil {
+			return Receipt{}, err
+		}
+	}
+	if p.ExternalHostedSourceID != "" {
+		if _, err = stageExternalHostedRemoval(ctx, tx, write, pull.Number, pull.Runs[0].HeadSHA, p.ExternalHostedSourceID); err != nil {
 			return Receipt{}, err
 		}
 	}

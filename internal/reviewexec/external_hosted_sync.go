@@ -68,27 +68,47 @@ func (e *Engine) externalHostedInputs(ctx context.Context, tx *sql.Tx, target li
 		if len(runs) >= limit {
 			return runs, true, nil
 		}
-		if !run.FinishedAt.After(floor) {
-			continue
-		}
 		if !run.Inventory.Complete || run.FinishedAt.IsZero() || len(run.Inventory.Findings) > 100 {
 			held = true
 			continue
 		}
 
-		// Existing exact source identities are immutable. Skip them before spending
-		// the new-result budget, so bounded ticks progress beyond their first batch.
+		// Retained identities do not spend append capacity, but may need exact
+		// native reconciliation. Refuse any immutable identity contradiction
+		// before allowing that current-membership change.
 		var owner int64
 		var channel, head string
 		err := tx.QueryRowContext(ctx, `SELECT pull_number,channel,head_sha FROM review_run_versions INDEXED BY review_run_versions_external_source WHERE project_id=? AND source_run_id=? LIMIT 1`, target.project, run.SourceID).Scan(&owner, &channel, &head)
-		if err == nil {
+		known := err == nil
+		if known {
+			var conflicting bool
 			if owner != target.number || channel != "hosted" || head != run.HeadSHA {
 				held = true
+				continue
 			}
-			continue
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_run_versions INDEXED BY review_run_versions_external_source WHERE project_id=? AND source_run_id=? AND (pull_number!=? OR channel!='hosted' OR head_sha!=?))`, target.project, run.SourceID, target.number, run.HeadSHA).Scan(&conflicting); err != nil {
+				return nil, false, err
+			}
+			if conflicting {
+				held = true
+				continue
+			}
+			// A retired observer identity or another historical producer cannot
+			// require repair. Avoid native capture parsing on every later tick.
+			var currentObserver bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_run_versions v INDEXED BY review_run_versions_external_source JOIN review_current_runs c ON c.project_id=v.project_id AND c.id=v.id WHERE v.project_id=? AND v.source_run_id=? AND v.source='github-hosted-observer')`, target.project, run.SourceID).Scan(&currentObserver); err != nil {
+				return nil, false, err
+			}
+			if !currentObserver {
+				continue
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
 			return nil, false, err
+		}
+		// A frozen discovery frontier still prevents importing earlier results.
+		// Exact already-retained duplicates may be reconciled on either side.
+		if !known && !run.FinishedAt.After(floor) {
+			continue
 		}
 		captures, uncertain, err := externalNativeCaptures(ctx, tx, target, run)
 		if err != nil {
@@ -100,10 +120,22 @@ func (e *Engine) externalHostedInputs(ctx context.Context, tx *sql.Tx, target li
 		}
 		owned, ambiguous := externalCapturedIdentity(captures, run)
 		if owned {
+			if len(captures) != 1 || nativeHostedExternalSourceID(captures[0].hosted) != run.SourceID {
+				held = true
+				continue
+			}
+			conflicting, err := reconcileExternalHostedCapture(ctx, tx, target, run, captures[0].evidenceID)
+			if err != nil {
+				return nil, false, err
+			}
+			held = held || conflicting
 			continue
 		}
 		if ambiguous {
 			held = true
+			continue
+		}
+		if known {
 			continue
 		}
 		owned, ambiguous, err = externalHostedNativeBinding(ctx, tx, target, run)
@@ -200,8 +232,9 @@ func externalHostedNativeBinding(ctx context.Context, tx *sql.Tx, target lifecyc
 // of current marker windows: a bot can edit an old standing comment after a new
 // unrelated command, without making the old provider run external.
 type externalNativeCapture struct {
-	head   string
-	hosted *HostedEvidenceMetadata
+	evidenceID string
+	head       string
+	hosted     *HostedEvidenceMetadata
 }
 
 func externalNativeCaptures(ctx context.Context, tx *sql.Tx, target lifecycleTarget, run reviewprovider.ExternalHostedRun) ([]externalNativeCapture, bool, error) {
@@ -266,7 +299,7 @@ func externalNativeCaptures(ctx context.Context, tx *sql.Tx, target lifecycleTar
 		if err != nil || evidence.Capture.Hosted == nil {
 			return nil, true, nil
 		}
-		captures = append(captures, externalNativeCapture{head: a.Anchor.CandidateSHA, hosted: evidence.Capture.Hosted})
+		captures = append(captures, externalNativeCapture{evidenceID: evidence.ID, head: a.Anchor.CandidateSHA, hosted: evidence.Capture.Hosted})
 	}
 	return captures, false, nil
 }
@@ -377,4 +410,29 @@ func publishExternalHostedBatch(ctx context.Context, tx *sql.Tx, target lifecycl
 	}
 	_, err = tx.ExecContext(ctx, `RELEASE external_hosted_candidate`)
 	return changed, unsupported, err
+}
+
+// A contradictory projection holds this candidate without discarding independent
+// lifecycle metadata. Roll back the whole candidate before continuing, including
+// any future reconciliation validation that follows staged membership writes.
+func reconcileExternalHostedCapture(ctx context.Context, tx *sql.Tx, target lifecycleTarget, run reviewprovider.ExternalHostedRun, evidenceID string) (bool, error) {
+	if _, err := tx.ExecContext(ctx, `SAVEPOINT external_hosted_reconcile`); err != nil {
+		return false, err
+	}
+	_, _, err := reviews.ReconcileNativeHostedSource(ctx, tx, core.Scope{ProjectID: target.project, PrincipalID: "service-hosted-observer"}, target.number, run.HeadSHA, evidenceID, run.SourceID)
+	if err != nil {
+		var failure *core.Error
+		if !errors.As(err, &failure) || failure.Code != "observation_conflict" {
+			return false, err
+		}
+		if _, rollbackErr := tx.ExecContext(ctx, `ROLLBACK TO external_hosted_reconcile`); rollbackErr != nil {
+			return false, rollbackErr
+		}
+		if _, releaseErr := tx.ExecContext(ctx, `RELEASE external_hosted_reconcile`); releaseErr != nil {
+			return false, releaseErr
+		}
+		return true, nil
+	}
+	_, err = tx.ExecContext(ctx, `RELEASE external_hosted_reconcile`)
+	return false, err
 }
