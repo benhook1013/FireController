@@ -38,6 +38,8 @@ Its compact `SourceReadinessAssessment` identifies `project_id`, `refresh_id`, `
 
 The CLI adds `--readiness` to explicit `reviews source-refresh` and a provider-free `reviews readiness --pr N`. MCP adds optional `include_readiness` to `review_source_refresh` and the read tool `review_source_readiness`. Bound profiles, explicit keys and optional short/immediate/longer waits retain their existing mechanics. No new background polling, generated retry keys, automatic merge or per-command project/worker flags are introduced.
 
+CLI and MCP source-refresh results, retained source-operation reads and combined readiness reads add an optional compact `ci_diagnostic` for recognized unproven CI reasons, using the same explanation and next action as `ci-assess`. Facts, zero counts, comparison identity and readiness holds stay unchanged. A moving observation calls for ordinary recollection after CI settles; it does not mean no checks are required or authorize workflow/review reruns. Pending receipts remain flat and do not claim an assessment exists.
+
 ## Executed proof
 
 Six actual packaged-service groups passed in 2.298 seconds at clean runtime checkpoint `7f58e9dd45e40ed33f95e7b6ce084a55f413ef10`. Actual `fc`, `fcd` and official-SDK stdio `fcmcp` binaries identified that exact commit with `vcs.modified=false`. Source/assets manifest SHA-256 `0dd3661029432fb903b8b9d7e900f6beaba5b7a536089b38b797c73afbbb5a85` and all binary hashes stayed unchanged; tested `fcd` SHA-256 was `ee010bb48b16602d01e6438df1a724912386f3272f2ea73fb7862142fc91d9d9`.

@@ -101,6 +101,14 @@ func TestReviewReadinessMCPControlledResultsAndWaitPreferences(t *testing.T) {
 	assessment := mcpReadinessFixture(binding.ProjectID)
 	operation := client.ReviewSourceOperation{ID: mcpRefreshID, ProjectID: binding.ProjectID, PullNumber: 2, HeadSHA: assessment.Target.HeadSHA, ConfigurationRevision: 1, State: "completed", Revision: 3, CreatedAt: assessment.Target.ObservedAt, UpdatedAt: assessment.Target.ObservedAt, Observation: &assessment.Target, IncludeReadiness: true, CI: &assessment.CI, ReviewState: &assessment.ReviewState}
 	var mode atomic.Int64
+	operationAtMode := func() client.ReviewSourceOperation {
+		value := operation
+		if mode.Load() == 3 {
+			ci := client.ReviewSourceCISummary{State: "unproven", Reason: "ci_provider_observation_changed_assessment", ObservedAt: assessment.Target.ObservedAt}
+			value.CI = &ci
+		}
+		return value
+	}
 	var requests atomic.Int64
 	var expectedWait atomic.Int64
 	expectedWait.Store(2)
@@ -125,8 +133,10 @@ func TestReviewReadinessMCPControlledResultsAndWaitPreferences(t *testing.T) {
 				w.WriteHeader(202)
 				_ = json.NewEncoder(w).Encode(client.ReviewRequestReceipt{ID: mcpRefreshID, State: "queued", Revision: 1})
 			} else {
-				_ = json.NewEncoder(w).Encode(operation)
+				_ = json.NewEncoder(w).Encode(operationAtMode())
 			}
+		case base + "source-refreshes/" + mcpRefreshID:
+			_ = json.NewEncoder(w).Encode(operationAtMode())
 		case base + "source/2/readiness":
 			if r.Method != "GET" || r.Header.Get("Prefer") != "" || r.Header.Get("Idempotency-Key") != "" {
 				t.Error("SDK read requested provider work")
@@ -141,6 +151,10 @@ func TestReviewReadinessMCPControlledResultsAndWaitPreferences(t *testing.T) {
 				value.State = "held"
 				value.Reasons = []string{"ci_merge_state_unproven"}
 				value.CI = client.ReviewSourceCISummary{State: "unproven", Reason: "ci_candidate_unproven", MergeState: "unproven", ObservedAt: value.Target.ObservedAt}
+			case 3:
+				value.State = "held"
+				value.Reasons = []string{"ci_unproven"}
+				value.CI = *operationAtMode().CI
 			}
 			_ = json.NewEncoder(w).Encode(value)
 		default:
@@ -178,20 +192,37 @@ func TestReviewReadinessMCPControlledResultsAndWaitPreferences(t *testing.T) {
 			}
 		}
 	}
-	for i := int64(0); i < 3; i++ {
+	for i := int64(0); i < 4; i++ {
 		mode.Store(i)
 		result := call(t, session, "review_source_readiness", map[string]any{"pull_number": 2})
-		var got client.ReviewSourceReadinessAssessment
+		var got client.ReviewReadinessOutput
 		decodeResult(t, result, &got)
 		data, _ := json.Marshal(result.StructuredContent)
 		if got.Target != assessment.Target || got.Source != "observed_comparison" || len(data) > 16<<10 || strings.Contains(string(data), `"threads":`) || strings.Contains(string(data), `"checks":`) || (got.State == "ready_as_observed") != (i == 0) {
 			t.Fatal("SDK lost held/observed compact facts", got)
 		}
+		if (got.CIDiagnostic != nil) != (i == 3) {
+			t.Fatal("readiness diagnostic missing or spurious", got)
+		}
 		if i == 1 && got.ReviewState.UnresolvedOutdated != 1 || i == 2 && got.CI.MergeState != "unproven" {
 			t.Fatal(got)
 		}
 	}
-	if requests.Load() != 12 {
+	mode.Store(3)
+	expectedWait.Store(2)
+	args := sourceMCPArguments()
+	args["include_readiness"] = true
+	for _, command := range []struct {
+		name string
+		args map[string]any
+	}{{"review_source_refresh", args}, {"review_source_refresh_read", map[string]any{"refresh_id": mcpRefreshID}}} {
+		var got client.ReviewSourceOperationOutput
+		decodeResult(t, call(t, session, command.name, command.args), &got)
+		if got.CIDiagnostic == nil || got.CI == nil || got.CI.State != "unproven" || got.CI.Required != 0 || got.ID != operation.ID || got.HeadSHA != operation.HeadSHA || got.State != "completed" {
+			t.Fatal("source result lost diagnostic or original facts", got)
+		}
+	}
+	if requests.Load() != 18 {
 		t.Fatal("SDK readiness tools polled", requests.Load())
 	}
 }

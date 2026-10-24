@@ -162,11 +162,13 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 	case "operation":
 		return executeReviewOperationStatus(ctx, service, call.reviewOperationStatus)
 	case "source-operation":
-		return service.ReviewSourceOperation(ctx, call.position[0])
+		value, err := service.ReviewSourceOperation(ctx, call.position[0])
+		return client.AgentReviewSourceOperation(value), err
 	case "source-assess":
 		return service.ReviewSourcePolicyAssessment(ctx, call.pullNumber)
 	case "readiness":
-		return service.ReviewSourceReadiness(ctx, call.pullNumber)
+		value, err := service.ReviewSourceReadiness(ctx, call.pullNumber)
+		return client.AgentReviewReadiness(value), err
 	case "ci-assess":
 		value, err := service.ReviewSourceCIAssessment(ctx, call.pullNumber)
 		return client.AgentReviewCI(value), err

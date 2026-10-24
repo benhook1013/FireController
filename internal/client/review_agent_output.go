@@ -24,6 +24,41 @@ type ReviewCIOutput struct {
 	Diagnostic *ReviewCIDiagnostic `json:"diagnostic,omitempty"`
 }
 
+type ReviewReadinessOutput struct {
+	ReviewSourceReadinessAssessment
+	CIDiagnostic *ReviewCIDiagnostic `json:"ci_diagnostic,omitempty"`
+}
+
+func AgentReviewReadiness(value ReviewSourceReadinessAssessment) ReviewReadinessOutput {
+	return ReviewReadinessOutput{value, agentCISummaryDiagnostic(value.CI)}
+}
+
+type ReviewSourceOperationOutput struct {
+	ReviewSourceOperation
+	CIDiagnostic *ReviewCIDiagnostic `json:"ci_diagnostic,omitempty"`
+}
+
+func AgentReviewSourceOperation(value ReviewSourceOperation) ReviewSourceOperationOutput {
+	out := ReviewSourceOperationOutput{ReviewSourceOperation: value}
+	if value.CI != nil {
+		out.CIDiagnostic = agentCISummaryDiagnostic(*value.CI)
+	}
+	return out
+}
+
+// Preserve flat receipts and the original invalid-result checks. Only a retained
+// operation can gain a CI hint; an unassessed pending receipt cannot.
+func AgentReviewSourceResult(value ReviewSourceResult) any {
+	if value.Operation != nil && value.Receipt == nil {
+		return AgentReviewSourceOperation(*value.Operation)
+	}
+	return value
+}
+
+func agentCISummaryDiagnostic(value ReviewSourceCISummary) *ReviewCIDiagnostic {
+	return AgentReviewCI(ReviewSourceCIAssessment{State: value.State, Reason: value.Reason}).Diagnostic
+}
+
 // AgentReviewCI explains the retained refusal; it neither refreshes nor credits CI.
 func AgentReviewCI(value ReviewSourceCIAssessment) ReviewCIOutput {
 	out := ReviewCIOutput{ReviewSourceCIAssessment: value}

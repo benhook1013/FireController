@@ -217,7 +217,8 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 	case "reviews publication-recover":
 		return service.RecoverReviewCheckpoint(ctx, call.key, call.id, call.reviewCheckpointRecovery, call.reviewSourceWait)
 	case "reviews source-refresh":
-		return service.RefreshReviewSource(ctx, call.key, call.reviewSource, call.reviewSourceWait)
+		value, err := service.RefreshReviewSource(ctx, call.key, call.reviewSource, call.reviewSourceWait)
+		return client.AgentReviewSourceResult(value), err
 	case "reviews route-create":
 		return service.CreateReviewFindingRoute(ctx, call.key, call.id, call.reviewRoute)
 	case "reviews route-decide":

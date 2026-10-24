@@ -168,13 +168,19 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "review_checkpoint_recover":
 				value, err = service.RecoverReviewCheckpoint(ctx, args.key, args.id, args.reviewCheckpointRecovery, args.reviewSourceWait)
 			case "review_source_refresh":
-				value, err = service.RefreshReviewSource(ctx, args.key, args.reviewSource, args.reviewSourceWait)
+				var result client.ReviewSourceResult
+				result, err = service.RefreshReviewSource(ctx, args.key, args.reviewSource, args.reviewSourceWait)
+				value = client.AgentReviewSourceResult(result)
 			case "review_source_refresh_read":
-				value, err = service.ReviewSourceOperation(ctx, args.id)
+				var operation client.ReviewSourceOperation
+				operation, err = service.ReviewSourceOperation(ctx, args.id)
+				value = client.AgentReviewSourceOperation(operation)
 			case "review_source_policy_assess":
 				value, err = service.ReviewSourcePolicyAssessment(ctx, args.pullNumber)
 			case "review_source_readiness":
-				value, err = service.ReviewSourceReadiness(ctx, args.pullNumber)
+				var assessment client.ReviewSourceReadinessAssessment
+				assessment, err = service.ReviewSourceReadiness(ctx, args.pullNumber)
+				value = client.AgentReviewReadiness(assessment)
 			case "review_source_ci_assess":
 				var assessment client.ReviewSourceCIAssessment
 				assessment, err = service.ReviewSourceCIAssessment(ctx, args.pullNumber)
