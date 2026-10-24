@@ -19,6 +19,9 @@ type CapturedHosted struct {
 	Receipt  reviewexec.Receipt `json:"receipt"`
 	Complete bool               `json:"complete"`
 	Reason   string             `json:"reason"`
+
+	// Internal attribution fact, never final evidence or completion credit.
+	publicationFinished bool
 }
 
 // RetainHosted saves a private observation before deriving final evidence. A
@@ -61,6 +64,7 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		}
 	}
 	if !inventory.Complete || inventory.Publication.State != "attributed" {
+		result.publicationFinished = inventory.Publication.State == "attributed" && !inventory.Publication.FinishedAt.IsZero()
 		result.Reason = inventory.Reason
 		if result.Reason == "" {
 			result.Reason = "finding_inventory_incomplete"

@@ -143,9 +143,10 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		result.Reason = "trigger_identity_changed"
 		return result, nil
 	}
-	// A finished reply with unproven inventory is already attached to this exact
-	// trigger. Keep observing without bouncing its durable uncertainty to active
-	// on every pass; later supported evidence can complete it from uncertain.
+	// A finished reply or attributed publication with unproven inventory is
+	// already attached to this exact trigger. Keep observing without bouncing its
+	// durable uncertainty to active on every pass; later supported evidence can
+	// complete it from uncertain.
 	finishedUnproven := attempt.State == "uncertain" && bound.Operation.Reason == "hosted_finished_inventory_unproven"
 	if attempt.State == "posting" || attempt.State == "uncertain" && !finishedUnproven {
 		attempt, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, "active", "trigger_recovered", externalID)
@@ -158,10 +159,10 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	captured, err := RetainHosted(ctx, captures, engine, attempt, retained)
 	if err != nil || !captured.Complete {
 		result.Reason = captured.Reason
-		if err == nil && captured.Reason == "hosted_finished_inventory_unproven" {
-			result.State = "uncertain"
+		if err == nil && (captured.Reason == "hosted_finished_inventory_unproven" || captured.publicationFinished) {
+			result.State, result.Reason = "uncertain", "hosted_finished_inventory_unproven"
 			if settle && !finishedUnproven {
-				_, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, "uncertain", captured.Reason, externalID)
+				_, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, "uncertain", result.Reason, externalID)
 			}
 		}
 		return result, err
