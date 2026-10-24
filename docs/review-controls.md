@@ -92,6 +92,8 @@ fc reviews finalize EVIDENCE_ID --key FINALIZATION_KEY --expect-revision 2
 
 Replace the uppercase placeholders with returned identities and the verified commit. Explicit source decisions can be finalized before fixes; the commands above are one possible ordering rather than a required project workflow. Read the current revision instead of inferring it from this example.
 
+`reviews evidence --help` and `reviews adjudication --help` explain these reads locally without loading profiles or contacting the service. Native evidence IDs are `review_evidence_` followed by exactly 32 lowercase hexadecimal characters; use the complete ID returned by the original operation. Invalid evidence IDs receive format-specific guidance, without echoing the submitted value.
+
 MCP exposes the read-only `review_policy_assess` tool with `evidence_id`, plus `review_evidence_read`, `review_adjudication_read`, `review_finding_decide`, `review_finding_fix` and `review_source_finalize`. Mutations require the corresponding fields above plus `evidence_id` and `idempotency_key`. Tool schemas describe the zero-based finding index and field bounds. The adapter validates arguments before opening credentials or making a request and retains one five-second command budget. Exact repeats have the same keyed effect; neither adapter retries automatically or selects another project.
 
 These tools record local review evidence. Project instructions and the optional [agent workflow](agent-workflow.md) decide when workers should review, update jobs or hand off.

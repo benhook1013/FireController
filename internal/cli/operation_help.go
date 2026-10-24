@@ -20,6 +20,9 @@ func validHelpOptions(o options) bool {
 
 func argumentHelpAction(call invocation) string {
 	operation := call.command + " " + call.subcommand
+	if call.command == "reviews" && (call.subcommand == "evidence" || call.subcommand == "adjudication" || call.subcommand == "assess") && len(call.position) == 1 && !reviewID(call.position[0], "review_evidence_") {
+		return "EVIDENCE_ID must be review_evidence_ followed by exactly 32 lowercase hexadecimal characters. Use the evidence ID returned by the original operation; run " + operation + " --help for details."
+	}
 	if _, ok := operationHelp(operation); ok {
 		return "Run the bound launcher with " + operation + " --help for required fields and examples."
 	}
@@ -34,11 +37,12 @@ func argumentHelpAction(call invocation) string {
 func operationHelp(operation string) (operationHelpResponse, bool) {
 	guard := "Use the current resource --expect-revision. Omitted fields stay unchanged; at least one edit is required."
 	recovery := "Use an explicit --key (1-128 printable ASCII bytes without surrounding whitespace). After uncertain output retry the same key, exact request and binding; never invent a replacement key."
+	evidenceID := "EVIDENCE_ID (review_evidence_ followed by exactly 32 lowercase hexadecimal characters)"
 	out := operationHelpResponse{Required: []string{}, Optional: []string{}}
 	switch operation {
 	case "reviews help":
 		out.Usage = "<bound launcher> reviews help"
-		out.Optional = []string{"reviews queue --help", "reviews rounds --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
+		out.Optional = []string{"reviews queue --help", "reviews rounds --help", "reviews evidence --help", "reviews adjudication --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
 		out.Semantics = []string{"queue, rounds read and assessments read retained state. Read findings with reviews evidence EVIDENCE_ID and decisions/revision with reviews adjudication EVIDENCE_ID.", "source-refresh explicitly reads GitHub; request submits review work; publish requests a checkpoint comment. decide/fix, their batches and finalize change local evidence. Round grants/closure only change local settings.", "All help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
 		out.Example = "<bound launcher> reviews decide --help"
 		out.Documentation = "docs/review-controls.md"
@@ -74,9 +78,20 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"Reads one ordered retained queue page without provider work or automatic pagination. Default output preserves merged/closed history and its full queue detail; --active selects only open, nonretired entries before applying the page limit.", "--active returns scalar PR summaries rather than nested round-control history. The default 5 is the retained page size, not channel-front selection. Continue has_more with the returned cursor and same view.", "Accepts no positional PR number or --snapshot flag. Queue entries alone do not establish review coverage, current CI or merge readiness."}
 		out.Example = "<bound launcher> reviews queue --active --limit 20"
 		out.Documentation = "docs/review-workspace.md"
+	case "reviews evidence", "reviews adjudication":
+		out.Usage = "<bound launcher> " + operation + " EVIDENCE_ID"
+		out.Required = []string{evidenceID}
+		out.Semantics = []string{"Reads retained data for one native evidence ID in the bound project without provider work, new reviews, writes or automatic finalization. Use the evidence ID returned by its original operation; a run, refresh or attempt ID is a different identity."}
+		if operation == "reviews evidence" {
+			out.Semantics = append(out.Semantics, "Returns the original captured comparison, completeness, outcome and finding text/indexes. Capture completion does not mean its findings are accepted, fixed or finalized; read reviews adjudication EVIDENCE_ID for current decisions and revision.")
+		} else {
+			out.Semantics = append(out.Semantics, "Returns the current adjudication revision, dispositions, reasons, fix proof, finalized flag and any frozen original counts. Read reviews evidence EVIDENCE_ID for original finding text; use this returned revision for guarded decision, fix or finalization edits.")
+		}
+		out.Example = "<bound launcher> " + operation + " review_evidence_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/review-controls.md"
 	case "reviews assess":
 		out.Usage = "<bound launcher> reviews assess EVIDENCE_ID"
-		out.Required = []string{"EVIDENCE_ID (native retained evidence identity)"}
+		out.Required = []string{evidenceID}
 		out.Semantics = []string{"Applies current project policy and local finding obligations to the PR identified by native evidence; its original captured comparison is retained.", "sufficient describes completed PR/channel review progress, preserved across later Git changes. It does not verify current GitHub source, required CI or unresolved provider threads, or declare merge readiness.", "Reads retained facts without provider work or writes. Use reviews source-assess --pr NUMBER for source policy or reviews readiness --pr NUMBER for the combined retained assessment."}
 		out.Example = "<bound launcher> reviews assess review_evidence_0123456789abcdef0123456789abcdef"
 		out.Documentation = "docs/review-controls.md"

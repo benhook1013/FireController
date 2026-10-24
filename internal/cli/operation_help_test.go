@@ -24,7 +24,7 @@ func TestOperationHelpIsOfflineBoundedAndDoesNotReadFiles(t *testing.T) {
 	if err := os.WriteFile(path, before, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []string{"jobs create", "jobs update", "jobs status", "jobs checklist-item", "inbox send", "notes list", "notes add", "notes update", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews decide-batch", "reviews fix-batch", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews rounds read", "reviews rounds grant", "reviews rounds close"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs status", "jobs checklist-item", "inbox send", "notes list", "notes add", "notes update", "reviews evidence", "reviews adjudication", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews decide-batch", "reviews fix-batch", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews rounds read", "reviews rounds grant", "reviews rounds close"} {
 		for _, spelling := range [][]string{append(strings.Fields(operation), "--help"), append([]string{"help"}, strings.Fields(operation)...)} {
 			for _, profilePath := range []string{path, filepath.Join(t.TempDir(), "missing.json")} {
 				args := append([]string{"--profile=bound-role", "--profiles-file", profilePath}, spelling...)
@@ -140,6 +140,8 @@ func TestExpandedOperationHelpExamplesMatchRealParsers(t *testing.T) {
 		{"jobs", "status", "job_0123456789abcdef0123456789abcdef"},
 		{"reviews", "operation", "review_operation_0123456789abcdef0123456789abcdef", "--wait-seconds", "40", "--diagnostics"},
 		{"reviews", "queue", "--active", "--limit", "20"},
+		{"reviews", "evidence", "review_evidence_0123456789abcdef0123456789abcdef"},
+		{"reviews", "adjudication", "review_evidence_0123456789abcdef0123456789abcdef"},
 	} {
 		call, ok := parseInvocation(args)
 		if !ok || call.command == "help" || call.helpOperation != "" {
@@ -197,7 +199,7 @@ func TestExpandedOperationHelpExplainsGuardsAndCompactReads(t *testing.T) {
 }
 
 func TestOperationErrorsPointToSelectedHelpWithoutEchoingArguments(t *testing.T) {
-	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes list", "notes add", "notes update", "map update", "publication prepare", "reviews fix", "reviews decide", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews runs"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes list", "notes add", "notes update", "reviews evidence", "reviews adjudication", "map update", "publication prepare", "reviews fix", "reviews decide", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews runs"} {
 		var stdout, stderr bytes.Buffer
 		args := append(strings.Fields(operation), "--private-typo=DO_NOT_ECHO")
 		if code := RunContext(t.Context(), args, map[string]string{"FC_PROFILE": "missing"}, &stdout, &stderr); code != ExitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), operation+" --help") || strings.Contains(stderr.String(), "DO_NOT_ECHO") {
@@ -306,6 +308,21 @@ func TestUnknownReviewSubgroupPointsToOfflineSiblingHelp(t *testing.T) {
 		code := RunContext(ctx, args, nil, &stdout, &stderr)
 		if code != ExitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), "invalid_arguments") || !strings.Contains(stderr.String(), "reviews --help") || !strings.Contains(stderr.String(), "reviews rounds --help") {
 			t.Fatalf("%v: %d %s %s", args, code, &stdout, &stderr)
+		}
+	}
+}
+
+func TestEvidenceReadIDErrorsAreSpecificOfflineAndDoNotEchoInput(t *testing.T) {
+	for _, command := range []string{"evidence", "adjudication", "assess"} {
+		for _, id := range []string{strings.Repeat("a", 32), "review_evidence_" + strings.Repeat("A", 32), "review_evidence_" + strings.Repeat("b", 31), "PRIVATE_DO_NOT_ECHO"} {
+			args := []string{"--profiles-file", filepath.Join(t.TempDir(), "missing.json"), "--profile", "bound", "reviews", command, id}
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			var stdout, stderr bytes.Buffer
+			code := RunContext(ctx, args, nil, &stdout, &stderr)
+			if code != ExitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), "review_evidence_") || !strings.Contains(stderr.String(), "32 lowercase hexadecimal") || !strings.Contains(stderr.String(), "reviews "+command+" --help") || strings.Contains(stderr.String(), id) {
+				t.Fatalf("%s: %d %s %s", command, code, &stdout, &stderr)
+			}
 		}
 	}
 }
