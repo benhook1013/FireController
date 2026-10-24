@@ -62,10 +62,11 @@ describe('per-PR inline retained review history', () => {
       expect(html).not.toContain('Subagent reviews');
     }
   });
-  it('keeps unfinalized, incomplete, unattributed and mismatched records visibly qualified', () => {
+  it('keeps evidence qualification without treating later Git changes as lost progress', () => {
     const value = { ...run('pending'), outcome: 'failed' as const, complete: false, attributable: false, finalized: false, finished_at: '' };
     const html = markup(<ReviewHistoryRow number={27} run={value} snapshot={snapshot} head="other-head" />);
-    for (const text of ['Incomplete record', 'Counts not finalized', 'Attribution unconfirmed', 'Different observed head', 'Started']) expect(html).toContain(text);
+    for (const text of ['Incomplete record', 'Counts not finalized', 'Attribution unconfirmed', 'Started']) expect(html).toContain(text);
+    expect(html).not.toContain('Different observed head');
     const missing = markup(<ReviewHistoryRow number={27} run={{ ...value, started_at: '', head_sha: '' }} snapshot={snapshot} head="head" />);
     expect(missing).toContain('Date unknown'); expect(missing).toContain('Head association unknown');
   });

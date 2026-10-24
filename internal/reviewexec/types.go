@@ -134,7 +134,6 @@ type Engine struct {
 	lifecycleRunning           atomic.Bool
 	lifecycleMu                sync.RWMutex
 	lifecycleSchedule          *lifecycleSchedule
-	applicabilityVerifiers     map[string]ApplicabilityVerifier
 	sourceMu                   sync.Mutex
 	sourceWaiters              map[string]map[*sourceRefreshWaiter]struct{}
 	sourceWaiterPrincipals     map[string]int

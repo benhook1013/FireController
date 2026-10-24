@@ -132,16 +132,16 @@ func TestPolicyAssessmentUsesEffectiveCorrectionsAndFrozenSourceCounts(t *testin
 	}
 }
 
-func TestPolicyAssessmentDoesNotMixComparisonsOrCreditIncompleteCapture(t *testing.T) {
-	t.Run("different hosted comparison", func(t *testing.T) {
+func TestPolicyAssessmentUsesPRProgressButNeverCreditsIncompleteCapture(t *testing.T) {
+	t.Run("completed channels retain their original comparisons", func(t *testing.T) {
 		f, a, id, _ := coverageFixture(t, 0, false)
 		coverageFinalize(t, f, a, id, 0)
 		other := *a.Anchor
 		other.BaseSHA = strings.Repeat("9", 40)
 		other.ParentSHA = other.BaseSHA
 		hosted, hostedID := assessmentHosted(t, f, other)
-		assessmentRead(t, f, a, id, "held", 1, PolicyAssessmentChannel{Channel: "cli", Covered: true}, PolicyAssessmentChannel{Channel: "hosted"})
-		assessmentRead(t, f, hosted, hostedID, "held", 1, PolicyAssessmentChannel{Channel: "cli"}, PolicyAssessmentChannel{Channel: "hosted", Covered: true})
+		assessmentRead(t, f, a, id, "sufficient", 1, PolicyAssessmentChannel{Channel: "cli", Covered: true}, PolicyAssessmentChannel{Channel: "hosted", Covered: true})
+		assessmentRead(t, f, hosted, hostedID, "sufficient", 1, PolicyAssessmentChannel{Channel: "cli", Covered: true}, PolicyAssessmentChannel{Channel: "hosted", Covered: true})
 	})
 	t.Run("incomplete capture", func(t *testing.T) {
 		f, a, id, _ := coverageFixture(t, 1, true)

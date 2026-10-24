@@ -172,7 +172,7 @@ func (e *Engine) verifyAction(ctx context.Context, tx *sql.Tx, project, attemptI
 	if err := verifyPredecessors(ctx, tx, project, current, *attempt.Anchor, predecessors); err != nil {
 		return err
 	}
-	state, err := comparison(ctx, tx, project, current.RepositoryID, operation.PullNumber, *attempt.Anchor, operation.Channel)
+	state, err := channelProgress(ctx, tx, project, current.RepositoryID, operation.PullNumber, operation.Channel)
 	if err != nil {
 		return err
 	}
@@ -184,7 +184,7 @@ func (e *Engine) verifyAction(ctx context.Context, tx *sql.Tx, project, attemptI
 		return err
 	}
 	if state.Covered && !rounds {
-		return &core.Error{Code: "review_held", Message: "The selected native comparison already has completed coverage in this channel.", Status: 409, Details: map[string]string{"reason": "target_already_covered"}}
+		return &core.Error{Code: "review_held", Message: "This PR already has a completed review in the selected channel.", Status: 409, Details: map[string]string{"reason": "target_already_covered"}}
 	}
 	return nil
 }
@@ -222,8 +222,7 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 		if routes > 0 {
 			return sourceHold("predecessor_unfinished")
 		}
-		anchor := Anchor{RepositoryID: current.RepositoryID, PullNumber: number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef}
-		state, err := comparison(ctx, tx, project, current.RepositoryID, number, anchor, current.Operation.Channel)
+		state, err := channelProgress(ctx, tx, project, current.RepositoryID, number, current.Operation.Channel)
 		if err != nil {
 			return err
 		}

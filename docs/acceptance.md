@@ -44,7 +44,7 @@ Implemented service/client boundaries have focused public tests and packaged che
 | ID | Scenario and required result |
 | --- | --- |
 | R01 | Change child or parent head during admission: hold/reselect before posting; never silently target a different PR. |
-| R02 | Change head immediately after final identity read: capture remains attached to admitted target, not the new head. |
+| R02 | Change head immediately after final identity read: capture remains attached to the admitted comparison, can earn PR/channel completion, and makes no claim that later code was reviewed. |
 | R03 | Concurrent callers request one review: one reservation/provider action; authorized callers can inspect the shared operation, while callers without inspection permission receive an opaque conflict with no private attempt details. |
 | R04 | Crash at each pre-post/post/capture/publication boundary: recover original attempt or retain uncertainty without duplicate posts. |
 | R05 | Provider pagination is partial or loops: evidence is incomplete and cannot authorize review/readiness. |
@@ -54,12 +54,13 @@ Implemented service/client boundaries have focused public tests and packaged che
 | R09 | Stop a review, or exhaust an optional configured channel budget: accepted finding obligations and CI requirements remain enforced. |
 | R10 | Correct a finding decision or fix proof: immutable source identity, revision guard, and audited prior values survive. |
 | R11 | Concurrent checkpoint publishers or lost response: one attributable public checkpoint or an explicit unresolved intent. |
-| R12 | Stack parent movement: only affected evidence is invalidated, with unknown applicability held. |
+| R12 | Candidate, base, parent or history movement before admission requires fresh exact selection; movement after start preserves earned PR/channel completion, rounds, taper and limits without automatic reopening or required rounds. Current CI, threads and mergeability remain source-bound. |
 | R13 | Required-check authority is missing, a same-named foreign app succeeds, or an obsolete retry passes: none can satisfy the exact candidate's current required CI. |
 | R14 | Review coverage is complete but mergeability is conflicting or unknown: show review completion separately and hold merge readiness. |
 | R15 | Concurrent actions target the same provider/repository/PR/action class, including changed heads: one external action and no exposure of another principal's private attempt state. |
 | R16 | A developer switches branches or edits their checkout while a local review runs: its verified service-owned tree/comparison and captured evidence remain unchanged; missing server source produces an explicit capability hold. |
-| R17 | Review-channel requirements are absent, or only one of two required channels has complete current-target evidence: aggregate review sufficiency remains held despite completed individual attempts or green CI. |
+| R17 | Review-channel requirements are absent, or only one of two required channels has complete native evidence for that PR/channel: aggregate review sufficiency remains held despite completed individual attempts or green CI. |
+| R18 | Move through several heads with unfinalized evidence, accepted findings, routes or imported obligations: every obligation remains live until explicitly satisfied, even when another native capture is ready. Extra review requires the existing deliberate controls; imported display rows supply no native completion credit. |
 | P06 | Two project creations bind the same GitHub repository concurrently or via renamed/alternate URLs: one owner, explicit duplicate error, and an existing-project pointer only for authorized callers. |
 | C06 | An MCP caller names a local profile outside its authorized set: reject before loading its credential or making a service call. Shared indistinguishable callers cannot claim separate grants or impersonate identity through labels. |
 | O01 | Fresh install and restart with committed activity: startup, private state, profiles, and durable receipts work as documented. |

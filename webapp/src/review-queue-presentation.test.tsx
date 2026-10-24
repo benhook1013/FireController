@@ -52,14 +52,14 @@ describe('truthful stored review presentation', () => {
     expect(selected).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Up next</span>');
     expect(selected).not.toContain('CLI CodeRabbit<span class="badge review-channel-position">Up next</span>');
   });
-  it('distinguishes current-head reviewing from a retained attempt on another head', () => {
+  it('keeps an already-started review visible after head movement', () => {
     const attempt = { channel: 'hosted', head_sha: pull(2).head_sha, state: 'active', finished_at: '', started_at: '2026-10-22T00:00:00Z', source_attempt_id: 'active' } as ReviewAttemptSummary;
     const html = markup(<ReviewQueueView />, queue([pull(1, 'merged'), { ...pull(2), latest_attempts: [attempt] }]), undefined, { fronts: fronts() });
     expect(html).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Reviewing</span>');
     expect(html).not.toContain('>Up next</span>');
     const stale = markup(<ReviewQueueView />, queue([pull(1, 'merged'), { ...pull(2), latest_attempts: [{ ...attempt, head_sha: 'c'.repeat(40) }] }]), undefined, { fronts: fronts() });
-    expect(stale).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Up next</span>');
-    expect(stale).not.toContain('>Reviewing</span>');
+    expect(stale).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Reviewing</span>');
+    expect(stale).not.toContain('>Up next</span>');
   });
   it('shows carried admission work without claiming Up next, and keeps independent channel readiness', () => {
     const held=fronts();held.channels[0]={...held.channels[0],state:'held',reason:'source_obligations_pending'};

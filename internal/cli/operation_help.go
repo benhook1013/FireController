@@ -59,13 +59,13 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	case "reviews assess":
 		out.Usage = "<bound launcher> reviews assess EVIDENCE_ID"
 		out.Required = []string{"EVIDENCE_ID (native retained evidence identity)"}
-		out.Semantics = []string{"Applies current project policy and local finding obligations to the immutable captured comparison identified by native evidence.", "sufficient describes required-channel coverage for that captured comparison. It does not verify current GitHub source, required CI or unresolved provider threads, or declare merge readiness.", "Reads retained facts without provider work or writes. Use reviews source-assess --pr NUMBER for source policy or reviews readiness --pr NUMBER for the combined retained assessment."}
+		out.Semantics = []string{"Applies current project policy and local finding obligations to the PR identified by native evidence; its original captured comparison is retained.", "sufficient describes completed PR/channel review progress, preserved across later Git changes. It does not verify current GitHub source, required CI or unresolved provider threads, or declare merge readiness.", "Reads retained facts without provider work or writes. Use reviews source-assess --pr NUMBER for source policy or reviews readiness --pr NUMBER for the combined retained assessment."}
 		out.Example = "<bound launcher> reviews assess review_evidence_0123456789abcdef0123456789abcdef"
 		out.Documentation = "docs/review-controls.md"
 	case "reviews source-assess":
 		out.Usage = "<bound launcher> reviews source-assess --pr NUMBER"
 		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)"}
-		out.Semantics = []string{"Applies current local review policy, required-channel coverage and finding obligations to the latest retained source comparison for the selected PR.", "Source observation and policy evaluation times differ. This result does not establish current GitHub freshness or assess required CI, provider threads or merge-state gates; reviews readiness --pr NUMBER combines those retained components.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help for explicit external collection."}
+		out.Semantics = []string{"Applies current local review policy, completed PR/channel review progress and finding obligations for the selected PR using its latest retained source identity.", "Source observation and policy evaluation times differ. This result does not establish current GitHub freshness or assess required CI, provider threads or merge-state gates; reviews readiness --pr NUMBER combines those retained components.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help for explicit external collection."}
 		out.Example = "<bound launcher> reviews source-assess --pr 42"
 		out.Documentation = "docs/review-source.md"
 	case "reviews ci-assess":
@@ -77,7 +77,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	case "reviews readiness":
 		out.Usage = "<bound launcher> reviews readiness --pr NUMBER"
 		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)"}
-		out.Semantics = []string{"Combines current local policy, applicable finalized review coverage, finding/route obligations, retained required CI, thread resolution and provider merge-state facts for the latest stored comparison.", "Required CI describes the selected base branch, not all workflow health. not_required does not mean workflows passed or stopped; GitHub merge-state gates remain separate. ready_as_observed describes the retained observation times. Missing, changed or conflicting input bindings remain held; it does not authorize a merge or guarantee GitHub remains unchanged.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help to explicitly collect readiness with --readiness."}
+		out.Semantics = []string{"Combines current local policy, finalized PR/channel review progress, finding/route obligations, retained required CI, thread resolution and provider merge-state facts for the latest stored comparison.", "Required CI describes the selected base branch, not all workflow health. not_required does not mean workflows passed or stopped; GitHub merge-state gates remain separate. ready_as_observed describes the retained observation times. Missing, changed or conflicting input bindings remain held; it does not authorize a merge or guarantee GitHub remains unchanged.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help to explicitly collect readiness with --readiness."}
 		out.Example = "<bound launcher> reviews readiness --pr 42"
 		out.Documentation = "docs/review-readiness.md"
 	case "reviews runs":

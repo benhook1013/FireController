@@ -95,7 +95,7 @@ func TestReviewReadHelpSeparatesQueuePolicyAndReadiness(t *testing.T) {
 		"assess":        {"immutable captured comparison", "current project policy", "CI", "threads"},
 		"source-assess": {"latest retained source comparison", "current local review policy", "source-refresh --help"},
 		"ci-assess":     {"required CI", "latest stored source comparison", "Review-channel policy", "selected base branch", "not_required", "optional workflows"},
-		"readiness":     {"finalized review coverage", "thread", "merge-state", "ready_as_observed", "source-refresh --help"},
+		"readiness":     {"finalized PR/channel review progress", "thread", "merge-state", "ready_as_observed", "source-refresh --help"},
 	} {
 		help, ok := operationHelp("reviews " + operation)
 		data, _ := json.Marshal(help)

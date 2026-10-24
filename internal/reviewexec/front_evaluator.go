@@ -50,8 +50,7 @@ func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo i
 	if pending > 0 {
 		return evaluatedFront{state: "held", reason: "routed_findings_pending", plan: plan}, nil
 	}
-	anchor := Anchor{RepositoryID: repo, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef}
-	state, err := comparison(ctx, q, r.ProjectID, repo, plan.Pull.Number, anchor, r.Channel)
+	state, err := channelProgress(ctx, q, r.ProjectID, repo, plan.Pull.Number, r.Channel)
 	if err != nil {
 		var failure *core.Error
 		if errors.As(err, &failure) && failure.Code == "storage_unavailable" {

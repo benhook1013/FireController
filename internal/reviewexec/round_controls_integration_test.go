@@ -48,12 +48,12 @@ func TestRoundIntegrationRequiredDiscoveryIsSeparateFromObservedCoverage(t *test
 	if err != nil || observed.State != "ready_as_observed" {
 		t.Fatal("closed discovery erased existing valid coverage", observed, err)
 	}
-	// A later head has no applicable capture. Closure remains discovery state,
-	// without giving that new head coverage or changing consumed history.
+	// Later Git changes preserve completed PR progress and explicit closure.
+	// The original captured comparison and consumed history remain unchanged.
 	changed := SourcePlan{Repository: reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, Pull: reviewprovider.Pull{Number: 2, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("9", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, ParentSHA: strings.Repeat("b", 40), ObservedAt: stamp()}
 	state, err := f.e.Comparison(t.Context(), attemptProject, changed, "cli")
-	if err != nil || state.Covered || state.Pending || !state.RoundsComplete {
-		t.Fatal("closure manufactured changed-head coverage", state, err)
+	if err != nil || !state.Covered || state.Pending || !state.RoundsComplete {
+		t.Fatal("Git change lost completed PR progress", state, err)
 	}
 	if done, err := f.e.DiscoveryComplete(t.Context(), attemptProject, changed, "cli"); err != nil || !done {
 		t.Fatal("changed head silently reopened explicit closure", done, err)

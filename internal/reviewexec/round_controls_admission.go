@@ -26,8 +26,8 @@ func (e *Engine) RoundAdmission(ctx context.Context, project, operationID string
 	return configured, err
 }
 
-// DiscoveryComplete controls channel progression, independently of whether a
-// stopped comparison has current captured coverage for merge readiness.
+// DiscoveryComplete controls PR/channel progression. Later commits do not
+// reopen completed rounds; unresolved native evidence still holds progression.
 func (e *Engine) DiscoveryComplete(ctx context.Context, project string, current SourcePlan, channel string) (bool, error) {
 	state, err := e.Comparison(ctx, project, current, channel)
 	if err != nil {

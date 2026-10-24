@@ -101,9 +101,9 @@ The former private development controller is retained only as a sealed historica
 
 | Boundary | Current evidence | Remaining proof |
 | --- | --- | --- |
-| Public project | Repository creation and visibility verified; PR #1 merged by the human; documentation `validate` passed; per-head coverage is recorded in PR evidence | Validation and review of every later head |
+| Public project | Repository creation and visibility verified; PR #1 merged by the human; documentation `validate` passed; original reviewed comparisons are retained in PR evidence | Validate later code changes; completed review progress and taper survive Git changes |
 | Main protection | PR requirement, admin enforcement, conversation resolution, no force/deletion; strict required `validate` check attributed to GitHub Actions | Ongoing enforcement as validation expands |
-| CodeRabbit configuration | CLI configuration smoke, doctor, and v2 schema passed; GitHub App and CLI completed deliberately requested reviews; independent channel cycles and observed quotas | Fresh provider coverage after corrections; automatic and incremental reviews remain disabled |
+| CodeRabbit configuration | CLI configuration smoke, doctor, and v2 schema passed; GitHub App and CLI completed deliberately requested reviews; independent channel cycles and observed quotas | Resolve accepted findings with verified fixes; automatic and incremental reviews remain disabled |
 | Inherited behavior | Two bounded inventories plus two independent source/test-body passes and main-worker adjudication; pinned census hashes/counts verified | Legacy suite was not executed; fresh rebuild scenario implementation and execution |
 | Temporary project controller | Separate private native runtime/context; own SQLite bootstrap and combined snapshot/restore passed; queue/review records and worker lane verified; copied site has 200 passing tests and desktop/mobile route proof | Replacement by the native service after its proof |
 | Design validation | Markdown lint, local links, and focused checker tests passed, including nested badge and reference-definition targets; first CLI missing-lockfile claim rejected against committed source/CI | Every later head needs validation; these checks do not prove standalone runtime behavior |

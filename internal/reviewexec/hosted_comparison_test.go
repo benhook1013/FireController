@@ -63,7 +63,7 @@ func TestHostedComparisonFrozenCountsCorrectionsAndMovedHead(t *testing.T) {
 	hostedComparisonRead(t, f, a, moved, ComparisonState{Pending: true})
 	coverageFix(t, f, id, "hosted-fix-one", 4, 0, "")
 	hostedComparisonRead(t, f, a, current, ComparisonState{Covered: true})
-	hostedComparisonRead(t, f, a, moved, ComparisonState{})
+	hostedComparisonRead(t, f, a, moved, ComparisonState{Covered: true})
 	adjudicationDecide(t, f, id, "hosted-correct", 5, 1, "accepted")
 	hostedComparisonRead(t, f, a, current, ComparisonState{Pending: true})
 	hostedComparisonRead(t, f, a, moved, ComparisonState{Pending: true})
@@ -76,7 +76,7 @@ func TestHostedComparisonFrozenCountsCorrectionsAndMovedHead(t *testing.T) {
 	coverageComparison(t, f, a, current, ComparisonState{})
 }
 
-func TestHostedComparisonExactScopeAndRepositoryBinding(t *testing.T) {
+func TestHostedProgressSurvivesGitChangesWithinRepositoryAndPR(t *testing.T) {
 	f, a, id, current := hostedComparisonFixture(t, true)
 	coverageFinalize(t, f, a, id, 0)
 	cases := map[string]func(*SourcePlan){
@@ -90,7 +90,7 @@ func TestHostedComparisonExactScopeAndRepositoryBinding(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			plan := current
 			change(&plan)
-			hostedComparisonRead(t, f, a, plan, ComparisonState{})
+			hostedComparisonRead(t, f, a, plan, ComparisonState{Covered: name != "pull"})
 		})
 	}
 	renamed := current

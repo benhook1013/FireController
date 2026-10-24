@@ -15,9 +15,9 @@ func validCoverageSource(current SourcePlan) bool {
 		(current.ParentPullNumber != 0 || current.Pull.BaseRef == current.Repository.DefaultBranch)
 }
 
-// ComparisonState separates applicable closed coverage from unresolved native
-// evidence on any head in the selected channel. Pending dominates admission
-// even when Covered is true.
+// ComparisonState separates completed PR/channel review progress from unresolved
+// native evidence on any head. Covered does not claim that later code was reviewed;
+// Pending dominates admission even when a prior review is complete.
 type ComparisonState struct {
 	Covered          bool
 	Pending          bool
@@ -25,7 +25,7 @@ type ComparisonState struct {
 	RoundsComplete   bool
 }
 
-// Coverage reports usable current coverage only when no completed native
+// Coverage reports completed PR/channel review progress only when no native
 // operation in the selected channel on this PR still needs capture, adjudication,
 // finalization or proof.
 func (e *Engine) Coverage(ctx context.Context, project string, current SourcePlan, channel string) (bool, error) {
@@ -34,7 +34,8 @@ func (e *Engine) Coverage(ctx context.Context, project string, current SourcePla
 }
 
 // Comparison reads indexed native proof facts without provider work.
-// Callers supply fresh comparison facts; imported browser history is not credit.
+// Callers supply selected PR identity; imported browser history is not credit.
+// Source freshness is an admission guard, not a reset of completed review progress.
 func (e *Engine) Comparison(ctx context.Context, project string, current SourcePlan, channel string) (ComparisonState, error) {
 	if channel != "cli" && channel != "hosted" || !identifier.MatchString(project) || !validCoverageSource(current) {
 		return ComparisonState{}, invalid()
@@ -51,9 +52,8 @@ func (e *Engine) Comparison(ctx context.Context, project string, current SourceP
 		if repositoryID != current.Repository.ID {
 			return sourceHold("repository_changed")
 		}
-		anchor := Anchor{RepositoryID: repositoryID, PullNumber: current.Pull.Number, CandidateSHA: current.Pull.HeadSHA, BaseSHA: current.Pull.BaseSHA, ParentSHA: current.ParentSHA, ParentPullNumber: current.ParentPullNumber, BaseRef: current.Pull.BaseRef}
 		var err error
-		result, err = comparison(ctx, tx, project, repositoryID, current.Pull.Number, anchor, channel)
+		result, err = channelProgress(ctx, tx, project, repositoryID, current.Pull.Number, channel)
 		return err
 	})
 	if err != nil {
@@ -62,9 +62,10 @@ func (e *Engine) Comparison(ctx context.Context, project string, current SourceP
 	return result, nil
 }
 
-// comparison reads indexed native proof facts. Pending and dirty obligations
-// apply across every retained head; exact comparison credit is separate.
-func comparison(ctx context.Context, tx *sql.Tx, project string, repositoryID, number int64, current Anchor, channel string) (ComparisonState, error) {
+// channelProgress reads completed native PR/channel outcomes. Captured anchors
+// remain evidence provenance; later commits cannot reopen earned progress.
+// Pending and dirty obligations still apply across every retained head.
+func channelProgress(ctx context.Context, tx *sql.Tx, project string, repositoryID, number int64, channel string) (ComparisonState, error) {
 	if channel != "cli" && channel != "hosted" {
 		return ComparisonState{}, invalid()
 	}
@@ -73,19 +74,13 @@ func comparison(ctx context.Context, tx *sql.Tx, project string, repositoryID, n
 	err := tx.QueryRowContext(ctx, `SELECT
  EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='dirty'),
  EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='pending'),
- EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='ready' AND repository_id=? AND candidate_sha=? AND base_sha=? AND parent_sha=? AND parent_pull_number=? AND base_ref=?)`,
-		project, number, channel, project, number, channel, project, number, channel, repositoryID, current.CandidateSHA, current.BaseSHA, current.ParentSHA, current.ParentPullNumber, current.BaseRef).Scan(&dirty, &result.Pending, &result.Covered)
+ EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='ready' AND repository_id=?)`,
+		project, number, channel, project, number, channel, project, number, channel, repositoryID).Scan(&dirty, &result.Pending, &result.Covered)
 	if err != nil {
 		return ComparisonState{}, err
 	}
 	if dirty {
 		return ComparisonState{}, adjudicationStorageError()
-	}
-	if !result.Covered {
-		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_applicability a JOIN review_comparison_proofs p ON p.evidence_id=a.evidence_id AND p.project_id=a.project_id AND p.pull_number=a.pull_number AND p.channel=a.channel WHERE a.project_id=? AND a.repository_id=? AND a.pull_number=? AND a.channel=? AND a.candidate_sha=? AND a.base_sha=? AND a.parent_sha=? AND a.parent_pull_number=? AND a.base_ref=? AND p.state='ready')`, project, repositoryID, number, channel, current.CandidateSHA, current.BaseSHA, current.ParentSHA, current.ParentPullNumber, current.BaseRef).Scan(&result.Covered)
-		if err != nil {
-			return ComparisonState{}, err
-		}
 	}
 	rounds, err := readRoundControl(ctx, tx, project, number, channel)
 	if err != nil {

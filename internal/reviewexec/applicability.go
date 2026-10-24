@@ -3,11 +3,8 @@ package reviewexec
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"reflect"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/strictjson"
@@ -17,12 +14,6 @@ import (
 type EquivalentComparison struct {
 	OriginalBaseTree, OriginalHeadTree, CurrentBaseTree, CurrentHeadTree    string
 	OriginalMergeBaseSHA, CurrentMergeBaseSHA, PatchSHA256, InventorySHA256 string
-}
-
-// ApplicabilityVerifier is registered by trusted operator composition. It may
-// acquire pinned Git objects, but cannot request or credit another review.
-type ApplicabilityVerifier interface {
-	VerifyReviewApplicability(context.Context, Anchor, SourcePlan) (EquivalentComparison, error)
 }
 
 type ReviewApplicability struct {
@@ -61,111 +52,8 @@ func applicabilityID(p ReviewApplicability) string {
 	return "review_applicability_" + hex.EncodeToString(sum[:16])
 }
 
-// Consider the newest native ready evidence independently for each channel.
-// This is bounded repair of normal parent carries, not a historical search.
-func (e *Engine) prepareReviewApplicability(ctx context.Context, project string, plan SourcePlan, capability string) []ReviewApplicability {
-	e.sourceMu.Lock()
-	verifier := e.applicabilityVerifiers[capability]
-	e.sourceMu.Unlock()
-	if verifier == nil || !validCoverageSource(plan) {
-		return nil
-	}
-	var originals []ReviewApplicability
-	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		for _, channel := range []string{"cli", "hosted"} {
-			var evidenceID string
-			err := tx.QueryRowContext(ctx, `SELECT p.evidence_id FROM review_comparison_proofs p JOIN review_execution_evidence e ON e.id=p.evidence_id WHERE p.project_id=? AND p.pull_number=? AND p.channel=? AND p.repository_id=? AND p.state='ready' ORDER BY e.rowid DESC LIMIT 1`, project, plan.Pull.Number, channel, plan.Repository.ID).Scan(&evidenceID)
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			evidence, _, err := loadReviewAdjudication(ctx, tx, project, evidenceID)
-			if err != nil {
-				return err
-			}
-			var retained bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_applicability WHERE project_id=? AND evidence_id=? AND repository_id=? AND pull_number=? AND channel=? AND candidate_sha=? AND base_sha=? AND parent_sha=? AND parent_pull_number=? AND base_ref=?)`, project, evidenceID, plan.Repository.ID, plan.Pull.Number, channel, plan.Pull.HeadSHA, plan.Pull.BaseSHA, plan.ParentSHA, plan.ParentPullNumber, plan.Pull.BaseRef).Scan(&retained); err != nil {
-				return err
-			}
-			if retained {
-				continue
-			}
-			a := evidence.Anchor
-			if a.CandidateSHA == plan.Pull.HeadSHA && a.BaseSHA == plan.Pull.BaseSHA && a.ParentSHA == plan.ParentSHA && a.ParentPullNumber == plan.ParentPullNumber && a.BaseRef == plan.Pull.BaseRef {
-				continue
-			}
-			originals = append(originals, ReviewApplicability{EvidenceID: evidenceID, Channel: channel, Original: a})
-		}
-		return nil
-	})
-	if err != nil {
-		return nil
-	}
-	var proofs []ReviewApplicability
-	for _, p := range originals {
-		trees, err := verifier.VerifyReviewApplicability(ctx, p.Original, plan)
-		if err != nil {
-			continue
-		}
-		p.Current = Anchor{RepositoryID: plan.Repository.ID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: trees.CurrentMergeBaseSHA, PatchSHA256: trees.PatchSHA256, ObservedAt: plan.ObservedAt}
-		p.Trees, p.RecordedAt = trees, time.Now().UTC().Format(time.RFC3339Nano)
-		if validApplicability(p) {
-			proofs = append(proofs, p)
-		}
-	}
-	return proofs
-}
-
-func (e *Engine) retainReviewApplicability(ctx context.Context, tx *sql.Tx, project string, plan SourcePlan, proofs []ReviewApplicability) error {
-	for _, p := range proofs {
-		if !validApplicability(p) || p.Current.RepositoryID != plan.Repository.ID || p.Current.PullNumber != plan.Pull.Number || p.Current.CandidateSHA != plan.Pull.HeadSHA || p.Current.BaseSHA != plan.Pull.BaseSHA || p.Current.ParentSHA != plan.ParentSHA || p.Current.ParentPullNumber != plan.ParentPullNumber || p.Current.BaseRef != plan.Pull.BaseRef {
-			return adjudicationStorageError()
-		}
-		evidence, state, err := loadReviewAdjudication(ctx, tx, project, p.EvidenceID)
-		if err != nil {
-			return err
-		}
-		derived, err := deriveComparisonProof(ctx, tx, project, evidence.OperationID)
-		if err != nil {
-			return err
-		}
-		ready, err := coverageProof(ctx, tx, evidence, state, p.Channel)
-		if err != nil {
-			return err
-		}
-		// A concurrent correction may remove eligibility; it never grants proof.
-		if !ready || derived.state != "ready" || derived.channel != p.Channel || !reflect.DeepEqual(evidence.Anchor, p.Original) {
-			continue
-		}
-		b, err := json.Marshal(p)
-		if err != nil {
-			return err
-		}
-		id := applicabilityID(p)
-		var existing string
-		err = tx.QueryRowContext(ctx, `SELECT body_json FROM review_applicability WHERE id=? AND project_id=?`, id, project).Scan(&existing)
-		if err == nil {
-			var old ReviewApplicability
-			if strictjson.Decode([]byte(existing), &old) != nil || !validApplicability(old) || applicabilityID(old) != id {
-				return adjudicationStorageError()
-			}
-			continue
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO review_applicability(id,project_id,evidence_id,repository_id,pull_number,channel,candidate_sha,base_sha,parent_sha,parent_pull_number,base_ref,body_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, id, project, p.EvidenceID, p.Current.RepositoryID, p.Current.PullNumber, p.Channel, p.Current.CandidateSHA, p.Current.BaseSHA, p.Current.ParentSHA, p.Current.ParentPullNumber, p.Current.BaseRef, string(b))
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // ValidateReviewApplicability checks retained attestations without network/Git
-// reads. Current readiness still joins the original live native proof state.
+// reads. These historical records do not gate current PR review progress.
 func ValidateReviewApplicability(ctx context.Context, q EvidenceQuery) error {
 	var malformed bool
 	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_applicability WHERE id IS NULL OR id='')`).Scan(&malformed); err != nil {
@@ -221,25 +109,4 @@ func ValidateReviewApplicability(ctx context.Context, q EvidenceQuery) error {
 			last = r.id
 		}
 	}
-}
-
-// RegisterApplicabilityVerifier binds one optional verifier to an existing
-// capability before serving. It does not replace any source-reader interfaces.
-func (e *Engine) RegisterApplicabilityVerifier(capability string, verifier ApplicabilityVerifier) error {
-	if e == nil || verifier == nil {
-		return invalid()
-	}
-	if _, ok := e.capabilities[capability]; !ok {
-		return invalid()
-	}
-	e.sourceMu.Lock()
-	defer e.sourceMu.Unlock()
-	if e.applicabilityVerifiers == nil {
-		e.applicabilityVerifiers = make(map[string]ApplicabilityVerifier)
-	}
-	if e.applicabilityVerifiers[capability] != nil {
-		return conflict()
-	}
-	e.applicabilityVerifiers[capability] = verifier
-	return nil
 }

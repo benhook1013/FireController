@@ -120,7 +120,7 @@ func TestCLICoverageZeroAndIncompleteEvidence(t *testing.T) {
 	})
 }
 
-func TestCLICoverageExactComparisonAndRepositoryRename(t *testing.T) {
+func TestCLIProgressSurvivesGitChangesWithinRepositoryAndPR(t *testing.T) {
 	f, a, id, current := coverageFixture(t, 0, false)
 	coverageFinalize(t, f, a, id, 0)
 	for _, test := range []struct {
@@ -131,10 +131,10 @@ func TestCLICoverageExactComparisonAndRepositoryRename(t *testing.T) {
 	}{
 		{"current", nil, true, ""},
 		{"rename", func(x *SourcePlan) { x.Repository.FullName = "renamed-owner/renamed-repository" }, true, ""},
-		{"new-head", func(x *SourcePlan) { x.Pull.HeadSHA = strings.Repeat("9", 40) }, false, ""},
-		{"new-base", func(x *SourcePlan) { x.Pull.BaseSHA = strings.Repeat("8", 40); x.ParentSHA = x.Pull.BaseSHA }, false, ""},
-		{"new-parent-number", func(x *SourcePlan) { x.ParentPullNumber = 4 }, false, ""},
-		{"new-base-ref", func(x *SourcePlan) { x.Pull.BaseRef = "other-base"; x.Repository.DefaultBranch = "other-base" }, false, ""},
+		{"new-head", func(x *SourcePlan) { x.Pull.HeadSHA = strings.Repeat("9", 40) }, true, ""},
+		{"new-base", func(x *SourcePlan) { x.Pull.BaseSHA = strings.Repeat("8", 40); x.ParentSHA = x.Pull.BaseSHA }, true, ""},
+		{"new-parent-number", func(x *SourcePlan) { x.ParentPullNumber = 4 }, true, ""},
+		{"new-base-ref", func(x *SourcePlan) { x.Pull.BaseRef = "other-base"; x.Repository.DefaultBranch = "other-base" }, true, ""},
 		{"other-pull", func(x *SourcePlan) { x.Pull.Number = 4 }, false, ""},
 		{"foreign-repository", func(x *SourcePlan) { x.Repository.ID = 802; x.Pull.RepositoryID = 802 }, false, "review_held"},
 		{"invalid-parent", func(x *SourcePlan) { x.ParentSHA = strings.Repeat("7", 40) }, false, "validation_failed"},

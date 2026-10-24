@@ -567,10 +567,6 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 	if readErr == nil && r.IncludeReadiness && ctx.Err() == nil {
 		review = observeSourceReviewState(operationCtx, readers[r.capability], plan)
 	}
-	var applicability []ReviewApplicability
-	if readErr == nil && ctx.Err() == nil {
-		applicability = e.prepareReviewApplicability(operationCtx, r.ProjectID, plan, r.capability)
-	}
 	if ctx.Err() != nil {
 		return true, nil
 	}
@@ -604,9 +600,6 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			}
 			retainedCI, retainedReview := "null", "null"
 			if state == "completed" {
-				if err = e.retainReviewApplicability(ctx, tx, r.ProjectID, plan, applicability); err != nil {
-					return err
-				}
 				retainedCI, retainedReview = ciBody, reviewBody
 				if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: r.ProjectID, PrincipalID: r.actor, WorkerID: r.worker}, r.repositoryID, metadataPins, []SourcePlan{plan}); err != nil {
 					return err
@@ -712,7 +705,6 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 			return nil
 		}
 		result.State = "sufficient"
-		anchor := Anchor{RepositoryID: observation.RepositoryID, Repository: observation.RepositoryName, PullNumber: number, CandidateSHA: observation.HeadSHA, BaseSHA: observation.BaseSHA, BaseRef: observation.BaseRef, ParentPullNumber: observation.ParentPullNumber, ParentSHA: observation.ParentSHA, ObservedAt: observation.ObservedAt}
 		result.IncomingRoutesPending, result.IncomingRoutesCapacity, err = incomingRoutePolicyFacts(ctx, tx, scope.ProjectID, number)
 		if err != nil {
 			return err
@@ -733,7 +725,7 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 			}
 		}
 		for _, channel := range policy.Policy.RequiredChannels {
-			state, err := comparison(ctx, tx, scope.ProjectID, r.repositoryID, number, anchor, channel)
+			state, err := channelProgress(ctx, tx, scope.ProjectID, r.repositoryID, number, channel)
 			if err != nil {
 				return err
 			}
