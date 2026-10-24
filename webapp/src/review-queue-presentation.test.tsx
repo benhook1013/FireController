@@ -173,6 +173,13 @@ describe('truthful stored review presentation', () => {
     expect(sections.flatMap(section => section.rows.map(row => row.pull.number))).toEqual([4, 1, 3, 2]);
     expect(groupReviewQueue(items, []).map(section => section.title)).toEqual([undefined]);
   });
+  it('keeps existing group identities when another group appears above them', () => {
+    const groups = [{ title: 'Foundation', pull_numbers: [1] }, { title: 'Delivery', pull_numbers: [2] }];
+    const original = groupReviewQueue([pull(1), pull(2)], groups);
+    const inserted = groupReviewQueue([pull(3), pull(1), pull(2)], groups);
+    expect(inserted.slice(1).map(section => section.key)).toEqual(original.map(section => section.key));
+    expect(new Set(inserted.map(section => section.key)).size).toBe(inserted.length);
+  });
   it('names only actually missing metadata and does not fabricate a missing head', () => {
     const incomplete = { ...pull(1), complete: false, base_sha: '', ci_state: 'unknown' as const };
     expect(missingPullFacts(incomplete)).toEqual(['Base commit was not captured.']);

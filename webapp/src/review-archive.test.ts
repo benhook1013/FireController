@@ -49,6 +49,18 @@ describe('explicit bounded review archive continuation', () => {
     archive.reset(page(0)); expect(archive.snapshot().items).toHaveLength(20); expect(read).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps displayed records paired with their own snapshot through continuation and replacement', async () => {
+    const archive = new ReviewArchive(async () => page(20), identity);
+    archive.reset(page(0));
+    expect(archive.snapshot().snapshot).toBe('snapshot_one');
+    await archive.more();
+    expect(archive.snapshot()).toMatchObject({ snapshot: 'snapshot_one', items: expect.any(Array) });
+    archive.reset(page(0, 1, 1, 'snapshot_replacement'));
+    expect(archive.snapshot()).toMatchObject({ snapshot: 'snapshot_replacement', items: [expect.objectContaining({ id: 'item_0' })] });
+    archive.reset();
+    expect(archive.snapshot().snapshot).toBeUndefined();
+  });
+
   it.each(['snapshot', 'revision', 'publisher', 'duplicate', 'cursor'])('refuses inconsistent %s without silently dropping or mixing records', async corruption => {
     const second = page(20);
     if (corruption === 'snapshot') second.snapshot_id = 'other_snapshot';

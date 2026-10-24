@@ -1,6 +1,6 @@
 import { useWorkerPresence, WorkerContactView } from './worker-presence-view';
 import type { WorkerPresence } from './worker-presence';
-import { useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
+import { useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { ReadState, signalFor, useWorkspace, type Session } from './workspace';
@@ -15,6 +15,7 @@ import { useReviewProgress } from './review-progress-view';
 import type { ReviewProgressItem } from './review-progress';
 import { currentReviewFronts, type ReviewFronts } from './review-fronts';
 import { useReviewFronts } from './review-fronts-view';
+import { RestoringReadingPosition, scrollToReadingTarget } from './reading-position';
 
 type DeliveryWorker = DeliverySnapshot['workers']['items'][number];
 type DeliveryJob = DeliverySnapshot['jobs']['items'][number];
@@ -64,7 +65,7 @@ function LaneInboxLink({ lane, home }: { lane: DeliveryLane; home: string }) {
   }}>Worker inbox</Link>;
 }
 export function DeliveryLanes({ value, home, partialJobs = value.jobs.has_more, presence }: { value: DeliverySnapshot; home: string; partialJobs?: boolean; presence?: WorkerPresence }) {
-  return <div className="delivery-lanes">{groupDeliveryLanes(value).map(lane => <WorkerLaneDisplay key={lane.id} label={lane.name}
+  return <div className="delivery-lanes">{groupDeliveryLanes(value).map(lane => <WorkerLaneDisplay key={lane.id} label={lane.name} readingAnchor={`delivery-worker-${lane.id || 'unassigned'}`}
     name={lane.id ? <Link to={`${home}/workers/${encodeURIComponent(lane.id)}`}>{lane.name}</Link> : lane.name}
     presence={lane.id && <WorkerContactView value={presence} worker={lane.id}/>}
     links={lane.id && <><LaneInboxLink lane={lane} home={home} /><Link to={`${home}/jobs?${new URLSearchParams({worker_id:lane.id,status:'all'})}`}>Job history</Link></>}
@@ -72,7 +73,7 @@ export function DeliveryLanes({ value, home, partialJobs = value.jobs.has_more, 
     details={<>{lane.worker?.paused && lane.worker.pause_reason && <p className="delivery-pause">{preview(lane.worker.pause_reason, lane.worker.pause_reason_truncated)}</p>}
       {lane.id && !lane.worker && <p className="delivery-page-note">Owner outside this worker page</p>}
       {lane.worker?.primary_job_id && !lane.jobs.some(job => job.id === lane.worker!.primary_job_id) && <Link className="delivery-primary-link" to={`${home}/jobs/${encodeURIComponent(lane.worker.primary_job_id)}`}>Primary job</Link>}</>}>
-    {lane.jobs.length ? <ul className="delivery-job-list">{lane.jobs.map(job => <DeliveryJobCard key={job.id}
+    {lane.jobs.length ? <ul className="delivery-job-list">{lane.jobs.map(job => <DeliveryJobCard key={job.id} readingAnchor={`delivery-job-${job.id}`}
       title={<Link to={`${home}/jobs/${encodeURIComponent(job.id)}`}>{job.summary?.revision && job.summary.title || job.title}</Link>}
       status={<><span className={`badge status-${job.status}`}>{job.status[0].toUpperCase()+job.status.slice(1)}</span>{lane.worker?.primary_job_id === job.id && <span className="badge delivery-primary">Primary focus</span>}</>}
       footer={<Link className="delivery-job-link" to={`${home}/jobs/${encodeURIComponent(job.id)}`} aria-label={`Read job ${job.title}`}>Read job →</Link>}>
@@ -113,21 +114,22 @@ export function DeliveryHero({ children }: { children: ReactNode }) {
   const fronts = useReviewFronts(!!query.data?.configured);
   const head = query.data && selectMergeHead(query.data);
   const showHead = Boolean(query.isPending || query.error || head?.state === 'head' || head?.state === 'unknown' && head.reason !== 'unconfigured');
-  return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Merge train head">{query.isPending && !query.error ? <MergeHeadSkeleton /> : <ReadState error={query.error} loading={false} empty={false}>{query.data && <MergeHeadContent queue={query.data} home={home} allProgress={progress.error ? undefined : progress.data?.items} fronts={fronts.error ? undefined : fronts.data} progress={progress.error || head?.state !== 'head' ? undefined : progress.data?.items.find(item => item.pull_number === head.pull.number)} />}</ReadState>}</section>}</div>;
+  return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Merge train head">{query.isPending && !query.data && !query.error ? <MergeHeadSkeleton /> : <ReadState error={query.error} loading={false} empty={false} retained={!!query.data}>{query.data && <MergeHeadContent queue={query.data} home={home} allProgress={progress.data?.items} fronts={fronts.error ? undefined : fronts.data} progress={head?.state !== 'head' ? undefined : progress.data?.items.find(item => item.pull_number === head.pull.number)} />}</ReadState>}</section>}</div>;
 }
 export function DeliveryWork() {
   const { session, key, home } = useWorkspace();
   const location = useLocation();
+  const restoringPosition = useContext(RestoringReadingPosition);
   const query = useQuery(deliveryQuery(session, key));
   const archive = useMemo(() => new DeliveryBoardArchive((workers, jobs, signal) => deliveryQuery(session, key, workers, jobs).queryFn({ signal })), [session, key]);
   const board = useSyncExternalStore(archive.subscribe, archive.snapshot, archive.snapshot);
-  useLayoutEffect(() => { archive.reset(query.data); }, [archive, query.data, query.dataUpdatedAt]);
+  useLayoutEffect(() => { archive.reset(query.data); }, [archive, query.data]);
   useEffect(() => { const cancel = () => archive.cancel(); session.controller.signal.addEventListener('abort', cancel, { once: true }); return () => { session.controller.signal.removeEventListener('abort', cancel); cancel(); }; }, [archive, session.controller]);
-  useEffect(() => { if (!query.isPending && location.hash === '#review-queue') { const frame = requestAnimationFrame(() => document.getElementById('review-queue')?.scrollIntoView()); return () => cancelAnimationFrame(frame); } }, [location.hash, location.key, query.isPending]);
+  useEffect(() => { if (!restoringPosition && !query.isPending && location.hash === '#review-queue') { const frame = requestAnimationFrame(() => { const target = document.getElementById('review-queue'); if (target) scrollToReadingTarget(target); }); return () => cancelAnimationFrame(frame); } }, [location.hash, location.key, query.isPending, restoringPosition]);
   const value = board.value ?? query.data;
   const contact = useWorkerPresence(value?.workers.items.map(worker => worker.id) ?? []);
   const more = Boolean(value && (value.workers.has_more || value.jobs.has_more));
-  return <section aria-labelledby="delivery-title"><div className="delivery-section-heading"><h2 id="delivery-title">Delivery</h2><Link to={`${home}/jobs`}>Manage jobs →</Link></div><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><DeliveryLanes value={value} home={home} presence={contact.error ? undefined : contact.data} />{board.error && <ReadState error={board.error} loading={false} empty={false}>{null}</ReadState>}{more && <div className="delivery-more"><p className="delivery-page-note">More open work is available. Lanes show the work loaded so far.</p><button type="button" onClick={() => { if (!query.isFetching) void archive.more(); }} disabled={query.isFetching || board.busy}>{board.busy ? 'Loading more work…' : 'Load more work'}</button></div>}</>}</ReadState></section>;
+  return <section aria-labelledby="delivery-title" data-reading-region="delivery" data-reading-ready={!!value}><div className="delivery-section-heading"><h2 id="delivery-title">Delivery</h2><Link to={`${home}/jobs`}>Manage jobs →</Link></div><ReadState error={query.error} loading={query.isPending} empty={false} retained={!!value}>{value && <><DeliveryLanes value={value} home={home} presence={contact.error ? undefined : contact.data} />{board.error && <ReadState error={board.error} loading={false} empty={false}>{null}</ReadState>}{more && <div className="delivery-more"><p className="delivery-page-note">More open work is available. Lanes show the work loaded so far.</p><button type="button" onClick={() => { if (!query.isFetching) void archive.more(); }} disabled={query.isFetching || board.busy}>{board.busy ? 'Loading more work…' : 'Load more work'}</button></div>}</>}</ReadState></section>;
 }
 export function Delivery() {
   return <><DeliveryWork /><ReviewQueueView embedded /></>;

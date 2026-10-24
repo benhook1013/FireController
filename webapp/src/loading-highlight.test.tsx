@@ -4,8 +4,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
 import { Jobs } from './App';
 import { findingDisplayFingerprint, nextSemanticHighlight, pullDisplayFingerprint, runDisplayFingerprint } from './review-workspace';
-import { DeliveryHeroSkeleton, MergeHeadSkeleton, PageSkeleton, PublicHistorySkeleton, PublicProjectSkeleton, WorkspaceSkeleton } from './loading';
-import { WorkspaceContext, type Session } from './workspace';
+import { DeliveryHeroSkeleton, MergeHeadSkeleton, PageSkeleton, PublicHistorySkeleton, PublicProjectSkeleton, ReviewRoundsSkeleton, WorkspaceSkeleton } from './loading';
+import { ReadState, WorkspaceContext, type Session } from './workspace';
+import { ApiError } from './api';
 import type { ReviewFinding, ReviewPullSummary, ReviewRunSummary, Worker } from './types';
 
 const run: ReviewRunSummary = { source: 'import', id: 'snapshot_local_run_one', pull_number: 7, source_run_id: 'original_run', channel: 'cli', head_sha: 'old_head', reviewer: 'reviewer', scope: 'patch', coverage_limits: [], outcome: 'completed', attributable: true, complete: true, started_at: '2026-10-18T00:00:00Z', finished_at: '2026-10-18T00:01:00Z', found: 2, accepted: 1, routed: 0, finalized: true, fixed: 0 };
@@ -21,6 +22,18 @@ function jobsMarkup(inboxWorker: Worker | null) {
 }
 
 describe('neutral stable loading', () => {
+  it('reserves only the known bounded round pills while initially opening a channel', () => {
+    const html = renderToStaticMarkup(<ReviewRoundsSkeleton count={20} />);
+    expect(html.match(/class="review-round-pill review-round-placeholder"/gu)).toHaveLength(6);
+    expect(html).toContain('aria-hidden="true"');
+    expect(html).not.toContain('page-skeleton');
+  });
+  it('retains populated content on transient failure while hiding it on loss of access', () => {
+    const value = { session: {} as Session, key: ['private'], home: '/projects/private', selectWorker: () => {}, fail: () => {}, ready: true };
+    const render = (error: ApiError) => renderToStaticMarkup(<WorkspaceContext.Provider value={value}><ReadState error={error} loading={false} empty={false} retained><p>Retained private content</p></ReadState></WorkspaceContext.Provider>);
+    expect(render(new ApiError('connection_failed', 'Unavailable'))).toContain('Retained private content');
+    expect(render(new ApiError('forbidden', 'Access ended', 403))).not.toContain('Retained private content');
+  });
   it('exposes one accessible loading label and only decorative placeholders', () => {
     const html = renderToStaticMarkup(<PageSkeleton />);
     expect(html).toContain('role="status"><span class="visually-hidden">Loading content</span>');

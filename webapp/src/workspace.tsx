@@ -4,6 +4,7 @@ import { ApiError } from './api';
 import { PageSkeleton } from './loading';
 import type { Api } from './api';
 import type { BrowserSessionBinding } from './browser-session';
+import { terminalBrowserSession } from './browser-session';
 import type { BrowserActionMemory } from './browser-actions';
 import type { Page, PresentationSnapshot, Project, Worker } from './types';
 
@@ -33,11 +34,12 @@ export function usePaging() {
 export function Pager({ paging, page, label, busy }: { paging: ReturnType<typeof usePaging>; page?: Page<unknown>; label: string; busy: boolean }) {
   return <div className="pager"><span>Page {paging.number}{page && !page.has_more ? ` of ${paging.number}` : ''}{page ? ` (${page.items.length} ${page.items.length === 1 ? 'item' : 'items'})` : ''}</span><div><button type="button" aria-label={`Previous ${label}`} disabled={paging.number === 1 || busy} onClick={paging.previous}>Previous</button><button type="button" aria-label={`Next ${label}`} disabled={!page?.has_more || !page.cursor || busy} onClick={() => { if (page?.cursor) paging.next(page.cursor); }}>Next</button></div></div>;
 }
-export function ReadState({ error, loading, empty, children }: { error: unknown; loading: boolean; empty: boolean; children: ReactNode }) {
+export function ReadState({ error, loading, empty, children, retained = false }: { error: unknown; loading: boolean; empty: boolean; children: ReactNode; retained?: boolean }) {
   const { fail } = useWorkspace();
   useEffect(() => { if (error) fail(error); }, [error, fail]);
-  if (error) return <div className="notice" role="alert">{errorText(error)}</div>;
+  const failure = error ? <div className="notice" role="alert">{errorText(error)}</div> : null;
+  if (error && (!retained || error instanceof ApiError && terminalBrowserSession(error))) return failure;
   if (loading) return <PageSkeleton />;
   if (empty) return <p className="empty">Nothing here yet.</p>;
-  return children;
+  return <>{children}{failure}</>;
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import type { FormEvent } from 'react';
-import { Link, NavLink, Navigate, Route, Routes, matchPath, useBlocker, useLocation, useMatch, useNavigate, useParams, useSearchParams } from 'react-router';
+import { Link, NavLink, Navigate, Route, Routes, matchPath, useBlocker, useLocation, useMatch, useNavigate, useNavigationType, useParams, useSearchParams } from 'react-router';
 import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Api, ApiError, type BrowserSessionView } from './api';
 import { WorkspaceContext, useWorkspace, signalFor, usePaging, Pager, ReadState, errorText } from './workspace';
@@ -26,6 +26,7 @@ import { applyPresentationRoot } from './presentation';
 import { PresentationContext, usePresentation, useProjectHeading } from './presentation-context';
 import { isCurrentProjectView, refreshProjectMetadata } from './project-metadata';
 import { startMetadataAttempt } from './metadata-recovery';
+import { RestoringReadingPosition, useReadingPosition } from './reading-position';
 import { createAppearanceAcceptor, refreshProjectView } from './appearance-refresh';
 import type { Presentation } from './types';
 import flameEmber from './flame-ember.svg?no-inline';
@@ -384,6 +385,9 @@ export function Workspace({ session, metadataStatus, reconnectProjectUpdates, se
   const home = projectHome(session.project);
   const location = useLocation();
   const pathname = location.pathname;
+  const readingRoot = useRef<HTMLElement>(null);
+  const navigationType = useNavigationType();
+  const restoringPosition = useReadingPosition(readingRoot, JSON.stringify([session.instanceId, session.project.id, session.binding?.sessionID ?? session.nonce, pathname, location.search, location.key]), navigationType === 'POP');
   const reviewsSelected = pathname === home && location.hash === '#review-queue' || pathname.startsWith(`${home}/reviews`);
   const publicPreview = pathname === `${home}/project` && new URLSearchParams(location.search).get('view') === 'public';
   const inboxArea = pathname === `${home}/inbox` || pathname.startsWith(`${home}/inbox/`);
@@ -427,14 +431,14 @@ export function Workspace({ session, metadataStatus, reconnectProjectUpdates, se
   }, [session, key, queryClient, onFailure, attempt]);
   const value = useMemo(() => ({ session, key, home, selectWorker, fail: onFailure, ready }), [session, key, home, selectWorker, onFailure, ready]);
   const liveLabel = !session.worker ? 'Choose a worker' : live === 'live' ? 'Live inbox connected' : live === 'reconnecting' ? 'Reconnecting inbox…' : live === 'closed' ? 'Inbox disconnected' : 'Connecting inbox…';
-  return <WorkspaceContext.Provider value={value}><main className="workspace">
+  return <WorkspaceContext.Provider value={value}><RestoringReadingPosition.Provider value={restoringPosition}><main ref={readingRoot} className="workspace">
     {!publicPreview && <DeliveryHero><ProjectIdentityHero name={presentation?.name ?? session.project.name} repository={session.project.repository} /></DeliveryHero>}
     <nav className="navigation" aria-label="Project navigation"><NavLink to={`${home}/project`}>{projectHeading}</NavLink><Link to={home} className={pathname === home && !reviewsSelected ? 'active' : undefined} aria-current={pathname === home && !reviewsSelected ? 'page' : undefined}>Delivery</Link><Link to={`${home}#review-queue`} className={reviewsSelected ? 'active' : undefined} aria-current={reviewsSelected ? 'location' : undefined}>{reviewsHeading}</Link><NavLink to={`${home}/jobs`}>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}</nav>
     <ProjectUpdateNotice status={metadataStatus} reconnect={reconnectProjectUpdates} />
     {unresolved > 0 && <p className="notice" role="status">{unresolved} pending or uncertain action{unresolved === 1 ? '' : 's'} retained in this connection. Return to the original worker and view to retry before reloading or disconnecting.</p>}
     <div className={inboxArea ? 'workspace-grid' : 'project-main'}>{inboxArea && <aside className="sidebar"><WorkerList compact /><section className="feed-card" aria-label="Inbox connection"><span className={`status-dot ${live === 'live' && session.worker ? 'online' : ''}`} /><strong role="status">{liveLabel}</strong><p>{session.worker ? session.worker.name : 'Select a worker to follow incoming messages.'}</p>{Boolean(feedError) && <><p className="error-copy">{errorText(feedError)}</p><button type="button" onClick={() => { setReady(false); setAttempt(value => value + 1); }}>Reconnect inbox</button></>}</section></aside>}
       <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Delivery />} /><Route path="/projects/:projectId/project" element={<ProjectPage />} /><Route path="/projects/:projectId/published/history/:revision" element={<ProjectPublishedHistory />} /><Route path="/projects/:projectId/jobs" element={<Jobs />} /><Route path="/projects/:projectId/settings" element={<ProjectSettings />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/workers/:workerId" element={<WorkerCoordinationView />} /><Route path="/projects/:projectId/notes" element={<NotesView />} /><Route path="/projects/:projectId/notes/:noteId" element={<NoteView />} /><Route path="/projects/:projectId/notes/:noteId/history/:revision" element={<NoteRevisionView />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/history" element={<ReviewQueueView key="history" history />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="/projects/:projectId/map/*" element={<FormerProjectMap />} /><Route path="/projects/:projectId/project/entries/:entryId" element={<ProjectMapEntryView />} /><Route path="/projects/:projectId/project/entries/:entryId/history/:revision" element={<ProjectMapRevisionView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to Delivery</Link></section>} /></Routes></div></div>
-  </main></WorkspaceContext.Provider>;
+  </main></RestoringReadingPosition.Provider></WorkspaceContext.Provider>;
 }
 
 function WorkerList({ compact = false }: { compact?: boolean }) {

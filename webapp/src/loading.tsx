@@ -5,6 +5,11 @@ export function PageSkeleton({ rows = 3, label = 'Loading content' }: { rows?: n
   return <div className="page-skeleton" role="status"><span className="visually-hidden">{label}</span><div aria-hidden="true">{Array.from({ length: rows }, (_, index) => <div className="skeleton-row" key={index}><span className="skeleton-line skeleton-short" /><span className="skeleton-line" /><span className="skeleton-line skeleton-medium" /></div>)}</div></div>;
 }
 
+/** The same bounded pill geometry as the eventual channel history. */
+export function ReviewRoundsSkeleton({ count }: { count: number }) {
+  return <div role="status"><span className="visually-hidden">Loading retained rounds</span><div className="review-round-pills review-recent-rounds" aria-hidden="true">{Array.from({ length: Math.min(6, Math.max(1, count)) }, (_, index) => <span key={index} className="review-round-pill review-round-placeholder"><strong>&nbsp;</strong><span className="review-pill-age">&nbsp;</span></span>)}</div></div>;
+}
+
 /** Reserve the public page shell without inventing its identity or sections. */
 export function PublicProjectSkeleton({ embedded = false }: { embedded?: boolean }) {
   const Layout = embedded ? 'div' : 'main';

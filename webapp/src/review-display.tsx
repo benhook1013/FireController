@@ -17,7 +17,7 @@ export function ReviewRowDisplay({ id, lifecycle, position, positionLabel, rail 
   children: ReactNode;
   footer?: ReactNode;
 }) {
-  return <li id={id} className={`review-queue-row review-row-${lifecycle}${rail ? '' : ' review-row-without-order'} ${className}`}>
+  return <li id={id} data-reading-anchor={id} className={`review-queue-row review-row-${lifecycle}${rail ? '' : ' review-row-without-order'} ${className}`}>
     {rail && <span className="review-queue-position" aria-label={positionLabel}>{position}</span>}
     <div className="review-queue-content">
       <div className="review-pull-heading"><span className="review-number">{url ? <a href={url} target="_blank" rel="noopener noreferrer">#{number}</a> : <>#{number}</>}</span><h3>{url ? <a href={url} target="_blank" rel="noopener noreferrer">{title}</a> : title}</h3></div>
@@ -26,15 +26,16 @@ export function ReviewRowDisplay({ id, lifecycle, position, positionLabel, rail 
   </li>;
 }
 
-export function ReviewLaneDisplay({ title, label = title, metadata, metadataTitle, status, children }: {
+export function ReviewLaneDisplay({ title, label = title, metadata, metadataTitle, status, children, readingAnchor }: {
   title: string;
   label?: string;
   metadata: ReactNode;
   metadataTitle?: string;
   status?: ReactNode;
   children: ReactNode;
+  readingAnchor?: string;
 }) {
-  return <section className="review-lane" aria-label={label}><div className="review-lane-heading"><h4>{title}{status}</h4><span title={metadataTitle}>{metadata}</span></div>{children}</section>;
+  return <section className="review-lane" data-reading-anchor={readingAnchor} aria-label={label}><div className="review-lane-heading"><h4>{title}{status}</h4><span title={metadataTitle}>{metadata}</span></div>{children}</section>;
 }
 
 type RoundPillContent = { className: string; title: string; 'aria-label': string; children: ReactNode };

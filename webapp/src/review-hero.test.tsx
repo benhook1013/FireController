@@ -56,7 +56,7 @@ describe('merge-head recent review rounds', () => {
     const queue: ReviewQueue = {project_id: 'project', revision: 1, snapshot_id: 'snapshot', source: 'fixture', observed_at: '', recorded_at: '', configured: true, items: [pull], has_more: false};
     const normal = markup(false, [], false, counts, <ul className="review-queue"><ReviewQueueRow pull={pull} snapshot="snapshot" order={{index: 0, distance: 1}} /></ul>);
     const hero = markup(false, [], false, counts, <MergeHeadContent queue={queue} home="/projects/project" />);
-    const body = (value: string) => value.slice(value.indexOf('<div class="review-queue-content">'), value.lastIndexOf('<a class="review-details-link"'));
+    const body = (value: string) => value.slice(value.indexOf('<div class="review-queue-content">'), value.lastIndexOf('<a class="review-details-link"')).replace(/ data-reading-anchor="[^"]*"/gu, '');
     expect(body(hero)).toBe(body(normal));
     expect(links(hero)).toEqual(['h3','h4','h5','h6','h7','h8']);
     expect(hero).toContain('27 runs</span>'); expect(hero).toContain('Manual reviews'); expect(hero).toContain('8 runs</span>');
@@ -120,7 +120,8 @@ describe('retained attempt diagnostics', () => {
     archive.items = []; archive.hasMore = false;
     const compact = markup(true, [value]);
     expect(compact).toContain(`aria-label="Latest retained hosted attempt: ${label} · ${text}"`);
-    expect(compact).toContain(`>${label} · ${text}</span>`);
+    expect(compact).toContain(`title="Latest retained attempt: ${label} · ${text}"`);
+    expect(compact).toContain(`>${label}</span>`);
     expect(compact.match(/class="review-attempt-state /gu)).toHaveLength(1);
     archive.items = [value];
     const expanded = markup(false, [], true);

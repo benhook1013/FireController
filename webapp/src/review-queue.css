@@ -53,3 +53,5 @@
 
 /* Channel holds share the heading instead of creating another content row. */
 .review-lane-heading h4{display:flex;align-items:center;flex-wrap:wrap;gap:4px 7px;min-width:0}.review-lane-heading .review-channel-position{margin-left:0}.review-lane-heading .review-attempt-state{margin:0;letter-spacing:normal;text-transform:none}
+
+.review-round-placeholder strong,.review-round-placeholder .review-pill-age{background:var(--fc-surface_border,#d8d1ca);border-radius:3px;min-width:3em;opacity:.6}.review-round-placeholder{pointer-events:none}

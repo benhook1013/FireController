@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { signalFor, useWorkspace } from './workspace';
 import { roundProgressState, roundProgressAllowance, roundProgressStopReason, type ReviewRoundProgress } from './review-progress';
+import { useRetainedRead } from './retained-read';
 
 export function useReviewProgress(pulls: number[]) {
   const { session, key, fail } = useWorkspace();
@@ -11,7 +12,8 @@ export function useReviewProgress(pulls: number[]) {
     queryFn: ({ signal }) => session.api.reviewProgress(selected, signalFor(session, signal)),
     enabled: selected.length > 0, staleTime: Infinity });
   useEffect(() => { if (query.error) fail(query.error); }, [query.error, fail]);
-  return query;
+  const retained = useRetainedRead(JSON.stringify(key), query.data, selected.length > 0);
+  return { ...query, data: retained };
 }
 export function ReviewProgressView({ value }: { value?: ReviewRoundProgress }) {
   if (!value?.configured) return null;
