@@ -277,19 +277,22 @@ func roundHasCapacity(c RoundControl, occupied int64) bool {
 }
 
 func roundOccupied(ctx context.Context, tx *sql.Tx, c roundRecord, excluding string) (int64, error) {
-	var occupied int64
-	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_round_operation_bindings b JOIN review_operations o ON o.id=b.operation_id WHERE b.project_id=? AND b.pull_number=? AND b.channel=? AND b.epoch=? AND b.operation_id<>? AND o.state IN `+roundPendingStates, c.ProjectID, c.PullNumber, c.Channel, c.Epoch, excluding).Scan(&occupied)
+	execution, adjudication, err := roundOccupancyStages(ctx, tx, c, excluding)
+	return execution + adjudication, err
+}
+
+func roundOccupancyStages(ctx context.Context, tx *sql.Tx, c roundRecord, excluding string) (execution, adjudication int64, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_round_operation_bindings b JOIN review_operations o ON o.id=b.operation_id WHERE b.project_id=? AND b.pull_number=? AND b.channel=? AND b.epoch=? AND b.operation_id<>? AND o.state IN `+roundPendingStates, c.ProjectID, c.PullNumber, c.Channel, c.Epoch, excluding).Scan(&execution)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if c.cumulative {
-		pending, err := roundUnfinalizedOccupancy(ctx, tx, c, excluding)
+		adjudication, err = roundUnfinalizedOccupancy(ctx, tx, c, excluding)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
-		occupied += pending
 	}
-	return occupied, nil
+	return execution, adjudication, nil
 }
 
 // bindRoundControl runs after inserting the new queued operation, inside its

@@ -30,11 +30,11 @@ const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, r
 describe('truthful stored review presentation', () => {
   it('distinguishes no required CI from an unknown observation without claiming workflow success', () => {
     const html = markup(<ReviewPullFacts pull={{ ...pull(2), ci_state: 'not_required' }} />);
-    expect(html).toContain('CI: Not required');
+    expect(html).toContain('Required CI: None');
     expect(html).toContain('Optional workflow results are separate.');
-    expect(html).not.toContain('CI: Success');
+    expect(html).not.toContain('Required CI: Success');
     expect(html).not.toContain('CI status is unknown.');
-    expect(markup(<ReviewPullFacts pull={{ ...pull(2), ci_state: 'unknown' }} />)).toContain('CI: Unknown');
+    expect(markup(<ReviewPullFacts pull={{ ...pull(2), ci_state: 'unknown' }} />)).toContain('Required CI: Unknown');
   });
   it('identifies incomplete Hosted history without calling healthy PR checks a GitHub retry', () => {
     const observation = { state: 'retrying' as const, checked_at: '2026-10-23T13:24:02Z', last_success_at: '2026-10-23T13:24:02Z', error: 'external_hosted_identity_unproven', hosted_error: 'external_hosted_identity_unproven' };
@@ -179,7 +179,7 @@ describe('truthful stored review presentation', () => {
     const html = markup(<ReviewPullFacts pull={incomplete} />);
     expect(html).toContain('<summary>Missing PR details</summary>');
     expect(html).toContain('Base commit was not captured.'); expect(html).not.toContain('Head commit was not captured.');
-    expect(html).toContain('CI: Unknown'); expect(html).toContain('Mergeability: Mergeable');
+    expect(html).toContain('Required CI: Unknown'); expect(html).toContain('Mergeability: Mergeable');
     expect(html).toContain('class="badge review-fact-pill review-ci review-fact-unknown"');
     expect(html).toContain('class="badge review-fact-pill review-mergeability review-fact-mergeable"');
     expect(markup(<ReviewPullFacts pull={pull(1, 'merged')} />)).toContain('review-state-merged');
@@ -189,13 +189,13 @@ describe('truthful stored review presentation', () => {
     const merged = { ...pull(1, 'merged'), mergeability };
     const html = markup(<ReviewPullFacts pull={merged} />);
     expect(html).toContain('review-state-merged'); expect(html).toContain('Merged');
-    expect(html).toContain('CI: Success'); expect(html).not.toContain('Mergeability:');
+    expect(html).toContain('Required CI: Success'); expect(html).not.toContain('Mergeability:');
     expect(html).not.toContain('Mergeability is unknown.'); expect(missingPullFacts(merged)).toEqual([]);
     const incomplete = { ...merged, complete: false, base_sha: '', ci_state: 'unknown' as const };
     expect(missingPullFacts(incomplete)).toEqual(['Base commit was not captured.']);
     const incompleteHTML = markup(<ReviewPullFacts pull={incomplete} />);
     expect(incompleteHTML).toContain('Missing PR details'); expect(incompleteHTML).toContain('Base commit was not captured.');
-    expect(incompleteHTML).toContain('CI: Unknown'); expect(incompleteHTML).not.toContain('CI status is unknown.'); expect(incompleteHTML).not.toContain('Mergeability');
+    expect(incompleteHTML).toContain('Required CI: Unknown'); expect(incompleteHTML).not.toContain('CI status is unknown.'); expect(incompleteHTML).not.toContain('Mergeability');
   });
   it.each(['open', 'closed', 'unknown'] as const)('retains unknown mergeability for %s PRs', state => {
     const value = { ...pull(1, state), mergeability: 'unknown' as const };
@@ -207,7 +207,7 @@ describe('truthful stored review presentation', () => {
     const value = { ...pull(1), complete: false, ci_state: 'unknown' as const, mergeability: 'unknown' as const };
     expect(missingPullFacts(value)).toEqual([]);
     const html = markup(<ReviewPullFacts pull={value} />);
-    expect(html).toContain('CI: Unknown'); expect(html).toContain('Mergeability: Unknown');
+    expect(html).toContain('Required CI: Unknown'); expect(html).toContain('Mergeability: Unknown');
     expect(html).not.toContain('Missing PR details');
     const explicit = { ...pull(1), complete: false };
     expect(missingPullFacts(explicit)).toEqual(['The source marked this PR incomplete without identifying another missing field.']);

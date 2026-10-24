@@ -162,7 +162,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		t.Helper()
 		var page archivePage
 		decode(t, raw, &page)
-		if len(page.Items) != 5 || page.SnapshotID != snapshot || page.Source != "archive-publisher" || !page.HasMore || page.Cursor == "" {
+		if len(page.Items) != 5 || page.SnapshotID != snapshot || (run && page.Source != "" || !run && page.Source != "archive-publisher") || !page.HasMore || page.Cursor == "" {
 			t.Fatal("packaged archive page lost default-five bound, snapshot or publisher")
 		}
 		for i, item := range page.Items {
@@ -317,6 +317,8 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		State            string `json:"state"`
 		Phase            string `json:"phase"`
 		DriverLine       int    `json:"driver_line"`
+		ProjectStatus    int    `json:"project_status"`
+		FailureKind      string `json:"failure_kind"`
 		ArchiveRequests  int    `json:"archive_requests"`
 		MaxLimit         int    `json:"max_limit"`
 		SourceCollisions bool   `json:"source_collisions"`
@@ -343,7 +345,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 			phase = result.Phase
 		}
 		if result.DriverLine > 0 && result.DriverLine <= 10000 {
-			t.Logf("safe archive failure phase=%s driver_line=%d", phase, result.DriverLine)
+			t.Logf("safe archive failure phase=%s driver_line=%d project_status=%d failure_kind=%s", phase, result.DriverLine, result.ProjectStatus, result.FailureKind)
 		}
 		t.Fatalf("packaged archive browser failed at phase=%s; raw output withheld to protect fixture authority", phase)
 	}

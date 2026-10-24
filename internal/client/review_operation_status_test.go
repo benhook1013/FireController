@@ -15,13 +15,18 @@ func compactStatusFixture() client.ReviewOperationStatus {
 	return client.ReviewOperationStatus{ID: executionOperationID, PullNumber: 2, Channel: "hosted", State: "uncertain", Revision: 4, Stage: "capture_blocked", Reason: "hosted_finished_inventory_unproven", AttemptID: "review_attempt_" + strings.Repeat("b", 32), UpdatedAt: "2026-01-01T00:00:00Z", NextAction: "contact_controller_owner"}
 }
 func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
-	for _, mode := range []string{"valid", "ready", "unknown", "wrong_id", "missing_reason", "null_attempt", "extra_private", "provider_running", "fake_evidence", "bad_evidence", "wrong_stage", "unsafe_reason", "oversize"} {
+	for _, mode := range []string{"valid", "ready", "captured", "unknown", "wrong_id", "missing_reason", "null_attempt", "extra_private", "provider_running", "fake_evidence", "bad_evidence", "wrong_stage", "unsafe_reason", "oversize"} {
 		t.Run(mode, func(t *testing.T) {
 			v := compactStatusFixture()
 			data, _ := json.Marshal(v)
 			var fields map[string]any
 			_ = json.Unmarshal(data, &fields)
 			switch mode {
+			case "captured":
+				fields["state"] = "active"
+				fields["stage"] = "result_captured"
+				fields["next_action"] = "wait"
+				fields["evidence_id"] = "review_evidence_" + strings.Repeat("c", 32)
 			case "ready":
 				fields["state"] = "completed"
 				fields["stage"] = "evidence_ready"
@@ -68,7 +73,7 @@ func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
 			defer s.Close()
 			c := newClient(t, s)
 			got, err := c.WaitReviewOperationStatus(t.Context(), executionOperationID, 900)
-			if mode == "valid" || mode == "ready" || mode == "unknown" {
+			if mode == "valid" || mode == "ready" || mode == "captured" || mode == "unknown" {
 				if err != nil || got.ID != executionOperationID {
 					t.Fatal(got, err)
 				}

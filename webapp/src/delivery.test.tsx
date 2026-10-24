@@ -215,7 +215,7 @@ describe('stored merge head and review summaries', () => {
     expect(partial).not.toContain('No open pull requests');
     const head = markup(<MergeHeadContent queue={queue([pull(2, 'open')])} home={home} />);
     expect(head).toContain('href="https://github.com/example/project/pull/2"');
-    expect(head).toContain('CI: Success');
+    expect(head).toContain('Required CI: Success');
     expect(head).not.toContain('Observed CI');
     expect(head).not.toContain('First open PR');
     expect(head).not.toContain('runs ·');

@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 // request headers, credentials, captured response bodies or raw diagnostics.
 let server, browser;
 let phase = 'configuration';
+let selectedProjectStatus = 0;
 const need = value => { if (!value) { const error = new Error('assertion'); Error.captureStackTrace(error,need); throw error; } };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
@@ -58,7 +59,7 @@ try {
     // The project-scoped sign-in form already binds this deep link's project.
     await page.getByLabel('Project credential',{exact:true}).fill(token);
     // Read while this login's response is current, before canonical navigation.
-    const resolved = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === prefix).then(async response => ({response, identity:await response.json()}));
+    const resolved = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === prefix).then(async response => { selectedProjectStatus=response.status(); return {response, identity:await response.json()}; });
     await page.getByRole('button',{name:'Connect to project',exact:true}).click();
     const {response:identityResponse, identity} = await resolved;
     need(identityResponse.status() === 200 && identity.id === config.project && typeof identity.handle === 'string' && identity.handle.length > 0);
@@ -253,11 +254,11 @@ try {
     const facts = queue.locator(`#review-pr-${merged} .review-pull-facts`);
     await expect(facts.locator(':scope > .review-state-merged')).toHaveCount(1);
     await expect(facts.locator(':scope > .review-state-merged')).toHaveText('Merged');
-    await expect(facts.locator('.review-ci')).toHaveText('CI: Success');
+    await expect(facts.locator('.review-ci')).toHaveText('Required CI: Success');
     need(await facts.locator('.review-mergeability').count()===0);
   }
   need(await queue.locator('#review-pr-205 .review-pull-facts > .badge:not(.review-fact-pill)').count() === 0);
-  await expect(queue.locator('#review-pr-205 .review-ci')).toHaveText('CI: Success');
+  await expect(queue.locator('#review-pr-205 .review-ci')).toHaveText('Required CI: Success');
   await expect(queue.locator('#review-pr-205 .review-mergeability')).toHaveText('Mergeability: Mergeable');
   need(await queue.locator('.review-queue-panel').evaluate(panel=>getComputedStyle(panel).borderTopLeftRadius === '0px'));
   if (config.proof_directory) for (const width of [1440,390]) {
@@ -326,7 +327,7 @@ try {
   // Retain only the fixed phase and bounded source line, never error text.
   const line = /review_archive\.mjs:(\d+):\d+/u.exec(error?.stack ?? '');
   const driverLine = line ? Number(line[1]) : 0;
-  console.log(JSON.stringify({state:'FAIL',phase,driver_line:Number.isInteger(driverLine) && driverLine > 0 && driverLine <= 10000 ? driverLine : 0})); process.exitCode=1;
+  console.log(JSON.stringify({state:'FAIL',phase,project_status:selectedProjectStatus,failure_kind:error?.name === 'SyntaxError' ? 'invalid_json' : error?.name === 'TimeoutError' ? 'timeout' : 'assertion',driver_line:Number.isInteger(driverLine) && driverLine > 0 && driverLine <= 10000 ? driverLine : 0})); process.exitCode=1;
 } finally {
   if(browser) await browser.close().catch(() => {});
   if(server) await server.close().catch(() => {});

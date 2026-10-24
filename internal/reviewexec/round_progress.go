@@ -10,19 +10,21 @@ import (
 // RoundProgressChannel contains current native allowance facts only. Pending
 // counts operations bound to this epoch, not coverage or permission to dispatch.
 type RoundProgressChannel struct {
-	Channel          string `json:"channel"`
-	Configured       bool   `json:"configured"`
-	Revision         int64  `json:"revision"`
-	Epoch            int64  `json:"epoch"`
-	Closed           bool   `json:"closed"`
-	Minimum          int64  `json:"minimum"`
-	Maximum          int64  `json:"maximum"`
-	MaximumUnbounded bool   `json:"maximum_unbounded,omitempty"`
-	Taper            int64  `json:"taper"`
-	Used             int64  `json:"used"`
-	Dry              int64  `json:"dry"`
-	Tapered          bool   `json:"tapered"`
-	Pending          int64  `json:"pending"`
+	Channel             string `json:"channel"`
+	Configured          bool   `json:"configured"`
+	Revision            int64  `json:"revision"`
+	Epoch               int64  `json:"epoch"`
+	Closed              bool   `json:"closed"`
+	Minimum             int64  `json:"minimum"`
+	Maximum             int64  `json:"maximum"`
+	MaximumUnbounded    bool   `json:"maximum_unbounded,omitempty"`
+	Taper               int64  `json:"taper"`
+	Used                int64  `json:"used"`
+	Dry                 int64  `json:"dry"`
+	Tapered             bool   `json:"tapered"`
+	Pending             int64  `json:"pending"`
+	PendingExecution    *int64 `json:"pending_execution,omitempty"`
+	PendingAdjudication *int64 `json:"pending_adjudication,omitempty"`
 }
 
 type RoundProgressItem struct {
@@ -53,6 +55,16 @@ func validRoundProgressNumbers(numbers []int64) bool {
 // ReadRoundProgress reads one bounded, authorized local snapshot. It does not
 // interpret imported history or collect source, captures, CI or provider state.
 func (e *Engine) ReadRoundProgress(ctx context.Context, scope core.Scope, numbers []int64) (RoundProgress, error) {
+	return e.readRoundProgress(ctx, scope, numbers, false)
+}
+
+// ReadRoundProgressStages splits the same occupancy into execution and
+// adjudication without changing reservation or completion accounting.
+func (e *Engine) ReadRoundProgressStages(ctx context.Context, scope core.Scope, numbers []int64) (RoundProgress, error) {
+	return e.readRoundProgress(ctx, scope, numbers, true)
+}
+
+func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, stages bool) (RoundProgress, error) {
 	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(scope.ProjectID) || !validRoundProgressNumbers(numbers) {
 		return RoundProgress{}, invalid()
 	}
@@ -66,19 +78,23 @@ func (e *Engine) ReadRoundProgress(ctx context.Context, scope core.Scope, number
 				if err != nil {
 					return err
 				}
-				var pending int64
+				var execution, adjudication int64
 				if control.Configured {
-					pending, err = roundOccupied(ctx, tx, control, "")
+					execution, adjudication, err = roundOccupancyStages(ctx, tx, control, "")
 					if err != nil {
 						return err
 					}
 				}
-				item.Channels = append(item.Channels, RoundProgressChannel{
+				progress := RoundProgressChannel{
 					Channel: channel, Configured: control.Configured, Revision: control.Revision,
 					Epoch: control.Epoch, Closed: control.Closed, Minimum: control.Minimum,
 					Maximum: control.Maximum, MaximumUnbounded: control.MaximumUnbounded, Taper: control.Taper, Used: control.Used,
-					Dry: control.Dry, Tapered: control.Tapered, Pending: pending,
-				})
+					Dry: control.Dry, Tapered: control.Tapered, Pending: execution + adjudication,
+				}
+				if stages {
+					progress.PendingExecution, progress.PendingAdjudication = &execution, &adjudication
+				}
+				item.Channels = append(item.Channels, progress)
 			}
 			out.Items = append(out.Items, item)
 		}

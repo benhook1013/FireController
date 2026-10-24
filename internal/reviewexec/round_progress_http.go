@@ -12,9 +12,12 @@ func roundProgressNumbers(r *http.Request) ([]int64, error) {
 	if len(r.URL.RawQuery) > 4096 {
 		return nil, invalid()
 	}
-	query, err := core.QueryKeys(r, "validation_failed", "pull_numbers")
+	query, err := core.QueryKeys(r, "validation_failed", "pull_numbers", "view")
 	if err != nil {
 		return nil, err
+	}
+	if query.Has("view") && query.Get("view") != "stages" {
+		return nil, invalid()
 	}
 	raw := query.Get("pull_numbers")
 	// One hundred int32 values and their separating commas need at most 1099 bytes.
@@ -50,7 +53,7 @@ func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	progress, err := e.ReadRoundProgress(r.Context(), scope, numbers)
+	progress, err := e.readRoundProgress(r.Context(), scope, numbers, r.URL.Query().Get("view") == "stages")
 	if err != nil {
 		core.WriteError(w, err)
 		return

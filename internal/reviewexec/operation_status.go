@@ -33,6 +33,9 @@ func operationStatusStage(o Operation, evidence string, complete bool) (string, 
 	case "preparing":
 		return "preparing", "wait"
 	case "posting", "active":
+		if evidence != "" && complete {
+			return "result_captured", "wait"
+		}
 		return "provider_wait", "wait"
 	case "completed":
 		if evidence != "" {

@@ -47,7 +47,7 @@ func validCompactOperationStatus(v ReviewOperationStatus) bool {
 	case "preparing":
 		return v.Stage == "preparing" && v.NextAction == "wait"
 	case "posting", "active":
-		return v.Stage == "provider_wait" && v.NextAction == "wait"
+		return (v.Stage == "provider_wait" || v.Stage == "result_captured" && v.EvidenceID != "") && v.NextAction == "wait"
 	case "completed":
 		return v.EvidenceID != "" && (v.Stage == "evidence_ready" && v.NextAction == "read_evidence" || v.Stage == "capture_blocked" && v.NextAction == "contact_controller_owner") || v.EvidenceID == "" && v.Stage == "unknown" && v.NextAction == "contact_controller_owner"
 	case "uncertain":

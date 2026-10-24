@@ -38,7 +38,7 @@ func TestOperationStatusEvidenceIdentityAndCompactHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	retained, err := f.e.ReadOperationStatus(t.Context(), scope, a.OperationID)
-	if err != nil || retained.EvidenceID != capture.ID || retained.Stage != "provider_wait" {
+	if err != nil || retained.EvidenceID != capture.ID || retained.Stage != "result_captured" || retained.State != "active" || retained.NextAction != "wait" {
 		t.Fatal("capture invented terminal operation", retained, err)
 	}
 	if _, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "controlled_completion", ""); err != nil {

@@ -45,7 +45,7 @@ describe('current round progress', () => {
   });
   it('keeps historical run counts separate and does not turn allowance into permission to dispatch', () => {
     const html=renderToStaticMarkup(<ReviewProgressView value={current}/>);
-    expect(html).toContain('Up to 3 more reviews');expect(html).not.toContain('of 5 used');expect(html).toContain('1 in flight');expect(html).toContain('Taper 0/1');expect(html).not.toMatch(/Ready|Idle|run recorded|coverage/i);
+    expect(html).toContain('Up to 3 more reviews');expect(html).not.toContain('of 5 used');expect(html).toContain('1 review pending');expect(html).toContain('Taper 0/1');expect(html).not.toMatch(/Ready|Idle|run recorded|coverage/i);
     expect(renderToStaticMarkup(<ReviewProgressView value={absent}/>)).toBe('');
     expect(roundProgressState({...current,closed:true})).toBe('No reviews remaining');
     expect(roundProgressState({...current,tapered:true,dry:1})).toBe('No reviews remaining');
@@ -130,4 +130,16 @@ describe('current round progress', () => {
     expect(roundProgressStopReason({ ...current, maximum_unbounded: true, maximum: 0 })).toBeUndefined();
   });
 
+});
+
+
+describe('pending review stages', () => {
+  it('distinguishes result collection from completed results awaiting adjudication', () => {
+    const awaiting = renderToStaticMarkup(<ReviewProgressView value={{...current, pending:1, pending_execution:0, pending_adjudication:1}} />);
+    expect(awaiting).toContain('1 awaiting adjudication');
+    expect(awaiting).not.toContain('in flight'); expect(awaiting).not.toContain('awaiting review result');
+    const mixed = renderToStaticMarkup(<ReviewProgressView value={{...current, pending:2, pending_execution:1, pending_adjudication:1}} />);
+    expect(mixed).toContain('1 awaiting review result'); expect(mixed).toContain('1 awaiting adjudication');
+    expect(mixed).not.toContain('awaiting fixes');
+  });
 });

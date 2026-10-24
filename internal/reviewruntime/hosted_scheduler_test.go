@@ -272,6 +272,8 @@ func TestHostedSchedulerMissingQueryOrChangedProviderIdentityBacksOffWithoutIO(t
 			gate.interval(t, 30*time.Second)
 			gate.resume(t)
 			gate.interval(t, 60*time.Second)
+			gate.resume(t)
+			gate.interval(t, 120*time.Second)
 			if p.repositories.Load() != 0 || p.currentActors.Load() != 0 || f.provider.observations != 0 || hostedDriverJournal(t, f, a.ID) != "uncertain" || cliCount(t, f.store, `SELECT count(*) FROM events`) != events || f.provider.queries != 1 || f.provider.reviews != 1 {
 				t.Fatal("unsafe recovery binding caused provider work or journal change")
 			}
@@ -291,7 +293,7 @@ func TestHostedSchedulerProviderBackoffCapsAndHonorsRetryAfter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, seconds := range []int{30, 60, 120, 240, 300, 300} {
+	for i, seconds := range []int{30, 60, 60, 60, 60, 60} {
 		if i > 0 {
 			gate.resume(t)
 		}
@@ -303,6 +305,12 @@ func TestHostedSchedulerProviderBackoffCapsAndHonorsRetryAfter(t *testing.T) {
 	p.repositoryError = &reviewprovider.Error{Code: "provider_rate_limited", Message: "synthetic shorter retry", RetryAfterSeconds: 1}
 	gate.resume(t)
 	gate.interval(t, 5*time.Minute)
+	p.repositoryError = &reviewprovider.Error{Code: "provider_unavailable", Status: 429, Message: "synthetic rate limit without retry header"}
+	gate.resume(t)
+	gate.interval(t, 5*time.Minute)
+	p.repositoryError = &reviewprovider.Error{Code: "provider_unavailable", Message: "synthetic retry hint", RetryAfterSeconds: 180}
+	gate.resume(t)
+	gate.interval(t, 180*time.Second)
 	p.repositoryError = nil
 	f.provider.partial = true
 	gate.resume(t)
@@ -319,6 +327,53 @@ func TestHostedSchedulerProviderBackoffCapsAndHonorsRetryAfter(t *testing.T) {
 	}
 	cancel()
 	schedulerDone(t, done, false)
+}
+
+func TestHostedSchedulerRetainedCapturePublicationAndSettlementRetryCap(t *testing.T) {
+	for _, stage := range []string{"publication", "settlement"} {
+		t.Run(stage, func(t *testing.T) {
+			f, a, p := schedulerUncertainFixture(t)
+			trigger := `CREATE TRIGGER fail_hosted_recovery BEFORE INSERT ON review_run_versions WHEN NEW.source='native-executor' BEGIN SELECT RAISE(ABORT,'synthetic publication failure'); END`
+			if stage == "settlement" {
+				trigger = `CREATE TRIGGER fail_hosted_recovery BEFORE UPDATE ON review_execution_attempts WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT,'synthetic settlement failure'); END`
+			}
+			if _, err := f.store.DB().Exec(trigger); err != nil {
+				t.Fatal(err)
+			}
+			gate := newSchedulerGate(f.hosted)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done, err := f.hosted.StartRecovery(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, seconds := range []int{30, 60, 60, 60, 60, 60} {
+				if i > 0 {
+					// After capture, even failed publication/settlement must stay offline.
+					p.repositoryError = errors.New("synthetic forbidden provider read after capture")
+					gate.resume(t)
+				}
+				gate.interval(t, time.Duration(seconds)*time.Second)
+				if hostedDriverJournal(t, f, a.ID) != "active" || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || p.repositories.Load() != 1 || f.provider.observations != 1 || f.provider.queries != 1 || f.provider.reviews != 1 {
+					t.Fatal("pending captured result retried provider work or gained completion", stage)
+				}
+			}
+			if _, err := f.store.DB().Exec(`DROP TRIGGER fail_hosted_recovery`); err != nil {
+				t.Fatal(err)
+			}
+			gate.resume(t)
+			gate.interval(t, 15*time.Second)
+			if hostedDriverJournal(t, f, a.ID) != "completed" || cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || p.repositories.Load() != 1 || f.provider.observations != 1 || f.provider.queries != 1 || f.provider.reviews != 1 {
+				t.Fatal("captured result failed to settle offline exactly once", stage)
+			}
+			var complete, finalized int
+			if err := f.store.DB().QueryRow(`SELECT r.complete,r.finalized FROM review_runs r JOIN review_workspace w ON w.project_id=r.project_id AND w.snapshot_id=r.snapshot_id WHERE r.source='native-executor'`).Scan(&complete, &finalized); err != nil || complete != 1 || finalized != 0 {
+				t.Fatal("recovery changed explicit source finalization", stage, err)
+			}
+			cancel()
+			schedulerDone(t, done, false)
+		})
+	}
 }
 
 func TestHostedSchedulerAmbiguousAndScopeUnprovenUseFailureBackoff(t *testing.T) {
@@ -348,6 +403,8 @@ func TestHostedSchedulerAmbiguousAndScopeUnprovenUseFailureBackoff(t *testing.T)
 			gate.interval(t, 30*time.Second)
 			gate.resume(t)
 			gate.interval(t, 60*time.Second)
+			gate.resume(t)
+			gate.interval(t, 120*time.Second)
 			state := hostedDriverJournal(t, f, a.ID)
 			if scope && state != "active" || !scope && state != "uncertain" || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || f.provider.queries != 1 || f.provider.reviews != 1 || p.currentActors.Load() != 0 {
 				t.Fatal("unproven recovery created evidence/action or lost reservation", state)
