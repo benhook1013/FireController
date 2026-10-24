@@ -92,8 +92,8 @@ func TestReviewReadHelpMatchesActualArgumentForms(t *testing.T) {
 func TestReviewReadHelpSeparatesQueuePolicyAndReadiness(t *testing.T) {
 	for operation, want := range map[string][]string{
 		"queue":         {"default 5", "retained page size", "merged", "channel-front", "--cursor"},
-		"assess":        {"immutable captured comparison", "current project policy", "CI", "threads"},
-		"source-assess": {"latest retained source comparison", "current local review policy", "source-refresh --help"},
+		"assess":        {"original captured comparison", "completed PR/channel review progress", "current project policy", "CI", "threads"},
+		"source-assess": {"latest retained source identity", "completed PR/channel review progress", "current local review policy", "source-refresh --help"},
 		"ci-assess":     {"required CI", "latest stored source comparison", "Review-channel policy", "selected base branch", "not_required", "optional workflows"},
 		"readiness":     {"finalized PR/channel review progress", "thread", "merge-state", "ready_as_observed", "source-refresh --help"},
 	} {

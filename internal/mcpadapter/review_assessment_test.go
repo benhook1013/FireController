@@ -42,7 +42,7 @@ func TestReviewPolicyAssessmentMCPDiscoveryAndInvalidArgumentsAreLocal(t *testin
 			t.Fatal("assessment schema permits missing identity or selectors")
 		}
 		a := tool.Annotations
-		if a == nil || !a.ReadOnlyHint || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint || a.OpenWorldHint == nil || *a.OpenWorldHint || !strings.Contains(tool.Description, "captured comparison") || !strings.Contains(tool.Description, "No provider refresh") {
+		if a == nil || !a.ReadOnlyHint || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint || a.OpenWorldHint == nil || *a.OpenWorldHint || !strings.Contains(tool.Description, "completed PR/channel review progress") || !strings.Contains(tool.Description, "later Git changes preserve progress") || !strings.Contains(tool.Description, "No provider refresh") {
 			t.Fatal("assessment effects/scope description incorrect")
 		}
 	}
