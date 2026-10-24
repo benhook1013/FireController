@@ -71,13 +71,13 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	case "reviews ci-assess":
 		out.Usage = "<bound launcher> reviews ci-assess --pr NUMBER"
 		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)"}
-		out.Semantics = []string{"Assesses retained required CI for the latest stored source comparison and current local repository, configuration and capability binding.", "Reports satisfied, failed, pending, unproven or not required. Review-channel policy, findings and provider thread/merge-state gates remain separate; reviews readiness --pr NUMBER combines the retained assessments.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help for explicit CI or readiness collection."}
+		out.Semantics = []string{"Assesses retained required CI for the latest stored source comparison and current local repository, configuration and capability binding.", "Reports satisfied, failed, pending, unproven or not required. not_required means the selected base branch has no required checks; optional workflows may still be running or failing and are not assessed here. Review-channel policy, findings and provider thread/merge-state gates remain separate; reviews readiness --pr NUMBER combines the retained assessments.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help for explicit CI or readiness collection."}
 		out.Example = "<bound launcher> reviews ci-assess --pr 42"
 		out.Documentation = "docs/review-ci.md"
 	case "reviews readiness":
 		out.Usage = "<bound launcher> reviews readiness --pr NUMBER"
 		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)"}
-		out.Semantics = []string{"Combines current local policy, applicable finalized review coverage, finding/route obligations, retained required CI, thread resolution and provider merge-state facts for the latest stored comparison.", "ready_as_observed describes the retained observation times. Missing, changed or conflicting input bindings remain held; it does not authorize a merge or guarantee GitHub remains unchanged.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help to explicitly collect readiness with --readiness."}
+		out.Semantics = []string{"Combines current local policy, applicable finalized review coverage, finding/route obligations, retained required CI, thread resolution and provider merge-state facts for the latest stored comparison.", "Required CI describes the selected base branch, not all workflow health. not_required does not mean workflows passed or stopped; GitHub merge-state gates remain separate. ready_as_observed describes the retained observation times. Missing, changed or conflicting input bindings remain held; it does not authorize a merge or guarantee GitHub remains unchanged.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help to explicitly collect readiness with --readiness."}
 		out.Example = "<bound launcher> reviews readiness --pr 42"
 		out.Documentation = "docs/review-readiness.md"
 	case "reviews runs":
@@ -147,7 +147,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Documentation = "docs/adoption-obligations.md"
 	case "reviews source-refresh":
 		out.Usage = "<bound launcher> reviews source-refresh --pr NUMBER --head SHA --expect-config N --key KEY [--ci] [--readiness] [--wait-seconds N]"
-		out.Semantics = []string{"Explicitly observe the exact comparison; does not request a review. Routine queue freshness is maintained by the automatic observer, not by this command.", "Held default_base_changed means there is no selected unmerged parent but the PR targets a nondefault branch. Check and reconcile the PR base with its intended default branch, then refresh the new comparison. Do not change worker credentials for a comparison hold.", recovery}
+		out.Semantics = []string{"Explicitly observe the exact comparison; does not request a review. Routine queue freshness is maintained by the automatic observer, not by this command. --ci and --readiness assess required checks for the selected base branch, not optional workflow health.", "Held default_base_changed means there is no selected unmerged parent but the PR targets a nondefault branch. Check and reconcile the PR base with its intended default branch, then refresh the new comparison. Do not change worker credentials for a comparison hold.", recovery}
 		out.Example = "<bound launcher> reviews source-operation REFRESH_ID"
 		out.Documentation = "docs/review-source.md"
 	case "jobs checklist-item":
