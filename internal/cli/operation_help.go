@@ -1,5 +1,7 @@
 package cli
 
+import "strings"
+
 type operationHelpResponse struct {
 	Usage         string            `json:"usage"`
 	Required      []string          `json:"required"`
@@ -20,6 +22,9 @@ func argumentHelpAction(call invocation) string {
 	operation := call.command + " " + call.subcommand
 	if _, ok := operationHelp(operation); ok {
 		return "Run the bound launcher with " + operation + " --help for required fields and examples."
+	}
+	if call.command == "reviews" || strings.HasPrefix(call.helpOperation, "reviews ") {
+		return "Run the bound launcher with reviews --help for supported review commands; reviews rounds --help lists per-PR limits and closure."
 	}
 	return "Run the bound launcher with help to discover supported commands and matching-release documentation."
 }

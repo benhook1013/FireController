@@ -295,3 +295,16 @@ func TestOperationHelpAdvertisedEditsReachExistingSemantics(t *testing.T) {
 		}
 	}
 }
+
+func TestUnknownReviewSubgroupPointsToOfflineSiblingHelp(t *testing.T) {
+	for _, args := range [][]string{{"reviews", "controls", "--help"}, {"help", "reviews", "controls"}, {"reviews", "controls"}, {"reviews", "roundz", "--help"}} {
+		args = append([]string{"--profiles-file", filepath.Join(t.TempDir(), "missing.json"), "--profile", "bound"}, args...)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		var stdout, stderr bytes.Buffer
+		code := RunContext(ctx, args, nil, &stdout, &stderr)
+		if code != ExitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), "invalid_arguments") || !strings.Contains(stderr.String(), "reviews --help") || !strings.Contains(stderr.String(), "reviews rounds --help") {
+			t.Fatalf("%v: %d %s %s", args, code, &stdout, &stderr)
+		}
+	}
+}
