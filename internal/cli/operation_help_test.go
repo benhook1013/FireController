@@ -24,7 +24,7 @@ func TestOperationHelpIsOfflineBoundedAndDoesNotReadFiles(t *testing.T) {
 	if err := os.WriteFile(path, before, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []string{"jobs create", "jobs update", "jobs status", "jobs checklist-item", "inbox send", "notes list", "notes add", "notes update", "reviews evidence", "reviews adjudication", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews decide-batch", "reviews fix-batch", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews rounds read", "reviews rounds grant", "reviews rounds close"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs status", "jobs checklist-item", "inbox send", "notes list", "notes add", "notes update", "reviews evidence", "reviews adjudication", "reviews route-create", "reviews route", "reviews routes", "reviews route-decide", "reviews route-fix", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews decide-batch", "reviews fix-batch", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews rounds read", "reviews rounds grant", "reviews rounds close"} {
 		for _, spelling := range [][]string{append(strings.Fields(operation), "--help"), append([]string{"help"}, strings.Fields(operation)...)} {
 			for _, profilePath := range []string{path, filepath.Join(t.TempDir(), "missing.json")} {
 				args := append([]string{"--profile=bound-role", "--profiles-file", profilePath}, spelling...)
@@ -103,9 +103,14 @@ func TestReviewHelpDiscoveryIsLocalAndKeepsOperationSemantics(t *testing.T) {
 		}
 	}
 	for operation, expected := range map[string][]string{
-		"reviews decide":   {"accepted|rejected", "zero-based", "--expect-route-revision", "route-create", "no provider"},
-		"reviews finalize": {"zero-finding", "Freezes original", "awaiting fixes", "reviews publish"},
-		"reviews publish":  {"GitHub", "current source adjudication", "pending receipt", "reviews publication"},
+		"reviews decide":       {"accepted|rejected", "zero-based", "--expect-route-revision", "route-create", "no provider"},
+		"reviews finalize":     {"zero-finding", "Freezes original", "awaiting fixes", "reviews publish"},
+		"reviews route-create": {"enrolled PR", "never a worker or job", "source adjudication revision", "--expect-route-revision", "source_revision", "No provider"},
+		"reviews route":        {"superseded history", "route revision", "source adjudication revision", "Provider-free"},
+		"reviews routes":       {"incoming routes", "default 5", "has_more", "without automatic pagination"},
+		"reviews route-decide": {"receiving-route revision", "Acceptance without fix proof remains pending", "No provider"},
+		"reviews route-fix":    {"receiving-route revision", "active accepted route", "--expect-sha=", "No provider"},
+		"reviews publish":      {"GitHub", "current source adjudication", "pending receipt", "reviews publication"},
 	} {
 		help, ok := operationHelp(operation)
 		b, _ := json.Marshal(help)
@@ -142,6 +147,11 @@ func TestExpandedOperationHelpExamplesMatchRealParsers(t *testing.T) {
 		{"reviews", "queue", "--active", "--limit", "20"},
 		{"reviews", "evidence", "review_evidence_0123456789abcdef0123456789abcdef"},
 		{"reviews", "adjudication", "review_evidence_0123456789abcdef0123456789abcdef"},
+		{"reviews", "route-create", "review_evidence_0123456789abcdef0123456789abcdef", "--finding", "0", "--target-pr", "84", "--expect-revision", "2", "--reason", "Owned by the receiving PR", "--key", "route-create-1"},
+		{"reviews", "route", "review_route_0123456789abcdef0123456789abcdef"},
+		{"reviews", "routes", "--pr", "84", "--limit", "5"},
+		{"reviews", "route-decide", "review_route_0123456789abcdef0123456789abcdef", "--expect-revision", "1", "--disposition", "accepted", "--reason", "Verified receiving scope", "--key", "route-decision-1"},
+		{"reviews", "route-fix", "review_route_0123456789abcdef0123456789abcdef", "--expect-revision", "2", "--expect-sha=", "--fix-sha", "0123456789abcdef0123456789abcdef01234567", "--proof", "Verified published fix", "--key", "route-fix-1"},
 	} {
 		call, ok := parseInvocation(args)
 		if !ok || call.command == "help" || call.helpOperation != "" {
@@ -199,7 +209,7 @@ func TestExpandedOperationHelpExplainsGuardsAndCompactReads(t *testing.T) {
 }
 
 func TestOperationErrorsPointToSelectedHelpWithoutEchoingArguments(t *testing.T) {
-	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes list", "notes add", "notes update", "reviews evidence", "reviews adjudication", "map update", "publication prepare", "reviews fix", "reviews decide", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews runs"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes list", "notes add", "notes update", "reviews evidence", "reviews adjudication", "reviews route-create", "reviews route", "reviews routes", "reviews route-decide", "reviews route-fix", "map update", "publication prepare", "reviews fix", "reviews decide", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews runs"} {
 		var stdout, stderr bytes.Buffer
 		args := append(strings.Fields(operation), "--private-typo=DO_NOT_ECHO")
 		if code := RunContext(t.Context(), args, map[string]string{"FC_PROFILE": "missing"}, &stdout, &stderr); code != ExitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), operation+" --help") || strings.Contains(stderr.String(), "DO_NOT_ECHO") {

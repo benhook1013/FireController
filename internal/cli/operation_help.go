@@ -42,7 +42,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	switch operation {
 	case "reviews help":
 		out.Usage = "<bound launcher> reviews help"
-		out.Optional = []string{"reviews queue --help", "reviews rounds --help", "reviews evidence --help", "reviews adjudication --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
+		out.Optional = []string{"reviews queue --help", "reviews rounds --help", "reviews evidence --help", "reviews adjudication --help", "reviews route-create --help", "reviews route --help", "reviews routes --help", "reviews route-decide --help", "reviews route-fix --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
 		out.Semantics = []string{"queue, rounds read and assessments read retained state. Read findings with reviews evidence EVIDENCE_ID and decisions/revision with reviews adjudication EVIDENCE_ID.", "source-refresh explicitly reads GitHub; request submits review work; publish requests a checkpoint comment. decide/fix, their batches and finalize change local evidence. Round grants/closure only change local settings.", "All help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
 		out.Example = "<bound launcher> reviews decide --help"
 		out.Documentation = "docs/review-controls.md"
@@ -89,6 +89,38 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		}
 		out.Example = "<bound launcher> " + operation + " review_evidence_0123456789abcdef0123456789abcdef"
 		out.Documentation = "docs/review-controls.md"
+	case "reviews route-create":
+		out.Usage = "<bound launcher> reviews route-create EVIDENCE_ID --finding INDEX --target-pr NUMBER --expect-revision N --reason TEXT --key KEY [--expect-route-revision N]"
+		out.Required = []string{evidenceID, "--finding INDEX (zero-based, 0-99)", "--target-pr NUMBER (different enrolled PR in the same project and repository)", "--expect-revision N (current source adjudication revision, initially 0)", "--reason TEXT (nonblank, up to 2048 UTF-8 bytes)", "--key KEY"}
+		out.Optional = []string{"--expect-route-revision N (current receiving-route revision when rerouting; omitted means 0 for an initial route)"}
+		out.Semantics = []string{"Read reviews evidence EVIDENCE_ID and reviews adjudication EVIDENCE_ID for the original finding and current source revision. Routes target an actual different enrolled PR, never a worker or job. A job/note/message handoff alone does not settle the source finding.", "Creates a route and changes the source disposition to routed. Returns the new route id/revision and source_revision; use the updated source revision for subsequent source edits. Source and receiving obligations stay pending until the receiving decision/fix satisfies them.", "Rerouting requires the existing route revision and preserves superseded history. Original evidence and finalized counts stay unchanged; a route with fix proof cannot be silently superseded. No provider work, review request, implicit message or owner acceptance.", recovery}
+		out.Example = "<bound launcher> reviews route-create review_evidence_0123456789abcdef0123456789abcdef --finding 0 --target-pr 84 --expect-revision 2 --reason 'Owned by the receiving PR' --key route-create-1"
+		out.Documentation = "docs/review-routes.md"
+	case "reviews route":
+		out.Usage = "<bound launcher> reviews route ROUTE_ID"
+		out.Required = []string{"ROUTE_ID (review_route_ followed by exactly 32 lowercase hexadecimal characters)"}
+		out.Semantics = []string{"Reads one same-project route, receiving revision/disposition/fix proof and original source anchor/finding text. Explicit reads retain superseded history; superseded routes cannot receive new decisions or fixes.", "Provider-free read with no writes, acceptance, source refresh or review request. Use the route revision for route-decide or route-fix; source changes use the separate source adjudication revision."}
+		out.Example = "<bound launcher> reviews route review_route_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/review-routes.md"
+	case "reviews routes":
+		out.Usage = "<bound launcher> reviews routes --pr NUMBER [--limit N] [--cursor CURSOR]"
+		out.Required = []string{"--pr NUMBER (receiving PR, canonical positive number)"}
+		out.Optional = []string{"--limit N (1-100, default 5)", "--cursor CURSOR (continue the same receiving PR)"}
+		out.Semantics = []string{"Lists active incoming routes for this receiving PR, with compact source identities and receiving state. Full finding text and superseded history require reviews route ROUTE_ID.", "Reads one scoped page with cursor and has_more, without automatic pagination, provider work, writes or new reviews. Accepts no positional PR, --snapshot or worker/job target selector."}
+		out.Example = "<bound launcher> reviews routes --pr 84 --limit 5"
+		out.Documentation = "docs/review-routes.md"
+	case "reviews route-decide":
+		out.Usage = "<bound launcher> reviews route-decide ROUTE_ID --expect-revision N --disposition accepted|rejected --reason TEXT --key KEY"
+		out.Required = []string{"ROUTE_ID (review_route_ followed by 32 lowercase hexadecimal characters)", "--expect-revision N (current receiving-route revision, at least 1)", "--disposition accepted|rejected", "--reason TEXT (nonblank, up to 2048 UTF-8 bytes)", "--key KEY"}
+		out.Semantics = []string{"Read reviews route ROUTE_ID first. Records the receiving decision using that route's revision, not the source adjudication revision. Acceptance without fix proof remains pending; rejection records its reason without inventing a fix.", "Preserves original source evidence and frozen counts. Superseded routes and proof-discarding changes are refused. No provider work, source decision rewrite or implicit review request.", recovery}
+		out.Example = "<bound launcher> reviews route-decide review_route_0123456789abcdef0123456789abcdef --expect-revision 1 --disposition accepted --reason 'Verified receiving scope' --key route-decision-1"
+		out.Documentation = "docs/review-routes.md"
+	case "reviews route-fix":
+		out.Usage = "<bound launcher> reviews route-fix ROUTE_ID --expect-revision N --expect-sha SHA --fix-sha SHA --proof TEXT --key KEY"
+		out.Required = []string{"ROUTE_ID (review_route_ followed by 32 lowercase hexadecimal characters)", "--expect-revision N (current receiving-route revision, at least 1)", "--expect-sha SHA (use --expect-sha= when no fix exists)", "--fix-sha SHA (40 lowercase hexadecimal characters)", "--proof TEXT (nonblank, up to 2048 UTF-8 bytes)", "--key KEY"}
+		out.Semantics = []string{"Read reviews route ROUTE_ID for its current receiving revision and fix SHA. Records verified fix proof only for an active accepted route. Empty --expect-sha= asserts no prior fix; correction requires the exact current SHA.", "Preserves original source evidence, attribution and frozen counts while updating the receiving obligation. No provider work, new review, source finalization or allowance change.", recovery}
+		out.Example = "<bound launcher> reviews route-fix review_route_0123456789abcdef0123456789abcdef --expect-revision 2 --expect-sha= --fix-sha 0123456789abcdef0123456789abcdef01234567 --proof 'Verified published fix' --key route-fix-1"
+		out.Documentation = "docs/review-routes.md"
 	case "reviews assess":
 		out.Usage = "<bound launcher> reviews assess EVIDENCE_ID"
 		out.Required = []string{evidenceID}
