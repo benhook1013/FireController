@@ -28,6 +28,11 @@ var findingOutsideHeader = regexp.MustCompile(`^\*\*⚠️ Outside diff range co
 var findingDuplicateHeader = regexp.MustCompile(`^<summary>♻️ Duplicate comments \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
 var findingGroupHeader = regexp.MustCompile(`^<summary>([^<>]+) \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
 var findingOutsideSummary = regexp.MustCompile(`^<summary>(?:<em>([^<>]+)</em>|<strong>([^<>]+)</strong>) · .+ · <code>[^<>]+</code></summary><blockquote>$`)
+
+// A decorative icon changes no metadata identity. Recognize only the observed
+// closed picture/img envelope and exact label; never fetch the image or treat
+// other labelled blocks as review metadata.
+var findingReviewInfoIcon = regexp.MustCompile(`^<summary><picture><img src="https://[^"<>\s]+" width="[1-9][0-9]{0,2}" height="[1-9][0-9]{0,2}" align="absmiddle" alt=""></picture> Review info</summary>$`)
 var findingPathLocation = regexp.MustCompile("^`([^`]+):([0-9]+)(?:-([0-9]+))?`$")
 var findingRange = regexp.MustCompile("^`([0-9]+)-([0-9]+)`: (.+)$")
 var findingTitle = regexp.MustCompile(`^\*\*([^*]+)\*\*$`)
@@ -690,7 +695,7 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 			if findingDuplicateHeader.MatchString(header) {
 				d.duplicates(review.Body, lines, i, end, review.ID)
 			} else {
-				known := header == "<summary>🤖 Prompt to fix review comments</summary>" || header == "<summary>ℹ️ Review info</summary>"
+				known := header == "<summary>🤖 Prompt to fix review comments</summary>" || header == "<summary>ℹ️ Review info</summary>" || findingReviewInfoIcon.MatchString(header)
 				if !known && selected {
 					d.fail("summary_format_unsupported")
 				}

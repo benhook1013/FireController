@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"runtime"
@@ -13,6 +14,7 @@ const (
 	textFileOK textFileFailure = iota
 	textFileInvalid
 	textFilePermissions
+	textFileTooLarge
 )
 
 func readPrivateTextFile(path string, maxBytes int) (string, bool) {
@@ -23,35 +25,43 @@ func readPrivateTextFile(path string, maxBytes int) (string, bool) {
 // Inspect before and after opening to reject accidental FIFO/device reads and
 // permissive files. This does not claim protection against hostile filesystem races.
 func readPrivateTextFileChecked(path string, maxBytes int) (string, textFileFailure) {
+	value, failure, _ := readPrivateTextFileMeasured(path, maxBytes)
+	return value, failure
+}
+
+func readPrivateTextFileMeasured(path string, maxBytes int) (string, textFileFailure, int64) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return "", textFileInvalid
+		return "", textFileInvalid, 0
 	}
 	if failure := privateTextFileInfo(info, maxBytes); failure != textFileOK {
-		return "", failure
+		return "", failure, info.Size()
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", textFileInvalid
+		return "", textFileInvalid, 0
 	}
 	defer f.Close()
 	opened, err := f.Stat()
 	if err != nil || !os.SameFile(info, opened) {
-		return "", textFileInvalid
+		return "", textFileInvalid, 0
 	}
 	if failure := privateTextFileInfo(opened, maxBytes); failure != textFileOK {
-		return "", failure
+		return "", failure, opened.Size()
 	}
 	data, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
 	if err != nil || len(data) > maxBytes || !utf8.Valid(data) {
-		return "", textFileInvalid
+		return "", textFileInvalid, 0
 	}
-	return string(data), textFileOK
+	return string(data), textFileOK, int64(len(data))
 }
 
 func privateTextFileInfo(info os.FileInfo, maxBytes int) textFileFailure {
-	if !info.Mode().IsRegular() || info.Size() > int64(maxBytes) {
+	if !info.Mode().IsRegular() {
 		return textFileInvalid
+	}
+	if info.Size() > int64(maxBytes) {
+		return textFileTooLarge
 	}
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
 		return textFilePermissions
@@ -80,7 +90,14 @@ func prepareTextFiles(values map[string]string, limits map[string]int) bool {
 func loadTextFiles(values map[string]string, limits map[string]int) (bool, *diagnostic) {
 	for flag, limit := range limits {
 		if path, file := values[flag+"-file"]; file {
-			value, failure := readPrivateTextFileChecked(path, limit)
+			value, failure, size := readPrivateTextFileMeasured(path, limit)
+			if failure == textFileTooLarge {
+				return false, &diagnostic{
+					Code:    "invalid_arguments",
+					Message: fmt.Sprintf("The file supplied for %s-file is %d bytes; the limit is %d bytes.", flag, size, limit),
+					Action:  fmt.Sprintf("Reduce the supplied file to at most %d UTF-8 bytes, then retry. No request was sent.", limit),
+				}
+			}
 			if failure == textFilePermissions {
 				return false, &diagnostic{
 					Code:    "invalid_arguments",
