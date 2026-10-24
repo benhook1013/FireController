@@ -104,7 +104,7 @@ func Run(ctx context.Context, args []string, env map[string]string, stdin io.Rea
 	// The largest admitted body is the combined job PATCH. Leave bounded space
 	// for its tool selectors and JSON-RPC envelope; per-tool parsers retain their
 	// own smaller limits for every other operation.
-	if err = server.Run(ctx, &mcp.IOTransport{Reader: reader, Writer: writerCloser{stdout}, MaxLineLength: client.JobPatchMaxEncodedBytes + 16<<10}); err != nil {
+	if err = server.Run(ctx, &mcp.IOTransport{Reader: reader, Writer: writerCloser{stdout}, MaxLineLength: client.ReviewBatchMaxBytes + 16<<10}); err != nil {
 		if ctx.Err() != nil {
 			return 6
 		}

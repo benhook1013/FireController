@@ -68,7 +68,7 @@ func validateObservationContent(queue []PullInput, retirements []RetiredPull, re
 		pullNumbers[pull.Number] = struct{}{}
 		if !validText(pull.Title, 500, true) || !oneOf(pull.State, "open", "merged", "closed", "unknown") ||
 			!validSHA(pull.HeadSHA) || !validText(pull.BaseRef, 256, false) || !validSHA(pull.BaseSHA) ||
-			!oneOf(pull.CIState, "unknown", "pending", "success", "failure") ||
+			!oneOf(pull.CIState, "unknown", "pending", "success", "failure", "not_required") ||
 			!oneOf(pull.Mergeability, "unknown", "mergeable", "conflicting") {
 			return validationError("A pull request contains invalid identity, state or summary fields.")
 		}

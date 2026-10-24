@@ -24,7 +24,7 @@ A repeatable process `FC_PROFILE` can replace the profile argument. The default 
 
 Startup validates configuration without opening the credential or contacting the service. Initialization, discovery and local `context` also need no credential or network. Service calls load the selected protected credential and normally share a five-second budget across authenticated instance verification and the scoped operation. An explicitly longer `review_start`, `review_selection_read`, `review_request`, `review_operation_read`, `review_source_refresh`, `review_checkpoint_publish` or `review_checkpoint_recover` wait and the quiet message wait have their selected wait plus five seconds; they do not change other tool deadlines. Argument validation precedes credential and network access. Each actual MCP session owns a lazy finite-request connection pool, released when that session closes. Every service tool call still reloads the protected credential and performs authenticated instance verification; the pool retains only transport connections. Separate sessions have separate pools. Long message/provider waits retain their owned transport clones, so they do not occupy the finite-request pool.
 
-The combined `job_update` body supports the API's 384 KiB encoded JSON limit, including escaped brief and progress text. Its tool arguments allow a further 1 KiB for selectors and the idempotency key; the stdio frame allows a further 16 KiB for the protocol envelope. Other mutations retain their 256 KiB argument limit and ordinary reads retain 16 KiB. These transport allowances do not increase field or API body limits. A valid atomic CLI update can therefore be recovered through MCP using the same content and key without splitting it into new writes.
+The combined `job_update` body supports the API's 384 KiB encoded JSON limit, including escaped brief and progress text. Its tool arguments allow a further 1 KiB for selectors and the idempotency key; the stdio frame allows a further 16 KiB for the protocol envelope. Finding-decision/fix batches allow 2 MiB plus 1 KiB of selectors; the stdio frame allows a further 16 KiB. Other mutations retain their 256 KiB argument limit and ordinary reads retain 16 KiB. These transport allowances do not increase field or API body limits. A valid atomic CLI update can therefore be recovered through MCP using the same content and key without splitting it into new writes.
 
 ## Tools and output
 
@@ -38,6 +38,7 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `worker_pause_history` | Optional limit/cursor; one explicit newest-first pause-history page. |
 | `jobs_list` | Optional worker_id/status/limit/cursor; one compact job page. |
 | `jobs_assigned` | Optional status/limit/cursor; default status:open selects active/blocked/parked assignments. Explicit status:all includes completed history. |
+| `job_status_read` | Required job_id; compact current status/revision/assignment and bounded progress/next/blocker previews with truncation flags and evidence count; no brief, checklist, notes or history. |
 | `job_read` | Required job_id; complete current brief/progress, remaining checklist/counts and compact pending exact-job notes. |
 | `job_summary_read` | Required job_id; current optional shareable title/body and independent summary revision; remains private. |
 | `job_summary_set` | Required job_id, expected_job_revision, expected_revision, title, body and idempotency_key; guarded summary replacement or explicit clear. |
@@ -70,7 +71,7 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `inbox_events` | Required event cursor; optional limit and wait_ms 0–4000; one bounded incoming-event page. |
 | `wait_for_messages` | Required event cursor; optional limit 1–100 and wait_seconds 1–50, default 20/25. One new-message event page or quiet timeout over a call-owned persistent stream. |
 | `review_execution_read` | No fields; stored execution configuration and revision, without provider work. |
-| `review_operation_read` | Required operation_id; optional wait_seconds (0–50/default 0) collects retained native operation state without polling. |
+| `review_operation_read` | Required operation_id; optional wait_seconds (0–50/default 0) collects compact stage, cause, evidence handle and next action without polling. Optional diagnostics:true returns the original full operation. |
 | `review_operations_list` | Optional pull_number, channel cli/hosted, status pending/all (default pending), limit 1–100 (default 5), cursor; one compact retained operation page, including history with all for lost-receipt recovery. No provider work. See [operation discovery](review-operations.md). |
 | `review_request` | Required idempotency_key/expected_configuration_revision/pull_number/channel/head_sha; optional allow_out_of_order (boolean/default false) bypasses only queue scheduling; wait_seconds (0–50/default 2) returns terminal state or a compact pending receipt authorizing background provider work. |
 | `review_source_refresh` | Required idempotency_key/expected_configuration_revision/pull_number/head_sha; optional wait_seconds (default 2, range 0–50), include_ci (default false) and include_readiness (default false). Returns a completed or held outcome within the wait, otherwise an operation receipt; schedules selected source/CI reads, never a review. |
@@ -84,6 +85,8 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `review_rounds_configure` | Project-writer grant/close with pull_number, channel, expected_revision, action and idempotency_key. Grant requires minimum/maximum; close omits both. Changes local controls without dispatching reviews. |
 | `review_evidence_read` | Required evidence_id; explicit full retained native capture and parsed findings, excluding raw diagnostics. |
 | `review_adjudication_read` | Required evidence_id; current guarded decisions and fix references without repeating finding text. |
+| `review_findings_decide` | Required evidence_id, expected_revision, explicit items (1–100 unique indices, dispositions, reasons and applicable route guards), idempotency_key; atomic single-revision batch, no implicit finalization. |
+| `review_findings_fix` | Required evidence_id, expected_revision, explicit items (1–100 unique indices, expected/fix SHA and proof), idempotency_key; atomic single-revision batch preserving source counts. |
 | `review_finding_decide` | Required idempotency_key/evidence_id/expected_revision/finding/disposition/reason; completed adjudication result. |
 | `review_finding_fix` | Required idempotency_key/evidence_id/expected_revision/finding/expected_sha/fix_sha/proof_note; completed fix-reference result. |
 | `review_source_finalize` | Required idempotency_key/evidence_id/expected_revision; completed source-count finalization result. |
@@ -92,10 +95,10 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `review_routes_list` | Required pull_number; optional limit/cursor; compact incoming routes in the bound project. |
 | `review_route_decide` | Required idempotency_key/route_id/expected_revision/disposition/reason; independent receiving decision. |
 | `review_route_fix` | Required idempotency_key/route_id/expected_revision/expected_sha/fix_sha/proof_note; guarded receiving fix reference. |
-| `review_queue` | Optional limit/cursor; stored queue, default five PRs. |
+| `review_queue` | Optional active/limit/cursor; default five stored PRs including history; active:true filters open PRs before paging and returns compact scalar state. |
 | `review_pull` | Required pull_number, optional snapshot; compact PR summary without loading the attempt archive. |
 | `review_attempts` | Required pull_number, optional snapshot/limit/cursor; default five newest-first retained attempts with original producer identity, without automatic paging or provider work. |
-| `review_runs` | Required pull_number, optional snapshot/limit/cursor; default five stored run summaries. |
+| `review_runs` | Required pull_number, optional snapshot/limit/cursor; default five stored run summaries, retaining each run’s own dates and pinned cursor while omitting unrelated workspace-origin timestamps. |
 | `review_run` | Required run_id, optional snapshot; explicit full findings/decisions/fix proof. |
 | `review_checkpoint_publish` | Required idempotency_key/evidence_id/expected_revision; optional wait_seconds (default 2, range 0–50). Explicitly publishes finalized historical source counts, returning terminal facts or a pending receipt. |
 | `review_checkpoint_read` | Required publication_id; compact stored publication state, without provider work. |

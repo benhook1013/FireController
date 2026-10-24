@@ -24,9 +24,8 @@ export function CompactReviewFinding({ finding }: { finding: ReviewFinding }) {
   const resolved = route?.fixed_at ?? finding.resolved_at;
   return <li className="review-finding-compact">
     <div className="review-finding-compact-header">
-      <span className={`badge review-severity-${severity}`}>{severityLabel}</span>
       <h4 className="review-finding-compact-title">{finding.title}</h4>
-      <span className="badge neutral">{label(finding.disposition)}</span>
+      <span className="review-finding-badges"><span className={`badge review-severity-${severity}`}>{severityLabel}</span><span className="badge neutral">{label(finding.disposition)}</span></span>
     </div>
     {rationale.text && <EditorialMarkdown compact className="review-finding-compact-rationale">{rationale.text}</EditorialMarkdown>}
     <div className="review-finding-compact-decision"><strong>Decision</strong><EditorialMarkdown compact>{decision.text || (finding.decision_reason.trim() ? 'Decision details recorded below.' : 'No decision reason recorded.')}</EditorialMarkdown></div>

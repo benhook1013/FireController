@@ -20,6 +20,7 @@ func Register(mux *http.ServeMux, store *core.Store, health ...ObservationHealth
 	})
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/queue/edits", editQueue(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/queue", queue(store, health...))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/queue/active", activeQueue(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{number}", pull(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{number}/runs", runs(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{number}/attempts", attempts(store))

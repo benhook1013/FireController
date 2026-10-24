@@ -40,6 +40,27 @@ The native run's original source identity and zero-based finding indexes bind th
 
 Evidence without an initial native workspace publication remains usable through the ledger controls. A decision does not invent a browser run or convert imported historical evidence into native execution. The optional configured CLI and hosted drivers perform trusted initial publication from retained evidence, as described in the [execution contract](review-execution.md#evidence-and-the-native-workspace); real CodeRabbit execution through those drivers and operational cutover remain unproven.
 
+## Atomic selected-finding batches
+
+`POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/decisions/batch` and `/fixes/batch` apply one explicitly selected batch under project write authority. Each request has one `expected_revision`, one `Idempotency-Key`, and an `items` array containing 1–100 unique zero-based finding indexes. Unselected findings are unchanged. The complete strict JSON request is bounded to 2 MiB, including escaping; unknown fields, duplicate keys, null required fields and duplicate selected indexes are refused.
+
+A decision item contains explicit `finding`, `disposition` (`accepted` or `rejected`) and nonblank `reason` of at most 2048 UTF-8 bytes. Optional `expected_route_revision` has the same semantics as a single decision: correcting a routed source finding requires its current route revision and cannot supersede a route that already has receiving fix proof. This endpoint does not create routes or exercise receiving-PR decision authority. A fix item contains explicit `finding`, `expected_sha`, `fix_sha` and nonblank `proof_note` of at most 2048 UTF-8 bytes. `expected_sha` is required even when empty; it asserts the currently recorded source fix. The finding must already be accepted. Receiving fixes continue to use the receiving-route controls.
+
+All items share one transaction, one adjudication revision, one audit history record and one compact receipt. Browser projection, route supersession, source policy facts, events and the receipt commit together. A bad later entry, stale adjudication/route/SHA guard, changed authorization or projection/event failure leaves no partial batch. Successful decision receipts are `{id,state:"adjudicated_batch",revision}`; fix receipts use `state:"fixes_recorded_batch"`. Audit history records the complete explicit selected input with finding index `-1`, rather than producing a separate adjudication revision for each item. Route supersession retains its own existing route history within the same transaction.
+
+Batching never changes immutable captures, original finalized counts, earned rounds or taper accounting, and it never finalizes source implicitly. Later corrections preserve frozen source counts as single actions do. Use the existing explicit finalization endpoint when every source finding has a decision. Exact-key replay returns the original compact receipt under current authorization, including after later revisions; changed input under that key conflicts. A lost mutation response requires recovery with that same batch and key. Neither the service nor clients automatically split, retry, infer decisions, supply a shared default reason or accept all findings.
+
+The bound CLI reads a private regular UTF-8 file and validates the complete request before loading its connection or contacting the service:
+
+```sh
+fc reviews decide-batch EVIDENCE_ID --file /private/decisions.json --key DECISION_KEY
+fc reviews fix-batch EVIDENCE_ID --file /private/fixes.json --key FIX_KEY
+```
+
+The decision file is, for example, `{"expected_revision":0,"items":[{"finding":0,"disposition":"accepted","reason":"Verified against source and focused proof."},{"finding":2,"disposition":"rejected","reason":"The stated precondition cannot occur."}]}`. A fix file contains the same envelope with explicit fix items, such as `{"finding":0,"expected_sha":"","fix_sha":"0123456789abcdef0123456789abcdef01234567","proof_note":"Focused test and immutable source reference."}`. Use actual returned revision/index values and a verified fix commit. The adapters emit only the one receipt.
+
+MCP exposes `review_findings_decide` and `review_findings_fix` with `evidence_id`, `idempotency_key`, `expected_revision` and the corresponding explicit bounded `items` array. Argument validation runs before credentials/network work. These tools retain the existing five-second command budget and unknown-outcome recovery rules. Single-finding controls remain available and use the same action validation and transaction-level guards.
+
 ## Explicit project policy
 
 `GET /api/v1/projects/{project_id}/reviews/policy` requires project read permission and returns `{project_id,revision,actor_id,recorded_at,policy}`. An unconfigured policy returns `reviews_policy_unconfigured` with HTTP 409; absence never means that review requirements passed.

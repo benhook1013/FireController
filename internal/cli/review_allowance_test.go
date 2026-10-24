@@ -57,7 +57,7 @@ func TestReviewAllowanceCLIRoundTrip(t *testing.T) {
 			expected, _ := json.Marshal(op)
 			var want map[string]any
 			_ = json.Unmarshal(expected, &want)
-			for _, args := range [][]string{{"reviews", "operation", op.ID}, {"reviews", "run-read", "--selection-id", cliSelectionID}, {"reviews", "request", "2", "--key", "retained-request", "--expect-config", "1", "--channel", op.Channel, "--head", op.HeadSHA}, {"reviews", "start", "--channel", op.Channel, "--key", "retained-selection", "--expect-pr", "2"}} {
+			for _, args := range [][]string{{"reviews", "operation", op.ID, "--diagnostics"}, {"reviews", "run-read", "--selection-id", cliSelectionID}, {"reviews", "request", "2", "--key", "retained-request", "--expect-config", "1", "--channel", op.Channel, "--head", op.HeadSHA}, {"reviews", "start", "--channel", op.Channel, "--key", "retained-selection", "--expect-pr", "2"}} {
 				code, out, stderr := mutationInvoke(t, profiles, "builder", args...)
 				var got map[string]any
 				if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &got) != nil {
@@ -74,7 +74,7 @@ func TestReviewAllowanceCLIRoundTrip(t *testing.T) {
 				t.Fatal("CLI polled retained state", calls.Load())
 			}
 			invalid.Store(true)
-			code, out, stderr := mutationInvoke(t, profiles, "builder", "reviews", "operation", op.ID)
+			code, out, stderr := mutationInvoke(t, profiles, "builder", "reviews", "operation", op.ID, "--diagnostics")
 			if code == 0 || out != "" || !strings.Contains(stderr, "invalid_response") || strings.Contains(stderr, "PRIVATE_SENTINEL") || calls.Load() != 5 {
 				t.Fatal("CLI accepted/leaked invalid retained facts", code, stderr)
 			}

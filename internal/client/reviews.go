@@ -309,7 +309,7 @@ func (c *Client) validReviewPull(value ReviewPullSummary) bool {
 	}
 	if !validPullNumber(value.Number) || !cleanReviewText(value.Title, 500, true) || !oneReviewOf(value.State, "open", "merged", "closed", "unknown") ||
 		!validReviewSHA(value.HeadSHA) || !cleanReviewText(value.BaseRef, 256, false) || !validReviewSHA(value.BaseSHA) ||
-		!oneReviewOf(value.CIState, "unknown", "pending", "success", "failure") || !oneReviewOf(value.Mergeability, "unknown", "mergeable", "conflicting") ||
+		!oneReviewOf(value.CIState, "unknown", "pending", "success", "failure", "not_required") || !oneReviewOf(value.Mergeability, "unknown", "mergeable", "conflicting") ||
 		!validReviewPullMetadata(value) || value.RunCount < 0 || !value.RunCounts.valid(value.RunCount) || value.AttemptCount < 0 ||
 		value.RecentRuns == nil || len(value.RecentRuns) > 3 || int64(len(value.RecentRuns)) > value.RunCount || value.RunCount > 0 && len(value.RecentRuns) == 0 ||
 		value.LatestAttempts == nil || len(value.LatestAttempts) > 4 || int64(len(value.LatestAttempts)) > value.AttemptCount || value.AttemptCount > 0 && len(value.LatestAttempts) == 0 {

@@ -48,3 +48,5 @@
 .review-queue-content>.review-details-link{margin-top:4px;padding:0}
 
 .review-queue-content>.review-history{margin-bottom:0}
+
+.review-ci.review-fact-not_required{background:#edf0f4;color:#43505d;border-color:#c7cdd5}

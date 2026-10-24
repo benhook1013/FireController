@@ -27,7 +27,7 @@ func PublishSourceStatus(ctx context.Context, tx *sql.Tx, scope core.Scope, repo
 	pulls := make([]PullInput, 0, len(observations))
 	statuses := make(map[int64]SourceStatus, len(observations))
 	for _, observation := range observations {
-		if !oneOf(observation.CIState, "", "unknown", "pending", "success", "failure") || !oneOf(observation.Mergeability, "unknown", "mergeable", "conflicting") {
+		if !oneOf(observation.CIState, "", "unknown", "pending", "success", "failure", "not_required") || !oneOf(observation.Mergeability, "unknown", "mergeable", "conflicting") {
 			return Receipt{}, validationError("Source status contains an unsupported observation.")
 		}
 		pulls = append(pulls, observation.Pull)

@@ -11,6 +11,19 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
+	if call.subcommand == "queue" && hasActiveQueueFlag(args) {
+		options, ok := parseReviewActiveQueue(args)
+		call.reviewActiveQueue, call.limit, call.cursor = true, options.Limit, options.Cursor
+		return call, ok
+	}
+	if call.subcommand == "operation" {
+		var ok bool
+		call.reviewOperationStatus, ok = parseReviewOperationStatus(args)
+		if ok {
+			call.waitSeconds = call.reviewOperationStatus.WaitSeconds
+		}
+		return call, ok
+	}
 	if call.subcommand == "operations" {
 		return parseOperationList(call, args)
 	}
@@ -147,7 +160,7 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 	case "execution":
 		return service.ReviewExecution(ctx)
 	case "operation":
-		return service.WaitReviewOperation(ctx, call.position[0], call.waitSeconds)
+		return executeReviewOperationStatus(ctx, service, call.reviewOperationStatus)
 	case "source-operation":
 		return service.ReviewSourceOperation(ctx, call.position[0])
 	case "source-assess":
@@ -155,15 +168,20 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 	case "readiness":
 		return service.ReviewSourceReadiness(ctx, call.pullNumber)
 	case "ci-assess":
-		return service.ReviewSourceCIAssessment(ctx, call.pullNumber)
+		value, err := service.ReviewSourceCIAssessment(ctx, call.pullNumber)
+		return client.AgentReviewCI(value), err
 	case "queue":
+		if call.reviewActiveQueue {
+			return runReviewActiveQueue(ctx, service, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+		}
 		return service.ReviewQueue(ctx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case "pull":
 		return service.ReviewPull(ctx, call.pullNumber, call.snapshot)
 	case "attempts":
 		return service.ReviewAttempts(ctx, call.pullNumber, client.ReviewAttemptOptions{PageOptions: client.PageOptions{Limit: call.limit, Cursor: call.cursor}, Snapshot: call.snapshot})
 	case "runs":
-		return service.ReviewRuns(ctx, call.pullNumber, client.ReviewRunOptions{PageOptions: client.PageOptions{Limit: call.limit, Cursor: call.cursor}, Snapshot: call.snapshot})
+		value, err := service.ReviewRuns(ctx, call.pullNumber, client.ReviewRunOptions{PageOptions: client.PageOptions{Limit: call.limit, Cursor: call.cursor}, Snapshot: call.snapshot})
+		return client.AgentReviewRuns(value), err
 	case "evidence":
 		return service.ReviewEvidence(ctx, call.position[0])
 	case "adjudication":
@@ -176,6 +194,9 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 }
 
 func parseReviewControl(operation string, args []string) (*mutationInvocation, bool) {
+	if operation == "decide-batch" || operation == "fix-batch" {
+		return parseReviewBatch(operation, args)
+	}
 	if operation == "publish" || operation == "publication-recover" {
 		return parseReviewPublication(operation, args)
 	}
@@ -506,4 +527,13 @@ func parseReviewPublication(operation string, args []string) (*mutationInvocatio
 	}
 	call.reviewCheckpoint = client.ReviewCheckpointRequest{EvidenceID: id, ExpectedRevision: revision}
 	return call, client.ValidateReviewCheckpointRequest(call.reviewCheckpoint) == nil
+}
+
+func hasActiveQueueFlag(args []string) bool {
+	for _, value := range args {
+		if value == "--active" || strings.HasPrefix(value, "--active=") {
+			return true
+		}
+	}
+	return false
 }

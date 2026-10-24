@@ -220,3 +220,9 @@ fc reviews run-read --selection-id review_selection_0123456789abcdef0123456789ab
 ```
 
 The default short wait returns a useful terminal result when available, or the original compact selection receipt when work remains pending. Immediate return uses `--wait-seconds 0`. Preserve the original key and arguments after uncertain output; another key authorizes another selection. Historical `reviews run RUN_ID` remains a separate retained-history read.
+
+## Compact review and job reads
+
+`jobs status JOB_ID` returns current status/revision/assignment, bounded progress/next/blocker previews with truncation flags, and evidence count. Full job reads remain the resume contract. `reviews queue --active` selects only open PRs before paging, using a snapshot-bound compact scalar response; the default queue and history remain available. Agent `reviews runs PR` output preserves each run’s own dates and continuation without unrelated workspace-origin timestamps.
+
+`reviews operation OPERATION_ID [--wait-seconds N]` returns compact retained stage, cause, next action and original evidence handle when available. Use `--diagnostics` for the complete original operation. The wait uses completion notifications and does not restart provider work. `reviews decide-batch EVIDENCE_ID --file PRIVATE --key KEY` and `reviews fix-batch EVIDENCE_ID --file PRIVATE --key KEY` apply explicit same-evidence items atomically; see [review controls](review-controls.md#atomic-selected-finding-batches). Matching local `--help` gives the request shape before loading credentials.

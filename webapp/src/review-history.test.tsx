@@ -39,8 +39,8 @@ describe('per-PR inline retained review history', () => {
   it('shows typed compact summaries, finish age and pinned secondary links without exposing cached findings before expansion', () => {
     const value = run('second');
     const html = markup(<ReviewHistoryRow number={27} run={value} snapshot={snapshot} head="head" />, { value: detail(value) });
-    expect(html).toContain('>CLI</span>'); expect(html).toContain('<strong>2</strong> found');
-    expect(html).toContain('<strong>1</strong> accepted'); expect(html).toContain('<strong>1</strong> routed');
+    expect(html).toContain('>CLI</span>'); expect(html).toContain('Found: <strong>2</strong>');
+    expect(html).toContain('Accepted: <strong>1</strong>'); expect(html).toContain('Routed: <strong>1</strong>');
     expect(html).toContain('dateTime="2026-10-18T00:01:00Z"'); expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('snapshot=snapshot-one'); expect(html).toContain('Run details ↗');
     expect(html).not.toContain('Private'); expect(html).not.toContain('review-history-findings"><');
@@ -66,10 +66,12 @@ describe('per-PR inline retained review history', () => {
   it('shows captured accepted severities without fabricating missing breakdowns', () => {
     const value = { ...run('counts'), accepted: 4, accepted_severity: {critical: 1, major: 1, minor: 1, trivial: 0, unknown: 1, complete: true} };
     const html = markup(<ReviewAcceptedCounts run={value} />);
-    for (const text of ['Critical', 'Major', 'Minor', 'Trivial', 'severity unknown']) expect(html).toContain(text);
+    for (const text of ['Critical', 'Major / Minor / Trivial', 'severity unknown']) expect(html).toContain(text);
     expect(html).toContain('4 accepted findings');
+    expect(html).toContain('Accepted: <strong>1/1/0</strong>');
+    expect(html).not.toContain('review-severity-high');
     const incomplete = markup(<ReviewAcceptedCounts run={{...value, accepted_severity:{...value.accepted_severity,complete:false}}} />);
-    expect(incomplete).toContain('<strong>4</strong> accepted');
+    expect(incomplete).toContain('Accepted: <strong>4</strong>');
     expect(incomplete).not.toContain('Major');
   });
   it('shows review duration only when original timing is known and ordered', () => {

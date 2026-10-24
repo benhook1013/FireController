@@ -161,7 +161,7 @@ func TestReviewRoundReadHelpRemainsLocalWithExactSelectors(t *testing.T) {
 		{"reviews", "rounds", "read", "--pr", "--help", "--channel", "cli"},
 		{"reviews", "rounds", "read", "--pr", "42", "--channel", "--help"},
 		{"help", "reviews", "rounds", "read", "extra"},
-		{"reviews", "rounds", "grant", "--help"},
+		{"reviews", "rounds", "grant", "--help", "extra"},
 	} {
 		if _, ok := parseInvocation(args); ok {
 			t.Fatal("help expanded unsupported argument grammar", args)

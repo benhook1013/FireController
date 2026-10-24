@@ -28,6 +28,14 @@ const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: f
 const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main' }] });
 
 describe('truthful stored review presentation', () => {
+  it('distinguishes no required CI from an unknown observation without claiming workflow success', () => {
+    const html = markup(<ReviewPullFacts pull={{ ...pull(2), ci_state: 'not_required' }} />);
+    expect(html).toContain('CI: Not required');
+    expect(html).toContain('Optional workflow results are separate.');
+    expect(html).not.toContain('CI: Success');
+    expect(html).not.toContain('CI status is unknown.');
+    expect(markup(<ReviewPullFacts pull={{ ...pull(2), ci_state: 'unknown' }} />)).toContain('CI: Unknown');
+  });
   it('identifies incomplete Hosted history without calling healthy PR checks a GitHub retry', () => {
     const observation = { state: 'retrying' as const, checked_at: '2026-10-23T13:24:02Z', last_success_at: '2026-10-23T13:24:02Z', error: 'external_hosted_identity_unproven', hosted_error: 'external_hosted_identity_unproven' };
     const html = markup(<ReviewPullFacts pull={{ ...pull(2), observation }} />);

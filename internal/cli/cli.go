@@ -48,26 +48,28 @@ type options struct {
 
 type invocation struct {
 	options
-	command          string
-	subcommand       string
-	position         []string
-	limit            int
-	waitMS           int
-	cursor           string
-	worker           string
-	status           string
-	unread           bool
-	unack            bool
-	snapshot         string
-	pullNumber       int64
-	mutation         *mutationInvocation
-	setup            *profileSetupInvocation
-	notes            *noteInvocation
-	projectMap       *projectMapInvocation
-	presentation     *presentationInvocation
-	publication      *publicationInvocation
-	helpOperation    string
-	reviewOperations client.ReviewOperationsOptions
+	command               string
+	subcommand            string
+	position              []string
+	limit                 int
+	waitMS                int
+	cursor                string
+	worker                string
+	status                string
+	unread                bool
+	unack                 bool
+	snapshot              string
+	pullNumber            int64
+	mutation              *mutationInvocation
+	setup                 *profileSetupInvocation
+	notes                 *noteInvocation
+	projectMap            *projectMapInvocation
+	presentation          *presentationInvocation
+	publication           *publicationInvocation
+	helpOperation         string
+	reviewOperations      client.ReviewOperationsOptions
+	reviewOperationStatus *reviewOperationStatusInvocation
+	reviewActiveQueue     bool
 
 	reviewQueueEdit     *reviewQueueEditInvocation
 	reviewImport        *reviewImportInvocation
@@ -336,6 +338,8 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value, err = service.Jobs(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.JobFilter{WorkerID: call.worker, Status: call.status})
 	case call.command == "jobs" && call.subcommand == "assigned":
 		value, err = service.Jobs(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.JobFilter{WorkerID: binding.Context.WorkerID, Status: call.status})
+	case call.command == "jobs" && call.subcommand == "status":
+		value, err = runJobStatus(requestCtx, service, call.position[0])
 	case call.command == "jobs" && call.subcommand == "read":
 		value, err = service.Job(requestCtx, call.position[0])
 	case call.command == "jobs" && call.subcommand == "history":
@@ -413,8 +417,8 @@ func parseInvocation(args []string) (invocation, bool) {
 		return call, validHelpOptions(call.options)
 	}
 	if call.command == "version" || call.command == "help" {
-		if remaining[0] == "help" && len(remaining) == 4 && remaining[1] == "reviews" && remaining[2] == "rounds" && remaining[3] == "read" {
-			call.helpOperation = "reviews rounds read"
+		if remaining[0] == "help" && len(remaining) == 4 && remaining[1] == "reviews" && remaining[2] == "rounds" && (remaining[3] == "read" || remaining[3] == "grant" || remaining[3] == "close") {
+			call.helpOperation = "reviews rounds " + remaining[3]
 			return call, validHelpOptions(call.options)
 		}
 		if remaining[0] == "help" && len(remaining) == 3 {
@@ -443,8 +447,8 @@ func parseInvocation(args []string) (invocation, bool) {
 	operationArgs := remaining[2:]
 	// Help is an exact grammar, not a scan for help-looking values. In
 	// particular, --body --help remains ordinary submitted text.
-	if call.command == "reviews" && call.subcommand == "rounds" && len(operationArgs) == 2 && operationArgs[0] == "read" && operationArgs[1] == "--help" {
-		call.command, call.helpOperation = "help", "reviews rounds read"
+	if call.command == "reviews" && call.subcommand == "rounds" && len(operationArgs) == 2 && (operationArgs[0] == "read" || operationArgs[0] == "grant" || operationArgs[0] == "close") && operationArgs[1] == "--help" {
+		call.command, call.helpOperation = "help", "reviews rounds "+operationArgs[0]
 		return call, validHelpOptions(call.options)
 	}
 	if len(operationArgs) == 1 && operationArgs[0] == "--help" {
@@ -537,7 +541,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.unack = true
 	case "inbox events":
 		allowed["--cursor"], allowed["--limit"], allowed["--wait-ms"] = true, true, true
-	case "workers pause-state", "jobs primary", "jobs read", "jobs checklist", "jobs summary", "inbox read":
+	case "workers pause-state", "jobs primary", "jobs status", "jobs read", "jobs checklist", "jobs summary", "inbox read":
 	default:
 		return call, false
 	}
@@ -622,7 +626,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		return call, false
 	}
 	expected := 0
-	if call.command == "jobs" && (call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "progress-history" || call.subcommand == "checklist" || call.subcommand == "checklist-history" || call.subcommand == "summary") || call.command == "inbox" && (call.subcommand == "thread" || call.subcommand == "read") {
+	if call.command == "jobs" && (call.subcommand == "status" || call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "progress-history" || call.subcommand == "checklist" || call.subcommand == "checklist-history" || call.subcommand == "summary") || call.command == "inbox" && (call.subcommand == "thread" || call.subcommand == "read") {
 		expected = 1
 	}
 	if len(call.position) != expected {

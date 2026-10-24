@@ -89,7 +89,7 @@ func TestSourceStatusChangedComparisonClearsCreditAndOrdinaryPathRefusesStatus(t
 		t.Fatal("ordinary metadata path accepted CI")
 	}
 	changed.CIState = ""
-	if _, err := publishStatus(t, f, sourcePins(t, f, 1), changed, "not_required", "mergeable"); err == nil {
+	if _, err := publishStatus(t, f, sourcePins(t, f, 1), changed, "optional", "mergeable"); err == nil {
 		t.Fatal("invented passing CI state")
 	}
 }

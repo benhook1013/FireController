@@ -22,7 +22,7 @@ func TestModelWaitBoundsLeaveHostDeadlineMargin(t *testing.T) {
 			return reviewRunArguments("review_selection_read", raw)
 		}, map[string]any{"selection_id": "review_selection_" + strings.Repeat("a", 32)}},
 		"review_operation_read": {func(raw json.RawMessage) (arguments, error) {
-			return reviewControlArguments("review_operation_read", raw)
+			return parseArguments("review_operation_read", raw)
 		}, map[string]any{"operation_id": "review_operation_" + strings.Repeat("a", 32)}},
 		"review_request": {func(raw json.RawMessage) (arguments, error) {
 			return reviewControlArguments("review_request", raw)

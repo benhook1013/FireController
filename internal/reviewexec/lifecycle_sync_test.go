@@ -149,9 +149,12 @@ func TestLifecycleSyncCIUnknownNotRequiredAndComparisonChanges(t *testing.T) {
 				return o, nil
 			}}
 			lifecycleTick(t, f, s, r)
-			want := map[string]string{"satisfied": "success", "failed": "failure", "pending": "pending", "not_required": "unknown", "unproven": "unknown"}[state]
+			want := map[string]string{"satisfied": "success", "failed": "failure", "pending": "pending", "not_required": "not_required", "unproven": "unknown"}[state]
 			if got := lifecycleRead(t, f); got.CIState != want {
 				t.Fatal("CI projection", state, got.CIState)
+			}
+			if r.ciCalls.Load() != 1 || r.calls.Load() != 4 {
+				t.Fatal("unexpected collection fanout", r.ciCalls.Load(), r.calls.Load())
 			}
 		})
 	}

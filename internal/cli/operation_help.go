@@ -33,16 +33,29 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	switch operation {
 	case "reviews help":
 		out.Usage = "<bound launcher> reviews help"
-		out.Optional = []string{"reviews queue --help", "reviews rounds --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews finalize --help", "reviews publish --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
-		out.Semantics = []string{"queue, rounds read, assess, source-assess, ci-assess and readiness read retained state. Read findings with reviews evidence EVIDENCE_ID and decisions/revision with reviews adjudication EVIDENCE_ID.", "source-refresh explicitly reads GitHub. request submits review work; publish requests a checkpoint comment. decide, fix and finalize change local evidence. Help performs none of these actions.", "All help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
+		out.Optional = []string{"reviews queue --help", "reviews rounds --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
+		out.Semantics = []string{"queue, rounds read and assessments read retained state. Read findings with reviews evidence EVIDENCE_ID and decisions/revision with reviews adjudication EVIDENCE_ID.", "source-refresh explicitly reads GitHub; request submits review work; publish requests a checkpoint comment. decide/fix, their batches and finalize change local evidence. Round grants/closure only change local settings.", "All help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
 		out.Example = "<bound launcher> reviews decide --help"
 		out.Documentation = "docs/review-controls.md"
 		out.Next = "docs/review-publication.md describes GitHub checkpoint publication; docs/review-execution.md describes review requests and retained operations."
 	case "reviews rounds":
 		out.Usage = "<bound launcher> reviews rounds read --pr NUMBER --channel cli|hosted"
-		out.Optional = []string{"reviews rounds read --help"}
-		out.Semantics = []string{"read returns current local per-PR/channel minimum, maximum, used, dry streak, taper, closure and revision without provider work.", "grant and close are separate explicit mutations described in the matching documentation. Help does not change settings or request a review."}
+		out.Optional = []string{"reviews rounds read --help", "reviews rounds grant --help", "reviews rounds close --help"}
+		out.Semantics = []string{"read returns current local per-PR/channel minimum, maximum, used, dry streak, taper, closure and revision without provider work.", "grant sets finite additional bounds or reopens the selected channel; close stops new dispatch. Both require project write authority, the current --expected-revision and an explicit --key. Help performs no action."}
 		out.Example = "<bound launcher> reviews rounds read --pr 42 --channel hosted"
+		out.Documentation = "docs/review-round-controls.md"
+	case "reviews rounds grant":
+		out.Usage = "<bound launcher> reviews rounds grant --pr NUMBER --channel cli|hosted --expected-revision N --max N [--min N] --key KEY | --exact N instead of --min/--max"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)", "--channel cli|hosted", "--expected-revision N (current round-control revision, initially 0)", "--max N (1-1000 additional completed rounds), or --exact N", "--key KEY"}
+		out.Optional = []string{"--min N (0 to --max, default 0)", "--exact N (1-1000; sets equal minimum/maximum; exclusive with --min and --max)"}
+		out.Semantics = []string{"Project writers can grant or reopen this PR/channel directly. Read reviews rounds read first for its current revision; the flag is --expected-revision, not --expect-revision.", "Bounds count additional completed rounds, including underway and complete-unfinalized work. One more includes that occupied round; wait for its finalization before requiring a round after it. A maximum below unavoidable occupied work is refused.", "Preserves earned dry streak, completed counts and history. Raising only maximum does not require more work after taper; an additional minimum does. Other channels are unchanged. This changes local settings without provider dispatch or a new review.", recovery}
+		out.Example = "<bound launcher> reviews rounds grant --pr 42 --channel hosted --expected-revision 1 --min 2 --max 3 --key hosted-42-grant"
+		out.Documentation = "docs/review-round-controls.md"
+	case "reviews rounds close":
+		out.Usage = "<bound launcher> reviews rounds close --pr NUMBER --channel cli|hosted --expected-revision N --key KEY"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)", "--channel cli|hosted", "--expected-revision N (current round-control revision)", "--key KEY"}
+		out.Semantics = []string{"Project writers can close this PR/channel directly. Read reviews rounds read for the current --expected-revision. No --min, --max or --exact is accepted.", "Stops new dispatch, including queued/prepared work at its final guard. Does not cancel a possibly posted action: its result can still be captured, adjudicated and counted once.", "Preserves earned dry streak, completed counts and history; other channels are unchanged. A later explicit grant reopens this channel. This local mutation performs no provider dispatch.", recovery}
+		out.Example = "<bound launcher> reviews rounds close --pr 42 --channel cli --expected-revision 2 --key cli-42-close"
 		out.Documentation = "docs/review-round-controls.md"
 	case "reviews rounds read":
 		out.Usage = "<bound launcher> reviews rounds read --pr NUMBER --channel cli|hosted"
@@ -51,10 +64,10 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Example = "<bound launcher> reviews rounds read --pr 42 --channel cli"
 		out.Documentation = "docs/review-round-controls.md"
 	case "reviews queue":
-		out.Usage = "<bound launcher> reviews queue [--limit N] [--cursor CURSOR]"
-		out.Optional = []string{"--limit N (1-100, default 5)", "--cursor CURSOR (continue the returned retained-snapshot page)"}
-		out.Semantics = []string{"Reads one ordered retained queue page, including merged and closed history, without provider work or automatic pagination.", "The default 5 is the retained page size, not the first five active PRs or channel-front selection. Continue with the returned cursor to inspect remaining entries.", "Accepts no positional PR number or --snapshot flag. Queue entries alone do not establish review coverage, current CI or merge readiness."}
-		out.Example = "<bound launcher> reviews queue --limit 20"
+		out.Usage = "<bound launcher> reviews queue [--active] [--limit N] [--cursor CURSOR]"
+		out.Optional = []string{"--active (open, nonretired PRs only, filtered before pagination; compact scalar summaries)", "--limit N (1-100, default 5)", "--cursor CURSOR (continue the returned retained-snapshot page with the same view)"}
+		out.Semantics = []string{"Reads one ordered retained queue page without provider work or automatic pagination. Default output preserves merged/closed history and its full queue detail; --active selects only open, nonretired entries before applying the page limit.", "--active returns scalar PR summaries rather than nested round-control history. The default 5 is the retained page size, not channel-front selection. Continue has_more with the returned cursor and same view.", "Accepts no positional PR number or --snapshot flag. Queue entries alone do not establish review coverage, current CI or merge readiness."}
+		out.Example = "<bound launcher> reviews queue --active --limit 20"
 		out.Documentation = "docs/review-workspace.md"
 	case "reviews assess":
 		out.Usage = "<bound launcher> reviews assess EVIDENCE_ID"
@@ -84,7 +97,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Usage = "<bound launcher> reviews runs NUMBER [--snapshot SNAPSHOT_ID] [--limit N] [--cursor CURSOR]"
 		out.Required = []string{"NUMBER (canonical positive PR number)"}
 		out.Optional = []string{"--snapshot SNAPSHOT_ID (retained snapshot; omission reads the current stored workspace)", "--limit N (1-100, default 5)", "--cursor CURSOR (continue the same scoped snapshot)"}
-		out.Semantics = []string{"Reads one newest-first stored run-summary page without full findings, automatic pagination, provider refresh or new review.", "Top-level observed_at is the retained workspace source-observation time. Publishing one native run preserves it; it can be older than that run's finished_at and does not mean the run is stale.", "Top-level recorded_at is when that workspace snapshot was recorded, not when every PR was refreshed. Each item's started_at/finished_at describes that review's capture window; item source identifies its original producer, distinct from top-level source.", "Use reviews run RUN_ID for full retained findings and original native operation/evidence anchors for execution status and applicability. Neither envelope nor run timestamps alone establish current GitHub freshness or coverage."}
+		out.Semantics = []string{"Reads one newest-first stored run-summary page without full findings, automatic pagination, provider refresh or new review.", "CLI/MCP omit unrelated workspace-origin source, observed_at and recorded_at fields; the API retains them. Each item's started_at/finished_at describes that review's capture window, and item source identifies its original producer. Snapshot identity, revision and continuation remain intact.", "Use reviews run RUN_ID for full retained findings and original native operation/evidence anchors for execution status and applicability. Run timestamps alone do not establish current GitHub freshness or coverage."}
 		out.Example = "<bound launcher> reviews runs 42 --limit 5"
 		out.Documentation = "docs/review-workspace.md"
 	case "reviews decide":
@@ -99,6 +112,20 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Required = []string{"EVIDENCE_ID", "--expect-revision N (current adjudication revision)", "--key KEY"}
 		out.Semantics = []string{"Requires a completed attempt, complete retained capture and a decision for every finding; a complete zero-finding review is valid. Read reviews adjudication EVIDENCE_ID for the current revision.", "Freezes original found/accepted/routed source counts. A finalized review can contain accepted findings awaiting fixes; finalization is not a clean-review or merge-readiness verdict.", "Later supported decision/fix corrections preserve frozen source counts. No GitHub comment, source refresh or new review is requested; reviews publish is separate.", recovery}
 		out.Example = "<bound launcher> reviews finalize review_evidence_0123456789abcdef0123456789abcdef --expect-revision 2 --key finalize-1"
+		out.Documentation = "docs/review-controls.md"
+	case "reviews decide-batch", "reviews fix-batch":
+		out.Usage = "<bound launcher> " + operation + " EVIDENCE_ID --file PATH --key KEY"
+		out.Required = []string{"EVIDENCE_ID", "--file PATH (private regular UTF-8 JSON file, at most 2 MiB)", "--key KEY"}
+		out.Semantics = []string{"Validates the complete strict file before loading profiles or contacting the service. One expected_revision and 1-100 explicitly selected unique zero-based finding indexes (0-99) are required; unknown, duplicate and null required fields are refused.", "Applies all items atomically, including browser projection, audit/event history and one compact receipt. A bad later item or stale guard rolls back the complete batch. No per-item commits, provider work, automatic retries or implicit finalization.", "Read reviews evidence EVIDENCE_ID for original findings and reviews adjudication EVIDENCE_ID for the current revision, dispositions and fix SHAs. Immutable source and finalized counts are retained.", recovery}
+		out.FileFields = map[string]string{"expected_revision": "Current adjudication revision, initially 0", "items": "1-100 explicit unique finding objects; unselected findings stay unchanged"}
+		if operation == "reviews decide-batch" {
+			out.FileExample = map[string]any{"expected_revision": 0, "items": []any{map[string]any{"finding": 0, "disposition": "accepted", "reason": "Verified against source and focused proof"}}}
+			out.Semantics = append(out.Semantics, "Each item requires finding, disposition accepted|rejected and its own nonblank reason (at most 2048 UTF-8 bytes). Optional expected_route_revision guards a routed source correction; receiving fix authority remains separate. No accept-all selection or shared default reason.")
+		} else {
+			out.FileExample = map[string]any{"expected_revision": 1, "items": []any{map[string]any{"finding": 0, "expected_sha": "", "fix_sha": "0123456789abcdef0123456789abcdef01234567", "proof_note": "Verified published fix and focused test"}}}
+			out.Semantics = append(out.Semantics, "Each item requires finding, expected_sha (explicit empty string when no fix exists), fix_sha (40 lowercase hexadecimal characters) and its own nonblank proof_note (at most 2048 UTF-8 bytes). Only accepted source findings can receive proof; receiving routed fixes use route controls.")
+		}
+		out.Example = "<bound launcher> " + operation + " review_evidence_0123456789abcdef0123456789abcdef --file /private/selected-findings.json --key selected-batch-1"
 		out.Documentation = "docs/review-controls.md"
 	case "reviews publish":
 		out.Usage = "<bound launcher> reviews publish EVIDENCE_ID --expect-revision N --key KEY [--wait-seconds N]"
@@ -120,10 +147,10 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Example = "<bound launcher> reviews operations --pr 42 --all --limit 5"
 		out.Documentation = "docs/review-operations.md"
 	case "reviews operation":
-		out.Usage = "<bound launcher> reviews operation OPERATION_ID [--wait-seconds N]"
+		out.Usage = "<bound launcher> reviews operation OPERATION_ID [--wait-seconds N] [--diagnostics]"
 		out.Required = []string{"OPERATION_ID"}
-		out.Optional = []string{"--wait-seconds N (0-900, default 0)"}
-		out.Semantics = []string{"Reads the original retained operation without provider work, retrying or requesting a review. An uncertain result is not proof the external review failed or completed.", "Hosted hosted_observation_pending means the original review trigger was issued and scheduled observation owns its result. Do not repost. CLI capture_retention_failed does not prove output was lost; capture_publication_pending identifies a retained result awaiting browser publication. The local observer can finish complete retained CLI evidence without rerunning the process.", "Use reviews runs PR and reviews run RUN_ID for published history; reviews evidence EVIDENCE_ID reads known native evidence. There is no reviews attempt command. If uncertain work has no discoverable result, report the original operation/attempt IDs to the maintainer; do not invent evidence IDs or start a replacement."}
+		out.Optional = []string{"--wait-seconds N (0-900, default 0)", "--diagnostics (full retained operation, configuration/attempt and capture diagnostics)"}
+		out.Semantics = []string{"Default output is compact status: stage, reason, original operation/attempt IDs, discoverable evidence_id and next_action. --diagnostics selects the full retained operation. Both are local reads without provider work, retries or requesting a review; bounded wait behavior is unchanged.", "Hosted hosted_observation_pending means the original review trigger was issued and scheduled observation owns its result. Do not repost. CLI capture_retention_failed does not prove output was lost; capture_publication_pending identifies a retained result awaiting browser publication. The local observer can finish complete retained CLI evidence without rerunning the process.", "Use reviews runs PR and reviews run RUN_ID for published history; reviews evidence EVIDENCE_ID reads known native evidence. There is no reviews attempt command. If uncertain work has no discoverable result, report the original operation/attempt IDs to the maintainer; do not invent evidence IDs or start a replacement."}
 		out.Example = "<bound launcher> reviews operation review_operation_0123456789abcdef0123456789abcdef --wait-seconds 40"
 		out.Documentation = "docs/review-execution.md"
 	case "reviews request":
@@ -162,6 +189,12 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Optional = []string{"--brief TEXT | --brief-file PATH", "--worker WORKER_ID", "--status active|blocked|parked|completed"}
 		out.Semantics = []string{"Brief files contain exact UTF-8 text, at most 32 KiB; empty is allowed. Use a regular file with owner-private POSIX permissions. Inline and file forms are mutually exclusive.", recovery}
 		out.Example = "<bound launcher> jobs create --title 'Implement transport' --brief-file /private/brief.md --key job-create-1"
+		out.Documentation = "docs/job-state.md"
+	case "jobs status":
+		out.Usage = "<bound launcher> jobs status JOB_ID"
+		out.Required = []string{"JOB_ID"}
+		out.Semantics = []string{"Reads compact current status, revision, worker and updated_at plus progress_summary (up to 1024 UTF-8 bytes), next and blocker (512 bytes each), explicit truncation flags and evidence_count. No evidence reference strings are included.", "Returns one coherent authorized snapshot without brief, checklist, notes, history, provider work or writes. Previews are status aids; use jobs read JOB_ID for complete working context before resuming."}
+		out.Example = "<bound launcher> jobs status job_0123456789abcdef0123456789abcdef"
 		out.Documentation = "docs/job-state.md"
 	case "inbox send":
 		out.Usage = "<bound launcher> inbox send --to WORKER_ID (--body TEXT | --body-file PATH) --key KEY [--reply-to MESSAGE_ID]"

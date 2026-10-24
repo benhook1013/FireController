@@ -63,6 +63,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if len(data) == 0 {
 		data = []byte("{}")
 	}
+	if reviewBatchTool(name) {
+		return reviewBatchArguments(name, data)
+	}
 	bound := 16 << 10
 	if mutationTool(name) {
 		bound = 256 << 10
@@ -82,6 +85,22 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 			return args, invalidArguments()
 		}
+	}
+	if name == "review_queue" {
+		options, active, err := reviewActiveQueueArguments(data)
+		args.limit, args.cursor, args.reviewActiveQueue = options.Limit, options.Cursor, active
+		return args, err
+	}
+	if name == "job_status_read" {
+		return jobStatusArguments(data)
+	}
+	if name == "review_operation_read" {
+		input, err := operationStatusArguments(data)
+		if err != nil {
+			return args, err
+		}
+		args.operationStatus, args.reviewSourceWait = input, input.WaitSeconds
+		return args, nil
 	}
 	if checkpointTool(name) {
 		return checkpointArguments(name, data)
@@ -212,6 +231,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 }
 
 func mutationTool(name string) bool {
+	if reviewBatchTool(name) {
+		return true
+	}
 	if name == "review_start" || name == "review_rounds_configure" {
 		return true
 	}

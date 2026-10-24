@@ -26,6 +26,16 @@ The complete brief and progress are never silently shortened. Reads use one auth
 
 Job lists remain compact: existing identity/title/status/worker/revision fields plus `progress_summary` and `blocker` previews of at most 240 UTF-8 bytes each. A shortened preview has its corresponding `progress_truncated` or `blocker_truncated` flag. No full brief, evidence, checklist, notes or history is loaded with the list.
 
+## Compact status read
+
+`GET /api/v1/projects/{project_id}/jobs/{job_id}/status`, CLI `jobs status JOB_ID` and MCP `job_status_read` with `job_id` provide a small current-state check. The response contains `id`, `title`, `worker_id`, `status`, `revision`, `updated_at`, `progress_summary`, `next`, `blocker`, `progress_truncated`, `next_truncated`, `blocker_truncated` and `evidence_count`. All fields are explicit, including empty previews and false flags. Progress summary is at most 1,024 UTF-8 bytes; next and blocker are at most 512 bytes each. Shortening takes a valid UTF-8 prefix without adding prose, and sets the corresponding flag. Evidence is represented only by its count, never its reference strings.
+
+The read requires ordinary project read authorization and observes job metadata and validated current progress in one transaction. It selects no private brief, checklist, attached notes or history, performs no provider calls or mutations, and rejects unsupported query parameters. The encoded response is limited to 16 KiB, including JSON escaping. These previews are status aids, not sufficient resume context; read the complete current job before continuing its work. The full job read and stored content remain unchanged, and no schema migration is needed.
+
+Focused source tests cover authorization and project isolation, coherent reads during atomic updates, large-job omission, UTF-8 boundaries, worst-case HTML escaping, malformed current progress and strict client response validation. CLI/MCP tests exercise the same native route without context fanout. Installed client rollout and hands-on deployment qualification remain separate.
+
+## Explicit history reads
+
 `GET .../jobs/{job_id}/progress/history`, CLI `jobs progress-history` and MCP `job_progress_history` provide one explicit newest-first progress archive. Each item contains `id`, `project_id`, `job_id`, `job_revision`, `sequence`, `actor_id`, `worker_id`, `progress` and `created_at`. Archive selection is bounded and cursor-based; normal reads never walk it. Ordinary job revision history remains a separate ascending audit of edited job state. Its pages contain whole retained entries within a 4 MiB encoded response budget, including the continuation envelope. The requested item limit is an upper bound: large snapshots can produce a shorter page with `has_more` and a cursor from its last included revision. Follow that cursor rather than assuming a short page is final. Valid legacy snapshots without progress keep their original shape; malformed or oversized stored snapshots fail safely without changing retained data.
 
 Embedded pending-note continuation preserves exact-job selection: CLI `notes list --all-workers --job JOB_ID --cursor CURSOR`, MCP `note_list` with `job_id`, `all_workers:true` and that cursor. The normal worker-note default uses a different selection. Discover worker reminders separately; they are not implicitly included in a job read.

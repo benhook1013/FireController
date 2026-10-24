@@ -126,6 +126,8 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 					ciState = "failure"
 				case "pending":
 					ciState = "pending"
+				case "not_required":
+					ciState = "not_required"
 				}
 			}
 			ciCancel()

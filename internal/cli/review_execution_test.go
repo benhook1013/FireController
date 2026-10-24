@@ -114,7 +114,7 @@ func TestReviewExecutionCLIExplicitOrderWireAndRetainedReplay(t *testing.T) {
 			if encodeString(first) != encodeString(replay) || posts.Load() != 2 {
 				t.Fatal("explicit replay changed its receipt")
 			}
-			code, out, stderr := mutationInvoke(t, path, "builder", "reviews", "operation", first["id"].(string))
+			code, out, stderr := mutationInvoke(t, path, "builder", "reviews", "operation", first["id"].(string), "--diagnostics")
 			var operation client.ReviewOperation
 			if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &operation) != nil || operation.AllowOutOfOrder != allow {
 				t.Fatal("operation lost requested ordering choice", code, stderr)
@@ -163,7 +163,7 @@ func TestReviewExecutionCLIReadsAndQueuedReceiptRemainBound(t *testing.T) {
 		t.Fatal("exact request replay changed receipt")
 	}
 	id := receipt["id"].(string)
-	code, out, stderr = mutationInvoke(t, path, "other", "reviews", "operation", id)
+	code, out, stderr = mutationInvoke(t, path, "other", "reviews", "operation", id, "--diagnostics")
 	var operation client.ReviewOperation
 	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &operation) != nil || operation.ID != id || operation.WorkerID != worker || operation.State != "queued" || operation.AttemptID != "" {
 		t.Fatal("explicit operation read changed attribution or fabricated dispatch", code, stderr)

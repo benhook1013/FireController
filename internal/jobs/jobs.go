@@ -56,6 +56,7 @@ func Register(mux *http.ServeMux, store *core.Store, options ...Option) {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs", listJobs(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/delivery", delivery(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}", getJob(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/status", getJobStatus(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/summary", getSummary(store))
 	mux.HandleFunc("PUT /api/v1/projects/{project_id}/jobs/{job_id}/summary", replaceSummary(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/summary/history", summaryHistory(store))

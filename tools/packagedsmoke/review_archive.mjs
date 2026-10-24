@@ -67,8 +67,8 @@ try {
     const rounds = page.locator('.main-content').getByRole('region',{name:`PR #${number} review rounds`,exact:true});
     const attempts = page.getByRole('region',{name:`PR #${number} attempts`,exact:true});
     await rounds.waitFor(); await attempts.waitFor();
-    await expect(page.locator('.review-pull-summary .review-diff')).toHaveText('0 files · +0 / −0 lines');
-    await expect(page.locator('.review-pull-summary .review-state-draft')).toHaveText('Draft');
+    await expect(page.locator('.review-detail-heading .review-diff')).toHaveText('0 files · +0 / −0 lines');
+    await expect(page.locator('.review-detail-heading .review-state-draft')).toHaveText('Draft');
     await attempts.locator('summary').click();
     await expect.poll(() => rounds.locator('.review-history-row').count()).toBe(25);
     await expect.poll(() => attempts.locator('li').count()).toBe(20);
@@ -79,7 +79,7 @@ try {
     const continuation = rounds.locator('.review-timeline-continuation');
     await expect(continuation).toContainText(`25 of ${count} rounds`);
     need(await rounds.evaluate(section => section.querySelector('.review-timeline-continuation').compareDocumentPosition(section.querySelector('.review-timeline')) & Node.DOCUMENT_POSITION_FOLLOWING));
-    need(await page.locator('.review-pull-summary').getByText(`${count} runs · ${count} attempts`,{exact:true}).count() === 0);
+    need(await page.locator('.review-detail-heading').getByText(`${count} runs · ${count} attempts`,{exact:true}).count() === 0);
     const stored = await page.evaluate(() => JSON.stringify({session:{...sessionStorage},local:{...localStorage}}));
     need(!stored.includes(token) && !stored.includes(admin));
     return {page,rounds,attempts,name,snapshot,home,path:canonicalPath};
@@ -171,7 +171,7 @@ try {
   need(response.status === 201); await response.arrayBuffer();
   await expect.poll(() => current.rounds.locator('.review-history-row').count()).toBe(1);
   await expect.poll(() => current.attempts.locator('li').count()).toBe(1);
-  await current.page.locator('.page-heading').getByRole('heading',{name:'Current archive metadata',exact:true}).waitFor();
+  await current.page.locator('.review-detail-heading').getByRole('heading',{name:'Current archive metadata',exact:true}).waitFor();
   await expect(current.rounds.locator('.review-history-kind')).toHaveText('CLI #1');
   await expect(current.rounds.getByRole('link',{name:'Open CLI #1 run details',exact:true})).toHaveCount(1);
   need(await current.attempts.getByText('current-only-attempt',{exact:true}).count() === 1);
@@ -182,9 +182,9 @@ try {
   phase = 'inline-current-findings';
   const currentRow = current.rounds.locator('.review-history-row');
   need(details.length === 1);
-  await expect(currentRow.locator('.review-history-counts > span').first()).toHaveText('1 found');
-  await expect(currentRow.locator('.review-history-accepted')).toHaveText('0 Major / 0 Minor / 0 Trivial accepted');
-  await expect(currentRow.locator('.review-history-counts > span').last()).toHaveText('0 routed');
+  await expect(currentRow.locator('.review-history-counts > span').first()).toHaveText('Found: 1');
+  await expect(currentRow.locator('.review-count-accepted')).toHaveText('Accepted: 0/0/0');
+  await expect(currentRow.locator('.review-history-counts > span').last()).toHaveText('Routed: 0');
   await currentRow.getByRole('button', {name:'Show findings for CLI #1', exact:true}).click();
   await currentRow.getByRole('heading', {name:'Inline retained finding', exact:true}).waitFor();
   const finding = currentRow.locator('.review-finding-compact');
@@ -210,10 +210,10 @@ try {
   await expect(originalFields.locator('pre')).toContainText('Useful **inline detail**');
   need(await currentRow.locator('.review-history-findings img').count() === 0 && await currentRow.locator('.review-history-findings a[href^="javascript:"]').count() === 0);
   need(details.length === 2 && details[1].name === 'current' && details[1].snapshot !== config.snapshot && new URL(current.page.url()).pathname === current.path);
-  await expect(current.page.locator('.review-pull-summary .review-diff')).toHaveText('73 files · +6,160 / −136 lines');
-  need(await current.page.locator('.review-pull-summary .review-state-draft').count() === 0);
-  await expect(pinned.page.locator('.review-pull-summary .review-diff')).toHaveText('0 files · +0 / −0 lines');
-  await expect(pinned.page.locator('.review-pull-summary .review-state-draft')).toHaveText('Draft');
+  await expect(current.page.locator('.review-detail-heading .review-diff')).toHaveText('73 files · +6,160 / −136 lines');
+  need(await current.page.locator('.review-detail-heading .review-state-draft').count() === 0);
+  await expect(pinned.page.locator('.review-detail-heading .review-diff')).toHaveText('0 files · +0 / −0 lines');
+  await expect(pinned.page.locator('.review-detail-heading .review-state-draft')).toHaveText('Draft');
   if (config.proof_directory) {
     await fs.mkdir(config.proof_directory, {recursive:true});
     for (const width of [1440,390,320]) {

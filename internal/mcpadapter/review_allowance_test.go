@@ -67,7 +67,7 @@ func TestReviewAllowanceMCPStdioRoundTrip(t *testing.T) {
 			for _, tool := range []struct {
 				name string
 				args map[string]any
-			}{{"review_operation_read", map[string]any{"operation_id": op.ID}}, {"review_selection_read", map[string]any{"selection_id": id}}, {"review_request", map[string]any{"idempotency_key": "retained-request", "expected_configuration_revision": 1, "pull_number": 2, "channel": op.Channel, "head_sha": op.HeadSHA}}, {"review_start", map[string]any{"idempotency_key": "retained-selection", "channel": op.Channel, "expected_pull_number": 2}}} {
+			}{{"review_operation_read", map[string]any{"operation_id": op.ID, "diagnostics": true}}, {"review_selection_read", map[string]any{"selection_id": id}}, {"review_request", map[string]any{"idempotency_key": "retained-request", "expected_configuration_revision": 1, "pull_number": 2, "channel": op.Channel, "head_sha": op.HeadSHA}}, {"review_start", map[string]any{"idempotency_key": "retained-selection", "channel": op.Channel, "expected_pull_number": 2}}} {
 				var got map[string]any
 				decodeResult(t, call(t, session, tool.name, tool.args), &got)
 				if nested, ok := got["operation"].(map[string]any); ok {
@@ -81,7 +81,7 @@ func TestReviewAllowanceMCPStdioRoundTrip(t *testing.T) {
 				t.Fatal("MCP polled retained state", calls.Load())
 			}
 			invalid.Store(true)
-			errorResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": op.ID}), "invalid_response", "PRIVATE_SENTINEL")
+			errorResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": op.ID, "diagnostics": true}), "invalid_response", "PRIVATE_SENTINEL")
 			if calls.Load() != 5 {
 				t.Fatal("MCP retried malformed read")
 			}

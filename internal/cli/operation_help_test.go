@@ -24,7 +24,7 @@ func TestOperationHelpIsOfflineBoundedAndDoesNotReadFiles(t *testing.T) {
 	if err := os.WriteFile(path, before, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews finalize", "reviews publish"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs status", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews decide-batch", "reviews fix-batch", "reviews finalize", "reviews publish", "reviews rounds read", "reviews rounds grant", "reviews rounds close"} {
 		for _, spelling := range [][]string{append(strings.Fields(operation), "--help"), append([]string{"help"}, strings.Fields(operation)...)} {
 			for _, profilePath := range []string{path, filepath.Join(t.TempDir(), "missing.json")} {
 				args := append([]string{"--profile=bound-role", "--profiles-file", profilePath}, spelling...)
@@ -63,6 +63,13 @@ func TestOperationHelpRequiresExactGrammarAndValidGlobalFlags(t *testing.T) {
 		{"publication", "prepare", "--file", "/private/not-read", "--help"},
 		{"reviews", "help", "extra"}, {"help", "reviews", "extra"},
 		{"reviews", "--help", "--unknown"}, {"reviews", "help", "--profile= padded "},
+		{"reviews", "rounds", "grant", "--help", "--pr", "42"},
+		{"reviews", "rounds", "close", "--help=true"},
+		{"reviews", "rounds", "close", "--pr", "42", "--help"},
+		{"reviews", "rounds", "grant", "--expected-revision", "null", "--help"},
+		{"help", "reviews", "rounds", "grant", "extra"},
+		{"help", "reviews", "rounds", "close", "--key", "not-a-help-option"},
+		{"help", "reviews", "rounds", "unknown"},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := RunContext(t.Context(), args, nil, &stdout, &stderr); code != ExitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), "invalid_arguments") {
@@ -112,14 +119,79 @@ func TestReviewHelpDiscoveryIsLocalAndKeepsOperationSemantics(t *testing.T) {
 	}
 }
 
-func TestRunHelpKeepsSnapshotAndRunTimeMeaningSeparate(t *testing.T) {
+func TestRunHelpDescribesCompactAdapterAndRetainedRunIdentity(t *testing.T) {
 	call, ok := parseInvocation([]string{"reviews", "runs", "42", "--snapshot", "review_snapshot_0123456789abcdef0123456789abcdef", "--limit", "2", "--cursor", "retained-page"})
 	if !ok || call.mutation != nil || call.pullNumber != 42 || call.limit != 2 || call.cursor != "retained-page" || call.helpOperation != "" {
 		t.Fatal("help example does not select the bounded stored run read")
 	}
 	help, ok := operationHelp("reviews runs")
-	if !ok || !strings.Contains(strings.Join(help.Semantics, " "), "older than that run's finished_at") || !strings.Contains(strings.Join(help.Semantics, " "), "not when every PR was refreshed") || !strings.Contains(strings.Join(help.Semantics, " "), "original native operation/evidence anchors") {
-		t.Fatal("run help conflates snapshot times, capture times or current coverage")
+	if !ok || !strings.Contains(strings.Join(help.Semantics, " "), "omit unrelated workspace-origin") || !strings.Contains(strings.Join(help.Semantics, " "), "API retains") || !strings.Contains(strings.Join(help.Semantics, " "), "original native operation/evidence anchors") || !strings.Contains(strings.Join(help.Semantics, " "), "Snapshot identity, revision and continuation") {
+		t.Fatal("run help lost the adapter/API boundary or retained run identity")
+	}
+}
+
+func TestExpandedOperationHelpExamplesMatchRealParsers(t *testing.T) {
+	for _, args := range [][]string{
+		{"reviews", "rounds", "read", "--pr", "42", "--channel", "cli"},
+		{"reviews", "rounds", "grant", "--pr", "42", "--channel", "hosted", "--expected-revision", "1", "--min", "2", "--max", "3", "--key", "hosted-42-grant"},
+		{"reviews", "rounds", "grant", "--pr", "42", "--channel", "cli", "--expected-revision", "0", "--exact", "2", "--key", "cli-42-exact"},
+		{"reviews", "rounds", "close", "--pr", "42", "--channel", "cli", "--expected-revision", "2", "--key", "cli-42-close"},
+		{"jobs", "status", "job_0123456789abcdef0123456789abcdef"},
+		{"reviews", "operation", "review_operation_0123456789abcdef0123456789abcdef", "--wait-seconds", "40", "--diagnostics"},
+		{"reviews", "queue", "--active", "--limit", "20"},
+	} {
+		call, ok := parseInvocation(args)
+		if !ok || call.command == "help" || call.helpOperation != "" {
+			t.Fatal("help example does not select its real operation", args)
+		}
+	}
+	for _, operation := range []string{"reviews decide-batch", "reviews fix-batch"} {
+		help, ok := operationHelp(operation)
+		body, err := json.Marshal(help.FileExample)
+		if !ok || err != nil {
+			t.Fatal("missing batch file example", operation, err)
+		}
+		if operation == "reviews decide-batch" {
+			_, err = client.DecodeReviewDecisionBatchRequest(body)
+		} else {
+			_, err = client.DecodeReviewFixBatchRequest(body)
+		}
+		if err != nil {
+			t.Fatal("help batch example violates strict file contract", operation, err)
+		}
+		path := filepath.Join(t.TempDir(), "selected.json")
+		if err := os.WriteFile(path, body, 0600); err != nil {
+			t.Fatal(err)
+		}
+		args := append(strings.Fields(operation), "review_evidence_0123456789abcdef0123456789abcdef", "--file", path, "--key", "selected-batch-1")
+		if call, ok := parseInvocation(args); !ok || call.mutation == nil || call.mutation.operation != operation || call.command == "help" {
+			t.Fatal("help batch example does not select one file-backed mutation", args)
+		}
+	}
+}
+
+func TestExpandedOperationHelpExplainsGuardsAndCompactReads(t *testing.T) {
+	for operation, expected := range map[string][]string{
+		"reviews help":         {"reviews decide-batch --help", "reviews fix-batch --help"},
+		"reviews rounds":       {"reviews rounds read --help", "reviews rounds grant --help", "reviews rounds close --help"},
+		"reviews rounds grant": {"--expected-revision", "--max", "--min", "--exact", "including underway", "complete-unfinalized", "Preserves earned dry streak", "after taper", "without provider dispatch", "same key, exact request"},
+		"reviews rounds close": {"--expected-revision", "Does not cancel", "Preserves earned dry streak", "no provider dispatch", "same key, exact request"},
+		"reviews decide-batch": {"2 MiB", "1-100", "unique", "reason", "expected_route_revision", "atomically", "rolls back", "implicit finalization", "same key, exact request"},
+		"reviews fix-batch":    {"expected_sha", "explicit empty string", "proof_note", "accepted source findings", "same key, exact request"},
+		"jobs status":          {"progress_summary", "1024", "512", "truncation flags", "evidence_count", "without brief", "jobs read"},
+		"reviews operation":    {"--diagnostics", "compact status", "stage, reason", "evidence_id", "next_action", "0-900", "bounded wait behavior is unchanged"},
+		"reviews queue":        {"--active", "before pagination", "scalar", "merged/closed history", "same view", "without provider work"},
+	} {
+		help, ok := operationHelp(operation)
+		body, _ := json.Marshal(help)
+		if !ok {
+			t.Fatal("missing selected operation help", operation)
+		}
+		for _, term := range expected {
+			if !strings.Contains(string(body), term) {
+				t.Fatalf("%s omits %q", operation, term)
+			}
+		}
 	}
 }
 
