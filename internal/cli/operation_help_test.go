@@ -24,7 +24,7 @@ func TestOperationHelpIsOfflineBoundedAndDoesNotReadFiles(t *testing.T) {
 	if err := os.WriteFile(path, before, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []string{"jobs create", "jobs update", "jobs status", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews decide-batch", "reviews fix-batch", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews rounds read", "reviews rounds grant", "reviews rounds close"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs status", "jobs checklist-item", "inbox send", "notes list", "notes add", "notes update", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews decide-batch", "reviews fix-batch", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews rounds read", "reviews rounds grant", "reviews rounds close"} {
 		for _, spelling := range [][]string{append(strings.Fields(operation), "--help"), append([]string{"help"}, strings.Fields(operation)...)} {
 			for _, profilePath := range []string{path, filepath.Join(t.TempDir(), "missing.json")} {
 				args := append([]string{"--profile=bound-role", "--profiles-file", profilePath}, spelling...)
@@ -33,7 +33,7 @@ func TestOperationHelpIsOfflineBoundedAndDoesNotReadFiles(t *testing.T) {
 				var stdout, stderr bytes.Buffer
 				code := RunContext(ctx, args, map[string]string{"FC_SERVER": service.URL}, &stdout, &stderr)
 				var result operationHelpResponse
-				if code != ExitSuccess || stderr.Len() != 0 || stdout.Len() > 4096 || json.Unmarshal(stdout.Bytes(), &result) != nil || !strings.Contains(result.Usage, operation) || len(result.Required) == 0 || len(result.Semantics) == 0 || result.Example == "" {
+				if code != ExitSuccess || stderr.Len() != 0 || stdout.Len() > 4096 || json.Unmarshal(stdout.Bytes(), &result) != nil || !strings.Contains(result.Usage, operation) || len(result.Required)+len(result.Optional) == 0 || len(result.Semantics) == 0 || result.Example == "" {
 					t.Fatalf("%v: code=%d stdout=%s stderr=%s", args, code, &stdout, &stderr)
 				}
 				if strings.Contains(stdout.String(), profilePath) || strings.Contains(stdout.String(), service.URL) || strings.Contains(stdout.String(), string(before)) {
@@ -60,6 +60,7 @@ func TestOperationHelpRequiresExactGrammarAndValidGlobalFlags(t *testing.T) {
 		{"jobs", "update", "--help", "--profiles-file=bad\npath"},
 		{"help", "jobs", "update", "--unknown"}, {"help", "unknown", "operation"},
 		{"notes", "update", "NOTE_ID", "--help"},
+		{"notes", "list", "--help", "extra"}, {"notes", "list", "--help=true"},
 		{"publication", "prepare", "--file", "/private/not-read", "--help"},
 		{"reviews", "help", "extra"}, {"help", "reviews", "extra"},
 		{"reviews", "--help", "--unknown"}, {"reviews", "help", "--profile= padded "},
@@ -196,7 +197,7 @@ func TestExpandedOperationHelpExplainsGuardsAndCompactReads(t *testing.T) {
 }
 
 func TestOperationErrorsPointToSelectedHelpWithoutEchoingArguments(t *testing.T) {
-	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare", "reviews fix", "reviews decide", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews runs"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes list", "notes add", "notes update", "map update", "publication prepare", "reviews fix", "reviews decide", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews runs"} {
 		var stdout, stderr bytes.Buffer
 		args := append(strings.Fields(operation), "--private-typo=DO_NOT_ECHO")
 		if code := RunContext(t.Context(), args, map[string]string{"FC_PROFILE": "missing"}, &stdout, &stderr); code != ExitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), operation+" --help") || strings.Contains(stderr.String(), "DO_NOT_ECHO") {
