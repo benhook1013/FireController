@@ -187,7 +187,7 @@ func assessmentFacts(inventory CIResultInventory, actions, latest ActionsHeadInv
 			continue
 		}
 		run, exists := facts.suites[attempt.CheckSuiteID]
-		if !exists || attempt.RepositoryID != actions.RepositoryID || attempt.RunID != run.ID || attempt.WorkflowID != run.WorkflowID || attempt.RunNumber != run.RunNumber || attempt.Event != run.Event || attempt.RunAttempt != run.RunAttempt || attempt.Status != run.Status || attempt.Conclusion != run.Conclusion || attempt.Jobs == nil || attempt.Reason != "" {
+		if !exists || attempt.RepositoryID != actions.RepositoryID || attempt.RunID != run.ID || attempt.WorkflowID != run.WorkflowID || attempt.RunNumber != run.RunNumber || attempt.Event != run.Event || attempt.RunAttempt != run.RunAttempt || !validIdentifierText(attempt.Status, 64) || attempt.Conclusion != "" && !validIdentifierText(attempt.Conclusion, 64) || attempt.Jobs == nil || attempt.Reason != "" {
 			return bad()
 		}
 		items += len(attempt.Jobs)
@@ -201,6 +201,12 @@ func assessmentFacts(inventory CIResultInventory, actions, latest ActionsHeadInv
 			}
 			jobIDs[job.ID], jobCheckIDs[job.CheckRunID] = true, true
 			jobs[job.CheckRunID] = job
+		}
+		// Separate calls may observe one immutable attempt before and after a
+		// lifecycle transition. Keep that observation unproven, but distinguish
+		// movement from malformed facts or a different workflow/attempt identity.
+		if attempt.Status != run.Status || attempt.Conclusion != run.Conclusion {
+			return ciAssessmentFacts{}, &Error{Code: "provider_observation_changed", Message: "CI workflow state changed during observation.", Status: http.StatusOK}
 		}
 		facts.jobs[attempt.CheckSuiteID] = jobs
 	}

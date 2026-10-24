@@ -509,3 +509,24 @@ func TestAssessRequiredCIMultipleSupersededWorkflowsDoNotMaskOneMissingCheck(t *
 		t.Fatal("current duplicate contexts silently selected a workflow", got, err)
 	}
 }
+
+func TestRequiredCIWorkflowLifecycleMovementIsNotMalformedProviderData(t *testing.T) {
+	for _, tc := range []struct{ before, after, conclusion string }{{"queued", "in_progress", ""}, {"in_progress", "completed", "success"}, {"completed", "completed", "failure"}} {
+		f := requiredCIFixture()
+		f.Actions.Runs[0].Status = tc.before
+		if tc.before != "completed" {
+			f.Actions.Runs[0].Conclusion = ""
+		}
+		f.Attempts[0].Status, f.Attempts[0].Conclusion = tc.after, tc.conclusion
+		before := string(fixtureJSON(t, f))
+		v, err := f.assess()
+		if !hasCode(err, "provider_observation_changed") || v.State != "unproven" || before != string(fixtureJSON(t, f)) {
+			t.Fatalf("movement credited or mislabeled: %+v %v", v, err)
+		}
+	}
+	f := requiredCIFixture()
+	f.Attempts[0].RunAttempt++
+	if _, err := f.assess(); !hasCode(err, "provider_invalid_response") {
+		t.Fatal("different attempt identity treated as lifecycle movement", err)
+	}
+}

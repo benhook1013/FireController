@@ -16,7 +16,7 @@ func TestAgentRunOutputKeepsRunDatesAndCursor(t *testing.T) {
 	}
 }
 func TestAgentCIDiagnosticPreservesRefusal(t *testing.T) {
-	for _, reason := range []string{"ci_merge_identity_unproven", "ci_merge_pending", "other_reason"} {
+	for _, reason := range []string{"ci_merge_identity_unproven", "ci_merge_pending", "ci_provider_observation_changed_assessment", "ci_observation_changed", "ci_provider_invalid_response_assessment", "other_reason"} {
 		v := ReviewSourceCIAssessment{State: "unproven", Reason: reason}
 		out := AgentReviewCI(v)
 		if !reflect.DeepEqual(out.ReviewSourceCIAssessment, v) || (out.Diagnostic != nil) != (reason != "other_reason") {

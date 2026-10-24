@@ -29,6 +29,7 @@ func TestSourceCIFailureDiagnosticsRemainBoundedAndUnproven(t *testing.T) {
 		{name: "rate_limit", code: "provider_rate_limited", status: 429, want: "ci_provider_rate_limited"},
 		{name: "authorization", code: "provider_unauthorized", status: 403, want: "ci_provider_unauthorized"},
 		{name: "missing", code: "provider_not_found", status: 404, want: "ci_provider_not_found"},
+		{name: "observation_changed", code: "provider_observation_changed", status: 200, want: "ci_provider_observation_changed"},
 		{name: "invalid_response", code: "provider_invalid_response", status: 200, want: "ci_provider_invalid_response"},
 		{name: "http_timeout", code: "provider_unavailable", status: 408, want: "ci_provider_timeout"},
 		{name: "server", code: "provider_unavailable", status: 503, want: "ci_provider_server_error"},
