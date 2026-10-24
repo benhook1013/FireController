@@ -39,7 +39,7 @@ describe('per-PR inline retained review history', () => {
   it('shows typed compact summaries, finish age and pinned secondary links without exposing cached findings before expansion', () => {
     const value = run('second');
     const html = markup(<ReviewHistoryRow number={27} run={value} snapshot={snapshot} head="head" />, { value: detail(value) });
-    expect(html).toContain('>CLI</span>'); expect(html).toContain('Found: <strong>2</strong>');
+    expect(html).toContain('>CodeRabbit CLI</span>'); expect(html).toContain('Found: <strong>2</strong>');
     expect(html).toContain('Accepted: <strong>1</strong>'); expect(html).toContain('Routed: <strong>1</strong>');
     expect(html).toContain('dateTime="2026-10-18T00:01:00Z"'); expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('snapshot=snapshot-one'); expect(html).toContain('Run details ↗');
@@ -51,7 +51,7 @@ describe('per-PR inline retained review history', () => {
     const html = markup(<ReviewHistoryGroups number={27} runs={items} snapshot={snapshot} head="head" partial loading={false} failed={false} channelTotals={{hosted: 5, cli: 8, manual: 1, subagent: 0}} />);
     const positions = ['manual', 'previous', 'hosted', 'last'].map(id => html.indexOf(`data-run-id="${id}"`));
     expect(positions.every((value, index) => index === 0 || value > positions[index - 1])).toBe(true);
-    for (const label of ['CLI #8', 'CLI #7', 'Hosted #5', 'Manual #1']) expect(html).toContain(label);
+    for (const label of ['CodeRabbit CLI #8', 'CodeRabbit CLI #7', 'CodeRabbit Hosted #5', 'Manual #1']) expect(html).toContain(label);
     expect(html).not.toContain('original-first');
     expect(html.match(/<ul class="review-history-run-list">/gu)).toHaveLength(1);
   });

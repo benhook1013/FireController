@@ -260,6 +260,8 @@ describe('truthful stored review presentation', () => {
     expect(completed).not.toContain('Latest attempt:'); expect(completed).not.toContain('review-attempt-state');
     expect(markup(<ReviewRunsView {...props} attempts={[{ ...attempt, state: 'rate_limited' }]} />)).toContain('Latest retained cli attempt: Cooldown');
     expect(markup(<ReviewRunsView {...props} attempts={[]} />)).not.toContain('review-attempt-state');
+    const held = markup(<ReviewRunsView {...props} attempts={[{ ...attempt, channel: 'hosted', state: 'held', reason: 'hosted_allowance_cooldown' }]} />);
+    expect(held).toMatch(/<h4>Hosted CodeRabbit<span[^>]*title="Latest retained attempt: Held · Waiting for hosted allowance"[^>]*>Held<\/span><\/h4>/u);
   });
   it('renders full finding Markdown safely while leaving titles and commit IDs literal', () => {
     const finding: ReviewFinding = { source_finding_id: 'id', title: '**Literal title**', detail: 'Useful **detail**\n\n- A step\n\n[unsafe](javascript:alert(1)) ![image](https://outside.invalid/image.png)', severity: 'low', disposition: 'accepted', decision_reason: 'Keep *context*.', actor: '', decided_at: '', fix_sha: '', proof_note: '`tested` with **evidence**', resolved_at: '' };
