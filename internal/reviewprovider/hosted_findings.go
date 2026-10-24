@@ -27,7 +27,7 @@ var findingMarker = regexp.MustCompile(`^<!-- cr-comment:v1:([a-f0-9]{24}) -->$`
 var findingOutsideHeader = regexp.MustCompile(`^\*\*⚠️ Outside diff range comments \((0|[1-9][0-9]*)\)\*\*$`)
 var findingDuplicateHeader = regexp.MustCompile(`^<summary>♻️ Duplicate comments \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
 var findingGroupHeader = regexp.MustCompile(`^<summary>([^<>]+) \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
-var findingOutsideSummary = regexp.MustCompile(`^<summary>(?:<em>([^<>]+)</em>|<strong>([^<>]+)</strong>) · .+ · <code>[^<>]+</code></summary><blockquote>$`)
+var findingOutsideSummary = regexp.MustCompile(`^<summary>(?:<em>(?:` + standingPicture + ` )?([^<>]+)</em>|<strong>(?:` + standingPicture + ` )?([^<>]+)</strong>) · .+ · <code>[^<>]+</code></summary><blockquote>$`)
 
 // A decorative icon changes no metadata identity. Recognize only the observed
 // closed picture/img envelope and exact label; never fetch the image or treat
