@@ -33,7 +33,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	switch operation {
 	case "reviews help":
 		out.Usage = "<bound launcher> reviews help"
-		out.Optional = []string{"reviews queue --help", "reviews rounds --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
+		out.Optional = []string{"reviews queue --help", "reviews rounds --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
 		out.Semantics = []string{"queue, rounds read and assessments read retained state. Read findings with reviews evidence EVIDENCE_ID and decisions/revision with reviews adjudication EVIDENCE_ID.", "source-refresh explicitly reads GitHub; request submits review work; publish requests a checkpoint comment. decide/fix, their batches and finalize change local evidence. Round grants/closure only change local settings.", "All help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
 		out.Example = "<bound launcher> reviews decide --help"
 		out.Documentation = "docs/review-controls.md"
@@ -134,6 +134,25 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"Explicitly requests a GitHub checkpoint comment for complete finalized native evidence, subject to existing publication authority. Uses original frozen counts and captured head; it does not publish finding bodies or current fix proof.", "A pending receipt is not confirmation. Read reviews publication PUBLICATION_ID to recover stored state without provider work. Publication does not request a review, refresh source or change allowances; local source finalization alone does not post a comment.", recovery}
 		out.Example = "<bound launcher> reviews publish review_evidence_0123456789abcdef0123456789abcdef --expect-revision 3 --key checkpoint-1 --wait-seconds 0"
 		out.Documentation = "docs/review-publication.md"
+	case "reviews publication":
+		out.Usage = "<bound launcher> reviews publication PUBLICATION_ID"
+		out.Required = []string{"PUBLICATION_ID"}
+		out.Semantics = []string{"Reads one retained checkpoint publication, including its state, revision and confirmed comment link, without provider work or retrying publication.", "This is the CLI equivalent of MCP review_checkpoint_read. Use reviews publication-recover only when deliberate recovery is needed."}
+		out.Example = "<bound launcher> reviews publication review_publication_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/review-publication.md"
+	case "reviews publication-recover":
+		out.Usage = "<bound launcher> reviews publication-recover PUBLICATION_ID --expect-revision N --key KEY [--retry-unposted] [--wait-seconds N]"
+		out.Required = []string{"PUBLICATION_ID", "--expect-revision N (current publication revision)", "--key KEY"}
+		out.Optional = []string{"--retry-unposted (explicitly permit retry after proven nonpublication)", "--wait-seconds N (0-900, default 2)"}
+		out.Semantics = []string{"Explicitly recovers the original checkpoint publication under its current revision; recovery may read GitHub. Read reviews publication PUBLICATION_ID first for the retained state and revision.", "Does not request another review or change its allowance. Retain the original publication identity; do not blindly publish another comment.", recovery}
+		out.Example = "<bound launcher> reviews publication-recover review_publication_0123456789abcdef0123456789abcdef --expect-revision 2 --key recover-checkpoint-1"
+		out.Documentation = "docs/review-publication.md"
+	case "reviews source-operation":
+		out.Usage = "<bound launcher> reviews source-operation OPERATION_ID"
+		out.Required = []string{"OPERATION_ID"}
+		out.Semantics = []string{"Reads one retained source-refresh operation without starting another GitHub refresh or review.", "Use the original operation ID from reviews source-refresh. Review-execution operations are read with reviews operation instead."}
+		out.Example = "<bound launcher> reviews source-operation review_refresh_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/review-source.md"
 	case "reviews fix":
 		out.Usage = "<bound launcher> reviews fix EVIDENCE_ID --key KEY --expect-revision N --finding INDEX --expect-sha SHA --fix-sha SHA --proof TEXT"
 		out.Required = []string{"EVIDENCE_ID", "--key KEY", "--expect-revision N", "--finding INDEX (zero-based, 0-99)", "--expect-sha SHA (use --expect-sha= when no fix exists)", "--fix-sha SHA (40 lowercase hexadecimal characters)", "--proof TEXT (nonblank, up to 2048 UTF-8 bytes)"}
