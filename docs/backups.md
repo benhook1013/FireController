@@ -63,6 +63,8 @@ Use a short private destination path. The bundled SQLite VFS imposes a smaller d
 
 ## Managed scheduling and retention
 
+Optional [offsite transfer](offsite-backups.md) runs separately over completed bundles. Local backup success does not establish an independently stored cloud copy, and cloud retention does not mirror local pruning.
+
 Scheduling is an explicitly configured daemon feature. The operator supplies `--backup-destination`, `--backup-interval` and `--backup-keep` together; no destination or automatic schedule is invented. The interval is one minute through thirty days and the retained count is one through one thousand. Optional `--backup-timeout` defaults to five minutes and accepts the same positive maximum twenty-four hours as the manual command. Creation and retention each receive that full bounded phase budget, both derived from the worker context so shutdown still cancels them. A completed snapshot does not consume the time available to verify and prune older copies. Invalid or incomplete configuration fails before creating installation state, including destinations whose encoded status could exceed the output budget. One active service replica remains the supported deployment. With scheduling disabled, startup still reconciles retained backup status but does not require backup-source inventory compatibility. Explicit backup creation and enabled scheduling retain their source-validation requirements.
 
 The daemon owns one serial backup worker using the existing store's read pool. After an attempt settles, it waits the configured interval; elapsed periods do not build a queue of catch-up work. On restart a due schedule can run immediately, and an interrupted prior attempt remains a failure rather than invented success. Shutdown cancels and joins the worker before closing storage. Destination failures do not stop ordinary coordination or readiness.
@@ -135,6 +137,20 @@ The restart-result regression reproduces overwritten outcomes before the fix and
 
 Focused regression checks cover real creation, inspection and inactive restore through higher directory aliases, overlap refusal before writes, cancellation immediately after completed deletion, and relative launcher-profile refusal before file access. The complete backup, profile and CLI race suites passed; native macOS and Windows execution remains unrun for these changes.
 
+## Retained acquisition captures
+
+The optional [history collection domain](history-collection.md) retains selected acquisition requests, immutable normalized source pages, their original reader identity and continuation checkpoints. Backup inspection validates exact physical schema and the complete logical graph, including selected PR/resource progression, source IDs, page hashes, seen-record indexes and derived counters. Inactive restore preserves those records while rotating authority and retaining the provider hold. Captures do not become native review evidence or an automatic import. Start a new selected collection under fresh authority after activation; an old request cannot silently adopt a replacement principal.
+
+Focused create/inspect/inactive-restore proof uses actual engine-created pages and preserves unrelated coordination/native records. Supported backups predating the optional domain remain valid. Eleven resealed logical/schema corruption cases are refused before restore destination creation. These checks do not establish installed migration or operational cutover.
+
 The inventory classifies capture names before accessing entry metadata. Unrecognized temporary names, directories and symlinks are excluded while still counting toward the bounded directory scan. Recognized capture names retain strict regular-file, privacy, size and digest checks. A failing-before/passing-after regression exercises actual bundle creation, inspection and inactive restore with both capture stores, conserving source rows/files and refusing recognized symlink/directory entries; focused normal and race checks pass.
 
 Registering a new successful managed backup clears the previous pruning result in that same transaction. Until the new pruning phase settles, status therefore has no pruning result for that creation. Restart reports an interrupted phase even when the clock moved backwards between passes; a failed creation still preserves the prior pruning result. A regression using two real bundles fails before the fix and passes after it, preserving both bundle trees, the newest usable backup and the interrupted-deletion hold. Focused normal/race checks and vet pass.
+
+## Website status
+
+The signed-in website footer shows compact recorded backup health. Expand it to see local snapshots and configured offsite copies separately. Public pages do not expose installation health, paths, credentials, account details or other projects' content.
+
+The project-scoped `GET /api/v1/projects/{project_id}/backup-health` requires read access. It reads the managed scheduling singleton and at most eight small explicitly selected offsite reports, without listing bundles, hashing backup contents or contacting storage providers. The browser refreshes this status once a minute while visible. A stale or failed read cannot keep a green status indefinitely. Successful snapshot times describe the data copied, not a fresh check of remote bytes.
+
+Offsite reporting is optional and separate from transfer scheduling. See [offsite reporting](offsite-backups.md#website-reporting) for the redacted operator handoff. No reporting files means offsite status reporting is not configured; it does not assert that no external backup exists. Local and offsite failures retain their last successful snapshot times. Missing, malformed, wrong-instance or stale reports show unavailable status rather than inventing a successful backup.

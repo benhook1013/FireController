@@ -106,6 +106,147 @@ func recoveryRuntimeCount(t *testing.T, f *cliEvidenceFixture, table string) int
 	return n
 }
 
+// Keep the original exact trigger, while the configured provider acknowledges
+// finishing without supplying a supported inventory. No source IDs are invented
+// for a completed review and no provider method beyond observation is needed.
+func unsupportedFinishedSnapshot(snapshot *reviewprovider.HostedPublicationSnapshot, bot reviewprovider.Author, triggerID int64) {
+	var trigger reviewprovider.IssueComment
+	for _, comment := range snapshot.IssueComments {
+		if comment.ID == triggerID {
+			trigger = comment
+		}
+	}
+	at := time.Now().UTC()
+	snapshot.Reviews, snapshot.ReviewComments = []reviewprovider.HostedReview{}, []reviewprovider.ReviewComment{}
+	snapshot.IssueComments = append(snapshot.IssueComments,
+		reviewprovider.IssueComment{ID: 5001, Author: bot, Body: "Unsupported retained standing inventory", CreatedAt: trigger.CreatedAt.Add(-time.Hour), UpdatedAt: at},
+		reviewprovider.IssueComment{ID: 5002, Author: bot, Body: "<!-- This is an auto-generated reply by CodeRabbit -->\n<!-- CodeRabbit review command invocation: v2:" + strings.Repeat("c", 64) + " -->\n<details>\n<summary>✅ Action performed</summary>\nFull review finished.\n</details>", CreatedAt: at, UpdatedAt: at})
+	snapshot.ObservedAt = at
+}
+
+func TestRecoverHostedFinishedInventoryUnprovenPersistsWithoutChurn(t *testing.T) {
+	for _, state := range []string{"active", "uncertain", "active_wrapped", "uncertain_wrapped"} {
+		t.Run(state, func(t *testing.T) {
+			f, captures, a, reader := recoveryRuntimeFixture(t, strings.TrimSuffix(state, "_wrapped"))
+			recoveryRuntimeMetadata(t, f, a)
+			complete := hostedRetainClone(t, reader.record)
+			unsupportedFinishedSnapshot(&reader.record.Snapshot, reader.record.ProviderActor, 100)
+			if strings.HasSuffix(state, "_wrapped") {
+				last := len(reader.record.Snapshot.IssueComments) - 1
+				reader.record.Snapshot.IssueComments[last].Body = "<!-- coderabbit-ai-generated:v1 -->\n\n" + reader.record.Snapshot.IssueComments[last].Body
+			}
+			beforeSource, _ := json.Marshal(reader.record)
+			got, err := recoverRuntime(t, f, captures, a, reader)
+			if err != nil || got.State != "uncertain" || got.Reason != "hosted_finished_inventory_unproven" || got.EvidenceID != "" || got.TriggerCommentID != 100 {
+				t.Fatalf("finished unsupported inventory remained active or settled: %+v %v", got, err)
+			}
+			bound, err := f.engine.ReadHostedRecovery(t.Context(), f.project, a.ID, "runtime-capability")
+			if err != nil || bound.Attempt.State != "uncertain" || bound.Operation.Reason != got.Reason || bound.Attempt.ExternalID != "100" || recoveryRuntimeCount(t, f, "review_execution_reservations") != 1 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 || recoveryRuntimeCount(t, f, "review_round_completions") != 0 {
+				t.Fatal("uncertainty lost original ownership or invented credit", bound, err)
+			}
+			var projectionState, finish string
+			if err := f.store.DB().QueryRow(`SELECT a.state,a.finished_at FROM review_workspace w JOIN review_attempts a ON a.project_id=w.project_id AND a.snapshot_id=w.snapshot_id WHERE w.project_id=?`, f.project).Scan(&projectionState, &finish); err != nil {
+				t.Fatal(err)
+			}
+			if projectionState != "uncertain" || finish != "" {
+				t.Fatal("projection invented a completion time", projectionState, finish)
+			}
+			references, err := f.engine.ReadHostedObservations(t.Context(), f.project, a.ID)
+			if err != nil || len(references) != 1 {
+				t.Fatal("missing retained unsupported source", references, err)
+			}
+			ref := references[0].Input
+			raw, err := captures.Read(t.Context(), a.ID, CaptureReference{ID: ref.CaptureID, SHA256: ref.CaptureSHA256, Bytes: ref.CaptureBytes})
+			if err != nil || raw.Snapshot.IssueComments[len(raw.Snapshot.IssueComments)-1].Body != reader.record.Snapshot.IssueComments[len(reader.record.Snapshot.IssueComments)-1].Body {
+				t.Fatal("raw acknowledgement not retained", err)
+			}
+			transitions := recoveryRuntimeCount(t, f, "review_execution_transitions")
+			again, err := recoverRuntime(t, f, captures, a, reader)
+			repeated, readErr := f.engine.ReadHostedRecovery(t.Context(), f.project, a.ID, "runtime-capability")
+			if err != nil || readErr != nil || again.State != "uncertain" || again.Reason != got.Reason || repeated.Attempt.Revision != bound.Attempt.Revision || repeated.Operation.Revision != bound.Operation.Revision || recoveryRuntimeCount(t, f, "review_execution_transitions") != transitions || recoveryRuntimeCount(t, f, "review_execution_reservations") != 1 {
+				t.Fatal("repeated unsupported source churned or released ownership", again, err, readErr)
+			}
+			afterSource, _ := json.Marshal(reader.record)
+			if !bytes.Equal(beforeSource, afterSource) {
+				t.Fatal("recovery mutated provider source")
+			}
+			reader.record = complete
+			final, err := recoverRuntime(t, f, captures, a, reader)
+			if err != nil || final.State != "completed" || final.EvidenceID == "" || final.TriggerCommentID != 100 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 {
+				t.Fatal("later inventory did not complete same attempt", final, err)
+			}
+			lastTransitions, calls := recoveryRuntimeCount(t, f, "review_execution_transitions"), len(reader.calls)
+			replay, err := recoverRuntime(t, f, captures, a, reader)
+			if err != nil || replay.Reason != "already_completed" || replay.EvidenceID != final.EvidenceID || recoveryRuntimeCount(t, f, "review_execution_transitions") != lastTransitions || len(reader.calls) != calls {
+				t.Fatal("completed replay did more work", replay, err)
+			}
+		})
+	}
+}
+
+func TestRecoverHostedFinishedInventoryUnprovenAnnotatedBaselineStillCompletes(t *testing.T) {
+	f, record := runtimeAnnotatedStandingFixture(t, nil)
+	if err := reviews.EnsureSchema(t.Context(), f.f.store); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	f.f.engine, err = reviewexec.New(f.f.store, []reviewexec.Capability{{ID: "runtime-capability", Provider: "coderabbit", Account: "runtime-account", Channels: []string{"cli", "hosted"}}}, reviewexec.WithNativeProjection())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryRuntimeMetadata(t, f.f, f.a)
+	// The original provider fixture uses future protocol instants. Model the
+	// already-supported four-second provider clock lag for actual observation,
+	// preserving the immutable local pre-POST baseline and its old review/root.
+	for i := range record.Snapshot.IssueComments {
+		if record.Snapshot.IssueComments[i].ID != 501 {
+			record.Snapshot.IssueComments[i].CreatedAt = record.Snapshot.IssueComments[i].CreatedAt.Add(-4 * time.Second)
+		}
+		record.Snapshot.IssueComments[i].UpdatedAt = record.Snapshot.IssueComments[i].UpdatedAt.Add(-4 * time.Second)
+	}
+	record.Snapshot.ReviewComments[0].UpdatedAt = record.Snapshot.ReviewComments[0].UpdatedAt.Add(-4 * time.Second)
+	valid := hostedRetainClone(t, record)
+	record.Snapshot.IssueComments[1].Body = strings.Replace(record.Snapshot.IssueComments[1].Body, "🔵 Low", "Unknown", 1)
+	reader := &hostedRecoveryReader{record: record, repositoryID: record.RepositoryID}
+	first, err := recoverRuntime(t, f.f, f.captures, f.a, reader)
+	if err != nil || first.State != "uncertain" || first.Reason != "hosted_finished_inventory_unproven" || first.EvidenceID != "" {
+		t.Fatal("unsupported inventory did not remain uncertain", first, err)
+	}
+	reader.record = valid
+	final, err := recoverRuntime(t, f.f, f.captures, f.a, reader)
+	if err != nil || final.State != "completed" || final.EvidenceID == "" {
+		t.Fatal("diagnostic uncertainty blocked proven baseline fallback", final, err)
+	}
+	evidence, err := f.f.engine.ReadReviewEvidence(t.Context(), f.f.scopeWithAccess(t, f.f.reader, false, "read"), final.EvidenceID)
+	if err != nil || evidence.Capture.Hosted == nil || evidence.Capture.Hosted.StandingSummary == nil || evidence.Capture.Hosted.StandingSummary.ProviderRunID != runtimeStandingRun || evidence.Capture.Review.ReportedFindings != 0 {
+		t.Fatal("not genuine attributed standing-zero evidence", evidence, err)
+	}
+	if recoveryRuntimeCount(t, f.f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f.f, "review_execution_reservations") != 0 {
+		t.Fatal("fallback duplicated evidence or retained completed reservation")
+	}
+}
+
+func TestRecoverHostedFinishedInventoryUnprovenProjectionFailureRollsBack(t *testing.T) {
+	f, captures, a, reader := recoveryRuntimeFixture(t, "active")
+	recoveryRuntimeMetadata(t, f, a)
+	unsupportedFinishedSnapshot(&reader.record.Snapshot, reader.record.ProviderActor, 100)
+	before, err := f.engine.ReadHostedRecovery(t.Context(), f.project, a.ID, "runtime-capability")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER refuse_uncertain_projection BEFORE INSERT ON review_snapshots BEGIN SELECT RAISE(ABORT,'synthetic projection failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := recoverRuntime(t, f, captures, a, reader)
+	if err == nil || got.EvidenceID != "" {
+		t.Fatal("projection failure was ignored", got, err)
+	}
+	after, err := f.engine.ReadHostedRecovery(t.Context(), f.project, a.ID, "runtime-capability")
+	if err != nil || after.Attempt.Revision != before.Attempt.Revision || after.Operation.Revision != before.Operation.Revision || after.Attempt.State != "active" || recoveryRuntimeCount(t, f, "review_execution_reservations") != 1 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 || recoveryRuntimeCount(t, f, "review_hosted_observations") != 1 {
+		t.Fatal("failed projection partially settled journal or lost retained source", after, err)
+	}
+}
+
 func TestRecoverHostedAdoptsAndPublishesWithoutReposting(t *testing.T) {
 	for _, state := range []string{"posting", "active", "uncertain"} {
 		t.Run(state, func(t *testing.T) {
@@ -184,7 +325,7 @@ func TestRecoverHostedRetainedEvidenceRepairsPublicationBeforeNewObservation(t *
 	recoveryRuntimeMetadata(t, f, a)
 	// A genuine non-missing projection failure must retain the final evidence
 	// and reservation for a later local retry, even after the exception below.
-	if _, err := f.store.DB().Exec(`CREATE TRIGGER fail_hosted_publication BEFORE INSERT ON review_runs BEGIN SELECT RAISE(ABORT,'synthetic publication failure'); END`); err != nil {
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER fail_hosted_publication BEFORE INSERT ON review_run_versions BEGIN SELECT RAISE(ABORT,'synthetic publication failure'); END`); err != nil {
 		t.Fatal(err)
 	}
 	first, err := recoverRuntime(t, f, captures, a, reader)

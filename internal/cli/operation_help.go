@@ -1,0 +1,298 @@
+package cli
+
+import "strings"
+
+type operationHelpResponse struct {
+	Usage         string            `json:"usage"`
+	Required      []string          `json:"required"`
+	Optional      []string          `json:"optional"`
+	Semantics     []string          `json:"semantics"`
+	Example       string            `json:"example"`
+	FileExample   map[string]any    `json:"file_example,omitempty"`
+	FileFields    map[string]string `json:"file_fields,omitempty"`
+	Next          string            `json:"next,omitempty"`
+	Documentation string            `json:"documentation"`
+}
+
+func validHelpOptions(o options) bool {
+	return (!o.hasProfile || validSetupText(o.profile)) && (!o.hasProfilesFile || validSetupText(o.profilesFile))
+}
+
+func argumentHelpAction(call invocation) string {
+	operation := call.command + " " + call.subcommand
+	if _, ok := operationHelp(operation); ok {
+		return "Run the bound launcher with " + operation + " --help for required fields and examples."
+	}
+	if call.command == "reviews" || strings.HasPrefix(call.helpOperation, "reviews ") {
+		return "Run the bound launcher with reviews --help for supported review commands; reviews rounds --help lists per-PR limits and closure."
+	}
+	return "Run the bound launcher with help to discover supported commands and matching-release documentation."
+}
+
+// This selected local reference supplements the real parsers. Only the exact
+// operation-help grammar reaches it, before any profile, file or service work.
+func operationHelp(operation string) (operationHelpResponse, bool) {
+	guard := "Use the current resource --expect-revision. Omitted fields stay unchanged; at least one edit is required."
+	recovery := "Use an explicit --key (1-128 printable ASCII bytes without surrounding whitespace). After uncertain output retry the same key, exact request and binding; never invent a replacement key."
+	out := operationHelpResponse{Required: []string{}, Optional: []string{}}
+	switch operation {
+	case "reviews help":
+		out.Usage = "<bound launcher> reviews help"
+		out.Optional = []string{"reviews queue --help", "reviews rounds --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
+		out.Semantics = []string{"queue, rounds read and assessments read retained state. Read findings with reviews evidence EVIDENCE_ID and decisions/revision with reviews adjudication EVIDENCE_ID.", "source-refresh explicitly reads GitHub; request submits review work; publish requests a checkpoint comment. decide/fix, their batches and finalize change local evidence. Round grants/closure only change local settings.", "All help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
+		out.Example = "<bound launcher> reviews decide --help"
+		out.Documentation = "docs/review-controls.md"
+		out.Next = "docs/review-publication.md describes GitHub checkpoint publication; docs/review-execution.md describes review requests and retained operations."
+	case "reviews rounds":
+		out.Usage = "<bound launcher> reviews rounds read --pr NUMBER --channel cli|hosted"
+		out.Optional = []string{"reviews rounds read --help", "reviews rounds grant --help", "reviews rounds close --help"}
+		out.Semantics = []string{"read returns current local per-PR/channel minimum, maximum, used, dry streak, taper, closure and revision without provider work.", "grant sets finite additional bounds or reopens the selected channel; close stops new dispatch. Both require project write authority, the current --expected-revision and an explicit --key. Help performs no action."}
+		out.Example = "<bound launcher> reviews rounds read --pr 42 --channel hosted"
+		out.Documentation = "docs/review-round-controls.md"
+	case "reviews rounds grant":
+		out.Usage = "<bound launcher> reviews rounds grant --pr NUMBER --channel cli|hosted --expected-revision N --max N [--min N] --key KEY | --exact N instead of --min/--max"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)", "--channel cli|hosted", "--expected-revision N (current round-control revision, initially 0)", "--max N (1-1000 additional completed rounds), or --exact N", "--key KEY"}
+		out.Optional = []string{"--min N (0 to --max, default 0)", "--exact N (1-1000; sets equal minimum/maximum; exclusive with --min and --max)"}
+		out.Semantics = []string{"Project writers can grant or reopen this PR/channel directly. Read reviews rounds read first for its current revision; the flag is --expected-revision, not --expect-revision.", "Bounds count additional completed rounds, including underway and complete-unfinalized work. One more includes that occupied round; wait for its finalization before requiring a round after it. A maximum below unavoidable occupied work is refused.", "Preserves earned dry streak, completed counts and history. Raising only maximum does not require more work after taper; an additional minimum does. Other channels are unchanged. This changes local settings without provider dispatch or a new review.", recovery}
+		out.Example = "<bound launcher> reviews rounds grant --pr 42 --channel hosted --expected-revision 1 --min 2 --max 3 --key hosted-42-grant"
+		out.Documentation = "docs/review-round-controls.md"
+	case "reviews rounds close":
+		out.Usage = "<bound launcher> reviews rounds close --pr NUMBER --channel cli|hosted --expected-revision N --key KEY"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)", "--channel cli|hosted", "--expected-revision N (current round-control revision)", "--key KEY"}
+		out.Semantics = []string{"Project writers can close this PR/channel directly. Read reviews rounds read for the current --expected-revision. No --min, --max or --exact is accepted.", "Stops new dispatch, including queued/prepared work at its final guard. Does not cancel a possibly posted action: its result can still be captured, adjudicated and counted once.", "Preserves earned dry streak, completed counts and history; other channels are unchanged. A later explicit grant reopens this channel. This local mutation performs no provider dispatch.", recovery}
+		out.Example = "<bound launcher> reviews rounds close --pr 42 --channel cli --expected-revision 2 --key cli-42-close"
+		out.Documentation = "docs/review-round-controls.md"
+	case "reviews rounds read":
+		out.Usage = "<bound launcher> reviews rounds read --pr NUMBER --channel cli|hosted"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)", "--channel cli|hosted"}
+		out.Semantics = []string{"Reads current local settings and credited completion counters for one PR/channel without provider work or writes. configured:false and revision zero explicitly mean no retained grant.", "Returns minimum, maximum, used, dry, taper, tapered, closed and revision. These counters are separate from historical run totals.", "For a finite maximum, maximum minus used is remaining completed-round capacity before in-flight work. maximum_unbounded:true has no finite remainder. Taper, closure, pending finalization and other admission requirements can still prevent another start; this read grants no permission."}
+		out.Example = "<bound launcher> reviews rounds read --pr 42 --channel cli"
+		out.Documentation = "docs/review-round-controls.md"
+	case "reviews queue":
+		out.Usage = "<bound launcher> reviews queue [--active] [--limit N] [--cursor CURSOR]"
+		out.Optional = []string{"--active (open, nonretired PRs only, filtered before pagination; compact scalar summaries)", "--limit N (1-100, default 5)", "--cursor CURSOR (continue the returned retained-snapshot page with the same view)"}
+		out.Semantics = []string{"Reads one ordered retained queue page without provider work or automatic pagination. Default output preserves merged/closed history and its full queue detail; --active selects only open, nonretired entries before applying the page limit.", "--active returns scalar PR summaries rather than nested round-control history. The default 5 is the retained page size, not channel-front selection. Continue has_more with the returned cursor and same view.", "Accepts no positional PR number or --snapshot flag. Queue entries alone do not establish review coverage, current CI or merge readiness."}
+		out.Example = "<bound launcher> reviews queue --active --limit 20"
+		out.Documentation = "docs/review-workspace.md"
+	case "reviews assess":
+		out.Usage = "<bound launcher> reviews assess EVIDENCE_ID"
+		out.Required = []string{"EVIDENCE_ID (native retained evidence identity)"}
+		out.Semantics = []string{"Applies current project policy and local finding obligations to the PR identified by native evidence; its original captured comparison is retained.", "sufficient describes completed PR/channel review progress, preserved across later Git changes. It does not verify current GitHub source, required CI or unresolved provider threads, or declare merge readiness.", "Reads retained facts without provider work or writes. Use reviews source-assess --pr NUMBER for source policy or reviews readiness --pr NUMBER for the combined retained assessment."}
+		out.Example = "<bound launcher> reviews assess review_evidence_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/review-controls.md"
+	case "reviews source-assess":
+		out.Usage = "<bound launcher> reviews source-assess --pr NUMBER"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)"}
+		out.Semantics = []string{"Applies current local review policy, completed PR/channel review progress and finding obligations for the selected PR using its latest retained source identity.", "Source observation and policy evaluation times differ. This result does not establish current GitHub freshness or assess required CI, provider threads or merge-state gates; reviews readiness --pr NUMBER combines those retained components.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help for explicit external collection."}
+		out.Example = "<bound launcher> reviews source-assess --pr 42"
+		out.Documentation = "docs/review-source.md"
+	case "reviews ci-assess":
+		out.Usage = "<bound launcher> reviews ci-assess --pr NUMBER"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)"}
+		out.Semantics = []string{"Assesses retained required CI for the latest stored source comparison and current local repository, configuration and capability binding.", "Reports satisfied, failed, pending, unproven or not required. not_required means the selected base branch has no required checks; optional workflows may still be running or failing and are not assessed here. Review-channel policy, findings and provider thread/merge-state gates remain separate; reviews readiness --pr NUMBER combines the retained assessments.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help for explicit CI or readiness collection."}
+		out.Example = "<bound launcher> reviews ci-assess --pr 42"
+		out.Documentation = "docs/review-ci.md"
+	case "reviews readiness":
+		out.Usage = "<bound launcher> reviews readiness --pr NUMBER"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)"}
+		out.Semantics = []string{"Combines current local policy, finalized PR/channel review progress, finding/route obligations, retained required CI, thread resolution and provider merge-state facts for the latest stored comparison.", "Required CI describes the selected base branch, not all workflow health. not_required does not mean workflows passed or stopped; GitHub merge-state gates remain separate. ready_as_observed describes the retained observation times. Missing, changed or conflicting input bindings remain held; it does not authorize a merge or guarantee GitHub remains unchanged.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help to explicitly collect readiness with --readiness."}
+		out.Example = "<bound launcher> reviews readiness --pr 42"
+		out.Documentation = "docs/review-readiness.md"
+	case "reviews runs":
+		out.Usage = "<bound launcher> reviews runs NUMBER [--snapshot SNAPSHOT_ID] [--limit N] [--cursor CURSOR]"
+		out.Required = []string{"NUMBER (canonical positive PR number)"}
+		out.Optional = []string{"--snapshot SNAPSHOT_ID (retained snapshot; omission reads the current stored workspace)", "--limit N (1-100, default 5)", "--cursor CURSOR (continue the same scoped snapshot)"}
+		out.Semantics = []string{"Reads one newest-first stored run-summary page without full findings, automatic pagination, provider refresh or new review.", "CLI/MCP omit unrelated workspace-origin source, observed_at and recorded_at fields; the API retains them. Each item's started_at/finished_at describes that review's capture window, and item source identifies its original producer. Snapshot identity, revision and continuation remain intact.", "Use reviews run RUN_ID for full retained findings and original native operation/evidence anchors for execution status and applicability. Run timestamps alone do not establish current GitHub freshness or coverage."}
+		out.Example = "<bound launcher> reviews runs 42 --limit 5"
+		out.Documentation = "docs/review-workspace.md"
+	case "reviews decide":
+		out.Usage = "<bound launcher> reviews decide EVIDENCE_ID --key KEY --expect-revision N --finding INDEX --disposition accepted|rejected --reason TEXT [--expect-route-revision N]"
+		out.Required = []string{"EVIDENCE_ID", "--key KEY", "--expect-revision N (current adjudication revision, initially 0)", "--finding INDEX (zero-based, 0-99)", "--disposition accepted|rejected", "--reason TEXT (nonblank, up to 2048 UTF-8 bytes)"}
+		out.Optional = []string{"--expect-route-revision N (current route revision when replacing a routed decision)"}
+		out.Semantics = []string{"Read reviews evidence EVIDENCE_ID for finding text and reviews adjudication EVIDENCE_ID for current revision and dispositions. Use the returned revision for each subsequent edit.", "accepted means the finding is useful work; rejected records why it is not accepted. Create routed findings with reviews route-create, not --disposition routed. An accepted finding with fix proof cannot be silently rejected.", "Decisions retain captured text and original finalized counts; no provider work, new review, publication or allowance change occurs.", recovery}
+		out.Example = "<bound launcher> reviews decide review_evidence_0123456789abcdef0123456789abcdef --key decision-1 --expect-revision 0 --finding 0 --disposition accepted --reason 'Verified against current source'"
+		out.Documentation = "docs/review-controls.md"
+	case "reviews finalize":
+		out.Usage = "<bound launcher> reviews finalize EVIDENCE_ID --expect-revision N --key KEY"
+		out.Required = []string{"EVIDENCE_ID", "--expect-revision N (current adjudication revision)", "--key KEY"}
+		out.Semantics = []string{"Requires a completed attempt, complete retained capture and a decision for every finding; a complete zero-finding review is valid. Read reviews adjudication EVIDENCE_ID for the current revision.", "Freezes original found/accepted/routed source counts. A finalized review can contain accepted findings awaiting fixes; finalization is not a clean-review or merge-readiness verdict.", "Later supported decision/fix corrections preserve frozen source counts. No GitHub comment, source refresh or new review is requested; reviews publish is separate.", recovery}
+		out.Example = "<bound launcher> reviews finalize review_evidence_0123456789abcdef0123456789abcdef --expect-revision 2 --key finalize-1"
+		out.Documentation = "docs/review-controls.md"
+	case "reviews decide-batch", "reviews fix-batch":
+		out.Usage = "<bound launcher> " + operation + " EVIDENCE_ID --file PATH --key KEY"
+		out.Required = []string{"EVIDENCE_ID", "--file PATH (private regular UTF-8 JSON file, at most 2 MiB)", "--key KEY"}
+		out.Semantics = []string{"Validates the complete strict file before loading profiles or contacting the service. One expected_revision and 1-100 explicitly selected unique zero-based finding indexes (0-99) are required; unknown, duplicate and null required fields are refused.", "Applies all items atomically, including browser projection, audit/event history and one compact receipt. A bad later item or stale guard rolls back the complete batch. No per-item commits, provider work, automatic retries or implicit finalization.", "Read reviews evidence EVIDENCE_ID for original findings and reviews adjudication EVIDENCE_ID for the current revision, dispositions and fix SHAs. Immutable source and finalized counts are retained.", recovery}
+		out.FileFields = map[string]string{"expected_revision": "Current adjudication revision, initially 0", "items": "1-100 explicit unique finding objects; unselected findings stay unchanged"}
+		if operation == "reviews decide-batch" {
+			out.FileExample = map[string]any{"expected_revision": 0, "items": []any{map[string]any{"finding": 0, "disposition": "accepted", "reason": "Verified against source and focused proof"}}}
+			out.Semantics = append(out.Semantics, "Each item requires finding, disposition accepted|rejected and its own nonblank reason (at most 2048 UTF-8 bytes). Optional expected_route_revision guards a routed source correction; receiving fix authority remains separate. No accept-all selection or shared default reason.")
+		} else {
+			out.FileExample = map[string]any{"expected_revision": 1, "items": []any{map[string]any{"finding": 0, "expected_sha": "", "fix_sha": "0123456789abcdef0123456789abcdef01234567", "proof_note": "Verified published fix and focused test"}}}
+			out.Semantics = append(out.Semantics, "Each item requires finding, expected_sha (explicit empty string when no fix exists), fix_sha (40 lowercase hexadecimal characters) and its own nonblank proof_note (at most 2048 UTF-8 bytes). Only accepted source findings can receive proof; receiving routed fixes use route controls.")
+		}
+		out.Example = "<bound launcher> " + operation + " review_evidence_0123456789abcdef0123456789abcdef --file /private/selected-findings.json --key selected-batch-1"
+		out.Documentation = "docs/review-controls.md"
+	case "reviews publish":
+		out.Usage = "<bound launcher> reviews publish EVIDENCE_ID --expect-revision N --key KEY [--wait-seconds N]"
+		out.Required = []string{"EVIDENCE_ID", "--expect-revision N (current source adjudication revision)", "--key KEY"}
+		out.Optional = []string{"--wait-seconds N (0-900, default 2)"}
+		out.Semantics = []string{"Explicitly requests a GitHub checkpoint comment for complete finalized native evidence, subject to existing publication authority. Uses original frozen counts and captured head; it does not publish finding bodies or current fix proof.", "A pending receipt is not confirmation. Read reviews publication PUBLICATION_ID to recover stored state without provider work. Publication does not request a review, refresh source or change allowances; local source finalization alone does not post a comment.", recovery}
+		out.Example = "<bound launcher> reviews publish review_evidence_0123456789abcdef0123456789abcdef --expect-revision 3 --key checkpoint-1 --wait-seconds 0"
+		out.Documentation = "docs/review-publication.md"
+	case "reviews publication":
+		out.Usage = "<bound launcher> reviews publication PUBLICATION_ID"
+		out.Required = []string{"PUBLICATION_ID"}
+		out.Semantics = []string{"Reads one retained checkpoint publication, including its state, revision and confirmed comment link, without provider work or retrying publication.", "This is the CLI equivalent of MCP review_checkpoint_read. Use reviews publication-recover only when deliberate recovery is needed."}
+		out.Example = "<bound launcher> reviews publication review_publication_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/review-publication.md"
+	case "reviews publication-recover":
+		out.Usage = "<bound launcher> reviews publication-recover PUBLICATION_ID --expect-revision N --key KEY [--retry-unposted] [--wait-seconds N]"
+		out.Required = []string{"PUBLICATION_ID", "--expect-revision N (current publication revision)", "--key KEY"}
+		out.Optional = []string{"--retry-unposted (explicitly permit retry after proven nonpublication)", "--wait-seconds N (0-900, default 2)"}
+		out.Semantics = []string{"Explicitly recovers the original checkpoint publication under its current revision; recovery may read GitHub. Read reviews publication PUBLICATION_ID first for the retained state and revision.", "Does not request another review or change its allowance. Retain the original publication identity; do not blindly publish another comment.", recovery}
+		out.Example = "<bound launcher> reviews publication-recover review_publication_0123456789abcdef0123456789abcdef --expect-revision 2 --key recover-checkpoint-1"
+		out.Documentation = "docs/review-publication.md"
+	case "reviews source-operation":
+		out.Usage = "<bound launcher> reviews source-operation OPERATION_ID"
+		out.Required = []string{"OPERATION_ID"}
+		out.Semantics = []string{"Reads one retained source-refresh operation without starting another GitHub refresh or review.", "Use the original operation ID from reviews source-refresh. Review-execution operations are read with reviews operation instead."}
+		out.Example = "<bound launcher> reviews source-operation review_refresh_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/review-source.md"
+	case "reviews fix":
+		out.Usage = "<bound launcher> reviews fix EVIDENCE_ID --key KEY --expect-revision N --finding INDEX --expect-sha SHA --fix-sha SHA --proof TEXT"
+		out.Required = []string{"EVIDENCE_ID", "--key KEY", "--expect-revision N", "--finding INDEX (zero-based, 0-99)", "--expect-sha SHA (use --expect-sha= when no fix exists)", "--fix-sha SHA (40 lowercase hexadecimal characters)", "--proof TEXT (nonblank, up to 2048 UTF-8 bytes)"}
+		out.Semantics = []string{"Read reviews adjudication EVIDENCE_ID for the current revision and finding fix SHA. Record a verified published fix for an accepted finding; use the returned revision for the next edit. Existing source finalization does not prevent fix proof.", "Empty --expect-sha= asserts no fix is recorded; replacing proof requires its exact current SHA. Retains original finding text, disposition, finalized counts and history. No provider work, source refresh, new review or allowance change.", recovery}
+		out.Example = "<bound launcher> reviews fix review_evidence_0123456789abcdef0123456789abcdef --key fix-1 --expect-revision 4 --finding 0 --expect-sha= --fix-sha 0123456789abcdef0123456789abcdef01234567 --proof 'Verified published fix and focused test'"
+		out.Documentation = "docs/review-controls.md"
+	case "reviews operations":
+		out.Usage = "<bound launcher> reviews operations [--pr NUMBER] [--channel cli|hosted] [--all] [--limit N] [--cursor CURSOR]"
+		out.Optional = []string{"--pr NUMBER (positive PR number)", "--channel cli|hosted", "--all (include terminal and held history)", "--limit N (1-100, default 5)", "--cursor CURSOR (continue with the same filters)"}
+		out.Semantics = []string{"Reads one compact newest-first page of retained project operations without provider work or automatic continuation. Defaults to pending queued/preparing/posting/active/uncertain operations and held operations retaining an execution reservation.", "--all recovers lost operation receipts from history. Mutable state is evaluated on each page; pagination does not promise a historical snapshot. Select reviews operation OPERATION_ID for detail and recovery; listing never requests or retries a review."}
+		out.Example = "<bound launcher> reviews operations --pr 42 --all --limit 5"
+		out.Documentation = "docs/review-operations.md"
+	case "reviews operation":
+		out.Usage = "<bound launcher> reviews operation OPERATION_ID [--wait-seconds N] [--diagnostics]"
+		out.Required = []string{"OPERATION_ID"}
+		out.Optional = []string{"--wait-seconds N (0-900, default 0)", "--diagnostics (full retained operation, configuration/attempt and capture diagnostics)"}
+		out.Semantics = []string{"Default output is compact status: stage, reason, original operation/attempt IDs, discoverable evidence_id and next_action. --diagnostics selects the full retained operation. Both are local reads without provider work, retries or requesting a review; bounded wait behavior is unchanged.", "Hosted hosted_observation_pending means the original review trigger was issued and scheduled observation owns its result. Do not repost. CLI capture_retention_failed does not prove output was lost; capture_publication_pending identifies a retained result awaiting browser publication. The local observer can finish complete retained CLI evidence without rerunning the process.", "Use reviews runs PR and reviews run RUN_ID for published history; reviews evidence EVIDENCE_ID reads known native evidence. There is no reviews attempt command. If uncertain work has no discoverable result, report the original operation/attempt IDs to the maintainer; do not invent evidence IDs or start a replacement."}
+		out.Example = "<bound launcher> reviews operation review_operation_0123456789abcdef0123456789abcdef --wait-seconds 40"
+		out.Documentation = "docs/review-execution.md"
+	case "reviews request":
+		out.Usage = "<bound launcher> reviews request NUMBER --expect-config N --channel cli|hosted --head SHA --key KEY [options]"
+		out.Required = []string{"NUMBER", "--expect-config N", "--channel cli|hosted", "--head SHA", "--key KEY"}
+		out.Optional = []string{"--wait-seconds N (0-900, default 2)", "--out-of-order"}
+		out.Semantics = []string{"Explicitly requests one review against the asserted current target and configuration; requires existing project authority. Out-of-order skips queue scheduling only, preserving target source, findings, limits and provider checks.", "A pending receipt is not completion. Read the retained operation by ID; a held operation does not automatically retry or establish review credit.", recovery}
+		out.Example = "<bound launcher> reviews request 42 --expect-config 3 --channel hosted --head 0123456789abcdef0123456789abcdef01234567 --key review-42-hosted"
+		out.Documentation = "docs/review-execution.md"
+	case "reviews start":
+		out.Usage = "<bound launcher> reviews start --channel cli|hosted --key KEY [--expect-pr NUMBER] [--wait-seconds N]"
+		out.Required = []string{"--channel cli|hosted", "--key KEY"}
+		out.Optional = []string{"--expect-pr NUMBER", "--wait-seconds N (0-900, default 2)"}
+		out.Semantics = []string{"Selects the channel front and requests at most one review. An expected PR is an assertion, not permission to redirect selection. Does not accept --out-of-order.", "Retain the selection receipt and follow its original operation link; a pending receipt does not mean a review completed.", recovery}
+		out.Example = "<bound launcher> reviews start --channel hosted --expect-pr 42 --key next-hosted-review"
+		out.Documentation = "docs/review-round-controls.md"
+	case "reviews obligations":
+		out.Usage = "<bound launcher> reviews obligations list --pr NUMBER [--status open|resolved] [--limit N] [--cursor CURSOR] | read OBLIGATION_ID --pr NUMBER"
+		out.Semantics = []string{"Reads carried unfinished findings, routes and unsettled review results. They are retained obligations, not newly verified current code defects. Open obligations remain pending until deliberately resolved with evidence.", "Project writers can resolve an obligation using its current revision and an explicit key; imports require administrator access. No provider refresh or review request is performed.", recovery}
+		out.Example = "<bound launcher> reviews obligations list --pr 3251 --status open"
+		out.Documentation = "docs/adoption-obligations.md"
+	case "reviews source-refresh":
+		out.Usage = "<bound launcher> reviews source-refresh --pr NUMBER --head SHA --expect-config N --key KEY [--ci] [--readiness] [--wait-seconds N]"
+		out.Semantics = []string{"Explicitly observe the exact comparison; does not request a review. Routine queue freshness is maintained by the automatic observer, not by this command. --ci and --readiness assess required checks for the selected base branch, not optional workflow health.", "Held default_base_changed means there is no selected unmerged parent but the PR targets a nondefault branch. Check and reconcile the PR base with its intended default branch, then refresh the new comparison. Do not change worker credentials for a comparison hold.", recovery}
+		out.Example = "<bound launcher> reviews source-operation REFRESH_ID"
+		out.Documentation = "docs/review-source.md"
+	case "jobs checklist-item":
+		out.Usage = "<bound launcher> jobs checklist-item JOB_ID ITEM_ID --done true|false --expect-checklist-revision N --key KEY"
+		out.Required = []string{"JOB_ID", "ITEM_ID", "--done true|false", "--expect-checklist-revision N", "--key KEY"}
+		out.Semantics = []string{"Set only one existing item's completion. Use checklist revision from the current job read; no job revision or full checklist input is required. Other items, text and order remain unchanged.", "Unrelated job progress does not invalidate the checklist guard. A stale checklist revision is refused even if the boolean already matches; a current-revision no-op adds no history.", recovery}
+		out.Example = "<bound launcher> jobs checklist-item JOB_ID verify --done true --expect-checklist-revision 2 --key checklist-verify-1"
+		out.Documentation = "docs/job-progress.md"
+	case "jobs create":
+		out.Usage = "<bound launcher> jobs create --title TEXT --key KEY [options]"
+		out.Required = []string{"--title TEXT", "--key KEY"}
+		out.Optional = []string{"--brief TEXT | --brief-file PATH", "--worker WORKER_ID", "--status active|blocked|parked|completed"}
+		out.Semantics = []string{"Brief files contain exact UTF-8 text, at most 32 KiB; empty is allowed. Use a regular file with owner-private POSIX permissions. Inline and file forms are mutually exclusive.", recovery}
+		out.Example = "<bound launcher> jobs create --title 'Implement transport' --brief-file /private/brief.md --key job-create-1"
+		out.Documentation = "docs/job-state.md"
+	case "jobs status":
+		out.Usage = "<bound launcher> jobs status JOB_ID"
+		out.Required = []string{"JOB_ID"}
+		out.Semantics = []string{"Reads compact current status, revision, worker and updated_at plus progress_summary (up to 1024 UTF-8 bytes), next and blocker (512 bytes each), explicit truncation flags and evidence_count. No evidence reference strings are included.", "Returns one coherent authorized snapshot without brief, checklist, notes, history, provider work or writes. Previews are status aids; use jobs read JOB_ID for complete working context before resuming."}
+		out.Example = "<bound launcher> jobs status job_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/job-state.md"
+	case "inbox send":
+		out.Usage = "<bound launcher> inbox send --to WORKER_ID (--body TEXT | --body-file PATH) --key KEY [--reply-to MESSAGE_ID]"
+		out.Required = []string{"--to WORKER_ID", "--body TEXT | --body-file PATH", "--key KEY"}
+		out.Optional = []string{"--reply-to MESSAGE_ID"}
+		out.Semantics = []string{"The body must be nonblank UTF-8 and at most 16 KiB. Body files preserve exact text and must be regular with owner-private POSIX permissions. Inline and file forms are mutually exclusive.", "Send to a worker in this project. --reply-to retains the existing conversation; reads never mark a message seen or acknowledged.", recovery}
+		out.Example = "<bound launcher> inbox send --to WORKER_ID --body-file /private/message.md --key message-1"
+		out.Documentation = "docs/development.md"
+	case "inbox wait":
+		out.Usage = "<bound launcher> inbox wait --cursor EVENT_CURSOR [--limit N] [--wait-seconds N]"
+		out.Required = []string{"--cursor EVENT_CURSOR (event_cursor from inbox snapshot or cursor from a prior successful wait; not inbox.cursor pagination)"}
+		out.Optional = []string{"--limit N (1-100, default 20)", "--wait-seconds N (1-60, default 25)"}
+		out.Semantics = []string{"One quiet bounded wait returns new incoming-message event metadata, or an empty timed_out result with a continuation cursor. Full message bodies require inbox read MESSAGE_ID; this is not a pending-inbox query.", "No automatic retry, reconnect, pagination or acknowledgment occurs; reads never acknowledge or mark messages seen. On error retain the saved cursor, then retry the wait or read the bound-worker inbox when the service is available."}
+		out.Example = "<bound launcher> inbox wait --cursor saved-event-cursor --wait-seconds 25"
+		out.Documentation = "docs/message-wait.md"
+	case "inbox list", "inbox snapshot":
+		out.Usage = "<bound launcher> " + operation + " [--limit N] [--cursor CURSOR] [--unread] [--unacknowledged] | <bound launcher> " + operation + " [--limit N] [--cursor CURSOR] --all"
+		out.Optional = []string{"--limit N (1-100)", "--cursor CURSOR (inbox pagination)", "--unread", "--unacknowledged (default)", "--all (cannot combine with --unread or --unacknowledged)"}
+		out.Semantics = []string{"Reads one compact inbox page for the bound worker. Defaults to pending, unacknowledged messages, including seen-but-unhandled messages; --unread narrows to unseen pending messages, not all pending work. --all includes handled history.", "Pages use durable insertion order, oldest first; no recent-first option exists. Continue has_more with cursor and the same filters. inbox snapshot also returns event_cursor for later arrivals via inbox events or inbox wait; this is not an inbox pagination cursor.", "No provider work, automatic pagination, message seen update or acknowledgment occurs. Read selected full message bodies with inbox read MESSAGE_ID."}
+		out.Example = "<bound launcher> " + operation + " --unread --limit 20"
+		if operation == "inbox snapshot" {
+			out.Semantics[0] = "Reads one compact inbox page plus event_cursor from the same snapshot. Defaults to pending, unacknowledged messages, including seen-but-unhandled messages; --unread narrows to unseen pending messages, not all pending work. --all includes handled history."
+			out.Semantics[1] = "Pages use durable insertion order, oldest first; no recent-first option exists. Continue inbox.has_more with inbox.cursor and the same filters. event_cursor is a separate watermark for inbox events or inbox wait to discover later arrivals; it is not an inbox pagination cursor."
+			out.Example = "<bound launcher> inbox snapshot --unacknowledged --limit 20"
+		}
+		out.Documentation = "docs/message-events.md"
+	case "jobs update":
+		out.Usage = "<bound launcher> jobs update JOB_ID --expect-revision N --key KEY [changes]"
+		out.Required = []string{"JOB_ID", "--expect-revision N", "--key KEY", "at least one optional edit"}
+		out.Optional = []string{"--title TEXT", "--brief TEXT | --brief-file PATH", "--worker WORKER_ID", "--status active|blocked|parked|completed", "--progress TEXT | --progress-file PATH", "--next TEXT | --next-file PATH", "--blocker TEXT | --blocker-file PATH", "--evidence REF (repeat up to 10)"}
+		out.Semantics = []string{guard, "Empty --brief, --worker, --progress, --next or --blocker clears that field; title cannot be empty. A sole --evidence '' clears evidence; otherwise supplied evidence replaces the complete reference list. History is automatic.", "Text files preserve exact UTF-8; each conflicts with its matching inline flag. Use regular owner-private files. Brief: 32 KiB; progress/next: 8 KiB each; blocker: 4 KiB; combined progress including evidence: 16 KiB. Empty files clear valid fields.", recovery}
+		out.Example = "<bound launcher> jobs update JOB_ID --expect-revision 3 --key job-next-1 --next 'Run focused validation'"
+		out.Documentation = "docs/job-state.md"
+	case "notes list":
+		out.Usage = "<bound launcher> notes list [scope and filters] [--limit N] [--cursor CURSOR]"
+		out.Optional = []string{"--worker WORKER_ID (select another worker in the bound project)", "--all-workers (project scope; exclusive with --worker and --direct-only)", "--direct-only (only notes naming the selected worker; omit assigned-job notes)", "--job JOB_ID", "--phase TEXT (exact label)", "--kind reminder|source", "--status pending|consumed|dismissed|all (default pending)", "--limit N (1-100, default 20)", "--cursor CURSOR (continue the same filters and scope)"}
+		out.Semantics = []string{"Defaults to pending notes naming the bound worker or a job currently assigned to it. Explicit job, phase, kind and status filters narrow that scope; --job does not select all workers by itself.", "For all pending notes attached to one job, use --all-workers --job JOB_ID. Project scope still belongs to the bound project and never changes the authenticated worker.", "Returns compact body_preview and body_truncated with cursor and has_more; no automatic pagination, full bodies, writes or provider work. Read selected full content with notes read NOTE_ID; listing never consumes notes."}
+		out.Example = "<bound launcher> notes list --all-workers --job JOB_ID --limit 20"
+		out.Documentation = "docs/notes.md"
+	case "notes add", "notes update":
+		out.Optional = []string{"--worker WORKER_ID | --clear-worker", "--job JOB_ID", "--phase TEXT", "--kind reminder|source"}
+		out.Semantics = []string{"Exactly one of --body TEXT or --body-file PATH when supplying body; body must be nonblank UTF-8, at most 16 KiB. A body file must be regular and owner-private on POSIX.", "New notes and explicit scope edits require an existing same-project worker or job attachment. Phase is only an optional label, not a sufficient attachment. No current job is inferred. Retained phase-only notes can still be consumed without a scope edit.", recovery}
+		if operation == "notes add" {
+			out.Usage = "<bound launcher> notes add (--body TEXT | --body-file PATH) --key KEY [scope]"
+			out.Required = []string{"--body TEXT | --body-file PATH", "--key KEY"}
+			out.Semantics = append(out.Semantics, "Defaults to the bound worker and kind reminder. --clear-worker removes the default worker and requires --job; --phase may label that attachment.")
+			out.Example = "<bound launcher> notes add --body 'Revisit after the API settles' --key reminder-1"
+		} else {
+			out.Usage = "<bound launcher> notes update NOTE_ID --expect-revision N --key KEY [changes]"
+			out.Required = []string{"NOTE_ID", "--expect-revision N", "--key KEY", "at least one optional edit"}
+			out.Optional = append(out.Optional, "--body TEXT | --body-file PATH", "--clear-job", "--clear-phase", "--status pending|consumed|dismissed", "--reason TEXT")
+			out.Semantics = append(out.Semantics, guard, "Use --clear-worker/--clear-job/--clear-phase instead of empty scope values; each conflicts with its corresponding value flag. Consuming needs no unchanged body. Dismissal requires a nonblank --reason; pending/consumed cannot have a nonempty reason.")
+			out.Example = "<bound launcher> notes update NOTE_ID --expect-revision 2 --key reminder-consumed-1 --status consumed"
+		}
+		out.Documentation = "docs/notes.md"
+	case "map update":
+		out.Usage = "<bound launcher> map update ENTRY_ID --expect-revision N --file /absolute/changes.json --key KEY"
+		out.Required = []string{"ENTRY_ID", "--expect-revision N", "--file ABSOLUTE_PATH", "--key KEY"}
+		out.Semantics = []string{guard, "The regular JSON file is at most 64 KiB and contains only changed fields, not an entry wrapper. Unknown, duplicate and null fields are refused. Kind cannot change.", "Empty optional text/arrays clears where valid for the entry kind. Selected arrays replace that array; existing phase IDs must be retained (archive phases instead of deleting).", recovery}
+		out.FileFields = map[string]string{"title": "Nonblank title", "description": "Project narrative", "state": "Editorial state", "where": "Workstream position", "next": "Workstream milestone", "trigger": "Return-point reconsideration trigger", "phases": "Ordered workstream phases: id, name, state, archived", "links": "Links: label, url", "archived": "Boolean", "position": "Integer 0-1000000"}
+		out.FileExample = map[string]any{"state": "In progress"}
+		out.Example = "<bound launcher> map update ENTRY_ID --expect-revision 3 --file /private/changes.json --key project-state-1"
+		out.Documentation = "docs/project-map.md"
+	case "publication prepare":
+		out.Usage = "<bound launcher> publication prepare --file /absolute/changes.json --output /absolute/new-approved.json"
+		out.Required = []string{"--file ABSOLUTE_PATH", "--output NEW_ABSOLUTE_PATH"}
+		out.Semantics = []string{"Administrator only. Reads approved content and selected public revisions, previews the result, and saves an exact owner-private apply file; does not publish. No --key or revision CLI flag.", "The owner-private regular plan file is at most 8 KiB: current expected_revision plus at least one edit. Omitted content stays unchanged; null, unknown and duplicate fields are refused. Output must be new, in an existing directory, and different from input; never overwrites.", "Selections use upsert/remove lists, not full replacements. Pin explicit job-summary/map revisions. Remove by selection key (reviews by PR number); description '' clears description.", "Retain the prepared file and returned preview_sha256. Apply separately with an explicit key; after uncertain apply retry that same key, exact file, hash and binding."}
+		out.FileFields = map[string]string{"expected_revision": "Required current publication configuration revision (>=1)", "description": "Optional public description", "job_refs": "upsert: key/job_id/summary_revision; remove: keys", "map_refs": "upsert: key/entry_id/revision; remove: keys", "worker_refs": "upsert: key/worker_id/label; remove: keys", "reviews": "upsert: number/title/url; remove: PR numbers"}
+		out.FileExample = map[string]any{"expected_revision": 2, "description": "Our project direction"}
+		out.Example = "<bound launcher> publication prepare --file /private/changes.json --output /private/approved.json"
+		out.Next = "Review the prepared publication, then publication apply --file PREPARED_FILE --preview-sha256 RETURNED_HASH --key KEY. Use publication preview --file PREPARED_FILE to recover a lost preview hash."
+		out.Documentation = "docs/public-site.md"
+	default:
+		return operationHelpResponse{}, false
+	}
+	return out, true
+}

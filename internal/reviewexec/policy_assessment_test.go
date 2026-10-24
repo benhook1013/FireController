@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,9 +15,9 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-func assessmentPolicy(t *testing.T, f *attemptFixture, previous int64, required, paused []string) {
+func assessmentPolicy(t *testing.T, f *attemptFixture, previous int64, required []string) {
 	t.Helper()
-	policyConfigure(t, f, f.scope(t, attemptProject, f.admin, true), fmt.Sprintf("assessment-policy-%d", previous), PolicyConfiguration{ExpectedRevision: &previous, RequiredChannels: required, PausedChannels: paused})
+	policyConfigure(t, f, f.scope(t, attemptProject, f.admin, true), fmt.Sprintf("assessment-policy-%d", previous), PolicyConfiguration{ExpectedRevision: &previous, RequiredChannels: required})
 }
 
 func assessmentRead(t *testing.T, f *attemptFixture, a Attempt, id, state string, revision int64, channels ...PolicyAssessmentChannel) PolicyAssessment {
@@ -90,20 +91,29 @@ func TestPolicyAssessmentCombinesRequiredChannelsAndCurrentPolicy(t *testing.T) 
 	hosted, hostedID := assessmentHosted(t, f, *a.Anchor)
 	assessmentRead(t, f, a, id, "sufficient", 1, PolicyAssessmentChannel{Channel: "cli", Covered: true}, PolicyAssessmentChannel{Channel: "hosted", Covered: true})
 	assessmentRead(t, f, hosted, hostedID, "sufficient", 1, PolicyAssessmentChannel{Channel: "cli", Covered: true}, PolicyAssessmentChannel{Channel: "hosted", Covered: true})
-	assessmentPolicy(t, f, 1, []string{"hosted", "cli"}, []string{"cli", "hosted"})
+	assessmentPolicy(t, f, 1, []string{"hosted", "cli"})
 	assessmentRead(t, f, a, id, "sufficient", 2, PolicyAssessmentChannel{Channel: "cli", Covered: true}, PolicyAssessmentChannel{Channel: "hosted", Covered: true})
 	// An enabled but no longer required channel's missing capture is irrelevant.
 	coverageSeedOperations(t, f, hosted, 1, "completed")
-	admissionSQL(t, f, `UPDATE review_operations SET head_sha=? WHERE id='history-operation-0'`, strings.Repeat("9", 40))
-	assessmentPolicy(t, f, 2, []string{"cli"}, []string{})
+	// This is deliberate retained missing-capture fixture setup, not a
+	// corrupted ready operation. Re-derive its pending proof in the same write.
+	if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE review_operations SET head_sha=? WHERE id='history-operation-0'`, strings.Repeat("9", 40)); err != nil {
+			return err
+		}
+		return refreshComparisonProof(ctx, tx, attemptProject, "history-operation-0")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assessmentPolicy(t, f, 2, []string{"cli"})
 	assessmentRead(t, f, a, id, "sufficient", 3, PolicyAssessmentChannel{Channel: "cli", Covered: true})
-	assessmentPolicy(t, f, 3, []string{"cli", "hosted"}, []string{})
+	assessmentPolicy(t, f, 3, []string{"cli", "hosted"})
 	assessmentRead(t, f, a, id, "held", 4, PolicyAssessmentChannel{Channel: "cli", Covered: true}, PolicyAssessmentChannel{Channel: "hosted", Covered: true, Pending: true})
 }
 
 func TestPolicyAssessmentUsesEffectiveCorrectionsAndFrozenSourceCounts(t *testing.T) {
 	f, a, id, _ := coverageFixture(t, 2, false)
-	assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+	assessmentPolicy(t, f, 1, []string{"cli"})
 	adjudicationComplete(t, f, a)
 	assessmentRead(t, f, a, id, "held", 2, PolicyAssessmentChannel{Channel: "cli", Pending: true})
 	adjudicationDecide(t, f, id, "assessment-accept", 0, 0, "accepted")
@@ -122,21 +132,21 @@ func TestPolicyAssessmentUsesEffectiveCorrectionsAndFrozenSourceCounts(t *testin
 	}
 }
 
-func TestPolicyAssessmentDoesNotMixComparisonsOrCreditIncompleteCapture(t *testing.T) {
-	t.Run("different hosted comparison", func(t *testing.T) {
+func TestPolicyAssessmentUsesPRProgressButNeverCreditsIncompleteCapture(t *testing.T) {
+	t.Run("completed channels retain their original comparisons", func(t *testing.T) {
 		f, a, id, _ := coverageFixture(t, 0, false)
 		coverageFinalize(t, f, a, id, 0)
 		other := *a.Anchor
 		other.BaseSHA = strings.Repeat("9", 40)
 		other.ParentSHA = other.BaseSHA
 		hosted, hostedID := assessmentHosted(t, f, other)
-		assessmentRead(t, f, a, id, "held", 1, PolicyAssessmentChannel{Channel: "cli", Covered: true}, PolicyAssessmentChannel{Channel: "hosted"})
-		assessmentRead(t, f, hosted, hostedID, "held", 1, PolicyAssessmentChannel{Channel: "cli"}, PolicyAssessmentChannel{Channel: "hosted", Covered: true})
+		assessmentRead(t, f, a, id, "sufficient", 1, PolicyAssessmentChannel{Channel: "cli", Covered: true}, PolicyAssessmentChannel{Channel: "hosted", Covered: true})
+		assessmentRead(t, f, hosted, hostedID, "sufficient", 1, PolicyAssessmentChannel{Channel: "cli", Covered: true}, PolicyAssessmentChannel{Channel: "hosted", Covered: true})
 	})
 	t.Run("incomplete capture", func(t *testing.T) {
 		f, a, id, _ := coverageFixture(t, 1, true)
 		adjudicationComplete(t, f, a)
-		assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+		assessmentPolicy(t, f, 1, []string{"cli"})
 		adjudicationDecide(t, f, id, "assessment-partial-reject", 0, 0, "rejected")
 		assessmentRead(t, f, a, id, "held", 2, PolicyAssessmentChannel{Channel: "cli", Pending: true})
 	})
@@ -232,7 +242,7 @@ func TestPolicyAssessmentRejectsMalformedMissingOrCorruptTarget(t *testing.T) {
 				}
 				admissionSQL(t, f, `UPDATE review_execution_evidence SET body_json=? WHERE id=?`, string(raw), id)
 			case "empty-required-policy":
-				admissionSQL(t, f, `UPDATE review_policy_config SET body_json='{"required_channels":[],"paused_channels":[],"max_review_files":0}' WHERE project_id=?`, attemptProject)
+				admissionSQL(t, f, `UPDATE review_policy_config SET body_json='{"required_channels":[],"max_review_files":0}' WHERE project_id=?`, attemptProject)
 			case "foreign-repository":
 				admissionSQL(t, f, `UPDATE projects SET github_repository_id=999 WHERE id=?`, attemptProject)
 				code = "review_held"
@@ -247,17 +257,19 @@ func TestPolicyAssessmentRejectsMalformedMissingOrCorruptTarget(t *testing.T) {
 	}
 }
 
-func TestPolicyAssessmentBoundedCompletedHistoryAndCancellation(t *testing.T) {
+func TestPolicyAssessmentPendingHistoryCorruptionAndCancellation(t *testing.T) {
 	f, a, id, _ := coverageFixture(t, 0, false)
 	coverageSeedOperations(t, f, a, 100, "completed")
 	assessmentRead(t, f, a, id, "held", 1, PolicyAssessmentChannel{Channel: "cli", Pending: true}, PolicyAssessmentChannel{Channel: "hosted"})
+	// Directly completing only the operation leaves its actual attempt active.
+	// Invalidation must refuse this corruption rather than pass cached facts.
 	admissionSQL(t, f, `UPDATE review_operations SET state='completed' WHERE id=?`, a.OperationID)
 	before := adjudicationState(t, f, a) + policyState(t, f)
 	scope := evidenceReadScope(t, f, attemptProject, f.reader)
 	got, err := f.e.ReadPolicyAssessment(t.Context(), scope, id)
-	attemptCode(t, err, "review_capacity")
+	attemptCode(t, err, "storage_unavailable")
 	if !reflect.DeepEqual(got, PolicyAssessment{}) || before != adjudicationState(t, f, a)+policyState(t, f) {
-		t.Fatal("capacity refusal created credit or state", got)
+		t.Fatal("corrupt journal refusal created credit or state", got)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

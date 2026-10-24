@@ -90,7 +90,7 @@ func reviewControlsFixture(t *testing.T) (*mutationAPI, http.Handler, string) {
 		return result
 	}
 	zero := int64(0)
-	if _, err = engine.ConfigurePolicy(ctx, scope(true), "fixture-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli", "hosted"}, PausedChannels: []string{}, MaxReviewFiles: 0}); err != nil {
+	if _, err = engine.ConfigurePolicy(ctx, scope(true), "fixture-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli", "hosted"}, MaxReviewFiles: 0}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = engine.Configure(ctx, scope(true), "fixture-config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "fixture", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli"}}); err != nil {

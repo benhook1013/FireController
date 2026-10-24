@@ -177,14 +177,19 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 		return args, nil
 	case "review_request":
 		var in struct {
-			Key      string `json:"idempotency_key"`
-			Revision *int64 `json:"expected_configuration_revision"`
-			Number   *int64 `json:"pull_number"`
-			Channel  string `json:"channel"`
-			Head     string `json:"head_sha"`
-			Wait     *int   `json:"wait_seconds,omitempty"`
+			Key             string `json:"idempotency_key"`
+			Revision        *int64 `json:"expected_configuration_revision"`
+			Number          *int64 `json:"pull_number"`
+			Channel         string `json:"channel"`
+			Head            string `json:"head_sha"`
+			Wait            *int   `json:"wait_seconds,omitempty"`
+			AllowOutOfOrder *bool  `json:"allow_out_of_order,omitempty"`
 		}
 		if strictjson.Decode(data, &in) != nil || in.Revision == nil || in.Number == nil || !validKey(in.Key) {
+			return args, invalidArguments()
+		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(data, &fields) != nil || fields["allow_out_of_order"] != nil && in.AllowOutOfOrder == nil {
 			return args, invalidArguments()
 		}
 		args.reviewSourceWait = 2
@@ -195,7 +200,7 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 			return args, invalidArguments()
 		}
 		args.key = in.Key
-		args.reviewRequest = client.ReviewRequest{ExpectedConfigurationRevision: *in.Revision, PullNumber: *in.Number, Channel: in.Channel, HeadSHA: in.Head}
+		args.reviewRequest = client.ReviewRequest{ExpectedConfigurationRevision: *in.Revision, PullNumber: *in.Number, Channel: in.Channel, HeadSHA: in.Head, AllowOutOfOrder: in.AllowOutOfOrder != nil && *in.AllowOutOfOrder}
 		if client.ValidateReviewRequest(args.reviewRequest) != nil {
 			return args, invalidArguments()
 		}
@@ -286,7 +291,7 @@ func reviewControlDefinitions() []definition {
 		{"review_routes_list", "Read one compact page of active incoming finding routes for a receiving PR, default five. No finding text, provider refresh or automatic paging.", schema(map[string]any{"pull_number": pull, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "default": 5}, "cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}}, "pull_number")},
 		{"review_route_decide", "Record the receiving decision for one active route using an explicit key/revision. Receiver decision is independent of source counts; no provider work or automatic retry.", schema(map[string]any{"route_id": routeID, "idempotency_key": key, "expected_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}, "disposition": map[string]any{"type": "string", "enum": []string{"accepted", "rejected"}}, "reason": text}, "route_id", "idempotency_key", "expected_revision", "disposition", "reason")},
 		{"review_route_fix", "Record or correct receiving fix proof with an explicit key, revision and expected current SHA. Retains source counts; no provider work or automatic retry.", schema(map[string]any{"route_id": routeID, "idempotency_key": key, "expected_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}, "expected_sha": map[string]any{"type": "string", "maxLength": 40, "pattern": "^(|[a-f0-9]{40})$"}, "fix_sha": map[string]any{"type": "string", "minLength": 40, "maxLength": 40, "pattern": "^[a-f0-9]{40}$"}, "proof_note": text}, "route_id", "idempotency_key", "expected_revision", "expected_sha", "fix_sha", "proof_note")},
-		{"review_policy_assess", "Read current project requirements for this captured comparison. No provider refresh, current-source verification or merge-readiness verdict.", schema(map[string]any{"evidence_id": id}, "evidence_id")},
+		{"review_policy_assess", "Read current project requirements and completed PR/channel review progress for the PR identified by captured evidence; later Git changes preserve progress. No provider refresh, current-source verification or merge-readiness verdict.", schema(map[string]any{"evidence_id": id}, "evidence_id")},
 		{"review_evidence_read", "Explicitly read full native immutable review evidence and parsed finding text, bounded to 4 MiB. No raw capture, provider refresh or execution.", schema(map[string]any{"evidence_id": id}, "evidence_id")},
 		{"review_adjudication_read", "Explicitly read current native finding decisions and fix proof without finding text, provider refresh or execution.", schema(map[string]any{"evidence_id": id}, "evidence_id")},
 		{"review_finding_decide", "Record or correct a native finding decision using an explicit key, revision and zero-based index; retain audit history and return a compact receipt. No provider work or automatic retry.", schema(map[string]any{"evidence_id": id, "idempotency_key": key, "expected_revision": revision, "finding": finding, "disposition": map[string]any{"type": "string", "enum": []string{"accepted", "rejected"}}, "reason": text, "expected_route_revision": routeRevision}, "evidence_id", "idempotency_key", "expected_revision", "finding", "disposition", "reason")},
@@ -309,22 +314,23 @@ func reviewExecutionDefinitions() []definition {
 			"expected_configuration_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64)},
 			"pull_number":                     map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647},
 			"head_sha":                        map[string]any{"type": "string", "minLength": 40, "maxLength": 40, "pattern": "^[a-f0-9]{40}$"},
-			"include_readiness":               map[string]any{"type": "boolean", "default": false, "description": "Also collect CI, review-thread resolution and merge-state facts for local readiness assessment."},
-			"include_ci":                      map[string]any{"type": "boolean", "default": false, "description": "Also collect required CI; ordinary reads remain provider-free."},
+			"include_readiness":               map[string]any{"type": "boolean", "default": false, "description": "Also collect selected-base required CI, review-thread resolution and merge-state facts for local readiness assessment; optional workflow health is not assessed."},
+			"include_ci":                      map[string]any{"type": "boolean", "default": false, "description": "Collect required checks for the selected base branch. not_required means no required checks; optional workflows may still run or fail and are not assessed. Ordinary reads remain provider-free."},
 			"wait_seconds":                    map[string]any{"type": "integer", "minimum": 0, "maximum": maxToolWaitSeconds, "default": 2, "description": "Wait for terminal facts up to this many seconds; zero requests an immediate receipt. Extends this source-refresh call budget only."},
 		}, "idempotency_key", "expected_configuration_revision", "pull_number", "head_sha")},
 		{"review_source_refresh_read", "Read one explicit retained source-refresh operation. Local provider-free read; no automatic polling or source refresh.", schema(map[string]any{"refresh_id": map[string]any{"type": "string", "minLength": 47, "maxLength": 47, "pattern": "^review_refresh_[a-f0-9]{32}$"}}, "refresh_id")},
 		{"review_source_policy_assess", "Read current project review policy as of a retained source observation for one PR. Local provider-free read; no current remote-source verification, CI or merge-readiness verdict.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
-		{"review_source_readiness", "Read one retained as-of readiness assessment using current local policy. Provider-free, compact selected-PR read; no refresh, polling or merge authorization.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
-		{"review_source_ci_assess", "Read retained required-CI assessment for one PR. Local provider-free read; reports observation age and applicability, never merge readiness.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
+		{"review_source_readiness", "Read one retained as-of readiness assessment using current local policy. Required CI covers the selected base branch, not optional workflow health; GitHub merge-state gates remain separate. Provider-free, compact selected-PR read; no refresh, polling or merge authorization.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
+		{"review_source_ci_assess", "Read retained required-CI assessment for the selected base branch of one PR. not_required means no required checks; optional workflows may still run or fail and are not assessed. Local provider-free read; reports observation age and applicability, never merge readiness.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
 		{"review_execution_read", "Read stored project review execution configuration. No provider calls, execution, readiness verdict or automatic polling.", schema(map[string]any{})},
-		{"review_operation_read", "Read one retained local review operation; optionally wait quietly for a terminal state. Cancellation detaches without stopping the review. No provider refresh, execution or polling.", schema(map[string]any{"operation_id": map[string]any{"type": "string", "pattern": "^review_operation_[a-f0-9]{32}$"}, "wait_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": maxToolWaitSeconds, "default": 0}}, "operation_id")},
+		operationStatusDefinition(),
 		{"review_request", "Enqueue the selected external provider review, which can consume included allowance asynchronously. Waits briefly for a terminal result; pending work returns a compact queued receipt, which does not mean started or completed. Retain the exact idempotency key and arguments for uncertain-outcome recovery; no automatic retry, generated key or operation polling.", schema(map[string]any{
 			"idempotency_key":                 map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
 			"expected_configuration_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64)},
 			"pull_number":                     map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647},
 			"channel":                         map[string]any{"type": "string", "enum": []string{"cli", "hosted"}},
 			"head_sha":                        map[string]any{"type": "string", "pattern": "^[a-f0-9]{40}$"},
+			"allow_out_of_order":              map[string]any{"type": "boolean", "default": false, "description": "Explicitly bypass queue order for this exact target only; comparison and all target admission guards still apply."},
 			"wait_seconds":                    map[string]any{"type": "integer", "minimum": 0, "maximum": maxToolWaitSeconds, "default": 2, "description": "Wait quietly for a terminal result; zero detaches immediately. Changing this preference never starts another review."},
 		}, "idempotency_key", "expected_configuration_revision", "pull_number", "channel", "head_sha")},
 	}

@@ -3,6 +3,7 @@ package mcpadapter_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,46 @@ import (
 
 func executionArguments() map[string]any {
 	return map[string]any{"idempotency_key": "explicit-native-review", "expected_configuration_revision": 1, "pull_number": 2, "channel": "cli", "head_sha": strings.Repeat("a", 40), "wait_seconds": 0}
+}
+
+func TestReviewExecutionStdioExplicitOrderBoundWire(t *testing.T) {
+	for _, choice := range []string{"omitted", "false", "true"} {
+		t.Run(choice, func(t *testing.T) {
+			var posts atomic.Int64
+			want := `{"expected_configuration_revision":1,"pull_number":2,"channel":"cli","head_sha":"` + strings.Repeat("a", 40) + `"`
+			if choice == "true" {
+				want += `,"allow_out_of_order":true`
+			}
+			want += `}`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/api/v1/instance" {
+					_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": "instance-one"})
+					return
+				}
+				posts.Add(1)
+				body, err := io.ReadAll(r.Body)
+				if err != nil || string(body) != want || r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/requests" || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("X-FC-Instance") != "instance-one" || r.Header.Get("Idempotency-Key") != "explicit-native-review" || r.Header.Get("Prefer") != "wait=0" {
+					t.Error("MCP changed exact body or bound action", string(body), err)
+				}
+				w.WriteHeader(http.StatusAccepted)
+				_ = json.NewEncoder(w).Encode(client.ReviewRequestReceipt{ID: "review_operation_" + strings.Repeat("a", 32), State: "queued", Revision: 1})
+			}))
+			defer server.Close()
+			binding := localContext()
+			binding.ServerURL = server.URL
+			session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"alpha": binding}, credential(t)), "alpha")
+			args := executionArguments()
+			if choice != "omitted" {
+				args["allow_out_of_order"] = choice == "true"
+			}
+			var receipt client.ReviewRequestReceipt
+			decodeResult(t, call(t, session, "review_request", args), &receipt)
+			if receipt.State != "queued" || posts.Load() != 1 {
+				t.Fatal("MCP request did not return one original receipt")
+			}
+		})
+	}
 }
 
 func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *testing.T) {
@@ -50,8 +91,22 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 		if tool.Name == "review_request" || tool.Name == "review_operation_read" {
 			properties++
 		}
+		if tool.Name == "review_request" || tool.Name == "review_operation_read" {
+			properties++
+		}
 		if json.Unmarshal(data, &schema) != nil || len(schema.Properties) != properties || len(schema.Required) != count || schema.Additional {
 			t.Fatal("execution schema fields changed", tool.Name)
+		}
+		if tool.Name == "review_request" {
+			flag, ok := schema.Properties["allow_out_of_order"].(map[string]any)
+			if !ok || flag["type"] != "boolean" || flag["default"] != false {
+				t.Fatal("explicit order flag is not an optional strict boolean")
+			}
+			for _, required := range schema.Required {
+				if required == "allow_out_of_order" {
+					t.Fatal("default request now requires an ordering choice")
+				}
+			}
 		}
 		a := tool.Annotations
 		write := tool.Name == "review_request"
@@ -134,6 +189,17 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 		})
 	}
 	diagnosticResult(t, call(t, session, "review_request", json.RawMessage(`{"idempotency_key":"bad\ud800","expected_configuration_revision":1,"pull_number":2,"channel":"cli","head_sha":"`+strings.Repeat("a", 40)+`"}`)), "invalid_arguments", false)
+	for _, bad := range []any{nil, "true", 1, 0, []any{}, map[string]any{}} {
+		args := executionArguments()
+		args["allow_out_of_order"] = bad
+		diagnosticResult(t, call(t, session, "review_request", args), "invalid_arguments", false)
+	}
+	raw, _ := json.Marshal(executionArguments())
+	for _, suffix := range []string{`,"allow_out_of_order":true,"allow_out_of_order":false}`, `,"AllowOutOfOrder":true}`} {
+		diagnosticResult(t, call(t, session, "review_request", json.RawMessage(strings.TrimSuffix(string(raw), "}")+suffix)), "invalid_arguments", false)
+	}
+	args := map[string]any{"channel": "cli", "idempotency_key": "automatic", "allow_out_of_order": true}
+	diagnosticResult(t, call(t, session, "review_start", args), "invalid_arguments", false)
 	if requests.Load() != 0 {
 		t.Fatal("invalid args reached credential/HTTP")
 	}
@@ -164,6 +230,7 @@ func TestReviewExecutionStdioConfiguredReadsAndQueuedReplayNoProviders(t *testin
 		t.Fatal("configuration read changed scope")
 	}
 	args := executionArguments()
+	args["allow_out_of_order"] = true
 	var first, replay client.ReviewRequestReceipt
 	decodeResult(t, call(t, session, "review_request", args), &first)
 	decodeResult(t, call(t, session, "review_request", args), &replay)
@@ -171,8 +238,8 @@ func TestReviewExecutionStdioConfiguredReadsAndQueuedReplayNoProviders(t *testin
 		t.Fatal("queued receipt changed on replay")
 	}
 	var operation client.ReviewOperation
-	decodeResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": first.ID}), &operation)
-	if operation.ProjectID != f.project || operation.WorkerID != f.sender || operation.State != "queued" || operation.AttemptID != "" {
+	decodeResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": first.ID, "diagnostics": true}), &operation)
+	if operation.ProjectID != f.project || operation.WorkerID != f.sender || operation.State != "queued" || operation.AttemptID != "" || !operation.AllowOutOfOrder {
 		t.Fatal("operation read invented provider progress or changed worker")
 	}
 	args["head_sha"] = strings.Repeat("b", 40)

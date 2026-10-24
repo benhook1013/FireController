@@ -95,6 +95,15 @@ func (d *HostedDriver) providerActor() reviewprovider.Author {
 	return reviewprovider.Author{ID: d.capability.Hosted.ProviderActorID, Login: d.capability.Hosted.ProviderLogin, Kind: "Bot"}
 }
 
+// HostedObservationReader exposes only stored-source collection and the
+// operator's trusted bot identity, independently of review dispatch or pause.
+func (d *HostedDriver) HostedObservationReader() reviewexec.ExternalHostedReader {
+	if d == nil || d.provider == nil || !validHostedSettings(d.capability.Hosted) {
+		return nil
+	}
+	return &hostedArchiveSource{provider: d.provider, actor: d.providerActor()}
+}
+
 func (d *HostedDriver) checkIdle(ctx context.Context, plan reviewexec.SourcePlan) error {
 	settings := d.capability.Hosted
 	observation, err := d.provider.ObserveHostedActivity(ctx, plan.Repository.FullName, plan.Pull.HeadSHA, reviewprovider.HostedActivitySelector{Mode: settings.ProgressMode, ProviderActorID: settings.ProviderActorID, AppID: settings.ProgressAppID})
@@ -123,7 +132,7 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	if ctx == nil {
 		return preparation, reviewHold("execution_binding_changed")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	current, err := d.engine.ExecutionContext(ctx, operation.ProjectID, operation.ID)
 	if err != nil {
@@ -161,6 +170,10 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	if err != nil {
 		return preparation, err
 	}
+	plan, err = refreshMaterializedSource(ctx, d.provider, current.RepositoryID, current.Configuration, current.Operation, plan)
+	if err != nil {
+		return preparation, err
+	}
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
 	actor, err := d.provider.CurrentActor(ctx)
 	if err != nil {
@@ -176,6 +189,9 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 			break
 		}
 		if observed.Observation.State == "cooldown_observed" {
+			if err := RetainHostedCooldown(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture); err != nil {
+				return preparation, reviewHold("hosted_allowance_unproven")
+			}
 			return preparation, reviewHold("hosted_allowance_cooldown")
 		}
 		if observed.Reason != "allowance_not_proven" || pass == 7 {
@@ -233,7 +249,7 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 	}
 	// Preserve the exact semantic comparison checked by RecheckSource while
 	// keeping the current plan and using this phase's single provider read set.
-	if currentSource.Repository != prepared.plan.Repository || currentSource.Pull.Number != prepared.plan.Pull.Number || currentSource.Pull.RepositoryID != prepared.plan.Pull.RepositoryID || currentSource.Pull.HeadSHA != prepared.plan.Pull.HeadSHA || currentSource.Pull.BaseSHA != prepared.plan.Pull.BaseSHA || currentSource.Pull.BaseRef != prepared.plan.Pull.BaseRef || currentSource.ParentSHA != prepared.plan.ParentSHA || currentSource.ParentPullNumber != prepared.plan.ParentPullNumber {
+	if !samePreparedSource(currentSource, prepared.plan) {
 		return failed("source_changed")
 	}
 	if err := d.verify(ctx, prepared.workspace); err != nil {
@@ -280,7 +296,7 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 		if observed.State == "completed" {
 			return reviewexec.Result{State: "completed", Reason: "hosted_evidence_retained", ExternalID: externalID}, nil
 		}
-		if observed.Reason == "hosted_observation_capacity" {
+		if observed.Reason == "hosted_observation_capacity" || observed.Reason == "hosted_finished_inventory_unproven" {
 			return reviewexec.Result{State: "uncertain", Reason: observed.Reason, ExternalID: externalID}, nil
 		}
 		if observed.Reason == "conflicting_trigger_evidence" || observed.Reason == "trigger_identity_changed" {

@@ -27,9 +27,21 @@ const maxUsageOutput = 64 << 10
 const maxReviewOutput = 16 << 20
 const maxErrorOutput = 64 << 10
 
+// FailureStage is a closed diagnostic category for an unsuccessful usage query.
+// The zero value leaves failures outside known command stages unclassified.
+type FailureStage string
+
+const (
+	FailureStageCommandNotStarted FailureStage = "command_not_started"
+	FailureStageTimeout           FailureStage = "timeout"
+	FailureStageCommandFailed     FailureStage = "command_failed"
+	FailureStageResponseUnproven  FailureStage = "response_unproven"
+)
+
 // Error contains only a stable public classification. It never includes a
 // filesystem path, provider output, executable stderr or underlying error.
 type Error struct {
+	FailureStage   FailureStage
 	Code           string
 	OutcomeUnknown bool
 }
@@ -147,14 +159,23 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 	}
 	result := r.run(commandCtx, workspace.Directory, []string{"usage", "--agent"}, maxUsageOutput, maxErrorOutput)
 	if result.err != nil || result.capture.ExitCode != 0 || !result.capture.Started {
-		return Usage{}, processError("usage_unavailable", false)
+		if ctx.Err() != nil {
+			return Usage{}, processError("usage_unavailable", false)
+		}
+		stage := FailureStageCommandFailed
+		if errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
+			stage = FailureStageTimeout
+		} else if !result.capture.Started {
+			stage = FailureStageCommandNotStarted
+		}
+		return Usage{}, &Error{Code: "usage_unavailable", FailureStage: stage}
 	}
 	usage, err := parseUsage(result.capture.Stdout, expectedRepository, expectedOrganization)
 	if err != nil {
-		return Usage{}, err
-	}
-	if usage.Remaining == 0 {
-		return Usage{}, processError("rate_limited", false)
+		if ctx.Err() != nil {
+			return Usage{}, processError("usage_unavailable", false)
+		}
+		return Usage{}, &Error{Code: "usage_unavailable", FailureStage: FailureStageResponseUnproven}
 	}
 	if err := r.manager.Verify(ctx, workspace); err != nil {
 		if ctx.Err() != nil {
@@ -166,6 +187,10 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 	if generation != r.usageGeneration || ctx.Err() != nil {
 		r.mu.Unlock()
 		return Usage{}, processError("usage_unavailable", false)
+	}
+	if usage.Remaining == 0 {
+		r.mu.Unlock()
+		return usage, processError("rate_limited", false)
 	}
 	r.permit = &usagePermit{workspace: keyFor(workspace), issued: r.now()}
 	r.mu.Unlock()

@@ -123,6 +123,52 @@ type handoffObservationProvider struct {
 	calls int
 }
 
+func TestHostedDispatchFinishedInventoryUnprovenHandsOff(t *testing.T) {
+	f := newHostedDriverFixture(t)
+	op, attempt := f.prepareHosted(t)
+	p := &handoffObservationProvider{HostedProvider: f.provider}
+	p.alter = func(snapshot *reviewprovider.HostedPublicationSnapshot) {
+		unsupportedFinishedSnapshot(snapshot, f.provider.bot, 200)
+	}
+	f.hosted.provider = p
+	result, err := f.hosted.Dispatch(t.Context(), op, attempt, f.callback(t, &attempt))
+	if err != nil || result.State != "uncertain" || result.Reason != "hosted_finished_inventory_unproven" || result.ExternalID != "200" || p.calls != 1 || f.provider.reviews != 1 || f.provider.queries != 1 {
+		t.Fatalf("finished unsupported observation lost its classified handoff: %+v %v", result, err)
+	}
+	if hostedDriverJournal(t, f, attempt.ID) != "active" || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+		t.Fatal("driver settled supervisor-owned attempt")
+	}
+	if _, err := f.engine.Advance(t.Context(), f.project, attempt.ID, attempt.Revision, result.State, result.Reason, result.ExternalID); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := f.engine.ReadHostedRecovery(t.Context(), f.project, attempt.ID, f.capability.ID)
+	if err != nil || bound.Attempt.State != "uncertain" || bound.Operation.Reason != result.Reason || cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_round_completions`) != 0 {
+		t.Fatal("handoff lost reservation or fabricated credit", bound, err)
+	}
+	candidate, err := f.engine.PendingHostedRecovery(t.Context(), f.capability.ID)
+	if err != nil || candidate == nil || candidate.AttemptID != attempt.ID {
+		t.Fatal("same attempt not eligible for continued observation", candidate, err)
+	}
+	gate := newSchedulerGate(f.hosted)
+	ctx, cancel := context.WithCancel(t.Context())
+	done, err := f.hosted.StartRecovery(ctx)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	defer func() { cancel(); schedulerDone(t, done, false) }()
+	for _, delay := range []time.Duration{30 * time.Second, 60 * time.Second} {
+		gate.interval(t, delay)
+		current, err := f.engine.ReadHostedRecovery(t.Context(), f.project, attempt.ID, f.capability.ID)
+		if err != nil || current.Attempt.Revision != bound.Attempt.Revision || current.Attempt.State != "uncertain" || current.Operation.Reason != result.Reason || f.provider.reviews != 1 || f.provider.queries != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+			t.Fatal("continued observation churned state, credited or reposted", current, err)
+		}
+		if delay == 30*time.Second {
+			gate.resume(t)
+		}
+	}
+}
+
 func (p *handoffObservationProvider) ObserveHosted(ctx context.Context, repository string, number int64) (reviewprovider.HostedPublicationSnapshot, error) {
 	p.calls++
 	if p.err != nil {
@@ -270,6 +316,17 @@ func handoffEnqueue(t *testing.T, f *cliEvidenceFixture, number int64, channel s
 	return receipt.ID
 }
 
+// Observe supervisor slot acquisition without replacing any real CLI work.
+type handoffDispatchSignal struct {
+	reviewexec.Driver
+	entered chan struct{}
+}
+
+func (d *handoffDispatchSignal) Dispatch(ctx context.Context, operation reviewexec.Operation, attempt reviewexec.Attempt, callback func(context.Context, string) error) (reviewexec.Result, error) {
+	close(d.entered)
+	return d.Driver.Dispatch(ctx, operation, attempt, callback)
+}
+
 func TestHostedDispatchHandoffFreesBothSupervisorSlotsForCLI(t *testing.T) {
 	f := newHostedDriverFixture(t)
 	second, third := f.capability, f.capability
@@ -358,8 +415,9 @@ func TestHostedDispatchHandoffFreesBothSupervisorSlotsForCLI(t *testing.T) {
 	cliDriver.fetch = fetch
 	firstID := handoffEnqueue(t, f.cliEvidenceFixture, 2, "hosted")
 	secondID := handoffEnqueue(t, f2, 3, "hosted")
+	cliEntered := make(chan struct{})
 	ctx, cancel := context.WithCancel(t.Context())
-	done, err := f.engine.Start(ctx, map[string]reviewexec.Driver{f.capability.ID: firstDriver, second.ID: secondDriver, third.ID: cliDriver})
+	done, err := f.engine.Start(ctx, map[string]reviewexec.Driver{f.capability.ID: firstDriver, second.ID: secondDriver, third.ID: &handoffDispatchSignal{Driver: cliDriver, entered: cliEntered}})
 	if err != nil {
 		cancel()
 		t.Fatal(err)
@@ -393,34 +451,62 @@ func TestHostedDispatchHandoffFreesBothSupervisorSlotsForCLI(t *testing.T) {
 		prefixes[target.operation] = refs
 	}
 	thirdID := handoffEnqueue(t, f3, 4, "cli")
+	releasedAt := time.Now()
 	close(release)
 	deadline := time.NewTimer(3 * time.Second)
 	defer deadline.Stop()
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
+	// Handoff means unrelated CLI work acquires a slot while the hosted
+	// outcomes remain retained. It does not require real Git/process execution,
+	// capture fsync, browser projection and terminal settlement to finish in the
+	// same short interval, particularly under race instrumentation.
+	select {
+	case <-cliEntered:
+	case delay := <-unexpectedWait:
+		t.Fatalf("pending hosted dispatch still consumed a supervisor slot for %s", delay)
+	case <-deadline.C:
+		t.Fatal("unrelated actual CLI dispatch did not acquire a supervisor slot")
+	}
+	for {
+		first, firstErr := f.engine.ReadOperation(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), firstID)
+		second, secondErr := f.engine.ReadOperation(t.Context(), f2.scopeWithAccess(t, f2.reader, false, "read"), secondID)
+		if firstErr != nil || secondErr != nil {
+			t.Fatal(firstErr, secondErr)
+		}
+		if first.State == "uncertain" && second.State == "uncertain" {
+			break
+		}
+		select {
+		case delay := <-unexpectedWait:
+			t.Fatalf("pending hosted dispatch still consumed a supervisor slot for %s", delay)
+		case <-deadline.C:
+			t.Fatalf("hosted handoff outcomes were not retained: first=%s second=%s", first.State, second.State)
+		case <-tick.C:
+		}
+	}
+	handoffElapsed := time.Since(releasedAt)
+	// Keep actual end-to-end completion and cleanup as a separate finite
+	// functional check. Application admission/transaction deadlines are unchanged.
+	completion := time.NewTimer(10 * time.Second)
+	defer completion.Stop()
 	for {
 		operation, err := f.engine.ReadOperation(t.Context(), f3.scopeWithAccess(t, f3.reader, false, "read"), thirdID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if operation.State == "completed" {
-			first, firstErr := f.engine.ReadOperation(t.Context(), f.scopeWithAccess(t, f.readerToken(), false, "read"), firstID)
-			second, secondErr := f.engine.ReadOperation(t.Context(), f2.scopeWithAccess(t, f2.reader, false, "read"), secondID)
-			if firstErr != nil || secondErr != nil {
-				t.Fatal(firstErr, secondErr)
-			}
-			if first.State == "uncertain" && second.State == "uncertain" {
-				break
-			}
+			break
 		}
 		select {
 		case delay := <-unexpectedWait:
 			t.Fatalf("pending hosted dispatch still consumed a supervisor slot for %s", delay)
-		case <-deadline.C:
+		case <-completion.C:
 			t.Fatalf("unrelated actual CLI execution did not complete: state=%s reason=%s", operation.State, operation.Reason)
 		case <-tick.C:
 		}
 	}
+	t.Logf("actual CLI dispatch with both hosted outcomes retained after %s; actual CLI completed after %s", handoffElapsed, time.Since(releasedAt))
 	cancel()
 	// Stop/join before inspecting non-atomic fixture counters. Both hosted
 	// outcomes are durable and no scheduler was started to mutate them later.

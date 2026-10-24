@@ -12,7 +12,7 @@ Authorization, inbox projection and event high-water mark share one read transac
 
 Call `GET /api/v1/projects/{project_id}/message-events?cursor=CURSOR` with the same binding. Optional `limit` is 1–100 (default 20); optional `wait_ms` is 0–4000 (default 0). Query fields occur once each. The response is `{items, cursor, has_more, timed_out}`. Retain the last processed cursor and deduplicate by instance plus event sequence. Repeating a cursor can repeat delivery; it never marks a message seen or acknowledged.
 
-Items contain sequence, project ID, type, resource ID, revision, principal actor, compact payload and timestamp. The feed includes `message.sent`, `message.seen` and `message.acknowledged` for the selected recipient. It omits message bodies and other workers' events. Full bodies require an explicit conversation read. Project sequence gaps caused by filtering are valid. A completed page can advance its cursor across those gaps.
+Items contain sequence, project ID, type, resource ID, revision, principal actor, compact payload and timestamp. The feed includes `message.sent`, `message.seen` and `message.acknowledged` for the selected recipient. It omits message bodies and other workers' events. Full bodies use `inbox read MESSAGE_ID` / MCP `inbox_message_read` for one selected message, or an explicit conversation read for surrounding context. Neither read marks messages seen or acknowledged. Project sequence gaps caused by filtering are valid. A completed page can advance its cursor across those gaps.
 
 Cursors are signed against instance, principal, project and selected-worker feed. Other bindings or malformed/ahead positions fail. A cursor older than the seven-day replay floor returns `resync_required`; obtain a fresh scoped inbox snapshot and explicitly retrieve remaining pages. Durable messages and receipt state remain available. This slice enforces replay eligibility without physically pruning old event rows.
 
@@ -25,9 +25,11 @@ fc inbox snapshot --unread
 fc inbox events --cursor CURSOR --wait-ms 4000
 ```
 
+Agent CLI/MCP snapshot defaults to pending messages (unacknowledged, including seen-but-unhandled); CLI `--all` or explicit MCP `unacknowledged:false` selects history. The raw HTTP snapshot and typed-client filters remain unchanged. Inbox pagination cursors bind the effective filter; preserve the selection on continuation. Event replay cursors remain independent of inbox selection.
+
 MCP provides `inbox_snapshot` with the same filters/page fields and `inbox_events` with required cursor plus optional limit/wait_ms. Both use the shared typed client and bound worker; invalid tool arguments fail before credential/network work. These are finite explicit reads, not automatic polling or a subscription. See the [MCP guide](mcp.md).
 
-Snapshot accepts the existing inbox filters and page options. Events requires an explicit snapshot/replay cursor and accepts limit plus wait-ms. One call returns one bounded page; no cursor is saved and no automatic polling, seen or acknowledgment occurs. A five-second total budget covers identity verification and the request. The typed client rejects incomplete or mis-scoped event pages, unexpected payload fields, invalid ordering and inconsistent timeout/page state.
+Snapshot accepts the existing inbox filters and page options. Both inbox list and snapshot use durable insertion order, oldest first, with no recent-first option. `--unread` narrows pending selection to unseen messages; it does not include all unhandled work. For subsequent arrivals, retain `event_cursor` and use events or wait without rescanning the older pending backlog. `inbox list --help` and `inbox snapshot --help` explain these selections offline. Events requires an explicit snapshot/replay cursor and accepts limit plus wait-ms. One call returns one bounded page; no cursor is saved and no automatic polling, seen or acknowledgment occurs. A five-second total budget covers identity verification and the request. The typed client rejects incomplete or mis-scoped event pages, unexpected payload fields, invalid ordering and inconsistent timeout/page state.
 
 ## Waiting and bounds
 

@@ -146,10 +146,8 @@ func hostedAdmissionStack(t *testing.T, f *attemptFixture, open SourcePlan) (Att
 	anchor := attemptAnchor(attemptProject, 4)
 	anchor.ParentPullNumber, anchor.ParentSHA, anchor.BaseSHA, anchor.BaseRef = 2, open.Pull.HeadSHA, open.Pull.HeadSHA, "parent-branch"
 	child := hostedAdmissionAttempt(t, f, "hosted-stack-child", "hosted", 2, anchor)
-	merged := open
-	merged.Pull.Number, merged.Pull.Merged, merged.Pull.State = 3, true, "closed"
-	merged.ParentSHA, merged.ParentPullNumber = "", 0
-	return child, []SourcePlan{open, merged}
+	open.Pull.HeadRef = "parent-branch"
+	return child, []SourcePlan{open}
 }
 
 func TestHostedAdmissionStackRequiresHostedPredecessor(t *testing.T) {
@@ -171,13 +169,18 @@ func TestHostedAdmissionStackChecksAllFreshPlansAndLateFixCorrection(t *testing.
 	child, plans := hostedAdmissionStack(t, f, open)
 	hostedAdmissionVerify(t, f, child, "", "", plans...)
 	cases := map[string]func([]SourcePlan) []SourcePlan{
-		"missing":             func(p []SourcePlan) []SourcePlan { return p[:1] },
-		"extra":               func(p []SourcePlan) []SourcePlan { return append(p, p[0]) },
-		"reordered":           func(p []SourcePlan) []SourcePlan { return []SourcePlan{p[1], p[0]} },
+		"missing":   func([]SourcePlan) []SourcePlan { return nil },
+		"duplicate": func(p []SourcePlan) []SourcePlan { return append(p, p[0]) },
+		"unrelated merged prefix": func(p []SourcePlan) []SourcePlan {
+			unrelated := p[0]
+			unrelated.Pull.Number, unrelated.Pull.Merged, unrelated.Pull.State = 3, true, "closed"
+			return append(p, unrelated)
+		},
 		"foreign":             func(p []SourcePlan) []SourcePlan { p[0].Repository.ID++; return p },
-		"closed unmerged":     func(p []SourcePlan) []SourcePlan { p[1].Pull.Merged = false; return p },
-		"bad merged head":     func(p []SourcePlan) []SourcePlan { p[1].Pull.HeadSHA = "bad"; return p },
-		"missing observation": func(p []SourcePlan) []SourcePlan { p[1].ObservedAt = ""; return p },
+		"closed unmerged":     func(p []SourcePlan) []SourcePlan { p[0].Pull.State = "closed"; return p },
+		"merged":              func(p []SourcePlan) []SourcePlan { p[0].Pull.State, p[0].Pull.Merged = "closed", true; return p },
+		"bad head":            func(p []SourcePlan) []SourcePlan { p[0].Pull.HeadSHA = "bad"; return p },
+		"missing observation": func(p []SourcePlan) []SourcePlan { p[0].ObservedAt = ""; return p },
 	}
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -186,11 +189,11 @@ func TestHostedAdmissionStackChecksAllFreshPlansAndLateFixCorrection(t *testing.
 	}
 	moved := append([]SourcePlan(nil), plans...)
 	moved[0].Pull.HeadSHA = strings.Repeat("9", 40)
-	hostedAdmissionVerify(t, f, child, "review_held", "predecessor_unfinished", moved...)
+	hostedAdmissionVerify(t, f, child, "validation_failed", "", moved...)
 	adjudicationDecide(t, f, id, "hosted-stack-correct", 4, 0, "accepted")
 	hostedAdmissionVerify(t, f, child, "review_held", "predecessor_unfinished", plans...)
 	coverageFix(t, f, id, "hosted-stack-fix", 5, 0, "")
 	hostedAdmissionVerify(t, f, child, "", "", plans...)
-	admissionPolicy(t, f, 1, "hosted")
+	admissionPolicy(t, f, 1)
 	hostedAdmissionVerify(t, f, child, "review_conflict", "", plans...)
 }

@@ -39,36 +39,57 @@ function validContrast(theme: Record<string, unknown>): boolean {
     const family = key.slice(0, -'_background'.length);
     const foreground = `${family}_text` as ThemeToken;
     if (!Object.hasOwn(defaults.theme, foreground)) continue;
-    if (!pair(foreground, key, 4.5) || !pair('focus', key, 3)) return false;
+    if (!pair(foreground, key, 4.5) || (key !== 'merged_background' || Object.hasOwn(theme, key)) && !pair('focus', key, 3)) return false;
     const muted = `${family}_muted` as ThemeToken;
     if (Object.hasOwn(defaults.theme, muted) && !pair(muted, key, 4.5)) return false;
   }
-  return pair('accent_background', 'canvas_background', 4.5) && pair('accent_background', 'surface_background', 4.5)
+  return pair('merged_rail_text', 'merged_rail', 4.5) && (!Object.hasOwn(theme, 'merged_rail') || pair('focus', 'merged_rail', 3)) && pair('accent_background', 'canvas_background', 4.5) && pair('accent_background', 'surface_background', 4.5)
     && pair('surface_text', 'accent_soft_background', 4.5) && pair('surface_muted', 'accent_soft_background', 4.5)
     && pair('accent_background', 'accent_soft_background', 4.5) && pair('focus', 'accent_soft_background', 3);
 }
 
-export type PresentationConfig = Pick<Presentation, 'name' | 'brand_name' | 'tagline' | 'headings' | 'theme'>;
+export type PresentationConfig = Pick<Presentation, 'name' | 'brand_name' | 'tagline' | 'headings' | 'theme' | 'review_groups'>;
 export function validPresentationConfig(v: unknown): v is PresentationConfig { return validConfig(v); }
+function validReviewGroups(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > 40) return false;
+  const titles = new Set<string>(), pulls = new Set<number>();
+  for (const group of value) {
+    if (!object(group) || !exact(group, ['title', 'pull_numbers']) || !name(group.title, 160) || titles.has(group.title) || !Array.isArray(group.pull_numbers) || group.pull_numbers.length === 0) return false;
+    titles.add(group.title);
+    for (const number of group.pull_numbers) {
+      if (!positive(number) || number > 2147483647 || pulls.has(number)) return false;
+      pulls.add(number);
+      if (pulls.size > 1000) return false;
+    }
+  }
+  return true;
+}
 function validConfig(v: unknown, implicit = false): v is PresentationConfig {
-  if (!object(v) || !exact(v, ['name', 'brand_name', 'tagline', 'headings', 'theme']) || !(implicit ? retainedName(v.name) : name(v.name, 200)) || !name(v.brand_name, 120) || !name(v.tagline, 120) || !object(v.headings) || !object(v.theme)) return false;
+  if (!object(v) || !exact(v, ['name', 'brand_name', 'tagline', 'headings', 'theme', ...(Object.hasOwn(v, 'review_groups') ? ['review_groups'] : [])]) || !(implicit ? retainedName(v.name) : name(v.name, 200)) || !name(v.brand_name, 120) || !name(v.tagline, 120) || !object(v.headings) || !object(v.theme)) return false;
+  if (Object.hasOwn(v, 'review_groups') && (!validReviewGroups(v.review_groups) || implicit && (v.review_groups as unknown[]).length > 0)) return false;
   for (const [key, value] of Object.entries(v.headings)) if (!Object.hasOwn(defaults.headings, key) || !name(value, 240)) return false;
   for (const [key, value] of Object.entries(v.theme)) if (!Object.hasOwn(defaults.theme, key) || typeof value !== 'string' || !/^#[0-9a-f]{6}$/u.test(value)) return false;
   if (!validContrast(v.theme)) return false;
   return encoder.encode(JSON.stringify(v).replace(/[<>&\u2028\u2029]/gu, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)).length <= 16 << 10;
 }
 export function validPresentation(v: unknown, project: string): v is Presentation {
-  if (!object(v) || !exact(v, ['project_id', 'revision', 'name', 'brand_name', 'tagline', 'headings', 'theme', 'updated_at']) || v.project_id !== project || !identity(v.project_id) || !Number.isSafeInteger(v.revision) || Number(v.revision) < 0 || !validConfig({ name: v.name, brand_name: v.brand_name, tagline: v.tagline, headings: v.headings, theme: v.theme }, v.revision === 0)) return false;
+  if (!object(v) || !exact(v, ['project_id', 'revision', 'name', 'brand_name', 'tagline', 'headings', 'theme', 'updated_at', ...(Object.hasOwn(v, 'review_groups') ? ['review_groups'] : [])]) || v.project_id !== project || !identity(v.project_id) || !Number.isSafeInteger(v.revision) || Number(v.revision) < 0 || !validConfig({ name: v.name, brand_name: v.brand_name, tagline: v.tagline, headings: v.headings, theme: v.theme, ...(Object.hasOwn(v, 'review_groups') ? {review_groups:v.review_groups} : {}) }, v.revision === 0)) return false;
   return v.revision === 0 ? v.updated_at === '' && v.brand_name === 'FireController' && v.tagline === 'Project workspace' && Object.keys(v.headings as object).length === 0 && Object.keys(v.theme as object).length === 0 : stamp(v.updated_at);
 }
 export function validPresentationSnapshot(v: unknown, project: string): v is PresentationSnapshot {
   return object(v) && exact(v, ['presentation', 'event_cursor']) && validPresentation(v.presentation, project) && cursor(v.event_cursor);
 }
+function metadataResource(event: string, value: unknown): boolean {
+  if (event !== 'reviews.rounds_configured') return identity(value);
+  if (typeof value !== 'string') return false;
+  const match = /^([1-9][0-9]{0,9})\/(hosted|cli)$/u.exec(value);
+  return match !== null && match[0] === value && Number(match[1]) <= 2147483647;
+}
 export function validMetadataPage(v: unknown, limit: number): v is ProjectMetadataPage {
   if (!object(v) || !exact(v, ['items', 'event_cursor', 'has_more']) || !Array.isArray(v.items) || v.items.length > limit || !cursor(v.event_cursor) || typeof v.has_more !== 'boolean' || v.has_more && v.items.length === 0) return false;
   const seen = new Set<string>();
   for (const item of v.items) {
-    if (!object(item) || !exact(item, ['event_type', 'resource_id', 'revision', 'event_cursor']) || typeof item.event_type !== 'string' || !projectEventTypeSet.has(item.event_type) || !identity(item.resource_id) || !positive(item.revision) || !cursor(item.event_cursor) || seen.has(item.event_cursor)) return false;
+    if (!object(item) || !exact(item, ['event_type', 'resource_id', 'revision', 'event_cursor']) || typeof item.event_type !== 'string' || !projectEventTypeSet.has(item.event_type) || !metadataResource(item.event_type, item.resource_id) || !positive(item.revision) || !cursor(item.event_cursor) || seen.has(item.event_cursor)) return false;
     seen.add(item.event_cursor);
   }
   return !v.has_more || v.items.at(-1)?.event_cursor === v.event_cursor;

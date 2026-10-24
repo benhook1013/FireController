@@ -76,7 +76,7 @@ func TestPendingHostedRecoveryRetainsOriginalConfigAfterPauseRevocationAndRestar
 	f, a, _ := hostedRecoveryFixture(t)
 	a = pendingRecoveryAdvance(t, f, a, "uncertain", "interrupted", "")
 	f.configure(t, attemptProject, "other-account", 1, true)
-	admissionPolicy(t, f, 1, "hosted")
+	admissionPolicy(t, f, 1)
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 	admissionSQL(t, f, `DELETE FROM grants WHERE credential_id='exec-writer-cred'`)
 	cliAllowanceReopen(t, f)

@@ -401,3 +401,39 @@ func TestRetainHostedObservationReferencesRecoverPendingAndComplete(t *testing.T
 		t.Fatal("restart lost observation/final evidence distinction", err)
 	}
 }
+
+func TestRetainHostedOutsideOnlyOmittedInlineCount(t *testing.T) {
+	f, captures, attempt, record := hostedRetainFixture(t, false)
+	record.Snapshot.ReviewComments = []reviewprovider.ReviewComment{}
+	record.Snapshot.Reviews[0].Body = "> [!CAUTION]\n> Some comments are outside the diff and are listed below.\n>\n> **⚠️ Outside diff range comments (1)**\n>\n> <details>\n> <summary><strong>🔵 Trivial</strong> · Shared event wording. · <code>events.go:19</code></summary><blockquote>\n>\n> `engine/events.go:19`\n> **📐 Maintainability & Code Quality** | **🔵 Trivial**\n>\n> **Keep shared event wording accurate.**\n>\n> Preserve the full literal detail.\n>\n> <!-- cr-comment:v1:000000000000000000000001 -->\n>\n> </blockquote></details>\n\n" + hostedRetainScope(f.baseSHA, f.headSHA) + "\n\n" + hostedRetainPublicationMarker()
+	before, _ := json.Marshal(record)
+	stateBefore := cliAttemptState(t, f.store, attempt.ID)
+	result, err := RetainHosted(t.Context(), captures, f.engine, attempt, record)
+	if err != nil || !result.Complete || result.Reason != "capture_recorded" {
+		t.Fatalf("outside-only finding not retained: %+v %v", result, err)
+	}
+	loaded, err := captures.Read(t.Context(), attempt.ID, result.Capture)
+	if err != nil || !reflect.DeepEqual(loaded, record) {
+		t.Fatal("raw outside-only observation changed", err)
+	}
+	evidence, err := f.engine.ReadReviewEvidence(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), result.Receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := evidence.Capture
+	if capture.Review.ReportedFindings != 1 || len(capture.Review.Findings) != 1 || capture.Hosted == nil || len(capture.Hosted.Sources) != 1 || capture.Hosted.ObservedBaseSHA != attempt.Anchor.ParentSHA || !reflect.DeepEqual(capture.Hosted.ReviewIDs, []int64{200}) {
+		t.Fatal("outside-only evidence lost exact inventory/comparison")
+	}
+	finding, source := capture.Review.Findings[0], capture.Hosted.Sources[0]
+	if finding.Title != "Keep shared event wording accurate." || finding.Path != "engine/events.go" || finding.StartLine != 19 || finding.EndLine != 19 || finding.Severity != "info" || !strings.Contains(record.Snapshot.Reviews[0].Body, finding.Detail) || !strings.Contains(finding.Detail, "<strong>🔵 Trivial</strong>") || source.Kind != "outside_diff" || source.CommentID != 0 || source.ReviewID != 200 || source.Fingerprint != "000000000000000000000001" {
+		t.Fatal("outside-only literal source fields lost")
+	}
+	replay, err := RetainHosted(t.Context(), captures, f.engine, attempt, record)
+	if err != nil || replay != result {
+		t.Fatal("outside-only exact replay changed evidence", err)
+	}
+	after, _ := json.Marshal(record)
+	if string(before) != string(after) || cliAttemptState(t, f.store, attempt.ID) != stateBefore || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, attempt.ID) != 1 || cliCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.observed'`) != 0 {
+		t.Fatal("retention changed source, duplicated evidence or dispatched/published work")
+	}
+}

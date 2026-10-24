@@ -4,7 +4,7 @@
     "workers": "Workers",
     "inbox": "Inbox",
     "reviews": "Reviews",
-    "map": "Map",
+    "map": "Project",
     "notes": "Notes",
     "hero_eyebrow": "Connected project",
     "hero_title": "Work, with context.",
@@ -20,6 +20,7 @@
     "active_background": "#f3dcd4", "active_text": "#a3382c",
     "blocked_background": "#ecd9dc", "blocked_text": "#a32234",
     "parked_background": "#e5e0d4", "parked_text": "#82704c",
-    "completed_background": "#e1e7db", "completed_text": "#597048"
+    "completed_background": "#e1e7db", "completed_text": "#597048",
+    "merged_background": "#f2ebf8", "merged_text": "#392451", "merged_rail": "#7042a0", "merged_rail_text": "#ffffff"
   }
 }

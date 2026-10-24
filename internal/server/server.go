@@ -21,9 +21,11 @@ type RepositoryIdentity struct {
 type RepositoryResolver func(context.Context, string) (RepositoryIdentity, error)
 type Option func(*api)
 type api struct {
-	store    *core.Store
-	resolver RepositoryResolver
-	browser  http.Handler
+	store              *core.Store
+	resolver           RepositoryResolver
+	browser            http.Handler
+	backupHealthFiles  []string
+	backupHealthReader BackupHealthReader
 }
 
 func WithRepositoryResolver(resolver RepositoryResolver) Option {
@@ -61,12 +63,15 @@ func New(store *core.Store, options ...Option) *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/projects", a.createProject)
 	mux.HandleFunc("GET /api/v1/projects", a.listProjects)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}", a.project)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/backup-health", a.backupHealth)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/browser-session", a.createBrowserSession)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/browser-session", a.currentBrowserSession)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/browser-session/renew", a.renewBrowserSession)
 	mux.HandleFunc("DELETE /api/v1/projects/{project_id}/browser-session", a.deleteBrowserSession)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/workers", a.createWorker)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers", a.listWorkers)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}", a.worker)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/presence", a.workerPresence)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/message-events", a.messageEvents)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/credentials", a.grant)
 	mux.HandleFunc("DELETE /api/v1/projects/{project_id}/credentials/{credential_id}", a.revoke)
@@ -106,6 +111,7 @@ func listQuery(r *http.Request) (url.Values, error) {
 
 type projectValue struct {
 	ID           string `json:"id"`
+	Handle       string `json:"handle"`
 	Name         string `json:"name"`
 	RepositoryID int64  `json:"github_repository_id"`
 	Repository   string `json:"repository"`
@@ -125,13 +131,14 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Name       string `json:"name"`
 		Repository string `json:"repository"`
+		Handle     string `json:"handle,omitempty"`
 	}
 	if err = core.ReadJSON(w, r, &request); err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	if !boundedText(request.Name, 200) || strings.IndexFunc(request.Name, unicode.IsControl) >= 0 || !validRepository(request.Repository) {
-		core.WriteError(w, core.Fail("validation_failed", "Provide a bounded project name and an owner/repository GitHub reference.", 400))
+	if !boundedText(request.Name, 200) || strings.IndexFunc(request.Name, unicode.IsControl) >= 0 || !validRepository(request.Repository) || request.Handle != "" && !core.ValidProjectHandle(request.Handle) {
+		core.WriteError(w, core.Fail("validation_failed", "Provide a bounded project name, an owner/repository GitHub reference, and an optional lowercase handle.", 400))
 		return
 	}
 	k, err := key(r)
@@ -143,6 +150,18 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 	if receipt, found, err := a.store.Replay(r.Context(), scope, mutation); err != nil || found {
 		complete(w, receipt, err)
 		return
+	}
+	if request.Handle != "" {
+		var exists int
+		err = a.store.DB().QueryRowContext(r.Context(), `SELECT 1 FROM project_handles WHERE handle=? UNION ALL SELECT 1 FROM projects WHERE id=? LIMIT 1`, request.Handle, request.Handle).Scan(&exists)
+		if err == nil {
+			core.WriteError(w, core.Fail("project_handle_conflict", "This project handle is already in use.", 409))
+			return
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			core.WriteError(w, err)
+			return
+		}
 	}
 	if a.resolver == nil {
 		core.WriteError(w, core.Fail("provider_unavailable", "Repository verification is not configured.", 503))
@@ -176,12 +195,16 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO projects(id,name,github_repository_id,repository) VALUES(?,?,?,?)", id, request.Name, identity.ID, identity.FullName); err != nil {
 			return nil, err
 		}
+		handle, err := core.AssignProjectHandle(ctx, tx, id, request.Name, request.Handle)
+		if err != nil {
+			return nil, err
+		}
 		eventScope := scope
 		eventScope.ProjectID = id
 		if err = core.AppendEvent(ctx, tx, eventScope, "projects.created", id, 1, map[string]string{"id": id}); err != nil {
 			return nil, err
 		}
-		return map[string]any{"id": id, "revision": 1, "outcome": "created"}, nil
+		return map[string]any{"id": id, "handle": handle, "revision": 1, "outcome": "created"}, nil
 	})
 	complete(w, result, err)
 }
@@ -193,7 +216,7 @@ func (a *api) project(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var value projectValue
-	err = a.store.DB().QueryRowContext(r.Context(), "SELECT id,name,github_repository_id,repository FROM projects WHERE id=?", scope.ProjectID).Scan(&value.ID, &value.Name, &value.RepositoryID, &value.Repository)
+	err = a.store.DB().QueryRowContext(r.Context(), "SELECT p.id,h.handle,p.name,p.github_repository_id,p.repository FROM projects p JOIN project_handles h ON h.project_id=p.id WHERE p.id=?", scope.ProjectID).Scan(&value.ID, &value.Handle, &value.Name, &value.RepositoryID, &value.Repository)
 	complete(w, value, err)
 }
 
@@ -218,7 +241,7 @@ func (a *api) listProjects(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	rows, err := a.store.DB().QueryContext(r.Context(), "SELECT id,name,github_repository_id,repository FROM projects WHERE id>? ORDER BY id LIMIT ?", after, limit+1)
+	rows, err := a.store.DB().QueryContext(r.Context(), "SELECT p.id,h.handle,p.name,p.github_repository_id,p.repository FROM projects p JOIN project_handles h ON h.project_id=p.id WHERE p.id>? ORDER BY p.id LIMIT ?", after, limit+1)
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -227,7 +250,7 @@ func (a *api) listProjects(w http.ResponseWriter, r *http.Request) {
 	values := make([]projectValue, 0, limit+1)
 	for rows.Next() {
 		var value projectValue
-		if err = rows.Scan(&value.ID, &value.Name, &value.RepositoryID, &value.Repository); err != nil {
+		if err = rows.Scan(&value.ID, &value.Handle, &value.Name, &value.RepositoryID, &value.Repository); err != nil {
 			core.WriteError(w, err)
 			return
 		}

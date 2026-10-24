@@ -57,7 +57,7 @@ func TestNativeDetailBudgetRejectsUpdateAtomicallyAndAllowsNearBudgetRead(t *tes
 	input := largeDetailDecisions(run, 2048)
 	// Demonstrate that the rejected payload really exceeds the encoder budget.
 	projected := before
-	projected.Findings = append([]Finding(nil), before.Findings...)
+	projected.Findings = append([]FindingView(nil), before.Findings...)
 	for i, next := range input.Findings {
 		finding := &projected.Findings[i]
 		finding.Disposition, finding.DecisionReason, finding.Actor, finding.DecidedAt = next.Disposition, next.DecisionReason, next.Actor, next.DecidedAt
@@ -137,7 +137,7 @@ func TestNativeDetailBudgetRejectsInitialPublicationAtomically(t *testing.T) {
 }
 
 func TestRunDetailBudgetMatchesHTTPEncoding(t *testing.T) {
-	response := RunDetailResponse{Findings: []Finding{{Title: "<>&\u2028"}}}
+	response := RunDetailResponse{Findings: []FindingView{{Finding: Finding{Title: "<>&\u2028"}}}}
 	size, err := encodedRunDetailSize(response)
 	if err != nil {
 		t.Fatal(err)

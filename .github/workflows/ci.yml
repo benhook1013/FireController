@@ -14,13 +14,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  linux:
-    name: Linux checks
+  static:
+    name: Source and browser checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -30,13 +34,103 @@ jobs:
             webapp/package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
+      - run: make workflow-check ci-selection-check fmt-check docs-check source-converter-check browser-check browser-build
+      - name: Verify embedded browser assets match source
+        run: |
+          git diff --exit-code -- internal/webui/assets
+          test -z "$(git ls-files --others --exclude-standard -- internal/webui/assets)"
+
+  linux:
+    name: Go race (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Use available hosted capacity without the previous tail of queued slices.
+      max-parallel: 20
+      matrix:
+        shard: [backup-0, reviewexec-0, reviews-0, reviewruntime-0, rest-0, backup-1, reviewexec-1, reviews-1, reviewruntime-1, rest-1, backup-2, reviewexec-2, reviews-2, backup-3, reviewexec-3, reviews-3, backup-4, reviewexec-4, backup-5, reviewexec-5, backup-6, backup-7]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Isolate the race build cache
+        run: printf 'GOCACHE=%s/firecontroller-go-race\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
-          cache: false
-      - run: make check build
-      - name: Smoke packaged binaries
-        run: make smoke
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Select Go packages
+        id: packages
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          go list ./... > "$RUNNER_TEMP/firecontroller-go-packages"
+          python3 tools/ci/select-go-tests.py "$SHARD" "$RUNNER_TEMP/firecontroller-go-packages" >> "$GITHUB_OUTPUT"
+      - name: Select complementary package tests
+        id: partition
+        if: steps.packages.outputs.partitioned == 'true'
+        env:
+          SHARD: ${{ matrix.shard }}
+          GO_TEST_PACKAGES: ${{ steps.packages.outputs.packages }}
+        run: |
+          set -euo pipefail
+          go test -race -p=2 -list . "$GO_TEST_PACKAGES" > "$RUNNER_TEMP/firecontroller-go-tests"
+          python3 tools/ci/select-go-tests.py "$SHARD" "$RUNNER_TEMP/firecontroller-go-packages" --tests "$RUNNER_TEMP/firecontroller-go-tests" >> "$GITHUB_OUTPUT"
+      - name: Run fresh race tests and vet
+        env:
+          GO_TEST_PACKAGES: ${{ steps.packages.outputs.packages }}
+          GO_TEST_RUN: ${{ steps.partition.outputs.run || '.' }}
+        run: make test-race vet
+
+  qualification:
+    name: Packaged qualification
+    # Keep the browser dependency baseline explicit across hosted image rollouts.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - run: npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
+      - name: Build packaged binaries
+        run: make build legacyimport
+      - name: Verify embedded browser assets match source
+        run: |
+          git diff --exit-code -- internal/webui/assets
+          test -z "$(git ls-files --others --exclude-standard -- internal/webui/assets)"
+      - name: Check ordinary-runtime limits
+        run: make test-budgets
+      - name: Smoke packaged binaries and legacy adoption
+        run: make smoke migration-smoke
+      - name: Install pinned optional backup transport
+        env:
+          RCLONE_VERSION: v1.75.2
+          RCLONE_SHA256: 349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
+        run: |
+          curl --fail --silent --show-error --location --max-time 90 "https://downloads.rclone.org/$RCLONE_VERSION/rclone-$RCLONE_VERSION-linux-amd64.zip" --output "$RUNNER_TEMP/rclone.zip"
+          python3 - <<'PY'
+          import hashlib, os, pathlib, zipfile
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          archive = root / 'rclone.zip'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == os.environ['RCLONE_SHA256']
+          with zipfile.ZipFile(archive) as zipped:
+              (root / 'rclone').write_bytes(zipped.read('rclone-' + os.environ['RCLONE_VERSION'] + '-linux-amd64/rclone'))
+          (root / 'rclone').chmod(0o755)
+          PY
+      - name: Smoke offsite S3 transfer and encrypted recovery
+        timeout-minutes: 4
+        run: make offsite-smoke RCLONE="$RUNNER_TEMP/rclone"
       - name: Install pinned Chromium
         working-directory: webapp
         timeout-minutes: 5
@@ -44,10 +138,6 @@ jobs:
       - name: Smoke embedded browser lifecycle
         timeout-minutes: 2
         run: make browser-smoke
-      - name: Verify embedded browser assets match source
-        run: |
-          git diff --exit-code -- internal/webui/assets
-          test -z "$(git ls-files --others --exclude-standard -- internal/webui/assets)"
       - name: Check standalone Windows and macOS builds
         run: |
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fc-windows.exe ./cmd/fc
@@ -57,6 +147,28 @@ jobs:
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fcmcp-windows.exe ./cmd/fcmcp
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fcmcp-macos ./cmd/fcmcp
 
+  container:
+    name: Container runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build and check provider container runtime
+        run: |
+          docker build --platform linux/amd64 -t firecontroller:ci .
+          docker run --rm --pull=never --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=67108864,mode=1777 \
+            --entrypoint /bin/sh firecontroller:ci -ec '
+              test "$(id -u)" = 65532
+              test "$(id -g)" = 65532
+              git --version
+              test -x /usr/lib/git-core/git-remote-https
+              test -s /etc/ssl/certs/ca-certificates.crt
+              git init --bare --template= /tmp/source.git
+            '
   native-smoke:
     name: Native smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -77,7 +189,8 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
+          cache-dependency-path: go.sum
       - name: Build native packaged binaries
         env:
           FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
@@ -102,13 +215,19 @@ jobs:
   validate:
     name: validate
     runs-on: ubuntu-latest
-    needs: [linux, native-smoke]
+    needs: [static, linux, qualification, container, native-smoke]
     if: ${{ always() }}
     steps:
-      - name: Require Linux and both native smoke results
+      - name: Require every check family
         env:
+          STATIC_RESULT: ${{ needs.static.result }}
           LINUX_RESULT: ${{ needs.linux.result }}
+          QUALIFICATION_RESULT: ${{ needs.qualification.result }}
+          CONTAINER_RESULT: ${{ needs.container.result }}
           NATIVE_RESULT: ${{ needs.native-smoke.result }}
         run: |
+          test "$STATIC_RESULT" = success
           test "$LINUX_RESULT" = success
+          test "$QUALIFICATION_RESULT" = success
+          test "$CONTAINER_RESULT" = success
           test "$NATIVE_RESULT" = success

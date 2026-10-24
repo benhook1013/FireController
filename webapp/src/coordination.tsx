@@ -5,6 +5,8 @@ import { useQuery } from '@tanstack/react-query';
 import { Pager, ReadState, signalFor, usePaging, useWorkspace } from './workspace';
 import type { Note, NoteHistorySummary, NoteOptions, NoteRevision, NoteSummary, WorkerPause, WorkerPrimary } from './types';
 import { useProjectHeading } from './presentation-context';
+import { ContextualNotes } from './contextual-notes';
+import { EditorialMarkdown } from './editorial-markdown';
 import './coordination.css';
 
 const pageSize = 20;
@@ -20,7 +22,7 @@ export function notesPath(home: string, filters: { worker_id?: string; job_id?: 
 }
 
 export function PauseContent({ value }: { value: WorkerPause }) {
-  return <><h3>Explicit pause</h3><p><strong>{value.paused ? 'Paused' : 'Not paused'}</strong> · Pause revision {value.revision}</p><p className="full-text">{value.reason || 'No pause reason recorded.'}</p><p className="item-meta">A coordination choice, not agent presence or an execution control.</p></>;
+  return <><h3>Explicit pause</h3><p><strong>{value.paused ? 'Paused' : 'Not paused'}</strong> · Pause revision {value.revision}</p><EditorialMarkdown>{value.reason || 'No pause reason recorded.'}</EditorialMarkdown><p className="item-meta">A coordination choice, not agent presence or an execution control.</p></>;
 }
 export function PrimaryContent({ value, home }: { value: WorkerPrimary; home: string }) {
   return <><h3>Primary job</h3>{value.job_id ? <p><Link to={jobPath(home, value.job_id)}>Open primary job {value.job_id}</Link></p> : <p>No primary job selected.</p>}<p className="item-meta">Focus revision {value.revision}. Focus is independent of job status and other assignments.</p></>;
@@ -36,7 +38,8 @@ function WorkerDetails({ workerId }: { workerId: string }) {
   const worker = useQuery({ queryKey: [...key, 'worker', workerId], queryFn: ({ signal }) => session.api.worker(workerId, signalFor(session, signal)), staleTime: Infinity });
   const pause = useQuery({ queryKey: [...key, 'worker-pause', workerId], queryFn: ({ signal }) => session.api.workerPause(workerId, signalFor(session, signal)), staleTime: Infinity });
   const primary = useQuery({ queryKey: [...key, 'worker-primary', workerId], queryFn: ({ signal }) => session.api.workerPrimary(workerId, signalFor(session, signal)), staleTime: Infinity });
-  return <div className="coordination"><section className="panel"><ReadState error={worker.error} loading={worker.isPending} empty={false}>{worker.data && <><p className="eyebrow">Worker details</p><h2>{worker.data.name}</h2><p className="item-meta">{worker.data.id}</p><Link to={notesPath(home, { worker_id: workerId })}>Notes for this worker</Link></>}</ReadState></section>
+  return <div className="coordination"><section className="panel"><ReadState error={worker.error} loading={worker.isPending} empty={false}>{worker.data && <><p className="eyebrow">Worker details</p><h2>{worker.data.name}</h2><p className="item-meta">{worker.data.id}</p></>}</ReadState></section>
+    <ContextualNotes workerId={workerId} />
     <section className="panel"><ReadState error={pause.error} loading={pause.isPending} empty={false}>{pause.data && <PauseContent value={pause.data} />}</ReadState><button type="button" aria-expanded={pauseHistory} onClick={() => setPauseHistory(value => !value)}>{pauseHistory ? 'Hide pause history' : 'Show pause history'}</button>{pauseHistory && <PauseHistory workerId={workerId} />}</section>
     <section className="panel"><ReadState error={primary.error} loading={primary.isPending} empty={false}>{primary.data && <PrimaryContent value={primary.data} home={home} />}</ReadState><button type="button" aria-expanded={primaryHistory} onClick={() => setPrimaryHistory(value => !value)}>{primaryHistory ? 'Hide focus history' : 'Show focus history'}</button>{primaryHistory && <PrimaryHistory workerId={workerId} />}</section>
   </div>;
@@ -45,7 +48,7 @@ function PauseHistory({ workerId }: { workerId: string }) {
   const { session, key } = useWorkspace();
   const paging = usePaging();
   const query = useQuery({ queryKey: [...key, 'worker-pause-history', workerId, paging.cursor], queryFn: ({ signal }) => session.api.workerPauseHistory(workerId, { limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity, gcTime: 0, refetchOnMount: 'always' });
-  return <div className="coordination-history"><h4>Pause history</h4><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ol>{query.data?.items.map(row => <li key={row.revision}><strong>Revision {row.revision} · {row.paused ? 'Paused' : 'Not paused'}</strong><p className="full-text">{row.reason || 'No reason recorded.'}</p><p className="item-meta">Recorded by {row.actor_id} · Worker {row.actor_worker_id || 'not bound'} · <time dateTime={row.created_at}>{date(row.created_at)}</time></p></li>)}</ol></ReadState><Pager paging={paging} page={query.data} label="pause history" busy={query.isFetching} /></div>;
+  return <div className="coordination-history"><h4>Pause history</h4><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ol>{query.data?.items.map(row => <li key={row.revision}><strong>Revision {row.revision} · {row.paused ? 'Paused' : 'Not paused'}</strong><EditorialMarkdown>{row.reason || 'No reason recorded.'}</EditorialMarkdown><p className="item-meta">Recorded by {row.actor_id} · Worker {row.actor_worker_id || 'not bound'} · <time dateTime={row.created_at}>{date(row.created_at)}</time></p></li>)}</ol></ReadState><Pager paging={paging} page={query.data} label="pause history" busy={query.isFetching} /></div>;
 }
 function PrimaryHistory({ workerId }: { workerId: string }) {
   const { session, key, home } = useWorkspace();
@@ -124,7 +127,7 @@ export function NoteSummaryRows({ rows, home }: { rows: NoteSummary[]; home: str
   return <ul className="coordination-notes">{rows.map(note => <li key={note.id}><p><span className="badge neutral">{note.kind} · {note.status}</span> · Revision {note.revision}</p><NoteScope value={note} home={home} /><p className="full-text">{note.body_preview}</p><p className="item-meta">{note.body_truncated ? 'Truncated preview.' : 'Preview.'} Open the note to read its full body.</p><Link to={notePath(home, note.id)}>Read note {note.id}</Link></li>)}</ul>;
 }
 export function NoteContent({ value, home }: { value: Note; home: string }) {
-  return <section className="panel brief"><h2>Note</h2><p><span className="badge neutral">{value.kind} · {value.status}</span> · Revision {value.revision}</p><NoteScope value={value} home={home} /><h3>Full body</h3><p className="full-text">{value.body}</p><h3>{value.status === 'dismissed' ? 'Dismissal reason' : 'Status reason'}</h3><p className="full-text">{value.status_reason || 'No status reason recorded.'}</p><dl className="metadata"><div><dt>Note ID</dt><dd>{value.id}</dd></div><div><dt>Created</dt><dd><time dateTime={value.created_at}>{date(value.created_at)}</time></dd></div><div><dt>Updated</dt><dd><time dateTime={value.updated_at}>{date(value.updated_at)}</time></dd></div></dl></section>;
+  return <section className="panel brief"><h2>Note</h2><p><span className="badge neutral">{value.kind} · {value.status}</span> · Revision {value.revision}</p><NoteScope value={value} home={home} /><h3>Full body</h3><EditorialMarkdown>{value.body}</EditorialMarkdown><h3>{value.status === 'dismissed' ? 'Dismissal reason' : 'Status reason'}</h3><EditorialMarkdown>{value.status_reason || 'No status reason recorded.'}</EditorialMarkdown><dl className="metadata"><div><dt>Note ID</dt><dd>{value.id}</dd></div><div><dt>Created</dt><dd><time dateTime={value.created_at}>{date(value.created_at)}</time></dd></div><div><dt>Updated</dt><dd><time dateTime={value.updated_at}>{date(value.updated_at)}</time></dd></div></dl></section>;
 }
 export function NoteView() {
   const { noteId = '' } = useParams();

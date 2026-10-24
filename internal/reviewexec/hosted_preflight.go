@@ -44,13 +44,25 @@ func hostedAllowanceSameSource(a, b Anchor) bool {
 }
 
 func validHostedAllowanceInput(in HostedAllowanceInput) bool {
+	return validHostedAllowanceObservation(in) && in.Observation.State == "available_observed" && in.Observation.Reason == "provider_available_observed" && in.Observation.RetryNotBefore.IsZero()
+}
+
+func validHostedAllowanceObservation(in HostedAllowanceInput) bool {
 	observed, ok := hostedObservationTime(in.ObservedAt)
 	o := in.Observation
 	return ok && hostedObservationID(in.QueryID, "review_hosted_query_") && validEvidenceAnchor(in.Anchor) &&
 		in.ChangedFiles > 0 && in.ChangedFiles <= 100000 && hash.MatchString(in.CaptureSHA256) && in.CaptureID == "review_capture_"+in.CaptureSHA256[:32] && in.CaptureBytes > 0 && in.CaptureBytes <= 48<<20 &&
-		o.State == "available_observed" && o.Reason == "provider_available_observed" && o.QueryCommentID > 0 && o.ResponseCommentID > 0 && o.ResponseCommentID != o.QueryCommentID &&
+		validHostedAllowanceOutcome(o) && o.QueryCommentID > 0 && o.ResponseCommentID > 0 && o.ResponseCommentID != o.QueryCommentID &&
 		o.QueryCreatedAt.Location() == time.UTC && !o.QueryCreatedAt.IsZero() && o.QueryCreatedAt.Year() >= 1 && o.QueryCreatedAt.Year() <= 9999 &&
-		o.ResponseCreatedAt.Location() == time.UTC && !o.ResponseCreatedAt.IsZero() && o.ResponseCreatedAt.After(o.QueryCreatedAt) && !o.ResponseCreatedAt.After(observed) && o.RetryNotBefore.IsZero()
+		o.ResponseCreatedAt.Location() == time.UTC && !o.ResponseCreatedAt.IsZero() && o.ResponseCreatedAt.After(o.QueryCreatedAt) && !o.ResponseCreatedAt.After(observed)
+}
+
+func validHostedAllowanceOutcome(o reviewprovider.HostedAllowanceObservation) bool {
+	if o.State == "available_observed" {
+		return o.Reason == "provider_available_observed" && o.RetryNotBefore.IsZero()
+	}
+	d := o.RetryNotBefore.Sub(o.ResponseCreatedAt)
+	return o.State == "cooldown_observed" && o.Reason == "provider_cooldown_observed" && o.RetryNotBefore.Location() == time.UTC && o.RetryNotBefore.Year() >= 1 && o.RetryNotBefore.Year() <= 9999 && d >= 2*time.Minute && d <= 24*time.Hour && d%time.Minute == 0
 }
 
 func hostedAllowanceUnavailable() error {
@@ -61,7 +73,7 @@ func decodeHostedAllowance(body, project, attemptID string) (hostedAllowanceReco
 	var retained hostedAllowanceRecord
 	if len(body) > 16<<10 || strictjson.Validate([]byte(body)) != nil || json.Unmarshal([]byte(body), &retained) != nil || encoded(retained) != body ||
 		retained.ProjectID != project || retained.AttemptID != attemptID || !hostedObservationID(retained.OperationID, "review_operation_") || !identifier.MatchString(retained.ActorID) || retained.WorkerID != "" && !identifier.MatchString(retained.WorkerID) ||
-		retained.ConfigurationRevision < 1 || retained.PolicyRevision < 1 || !hash.MatchString(retained.CapabilityFingerprint) || !validHostedAllowanceInput(retained.Input) {
+		retained.ConfigurationRevision < 1 || retained.PolicyRevision < 1 || !hash.MatchString(retained.CapabilityFingerprint) || !validHostedAllowanceObservation(retained.Input) {
 		return hostedAllowanceRecord{}, hostedAllowanceUnavailable()
 	}
 	return retained, nil
@@ -78,7 +90,22 @@ func hostedAllowanceBinding(record hostedAllowanceRecord, attempt Attempt, opera
 // admission. Exact replay is local and precedes freshness/current eligibility;
 // a replay cannot refresh provider facts or authorize another external action.
 func (e *Engine) RecordHostedAllowance(ctx context.Context, project, attemptID string, expectedRevision int64, input HostedAllowanceInput) error {
-	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(project) || !hostedObservationID(attemptID, "review_attempt_") || expectedRevision != 1 || !validHostedAllowanceInput(input) {
+	if !validHostedAllowanceInput(input) {
+		return invalid()
+	}
+	return e.recordHostedAllowance(ctx, project, attemptID, expectedRevision, input)
+}
+
+// RecordHostedCooldown retains attributed cooldown facts, never positive admission.
+func (e *Engine) RecordHostedCooldown(ctx context.Context, project, attemptID string, expectedRevision int64, input HostedAllowanceInput) error {
+	if input.Observation.State != "cooldown_observed" {
+		return invalid()
+	}
+	return e.recordHostedAllowance(ctx, project, attemptID, expectedRevision, input)
+}
+
+func (e *Engine) recordHostedAllowance(ctx context.Context, project, attemptID string, expectedRevision int64, input HostedAllowanceInput) error {
+	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(project) || !hostedObservationID(attemptID, "review_attempt_") || expectedRevision != 1 || !validHostedAllowanceObservation(input) {
 		return invalid()
 	}
 	canonical, err := json.Marshal(input)
@@ -137,6 +164,11 @@ func (e *Engine) RecordHostedAllowance(ctx context.Context, project, attemptID s
 			return err
 		}
 		observation := owned.Observation
+		if observation.State == "cooldown_observed" {
+			if err := validateCooldownReference(ctx, tx, attempt, operation, query, owned); err != nil {
+				return err
+			}
+		}
 		if query.ID != owned.QueryID || query.Comment == nil || query.Comment.ID != observation.QueryCommentID || !query.Comment.CreatedAt.Equal(observation.QueryCreatedAt) || !hostedAllowanceSameSource(query.Anchor, owned.Anchor) {
 			return conflict()
 		}
@@ -209,6 +241,9 @@ func (e *Engine) ReadHostedAllowance(ctx context.Context, project, attemptID str
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		record, _, _, err := readHostedAllowance(ctx, tx, project, attemptID)
 		input = record.Input
+		if err == nil && !validHostedAllowanceInput(input) {
+			return conflict()
+		}
 		return err
 	})
 	if err != nil {
@@ -233,7 +268,7 @@ func (e *Engine) VerifyHostedAction(ctx context.Context, project, attemptID stri
 		if err != nil {
 			return err
 		}
-		if operation.Channel != "hosted" || attempt.State != "posting" || attempt.Anchor == nil || !hostedAllowanceSameSource(record.Input.Anchor, *attempt.Anchor) {
+		if !validHostedAllowanceInput(record.Input) || operation.Channel != "hosted" || attempt.State != "posting" || attempt.Anchor == nil || !hostedAllowanceSameSource(record.Input.Anchor, *attempt.Anchor) {
 			return conflict()
 		}
 		intent, err := reviewprovider.HostedTriggerBody(reviewprovider.HostedTriggerIntent{OperationID: operation.ID, AttemptID: attempt.ID, HeadSHA: operation.HeadSHA})

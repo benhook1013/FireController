@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -160,19 +158,7 @@ func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string,
 }
 
 func operationPreference(r *http.Request, defaultSeconds int) (int, error) {
-	values, present := r.Header["Prefer"]
-	if !present {
-		return defaultSeconds, nil
-	}
-	if len(values) != 1 || !strings.HasPrefix(values[0], "wait=") {
-		return 0, invalid()
-	}
-	raw := strings.TrimPrefix(values[0], "wait=")
-	seconds, err := strconv.Atoi(raw)
-	if err != nil || seconds < 0 || seconds > 900 || strconv.Itoa(seconds) != raw {
-		return 0, invalid()
-	}
-	return seconds, nil
+	return core.WaitPreference(r, defaultSeconds)
 }
 
 func operationResponseDeadline(w http.ResponseWriter, seconds int) error {

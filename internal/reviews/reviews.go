@@ -10,14 +10,19 @@ import (
 
 // Register mounts the review observation write boundary and its provider-free
 // project-scoped read routes.
-func Register(mux *http.ServeMux, store *core.Store) {
+func Register(mux *http.ServeMux, store *core.Store, health ...ObservationHealthReader) {
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/transfer/preview", previewTransfer(store))
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/transfer/apply", applyTransfer(store))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/import/preview", previewImport(store))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/import/apply", applyImport(store))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/observations", func(w http.ResponseWriter, r *http.Request) {
 		appendObservation(store, w, r)
 	})
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/queue", queue(store))
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/queue/edits", editQueue(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/queue", queue(store, health...))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/queue/active", activeQueue(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{number}", pull(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{number}/runs", runs(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{number}/attempts", attempts(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/runs/{run_id}", runDetail(store))
 }

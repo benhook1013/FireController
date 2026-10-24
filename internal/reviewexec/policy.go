@@ -16,14 +16,12 @@ import (
 type PolicyConfiguration struct {
 	ExpectedRevision *int64   `json:"expected_revision"`
 	RequiredChannels []string `json:"required_channels"`
-	PausedChannels   []string `json:"paused_channels"`
 	MaxReviewFiles   int64    `json:"max_review_files"`
 }
 
 // Policy omits the previous-revision assertion from the current stored values.
 type Policy struct {
 	RequiredChannels []string `json:"required_channels"`
-	PausedChannels   []string `json:"paused_channels"`
 	MaxReviewFiles   int64    `json:"max_review_files"`
 }
 
@@ -36,17 +34,15 @@ type PolicyRecord struct {
 }
 
 func validPolicy(policy Policy) bool {
-	if policy.RequiredChannels == nil || len(policy.RequiredChannels) < 1 || len(policy.RequiredChannels) > 2 || policy.PausedChannels == nil || len(policy.PausedChannels) > 2 || policy.MaxReviewFiles < 0 || policy.MaxReviewFiles > 100000 {
+	if policy.RequiredChannels == nil || len(policy.RequiredChannels) < 1 || len(policy.RequiredChannels) > 2 || policy.MaxReviewFiles < 0 || policy.MaxReviewFiles > 100000 {
 		return false
 	}
-	for _, channels := range [][]string{policy.RequiredChannels, policy.PausedChannels} {
-		seen := map[string]bool{}
-		for _, channel := range channels {
-			if !validChannel(channel) || seen[channel] {
-				return false
-			}
-			seen[channel] = true
+	seen := map[string]bool{}
+	for _, channel := range policy.RequiredChannels {
+		if !validChannel(channel) || seen[channel] {
+			return false
 		}
+		seen[channel] = true
 	}
 	return true
 }
@@ -61,11 +57,6 @@ func clonePolicyConfiguration(value PolicyConfiguration) PolicyConfiguration {
 		copy(channels, value.RequiredChannels)
 		value.RequiredChannels = channels
 	}
-	if value.PausedChannels != nil {
-		channels := make([]string, len(value.PausedChannels))
-		copy(channels, value.PausedChannels)
-		value.PausedChannels = channels
-	}
 	return value
 }
 
@@ -73,11 +64,11 @@ func clonePolicyConfiguration(value PolicyConfiguration) PolicyConfiguration {
 // performs no admission, provider observation, execution or policy assessment.
 func (e *Engine) ConfigurePolicy(ctx context.Context, scope core.Scope, key string, input PolicyConfiguration) (json.RawMessage, error) {
 	// Bound collection copying even for trusted direct callers.
-	if len(input.RequiredChannels) > 2 || len(input.PausedChannels) > 2 {
+	if len(input.RequiredChannels) > 2 {
 		return nil, invalid()
 	}
 	input = clonePolicyConfiguration(input)
-	policy := Policy{RequiredChannels: input.RequiredChannels, PausedChannels: input.PausedChannels, MaxReviewFiles: input.MaxReviewFiles}
+	policy := Policy{RequiredChannels: input.RequiredChannels, MaxReviewFiles: input.MaxReviewFiles}
 	if !identifier.MatchString(scope.ProjectID) || input.ExpectedRevision == nil || *input.ExpectedRevision < 0 || *input.ExpectedRevision == math.MaxInt64 || !validPolicy(policy) {
 		return nil, invalid()
 	}

@@ -1,6 +1,7 @@
 package publicsite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -15,6 +16,96 @@ var publicGenerationPattern = regexp.MustCompile(`^public_generation_[0-9a-f]{32
 
 func manifestForContent(content Content) Manifest {
 	return publicsitemodel.EditorialManifest(content)
+}
+
+func canonicalJobStatus(value string) bool {
+	return value == "active" || value == "parked" || value == "blocked" || value == "completed"
+}
+
+func orderedTitleSubsequence(values, enrolled []string) bool {
+	position := 0
+	for _, value := range values {
+		for position < len(enrolled) && enrolled[position] != value {
+			position++
+		}
+		if position == len(enrolled) {
+			return false
+		}
+		position++
+	}
+	return true
+}
+
+func validateCurrentEditorial(ctx context.Context, tx *sql.Tx, r record, stored Manifest, content Content) error {
+	expected, err := resolveLinkedSources(ctx, tx, r.project, stored)
+	if err != nil {
+		return unavailable()
+	}
+	observed := manifestForContent(content)
+	if r.refreshError == "projection_unavailable" {
+		progress := make(map[string]int, len(expected.Progress))
+		for i := range expected.Progress {
+			progress[expected.Progress[i].Key] = i
+		}
+		selectedTitles := make([]string, 0, len(stored.JobRefs))
+		for _, ref := range stored.JobRefs {
+			i, found := progress[ref.Key]
+			if !found {
+				return unavailable()
+			}
+			selectedTitles = append(selectedTitles, expected.Progress[i].Title)
+			var status string
+			for _, card := range observed.Progress {
+				if card.Key == ref.Key {
+					status = card.Status
+					break
+				}
+			}
+			if !canonicalJobStatus(status) {
+				return unavailable()
+			}
+			expected.Progress[i].Status = status
+		}
+		lanes := make(map[string]int, len(expected.WorkerLanes))
+		for i := range expected.WorkerLanes {
+			lanes[expected.WorkerLanes[i].Key] = i
+		}
+		for _, ref := range stored.WorkerRefs {
+			i, found := lanes[ref.Key]
+			if !found {
+				return unavailable()
+			}
+			var lane *WorkerLane
+			for j := range observed.WorkerLanes {
+				if observed.WorkerLanes[j].Key == ref.Key {
+					lane = &observed.WorkerLanes[j]
+					break
+				}
+			}
+			if lane == nil || lane.Label != ref.Label || len(lane.Milestones) > MaxMilestones || !orderedTitleSubsequence(lane.Milestones, selectedTitles) {
+				return unavailable()
+			}
+			if len(lane.Milestones) == 0 {
+				if lane.Headline != "" || lane.Status != "idle" {
+					return unavailable()
+				}
+			} else if lane.Headline != lane.Milestones[0] || !canonicalJobStatus(lane.Status) {
+				return unavailable()
+			}
+			expected.WorkerLanes[i].Headline = lane.Headline
+			expected.WorkerLanes[i].Status = lane.Status
+			expected.WorkerLanes[i].Milestones = append([]string(nil), lane.Milestones...)
+		}
+	}
+	expectedJSON, err := json.Marshal(expected)
+	if err != nil {
+		return unavailable()
+	}
+	observedJSON, err := json.Marshal(observed)
+	if err != nil || !bytes.Equal(expectedJSON, observedJSON) {
+		return unavailable()
+	}
+	return nil
 }
 
 // decodeSnapshotContent validates the same explicit public model used to build
@@ -76,7 +167,7 @@ func ValidateSnapshot(ctx context.Context, tx *sql.Tx) error {
 		} else if r.publicRevision < 0 || !publicGenerationPattern.MatchString(r.generation) || !validPublicationTime(r.updated) {
 			return unavailable()
 		}
-		if err = validatePublicHistory(ctx, tx, r); err != nil {
+		if err = validatePublicHistory(ctx, tx, r, manifest); err != nil {
 			return err
 		}
 	}
@@ -93,7 +184,7 @@ func ValidateSnapshot(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-func validatePublicHistory(ctx context.Context, tx *sql.Tx, r record) error {
+func validatePublicHistory(ctx context.Context, tx *sql.Tx, r record, manifest Manifest) error {
 	rows, err := tx.QueryContext(ctx, `SELECT CASE WHEN length(CAST(generation AS BLOB))<=50 THEN generation ELSE NULL END,revision,CASE WHEN length(CAST(content_json AS BLOB))<=262144 THEN content_json ELSE NULL END,CASE WHEN length(CAST(created_at AS BLOB))<=64 THEN created_at ELSE NULL END FROM public_project_snapshots WHERE project_id=? ORDER BY generation,revision LIMIT 1001`, r.project)
 	if err != nil {
 		return err
@@ -128,9 +219,8 @@ func validatePublicHistory(ctx context.Context, tx *sql.Tx, r record) error {
 				return unavailable()
 			}
 			if r.enabled {
-				manifest, err := json.Marshal(manifestForContent(content))
-				if err != nil || string(manifest) != r.manifest {
-					return unavailable()
+				if err = validateCurrentEditorial(ctx, tx, r, manifest, content); err != nil {
+					return err
 				}
 			}
 		}

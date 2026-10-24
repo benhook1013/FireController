@@ -65,7 +65,7 @@ func adjudicationStorageError() error {
 
 // loadReviewAdjudication reads the immutable source and current projection in the
 // same snapshot. Source text is used internally and never included in the view.
-func loadReviewAdjudication(ctx context.Context, tx *sql.Tx, project, id string) (ReviewEvidence, ReviewAdjudication, error) {
+func loadReviewAdjudication(ctx context.Context, tx EvidenceQuery, project, id string) (ReviewEvidence, ReviewAdjudication, error) {
 	var captureBody string
 	var stateBody sql.NullString
 	var revision sql.NullInt64
@@ -173,11 +173,23 @@ func (e *Engine) persistReviewAdjudication(ctx context.Context, tx *sql.Tx, scop
 			return nil, err
 		}
 	}
+	if err = refreshEvidenceComparison(ctx, tx, scope.ProjectID, state.EvidenceID); err != nil {
+		return nil, err
+	}
+	if state.Finalized {
+		var operation string
+		if err = tx.QueryRowContext(ctx, `SELECT operation_id FROM review_execution_evidence WHERE project_id=? AND id=?`, scope.ProjectID, state.EvidenceID).Scan(&operation); err != nil {
+			return nil, err
+		}
+		if err = completeRoundControl(ctx, tx, scope.ProjectID, operation); err != nil {
+			return nil, err
+		}
+	}
 	return Receipt{ID: state.EvidenceID, State: kind, Revision: state.Revision}, nil
 }
 
 func (e *Engine) DecideReviewFinding(ctx context.Context, scope core.Scope, key, evidenceID string, request FindingDecisionRequest) (json.RawMessage, error) {
-	if !identifier.MatchString(evidenceID) || !validAdjudicationRevision(request.ExpectedRevision) || request.Finding < 0 || request.Finding >= 100 || request.ExpectedRouteRevision < 0 || request.ExpectedRouteRevision == math.MaxInt64 || request.Disposition != "accepted" && request.Disposition != "rejected" || !safeText(request.Reason, 2048) || strings.TrimSpace(request.Reason) == "" {
+	if !identifier.MatchString(evidenceID) || !validAdjudicationRevision(request.ExpectedRevision) || !validFindingDecisionAction(request) {
 		return nil, invalid()
 	}
 	// Copy pointer values so the callback and receipt fingerprint use one input.
@@ -191,31 +203,10 @@ func (e *Engine) DecideReviewFinding(ctx context.Context, scope core.Scope, key,
 		if !adjudicationMatches(state, expected) {
 			return nil, conflict()
 		}
-		if request.Finding >= int64(len(state.Findings)) {
-			return nil, invalid()
+		at, err := e.applyFindingDecision(ctx, tx, scope, evidence, &state, request)
+		if err != nil {
+			return nil, err
 		}
-		f := &state.Findings[request.Finding]
-		if request.Disposition == "rejected" && f.FixSHA != "" {
-			return nil, conflict()
-		}
-		var at string
-		if f.Disposition == "routed" {
-			at = e.routeStamp("")
-		} else {
-			at = sourceStamp()
-		}
-		if f.Disposition == "routed" {
-			if err = routeRepository(ctx, tx, scope.ProjectID, evidence.Anchor.RepositoryID); err != nil {
-				return nil, err
-			}
-			if at, err = supersedeFindingRoute(ctx, tx, scope, evidence, state, *f, request.ExpectedRouteRevision, at); err != nil {
-				return nil, err
-			}
-			f.RouteID = ""
-		} else if request.ExpectedRouteRevision != 0 {
-			return nil, conflict()
-		}
-		f.Disposition, f.Reason, f.ActorID, f.DecidedAt = request.Disposition, request.Reason, scope.PrincipalID, at
 		return e.persistReviewAdjudication(ctx, tx, scope, state, "adjudicated", request.Finding, request, at)
 	})
 }
@@ -239,6 +230,9 @@ func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, k
 			return nil, err
 		}
 		if a.State != "completed" {
+			if a.State == "uncertain" {
+				return nil, core.Fail("review_result_unsettled", "The complete captured result awaits settlement of its original review attempt.", 409)
+			}
 			return nil, conflict()
 		}
 		counts := FindingCounts{Found: int64(len(state.Findings))}
@@ -266,7 +260,7 @@ func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, k
 }
 
 func (e *Engine) RecordFindingFix(ctx context.Context, scope core.Scope, key, evidenceID string, request FindingFixRequest) (json.RawMessage, error) {
-	if !identifier.MatchString(evidenceID) || !validAdjudicationRevision(request.ExpectedRevision) || request.Finding < 0 || request.Finding >= 100 || request.ExpectedSHA == nil || *request.ExpectedSHA != "" && !sha.MatchString(*request.ExpectedSHA) || !sha.MatchString(request.FixSHA) || !safeText(request.ProofNote, 2048) || strings.TrimSpace(request.ProofNote) == "" {
+	if !identifier.MatchString(evidenceID) || !validAdjudicationRevision(request.ExpectedRevision) || !validFindingFixAction(request) {
 		return nil, invalid()
 	}
 	expected, expectedSHA := *request.ExpectedRevision, *request.ExpectedSHA
@@ -279,15 +273,61 @@ func (e *Engine) RecordFindingFix(ctx context.Context, scope core.Scope, key, ev
 		if !adjudicationMatches(state, expected) {
 			return nil, conflict()
 		}
-		if request.Finding >= int64(len(state.Findings)) {
-			return nil, invalid()
+		at, err := applyFindingFix(&state, request)
+		if err != nil {
+			return nil, err
 		}
-		f := &state.Findings[request.Finding]
-		if f.Disposition != "accepted" || f.FixSHA != expectedSHA {
-			return nil, conflict()
-		}
-		at := stamp()
-		f.FixSHA, f.ProofNote, f.FixedAt = request.FixSHA, request.ProofNote, at
 		return e.persistReviewAdjudication(ctx, tx, scope, state, "fix_recorded", request.Finding, request, at)
 	})
+}
+
+func (e *Engine) applyFindingDecision(ctx context.Context, tx *sql.Tx, scope core.Scope, evidence ReviewEvidence, state *ReviewAdjudication, request FindingDecisionRequest) (string, error) {
+	var err error
+	if request.Finding >= int64(len(state.Findings)) {
+		return "", invalid()
+	}
+	f := &state.Findings[request.Finding]
+	if request.Disposition == "rejected" && f.FixSHA != "" {
+		return "", conflict()
+	}
+	var at string
+	if f.Disposition == "routed" {
+		at = e.routeStamp("")
+	} else {
+		at = sourceStamp()
+	}
+	if f.Disposition == "routed" {
+		if err = routeRepository(ctx, tx, scope.ProjectID, evidence.Anchor.RepositoryID); err != nil {
+			return "", err
+		}
+		if at, err = supersedeFindingRoute(ctx, tx, scope, evidence, *state, *f, request.ExpectedRouteRevision, at); err != nil {
+			return "", err
+		}
+		f.RouteID = ""
+	} else if request.ExpectedRouteRevision != 0 {
+		return "", conflict()
+	}
+	f.Disposition, f.Reason, f.ActorID, f.DecidedAt = request.Disposition, request.Reason, scope.PrincipalID, at
+	return at, nil
+}
+
+func applyFindingFix(state *ReviewAdjudication, request FindingFixRequest) (string, error) {
+	if request.Finding >= int64(len(state.Findings)) {
+		return "", invalid()
+	}
+	f := &state.Findings[request.Finding]
+	if f.Disposition != "accepted" || f.FixSHA != *request.ExpectedSHA {
+		return "", conflict()
+	}
+	at := stamp()
+	f.FixSHA, f.ProofNote, f.FixedAt = request.FixSHA, request.ProofNote, at
+	return at, nil
+}
+
+func validFindingDecisionAction(request FindingDecisionRequest) bool {
+	return !(request.Finding < 0 || request.Finding >= 100 || request.ExpectedRouteRevision < 0 || request.ExpectedRouteRevision == math.MaxInt64 || request.Disposition != "accepted" && request.Disposition != "rejected" || !safeText(request.Reason, 2048) || strings.TrimSpace(request.Reason) == "")
+}
+
+func validFindingFixAction(request FindingFixRequest) bool {
+	return !(request.Finding < 0 || request.Finding >= 100 || request.ExpectedSHA == nil || *request.ExpectedSHA != "" && !sha.MatchString(*request.ExpectedSHA) || !sha.MatchString(request.FixSHA) || !safeText(request.ProofNote, 2048) || strings.TrimSpace(request.ProofNote) == "")
 }

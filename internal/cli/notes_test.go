@@ -81,7 +81,7 @@ func TestNotesCommandsDefaultsPartialStateAndExplicitArchives(t *testing.T) {
 	if json.Unmarshal([]byte(invoke("notes", "list", "--worker", other, "--direct-only")), &page) != nil || len(page.Items) != 1 || page.Items[0].WorkerID != other {
 		t.Fatal("explicit worker", page)
 	}
-	invoke("notes", "add", "--clear-worker", "--phase", "Later", "--kind", "source", "--body", "Phase-only", "--key", "phase-note")
+	invoke("notes", "add", "--clear-worker", "--job", job.ID, "--phase", "Later", "--kind", "source", "--body", "Job-targeted", "--key", "job-note")
 	if json.Unmarshal([]byte(invoke("notes", "list", "--all-workers", "--status", "all")), &page) != nil || len(page.Items) != 3 {
 		t.Fatal("project list", page)
 	}

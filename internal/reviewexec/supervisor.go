@@ -179,12 +179,12 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 func preparationReason(err error) string {
 	var failure *core.Error
 	if errors.As(err, &failure) {
-		if failure.Code == "review_evidence_pending" || failure.Code == "review_capacity" {
+		if failure.Code == "review_evidence_pending" || failure.Code == "review_capacity" || roundControlRefusal(failure.Code) {
 			return failure.Code
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
 			switch reason := details["reason"]; reason {
-			case "repository_changed", "allowance_exhausted", "allowance_unavailable", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "execution_binding_changed", "preparation_duplicate", "source_unavailable", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit", "provider_activity_unproven", "provider_review_active", "provider_actor_unproven", "hosted_allowance_unproven", "hosted_allowance_cooldown", "standing_baseline_unproven":
+			case "source_obligations_pending", "repository_changed", "allowance_exhausted", "allowance_unavailable", "allowance_command_not_started", "allowance_timeout", "allowance_command_failed", "allowance_response_unproven", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "execution_binding_changed", "preparation_duplicate", "source_changed", "target_changed", "parent_moved", "parent_unavailable", "parent_identity_changed", "default_base_changed", "source_unavailable", "source_fetch_timeout", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit", "provider_activity_unproven", "provider_review_active", "provider_actor_unproven", "hosted_allowance_unproven", "hosted_allowance_cooldown", "standing_baseline_unproven":
 				return reason
 			}
 		}
@@ -234,7 +234,10 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if driver == nil {
 			return e.finishPreparation(a, "held", "capability_unavailable")
 		}
-		prepareCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		// Cold source retrieval has its own sixty-second bound. Leave room for
+		// source verification, workspace materialization and allowance checks.
+		// Result collection remains independently bounded by the caller's wait.
+		prepareCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		prepared, err := driver.Prepare(prepareCtx, o, c, a)
 		cancel()
 		if err != nil {
@@ -252,7 +255,13 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
 			}
 			var refusal *core.Error
-			if errors.As(err, &refusal) && (refusal.Code == "review_conflict" || refusal.Code == "validation_failed") {
+			// A protective source hold may arrive during successful preparation.
+			// Admit has refused before recording intent or invoking Dispatch, so
+			// settle this unused reservation through the normal held transition.
+			if errors.As(err, &refusal) && refusal.Code == "review_held" && preparationReason(err) == "source_obligations_pending" {
+				return e.finishPreparation(a, "held", "source_obligations_pending")
+			}
+			if errors.As(err, &refusal) && (refusal.Code == "review_conflict" || refusal.Code == "validation_failed" || roundControlRefusal(refusal.Code)) {
 				return e.finishPreparation(a, "held", "admission_changed")
 			}
 			return persistenceFailure()

@@ -140,3 +140,7 @@ func (d *reviewChannelDriver) Dispatch(ctx context.Context, operation reviewexec
 func (d *reviewChannelDriver) StartRecovery(ctx context.Context) (<-chan error, error) {
 	return d.hosted.StartRecovery(ctx)
 }
+
+func (d *reviewChannelDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) {
+	return d.cli.StartCLIRecovery(ctx)
+}

@@ -21,7 +21,7 @@ func TestWorkerPauseBackupRoundTripPreservesCoordination(t *testing.T) {
 	}{{true, "Private pause <literal> 雪\n\t"}, {true, "Corrected reason"}, {false, ""}, {true, "Retained pause"}} {
 		f.request(t, "PUT", base+"/pause", map[string]any{"expected_revision": revision, "paused": state.paused, "reason": state.reason})
 	}
-	tables := []string{"worker_pause_state", "worker_pause_history", "worker_primary_jobs", "worker_primary_job_history", "jobs", "job_history", "job_checkpoints", "job_updates", "job_checklists", "job_checklist_history", "inbox_messages", "inbox_recipient_state", "review_policy_config", "review_execution_config", "review_operations", "review_attempts", "receipts", "events"}
+	tables := []string{"worker_pause_state", "worker_pause_history", "worker_primary_jobs", "worker_primary_job_history", "jobs", "job_history", "job_checkpoints", "job_updates", "job_checklists", "job_checklist_history", "inbox_messages", "inbox_recipient_state", "review_policy_config", "review_execution_config", "review_operations", "review_attempt_versions", "review_attempt_memberships", "review_current_attempts", "receipts", "events"}
 	original := map[string][][]any{}
 	for _, table := range tables {
 		original[table] = restoreRows(t, f.store.DB(), `SELECT * FROM `+table+` ORDER BY rowid`)
@@ -66,7 +66,7 @@ func TestWorkerPauseOlderJobsBundlesRemainSupported(t *testing.T) {
 				job := restoreRows(t, f.store.DB(), `SELECT id FROM jobs LIMIT 1`)[0][0].(string)
 				f.request(t, "PUT", "/api/v1/projects/"+f.project+"/workers/"+f.worker+"/primary-job", map[string]any{"expected_revision": 0, "job_id": job})
 			}
-			sql := `DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history;DROP TABLE worker_pause_state;`
+			sql := `DROP TABLE job_progress_history; DROP TABLE job_progress; DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history;DROP TABLE worker_pause_state;`
 			if version < 4 {
 				sql += `DROP TABLE worker_primary_job_history;DROP TABLE worker_primary_jobs;`
 			}

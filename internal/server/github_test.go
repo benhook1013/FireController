@@ -5,11 +5,43 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
+
+func TestGitHubCredentialRejectsUnsafeHeaderBytes(t *testing.T) {
+	for name, token := range map[string]string{
+		"nul": "synthetic\x00secret", "control": "synthetic\x01secret",
+		"delete": "synthetic\x7fsecret", "unicode": "syntheticΩsecret",
+		"invalid UTF8": "synthetic\xffsecret", "space": "synthetic secret",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "credential")
+			if err := os.WriteFile(path, []byte(token), 0600); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := loadGitHubCredential(path)
+			var failure *core.Error
+			if loaded != "" || !errors.As(err, &failure) || failure.Code != "configuration_invalid" || strings.Contains(err.Error(), "synthetic") || strings.Contains(err.Error(), path) {
+				t.Fatal("unsafe credential accepted or disclosed")
+			}
+			if resolver, err := GitHubResolver(path); resolver != nil || err == nil {
+				t.Fatal("public resolver accepted unsafe credential")
+			}
+		})
+	}
+	path := filepath.Join(t.TempDir(), "credential")
+	if err := os.WriteFile(path, []byte("synthetic-token!~\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if token, err := loadGitHubCredential(path); err != nil || token != "synthetic-token!~" {
+		t.Fatal("printable token with file newline rejected")
+	}
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

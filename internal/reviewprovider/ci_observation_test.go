@@ -149,6 +149,9 @@ func (f *ciObservationFixture) serve(w http.ResponseWriter, r *http.Request) {
 		body = candidateBranchFixture()
 	case r.URL.Path == candidateCommitPath:
 		body = candidateCommitFixture(candidateBase, candidateHead)
+		if f.mode == "stale_merge_parent" {
+			body = candidateCommitFixture(strings.Repeat("d", 40), candidateHead)
+		}
 	case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/commits/"):
 		parts := strings.Split(r.URL.Path, "/")
 		head, kind := parts[5], parts[6]

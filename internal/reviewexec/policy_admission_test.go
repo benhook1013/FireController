@@ -14,10 +14,9 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-func admissionPolicy(t *testing.T, f *attemptFixture, previous int64, paused ...string) {
+func admissionPolicy(t *testing.T, f *attemptFixture, previous int64) {
 	t.Helper()
 	input := policyInput(previous)
-	input.PausedChannels = append([]string{}, paused...)
 	policyConfigure(t, f, f.scope(t, attemptProject, f.admin, true), "admission-policy-"+strconv.FormatInt(previous, 10), input)
 }
 
@@ -33,19 +32,11 @@ func TestPolicyAdmissionEnqueueRequiresPolicyAndRetainsKeyedRevision(t *testing.
 		t.Fatal("missing policy allocated request effects")
 	}
 	// Required channels describe sufficiency, not which channel may run. An
-	// optional CLI request remains independent of an explicitly paused hosted lane.
+	// optional CLI request remains independent of required hosted coverage.
 	input := policyInput(0)
 	input.RequiredChannels = []string{"hosted"}
-	input.PausedChannels = []string{"hosted"}
 	policyConfigure(t, f, f.scope(t, attemptProject, f.admin, true), "explicit-policy", input)
 	before = policyState(t, f)
-	hosted := request
-	hosted.Channel = "hosted"
-	_, err = f.e.Enqueue(t.Context(), scope, "paused-hosted", hosted)
-	attemptCode(t, err, "reviews_paused")
-	if policyState(t, f) != before || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
-		t.Fatal("paused channel allocated request effects")
-	}
 	original, err := f.e.Enqueue(t.Context(), scope, "cli-key", request)
 	if err != nil {
 		t.Fatal(err)
@@ -61,16 +52,16 @@ func TestPolicyAdmissionEnqueueRequiresPolicyAndRetainsKeyedRevision(t *testing.
 	prepared := f.start(t, attemptProject, receipt)
 	active, err := f.e.Admit(t.Context(), attemptProject, prepared.ID, prepared.Revision, attemptAnchor(attemptProject, 2), "")
 	if err != nil {
-		t.Fatal("hosted pause blocked CLI admission", err)
+		t.Fatal("required hosted coverage blocked CLI admission", err)
 	}
 	if err := f.e.VerifyAction(t.Context(), attemptProject, active.ID, active.Revision); err != nil {
-		t.Fatal("hosted pause blocked CLI final check", err)
+		t.Fatal("required hosted coverage blocked CLI final check", err)
 	}
 	operation, err = f.e.ReadOperation(t.Context(), scope, receipt.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	admissionPolicy(t, f, 1, "cli")
+	f.configure(t, attemptProject, "test-capability", 1, true)
 	before = policyState(t, f)
 	replay, err := f.e.Enqueue(t.Context(), scope, "cli-key", request)
 	if err != nil || !bytes.Equal(original, replay) || policyState(t, f) != before {
@@ -80,7 +71,9 @@ func TestPolicyAdmissionEnqueueRequiresPolicyAndRetainsKeyedRevision(t *testing.
 	if err != nil || !reflect.DeepEqual(operation, retained) {
 		t.Fatal("replay silently adopted new policy", retained, err)
 	}
-	_, err = f.e.Enqueue(t.Context(), scope, "new-paused-key", request)
+	pausedRequest := request
+	pausedRequest.ExpectedConfigurationRevision = 2
+	_, err = f.e.Enqueue(t.Context(), scope, "new-paused-key", pausedRequest)
 	attemptCode(t, err, "reviews_paused")
 	if policyState(t, f) != before || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
 		t.Fatal("paused new key changed journal")
@@ -103,8 +96,8 @@ func TestPolicyAdmissionStartHoldsWithoutPreparingOrDispatch(t *testing.T) {
 			case "changed":
 				admissionPolicy(t, f, 1)
 			case "paused":
-				admissionPolicy(t, f, 1, "cli")
-				reason = "policy_paused"
+				f.configure(t, attemptProject, "test-capability", 1, true)
+				reason = "configuration_changed"
 			case "missing":
 				if _, err := f.store.DB().Exec(`DELETE FROM review_policy_config WHERE project_id=?`, attemptProject); err != nil {
 					t.Fatal(err)
@@ -147,7 +140,7 @@ func TestPolicyAdmissionBetweenPreparationAndAdmitIsReadOnlyFailure(t *testing.T
 				t.Fatal("preparation context did not expose exact binding", current, err)
 			}
 			if paused {
-				admissionPolicy(t, f, 1, "cli")
+				f.configure(t, attemptProject, "test-capability", 1, true)
 			} else {
 				admissionPolicy(t, f, 1)
 			}
@@ -173,7 +166,9 @@ func TestVerifyActionCurrentBindingsAndReservation(t *testing.T) {
 	}{
 		{"unchanged", "", nil},
 		{"policy-changed", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) { admissionPolicy(t, f, 1) }},
-		{"policy-paused", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) { admissionPolicy(t, f, 1, "cli") }},
+		{"policy-paused", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) {
+			f.configure(t, attemptProject, "test-capability", 1, true)
+		}},
 		{"policy-unbound", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) {
 			admissionSQL(t, f, `UPDATE review_operations SET policy_revision=0 WHERE id=?`, a.OperationID)
 		}},
@@ -313,6 +308,7 @@ func TestPolicyAdmissionVersionTwoMigrationRetainsUnboundJournal(t *testing.T) {
 	admissionSQL(t, f, `DROP TABLE review_cli_preflight`)
 	admissionSQL(t, f, `DROP INDEX IF EXISTS review_operations_coverage`)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN policy_revision`)
+	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
 	admissionSQL(t, f, `UPDATE metadata SET value='2' WHERE key='schema:review_execution'`)
 	var sequence int
 	var name, path string
@@ -410,7 +406,7 @@ func TestVerifyActionAlreadyCoveredAndHostedIndependent(t *testing.T) {
 	}
 }
 
-func TestVerifyActionStackedRequiresCompleteOrderedFreshPredecessors(t *testing.T) {
+func TestVerifyActionStackedRequiresExactActualParentWitness(t *testing.T) {
 	f, prior, id, open := coverageFixture(t, 1, false)
 	adjudicationDecide(t, f, id, "reject-predecessor", 0, 0, "rejected")
 	coverageFinalize(t, f, prior, id, 1)
@@ -428,27 +424,27 @@ func TestVerifyActionStackedRequiresCompleteOrderedFreshPredecessors(t *testing.
 	merged := open
 	merged.Pull.Number, merged.Pull.Merged, merged.Pull.State = 3, true, "closed"
 	merged.ParentSHA, merged.ParentPullNumber = "", 0
-	dependencies := []SourcePlan{open, merged}
+	open.Pull.HeadRef = "parent-branch"
+	dependencies := []SourcePlan{open}
 	before := adjudicationState(t, f, child)
 	if err := f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, dependencies...); err != nil {
-		t.Fatal("valid covered/merged stack failed", err)
+		t.Fatal("valid covered actual parent failed", err)
 	}
 	for _, test := range []struct {
 		name   string
 		change func([]SourcePlan) []SourcePlan
 	}{
 		{"missing-all", func([]SourcePlan) []SourcePlan { return nil }},
-		{"missing-merged", func(in []SourcePlan) []SourcePlan { return in[:1] }},
-		{"extra", func(in []SourcePlan) []SourcePlan { return append(in, in[0]) }},
-		{"reordered", func(in []SourcePlan) []SourcePlan { return []SourcePlan{in[1], in[0]} }},
-		{"duplicate", func(in []SourcePlan) []SourcePlan { in[1] = in[0]; return in }},
+		{"unrelated-merged-prefix", func(in []SourcePlan) []SourcePlan { return append(in, merged) }},
+		{"duplicate", func(in []SourcePlan) []SourcePlan { return append(in, in[0]) }},
+		{"wrong-parent-number", func(in []SourcePlan) []SourcePlan { in[0].Pull.Number = 3; return in }},
 		{"foreign-repository", func(in []SourcePlan) []SourcePlan { in[0].Repository.ID = 802; return in }},
-		{"foreign-pull-repository", func(in []SourcePlan) []SourcePlan { in[1].Pull.RepositoryID = 802; return in }},
-		{"malformed-merged-head", func(in []SourcePlan) []SourcePlan { in[1].Pull.HeadSHA = "bad"; return in }},
-		{"malformed-merged-lifecycle", func(in []SourcePlan) []SourcePlan { in[1].Pull.State = "open"; return in }},
+		{"foreign-pull-repository", func(in []SourcePlan) []SourcePlan { in[0].Pull.RepositoryID = 802; return in }},
+		{"malformed-head", func(in []SourcePlan) []SourcePlan { in[0].Pull.HeadSHA = "bad"; return in }},
+		{"closed-unmerged", func(in []SourcePlan) []SourcePlan { in[0].Pull.State = "closed"; return in }},
+		{"merged", func(in []SourcePlan) []SourcePlan { in[0].Pull.State, in[0].Pull.Merged = "closed", true; return in }},
 		{"malformed-open-parent", func(in []SourcePlan) []SourcePlan { in[0].ParentSHA = strings.Repeat("9", 40); return in }},
-		{"closed-unmerged", func(in []SourcePlan) []SourcePlan { in[1].Pull.Merged = false; return in }},
-		{"missing-observation", func(in []SourcePlan) []SourcePlan { in[1].ObservedAt = ""; return in }},
+		{"missing-observation", func(in []SourcePlan) []SourcePlan { in[0].ObservedAt = ""; return in }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plans := test.change(append([]SourcePlan(nil), dependencies...))
@@ -460,9 +456,9 @@ func TestVerifyActionStackedRequiresCompleteOrderedFreshPredecessors(t *testing.
 	}
 	uncovered := append([]SourcePlan(nil), dependencies...)
 	uncovered[0].Pull.HeadSHA = strings.Repeat("9", 40)
-	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, uncovered...), "review_held")
+	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, uncovered...), "validation_failed")
 	if adjudicationState(t, f, child) != before {
-		t.Fatal("uncovered predecessor refusal changed retained state")
+		t.Fatal("moved actual parent refusal changed retained state")
 	}
 	// The proof was ready at preparation, but a real current correction now needs
 	// a fix. The final guard must check predecessors and target in the same read.

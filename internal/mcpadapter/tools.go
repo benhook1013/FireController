@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/buildinfo"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/profile"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -19,6 +20,11 @@ import (
 const maxToolWaitSeconds = 50
 
 type arguments struct {
+	reviewActiveQueue          bool
+	summary                    client.SetJobSummaryRequest
+	reviewRun                  client.ReviewRunRequest
+	roundChannel               string
+	roundControl               client.ConfigureReviewRoundControlRequest
 	notes                      *noteToolCall
 	projectMap                 *projectMapToolCall
 	reviewCheckpoint           client.ReviewCheckpointRequest
@@ -32,11 +38,11 @@ type arguments struct {
 	pullNumber                 int64
 	key                        string
 	create                     client.CreateJobRequest
-	edit                       client.EditJobRequest
 	send                       client.SendMessageRequest
-	checkpoint                 client.AppendCheckpointRequest
-	update                     client.AppendUpdateRequest
+	patch                      client.UpdateJobRequest
 	checklist                  client.ReplaceChecklistRequest
+	checklistItem              client.UpdateChecklistItemRequest
+	itemID                     string
 	primary                    client.ReplacePrimaryJobRequest
 	pause                      client.ReplaceWorkerPauseRequest
 	reviewRoute                client.ReviewRouteRequest
@@ -44,10 +50,14 @@ type arguments struct {
 	reviewRouteFix             client.ReviewRouteFixRequest
 	reviewDecision             client.ReviewDecisionRequest
 	reviewFix                  client.ReviewFixRequest
+	reviewDecisionBatch        client.ReviewDecisionBatchRequest
+	reviewFixBatch             client.ReviewFixBatchRequest
+	operationStatus            *operationStatusInput
 	reviewFinalize             client.ReviewFinalizeRequest
 	reviewRequest              client.ReviewRequest
 	reviewSource               client.ReviewSourceRequest
 	reviewSourceWait           int
+	reviewOperations           client.ReviewOperationsOptions
 }
 type definition struct {
 	name, description string
@@ -57,18 +67,25 @@ type definition struct {
 func boundServer(binding profile.Binding) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128})
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
+	definitions = append(definitions, roundControlDefinitions()...)
+	definitions = append(definitions, reviewRunDefinitions()...)
 	definitions = append(definitions, jobProgressDefinitions()...)
+	definitions = append(definitions, jobSummaryDefinitions()...)
 	definitions = append(definitions, primaryJobDefinitions()...)
 	definitions = append(definitions, workerPauseDefinitions()...)
 	definitions = append(definitions, noteDefinitions()...)
 	definitions = append(definitions, projectMapDefinitions()...)
-	definitions = append(definitions, jobContextDefinition(), messageWaitDefinition())
+	definitions = append(definitions, messageWaitDefinition())
+	definitions = append(definitions, operationListDefinition())
+	definitions = append(definitions, jobStatusDefinitions()...)
+	definitions = append(definitions, reviewBatchDefinitions()...)
 	known := make(map[string]bool)
+	transports := sessionTransports{pools: make(map[*mcp.ServerSession]*client.TransportPool)}
 	for _, tool := range definitions {
 		known[tool.name] = true
 		write := projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		openWorld := checkpointWrite(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		destructive := tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
+		openWorld := checkpointWrite(tool.name) || tool.name == "review_start" || tool.name == "review_request" || tool.name == "review_source_refresh"
+		destructive := tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "map_entry_update" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_update" || tool.name == "job_summary_set" || tool.name == "job_checklist_replace" || tool.name == "job_checklist_item_update" || reviewBatchTool(tool.name) || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
 			var err error
@@ -76,8 +93,6 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				args, err = projectMapArguments(tool.name, request.Params.Arguments)
 			} else if tool.name == "wait_for_messages" {
 				args, err = messageWaitArguments(request.Params.Arguments)
-			} else if tool.name == "job_context" {
-				args, err = jobContextArguments(request.Params.Arguments)
 			} else if noteTool(tool.name) {
 				args, err = noteArguments(tool.name, request.Params.Arguments)
 			} else if workerPauseTool(tool.name) {
@@ -89,7 +104,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				return resultFailure(err), nil
 			}
 			if tool.name == "context" {
-				return result(binding.Context, false), nil
+				return result(struct {
+					profile.Context
+					buildinfo.Connection
+				}{binding.Context, buildinfo.ConnectionInfo(Version)}, false), nil
 			}
 			timeout := 5 * time.Second
 			if tool.name == "wait_for_messages" {
@@ -98,12 +116,12 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			if tool.name == "review_source_refresh" || checkpointWrite(tool.name) {
 				timeout = client.SourceRefreshBudget(args.reviewSourceWait)
 			}
-			if tool.name == "review_request" || tool.name == "review_operation_read" {
+			if tool.name == "review_start" || tool.name == "review_selection_read" || tool.name == "review_request" || tool.name == "review_operation_read" {
 				timeout = client.ReviewOperationBudget(args.reviewSourceWait)
 			}
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
-			service, err := client.New(ctx, binding)
+			service, err := transports.newClient(ctx, binding, request.Session)
 			if err != nil {
 				return resultFailure(err), nil
 			}
@@ -111,12 +129,18 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			options := client.PageOptions{Limit: args.limit, Cursor: args.cursor}
 			var value any
 			switch tool.name {
-			case "map_entry_create", "map_entry_replace", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history":
+			case "review_start":
+				value, err = service.RunReview(ctx, args.key, args.reviewRun, args.reviewSourceWait)
+			case "review_selection_read":
+				value, err = service.WaitReviewSelection(ctx, args.id, args.reviewSourceWait)
+			case "review_rounds_read":
+				value, err = service.ReviewRoundControl(ctx, args.pullNumber, args.roundChannel)
+			case "review_rounds_configure":
+				value, err = service.ConfigureReviewRoundControl(ctx, args.pullNumber, args.roundChannel, args.key, args.roundControl)
+			case "map_entry_create", "map_entry_replace", "map_entry_update", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history":
 				value, err = executeProjectMapTool(ctx, service, args.projectMap)
 			case "wait_for_messages":
 				value, err = service.WaitForMessages(ctx, args.cursor, args.limit, args.messageWaitSeconds)
-			case "job_context":
-				value, err = service.JobContext(ctx, args.id, args.limit)
 			case "note_create", "note_update", "note_read", "note_list", "note_history", "note_revision_read":
 				value, err = executeNoteTool(ctx, service, args.notes)
 			case "presentation_read":
@@ -126,12 +150,15 @@ func boundServer(binding profile.Binding) *mcp.Server {
 					value = struct {
 						profile.Context
 						Verified bool `json:"verified"`
-					}{service.Identity(), true}
+						buildinfo.Connection
+					}{service.Identity(), true, buildinfo.ConnectionInfo(Version)}
 				}
 			case "review_execution_read":
 				value, err = service.ReviewExecution(ctx)
 			case "review_operation_read":
-				value, err = service.WaitReviewOperation(ctx, args.id, args.reviewSourceWait)
+				value, err = executeOperationStatus(ctx, service, args.operationStatus)
+			case "review_operations_list":
+				value, err = service.ReviewOperations(ctx, args.reviewOperations)
 			case "review_request":
 				value, err = service.RequestReview(ctx, args.key, args.reviewRequest, args.reviewSourceWait)
 			case "review_checkpoint_publish":
@@ -141,21 +168,37 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "review_checkpoint_recover":
 				value, err = service.RecoverReviewCheckpoint(ctx, args.key, args.id, args.reviewCheckpointRecovery, args.reviewSourceWait)
 			case "review_source_refresh":
-				value, err = service.RefreshReviewSource(ctx, args.key, args.reviewSource, args.reviewSourceWait)
+				var result client.ReviewSourceResult
+				result, err = service.RefreshReviewSource(ctx, args.key, args.reviewSource, args.reviewSourceWait)
+				value = client.AgentReviewSourceResult(result)
 			case "review_source_refresh_read":
-				value, err = service.ReviewSourceOperation(ctx, args.id)
+				var operation client.ReviewSourceOperation
+				operation, err = service.ReviewSourceOperation(ctx, args.id)
+				value = client.AgentReviewSourceOperation(operation)
 			case "review_source_policy_assess":
 				value, err = service.ReviewSourcePolicyAssessment(ctx, args.pullNumber)
 			case "review_source_readiness":
-				value, err = service.ReviewSourceReadiness(ctx, args.pullNumber)
+				var assessment client.ReviewSourceReadinessAssessment
+				assessment, err = service.ReviewSourceReadiness(ctx, args.pullNumber)
+				value = client.AgentReviewReadiness(assessment)
 			case "review_source_ci_assess":
-				value, err = service.ReviewSourceCIAssessment(ctx, args.pullNumber)
+				var assessment client.ReviewSourceCIAssessment
+				assessment, err = service.ReviewSourceCIAssessment(ctx, args.pullNumber)
+				value = client.AgentReviewCI(assessment)
 			case "review_queue":
-				value, err = service.ReviewQueue(ctx, options)
+				if args.reviewActiveQueue {
+					value, err = runReviewActiveQueue(ctx, service, options)
+				} else {
+					value, err = service.ReviewQueue(ctx, options)
+				}
 			case "review_pull":
 				value, err = service.ReviewPull(ctx, args.pullNumber, args.snapshot)
+			case "review_attempts":
+				value, err = service.ReviewAttempts(ctx, args.pullNumber, client.ReviewAttemptOptions{PageOptions: options, Snapshot: args.snapshot})
 			case "review_runs":
-				value, err = service.ReviewRuns(ctx, args.pullNumber, client.ReviewRunOptions{PageOptions: options, Snapshot: args.snapshot})
+				var runs client.ReviewRuns
+				runs, err = service.ReviewRuns(ctx, args.pullNumber, client.ReviewRunOptions{PageOptions: options, Snapshot: args.snapshot})
+				value = client.AgentReviewRuns(runs)
 			case "review_run":
 				value, err = service.ReviewRun(ctx, args.id, args.snapshot)
 			case "review_policy_assess":
@@ -174,6 +217,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.DecideReviewFindingRoute(ctx, args.key, args.id, args.reviewRouteDecision)
 			case "review_route_fix":
 				value, err = service.FixReviewFindingRoute(ctx, args.key, args.id, args.reviewRouteFix)
+			case "review_findings_decide":
+				value, err = service.DecideReviewFindings(ctx, args.key, args.id, args.reviewDecisionBatch)
+			case "review_findings_fix":
+				value, err = service.RecordReviewFixes(ctx, args.key, args.id, args.reviewFixBatch)
 			case "review_finding_decide":
 				value, err = service.DecideReviewFinding(ctx, args.key, args.id, args.reviewDecision)
 			case "review_finding_fix":
@@ -198,24 +245,26 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.PrimaryJobHistory(ctx, options)
 			case "job_primary_replace":
 				value, err = service.ReplacePrimaryJob(ctx, args.key, args.primary)
+			case "job_summary_read":
+				value, err = service.JobSummary(ctx, args.id)
+			case "job_summary_set":
+				value, err = service.SetJobSummary(ctx, args.key, args.id, args.summary)
+			case "job_status_read":
+				value, err = runJobStatus(ctx, service, args)
 			case "job_read":
 				value, err = service.Job(ctx, args.id)
 			case "job_history":
 				value, err = service.JobHistory(ctx, args.id, options)
-			case "job_checkpoint_latest":
-				value, err = service.LatestCheckpoint(ctx, args.id)
-			case "job_checkpoint_history":
-				value, err = service.CheckpointHistory(ctx, args.id, options)
-			case "job_checkpoint_append":
-				value, err = service.AppendCheckpoint(ctx, args.key, args.id, args.checkpoint)
-			case "job_update_append":
-				value, err = service.AppendJobUpdate(ctx, args.key, args.id, args.update)
-			case "job_update_history":
-				value, err = service.JobUpdates(ctx, args.id, options)
+			case "job_update":
+				value, err = service.UpdateJob(ctx, args.key, args.id, args.patch)
+			case "job_progress_history":
+				value, err = service.JobProgressHistory(ctx, args.id, options)
 			case "job_checklist_read":
 				value, err = service.JobChecklist(ctx, args.id)
 			case "job_checklist_replace":
 				value, err = service.ReplaceJobChecklist(ctx, args.key, args.id, args.checklist)
+			case "job_checklist_item_update":
+				value, err = service.UpdateJobChecklistItem(ctx, args.key, args.id, args.itemID, args.checklistItem)
 			case "job_checklist_history":
 				value, err = service.JobChecklistHistory(ctx, args.id, options)
 			case "inbox_list":
@@ -226,10 +275,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.MessageEvents(ctx, args.cursor, args.limit, args.waitMS)
 			case "inbox_thread":
 				value, err = service.Conversation(ctx, args.id, options)
+			case "inbox_message_read":
+				value, err = service.Message(ctx, args.id)
 			case "jobs_create":
 				value, err = service.CreateJob(ctx, args.key, args.create)
-			case "job_edit":
-				value, err = service.EditJob(ctx, args.key, args.id, args.edit)
 			case "inbox_send":
 				value, err = service.SendMessage(ctx, args.key, args.send)
 			case "inbox_seen":

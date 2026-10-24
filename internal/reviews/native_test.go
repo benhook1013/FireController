@@ -76,7 +76,7 @@ func nativeSnapshotBytes(t *testing.T, f *apiFixture, snapshot string) string {
 	t.Helper()
 	hash := sha256.New()
 	for _, table := range []string{"review_snapshots", "review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls"} {
-		rows, err := f.store.DB().Query("SELECT * FROM "+table+" WHERE project_id=? AND snapshot_id=? ORDER BY rowid", f.project, snapshot)
+		rows, err := f.store.DB().Query("SELECT * FROM "+table+" WHERE project_id=? AND snapshot_id=? ORDER BY 1,2,3,4", f.project, snapshot)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +121,7 @@ func TestNativePublicationPreservesUnrelatedPullCompleteness(t *testing.T) {
 	knownWithIncompleteRun.Complete = true
 	knownWithIncompleteRun.Runs = []RunInput{{SourceRunID: "imported-incomplete-run", Channel: "manual", HeadSHA: knownWithIncompleteRun.HeadSHA, Scope: "Retained partial finding inventory", Outcome: "unknown", Found: 1}}
 	old := f.observe(t, reviewRequest(0, []PullInput{incomplete, knownWithoutRuns, knownWithIncompleteRun}), "original-completeness")["id"].(string)
-	// Rebuilding all compact rows must still repair an older missing source,
+	// Reading an unchanged compact row must still resolve its older missing source,
 	// without changing this unrelated producer's completeness assertion.
 	var stored string
 	if err := f.store.DB().QueryRow(`SELECT recent_runs_json FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=6`, f.project, old).Scan(&stored); err != nil {
@@ -133,7 +133,7 @@ func TestNativePublicationPreservesUnrelatedPullCompleteness(t *testing.T) {
 	}
 	delete(summaries[0], "source")
 	data, _ := json.Marshal(summaries)
-	if _, err := f.store.DB().Exec(`UPDATE review_pulls SET recent_runs_json=? WHERE project_id=? AND snapshot_id=? AND number=6`, string(data), f.project, old); err != nil {
+	if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET recent_runs_json=? WHERE (project_id,number,version_revision) IN (SELECT m.project_id,m.number,m.version_revision FROM review_pull_memberships m JOIN review_snapshots s ON s.project_id=m.project_id WHERE m.project_id=? AND s.snapshot_id=? AND m.start_revision<=s.revision AND (m.end_revision IS NULL OR s.revision<m.end_revision)) AND number=6`, string(data), f.project, old); err != nil {
 		t.Fatal(err)
 	}
 	oldDigest := nativeSnapshotBytes(t, f, old)
@@ -155,8 +155,13 @@ func TestNativePublicationPreservesUnrelatedPullCompleteness(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT recent_runs_json FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=6`, f.project, next.ID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if json.Unmarshal([]byte(stored), &summaries) != nil || summaries[0]["source"] != "test-import" {
-		t.Fatal("full compact origin repair lost")
+	if json.Unmarshal([]byte(stored), &summaries) != nil || summaries[0]["source"] != nil {
+		t.Fatal("unrelated immutable compact body was rewritten")
+	}
+	var unchanged PullResponse
+	nativeRead(t, f, "/pulls/6", &unchanged)
+	if unchanged.Pull.RecentRuns[0].Source != "test-import" {
+		t.Fatal("read-time original source resolution lost")
 	}
 	if nativeSnapshotBytes(t, f, old) != oldDigest {
 		t.Fatal("publication rewrote retained imported snapshot")
@@ -241,7 +246,7 @@ func TestNativePreservesImportedOriginEvidenceAndOldBytes(t *testing.T) {
 	}
 	delete(compact[0], "source")
 	encoded, _ := json.Marshal(compact)
-	if _, err := f.store.DB().Exec(`UPDATE review_pulls SET recent_runs_json=? WHERE project_id=? AND snapshot_id=? AND number=1`, string(encoded), f.project, old); err != nil {
+	if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET recent_runs_json=? WHERE (project_id,number,version_revision) IN (SELECT m.project_id,m.number,m.version_revision FROM review_pull_memberships m JOIN review_snapshots s ON s.project_id=m.project_id WHERE m.project_id=? AND s.snapshot_id=? AND m.start_revision<=s.revision AND (m.end_revision IS NULL OR s.revision<m.end_revision)) AND number=1`, string(encoded), f.project, old); err != nil {
 		t.Fatal(err)
 	}
 	oldDigest := nativeSnapshotBytes(t, f, old)
@@ -275,6 +280,30 @@ func TestNativePreservesImportedOriginEvidenceAndOldBytes(t *testing.T) {
 	if detail.Source != nativeSource || runs.Source != nativeSource || len(runs.Items) != 2 || detail.Pull.RunCount != 2 || detail.Pull.AttemptCount != 2 {
 		t.Fatal("mixed native projection lost producer history")
 	}
+	positionRows, err := f.store.DB().Query(`SELECT v.source,c.run_order FROM review_current_runs c JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision WHERE c.project_id=? AND c.pull_number=1 ORDER BY c.run_order`, f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var placements []struct {
+		source string
+		order  int
+	}
+	for positionRows.Next() {
+		var placement struct {
+			source string
+			order  int
+		}
+		if err := positionRows.Scan(&placement.source, &placement.order); err != nil {
+			positionRows.Close()
+			t.Fatal(err)
+		}
+		placements = append(placements, placement)
+	}
+	err = positionRows.Err()
+	positionRows.Close()
+	if err != nil || len(placements) != 2 || placements[0].source != request.Source || placements[0].order != 0 || placements[1].source != nativeSource || placements[1].order != 1 {
+		t.Fatalf("native run did not append after retained producer placement: %+v err=%v", placements, err)
+	}
 	for _, summaries := range [][]RunSummary{queue.Items[0].RecentRuns, detail.Pull.RecentRuns, runs.Items} {
 		if len(summaries) != 2 || summaries[0].Source != nativeSource || summaries[1].Source != request.Source || summaries[1].ID != importedID || summaries[0].ID == summaries[1].ID {
 			t.Fatal("same external ID producers collapsed or origin relabeled", summaries)
@@ -286,7 +315,7 @@ func TestNativePreservesImportedOriginEvidenceAndOldBytes(t *testing.T) {
 	var importedDetail, nativeDetail RunDetailResponse
 	nativeRead(t, f, "/runs/"+importedID, &importedDetail)
 	nativeRead(t, f, "/runs/"+runOpaqueID(f.project, nativeSource, captured.SourceRunID), &nativeDetail)
-	if importedDetail.Source != nativeSource || importedDetail.Run.Source != request.Source || !reflect.DeepEqual(importedDetail.Findings, imported.Findings) || nativeDetail.Run.Source != nativeSource || !reflect.DeepEqual(nativeDetail.Findings, captured.Findings) {
+	if importedDetail.Source != nativeSource || importedDetail.Run.Source != request.Source || !reflect.DeepEqual(plainFindingsForTest(importedDetail.Findings), imported.Findings) || nativeDetail.Run.Source != nativeSource || !reflect.DeepEqual(plainFindingsForTest(nativeDetail.Findings), captured.Findings) {
 		t.Fatal("full finding text/decision/fix or producer identity changed")
 	}
 	for _, body := range [][]byte{queueBytes, pullBytes, runBytes} {
@@ -378,9 +407,12 @@ func TestNativeAttemptLifecycleKeepsSourceIdentity(t *testing.T) {
 	last := mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &a, Run: &run})
 	var detail PullResponse
 	nativeRead(t, f, "/pulls/1", &detail)
-	if len(detail.Attempts) != 1 || detail.Attempts[0].State != "completed" || detail.Attempts[0].SourceRunID != run.SourceRunID || detail.Attempts[0].TriggerID != "trigger_123" || detail.Attempts[0].DurationSeconds == nil || *detail.Attempts[0].DurationSeconds != 60 || detail.Pull.RunCount != 1 || detail.Pull.AttemptCount != 1 {
+	var archive AttemptsResponse
+	nativeRead(t, f, "/pulls/1/attempts", &archive)
+	if len(archive.Items) != 1 || archive.Items[0].State != "completed" || archive.Items[0].SourceRunID != run.SourceRunID || archive.Items[0].TriggerID != "trigger_123" || archive.Items[0].DurationSeconds == nil || *archive.Items[0].DurationSeconds != 60 || archive.Items[0].Source != nativeSource || detail.Pull.RunCount != 1 || detail.Pull.AttemptCount != 1 {
 		t.Fatal("lifecycle did not update one retained native attempt")
 	}
+
 	if nativeSnapshotBytes(t, f, first.ID) != old {
 		t.Fatal("attempt update mutated prepared snapshot")
 	}
@@ -407,6 +439,75 @@ func TestNativeAttemptLifecycleKeepsSourceIdentity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNativeAttemptPositionsRemainStableAcrossPublication(t *testing.T) {
+	t.Run("first attempt starts at zero", func(t *testing.T) {
+		f := newAPIFixture(t)
+		a := nativeAttempt("first-native", "prepared")
+		first := mustNativePublish(t, f, NativePublication{Pull: nativePull(1), Attempt: &a})
+		if got := nativeAttemptPosition(t, f, first.ID, nativeSource, "first-native"); got != 0 {
+			t.Fatalf("first native attempt position = %d, want 0", got)
+		}
+	})
+
+	t.Run("preserve update and append after all producers", func(t *testing.T) {
+		f := newAPIFixture(t)
+		pull := nativePull(1)
+		firstImported := Attempt{SourceAttemptID: "imported-first", Channel: "manual", HeadSHA: pull.HeadSHA, State: "active", StartedAt: "2026-01-01T00:00:00Z"}
+		secondImported := Attempt{SourceAttemptID: "imported-second", Channel: "subagent", HeadSHA: pull.HeadSHA, State: "active", StartedAt: "2026-01-01T00:01:00Z"}
+		seed := pull
+		seed.Attempts = []Attempt{firstImported, secondImported}
+		initial := f.observe(t, reviewRequest(0, []PullInput{seed}), "attempt-position-import")
+		initialID := initial["id"].(string)
+		initialBytes := nativeSnapshotBytes(t, f, initialID)
+
+		a := nativeAttempt("native-positioned", "prepared")
+		firstNative := mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &a})
+		if got := nativeAttemptPosition(t, f, firstNative.ID, nativeSource, a.SourceAttemptID); got != 2 {
+			t.Fatalf("new native attempt position = %d, want after both producer positions 0 and 1", got)
+		}
+		if nativeSnapshotBytes(t, f, initialID) != initialBytes {
+			t.Fatal("first imported snapshot changed during native append")
+		}
+
+		run := nativeRun("same-publication-position-run")
+		a.State, a.FinishedAt, a.SourceRunID = "completed", run.FinishedAt, run.SourceRunID
+		firstNativeBytes := nativeSnapshotBytes(t, f, firstNative.ID)
+		updated := mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &a, Run: &run})
+		if got := nativeAttemptPosition(t, f, updated.ID, nativeSource, a.SourceAttemptID); got != 2 {
+			t.Fatalf("updated native attempt moved to position %d, want retained position 2", got)
+		}
+		var linked int
+		if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=1 AND source=? AND source_run_id=?`, f.project, updated.ID, nativeSource, run.SourceRunID).Scan(&linked); err != nil || linked != 1 {
+			t.Fatalf("attempt's same-publication run missing: count=%d err=%v", linked, err)
+		}
+		var linkedAttempt int
+		if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_attempts WHERE project_id=? AND snapshot_id=? AND pull_number=1 AND source=? AND source_attempt_id=? AND source_run_id=?`, f.project, updated.ID, nativeSource, a.SourceAttemptID, run.SourceRunID).Scan(&linkedAttempt); err != nil || linkedAttempt != 1 {
+			t.Fatalf("updated attempt did not retain its own run link: count=%d err=%v", linkedAttempt, err)
+		}
+		if nativeSnapshotBytes(t, f, firstNative.ID) != firstNativeBytes {
+			t.Fatal("native lifecycle update changed its predecessor snapshot")
+		}
+
+		next := nativeAttempt("native-position-next", "prepared")
+		appended := mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &next})
+		if got := nativeAttemptPosition(t, f, appended.ID, nativeSource, next.SourceAttemptID); got != 3 {
+			t.Fatalf("next native attempt position = %d, want next after positions 0, 1, and 2", got)
+		}
+		if got := nativeAttemptPosition(t, f, appended.ID, nativeSource, a.SourceAttemptID); got != 2 {
+			t.Fatalf("linked native attempt moved after append: position=%d want 2", got)
+		}
+	})
+}
+
+func nativeAttemptPosition(t *testing.T, f *apiFixture, snapshot, source, id string) int64 {
+	t.Helper()
+	var position int64
+	if err := f.store.DB().QueryRow(`SELECT position FROM review_attempts WHERE project_id=? AND snapshot_id=? AND source=? AND source_attempt_id=?`, f.project, snapshot, source, id).Scan(&position); err != nil {
+		t.Fatal(err)
+	}
+	return position
 }
 
 func TestNativeAttemptsOnlyLinkOwnRunOnExactTarget(t *testing.T) {
@@ -522,120 +623,47 @@ func TestNativeKnownAttemptIdentitiesCannotBeRewritten(t *testing.T) {
 	}
 }
 
-func TestNativeCapacityAndCallerFailureRollbackEntireTransaction(t *testing.T) {
-	for _, mode := range []string{"queue", "pull_runs", "all_runs", "pull_attempts", "all_attempts", "all_findings", "caller_failure"} {
+func TestNativeGrowthCallerAndEventFailureRollbackEntireTransaction(t *testing.T) {
+	f := newAPIFixture(t)
+	pull := nativePull(1)
+	var previous Receipt
+	for batch := 0; batch < 3; batch++ {
+		previous = nativeGrowthTransferBatch(t, f, pull, "retained-original", batch*75, 75, 0)
+	}
+	if _, err := f.store.DB().Exec(`CREATE TABLE native_test_journal(note TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"caller_failure", "event_failure"} {
 		t.Run(mode, func(t *testing.T) {
-			f := newAPIFixture(t)
-			queue := []PullInput{nativePull(1)}
-			switch mode {
-			case "queue":
-				for i := int64(2); i <= 100; i++ {
-					queue = append(queue, nativePull(i))
+			if mode == "event_failure" {
+				if _, err := f.store.DB().Exec(`CREATE TRIGGER native_event_failure BEFORE INSERT ON events WHEN NEW.event_type='review.observed' BEGIN SELECT RAISE(ABORT,'synthetic native event failure'); END`); err != nil {
+					t.Fatal(err)
 				}
-			case "pull_runs", "all_runs":
-				if mode == "all_runs" {
-					queue = append(queue, nativePull(2), nativePull(3))
-				}
-				for i := range queue {
-					count := 100
-					if mode == "all_runs" {
-						count = 67
-						if i == 2 {
-							count = 66
-						}
+				defer func() {
+					if _, err := f.store.DB().Exec(`DROP TRIGGER native_event_failure`); err != nil {
+						t.Error(err)
 					}
-					for n := 0; n < count; n++ {
-						queue[i].Runs = append(queue[i].Runs, RunInput{SourceRunID: fmt.Sprintf("old-%d-%d", i, n), Channel: "cli", Scope: "stored", Outcome: "unknown"})
-					}
-				}
-			case "pull_attempts", "all_attempts":
-				if mode == "all_attempts" {
-					queue = append(queue, nativePull(2), nativePull(3))
-				}
-				for i := range queue {
-					count := 100
-					if mode == "all_attempts" {
-						count = 67
-						if i == 2 {
-							count = 66
-						}
-					}
-					for n := 0; n < count; n++ {
-						queue[i].Attempts = append(queue[i].Attempts, nativeAttempt(fmt.Sprintf("old-%d-%d", i, n), "unknown"))
-					}
-				}
-			case "all_findings":
-				for n := 0; n < 10; n++ {
-					queue[0].Runs = append(queue[0].Runs, RunInput{SourceRunID: fmt.Sprintf("finding-cap-%d", n), Channel: "cli", Scope: "stored", Outcome: "unknown", Found: 100})
-				}
+				}()
 			}
-			old := f.observe(t, reviewRequest(0, queue), "capacity-fixture")["id"].(string)
-			if mode == "all_findings" {
-				// Local fixture setup inserts a valid retained1000-finding snapshot
-				// without routing a large historical observation through import.
-				for _, r := range queue[0].Runs {
-					if _, err := f.store.DB().Exec(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100) INSERT INTO review_findings(project_id,snapshot_id,pull_number,run_id,position,source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at) SELECT ?,?,1,?,x-1,'finding-'||x,'Retained','Exact source','unknown','unadjudicated','','','','','','' FROM n`, f.project, old, runOpaqueID(f.project, "test-import", r.SourceRunID)); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			if _, err := f.store.DB().Exec(`CREATE TABLE native_test_journal(note TEXT NOT NULL)`); err != nil {
-				t.Fatal(err)
-			}
-			before := nativeSnapshotBytes(t, f, old)
-			counts := map[string]int{}
-			for _, table := range []string{"review_snapshots", "review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls", "events", "receipts"} {
-				counts[table] = countRows(t, f.store, table)
-			}
-			p := NativePublication{Pull: nativePull(1)}
-			a := nativeAttempt("new-capacity-attempt", "prepared")
-			r := nativeRun("new-capacity-run")
-			switch mode {
-			case "queue":
-				p.Pull = nativePull(101)
-				p.Attempt = &a
-			case "pull_runs", "all_findings":
-				p.Run = &r
-			case "all_runs":
-				p.Pull = nativePull(3)
-				p.Run = &r
-			case "all_attempts":
-				p.Pull = nativePull(3)
-				p.Attempt = &a
-			default:
-				p.Attempt = &a
-			}
+			before := importDatabaseState(t, f)
+			oldBytes := nativeSnapshotBytes(t, f, previous.ID)
+			attempt := nativeAttempt("rollback-native-attempt", "prepared")
 			err := f.store.BackgroundWrite(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
 				if _, err := tx.ExecContext(ctx, `INSERT INTO native_test_journal(note) VALUES('staged attempt')`); err != nil {
 					return err
 				}
-				if _, err := PublishNative(ctx, tx, core.Scope{ProjectID: f.project, PrincipalID: "synthetic-publisher"}, p); err != nil {
+				if _, err := PublishNative(ctx, tx, core.Scope{ProjectID: f.project, PrincipalID: "synthetic-publisher"}, NativePublication{Pull: pull, Attempt: &attempt}); err != nil {
 					return err
 				}
-				if mode == "caller_failure" {
-					return core.Fail("test_failure", "Synthetic journal failure.", 409)
-				}
-				return nil
+				return core.Fail("test_failure", "Synthetic journal failure.", 409)
 			})
-			code := "workspace_capacity"
-			if mode == "queue" {
-				code = "validation_failed"
-			}
-			if mode == "caller_failure" {
-				code = "test_failure"
+			code := "test_failure"
+			if mode == "event_failure" {
+				code = "storage_unavailable"
 			}
 			nativeErrorCode(t, err, code)
-			if nativeSnapshotBytes(t, f, old) != before || countRows(t, f.store, "native_test_journal") != 0 {
-				t.Fatal("failed publication changed old bytes or caller journal")
-			}
-			for table, count := range counts {
-				if countRows(t, f.store, table) != count {
-					t.Fatal("failed publication left partial rows", table)
-				}
-			}
-			var current string
-			if err := f.store.DB().QueryRow(`SELECT snapshot_id FROM review_workspace WHERE project_id=?`, f.project).Scan(&current); err != nil || current != old {
-				t.Fatal("failed publication advanced current pointer", err)
+			if !reflect.DeepEqual(before, importDatabaseState(t, f)) || nativeSnapshotBytes(t, f, previous.ID) != oldBytes {
+				t.Fatal("failed native publication changed retained history, caller journal, indexes, events or receipts")
 			}
 		})
 	}
@@ -700,21 +728,21 @@ func TestNativePublicationRunRowsBindOwningSnapshotRevision(t *testing.T) {
 		t.Fatal("copy lost finalized counts or corrected fix projection")
 	}
 	nativeRead(t, f, "/runs/"+runOpaqueID(f.project, nativeSource, run.SourceRunID), &detail)
-	if !reflect.DeepEqual(detail.Findings, run.Findings) {
+	if !reflect.DeepEqual(plainFindingsForTest(detail.Findings), run.Findings) {
 		t.Fatal("new native row lost retained finding/decision/fix")
 	}
 	if nativeSnapshotBytes(t, f, first) != firstBytes || nativeSnapshotBytes(t, f, corrected) != correctedBytes || nativeSnapshotBytes(t, f, appended.ID) != appendedBytes {
 		t.Fatal("publication rewrote historical snapshot bytes")
 	}
-	// A structurally valid extra row that omits the new field must be rejected,
-	// rather than silently becoming eligible under another snapshot's revision.
+	// Physical payload versions require an actual same-project owning snapshot.
+	// Test the real version constraints rather than a read view's blanket write refusal.
 	before := nativeSnapshotBytes(t, f, copied.ID)
-	_, err = f.store.DB().Exec(`INSERT INTO review_runs(project_id,snapshot_id,pull_number,run_order,id,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json) SELECT project_id,snapshot_id,pull_number,run_order+10,'omitted-owning-revision',source,'omitted-owning-source',channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json FROM review_runs WHERE project_id=? AND snapshot_id=? AND source=? AND source_run_id=?`, f.project, copied.ID, nativeSource, run.SourceRunID)
+	_, err = f.store.DB().Exec(`INSERT INTO review_run_versions(project_id,id,pull_number,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json) SELECT project_id,'omitted-owning-revision',pull_number,source,'omitted-owning-source',channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json FROM review_run_versions WHERE project_id=? AND source=? AND source_run_id=? LIMIT 1`, f.project, nativeSource, run.SourceRunID)
 	if err == nil {
-		t.Fatal("omitted snapshot revision was accepted")
+		t.Fatal("omitted owning version revision was accepted")
 	}
-	if _, err := f.store.DB().Exec(`UPDATE review_runs SET snapshot_revision=snapshot_revision-1 WHERE project_id=? AND snapshot_id=?`, f.project, copied.ID); err == nil {
-		t.Fatal("wrong owning snapshot revision update was accepted")
+	if _, err := f.store.DB().Exec(`UPDATE review_run_versions SET version_revision=(SELECT max(revision)+1 FROM review_snapshots WHERE project_id=review_run_versions.project_id) WHERE project_id=? AND source=? AND source_run_id=?`, f.project, nativeSource, run.SourceRunID); err == nil {
+		t.Fatal("version without owning snapshot was accepted")
 	}
 	if nativeSnapshotBytes(t, f, copied.ID) != before {
 		t.Fatal("rejected revision mismatch changed snapshot bytes")

@@ -22,6 +22,7 @@ import (
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/presentation"
+	"github.com/benhook1013/FireController/internal/presentationmodel"
 	"github.com/benhook1013/FireController/internal/server"
 )
 
@@ -106,7 +107,7 @@ func TestPresentationClientActualAPIHistoryReplayRestartAndLostReceipt(t *testin
 	presentationClientError(t, err, "forbidden", false)
 	lose.Store(true)
 	attemptsBefore := mutations.Load()
-	req := client.ReplacePresentationRequest{Presentation: client.PresentationConfig{Name: "  Named <literal>  ", Headings: map[string]string{"jobs": "Work"}}}
+	req := client.ReplacePresentationRequest{Presentation: client.PresentationConfig{Name: "  Named <literal>  ", Headings: map[string]string{"jobs": "Work"}, ReviewGroups: []presentationmodel.ReviewGroup{{Title: "Foundation", PullNumbers: []int64{2, 7}}}}}
 	_, e = c.ReplacePresentation(t.Context(), "original-key", req)
 	presentationClientError(t, e, "invalid_response", true)
 	if mutations.Load() != attemptsBefore+1 {
@@ -126,7 +127,7 @@ func TestPresentationClientActualAPIHistoryReplayRestartAndLostReceipt(t *testin
 		t.Fatal(replay, e)
 	}
 	old, e := c.PresentationRevision(t.Context(), 1)
-	if e != nil || old.State.Name != "Named <literal>" || old.State.Headings["jobs"] != "Work" {
+	if e != nil || old.State.Name != "Named <literal>" || old.State.Headings["jobs"] != "Work" || len(old.State.ReviewGroups) != 1 || !reflect.DeepEqual(old.State.ReviewGroups[0].PullNumbers, []int64{2, 7}) {
 		t.Fatal(old, e)
 	}
 	page, e := c.PresentationHistory(t.Context(), client.PageOptions{Limit: 1})
@@ -148,7 +149,7 @@ func TestPresentationClientActualAPIHistoryReplayRestartAndLostReceipt(t *testin
 	if e != nil {
 		t.Fatal(e)
 	}
-	ordinary, e := c.JobContext(t.Context(), job.ID, 1)
+	ordinary, e := c.Job(t.Context(), job.ID)
 	raw, _ := json.Marshal(ordinary)
 	if e != nil || strings.Contains(string(raw), `"theme"`) || strings.Contains(string(raw), `"brand_name"`) {
 		t.Fatal("appearance leaked into ordinary context", e)

@@ -130,14 +130,10 @@ func TestNotesToolsSDKAndCLICrossAdapterOriginalKeyRecovery(t *testing.T) {
 	if revision.Body != body || revision.Status != "pending" || revision.RecordedAt != revision.UpdatedAt {
 		t.Fatal("immutable revision")
 	}
-	var phaseNote client.NoteReceipt
-	decodeResult(t, call(t, session, "note_create", map[string]any{"idempotency_key": "phase-only", "worker_id": "", "phase": "Later", "body": "Phase-only scope"}), &phaseNote)
-	decodeResult(t, call(t, session, "note_read", map[string]any{"note_id": phaseNote.ID}), &current)
-	if current.WorkerID != "" || current.Phase != "Later" {
-		t.Fatal("explicit empty worker defaulted", current)
-	}
+	phaseResult := call(t, session, "note_create", map[string]any{"idempotency_key": "phase-only", "worker_id": "", "phase": "Later", "body": "Phase-only scope"})
+	diagnosticResult(t, phaseResult, "validation_failed", false)
 	var effects int
-	if err = f.store.DB().QueryRow(`SELECT count(*) FROM note_revisions`).Scan(&effects); err != nil || effects != 3 || f.providers.Load() != 1 {
+	if err = f.store.DB().QueryRow(`SELECT count(*) FROM note_revisions`).Scan(&effects); err != nil || effects != 2 || f.providers.Load() != 1 {
 		t.Fatal("duplicate effects/provider", effects, err)
 	}
 }

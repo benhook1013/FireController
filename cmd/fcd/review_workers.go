@@ -13,8 +13,30 @@ type reviewRecoveryStarter interface {
 	StartRecovery(context.Context) (<-chan error, error)
 }
 
+type cliRecoveryStarter interface {
+	StartCLIRecovery(context.Context) (<-chan error, error)
+}
+
 type sourceReaderProvider interface {
 	SourceReader() reviewexec.TargetReader
+}
+
+type externalHostedSourceProvider interface {
+	HostedObservationReader() reviewexec.ExternalHostedReader
+}
+
+func lifecycleReader(driver reviewexec.Driver, fallback reviewexec.TargetReader) reviewexec.TargetReader {
+	if provider, ok := driver.(externalHostedSourceProvider); ok {
+		if reader := provider.HostedObservationReader(); reader != nil {
+			return reader
+		}
+	}
+	if combined, ok := driver.(*reviewChannelDriver); ok && combined.hosted != nil {
+		if reader := combined.hosted.HostedObservationReader(); reader != nil {
+			return reader
+		}
+	}
+	return fallback
 }
 
 // Review-attempt recovery commits before any observer starts. All worker
@@ -38,6 +60,18 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 	channels := []worker{{done: supervisor}}
 	var startupErr error
 	for capabilityID, driver := range drivers {
+		if starter, ok := driver.(cliRecoveryStarter); ok {
+			done, err := starter.StartCLIRecovery(workerCtx)
+			if err != nil || done == nil {
+				startupErr = err
+				if startupErr == nil {
+					startupErr = core.Fail("configuration_invalid", "The retained CLI recovery observer could not be started.", 500)
+				}
+				cancel()
+				break
+			}
+			channels = append(channels, worker{done: done, recoveryObserver: true, capabilityID: capabilityID})
+		}
 		if starter, ok := driver.(reviewRecoveryStarter); ok {
 			done, err := starter.StartRecovery(workerCtx)
 			if err != nil || done == nil {
@@ -63,12 +97,34 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 				}
 			}
 		}
-		done, err := execution.StartSourceRefresh(workerCtx, readers)
+		done, err := execution.StartReviewRuns(workerCtx, readers)
 		if err != nil {
 			startupErr = err
 			cancel()
 		} else if done != nil {
 			channels = append(channels, worker{done: done})
+		}
+		if startupErr == nil {
+			done, err = execution.StartSourceRefresh(workerCtx, readers)
+			if err != nil {
+				startupErr = err
+				cancel()
+			} else if done != nil {
+				channels = append(channels, worker{done: done})
+			}
+		}
+		if startupErr == nil {
+			lifecycleReaders := make(map[string]reviewexec.TargetReader, len(readers))
+			for id, reader := range readers {
+				lifecycleReaders[id] = lifecycleReader(drivers[id], reader)
+			}
+			done, err = execution.StartLifecycleSync(workerCtx, lifecycleReaders)
+			if err != nil {
+				startupErr = err
+				cancel()
+			} else if done != nil {
+				channels = append(channels, worker{done: done})
+			}
 		}
 		if startupErr == nil {
 			done, err = execution.StartCheckpointPublications(workerCtx, publications)
@@ -93,7 +149,7 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 				// never the retained error's provider text or private details.
 				if workerCtx.Err() == nil {
 					mu.Lock()
-					diagnostic(diagnostics, "review_recovery_stopped", "The native hosted recovery observer for capability "+owned.capabilityID+" stopped; inspect retained uncertain work before recovery.")
+					diagnostic(diagnostics, "review_recovery_stopped", "The native review recovery observer for capability "+owned.capabilityID+" stopped; inspect retained uncertain work before recovery.")
 					mu.Unlock()
 				}
 				return

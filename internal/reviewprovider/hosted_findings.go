@@ -27,7 +27,13 @@ var findingMarker = regexp.MustCompile(`^<!-- cr-comment:v1:([a-f0-9]{24}) -->$`
 var findingOutsideHeader = regexp.MustCompile(`^\*\*⚠️ Outside diff range comments \((0|[1-9][0-9]*)\)\*\*$`)
 var findingDuplicateHeader = regexp.MustCompile(`^<summary>♻️ Duplicate comments \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
 var findingGroupHeader = regexp.MustCompile(`^<summary>([^<>]+) \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
-var findingOutsideSummary = regexp.MustCompile(`^<summary><em>([^<>]+)</em> · .+ · <code>[^<>]+</code></summary><blockquote>$`)
+var findingOutsideSummary = regexp.MustCompile(`^<summary>(?:<em>(?:` + standingPicture + ` )?([^<>]+)</em>|<strong>(?:` + standingPicture + ` )?([^<>]+)</strong>) · .+ · <code>[^<>]+</code></summary><blockquote>$`)
+
+// A decorative icon changes no metadata identity. Recognize only the observed
+// closed picture/img envelope and exact label; never fetch the image or treat
+// other labelled blocks as review metadata.
+var findingPromptIcon = regexp.MustCompile(`^<summary>` + standingPicture + ` Prompt to fix review comments</summary>$`)
+var findingReviewInfoIcon = regexp.MustCompile(`^<summary><picture><img src="https://[^"<>\s]+" width="[1-9][0-9]{0,2}" height="[1-9][0-9]{0,2}" align="absmiddle" alt=""></picture> Review info</summary>$`)
 var findingPathLocation = regexp.MustCompile("^`([^`]+):([0-9]+)(?:-([0-9]+))?`$")
 var findingRange = regexp.MustCompile("^`([0-9]+)-([0-9]+)`: (.+)$")
 var findingTitle = regexp.MustCompile(`^\*\*([^*]+)\*\*$`)
@@ -172,8 +178,13 @@ func (d *findingDecoder) add(body string, start int, line findingLine, f HostedF
 	d.inventory.Findings = append(d.inventory.Findings, f)
 }
 
+var findingPictureSeverity = regexp.MustCompile(`^` + standingPicture + ` (Trivial|Minor|Major|Critical)$`)
+
 func findingSeverity(text string) string {
 	text = strings.TrimSpace(text)
+	if match := findingPictureSeverity.FindStringSubmatch(text); match != nil {
+		text = match[1]
+	}
 	for _, prefix := range []string{"🔵 ", "🟡 ", "🟠 ", "🔴 "} {
 		text = strings.TrimPrefix(text, prefix)
 	}
@@ -206,8 +217,15 @@ func (f *findingFields) severityValue(value string) {
 	f.severity = value
 }
 
-func (f *findingFields) metadata(text string) {
-	parts := strings.Split(text, " | ")
+func (f *findingFields) metadata(text string) (valid, explicitSeverity bool) {
+	separator := " | "
+	if strings.Contains(text, " · ") {
+		if strings.Contains(text, separator) {
+			return false, false
+		}
+		separator = " · "
+	}
+	parts := strings.Split(text, separator)
 	for i, p := range parts {
 		switch {
 		case len(p) >= 4 && strings.HasPrefix(p, "**") && strings.HasSuffix(p, "**"):
@@ -215,12 +233,15 @@ func (f *findingFields) metadata(text string) {
 		case len(p) >= 2 && strings.HasPrefix(p, "_") && strings.HasSuffix(p, "_"):
 			parts[i] = p[1 : len(p)-1]
 		default:
-			return
+			return false, false
 		}
 	}
 	for _, p := range parts {
-		f.severityValue(findingSeverity(p))
+		value := findingSeverity(p)
+		f.severityValue(value)
+		explicitSeverity = explicitSeverity || value != ""
 	}
+	return true, explicitSeverity
 }
 
 func (f *findingFields) observe(text string) {
@@ -253,7 +274,7 @@ func findingLocation(first, last string) (*int64, *int64, bool) {
 }
 
 func findingSourceMetadata(text string) bool {
-	return text == "" || strings.HasPrefix(text, "_Source: ") && strings.HasSuffix(text, "_")
+	return text == "" || (strings.HasPrefix(text, "_Source: ") || strings.HasPrefix(text, "_Sources: ")) && strings.HasSuffix(text, "_")
 }
 
 // An edited provider acknowledgement is metadata only. Require the complete
@@ -460,7 +481,8 @@ func (d *findingDecoder) outsideItem(body string, lines []findingLine, start, en
 		}
 		if depth == 1 && quotes == 0 && findingOutsideSummary.MatchString(l.text) {
 			summary = true
-			fields.severityValue(findingSeverity(findingOutsideSummary.FindStringSubmatch(l.text)[1]))
+			match := findingOutsideSummary.FindStringSubmatch(l.text)
+			fields.severityValue(findingSeverity(match[1] + match[2]))
 		}
 		if depth > 1 && strings.HasPrefix(l.text, "<summary>") {
 			knownNested = findingKnownNested(l.text)
@@ -689,7 +711,7 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 			if findingDuplicateHeader.MatchString(header) {
 				d.duplicates(review.Body, lines, i, end, review.ID)
 			} else {
-				known := header == "<summary>🤖 Prompt to fix review comments</summary>" || header == "<summary>ℹ️ Review info</summary>"
+				known := header == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header) || header == "<summary>ℹ️ Review info</summary>" || findingReviewInfoIcon.MatchString(header)
 				if !known && selected {
 					d.fail("summary_format_unsupported")
 				}
@@ -720,6 +742,41 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 	}
 }
 
+// publicationOutsideOnly recognizes the narrow omitted-inline-count variant
+// through the same strict decoder used for final extraction. It is nonrecursive
+// and does not rewrite the original provider body or infer an empty inventory.
+func publicationOutsideOnly(publication HostedPublication) bool {
+	if len(publication.Batches) != 1 {
+		return false
+	}
+	primary := publication.Batches[0]
+	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
+	decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}
+	decoder.summary(primary, true)
+	if !inventory.Complete || len(inventory.Findings) == 0 {
+		return false
+	}
+	for _, review := range publication.EligibleReviews {
+		for _, line := range publicationVisibleLines(review.Body) {
+			if strings.Contains(strings.ToLower(line), "actionable comments posted") {
+				return false
+			}
+		}
+		if review.ID != primary.ID {
+			decoder.summary(review, false)
+		}
+	}
+	if !inventory.Complete || len(inventory.Findings) == 0 {
+		return false
+	}
+	for _, finding := range inventory.Findings {
+		if finding.Kind != "outside_diff" {
+			return false
+		}
+	}
+	return true
+}
+
 // ExtractHostedFindings re-establishes attribution before decoding. Unsupported
 // inventory remains explicitly incomplete with bounded extracted pieces and the
 // original publication retained; it never fabricates aggregate placeholder rows.
@@ -730,14 +787,21 @@ func ExtractHostedFindings(snapshot HostedPublicationSnapshot, intent HostedTrig
 		result.Reason = "publication_unavailable"
 		return result, err
 	}
+	return decodeHostedFindings(publication), nil
+}
+
+// decodeHostedFindings shares only inventory decoding; callers establish source
+// attribution independently. It performs no request/attempt or coverage action.
+func decodeHostedFindings(publication HostedPublication) HostedFindingInventory {
+	result := HostedFindingInventory{Publication: publication, Findings: []HostedFinding{}}
 	if publication.State != "attributed" {
 		result.Reason = publication.Reason
-		return result, nil
+		return result
 	}
 	if publication.StandingZero != nil {
 		result.Complete = validStandingZero(publication.StandingZero) && len(publication.Batches) == 0 && len(publication.Roots) == 0 && len(publication.EligibleReviews) == 0
 		result.Reason = "standing_zero_inventory_attributed"
-		return result, nil
+		return result
 	}
 	result.Complete = true
 	decoder := findingDecoder{inventory: &result, seen: map[string]bool{}}
@@ -754,5 +818,5 @@ func ExtractHostedFindings(snapshot HostedPublicationSnapshot, intent HostedTrig
 	if result.Complete {
 		result.Reason = "finding_inventory_complete"
 	}
-	return result, nil
+	return result
 }

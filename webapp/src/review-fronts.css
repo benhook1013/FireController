@@ -1,0 +1,4 @@
+.review-pull-heading{flex-wrap:wrap}
+.review-pull-facts>.badge.review-position-front,.review-pull-facts>.badge.review-position-closed,.review-pull-facts>.badge.review-position-queued{max-width:100%;white-space:normal;line-height:1.35;font-size:.65rem;font-weight:750}
+.review-pull-facts>.badge.review-position-front{background:var(--fc-active_background,#f3dcd4);color:var(--fc-active_text,#a3382c)}
+.review-pull-facts>.badge.review-position-closed,.review-pull-facts>.badge.review-position-queued{background:var(--fc-canvas_background,#e8e7e4);color:var(--fc-canvas_text,#252833)}

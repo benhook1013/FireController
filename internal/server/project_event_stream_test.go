@@ -272,7 +272,7 @@ func TestProjectStreamHTTPBrowserSessionReadAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	sessionID := strings.Repeat("a", 32)
-	cookie := browserLogin(t, f, project, eventClientToken, sessionID, base.Host)
+	cookie := browserLoginCapabilities(t, f, project, eventClientToken, sessionID, base.Host, true, false)
 	receipts, events := count(t, f.store, "receipts"), count(t, f.store, "events")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

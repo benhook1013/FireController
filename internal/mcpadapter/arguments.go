@@ -3,7 +3,6 @@ package mcpadapter
 import (
 	"bytes"
 	"encoding/json"
-	"math"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -39,7 +38,7 @@ type inboxInput struct {
 	Limit          *int   `json:"limit,omitempty"`
 	Cursor         string `json:"cursor,omitempty"`
 	Unread         bool   `json:"unread,omitempty"`
-	Unacknowledged bool   `json:"unacknowledged,omitempty"`
+	Unacknowledged *bool  `json:"unacknowledged,omitempty"`
 }
 type inboxEventsInput struct {
 	Cursor string `json:"cursor"`
@@ -51,6 +50,9 @@ type threadInput struct {
 	Limit          *int   `json:"limit,omitempty"`
 	Cursor         string `json:"cursor,omitempty"`
 }
+type messageInput struct {
+	MessageID string `json:"message_id"`
+}
 
 func invalidArguments() *Diagnostic {
 	return diagnostic("invalid_arguments", "Use only the declared tool fields with valid bounded values and required keys or revisions.", "Check this tool's input schema; the startup binding cannot be overridden.")
@@ -61,9 +63,16 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if len(data) == 0 {
 		data = []byte("{}")
 	}
+	if reviewBatchTool(name) {
+		return reviewBatchArguments(name, data)
+	}
 	bound := 16 << 10
 	if mutationTool(name) {
 		bound = 256 << 10
+	}
+	if name == "job_update" {
+		// Tool selectors and the key sit outside the public PATCH body.
+		bound = client.JobPatchMaxEncodedBytes + 1024
 	}
 	if len(data) > bound || strictjson.Validate(data) != nil {
 		return args, invalidArguments()
@@ -77,14 +86,42 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 			return args, invalidArguments()
 		}
 	}
+	if name == "review_queue" {
+		options, active, err := reviewActiveQueueArguments(data)
+		args.limit, args.cursor, args.reviewActiveQueue = options.Limit, options.Cursor, active
+		return args, err
+	}
+	if name == "job_status_read" {
+		return jobStatusArguments(data)
+	}
+	if name == "review_operation_read" {
+		input, err := operationStatusArguments(data)
+		if err != nil {
+			return args, err
+		}
+		args.operationStatus, args.reviewSourceWait = input, input.WaitSeconds
+		return args, nil
+	}
 	if checkpointTool(name) {
 		return checkpointArguments(name, data)
 	}
 	if primaryJobTool(name) {
 		return primaryJobArguments(name, data)
 	}
+	if name == "job_summary_read" || name == "job_summary_set" {
+		return jobSummaryArguments(name, data)
+	}
 	if jobProgressTool(name) {
 		return jobProgressArguments(name, data)
+	}
+	if name == "review_start" || name == "review_selection_read" {
+		return reviewRunArguments(name, data)
+	}
+	if name == "review_rounds_read" || name == "review_rounds_configure" {
+		return roundControlArguments(name, data)
+	}
+	if name == "review_operations_list" {
+		return operationListArguments(data)
 	}
 	if reviewControlTool(name) {
 		return reviewControlArguments(name, data)
@@ -107,9 +144,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		dst = new(jobsInput)
 	case "jobs_assigned":
 		dst = new(assignedInput)
-	case "job_read", "job_checkpoint_latest":
+	case "job_read":
 		dst = new(jobInput)
-	case "job_history", "job_checkpoint_history":
+	case "job_history":
 		dst = new(historyInput)
 	case "inbox_list":
 		dst = new(inboxInput)
@@ -119,6 +156,8 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		dst = new(inboxEventsInput)
 	case "inbox_thread":
 		dst = new(threadInput)
+	case "inbox_message_read":
+		dst = new(messageInput)
 	default:
 		return args, invalidArguments()
 	}
@@ -132,16 +171,28 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		limit, args.cursor, args.worker, args.status = v.Limit, v.Cursor, v.WorkerID, v.Status
 	case *assignedInput:
 		limit, args.cursor, args.status = v.Limit, v.Cursor, v.Status
+		if _, supplied := fields["status"]; !supplied {
+			args.status = "open"
+		} else if v.Status == "all" {
+			args.status = ""
+		} else if v.Status == "" {
+			return args, invalidArguments()
+		}
 	case *jobInput:
 		args.id = v.JobID
 	case *historyInput:
 		limit, args.cursor, args.id = v.Limit, v.Cursor, v.JobID
 	case *inboxInput:
-		limit, args.cursor, args.unread, args.unack = v.Limit, v.Cursor, v.Unread, v.Unacknowledged
+		limit, args.cursor, args.unread, args.unack = v.Limit, v.Cursor, v.Unread, true
+		if v.Unacknowledged != nil {
+			args.unack = *v.Unacknowledged
+		}
 	case *inboxEventsInput:
 		limit, args.cursor, waitMS = v.Limit, v.Cursor, v.WaitMS
 	case *threadInput:
 		limit, args.cursor, args.id = v.Limit, v.Cursor, v.ConversationID
+	case *messageInput:
+		args.id = v.MessageID
 	}
 	if limit != nil {
 		if *limit < 1 || *limit > 100 {
@@ -168,10 +219,10 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if _, ok := fields["worker_id"]; ok && !validID(args.worker) {
 		return args, invalidArguments()
 	}
-	if _, ok := fields["status"]; ok && !validStatus(args.status) {
+	if _, ok := fields["status"]; ok && !client.ValidJobStatusFilter(args.status) && !(name == "jobs_assigned" && args.status == "") {
 		return args, invalidArguments()
 	}
-	if name == "job_read" || name == "job_history" || name == "job_checkpoint_latest" || name == "job_checkpoint_history" || name == "inbox_thread" {
+	if name == "job_read" || name == "job_history" || name == "inbox_thread" || name == "inbox_message_read" {
 		if !validID(args.id) {
 			return args, invalidArguments()
 		}
@@ -180,11 +231,17 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 }
 
 func mutationTool(name string) bool {
-	if name == "job_primary_replace" || name == "job_update_append" || name == "job_checklist_replace" {
+	if reviewBatchTool(name) {
+		return true
+	}
+	if name == "review_start" || name == "review_rounds_configure" {
+		return true
+	}
+	if name == "job_summary_set" || name == "job_primary_replace" || name == "job_update" || name == "job_checklist_replace" || name == "job_checklist_item_update" {
 		return true
 	}
 	switch name {
-	case "review_checkpoint_publish", "review_checkpoint_recover", "review_finding_route", "review_route_decide", "review_route_fix", "jobs_create", "job_edit", "job_checkpoint_append", "inbox_send", "inbox_seen", "inbox_ack", "review_finding_decide", "review_finding_fix", "review_source_finalize":
+	case "review_checkpoint_publish", "review_checkpoint_recover", "review_finding_route", "review_route_decide", "review_route_fix", "jobs_create", "inbox_send", "inbox_seen", "inbox_ack", "review_finding_decide", "review_finding_fix", "review_source_finalize":
 		return true
 	}
 	return false
@@ -205,24 +262,6 @@ func validTitle(value string) bool {
 func mutationArguments(name string, data json.RawMessage) (arguments, error) {
 	var args arguments
 	switch name {
-	case "job_checkpoint_append":
-		var input struct {
-			Key                 string   `json:"idempotency_key"`
-			JobID               string   `json:"job_id"`
-			ExpectedJobRevision int64    `json:"expected_job_revision"`
-			Done                string   `json:"done"`
-			Next                string   `json:"next"`
-			Blocker             string   `json:"blocker,omitempty"`
-			Evidence            []string `json:"evidence,omitempty"`
-		}
-		if strictjson.Decode(data, &input) != nil || !validID(input.JobID) {
-			return args, invalidArguments()
-		}
-		args.checkpoint = client.AppendCheckpointRequest{ExpectedJobRevision: input.ExpectedJobRevision, Done: input.Done, Next: input.Next, Blocker: input.Blocker, Evidence: input.Evidence}
-		if client.ValidateCheckpointRequest(args.checkpoint) != nil {
-			return args, invalidArguments()
-		}
-		args.key, args.id = input.Key, input.JobID
 	case "jobs_create":
 		var input struct {
 			Key    string `json:"idempotency_key"`
@@ -244,42 +283,6 @@ func mutationArguments(name string, data json.RawMessage) (arguments, error) {
 		}
 		args.key = input.Key
 		args.create = client.CreateJobRequest{Title: input.Title, Brief: input.Brief, WorkerID: input.Worker, Status: input.Status}
-	case "job_edit":
-		var input struct {
-			Key      string  `json:"idempotency_key"`
-			ID       string  `json:"job_id"`
-			Revision int64   `json:"expected_revision"`
-			Title    *string `json:"title,omitempty"`
-			Brief    *string `json:"brief,omitempty"`
-			Worker   *string `json:"worker_id,omitempty"`
-			Status   *string `json:"status,omitempty"`
-		}
-		if strictjson.Decode(data, &input) != nil || !validID(input.ID) || input.Revision < 1 || input.Revision == math.MaxInt64 || input.Title == nil && input.Brief == nil && input.Worker == nil && input.Status == nil {
-			return args, invalidArguments()
-		}
-		if input.Title != nil {
-			v := strings.TrimSpace(*input.Title)
-			if !validTitle(v) {
-				return args, invalidArguments()
-			}
-			input.Title = &v
-		}
-		if input.Brief != nil && (!utf8.ValidString(*input.Brief) || len(*input.Brief) > 32<<10) {
-			return args, invalidArguments()
-		}
-		if input.Worker != nil {
-			v := strings.TrimSpace(*input.Worker)
-			if v != "" && !validID(v) {
-				return args, invalidArguments()
-			}
-			input.Worker = &v
-		}
-		if input.Status != nil && !validStatus(*input.Status) {
-			return args, invalidArguments()
-		}
-		args.key = input.Key
-		args.id = input.ID
-		args.edit = client.EditJobRequest{ExpectedRevision: input.Revision, Title: input.Title, Brief: input.Brief, WorkerID: input.Worker, Status: input.Status}
 	case "inbox_send":
 		var input struct {
 			Key       string `json:"idempotency_key"`
@@ -329,18 +332,11 @@ func toolDefinitions() []definition {
 	cursor := map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Continuation cursor from this scoped read."}
 	id := map[string]any{"type": "string", "minLength": 1, "maxLength": 128}
 	status := map[string]any{"type": "string", "enum": []string{"active", "parked", "blocked", "completed"}}
+	statusFilter := map[string]any{"type": "string", "enum": []string{"active", "parked", "blocked", "completed", "open"}, "description": "Stored status or the list-only open filter, which selects active, blocked and parked jobs in that priority order."}
 	key := map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "Explicit printable ASCII idempotency key; retain the same key and request after an unknown outcome. Never generated or automatically retried."}
 	title := map[string]any{"type": "string", "minLength": 1, "maxLength": 240, "description": "Nonblank UTF-8 title, at most 240 bytes after trimming surrounding whitespace."}
 	brief := map[string]any{"type": "string", "maxLength": 32 << 10, "description": "Explicit UTF-8 brief, at most 32 KiB; empty clears it on edit."}
-	workerEdit := map[string]any{"type": "string", "maxLength": 128, "description": "Worker in the bound project; empty clears assignment."}
 	workerCreate := map[string]any{"type": "string", "maxLength": 128, "description": "Worker in the bound project; omission or empty leaves the job unassigned."}
-	checkpointText := func(max int, required bool) map[string]any {
-		value := map[string]any{"type": "string", "maxLength": max, "description": "Exact UTF-8 text; byte limits and the 16 KiB aggregate bound apply. C0 controls except tab, CR and LF, and DEL, are forbidden."}
-		if required {
-			value["minLength"] = 1
-		}
-		return value
-	}
 	schema := func(props map[string]any, required ...string) map[string]any {
 		v := map[string]any{"type": "object", "properties": props, "additionalProperties": false}
 		if len(required) > 0 {
@@ -348,29 +344,21 @@ func toolDefinitions() []definition {
 		}
 		return v
 	}
-	editSchema := schema(map[string]any{"idempotency_key": key, "job_id": id, "expected_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}, "title": title, "brief": brief, "worker_id": workerEdit, "status": status}, "idempotency_key", "job_id", "expected_revision")
-	editSchema["anyOf"] = []any{
-		map[string]any{"required": []string{"title"}}, map[string]any{"required": []string{"brief"}},
-		map[string]any{"required": []string{"worker_id"}}, map[string]any{"required": []string{"status"}},
-	}
 	return append([]definition{
 		{"presentation_read", "Read the bound project appearance and metadata watermark explicitly. No ordinary job or inbox call includes settings; no provider work or mutation.", schema(map[string]any{})},
-		{"context", "Inspect the immutable local profile configuration; no service verification or credential read.", schema(map[string]any{})},
-		{"doctor", "Verify the configured service instance, project and worker without provider work.", schema(map[string]any{})},
+		{"context", "Inspect the immutable local profile and running client source revision/state; no service verification or credential read.", schema(map[string]any{})},
+		{"doctor", "Verify the configured service instance, project and worker; includes the running client source revision/state, without provider work.", schema(map[string]any{})},
 		{"workers_list", "Read one compact worker page in the bound project.", schema(map[string]any{"limit": limit, "cursor": cursor})},
-		{"jobs_list", "Read one compact job page with explicit optional worker/status filters.", schema(map[string]any{"limit": limit, "cursor": cursor, "worker_id": id, "status": status})},
-		{"jobs_assigned", "Read one compact job page assigned to the bound worker; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": status})},
-		{"job_read", "Read explicit full detail and brief for one job.", schema(map[string]any{"job_id": id}, "job_id")},
+		{"jobs_list", "Read one compact job page with explicit optional worker/status filters.", schema(map[string]any{"limit": limit, "cursor": cursor, "worker_id": id, "status": statusFilter})},
+		{"jobs_assigned", "Read one compact assigned-job page, default open (active, blocked, parked). Explicit status:all includes completed history; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": map[string]any{"type": "string", "enum": []string{"open", "active", "blocked", "parked", "completed", "all"}, "default": "open", "description": "Defaults to open; all explicitly includes completed jobs."}})},
+		{"job_read", "Read one current job snapshot: full private brief and progress, remaining checklist, and exact-job pending-note previews. No worker inbox. Continue pending job notes with note_list(job_id,all_workers:true,cursor); discover worker reminders separately with note_list().", schema(map[string]any{"job_id": id}, "job_id")},
 		{"job_history", "Read one explicit bounded full-state history page for a job.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
-		{"job_checkpoint_append", "Append an immutable checkpoint with an explicit key and current expected job revision; return a compact receipt without changing the job or automatically retrying.", schema(map[string]any{"job_id": id, "idempotency_key": key, "expected_job_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64)}, "done": checkpointText(8<<10, true), "next": checkpointText(8<<10, true), "blocker": checkpointText(4<<10, false), "evidence": map[string]any{"type": "array", "maxItems": 10, "items": checkpointText(1024, true)}}, "job_id", "idempotency_key", "expected_job_revision", "done", "next")},
-		{"job_checkpoint_latest", "Read the current job revision and latest checkpoint, or explicit null when none exists; the captured checkpoint revision may be older.", schema(map[string]any{"job_id": id}, "job_id")},
-		{"job_checkpoint_history", "Read one explicit full checkpoint archive page in descending sequence order; no automatic archive reads.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
-		{"inbox_list", "Read one compact preview page for the bound worker; never mark seen or acknowledged.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
-		{"inbox_snapshot", "Read one bounded compact inbox page and its explicit scoped event cursor; no cursor is saved, no messages are marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
+		{"inbox_list", "Read one compact pending-message page for the bound worker (unacknowledged by default, including seen-but-unhandled). Set unacknowledged:false for history. Never marks seen or acknowledged.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
+		{"inbox_snapshot", "Read one bounded pending inbox page (unacknowledged by default; explicit false includes history) and its explicit scoped event cursor; no cursor is saved, no messages are marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
 		{"inbox_events", "Read one bounded incoming-message event page after an explicit cursor, optionally waiting up to 4000 ms. No cursor is saved, no automatic polling or subscription occurs, messages are never marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Required explicit cursor from a scoped snapshot or replay page."}, "limit": limit, "wait_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 4000, "description": "One bounded wait; omission returns immediately."}}, "cursor")},
 		{"inbox_thread", "Read one explicit conversation page with full immutable bodies; no receipt-state change.", schema(map[string]any{"conversation_id": id, "limit": limit, "cursor": cursor}, "conversation_id")},
+		{"inbox_message_read", "Read one selected full immutable message by ID without paging older conversation bodies. Does not mark seen or acknowledged; expand conversation context explicitly when needed.", schema(map[string]any{"message_id": id}, "message_id")},
 		{"jobs_create", "Create a job in the bound project using an explicit key; return a compact receipt, without rereading brief/history.", schema(map[string]any{"idempotency_key": key, "title": title, "brief": brief, "worker_id": workerCreate, "status": status}, "idempotency_key", "title")},
-		{"job_edit", "Edit selected job fields with an explicit key and expected revision; empty brief/worker clears those fields. No automatic retry.", editSchema},
 		{"inbox_send", "Send an immutable message as the bound worker with an explicit key, optionally replying to a message; return a compact receipt.", schema(map[string]any{"idempotency_key": key, "recipient_worker_id": id, "body": map[string]any{"type": "string", "minLength": 1, "maxLength": 16 << 10}, "reply_to_message_id": id}, "idempotency_key", "recipient_worker_id", "body")},
 		{"inbox_seen", "Explicitly mark a message seen as its bound recipient worker using the supplied key.", schema(map[string]any{"idempotency_key": key, "message_id": id}, "idempotency_key", "message_id")},
 		{"inbox_ack", "Explicitly acknowledge a message as its bound recipient worker, also establishing seen, using the supplied key.", schema(map[string]any{"idempotency_key": key, "message_id": id}, "idempotency_key", "message_id")},

@@ -18,6 +18,7 @@ const runtimeAllowanceAvailable = "<!-- This is an auto-generated reply by CodeR
 type runtimeAllowanceProvider struct {
 	t          *testing.T
 	body       string
+	replyBody  string
 	poster     reviewprovider.Author
 	bot        reviewprovider.Author
 	comments   []reviewprovider.IssueComment
@@ -40,7 +41,11 @@ func (p *runtimeAllowanceProvider) PostIssueComment(_ context.Context, repositor
 		// Nanoseconds keep the causal ordering strict without sleeping or placing
 		// a reply outside the subsequent real observation window.
 		replyAt := at.Add(time.Nanosecond)
-		p.comments = []reviewprovider.IssueComment{query, {ID: 101, Body: runtimeAllowanceAvailable, Author: p.bot, CreatedAt: replyAt, UpdatedAt: replyAt}}
+		replyBody := p.replyBody
+		if replyBody == "" {
+			replyBody = runtimeAllowanceAvailable
+		}
+		p.comments = []reviewprovider.IssueComment{query, {ID: 101, Body: replyBody, Author: p.bot, CreatedAt: replyAt, UpdatedAt: replyAt}}
 	}
 	if p.postError != nil {
 		return reviewprovider.IssueComment{}, p.postError
@@ -308,4 +313,32 @@ func TestObserveHostedAllowanceRecoversIssuedQueryAfterPreparationCancelled(t *t
 	if state != "cancelled" || reservations != 0 || evidence != 0 {
 		t.Fatal("metadata observation restarted or admitted cancelled review", state, reservations, evidence)
 	}
+}
+
+func TestObserveHostedAllowanceBasePlanURLRetainsExactSourceWithoutRepost(t *testing.T) {
+	f := newRuntimeAllowanceFixture(t)
+	f.provider.replyBody = "<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). Reviews are available now."
+	first, err := f.observe(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := f.assertAvailableSource(t, first)
+	firstBody := f.provider.comments[1].Body
+	second, err := f.observe(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.assertAvailableSource(t, second)
+	if f.provider.posts != 1 || f.provider.reads != 2 || second.QueryID != first.QueryID || second.Capture == first.Capture || second.Observation != first.Observation {
+		t.Fatal("new observed URL reposted/rebound original query", second)
+	}
+	retained, err := f.captures.Read(t.Context(), f.a.ID, first.Capture)
+	if err != nil || retained.Snapshot.IssueComments[1].Body != firstBody {
+		t.Fatal("later observation rewrote original raw capture", err)
+	}
+	after, err := f.f.engine.ReadHostedAllowanceQuery(t.Context(), f.f.project, f.a.ID)
+	if err != nil || !reflect.DeepEqual(after, query) {
+		t.Fatal("later observation rewrote query journal", err)
+	}
+	f.assertNotAdmitted(t)
 }

@@ -37,6 +37,7 @@ type ProjectMapEditable struct {
 	Phases      []ProjectMapPhase `json:"phases"`
 	Links       []ProjectMapLink  `json:"links"`
 	Archived    bool              `json:"archived"`
+	Position    int64             `json:"position,omitempty"`
 }
 
 type ProjectMapEntry struct {
@@ -55,6 +56,7 @@ type ProjectMapEntry struct {
 	Archived    bool              `json:"archived"`
 	CreatedAt   string            `json:"created_at"`
 	UpdatedAt   string            `json:"updated_at"`
+	Position    int64             `json:"position,omitempty"`
 }
 
 type ProjectMapSummary struct {
@@ -122,7 +124,9 @@ type JobWorkstreamHistoryEntry struct {
 	CreatedAt       string `json:"created_at"`
 }
 
-func projectMapKind(kind string) bool { return kind == "workstream" || kind == "return_point" }
+func projectMapKind(kind string) bool {
+	return kind == "workstream" || kind == "return_point" || kind == "section"
+}
 
 func projectMapTitle(title string, maximum int) bool {
 	return noteText(title, maximum, true, false) && title == strings.TrimSpace(title)
@@ -141,10 +145,10 @@ func projectMapPhaseID(id string) bool {
 }
 
 func validProjectMapEditable(entry ProjectMapEditable) bool {
-	if !projectMapKind(entry.Kind) || !projectMapTitle(entry.Title, 240) || !noteText(entry.State, 240, false, false) || !noteText(entry.Description, 8<<10, false, true) || !noteText(entry.Where, 8<<10, false, true) || !noteText(entry.Next, 8<<10, false, true) || !noteText(entry.Trigger, 8<<10, false, true) || entry.Phases == nil || entry.Links == nil || len(entry.Phases) > 64 || len(entry.Links) > 12 {
+	if !projectMapKind(entry.Kind) || entry.Position < 0 || entry.Position > 1000000 || !projectMapTitle(entry.Title, 240) || !noteText(entry.State, 240, false, false) || !noteText(entry.Description, 8<<10, false, true) || !noteText(entry.Where, 8<<10, false, true) || !noteText(entry.Next, 8<<10, false, true) || !noteText(entry.Trigger, 8<<10, false, true) || entry.Phases == nil || entry.Links == nil || len(entry.Phases) > 64 || len(entry.Links) > 12 {
 		return false
 	}
-	if entry.Kind == "workstream" && entry.Trigger != "" || entry.Kind == "return_point" && (entry.Where != "" || entry.Next != "" || len(entry.Phases) != 0) {
+	if entry.Kind == "workstream" && entry.Trigger != "" || entry.Kind == "return_point" && (entry.Where != "" || entry.Next != "" || len(entry.Phases) != 0) || entry.Kind == "section" && (entry.Where != "" || entry.Next != "" || entry.Trigger != "" || len(entry.Phases) != 0) {
 		return false
 	}
 	seen := make(map[string]bool, len(entry.Phases))
@@ -277,7 +281,7 @@ func (c *Client) ReplaceProjectMapEntry(ctx context.Context, key, id string, req
 }
 
 func (c *Client) validProjectMapEntry(entry ProjectMapEntry, id string) bool {
-	return entry.ID == id && validID(id) && entry.ProjectID == c.identity.ProjectID && entry.Revision > 0 && len(entry.CreatedAt) <= 64 && len(entry.UpdatedAt) <= 64 && noteTimes(entry.CreatedAt, entry.UpdatedAt) && validProjectMapEditable(ProjectMapEditable{entry.Kind, entry.Title, entry.Description, entry.State, entry.Where, entry.Next, entry.Trigger, entry.Phases, entry.Links, entry.Archived})
+	return entry.ID == id && validID(id) && entry.ProjectID == c.identity.ProjectID && entry.Revision > 0 && len(entry.CreatedAt) <= 64 && len(entry.UpdatedAt) <= 64 && noteTimes(entry.CreatedAt, entry.UpdatedAt) && validProjectMapEditable(ProjectMapEditable{entry.Kind, entry.Title, entry.Description, entry.State, entry.Where, entry.Next, entry.Trigger, entry.Phases, entry.Links, entry.Archived, entry.Position})
 }
 
 func (c *Client) ProjectMapEntry(ctx context.Context, id string) (ProjectMapEntry, error) {
@@ -422,6 +426,38 @@ func (c *Client) JobWorkstreamHistory(ctx context.Context, jobID string, options
 			return Page[JobWorkstreamHistoryEntry]{}, invalidResponse()
 		}
 		previous = entry.Revision
+	}
+	return result, nil
+}
+
+// ProjectMapEditorial reads one bounded active editorial page, without walking
+// the continuation or expanding any history or provider observation.
+func (c *Client) ProjectMapEditorial(ctx context.Context, options PageOptions) (Page[ProjectMapEntry], error) {
+	if options.Limit == 0 {
+		options.Limit = 5
+	}
+	if options.Limit < 1 || options.Limit > 10 || options.Cursor != "" && !validOpaqueCursor(options.Cursor) {
+		return Page[ProjectMapEntry]{}, validation()
+	}
+	q, err := pageQuery(options)
+	if err != nil {
+		return Page[ProjectMapEntry]{}, err
+	}
+	var result Page[ProjectMapEntry]
+	if err := c.get(ctx, c.projectPath("map", "editorial"), q, true, &result); err != nil {
+		return Page[ProjectMapEntry]{}, err
+	}
+	if !validPage(result, options) || result.Cursor != "" && !validOpaqueCursor(result.Cursor) {
+		return Page[ProjectMapEntry]{}, invalidResponse()
+	}
+	seen := make(map[string]bool, len(result.Items))
+	var previous ProjectMapEntry
+	for i, item := range result.Items {
+		if !c.validProjectMapEntry(item, item.ID) || item.Archived || seen[item.ID] || i > 0 && (item.Position < previous.Position || item.Position == previous.Position && item.ID <= previous.ID) {
+			return Page[ProjectMapEntry]{}, invalidResponse()
+		}
+		seen[item.ID] = true
+		previous = item
 	}
 	return result, nil
 }

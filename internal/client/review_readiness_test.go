@@ -182,3 +182,58 @@ func TestReviewReadinessRetainedClocksRemainReadable(t *testing.T) {
 		})
 	}
 }
+
+func TestReadinessIncomingCountsRemainExactBeyondOneHundred(t *testing.T) {
+	var response atomic.Value
+	var calls atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		calls.Add(1)
+		if r.Method != "GET" || r.URL.Path != "/api/v1/projects/project-one/reviews/source/2/readiness" || r.URL.RawQuery != "" {
+			t.Error("readiness changed selected read")
+		}
+		write(w, http.StatusOK, response.Load())
+	}))
+	defer service.Close()
+	c := newClient(t, service)
+	for _, count := range []int64{0, 101, 1000, (1 << 53) - 1} {
+		value := sampleReadiness()
+		value.IncomingRoutesPending = count
+		if count > 0 {
+			value.State = "held"
+			value.Reasons = []string{"routed_findings_pending"}
+		}
+		response.Store(value)
+		before := calls.Load()
+		got, err := c.ReviewSourceReadiness(t.Context(), 2)
+		if err != nil || got.IncomingRoutesPending != count || got.State != value.State || calls.Load() != before+1 {
+			t.Fatal("exact incoming count or independent readiness lost", count, got.State, err)
+		}
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*client.ReviewSourceReadinessAssessment)
+	}{
+		{"negative", func(v *client.ReviewSourceReadinessAssessment) { v.IncomingRoutesPending = -1 }},
+		{"unsafe", func(v *client.ReviewSourceReadinessAssessment) { v.IncomingRoutesPending = 1 << 53 }},
+		{"false ready", func(v *client.ReviewSourceReadinessAssessment) { v.State = "ready_as_observed"; v.Reasons = []string{} }},
+		{"capacity with exact count", func(v *client.ReviewSourceReadinessAssessment) {
+			v.IncomingRoutesCapacity = true
+			v.Reasons = []string{"routed_findings_capacity"}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := sampleReadiness()
+			value.State = "held"
+			value.Reasons = []string{"routed_findings_pending"}
+			value.IncomingRoutesPending = 101
+			test.edit(&value)
+			response.Store(value)
+			_, err := c.ReviewSourceReadiness(t.Context(), 2)
+			checkError(t, err, "invalid_response")
+		})
+	}
+}

@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS inbox_recipient_state (
 func Register(mux *http.ServeMux, store *core.Store) {
 	h := &handler{store: store}
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages", h.send)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}", h.readMessage)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}", h.list)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}/snapshot", h.snapshot)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/conversations/{conversation_id}", h.conversation)

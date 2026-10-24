@@ -23,7 +23,7 @@ These decisions define FireController’s target design. The [product scope](pro
 | D15 | SDK-backed MCP interface alongside CLI and browser | A packaged local adapter uses the service API; remote MCP can follow without duplicating behavior. Verify supported protocol versions, caller isolation and host completion capabilities. | [Client contract](agent-client.md) |
 | D16 | New instance identity and held provider recovery after disaster restore | Separate restart from rollback; require explicit rebind/resync, credential re-establishment and reconciliation of possible post-backup effects. | [Architecture](architecture.md) |
 | D17 | Service-owned immutable workspaces for local reviews | Configure server sources administratively and prove the executor reads the admitted tree independently of developer changes. | [Review execution](reviews.md) |
-| D18 | Explicit required channels for initial review sufficiency | One complete applicable capture per selected channel, with finding obligations met; missing policy never means success. | [Review policy](reviews.md) |
+| D18 | Explicit required channels for initial review sufficiency | Finalized native completion in each required PR/channel survives later Git movement; live findings and explicit rounds/stops still apply. Original anchors remain truthful, and current CI/threads/mergeability remain separate. Missing policy never means success. | [Review policy](reviews.md) |
 | D19 | Managed backups with optional destination adapters | Own scheduling, retention and failure status; start locally and preserve one restore format for later cloud or trusted custom-command destinations. | [Backup and recovery](architecture.md#storage-operations-and-growth) |
 
 ## Implementation selection and migration work

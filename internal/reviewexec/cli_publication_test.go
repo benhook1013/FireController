@@ -202,8 +202,13 @@ func TestPublishEvidenceNilMetadataPreservesCurrentFactsWithoutHTTP(t *testing.T
 	current.Title, current.HeadSHA = "Newer current title", strings.Repeat("9", 40)
 	current.BaseRef, current.BaseSHA = "current-base", strings.Repeat("8", 40)
 	current.CIState, current.Mergeability = "pending", "conflicting"
+	currentDraft := false
+	current.Diff = &reviews.PullDiff{Files: 3, Additions: 11, Deletions: 7}
+	current.IsDraft = &currentDraft
 	merged := projectionPull(1)
 	merged.State = "merged"
+	merged.Diff = &reviews.PullDiff{}
+	merged.MergedAt = "2026-01-01T00:00:00.123456789Z"
 	imported := projectionRun(evidence)
 	imported.Channel = "manual"
 	merged.Runs = []reviews.RunInput{imported}
@@ -230,8 +235,11 @@ func TestPublishEvidenceNilMetadataPreservesCurrentFactsWithoutHTTP(t *testing.T
 	var after, afterMerged reviews.PullResponse
 	projectionRead(t, f, "/pulls/2", &after)
 	projectionRead(t, f, "/pulls/1", &afterMerged)
+	if after.Pull.RunCounts.CLI != before.Pull.RunCounts.CLI+1 || after.Pull.RunCounts.Hosted != before.Pull.RunCounts.Hosted || after.Pull.RunCounts.Manual != before.Pull.RunCounts.Manual || after.Pull.RunCounts.Subagent != before.Pull.RunCounts.Subagent {
+		t.Fatal("native publication did not increment only its exact channel count")
+	}
 	facts := after.Pull
-	facts.RunCount, facts.RecentRuns = before.Pull.RunCount, before.Pull.RecentRuns
+	facts.RunCount, facts.RunCounts, facts.RecentRuns = before.Pull.RunCount, before.Pull.RunCounts, before.Pull.RecentRuns
 	if !reflect.DeepEqual(facts, before.Pull) || after.ObservedAt != observed || !reflect.DeepEqual(afterMerged.Pull, beforeMerged.Pull) || projectionDigest(t, f, before.SnapshotID) != oldSnapshot || attemptState(t, f, a) != journal {
 		t.Fatal("nil publication replaced current metadata, history, freshness or journal")
 	}
@@ -353,18 +361,20 @@ func TestPublishEvidenceReplayRejectsChangedAndHistoricalOnlyNativeSources(t *te
 			if _, err := f.e.PublishEvidence(context.Background(), attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
 				t.Fatal(err)
 			}
+			detail := cliPublicationDetail(t, f, 2, evidence.ID)
+			runID, version := projectionNativeVersion(t, f, detail.SnapshotID, evidence.ID)
 			var err error
 			switch mode {
 			case "text":
-				_, err = f.store.DB().Exec(`UPDATE review_findings SET detail='replaced' WHERE project_id=?`, attemptProject)
+				_, err = f.store.DB().Exec(`UPDATE review_finding_versions SET detail='replaced' WHERE project_id=? AND run_id=? AND run_version_revision=?`, attemptProject, runID, version)
 			case "finding-id":
-				_, err = f.store.DB().Exec(`UPDATE review_findings SET source_finding_id='replaced' WHERE project_id=? AND position=0`, attemptProject)
+				_, err = f.store.DB().Exec(`UPDATE review_finding_versions SET source_finding_id='replaced' WHERE project_id=? AND run_id=? AND run_version_revision=? AND position=0`, attemptProject, runID, version)
 			case "head":
-				_, err = f.store.DB().Exec(`UPDATE review_runs SET head_sha=? WHERE project_id=?`, strings.Repeat("9", 40), attemptProject)
+				_, err = f.store.DB().Exec(`UPDATE review_run_versions SET head_sha=? WHERE project_id=? AND id=? AND version_revision=?`, strings.Repeat("9", 40), attemptProject, runID, version)
 			case "counts":
-				_, err = f.store.DB().Exec(`UPDATE review_runs SET accepted=1 WHERE project_id=?`, attemptProject)
+				_, err = f.store.DB().Exec(`UPDATE review_run_versions SET accepted=1 WHERE project_id=? AND id=? AND version_revision=?`, attemptProject, runID, version)
 			case "decision":
-				_, err = f.store.DB().Exec(`UPDATE review_findings SET disposition='accepted' WHERE project_id=? AND position=0`, attemptProject)
+				_, err = f.store.DB().Exec(`UPDATE review_finding_versions SET disposition='accepted' WHERE project_id=? AND run_id=? AND run_version_revision=? AND position=0`, attemptProject, runID, version)
 			case "historical-only":
 				w := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/observations", f.admin, "replace-current-with-import", encoded(reviews.ObservationRequest{ExpectedRevision: adjudicationRevision(1), RepositoryID: evidence.Anchor.RepositoryID, Source: "synthetic-import", ObservedAt: stamp(), Queue: []reviews.PullInput{projectionPull(2)}}))
 				if w.Code != 201 {

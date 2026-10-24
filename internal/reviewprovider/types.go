@@ -12,9 +12,18 @@ type Error struct {
 	Status            int
 	RetryAfterSeconds int64
 	OutcomeUnknown    bool
+	cause             error
 }
 
 func (e *Error) Error() string { return e.Message }
+
+// Unwrap retains only a safe caller-context sentinel, never a transport body or URL.
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
 
 type Author struct {
 	ID    int64
@@ -35,9 +44,15 @@ type Pull struct {
 	State        string
 	Merged       bool
 	HeadSHA      string
+	HeadRef      string `json:",omitempty"`
 	BaseSHA      string
 	BaseRef      string
 	ChangedFiles int64
+	Additions    *int64 `json:",omitempty"`
+	Deletions    *int64 `json:",omitempty"`
+	IsDraft      *bool  `json:",omitempty"`
+	MergedAt     string `json:",omitempty"`
+	Mergeability string `json:",omitempty"`
 }
 
 type IssueComment struct {
@@ -75,4 +90,12 @@ type ReviewComment struct {
 	OriginalHeadSHA   string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+}
+
+// Page contains exactly one selected provider response, not a complete history.
+// NextPage is the validated adjacent page number, or zero for a terminal page.
+// Callers own cross-page identity checks, durable continuation and completeness.
+type Page[T any] struct {
+	Items    []T
+	NextPage int64
 }

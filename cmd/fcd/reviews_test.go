@@ -111,6 +111,17 @@ func TestReviewExecutionCompositionIsExplicit(t *testing.T) {
 				cancel()
 				t.Fatal("worker startup failed", err)
 			}
+			if mode == "cli" || mode == "dual" {
+				starter, ok := drivers["local-cli"].(cliRecoveryStarter)
+				if !ok {
+					cancel()
+					t.Fatal("CLI recovery is absent from daemon composition")
+				}
+				if _, err := starter.StartCLIRecovery(workerCtx); err == nil {
+					cancel()
+					t.Fatal("daemon failed to start its one owned CLI recovery observer")
+				}
+			}
 			cancel()
 			if done != nil {
 				select {

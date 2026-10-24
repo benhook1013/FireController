@@ -11,6 +11,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -472,6 +473,7 @@ func (e *Engine) refreshNext(ctx context.Context, readers map[string]TargetReade
 func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]TargetReader, schedule *sourceRefreshSchedule) (bool, error) {
 	var selected *sourceRefresh
 	var configuration Configuration
+	var metadataPins map[int64]reviews.SourceMetadataPin
 	var changed string
 
 	var project, id string
@@ -518,6 +520,12 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			if reason != "" {
 				changed = r.ID
 				return e.updateSourceRefresh(ctx, tx, r, "held", reason, nil, "null", "null")
+			}
+			if e.publishAttempt != nil {
+				metadataPins, err = reviews.PinSourceMetadata(ctx, tx, r.ProjectID, []int64{r.PullNumber})
+				if err != nil {
+					return err
+				}
 			}
 			if err = e.updateSourceRefresh(ctx, tx, r, "running", "", nil, "null", "null"); err != nil {
 				return err
@@ -593,6 +601,9 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			retainedCI, retainedReview := "null", "null"
 			if state == "completed" {
 				retainedCI, retainedReview = ciBody, reviewBody
+				if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: r.ProjectID, PrincipalID: r.actor, WorkerID: r.worker}, r.repositoryID, metadataPins, []SourcePlan{plan}); err != nil {
+					return err
+				}
 			}
 			return e.updateSourceRefresh(ctx, tx, r, state, reason, retained, retainedCI, retainedReview)
 		})
@@ -616,19 +627,20 @@ func sourceRefreshReason(err error) string {
 }
 
 type SourcePolicyAssessment struct {
-	IncomingRoutesPending  int64                     `json:"incoming_routes_pending,omitempty"`
-	IncomingRoutesCapacity bool                      `json:"incoming_routes_capacity,omitempty"`
-	ProjectID              string                    `json:"project_id"`
-	RefreshID              string                    `json:"refresh_id"`
-	Source                 string                    `json:"source"`
-	ConfigurationRevision  int64                     `json:"configuration_revision"`
-	PolicyRevision         int64                     `json:"policy_revision"`
-	SourceObservedAt       string                    `json:"source_observed_at"`
-	EvaluatedAt            string                    `json:"evaluated_at"`
-	State                  string                    `json:"state"`
-	Reason                 string                    `json:"reason,omitempty"`
-	Target                 SourceObservation         `json:"target"`
-	Channels               []PolicyAssessmentChannel `json:"channels"`
+	SourceObligationsPending int64                     `json:"source_obligations_pending,omitempty"`
+	IncomingRoutesPending    int64                     `json:"incoming_routes_pending,omitempty"`
+	IncomingRoutesCapacity   bool                      `json:"incoming_routes_capacity,omitempty"`
+	ProjectID                string                    `json:"project_id"`
+	RefreshID                string                    `json:"refresh_id"`
+	Source                   string                    `json:"source"`
+	ConfigurationRevision    int64                     `json:"configuration_revision"`
+	PolicyRevision           int64                     `json:"policy_revision"`
+	SourceObservedAt         string                    `json:"source_observed_at"`
+	EvaluatedAt              string                    `json:"evaluated_at"`
+	State                    string                    `json:"state"`
+	Reason                   string                    `json:"reason,omitempty"`
+	Target                   SourceObservation         `json:"target"`
+	Channels                 []PolicyAssessmentChannel `json:"channels"`
 }
 
 func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scope, number int64) (SourcePolicyAssessment, error) {
@@ -693,7 +705,6 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 			return nil
 		}
 		result.State = "sufficient"
-		anchor := Anchor{RepositoryID: observation.RepositoryID, Repository: observation.RepositoryName, PullNumber: number, CandidateSHA: observation.HeadSHA, BaseSHA: observation.BaseSHA, BaseRef: observation.BaseRef, ParentPullNumber: observation.ParentPullNumber, ParentSHA: observation.ParentSHA, ObservedAt: observation.ObservedAt}
 		result.IncomingRoutesPending, result.IncomingRoutesCapacity, err = incomingRoutePolicyFacts(ctx, tx, scope.ProjectID, number)
 		if err != nil {
 			return err
@@ -703,13 +714,23 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 		} else if result.IncomingRoutesPending > 0 {
 			result.State, result.Reason = "held", "routed_findings_pending"
 		}
+		result.SourceObligationsPending, err = sourceObligationCount(ctx, tx, scope.ProjectID, number)
+		if err != nil {
+			return err
+		}
+		if result.SourceObligationsPending > 0 {
+			result.State = "held"
+			if result.Reason == "" {
+				result.Reason = "source_obligations_pending"
+			}
+		}
 		for _, channel := range policy.Policy.RequiredChannels {
-			state, err := comparison(ctx, tx, scope.ProjectID, r.repositoryID, number, anchor, channel)
+			state, err := channelProgress(ctx, tx, scope.ProjectID, r.repositoryID, number, channel)
 			if err != nil {
 				return err
 			}
-			result.Channels = append(result.Channels, PolicyAssessmentChannel{Channel: channel, Covered: state.Covered, Pending: state.Pending})
-			if !state.Covered || state.Pending {
+			result.Channels = append(result.Channels, PolicyAssessmentChannel{Channel: channel, Covered: state.Covered, Pending: state.Pending, RoundsConfigured: state.RoundsConfigured, RoundsComplete: state.RoundsComplete})
+			if !state.Covered || state.Pending || state.RoundsConfigured && !state.RoundsComplete {
 				result.State = "held"
 			}
 		}

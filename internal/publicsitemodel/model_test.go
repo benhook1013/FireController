@@ -288,3 +288,11 @@ func TestPublicContentRejectsInvalidEligibleFactsWithoutInventingUnknowns(t *tes
 		t.Fatal("unbounded round history accepted")
 	}
 }
+
+func TestPublicManifestRejectsPrivateReviewGroups(t *testing.T) {
+	m := approvedManifest()
+	m.Presentation.ReviewGroups = []presentationmodel.ReviewGroup{{Title: "Private operations", PullNumbers: []int64{7}}}
+	if _, err := NormalizeManifest(m); err == nil {
+		t.Fatal("private queue groups entered public manifest")
+	}
+}

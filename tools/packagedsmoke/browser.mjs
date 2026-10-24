@@ -1,15 +1,49 @@
 import { chromium, expect } from '../../webapp/node_modules/@playwright/test/index.mjs';
 import fs from 'node:fs/promises';
+import {writeFileSync, renameSync} from 'node:fs';
+import { classifyBrowserFailure, retainBrowserFailure } from './browser-diagnostics.mjs';
 
 // All inputs are synthetic, private files produced by browser_test.go. Neither
 // Playwright diagnostics nor request/credential bytes are printed on failure.
 let server, browser;
 let phase = 'configuration';
-let checkpoint = 'none';
+let checkpoint = '';
+let operation = 'workload';
+let publishProgress = () => {};
+let stopProgress = () => {};
+let progressFailed = false;
+let counters = () => ({});
+let failureClass = '';
+let repeatedFallbackHash = false;
+let fallbackGeometry = {};
+let workerHistoryBefore = -1, workerHistoryAfter = -1;
+let sendStatus = 0, replyStatus = 0, conversationMatch = false;
+let lastHTTPStatus = 0;
+let lastAllowWrites = false, lastCanEditPresentation = false;
+let reloadLayout = {};
+let reloadDeliveryHeld = false, reloadDeliverySettled = 0;
+let renewalProof = { renewal_response_received:false, renewal_response_ok:false, current_read_ok:false, current_shape_valid:false, current_identity_matches:false, current_read_only:false, current_expiry_valid:false, current_expiry_nondecreasing:false, storage_matches_current:false };
+let failureSnapshot = async () => ({});
 let diagnostics = () => ({});
 const need = (value) => { if (!value) throw new Error('assertion'); };
 try {
   const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
+  need(typeof config.progress_file === 'string' && config.progress_file.startsWith('/'));
+  let previousProgress = '';
+  publishProgress = () => {
+    const observed = {phase, checkpoint, operation, counters:{...counters(), ...diagnostics(), http_status:lastHTTPStatus, allow_writes:lastAllowWrites, can_edit_presentation:lastCanEditPresentation}};
+    const fingerprint = JSON.stringify(observed);
+    if (fingerprint === previousProgress) return;
+    try {
+      writeFileSync(config.progress_file + '.tmp', JSON.stringify({...observed, observed_unix_ms:Date.now()}), {mode:0o600});
+      renameSync(config.progress_file + '.tmp', config.progress_file);
+      previousProgress = fingerprint;
+    } catch { progressFailed = true; }
+  };
+  publishProgress();
+  const progressTimer = setInterval(publishProgress, 250);
+  progressTimer.unref();
+  stopProgress = () => clearInterval(progressTimer);
   const [admin, token] = await Promise.all([config.admin_file, config.credential_file].map(async path => (await fs.readFile(path, 'utf8')).trim()));
   phase = 'launch';
   server = await chromium.launchServer({ headless: true, ...(config.executable ? { executablePath: config.executable } : {}), timeout: 5000, proxy: { server: config.proxy, bypass: '127.0.0.1,localhost' }, args: ['--disable-background-networking', '--no-first-run'] });
@@ -17,10 +51,103 @@ try {
   browser = await chromium.connect(server.wsEndpoint(), {timeout: 5000});
   const context = await browser.newContext({ viewport: { width: 390, height: 900 } });
   const page = await context.newPage();
+  await page.clock.install({time: new Date()});
   page.setDefaultTimeout(5000);
   page.setDefaultNavigationTimeout(5000);
   const prefix = '/api/v1/projects/' + config.project;
-  const home = '/projects/' + config.project;
+  // The canonical fixture handle is separate from its immutable API identity.
+  const handle = 'packaged-smoke';
+  const home = '/projects/' + handle;
+  const bindingKey = 'firecontroller.browser-session.v1';
+  const loginAuthority = async (loginResponse, allowWrites, canEditPresentation) => {
+    const posted = loginResponse.request().postDataJSON();
+    need(posted && Object.keys(posted).length === 1 && typeof posted.session_id === 'string' && /^[a-f0-9]{32}$/u.test(posted.session_id));
+    // The page has accepted this login; inspect actual cookie authority rather
+    // than an unbounded CDP response-finished/body observer.
+    const current = await page.evaluate(async ({prefix, bindingKey, sessionID, project, instance}) => {
+      const binding = JSON.parse(sessionStorage.getItem(bindingKey));
+      if (binding?.sessionID !== sessionID || binding.projectID !== project || binding.instanceID !== instance) throw new Error('login session binding differs');
+      const response = await fetch(prefix + '/browser-session', {headers:{'X-FC-Browser-Session':sessionID, 'X-FC-Instance':instance}, credentials:'same-origin', cache:'no-store', redirect:'error', signal:AbortSignal.timeout(5000)});
+      return {status:response.status, view:response.status === 200 ? await response.json() : null, binding};
+    }, {prefix, bindingKey, sessionID:posted.session_id, project:config.project, instance:config.instance});
+    const view = current.view, binding = current.binding;
+    const fields = ['session_id', 'instance_id', 'project_id', 'expires_at', 'allow_writes', 'can_edit_presentation'];
+    const bindingFields = ['version', 'projectID', 'projectHandle', 'instanceID', 'sessionID', 'expiresAt', 'selectedworkerID'];
+    need(current.status === 200 && view && typeof view === 'object' && !Array.isArray(view) && Object.keys(view).length === fields.length && fields.every(field => Object.hasOwn(view, field)));
+    need(view.session_id === posted.session_id && view.project_id === config.project && view.instance_id === config.instance && view.allow_writes === allowWrites && view.can_edit_presentation === canEditPresentation);
+    need(typeof view.expires_at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(view.expires_at) && Number.isFinite(Date.parse(view.expires_at)) && Date.parse(view.expires_at) > Date.now() && Date.parse(view.expires_at) <= Date.now() + 86400000 + 300000);
+    need(binding.version === 1 && Object.keys(binding).length === bindingFields.length && bindingFields.every(field => Object.hasOwn(binding, field)) && binding.projectHandle === handle && binding.expiresAt === view.expires_at && typeof binding.selectedworkerID === 'string' && (binding.selectedworkerID === '' || /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(binding.selectedworkerID)));
+    return view;
+  };
+
+  const reloadGeometry = async () => ({...await page.evaluate(() => {
+    const rect = selector => {const node=document.querySelector(selector);if(!node)return null;const box=node.getBoundingClientRect();return {top:box.top,bottom:box.bottom,left:box.left,right:box.right,height:box.height};};
+    const target=document.querySelector('#review-pr-32');
+    return {hash_matches:location.hash==='#review-pr-32',scroll_y:scrollY,scroll_height:document.documentElement.scrollHeight,viewport_height:innerHeight,margin:target?parseFloat(getComputedStyle(target).scrollMarginTop):0,target:rect('#review-pr-32'),header:rect('.mast'),hero:rect('.delivery-merge-head'),queue:rect('#review-queue')};
+  }),run_reads:reviewRunReads,delivery_reads:deliveryReads,delivery_held:reloadDeliveryHeld,delivery_settled:reloadDeliverySettled});
+
+  failureSnapshot = async () => {
+    const screenshot = path => page.screenshot({path,mask:[page.locator('input,textarea,code,.full-text,.message-preview')],timeout:2000});
+    if (phase === 'live-reviews') {
+      return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'review-failure.json',
+        snapshot:{phase,checkpoint,run_fetches:reviewRunReads,attempt_fetches:reviewAttemptReads,pull_fetches:reviewPullReads,operation_reads:reviewOperationReads,fallback_geometry:fallbackGeometry}, screenshot,
+        collect:async snapshot => {
+          snapshot.updated_pull=await page.getByRole('link',{name:'Live review updated',exact:true}).count();
+          snapshot.hosted_run_link=await page.getByRole('link',{name:/^Open hosted run live-hosted-round:/}).count();
+          snapshot.history_sections=await page.locator('.review-history').count();
+          snapshot.hosted_sections=await page.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).count();
+          snapshot.review_alerts=await page.getByRole('alert').count();
+        },
+      });
+    }
+    if (phase === 'delivery-overview') {
+      // Persist local fixed counters first: optional DOM/indicator/screenshot
+      // failures must not erase the checkpoint that explains the real failure.
+      return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'delivery-failure.json', screenshot,
+        snapshot:{phase,checkpoint,
+          fixture_writes:fixtureWrites, action_writes:actionWrites, forbidden_writes:forbiddenWrites,
+          delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads,
+          ...presenceDiagnostics(),
+          contact_history_reads:contactHistoryReads, node_clock_ms:Date.now(),
+          worker_history_before: workerHistoryBefore, worker_history_after: workerHistoryAfter,
+        },
+        collect:async snapshot => {
+          snapshot.browser_clock_ms=await page.evaluate(()=>Date.now());
+          snapshot.browser_hidden=await page.evaluate(()=>document.visibilityState==='hidden');
+          snapshot.delivery_heading=await page.getByRole('heading',{name:'Delivery',exact:true}).count();
+          snapshot.inspector_lane=await page.locator('.delivery-lane[aria-label="Inspector jobs"]').count();
+          snapshot.active_job=await page.getByText('Inspector active work',{exact:true}).count();
+          snapshot.latest_done=await page.locator('.delivery-checkpoint p').filter({hasText:'Latest progress is visible.'}).count();
+          snapshot.latest_next=await page.locator('.delivery-checkpoint p').filter({hasText:'Continue from the latest progress.'}).count();
+          snapshot.earlier_done=await page.locator('.delivery-checkpoint p').filter({hasText:'Earlier progress only.'}).count();
+          snapshot.inbox_sidebar=await page.locator('.sidebar').count();
+          snapshot.inbox_heading=await page.getByRole('heading',{name:'Builder inbox',exact:true}).count();
+          snapshot.readonly_new_message=await page.getByRole('button',{name:'New message',exact:true}).count();
+          snapshot.contact_labels=await page.locator('.worker-contact').count();
+          if (await page.locator('.feed-card .status-dot').count()) snapshot.indicators=await indicatorColors();
+        },
+      });
+    }
+    if (phase === 'reload') {
+      return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'reload-failure.json', snapshot:{phase,checkpoint,...renewalProof,layout:reloadLayout}, collect:async snapshot=>{snapshot.current_geometry=await reloadGeometry();} });
+    }
+    if (phase === 'renewal-missing-cookie') return retainBrowserFailure({directory:config.diagnostic_directory,filename:'failure.json',snapshot:{phase,checkpoint,...counters(),cookie_removed:missingCookieRemoved,statuses:missingCookieStatuses,terminal_all:terminalResponsesAll,auth_timeline:authTimeline,auth_events:authEvents},collect:async snapshot=>{snapshot.binding_present=await page.evaluate(key=>sessionStorage.getItem(key)!==null,bindingKey);}});
+    if (phase !== 'explicit-actions-uncertain') return {};
+    return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'failure.json', screenshot,
+      snapshot:{phase,checkpoint,...counters()},
+      collect:async snapshot => {
+        snapshot.sent_links=await page.getByRole('link',{name:'Open sent conversation',exact:true}).count();
+        snapshot.retry_buttons=await page.getByRole('button',{name:'Retry exact send',exact:true}).count();
+        snapshot.send_buttons=await page.getByRole('button',{name:'Send message',exact:true}).count();
+        snapshot.composer_forms=await page.locator('.browser-composer form').count();
+        snapshot.message_matches=await page.getByText('Uncertain browser message',{exact:true}).count();
+        snapshot.conversation_items=await page.locator('.conversation-list > li').count();
+        snapshot.alerts=await page.getByRole('alert').count();
+        snapshot.inbox_route=new URL(page.url()).pathname === home+'/inbox';
+        snapshot.conversation_route=new URL(page.url()).pathname.startsWith(home+'/inbox/');
+      },
+    });
+  };
   let fixtureWrites = 0;
   const write = async (method, path, body, status = 200, sender = config.worker) => {
     const response = await fetch(config.origin + prefix + path, {
@@ -29,47 +156,163 @@ try {
     });
     need(response.status === status);
     const receipt = await response.json();
-    need(receipt.id || receipt.project_id);
+    need(receipt && Object.keys(receipt).length > 0);
     fixtureWrites++;
     return receipt;
   };
-  let sessionPosts = 0, sessionDeletes = 0, forbiddenWrites = 0, actionWrites = 0, errors = 0, external = 0;
-  let explicitActions = false, controlledMessageFailure = false;
-  let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0;
+  let deliveryFixtureWrites = 0;
+  const seedDelivery = async (method, path, body, status = 200, sender = config.worker) => {
+    const response = await fetch(config.origin + prefix + path, {
+      method, headers: {'Authorization':'Bearer '+admin, 'X-FC-Instance':config.instance, 'X-FC-Worker':sender, 'Idempotency-Key':'packaged-delivery-fixture-' + (++deliveryFixtureWrites), 'Content-Type':'application/json'},
+      body:JSON.stringify(body), signal:AbortSignal.timeout(5000),
+    });
+    need(response.status === status);
+    const receipt = await response.json();
+    need(receipt && Object.keys(receipt).length > 0);
+    return receipt;
+  };
+  const deliveryFixture = { jobs: {} };
+  deliveryFixture.jobs.builderActive = (await seedDelivery('POST', '/jobs', {title:'Builder primary delivery', brief:'Private delivery identifier never rendered.', worker_id:config.worker}, 201)).id;
+  deliveryFixture.jobs.inspectorActive = (await seedDelivery('POST', '/jobs', {title:'Inspector active work', brief:'Fixture brief.', worker_id:config.other_worker}, 201)).id;
+  deliveryFixture.jobs.inspectorBlocked = (await seedDelivery('POST', '/jobs', {title:'Inspector blocked work', brief:'Fixture brief.', worker_id:config.other_worker}, 201)).id;
+  deliveryFixture.jobs.inspectorParked = (await seedDelivery('POST', '/jobs', {title:'Inspector parked work', brief:'Fixture brief.', worker_id:config.other_worker}, 201)).id;
+  deliveryFixture.jobs.unassigned = (await seedDelivery('POST', '/jobs', {title:'Unassigned parked work', brief:'Fixture brief.', worker_id:''}, 201)).id;
+  await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.inspectorBlocked, {expected_revision:1, status:'blocked'});
+  await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.inspectorParked, {expected_revision:1, status:'parked'});
+  await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.unassigned, {expected_revision:1, status:'parked'});
+  await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.inspectorActive, {expected_revision:1, progress:{summary:'Earlier progress only.', next:'Earlier next step.'}});
+  await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.inspectorActive, {expected_revision:2, progress:{summary:'Latest progress is visible.', next:'Continue from the latest progress.'}});
+  await seedDelivery('PUT', '/workers/' + config.other_worker + '/pause', {expected_revision:0, paused:true, reason:'Paused for synthetic dependency review.'});
+  await seedDelivery('PUT', '/workers/' + config.worker + '/primary-job', {expected_revision:0, job_id:deliveryFixture.jobs.builderActive});
+  let sessionPosts = 0, sessionDeletes = 0, sessionRenewals = 0, terminalResponses = 0, forbiddenWrites = 0, actionWrites = 0, errors = 0, external = 0;
+ let explicitActions = false;
+ let controlledMessageFailure = false;
+ let controlledAccessFailure = false;
+ let missingCookieStatuses = {};
+ let missingCookieRemoved = false;
+ let terminalResponsesAll = 0, expectedMissingSession = '';
+ const authEvents = [], authTimeline = [];
+ const retainAuthEvent = event => {if(authEvents.length<16)authEvents.push(event);};
+ const authSnapshot = async stage => {
+   const metadata=await page.evaluate(({bindingKey,home,project,instance,session})=>{
+     let binding;try{binding=JSON.parse(sessionStorage.getItem(bindingKey));}catch{}
+     return {path_matches:location.pathname===home,search_empty:location.search==='',hash_empty:location.hash==='',binding_present:!!binding,binding_project_matches:binding?.projectID===project,binding_instance_matches:binding?.instanceID===instance,binding_session_matches:binding?.sessionID===session};
+   },{bindingKey,home,project:config.project,instance:config.instance,session:expectedMissingSession});
+   if(authTimeline.length<16)authTimeline.push({stage,...metadata,session_posts:sessionPosts,session_deletes:sessionDeletes,session_renewals:sessionRenewals,terminal_all:terminalResponsesAll,terminal_controlled:terminalResponses,control_enabled:controlledAccessFailure});
+   if(config.diagnostic_directory){await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});await fs.writeFile(config.diagnostic_directory+'/auth-diagnosis.json',JSON.stringify({timeline:authTimeline,events:authEvents}),{mode:0o600});}
+   return metadata;
+ };
+ let controlledProgressAccessFailure = false, progressAccessFailures = 0;
+ const expectedMissingSessionRoute = url => { if ((!controlledAccessFailure && !controlledProgressAccessFailure) || !url) return false; try { const value = new URL(url); return value.origin === config.origin && ((controlledAccessFailure && ['/api/v1/instance', prefix + '/browser-session'].includes(value.pathname)) || (controlledProgressAccessFailure && value.pathname === prefix + '/reviews/rounds/progress')); } catch { return false; } };
+ const unpublishedLocation = url => { try { const value = new URL(url); return value.origin === config.origin && value.pathname === '/api/v1/public/project-locations/' + handle && value.search === ''; } catch { return false; } };
+  counters = () => ({session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, terminal_responses:terminalResponses, errors, forbidden_writes:forbiddenWrites, action_writes:actionWrites, external});
+  let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0, noteArchiveReads = 0;
+  let deliveryReads = 0, jobBriefReads = 0, jobArchiveReads = 0, reviewRunReads = 0;
+  let reviewAttemptReads = 0, reviewPullReads = 0, reviewOperationReads = 0;
+  let presenceReads = 0, presenceFinished = 0, presenceResponses = 0, presenceHTTPStatus = 0, presenceFailed = 0, presenceHeaderErrors = 0, contactHistoryReads = 0;
+  let presenceFailureKind = 'none', presenceFailureMS = 0, presenceFailureHeadersMS = 0, presenceSignalAborts = 0, presenceSignalAbortMS = 0;
+  const presenceTimings = new WeakMap();
+  const presenceElapsed = (now, start) => start === undefined ? 0 : Math.min(120000, Math.max(0, Math.round(now - start)));
+  const presenceDiagnostics = () => ({ presence_reads:presenceReads, presence_finished:presenceFinished, presence_responses:presenceResponses, presence_http_status:presenceHTTPStatus, presence_failed:presenceFailed, presence_header_errors:presenceHeaderErrors, presence_failure_kind:presenceFailureKind, presence_failure_ms:presenceFailureMS, presence_failure_headers_ms:presenceFailureHeadersMS, presence_signal_aborts:presenceSignalAborts, presence_signal_abort_ms:presenceSignalAbortMS });
+  // Observe only this synthetic fixture's presence signal. Keep the original
+  // fetch promise and body handling; a signal may abort after headers arrive.
+  await page.exposeFunction('__fcSmokePresenceSignalAborted', elapsed => {
+    if (Number.isInteger(elapsed) && elapsed >= 0 && elapsed <= 120000) {
+      presenceSignalAborts = Math.min(1000, presenceSignalAborts + 1);
+      presenceSignalAbortMS = elapsed;
+    }
+  });
+  await page.addInitScript(({path}) => {
+    const original = globalThis.fetch;
+    globalThis.fetch = function(input, init) {
+      let url;
+      try { url = new URL(input instanceof Request ? input.url : input, location.href); }
+      catch { return original.apply(this, arguments); }
+      const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+      if (url.origin === location.origin && url.pathname === path && method === 'GET') {
+        const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+        if (signal) {
+          const started = performance.now();
+          const aborted = () => { void globalThis.__fcSmokePresenceSignalAborted(Math.min(120000, Math.max(0, Math.round(performance.now() - started)))).catch(() => {}); };
+          if (signal.aborted) aborted(); else signal.addEventListener('abort', aborted, {once:true});
+        }
+      }
+      return original.apply(this, arguments);
+    };
+  }, {path:prefix+'/workers/presence'});
   let injectedRequest;
-  diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external });
+  diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external, ...presenceDiagnostics(), delivery_reads:deliveryReads, job_brief_reads:jobBriefReads, job_archive_reads:jobArchiveReads, contact_history_reads:contactHistoryReads });
   page.on('pageerror', () => errors++);
   page.on('console', value => {
-    if (value.type() !== 'error') return;
-    if (controlledMessageFailure && value.location().url === config.origin + prefix + '/messages') return;
-    // Only this exact controlled 400 may produce Chromium's resource-error
-    // console entry. Every other console error still fails the workload.
-    if (injectedRequest && injectedConsoleErrors === 0 && value.location().url === injectedRequest.url()
-      && /^Failed to load resource: the server responded with a status of 400 \(Bad Request\)$/u.test(value.text())) injectedConsoleErrors++;
+    if (value.type() !== 'error' || expectedMissingSessionRoute(value.location().url) || (controlledMessageFailure && value.location().url === config.origin + prefix + '/messages') || (unpublishedLocation(value.location().url) && /^Failed to load resource: the server responded with a status of 404 \(Not Found\)$/u.test(value.text()))) return;
+    if (injectedRequest && injectedConsoleErrors === 0 && value.location().url === injectedRequest.url() && /^Failed to load resource: the server responded with a status of 400 \(Bad Request\)$/u.test(value.text())) injectedConsoleErrors++;
     else errors++;
   });
   page.on('response', value => {
-    if (value.status() < 400) return;
-    if (value.request() === injectedRequest && value.status() === 400) injectedResponses++;
-    else errors++;
-  });
+    const url = new URL(value.url());
+    if(url.origin===config.origin && [401,403].includes(value.status()) && (url.pathname==='/api/v1/instance'||url.pathname===prefix||url.pathname.startsWith(prefix+'/'))){
+      terminalResponsesAll++;
+      const kind=url.pathname==='/api/v1/instance'?'instance':url.pathname===prefix?'project':url.pathname===prefix+'/browser-session'?'session':url.pathname===prefix+'/workers/presence'?'presence':url.pathname===prefix+'/project-events/stream'?'metadata':url.pathname===prefix+'/message-events/stream'?'inbox':url.pathname===prefix+'/presentation'?'presentation':'other';
+      retainAuthEvent({kind,status:value.status(),control_enabled:controlledAccessFailure,phase_missing_cookie:phase==='renewal-missing-cookie',deletes:sessionDeletes});
+    }
+    if (controlledAccessFailure && url.origin===config.origin && value.status()>=400) {
+      const kind=url.pathname==='/api/v1/instance'?'instance':url.pathname===prefix?'project':url.pathname===prefix+'/browser-session'?'session':url.pathname==='/api/v1/public/project-locations/'+handle?'unpublished':url.pathname===prefix+'/presentation'?'presentation':'other';
+      missingCookieStatuses[kind]=value.status();
+    }
+    if (value.request().method()==='GET' && url.origin===config.origin && url.pathname===prefix+'/workers/presence') { presenceResponses++; presenceHTTPStatus=value.status(); const timing=presenceTimings.get(value.request()); if(timing) timing.headers=performance.now(); }
+    if (value.status() >= 400) { if (value.status() === 401 && expectedMissingSessionRoute(value.url())) terminalResponses++; else if (value.request() === injectedRequest && value.status() === 400) injectedResponses++; else if (!(value.status() === 404 && value.request().method() === 'GET' && unpublishedLocation(value.url()))) errors++; } });
   page.on('request', request => {
     const url = new URL(request.url());
     if (url.origin !== config.origin) { external++; return; }
     if (request.method() === 'GET') {
+      if (url.pathname === prefix + '/workers/presence') {
+        presenceReads++;
+        presenceTimings.set(request, {started:performance.now()});
+        const headers=request.headers();
+        if (Object.hasOwn(headers,'x-fc-worker') || Object.hasOwn(headers,'x-fc-session')) presenceHeaderErrors++;
+      }
+      if (/\/(?:history|runs|attempts)(?:\/|$)/u.test(url.pathname.slice(prefix.length))) contactHistoryReads++;
       if (url.pathname === prefix + '/presentation') presentationReads++;
+      if (url.pathname === prefix + '/notes' && url.searchParams.get('status') === 'all') noteArchiveReads++;
+      if (url.pathname === prefix + '/delivery') deliveryReads++;
+      if (url.pathname === prefix + '/reviews/pulls/32/runs') reviewRunReads++;
+      if (url.pathname === prefix + '/reviews/pulls/32/attempts') reviewAttemptReads++;
+      if (url.pathname === prefix + '/reviews/pulls/32') reviewPullReads++;
+      if (url.pathname.startsWith(prefix + '/reviews/operations')) reviewOperationReads++;
+      if (url.pathname === prefix + '/jobs' && url.searchParams.get('status') === 'all') jobArchiveReads++;
+      if (/\/jobs\/[^/]+$/u.test(url.pathname.slice(prefix.length))) jobBriefReads++;
       if (url.pathname === prefix + '/project-events/stream') metadataStreams++;
       if (url.pathname === prefix + '/message-events/stream') inboxStreams++;
       return;
     }
-    if (url.pathname === prefix + '/browser-session' && request.method() === 'POST') sessionPosts++;
-    else if (url.pathname === prefix + '/browser-session' && request.method() === 'DELETE') sessionDeletes++;
+    if (url.pathname === prefix + '/browser-session' && request.method() === 'POST') {
+      sessionPosts++;
+      try { const body=JSON.parse(request.postData()); if (Object.keys(body).length!==1 || typeof body.session_id!=='string' || !body.session_id) forbiddenWrites++; }
+      catch { forbiddenWrites++; }
+    }
+    else if (url.pathname === prefix + '/browser-session/renew' && request.method() === 'POST') { sessionRenewals++; if (request.postData() !== '{}' || request.headers()['authorization'] || request.headers()['x-fc-instance'] !== config.instance) forbiddenWrites++; }
+    else if (url.pathname === prefix + '/browser-session' && request.method() === 'DELETE') {sessionDeletes++;if(phase==='renewal-missing-cookie')retainAuthEvent({kind:'delete-request',deletes:sessionDeletes,terminal_all:terminalResponsesAll,control_enabled:controlledAccessFailure});}
     else if (explicitActions && ((request.method() === 'POST' && (url.pathname === prefix + '/messages' || /^messages\/[^/]+\/(?:seen|ack)$/.test(url.pathname.slice(prefix.length + 1)))) || (request.method() === 'PUT' && url.pathname === prefix + '/presentation'))) actionWrites++;
     else forbiddenWrites++;
   });
+  page.on('requestfailed', request => {
+    const url = new URL(request.url());
+    if (request.method()==='GET' && url.origin===config.origin && url.pathname===prefix+'/workers/presence') {
+      presenceFailed++;
+      const timing=presenceTimings.get(request), now=performance.now();
+      presenceFailureMS=presenceElapsed(now,timing?.started);
+      presenceFailureHeadersMS=presenceElapsed(now,timing?.headers);
+      const error=request.failure()?.errorText;
+      presenceFailureKind=error==='net::ERR_ABORTED' ? 'aborted' : ['net::ERR_CONNECTION_ABORTED','net::ERR_CONNECTION_CLOSED','net::ERR_CONNECTION_FAILED','net::ERR_CONNECTION_REFUSED','net::ERR_CONNECTION_RESET','net::ERR_TIMED_OUT','net::ERR_NAME_NOT_RESOLVED','net::ERR_INTERNET_DISCONNECTED','net::ERR_NETWORK_CHANGED','net::ERR_EMPTY_RESPONSE','net::ERR_HTTP2_PROTOCOL_ERROR'].includes(error) ? 'connection' : 'other';
+    }
+  });
+  page.on('requestfinished', request => {
+    if (request.method()==='GET' && request.url().startsWith(config.origin+prefix+'/workers/presence?')) presenceFinished++;
+  });
   await context.route('**/*', async route => {
-    if (new URL(route.request().url()).origin !== config.origin) { await route.abort(); return; }
-    if (!injectedRequest && route.request().method() === 'GET' && new URL(route.request().url()).pathname === prefix + '/project-events/stream') {
+    const url = new URL(route.request().url());
+    if (url.origin !== config.origin) { await route.abort(); return; }
+    if (!injectedRequest && route.request().method() === 'GET' && url.pathname === prefix + '/project-events/stream') {
       injectedRequest = route.request();
       await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: { code: 'invalid_response' } }) });
       return;
@@ -83,44 +326,270 @@ try {
     accent: document.documentElement.style.getPropertyValue('--fc-accent_text'),
   }));
   const indicatorColors = () => page.evaluate(() => ({
-    connection: getComputedStyle(document.querySelector('.connection-note'), '::before').backgroundColor,
+    connection: getComputedStyle(document.querySelector('.mast .header-utilities .connection-note'), '::before').backgroundColor,
+    connectionBorder: getComputedStyle(document.querySelector('.mast .header-utilities .connection-note'), '::before').borderColor,
+    connectionText: getComputedStyle(document.querySelector('.mast .header-utilities .connection-note')).color,
     canvas: getComputedStyle(document.documentElement).backgroundColor,
+    header: getComputedStyle(document.querySelector('.mast')).backgroundColor,
+    connectionSurface: getComputedStyle(document.querySelector('.mast')).backgroundColor,
     status: getComputedStyle(document.querySelector('.feed-card .status-dot')).backgroundColor,
     online: document.querySelector('.feed-card .status-dot').classList.contains('online'),
     surface: getComputedStyle(document.querySelector('.feed-card')).backgroundColor,
   }));
+  const captureLayouts = async (name, widths, checkLayout) => {
+    for (const width of widths) {
+      await page.setViewportSize({width, height:900});
+      need(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      need(await page.locator('.mast .header-utilities .connection-note').count() === 1);
+      need(await page.locator('.connection-note').count() === 1);
+      need(await page.locator('.connection-card .connection-note').count() === 0);
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      need(await page.locator('.mast').evaluate(element => Math.abs(element.getBoundingClientRect().top) <= 1));
+      await page.evaluate(() => window.scrollTo(0, 0));
+      need(await page.locator('.mast').evaluate(element => Math.abs(element.getBoundingClientRect().top) <= 1));
+      await expect(page.getByRole('button', {name:'Refresh visible data', exact:true})).toBeVisible();
+      if (checkLayout) await checkLayout();
+      if (config.diagnostic_directory) {
+        await fs.mkdir(config.diagnostic_directory, {recursive:true, mode:0o700});
+        await page.screenshot({path:config.diagnostic_directory + '/' + name + '-' + width + '.png', fullPage:true, timeout:2000});
+      }
+    }
+    await page.setViewportSize({width:390, height:900});
+  };
   const defaults = async () => {
     const value = await appearance();
     need(value.brand === 'FireController' && value.background === 'rgb(232, 231, 228)' && value.overrides.length === 0);
   };
   phase = 'connect';
+  checkpoint = 'root';
   await page.goto(config.origin);
-  await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+  checkpoint = 'project-input';
+  await page.getByLabel('Project', {exact:true}).fill(config.project);
+  checkpoint = 'credential-input';
   await page.getByLabel('Project credential', {exact:true}).fill(token);
+  need(await page.getByRole('checkbox').count() === 0);
+  checkpoint = 'submit';
+  const readOnlyLogin=page.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname===prefix+'/browser-session');
   await page.getByRole('button', {name:'Connect to project', exact:true}).click();
+  checkpoint = 'session-response';
+  const readOnlyResponse=await readOnlyLogin; lastHTTPStatus=readOnlyResponse.status();
+  checkpoint = 'session-status';
+  need(lastHTTPStatus===200);
+  checkpoint = 'heading';
   await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
+  checkpoint = 'capabilities-read';
+  const readOnlyCapabilities=await loginAuthority(readOnlyResponse, false, false);
+  lastAllowWrites=readOnlyCapabilities.allow_writes===true; lastCanEditPresentation=readOnlyCapabilities.can_edit_presentation===true;
+  checkpoint = 'capabilities-check';
+  need(readOnlyCapabilities.allow_writes===false && readOnlyCapabilities.can_edit_presentation===false);
+
+  need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).count()===0);
+  need(await page.locator('.sidebar').count() === 0);
+  need(await page.locator('.mast .header-utilities .connection-note').count() === 1);
+  need(await page.locator('.connection-note').count() === 1);
+  need(await page.locator('.connection-card .connection-note').count() === 0);
+  await expect(page.locator('.page-skeleton')).toHaveCount(0);
+  phase = 'delivery-overview'; checkpoint = 'initial-snapshot';
+  await page.getByRole('heading', {name:'Delivery', exact:true}).waitFor();
+  checkpoint = 'delivery-heading';
+  const builderLane = page.locator('.delivery-lane[aria-label="Builder jobs"]');
+  const inspectorLane = page.locator('.delivery-lane[aria-label="Inspector jobs"]');
+  const unassignedLane = page.locator('.delivery-lane[aria-label="Unassigned jobs"]');
+  await expect(builderLane.getByText('Builder primary delivery', {exact:true})).toBeVisible();
+  checkpoint = 'builder-job';
+  await expect(builderLane.getByText('Primary focus', {exact:true})).toBeVisible();
+  checkpoint = 'builder-primary';
+  await expect(inspectorLane.getByText('Paused', {exact:true})).toBeVisible();
+  checkpoint = 'inspector-paused';
+  await expect(inspectorLane.getByText('Paused for synthetic dependency review.', {exact:true})).toBeVisible();
+  checkpoint = 'inspector-pause-reason';
+  await expect(unassignedLane.getByText('Unassigned parked work', {exact:true})).toBeVisible();
+  checkpoint = 'unassigned-job';
+  const inspectorStatuses = await inspectorLane.locator('.delivery-job-state .badge').allTextContents();
+  need(inspectorStatuses.join('|') === 'Active|Blocked|Parked');
+  checkpoint = 'status-order';
+  checkpoint = 'latest-checkpoint-done';
+  const latestDone = inspectorLane.locator('.delivery-checkpoint p').filter({hasText:'Latest progress is visible.'});
+  await expect(latestDone).toHaveCount(1);
+  await expect(latestDone).toContainText('Latest progress is visible.');
+  checkpoint = 'latest-checkpoint-next';
+  const latestNext = inspectorLane.locator('.delivery-checkpoint p').filter({hasText:'Continue from the latest progress.'});
+  await expect(latestNext).toHaveCount(1);
+  await expect(latestNext).toContainText('Continue from the latest progress.');
+  checkpoint = 'latest-checkpoint';
+  need(await inspectorLane.locator('.delivery-checkpoint p').filter({hasText:'Earlier progress only.'}).count() === 0);
+  checkpoint = 'old-checkpoint-absent';
+  need(deliveryReads === 1 && jobBriefReads === 0 && jobArchiveReads === 0);
+  checkpoint = 'overview-request-budget';
+  need(await page.locator('.delivery-lane').count() === 3);
+  checkpoint = 'lane-count';
+  need(await page.getByRole('button', {name:/^(?:Previous|Next) (?:workers|jobs)$/, exact:true}).count() === 0);
+  need(await page.getByRole('button', {name:'Load more work', exact:true}).count() === 0);
+  const deliveryBodyText = await page.locator('body').innerText();
+  need(![config.project, config.worker, config.other_worker, ...Object.values(deliveryFixture.jobs)].some(id => deliveryBodyText.includes(id)));
+  checkpoint = 'private-identifiers-absent';
+  // Actual mounted contact query: one shared read for all loaded lanes, no
+  // browser agent attribution, and no fleet/board/history refresh while hidden.
+  checkpoint = 'presence-initial';
+  await expect.poll(() => presenceFinished, {timeout:5000}).toBe(1);
+  need(presenceReads===1 && presenceHeaderErrors===0);
+  await expect(page.locator('.worker-contact')).toHaveCount(0);
+  const contactReadBoundary={delivery:deliveryReads,brief:jobBriefReads,archive:jobArchiveReads,history:contactHistoryReads};
+  const sameContactReadBoundary=()=>deliveryReads===contactReadBoundary.delivery && jobBriefReads===contactReadBoundary.brief && jobArchiveReads===contactReadBoundary.archive && contactHistoryReads===contactReadBoundary.history;
+  const restoreContactVisibility=()=>page.evaluate(()=>globalThis.__fcSmokeRestoreContactVisibility?.());
+  await page.evaluate(()=>{
+    if (document.visibilityState!=='visible' || Object.hasOwn(globalThis,'__fcSmokeRestoreContactVisibility')) throw new Error('visibility fixture unavailable');
+    const original=Object.getOwnPropertyDescriptor(document,'visibilityState');
+    globalThis.__fcSmokeRestoreContactVisibility=()=>{
+      if (original) Object.defineProperty(document,'visibilityState',original);else delete document.visibilityState;
+      delete globalThis.__fcSmokeRestoreContactVisibility;
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'});
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  try {
+    checkpoint = 'presence-hidden';
+    need(await page.evaluate(()=>document.visibilityState==='hidden'));
+    const hiddenAt=performance.now();
+    // This native client contact stays in Node; no credential or connection ID
+    // enters page execution. It performs a GET, not a new fixture/domain write.
+    const contact=await fetch(config.origin+prefix+'/workers/'+config.worker,{
+      headers:{Authorization:'Bearer '+admin,'X-FC-Instance':config.instance,'X-FC-Worker':config.worker,'X-FC-Session':'dddddddddddddddddddddddddddddddd'},
+      signal:AbortSignal.timeout(5000),
+    });
+    need(contact.status===200 && (await contact.json()).id===config.worker);
+    // Timer callbacks need not fire at their exact requested delay. Prove the
+    // full interval with monotonic elapsed time, including early wakeups.
+    const hiddenUntil=hiddenAt+15500;
+    while (performance.now()<hiddenUntil) await new Promise(resolve=>setTimeout(resolve,Math.max(1,Math.ceil(hiddenUntil-performance.now()))));
+    need(performance.now()-hiddenAt>=15500 && presenceReads===1 && presenceFinished===1 && presenceHeaderErrors===0 && sameContactReadBoundary());
+    await expect(page.locator('.worker-contact')).toHaveCount(0);
+    checkpoint = 'presence-visible';
+    await restoreContactVisibility();
+    need(await page.evaluate(()=>document.visibilityState==='visible'));
+    checkpoint = 'presence-visible-response';
+    // A transport completion event alone is not the user-visible success
+    // boundary. Require the real response and newly delivered contact below.
+    await expect.poll(()=>presenceResponses,{timeout:8000}).toBe(2);
+    need(presenceHTTPStatus===200);
+    checkpoint = 'presence-visible-content';
+    await expect(builderLane.locator('.worker-contact')).toContainText('Last contact');
+    need(presenceReads===2 && presenceHeaderErrors===0 && sameContactReadBoundary());
+    need(await inspectorLane.locator('.worker-contact').count()===0);
+  } finally {
+    // Restore the original property even when a contact/timing assertion fails.
+    await restoreContactVisibility().catch(()=>{});
+  }
+  await captureLayouts('delivery', [1440, 390, 320]);
+  checkpoint = 'layout-capture';
+  need(await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Notes',exact:true}).count() === 0);
+  checkpoint = 'notes-nav-absent';
+  checkpoint = 'inbox-nav-click';
+  const laneInbox = builderLane.getByRole('link',{name:'Worker inbox',exact:true});
+  await expect(laneInbox).toHaveAttribute('href', `${home}/inbox?worker_id=${config.worker}`);
+  // Observe modified-click handling after React, suppressing only the native
+  // new-tab default so this bounded fixture opens no additional session.
+  const modifiedLaneClick = await laneInbox.evaluate((anchor,key) => {
+    const binding = sessionStorage.getItem(key), index = history.state.idx;
+    let prevented;
+    const observe = event => { prevented = event.defaultPrevented; event.preventDefault(); };
+    document.addEventListener('click',observe,{once:true});
+    try {
+      anchor.dispatchEvent(new MouseEvent('click',{button:0,ctrlKey:true,bubbles:true,cancelable:true}));
+      return {prevented,sameBinding:sessionStorage.getItem(key) === binding,sameHistory:history.state.idx === index};
+    } finally { document.removeEventListener('click',observe); }
+  },bindingKey);
+  need(modifiedLaneClick.prevented === false && modifiedLaneClick.sameBinding && modifiedLaneClick.sameHistory);
+  workerHistoryBefore = await page.evaluate(() => history.state.idx);
+  await laneInbox.click();
+  await page.getByRole('heading',{name:'Builder inbox',exact:true}).waitFor();
+  workerHistoryAfter = await page.evaluate(() => history.state.idx);
+  checkpoint = 'worker-inbox-history';
+  need(Number.isInteger(workerHistoryBefore) && workerHistoryAfter === workerHistoryBefore + 1);
+  need(new URL(page.url()).pathname === home + '/inbox' && new URL(page.url()).search === '');
+  need(JSON.parse(await page.evaluate(key => sessionStorage.getItem(key),bindingKey)).selectedworkerID === config.worker);
+  checkpoint = 'worker-inbox-back';
+  await page.goBack();
+  await page.waitForURL(config.origin + home);
+  await page.getByRole('heading',{name:'Delivery',exact:true}).waitFor();
+  need(await page.evaluate(() => history.state.idx) === workerHistoryBefore);
+  checkpoint = 'inbox-nav-click';
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
+  await page.getByRole('button',{name:'Select worker Builder',exact:true}).click();
+  checkpoint = 'inbox-worker-selected';
+  await page.getByRole('heading',{name:'Builder inbox',exact:true}).waitFor();
+  checkpoint = 'worker-inbox-workers-nav';
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Workers',exact:true}).click();
+  const builderInbox = page.getByRole('button',{name:'Open Builder inbox',exact:true});
+  await builderInbox.waitFor();
+  workerHistoryBefore = await page.evaluate(() => history.state.idx);
+  checkpoint = 'worker-inbox-open';
+  await builderInbox.click();
+  await page.getByRole('heading',{name:'Builder inbox',exact:true}).waitFor();
+  workerHistoryAfter = await page.evaluate(() => history.state.idx);
+  checkpoint = 'worker-inbox-history';
+  need(Number.isInteger(workerHistoryBefore) && workerHistoryAfter === workerHistoryBefore + 1);
+  checkpoint = 'worker-inbox-back';
+  await page.goBack();
+  await page.waitForURL(config.origin + home + '/workers');
+  await page.getByRole('button',{name:'Open Builder inbox',exact:true}).waitFor();
+  need(await page.evaluate(() => history.state.idx) === workerHistoryBefore);
+  checkpoint = 'worker-inbox-return';
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
+  await page.getByRole('heading',{name:'Builder inbox',exact:true}).waitFor();
+  checkpoint = 'inbox-heading';
+  need(await page.locator('.sidebar').count() === 1);
+  checkpoint = 'inbox-sidebar';
+  need(await page.getByRole('button',{name:'New message',exact:true}).count()===0);
+  checkpoint = 'inbox-readonly-composer';
+  need(actionWrites===0 && fixtureWrites===0 && forbiddenWrites===0);
+  checkpoint = 'inbox-readonly-writes';
+  checkpoint = 'default-appearance';
   await defaults();
+  checkpoint = 'default-title';
   need((await appearance()).title === 'Packaged smoke · FireController');
+  checkpoint = 'default-indicator-colors';
   const defaultIndicators = await indicatorColors();
-  need(defaultIndicators.connection === 'rgb(103, 118, 89)' && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
+  checkpoint = 'default-indicator-contrast';
+  need(defaultIndicators.connection === 'rgba(0, 0, 0, 0)' && defaultIndicators.connectionBorder === 'rgb(243, 203, 200)' && defaultIndicators.connectionText === 'rgb(243, 203, 200)' && defaultIndicators.connectionText !== defaultIndicators.connectionSurface && defaultIndicators.status === (defaultIndicators.online ? 'rgb(103, 128, 93)' : 'rgb(169, 164, 160)'));
   phase = 'metadata-failure';
   checkpoint = 'metadata-notice';
   const reconnect = page.getByRole('button', {name:'Reconnect project updates', exact:true});
   await reconnect.waitFor();
   checkpoint = 'metadata-initial-counts';
   need(metadataStreams === 1 && presentationReads === 1 && injectedResponses === 1);
-  await page.getByRole('button', {name:'Open Builder inbox', exact:true}).click();
+  await page.getByRole('button', {name:'Select worker Builder', exact:true}).click();
   checkpoint = 'metadata-inbox-ready';
   await page.getByText('Live inbox connected', {exact:true}).waitFor();
   need(metadataStreams === 1 && inboxStreams === 1);
   checkpoint = 'none';
-  const bindingKey = 'firecontroller.browser-session.v1';
+
   const binding = await page.evaluate(key => sessionStorage.getItem(key), bindingKey);
   need(binding && !binding.includes(token) && JSON.parse(binding).selectedworkerID === config.worker);
   const sessionID = JSON.parse(binding).sessionID;
   const cookieName = 'fc-local-browser-' + sessionID;
   const cookie = (await context.cookies()).find(value => value.name === cookieName);
-  need(cookie?.httpOnly && cookie.sameSite === 'Strict');
+  need(cookie?.httpOnly && cookie.sameSite === 'Strict' && sessionRenewals === 0);
+
+  // A DOM-only text fixture measures the normal single-word title without
+  // changing project presentation or reducing the long-brand fixture below.
+  phase = 'normal-title-mobile-layout';
+  for (const width of [320, 390]) {
+    await page.setViewportSize({width, height:900});
+    need(await page.locator('.hero-project h1').evaluate(element => {
+      const original = element.textContent;
+      try {
+        element.textContent = 'FireController';
+        const range = document.createRange(); range.selectNodeContents(element);
+        const rects = [...range.getClientRects()];
+        const box = element.getBoundingClientRect();
+        return rects.length === 1 && rects[0].left >= box.left - 1 && rects[0].right <= box.right + 1
+          && document.documentElement.scrollWidth <= innerWidth;
+      } finally { element.textContent = original; }
+    }));
+  }
+  await page.setViewportSize({width:390, height:900});
 
   phase = 'fixture-update';
   const title = 'UnbrokenProjectTitle'.repeat(8) + '<literal>';
@@ -135,7 +604,8 @@ try {
     theme[family + '_text'] = '#000000';
     if (['canvas', 'surface', 'header', 'hero'].includes(family)) theme[family + '_muted'] = '#000000';
   }
-  const receipt = await write('PUT', '/presentation', {expected_revision:0, presentation:{name:title, brand_name:'Smoke <literal>', theme}});
+  const brand = 'UnbrokenProjectBrand'.repeat(5) + '<literal>';
+  const receipt = await write('PUT', '/presentation', {expected_revision:0, presentation:{name:title, brand_name:brand, theme, review_groups:[{title:'Smoke release',pull_numbers:[31,32]}]}});
   need(receipt.revision === 1 && receipt.outcome === 'updated');
   await page.getByRole('heading', {name:'Packaged smoke', exact:true}).waitFor();
   need(metadataStreams === 1 && presentationReads === 1);
@@ -144,9 +614,9 @@ try {
   const heading = page.getByRole('heading', {name:title, exact:true});
   await heading.waitFor();
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
-  need((await appearance()).brand === 'Smoke <literal>' && (await appearance()).title === title + ' · FireController');
+  need((await appearance()).brand === brand && (await appearance()).title === title + ' · FireController');
   const themedIndicators = await indicatorColors();
-  need(themedIndicators.connection === 'rgb(0, 0, 0)' && themedIndicators.connection !== themedIndicators.canvas);
+  need(themedIndicators.connection === 'rgb(0, 0, 0)' && themedIndicators.connection !== themedIndicators.connectionSurface);
   need(themedIndicators.status === 'rgb(0, 0, 0)' && themedIndicators.status !== themedIndicators.surface);
   need(await page.locator('literal').count() === 0);
   const fits = await heading.evaluate(element => {
@@ -168,15 +638,21 @@ try {
     }
     return true;
   });
+  checkpoint = 'long-brand-layout';
   need(fits);
+  need(await page.locator('.brand').evaluate(element => {
+    const range = document.createRange(); range.selectNodeContents(element);
+    return document.documentElement.scrollWidth <= innerWidth && [...range.getClientRects()].every(rect => rect.left >= -1 && rect.right <= innerWidth + 1);
+  }));
+  checkpoint = 'none';
 
   await expect(reconnect).toHaveCount(0);
   await page.getByText('Live inbox connected', {exact:true}).waitFor();
   need(metadataStreams === 2 && presentationReads === 2 && inboxStreams === 1 && sessionPosts === 1);
   need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === binding);
-  await expect(page.getByRole('button', {name:'Open Builder inbox', exact:true})).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', {name:'Select worker Builder', exact:true})).toHaveAttribute('aria-pressed', 'true');
   phase = 'metadata-live-update';
-  const liveReceipt = await write('PUT', '/presentation', {expected_revision:1, presentation:{name:title, brand_name:'Smoke live <literal>', theme}});
+  const liveReceipt = await write('PUT', '/presentation', {expected_revision:1, presentation:{name:title, brand_name:'Smoke live <literal>', theme, review_groups:[{title:'Smoke release',pull_numbers:[31,32]}]}});
   need(liveReceipt.revision === 2 && liveReceipt.outcome === 'updated');
   await expect.poll(async () => (await appearance()).brand, {timeout:5000}).toBe('Smoke live <literal>');
   need(metadataStreams === 2 && presentationReads === 3 && inboxStreams === 1 && sessionPosts === 1);
@@ -185,11 +661,26 @@ try {
   // view has rendered its preceding state. No Refresh click or browser reload
   // may be used to observe these changes; the project stream owns delivery.
   phase = 'live-jobs';
-  const selected = page.getByRole('button', {name:'Open Builder inbox', exact:true});
+  const selectedWorker = async () => JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey)).selectedworkerID;
   const selectedBinding = await page.evaluate(key => sessionStorage.getItem(key), bindingKey);
   need(JSON.parse(selectedBinding).selectedworkerID === config.worker);
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Jobs', exact:true}).click();
   await page.getByLabel('Job status', {exact:true}).waitFor();
+  await expect(page.getByLabel('Job status', {exact:true})).toHaveValue('open');
+  await expect(page.getByLabel('Job worker', {exact:true})).toHaveValue('');
+  need(await page.locator('.sidebar').count() === 0);
+  const completedJob = await write('POST', '/jobs', {title:'Completed job sentinel', brief:'Synthetic completed job', worker_id:config.worker}, 201);
+  await write('PATCH', '/jobs/' + completedJob.id, {expected_revision:1, status:'completed'});
+  await expect(page.getByRole('link', {name:'Completed job sentinel', exact:true})).toHaveCount(0);
+  await page.getByLabel('Job status', {exact:true}).selectOption('completed');
+  await page.getByRole('link', {name:'Completed job sentinel', exact:true}).waitFor();
+  await page.getByLabel('Job status', {exact:true}).selectOption('open');
+  await expect(page.getByRole('link', {name:'Completed job sentinel', exact:true})).toHaveCount(0);
+  await page.getByLabel('Job worker', {exact:true}).selectOption(config.other_worker);
+  need(await selectedWorker() === config.worker);
+  await page.getByRole('button', {name:'Show jobs for all workers', exact:true}).click();
+  await expect(page.getByLabel('Job worker', {exact:true})).toHaveValue('');
+  need(await selectedWorker() === config.worker);
   const job = await write('POST', '/jobs', {title:'Live job before', brief:'Live brief before', worker_id:config.worker}, 201);
   await page.getByRole('link', {name:'Live job before', exact:true}).waitFor();
   await write('PATCH', '/jobs/' + job.id, {expected_revision:1, title:'Live job list updated'});
@@ -200,25 +691,56 @@ try {
   await page.getByText('Live brief <literal> updated', {exact:true}).waitFor();
 
   phase = 'live-workers';
-  need(await selected.getAttribute('aria-pressed') === 'true');
+  checkpoint = 'selected-builder-before-workers';
+  need(await selectedWorker() === config.worker);
+  checkpoint = 'workers-nav';
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Workers', exact:true}).click();
+  checkpoint = 'builder-inbox-link';
+  await page.getByRole('button', {name:'Open Builder inbox', exact:true}).waitFor();
+  checkpoint = 'create-worker';
   await write('POST', '/workers', {name:'Live newcomer'});
+  checkpoint = 'newcomer-visible';
   await page.getByRole('button', {name:'Open Live newcomer inbox', exact:true}).waitFor();
-  need(await selected.getAttribute('aria-pressed') === 'true');
+  checkpoint = 'selection-preserved';
+  need(await selectedWorker() === config.worker);
+  checkpoint = 'builder-details';
   await page.getByRole('link', {name:'Read Builder details', exact:true}).click();
+  checkpoint = 'pause-default';
   await page.getByText('No pause reason recorded.', {exact:true}).waitFor();
-  await page.getByText('No primary job selected.', {exact:true}).waitFor();
+  checkpoint = 'primary-existing';
+  await page.getByRole('link', {name:'Open primary job ' + deliveryFixture.jobs.builderActive, exact:true}).waitFor();
+  checkpoint = 'pause-update';
   await write('PUT', '/workers/' + config.worker + '/pause', {expected_revision:0, paused:true, reason:'Live pause <literal>'});
+  checkpoint = 'pause-visible';
   await page.getByText('Live pause <literal>', {exact:true}).waitFor();
-  await write('PUT', '/workers/' + config.worker + '/primary-job', {expected_revision:0, job_id:job.id});
+  checkpoint = 'primary-update';
+  await write('PUT', '/workers/' + config.worker + '/primary-job', {expected_revision:1, job_id:job.id});
+  checkpoint = 'primary-link';
   await page.getByRole('link', {name:'Open primary job ' + job.id, exact:true}).waitFor();
-  need(await selected.getAttribute('aria-pressed') === 'true');
+  checkpoint = 'selected-builder-after-update';
+  need(await selectedWorker() === config.worker);
 
   phase = 'live-notes';
-  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Notes', exact:true}).click();
+  checkpoint = 'worker-history-link';
+  const emptyWorkerHistory = page.getByRole('link', {name:'Notes history', exact:true});
+  await emptyWorkerHistory.waitFor();
+  checkpoint = 'worker-history-empty';
+  need(await page.getByRole('region', {name:'Pending notes', exact:true}).count() === 0 && noteArchiveReads === 0);
+  need(await emptyWorkerHistory.getAttribute('href') === home + '/notes?status=all&worker_id=' + config.worker);
+  const workerArchive = page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/notes' && new URL(value.url()).searchParams.get('status') === 'all' && new URL(value.url()).searchParams.get('limit') === '20' && !new URL(value.url()).searchParams.has('cursor') && new URL(value.url()).searchParams.get('worker_id') === config.worker);
+  checkpoint = 'worker-history-open';
+  await emptyWorkerHistory.click();
+  checkpoint = 'worker-history-response';
+  need((await workerArchive).status() === 200 && noteArchiveReads === 1);
+  checkpoint = 'worker-history-filters';
+  await expect(page.getByLabel('Worker ID', {exact:true})).toHaveValue(config.worker);
+  await expect(page.getByRole('form', {name:'Note filters', exact:true}).getByRole('combobox', {name:/^Status/})).toHaveValue('all');
+  checkpoint = 'worker-history-phase-filter';
   await page.getByLabel('Phase', {exact:true}).fill('live-proof');
   const filtered = page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/notes' && new URL(value.url()).searchParams.get('phase') === 'live-proof');
   await page.getByRole('button', {name:'Apply note filters', exact:true}).click();
   need((await filtered).status() === 200);
+  checkpoint = 'worker-note-create';
   const noteBody = {worker_id:config.worker, job_id:'', phase:'live-proof', kind:'reminder', body:'Live note before'};
   const note = await write('POST', '/notes', noteBody, 201);
   await page.getByText('Live note before', {exact:true}).waitFor();
@@ -232,82 +754,568 @@ try {
   await write('PATCH', '/notes/' + note.id, {expected_revision:2, body:'Live note detail <literal> updated'});
   await page.getByText('Live note detail <literal> updated', {exact:true}).waitFor();
 
+  phase = 'contextual-notes';
+  const pendingPanel = page.getByRole('region', {name:'Pending notes', exact:true});
+  const archiveReadsBeforeEmptyJob = noteArchiveReads;
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Jobs', exact:true}).click();
+  await page.getByRole('link', {name:'Live job detail updated', exact:true}).click();
+  checkpoint = 'job-empty';
+  const emptyJobHistory = page.getByRole('link', {name:'Notes history', exact:true});
+  await emptyJobHistory.waitFor();
+  await expect(pendingPanel).toHaveCount(0);
+  need(await emptyJobHistory.getAttribute('href') === home + '/notes?status=all&job_id=' + job.id);
+  need(noteArchiveReads === archiveReadsBeforeEmptyJob);
+  const archiveReadsBeforeJob = noteArchiveReads;
+  const jobArchive = page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/notes' && new URL(value.url()).searchParams.get('status') === 'all' && new URL(value.url()).searchParams.get('limit') === '20' && !new URL(value.url()).searchParams.has('cursor') && new URL(value.url()).searchParams.get('job_id') === job.id);
+  await emptyJobHistory.click();
+  need((await jobArchive).status() === 200 && noteArchiveReads === archiveReadsBeforeJob + 1);
+  await expect(page.getByLabel('Job ID', {exact:true})).toHaveValue(job.id);
+  await expect(page.getByRole('form', {name:'Note filters', exact:true}).getByRole('combobox', {name:/^Status/})).toHaveValue('all');
+  await page.goBack();
+  await emptyJobHistory.waitFor();
+  checkpoint = 'job-create';
+  const jobNote = await write('POST', '/notes', {worker_id:'', job_id:job.id, phase:'', kind:'reminder', body:'Context job pending'}, 201);
+  checkpoint = 'job-appeared';
+  await pendingPanel.getByText('Context job pending', {exact:true}).waitFor();
+  const jobPanelBox = await pendingPanel.boundingBox();
+  const briefBox = await page.getByRole('heading', {name:'Job brief', exact:true}).boundingBox();
+  need(jobPanelBox && briefBox && jobPanelBox.y < briefBox.y);
+  await captureLayouts('job-pending-notes', [1440, 390, 320]);
+  checkpoint = 'job-read';
+  await pendingPanel.getByRole('link', {name:'Read note', exact:true}).click();
+  checkpoint = 'job-pending-detail';
+  await page.getByText('reminder · pending', {exact:true}).waitFor();
+  checkpoint = 'job-open-history';
+  await page.getByRole('button', {name:'Show note history', exact:true}).click();
+  checkpoint = 'job-history-loaded';
+  await page.getByRole('link', {name:'Read revision 1', exact:true}).waitFor();
+  checkpoint = 'job-scope-return';
+  await page.locator('.panel.brief').getByRole('link', {name:job.id, exact:true}).click();
+  await pendingPanel.getByText('Context job pending', {exact:true}).waitFor();
+  checkpoint = 'job-consume';
+  await write('PATCH', '/notes/' + jobNote.id, {expected_revision:1, status:'consumed'});
+  await expect(pendingPanel).toHaveCount(0);
+  checkpoint = 'consumed-history-return';
+  await page.goBack();
+  await page.getByText('reminder · consumed', {exact:true}).waitFor();
+  await page.getByRole('button', {name:'Show note history', exact:true}).click();
+  await page.getByRole('link', {name:'Read revision 1', exact:true}).click();
+  await page.getByRole('heading', {name:'Captured note revision 1', exact:true}).waitFor();
+  await page.getByText('reminder · pending', {exact:true}).waitFor();
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox', exact:true}).click();
+  await page.getByRole('heading', {name:'Builder inbox', exact:true}).waitFor();
+  need(await selectedWorker() === config.worker);
+  checkpoint = 'worker-create';
+  const workerNote = await write('POST', '/notes', {worker_id:config.worker, job_id:'', phase:'', kind:'source', body:'Context worker pending'}, 201);
+  checkpoint = 'worker-appeared';
+  await pendingPanel.getByText('Context worker pending', {exact:true}).waitFor();
+  const workerPanelBox = await pendingPanel.boundingBox();
+  const inboxBox = await page.locator('.main-content > .panel:not(.contextual-notes)').first().boundingBox();
+  need(workerPanelBox && inboxBox && workerPanelBox.y < inboxBox.y);
+  need(await page.locator('.sidebar').count() === 1);
+  await captureLayouts('inbox-pending-notes', [1440, 390, 320]);
+  checkpoint = 'worker-dismiss';
+  await write('PATCH', '/notes/' + workerNote.id, {expected_revision:1, status:'dismissed', status_reason:'Synthetic dismissal proof'});
+  await expect(pendingPanel.getByText('Context worker pending', {exact:true})).toHaveCount(0);
+  // The original library fixture stays pending: viewing it did not consume it.
+  await pendingPanel.getByText('Live note detail <literal> updated', {exact:true}).waitFor();
+  need(forbiddenWrites === 0 && actionWrites === 0);
+  await pendingPanel.getByRole('link', {name:'View all notes and history', exact:true}).click();
+  await page.getByRole('link', {name:'Read note ' + workerNote.id, exact:true}).click();
+  await page.getByText('source · dismissed', {exact:true}).waitFor();
+  await page.getByText('Synthetic dismissal proof', {exact:true}).waitFor();
+  await page.getByRole('button', {name:'Show note history', exact:true}).click();
+  await page.getByRole('link', {name:'Read revision 1', exact:true}).click();
+  await page.getByRole('heading', {name:'Captured note revision 1', exact:true}).waitFor();
+  await page.getByText('source · pending', {exact:true}).waitFor();
+
   phase = 'live-reviews';
+  checkpoint = 'reviews-open';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
-  await page.getByRole('heading', {name:'Review workspace unconfigured', exact:true}).waitFor();
+  checkpoint = 'unconfigured';
+  await page.locator('#review-queue').getByRole('heading', {name:'No review queue yet', exact:true}).waitFor();
   const pull = (number, state, title) => ({number, title, state, head_sha:'a'.repeat(40), base_ref:'main', base_sha:'b'.repeat(40), ci_state:'unknown', mergeability:'unknown', complete:true, runs:[], attempts:[]});
   const merged = pull(31, 'merged', 'Retained merged smoke PR');
+  merged.diff = {files:73, additions:6160, deletions:136};
+  merged.is_draft = false;
+  merged.merged_at = new Date(Date.now() - (2*60+22)*60000).toISOString();
   const open = pull(32, 'open', 'Live review before');
   const observation = (revision, queue) => ({expected_revision:revision, repository_id:991, source:'packaged-browser', observed_at:new Date().toISOString(), queue, retired:[]});
-  await write('POST', '/reviews/observations', observation(0, [merged, open]), 201);
-  await page.getByRole('link', {name:'Live review before', exact:true}).waitFor();
-  await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
+  checkpoint = 'fallback-observation';
+  // An unknown predecessor prevents the stored queue from claiming an open
+  // head. Use the real observation API, not a fabricated browser response.
+  await write('POST', '/reviews/observations', observation(0, [pull(33, 'unknown', 'Unknown preceding smoke PR'), open]), 201);
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
+  const fallbackHero = page.getByRole('region', {name:'Merge train head', exact:true});
+  await fallbackHero.getByRole('heading', {name:'Merge head not determined', exact:true}).waitFor();
+  const fallbackJump = fallbackHero.getByRole('link', {name:'Jump to review queue', exact:true});
+  await expect(fallbackJump).toHaveAttribute('href', `${home}#review-queue`);
+  const fallbackPosition = async () => {
+    const geometry = await page.locator('#review-queue').evaluate(element => {
+      const box = element.getBoundingClientRect(), mast = document.querySelector('.mast').getBoundingClientRect();
+      const maximum = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+      const target = Math.max(0, Math.min(maximum, scrollY + box.top - parseFloat(getComputedStyle(element).scrollMarginTop)));
+      return {top:Math.round(box.top),mast_bottom:Math.round(mast.bottom),scroll:Math.round(scrollY),target:Math.round(target),aligned:box.top >= mast.bottom - 1 && box.top < innerHeight && Math.abs(scrollY - target) <= 2};
+    });
+    fallbackGeometry = geometry;
+    return geometry.aligned;
+  };
+  for (const width of [390, 320]) {
+    await page.setViewportSize({width,height:900});
+    checkpoint = 'fallback-first-jump';
+    const fallbackPage = await page.evaluate(() => ({origin:performance.timeOrigin, session:sessionStorage.getItem('firecontroller.browser-session.v1')}));
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect.poll(fallbackPosition).toBe(false);
+    await fallbackJump.click();
+    await expect.poll(() => new URL(page.url()).hash).toBe('#review-queue');
+    await expect.poll(fallbackPosition).toBe(true);
+    need(fallbackGeometry.scroll > 2);
+    const fallbackKey = await page.evaluate(() => history.state.key);
+    need(typeof fallbackKey === 'string' && fallbackKey.length > 0);
+    checkpoint = 'fallback-scroll-away';
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect.poll(fallbackPosition).toBe(false);
+    need(new URL(page.url()).hash === '#review-queue');
+    need(await page.evaluate(() => history.state.key) === fallbackKey);
+    checkpoint = 'fallback-repeat-jump';
+    await fallbackJump.click();
+    await expect.poll(() => page.evaluate(() => history.state.key)).not.toBe(fallbackKey);
+    need(typeof await page.evaluate(() => history.state.key) === 'string');
+    need(new URL(page.url()).pathname === home && new URL(page.url()).hash === '#review-queue');
+    await expect.poll(fallbackPosition).toBe(true);
+    need(JSON.stringify(await page.evaluate(() => ({origin:performance.timeOrigin, session:sessionStorage.getItem('firecontroller.browser-session.v1')}))) === JSON.stringify(fallbackPage));
+  }
+  repeatedFallbackHash = true;
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
+  checkpoint = 'seed-observation';
+  // Complete observations require explicit retirement of an omitted entry.
+  await write('POST', '/reviews/observations', {...observation(1, [merged, open]), retired:[{number:33,reason:'defunct'}]}, 201);
+  checkpoint = 'initial-open-pull';
+  await page.locator('#review-pr-32').getByRole('link', {name:'Live review before', exact:true}).waitFor();
+  checkpoint = 'initial-merged-pull';
+  await page.locator('#review-pr-31').getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
   const finished = new Date().toISOString();
   const run = {source_run_id:'live-hosted-round', channel:'hosted', head_sha:open.head_sha, reviewer:'Synthetic reviewer', scope:'Synthetic comparison', outcome:'completed', attributable:true, complete:true, started_at:finished, finished_at:finished, found:0, accepted:0, routed:0, finalized:true, coverage_limits:[], findings:[]};
-  await write('POST', '/reviews/observations', observation(1, [merged, {...open, title:'Live review updated', runs:[run]}]), 201);
-  await page.getByRole('link', {name:'Live review updated', exact:true}).waitFor();
-  await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
-  await page.getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
-  need(await page.getByText('merged · retained history', {exact:true}).count() === 1);
-  need(await selected.getAttribute('aria-pressed') === 'true');
+  const reasonCode = 'hosted_finished_inventory_unproven';
+  const reasonText = 'Finished response could not be verified';
+  const reasonPillText = `Uncertain · ${reasonText}`;
+  const uncertainAttempt = {source_attempt_id:'live-hosted-uncertain',channel:'hosted',head_sha:open.head_sha,state:'uncertain',started_at:finished,finished_at:'',duration_seconds:null,source_run_id:'',trigger_id:'',provider_review_id:'',reason:reasonCode};
+  checkpoint = 'updated-observation';
+  await write('POST', '/reviews/observations', observation(2, [merged, {...open, title:'Live review updated', runs:[run],attempts:[uncertainAttempt]}]), 201);
+  checkpoint = 'updated-open-pull';
+  await page.locator('#review-pr-32').getByRole('link', {name:'Live review updated', exact:true}).waitFor();
+  checkpoint = 'updated-merged-pull';
+  await page.locator('#review-pr-31').getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
+  checkpoint = 'hosted-run';
+  await page.locator('#review-pr-32').getByRole('region', {name:'Hosted CodeRabbit', exact:true}).getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
+  checkpoint = 'current-round-grants';
+  await write('POST', '/reviews/rounds/32/hosted', {expected_revision:0,action:'grant',minimum:0,maximum:5}, 200);
+  await write('POST', '/reviews/rounds/32/cli', {expected_revision:0,action:'grant',minimum:2,maximum:4}, 200);
+  await expect(page.locator('#review-queue [aria-label="Current hosted round limits"]')).toContainText('Up to 5 more reviews');
+  await expect(page.locator('#review-queue [aria-label="Current cli round limits"]')).toContainText('At least 2 more');
+  checkpoint = 'merged-retention';
+  need(await page.locator('.review-state-merged').filter({hasText:'Merged'}).count() === 1);
+  checkpoint = 'delivery-queue';
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
+  checkpoint = 'queue-heading';
+  const deliveryQueue = page.locator('#review-queue');
+  await expect(deliveryQueue.getByRole('heading', {name:'Reviews', exact:true})).toBeVisible();
+  await expect(deliveryQueue.getByRole('heading', {name:'Smoke release', exact:true})).toBeVisible();
+  need(await deliveryQueue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.querySelector('.review-number').textContent).join('|')) === '#31|#32');
+  checkpoint = 'queue-pull';
+  await expect(deliveryQueue.getByRole('link', {name:'Live review updated', exact:true})).toBeVisible();
+  await expect(deliveryQueue.locator('.review-state-merged').filter({hasText:'Merged'})).toBeVisible();
+  checkpoint = 'merge-head';
+  await expect(page.getByRole('region', {name:'Merge train head'}).getByRole('link', {name:'#32', exact:true})).toBeVisible();
+  await expect(page.getByRole('region', {name:'Merge train head'}).getByRole('link', {name:'Live review updated', exact:true})).toBeVisible();
+  checkpoint = 'hosted-summary';
+  const queueHistory = deliveryQueue.getByRole('region', {name:'PR #32 review rounds', exact:true});
+  const queueHosted = queueHistory.getByRole('region', {name:'Hosted CodeRabbit', exact:true});
+  await expect(queueHosted.getByRole('link', {name:/^Open hosted run live-hosted-round:/})).toBeVisible();
+  await expect(queueHosted.locator('.review-lane-heading')).toContainText('1 run');
+  const hero = page.getByRole('region', {name:'Merge train head', exact:true});
+  checkpoint = 'attempt-reason-compact';
+  const heroHosted = hero.getByRole('region',{name:'Hosted CodeRabbit',exact:true});
+  const reasonPills = [queueHosted.locator('.review-attempt-state'),heroHosted.locator('.review-attempt-state')];
+  for (const pill of reasonPills) {
+    await expect(pill).toHaveCount(1);
+    await expect(pill).toHaveText(reasonPillText);
+    await expect(pill).toHaveAttribute('title',`Latest retained attempt: ${reasonPillText}`);
+    await expect(pill).toHaveAttribute('aria-label',`Latest retained hosted attempt: ${reasonPillText}`);
+  }
+  const jump = hero.getByRole('link', {name:'Jump to review queue', exact:true});
+  await expect(jump).toHaveAttribute('href', `${home}#review-pr-32`);
+  await expect(jump).toHaveText('Review queue ↗');
+  need(await jump.locator('*').count() === 0);
+  const jumpStyle = await jump.evaluate(element => { const style = getComputedStyle(element); return {color:style.color, weight:style.fontWeight, family:style.fontFamily, decoration:style.textDecorationLine}; });
+  const configuredInk = [1, 3, 5].map(offset => Number.parseInt(theme.surface_text.slice(offset, offset + 2), 16)).join(', ');
+  need(jumpStyle.color === `rgb(${configuredInk})` && jumpStyle.weight === '700' && jumpStyle.family === 'ui-sans-serif, system-ui, sans-serif' && jumpStyle.decoration.includes('underline'));
+  const mergedFacts = deliveryQueue.locator('#review-pr-31 .review-pull-facts');
+  const openFacts = deliveryQueue.locator('#review-pr-32 .review-pull-facts');
+  await expect(mergedFacts).not.toContainText('Mergeability');
+  await expect(mergedFacts).toContainText('CI: Unknown');
+  await expect(mergedFacts.locator('.review-diff')).toHaveText('73 files · +6,160 / −136 lines');
+  await expect(mergedFacts.locator('.review-merged-age time')).toHaveAttribute('datetime', merged.merged_at);
+  await expect(mergedFacts).not.toContainText('Draft');
+  await expect(mergedFacts.locator('.review-ci')).toHaveText('CI: Unknown');
+  await expect(openFacts).toContainText('Mergeability: Unknown');
+  await expect(openFacts.locator('.review-mergeability')).toHaveText('Mergeability: Unknown');
+  const headRow = page.locator('#review-pr-32');
+  const headJumpPosition = () => headRow.evaluate(element => {
+    const box = element.getBoundingClientRect(), mast = document.querySelector('.mast').getBoundingClientRect();
+    const margin = getComputedStyle(element).scrollMarginTop;
+    const maximum = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+    const target = Math.max(0, Math.min(maximum, scrollY + box.top - parseFloat(margin)));
+    return {belowHeader:box.top >= mast.bottom - 1, inViewport:box.top < innerHeight && box.bottom > mast.bottom, atRowTarget:Math.abs(scrollY - target) <= 2, margin};
+  });
+  const expectedHeadPosition = {belowHeader:true, inViewport:true, atRowTarget:true, margin:page.viewportSize().width <= 650 ? '160px' : '130px'};
+  await expect(hero.getByRole('region', {name:'Hosted CodeRabbit', exact:true}).locator('.review-lane-heading')).toContainText('1 run');
+  checkpoint = 'current-round-limits-shared';
+  await expect(hero.locator('[aria-label="Current hosted round limits"]')).toContainText('Up to 5 more reviews');
+  // Imported recorded history does not count against a new native grant.
+  await expect(queueHosted.locator('[aria-label="Current hosted round limits"]')).toContainText('Up to 5 more reviews');
+  checkpoint = 'current-round-close-live';
+  await write('POST', '/reviews/rounds/32/hosted', {expected_revision:1,action:'close'}, 200);
+  for (const limits of [hero.locator('[aria-label="Current hosted round limits"]'), queueHosted.locator('[aria-label="Current hosted round limits"]')]) {
+    await expect(limits.locator('summary')).toHaveText('No reviews remaining');
+    await limits.locator('summary').click();
+    await expect(limits.locator('details')).toContainText('Manually closed');
+    await limits.locator('summary').click();
+  }
+  await expect(queueHosted.locator('.review-lane-heading')).toContainText('1 run');
+  const age = queueHosted.locator('.review-round-pill time');
+  await expect(age).toHaveText(/^(?:Just now|Future date|\d+m ago|\d+h \d+m ago|\d+d \d+h ago)$/u);
+  await expect(age).toHaveAttribute('datetime', finished);
+  checkpoint = 'attempt-reason-layout';
+  await captureLayouts('delivery-populated', [1440, 390, 320], async () => {
+    for (const pill of reasonPills) {
+      await expect(pill).toHaveText(reasonPillText);
+      need(await pill.evaluate(element => {
+        const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect();
+        return box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;
+      }));
+    }
+    const progressColors=await page.evaluate(()=>{
+      const luminance=value=>{const c=value.match(/[\d.]+/g).slice(0,3).map(v=>{const n=Number(v)/255;return n<=0.04045?n/12.92:((n+0.055)/1.055)**2.4;});return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2];};
+      const contrast=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+0.05)/(Math.min(x,y)+0.05);};
+      return ['.delivery-merge-head','#review-pr-32'].flatMap(root=>['hosted','cli'].map(channel=>{
+        const node=document.querySelector(root).querySelector(`[aria-label="Current ${channel} round limits"]`);
+        const text=getComputedStyle(node.querySelector('.review-progress-state')).color,border=getComputedStyle(node).borderTopColor;
+        let ancestor=node,background='rgba(0, 0, 0, 0)';
+        while(ancestor&&background==='rgba(0, 0, 0, 0)'){background=getComputedStyle(ancestor).backgroundColor;ancestor=ancestor.parentElement;}
+        return {text,border,background,textContrast:contrast(text,background),borderContrast:contrast(border,background)};
+      }));
+    });
+    need(progressColors.length===4&&progressColors.every(value=>value.text===`rgb(${configuredInk})`&&value.border===value.text&&value.textContrast>=4.5&&value.borderContrast>=3));
+    for(let channel=0;channel<2;channel++)need(JSON.stringify(progressColors[channel])===JSON.stringify(progressColors[channel+2]));
+    need(reviewOperationReads === 0 && reviewAttemptReads === 0);
+  });
+  await jump.click();
+  await expect.poll(() => new URL(page.url()).hash).toBe('#review-pr-32');
+  checkpoint = 'queue-jump-visible';
+  await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
+  if (config.diagnostic_directory) {
+    await fs.mkdir(config.diagnostic_directory, {recursive:true, mode:0o700});
+    await page.screenshot({path:config.diagnostic_directory + '/delivery-head-jump-390.png', timeout:2000});
+  }
+  checkpoint = 'attempt-reason-detail';
+  const reasonReadBoundary = {pull:reviewPullReads,attempts:reviewAttemptReads,runs:reviewRunReads};
+  const attemptArchiveResponse = page.waitForResponse(response => response.request().method()==='GET' && new URL(response.url()).pathname===prefix+'/reviews/pulls/32/attempts').then(async response => ({status:response.status(),body:await response.json()}));
+  // The detail view has its own bounded channel history page, distinct from
+  // the six-round overview. Opening it does not fetch finding bodies.
+  const roundArchiveResponse = page.waitForResponse(response => {
+    const url=new URL(response.url());
+    return response.request().method()==='GET' && url.pathname===prefix+'/reviews/pulls/32/runs' && url.searchParams.get('channel')==='hosted' && url.searchParams.get('limit')==='25';
+  }).then(async response => ({status:response.status(),url:new URL(response.url()),body:await response.json()}));
+  await headRow.getByRole('link',{name:'Review details for PR #32',exact:true}).click();
+  const attemptArchive = await attemptArchiveResponse;
+  need(attemptArchive.status === 200);
+  const roundArchive = await roundArchiveResponse;
+  need(roundArchive.status===200 && roundArchive.url.searchParams.get('snapshot')===new URL(page.url()).searchParams.get('snapshot') && !roundArchive.url.searchParams.has('cursor') && roundArchive.body.items.length===1 && roundArchive.body.items[0].source_run_id===run.source_run_id);
+  const retainedAttempts = attemptArchive.body;
+  need(retainedAttempts.items.length === 1 && retainedAttempts.items[0].source_attempt_id === uncertainAttempt.source_attempt_id && retainedAttempts.items[0].state === 'uncertain' && retainedAttempts.items[0].reason === reasonCode);
+  checkpoint = 'attempt-reason-expanded';
+  const attemptsPanel = page.getByRole('region',{name:'PR #32 attempts',exact:true});
+  await expect(attemptsPanel.locator('summary')).toHaveText('Attempts (1)');
+  await attemptsPanel.locator('summary').click();
+  await expect(attemptsPanel.getByText('Reason',{exact:true})).toBeVisible();
+  await expect(attemptsPanel.getByTitle(reasonCode,{exact:true})).toBeVisible();
+  await expect(attemptsPanel.getByTitle(reasonCode,{exact:true})).toHaveText(reasonText);
+  await expect(attemptsPanel.locator('li strong')).toHaveText('Uncertain');
+  need(await page.locator('literal').count() === 0 && await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  checkpoint = 'attempt-reason-reads';
+  need(reviewPullReads === reasonReadBoundary.pull+1 && reviewAttemptReads === reasonReadBoundary.attempts+1 && reviewRunReads === reasonReadBoundary.runs+1 && reviewOperationReads === 0);
+  checkpoint = 'reviews-return';
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
+  checkpoint = 'reviews-heading';
+  await page.getByRole('heading', {name:'Reviews', exact:true}).waitFor();
+  checkpoint = 'selected-worker';
+  need(await selectedWorker() === config.worker);
+  checkpoint = 'sanitized-literal';
   need(await page.locator('literal').count() === 0);
-  need(new URL(page.url()).pathname === home + '/reviews');
+  checkpoint = 'reviews-url';
+  await expect.poll(() => {
+    const url = new URL(page.url());
+    return url.pathname + url.hash;
+  }).toBe(home + '#review-queue');
+  checkpoint = 'reload-head-spa';
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
+  await jump.click();
+  await expect.poll(() => new URL(page.url()).hash).toBe('#review-pr-32');
+  await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
 
   phase = 'reload';
-  await page.reload();
-  await page.getByRole('heading', {name:title, exact:true}).waitFor();
-  need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === selectedBinding);
+  checkpoint = 'reload-before';
+  const renewalResponsePromise = page.waitForResponse(value => value.request().method() === 'POST' && new URL(value.url()).pathname === prefix + '/browser-session/renew');
+  // Hold only the existing reload queue request: the hash must survive before
+  // any target row exists, then scroll after its ordinary async response.
+  let releaseReloadQueue, reloadQueueHeld = false;
+  const reloadQueueGate = new Promise(resolve => { releaseReloadQueue = resolve; });
+  const queuePattern = config.origin + prefix + '/reviews/queue?*';
+  const holdReloadQueue = async route => { if (route.request().method() === 'GET') { reloadQueueHeld = true; await reloadQueueGate; } await route.fallback(); };
+  const deliveryPattern = url => url.origin===config.origin && url.pathname===prefix+'/delivery';
+  let releaseReloadDelivery;
+  const reloadDeliveryGate = new Promise(resolve => {releaseReloadDelivery=resolve;});
+  const holdReloadDelivery = async route => {
+    if(route.request().method()==='GET'){reloadDeliveryHeld=true;await reloadDeliveryGate;}
+    await route.fallback();
+  };
+  await page.route(deliveryPattern,holdReloadDelivery);
+  const reloadDeliveryResponse = page.waitForResponse(value=>value.request().method()==='GET'&&new URL(value.url()).pathname===prefix+'/delivery').catch(()=>undefined);
+  await page.route(queuePattern, holdReloadQueue);
+  const reloadQueueResponsePromise = page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/reviews/queue');
+  try {
+    try {
+      await page.reload();
+      checkpoint = 'reload-project-heading';
+      await page.getByRole('heading', {name:title, exact:true}).waitFor();
+      checkpoint = 'reload-queue-held';
+      await expect.poll(() => reloadQueueHeld).toBe(true);
+      checkpoint = 'reload-hash-retained';
+      need(new URL(page.url()).hash === '#review-pr-32');
+      checkpoint = 'reload-target-absent';
+      await expect(headRow).toHaveCount(0);
+    } finally { releaseReloadQueue(); }
+    checkpoint = 'reload-queue-response';
+    need((await reloadQueueResponsePromise).status() === 200);
+    checkpoint = 'reload-queue-unroute';
+    await page.unroute(queuePattern, holdReloadQueue);
+    checkpoint = 'reload-delivery-held';
+    await expect.poll(()=>reloadDeliveryHeld).toBe(true);
+    checkpoint = 'reload-initial-alignment';
+    await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
+    reloadLayout.before_delivery=await reloadGeometry();
+    if(config.diagnostic_directory){await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});await fs.writeFile(config.diagnostic_directory+'/reload-layout.json',JSON.stringify(reloadLayout),{mode:0o600});}
+    releaseReloadDelivery();
+    checkpoint = 'reload-delivery-response';
+    need((await reloadDeliveryResponse)?.status()===200);reloadDeliverySettled++;
+    checkpoint = 'reload-delivery-rendered';
+    await expect(page.locator('.delivery-lane[aria-label="Inspector jobs"]').getByRole('link',{name:'Inspector active work',exact:true})).toBeVisible();
+    reloadLayout.after_delivery=await reloadGeometry();
+    if(config.diagnostic_directory){await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});await fs.writeFile(config.diagnostic_directory+'/reload-layout.json',JSON.stringify(reloadLayout),{mode:0o600});}
+    checkpoint = 'reload-head-position';
+    await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
+  } finally {
+    releaseReloadQueue();releaseReloadDelivery();
+    await page.unroute(queuePattern,holdReloadQueue);
+    await page.unroute(deliveryPattern,holdReloadDelivery);
+  }
+  checkpoint = 'reload-heading-visible';
+  await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(1);
+  checkpoint = 'reload-session-renewed';
+  const renewalResponse = await renewalResponsePromise;
+  renewalProof.renewal_response_received = true; renewalProof.renewal_response_ok = renewalResponse.status() === 200;
+  need(renewalProof.renewal_response_ok);
+  // Chromium may retire the CDP body handle independently of the page's
+  // successful renewal. Validate actual current cookie authority instead.
+  const current = await page.evaluate(async ({prefix, sessionID, project, instance, bindingKey}) => {
+    const binding = JSON.parse(sessionStorage.getItem(bindingKey));
+    if (binding?.sessionID !== sessionID || binding.projectID !== project || binding.instanceID !== instance) throw new Error('current session binding differs');
+    const response = await fetch(prefix + '/browser-session', {headers:{'X-FC-Browser-Session':sessionID, 'X-FC-Instance':instance}, credentials:'same-origin', cache:'no-store', redirect:'error', signal:AbortSignal.timeout(5000)});
+    if (response.status !== 200) return {status:response.status, view:null};
+    return {status:response.status, view:await response.json()};
+  }, {prefix, sessionID, project:config.project, instance:config.instance, bindingKey});
+  const currentView = current.view;
+  const originalBinding = JSON.parse(selectedBinding);
+  const fields = ['session_id', 'instance_id', 'project_id', 'expires_at', 'allow_writes', 'can_edit_presentation'];
+  const currentObject = !!currentView && typeof currentView === 'object' && !Array.isArray(currentView);
+  const currentShape = currentObject && Object.keys(currentView).length === fields.length && fields.every(field => Object.hasOwn(currentView, field));
+  const currentExpiry = typeof currentView?.expires_at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(currentView.expires_at) && Number.isFinite(Date.parse(currentView.expires_at));
+  renewalProof = {
+    renewal_response_received:true,
+    renewal_response_ok:renewalResponse.status() === 200,
+    current_read_ok:current.status === 200,
+    current_shape_valid:currentShape,
+    current_identity_matches:currentShape && currentView.session_id === sessionID && currentView.project_id === config.project && currentView.instance_id === config.instance,
+    current_read_only:currentShape && currentView.allow_writes === false && currentView.can_edit_presentation === false,
+    current_expiry_valid:currentExpiry && Date.parse(currentView.expires_at) > Date.now() && Date.parse(currentView.expires_at) <= Date.now() + 86400000 + 300000,
+    // Cookies use Unix seconds; a same-second renewal need not change expiry.
+    current_expiry_nondecreasing:currentExpiry && Date.parse(currentView.expires_at) >= Date.parse(originalBinding.expiresAt),
+    storage_matches_current:false,
+  };
+  checkpoint = 'reload-current-authority';
+  need(Object.entries(renewalProof).filter(([name]) => name !== 'storage_matches_current').every(([, value]) => value === true));
+  checkpoint = 'reload-expiry-persistence';
+  try { await expect.poll(async () => JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey)).expiresAt, {timeout:5000}).toBe(currentView.expires_at); renewalProof.storage_matches_current = true; } catch { /* retain bounded diagnostics for the refused assertion */ }
+  checkpoint = 'reload-expiry-evidence';
+  need(renewalProof.storage_matches_current);
+  checkpoint = 'reload-binding-retained';
+  const retained = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey));
+  const bindingFields = ['version', 'projectID', 'projectHandle', 'instanceID', 'sessionID', 'expiresAt', 'selectedworkerID'];
+  need(retained.version === 1 && Object.keys(retained).length === bindingFields.length && bindingFields.every(field => Object.hasOwn(retained, field)));
+  need(retained.projectID === config.project && retained.projectHandle === handle && retained.instanceID === config.instance && retained.sessionID === sessionID && retained.selectedworkerID === config.worker);
+  checkpoint = 'reload-expiry-window';
+  need(Date.parse(retained.expiresAt) > Date.now() && Date.parse(retained.expiresAt) <= Date.now() + 86400000 + 300000);
+  checkpoint = 'reload-cookie-rotated';
   const resumed = (await context.cookies()).find(value => value.name === cookieName);
-  need(resumed?.value === cookie.value && sessionPosts === 1);
+  need(resumed?.value !== cookie.value && resumed?.httpOnly && resumed?.sameSite === 'Strict' && sessionPosts === 1);
+  checkpoint = 'reload-presentation-restored';
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
-  await page.getByText('Live inbox connected', {exact:true}).waitFor();
-  need((await appearance()).brand === 'Smoke live <literal>' && metadataStreams === 3 && presentationReads === 4 && inboxStreams === 2);
+  checkpoint = 'reload-sidebar-absent';
+  need(await page.locator('.sidebar').count() === 0);
+  checkpoint = 'reload-connection-live';
+  await page.locator('.mast .connection-live').waitFor();
+
+  checkpoint = 'reload-metadata-live';
+  await expect(page.getByRole('status').filter({hasText:/^Project updates disconnected/})).toHaveCount(0);
+  checkpoint = 'reload-reader-counts';
+  need((await appearance()).brand === 'Smoke live <literal>' && metadataStreams >= 3 && metadataStreams <= 4 && presentationReads === 4 && inboxStreams >= 2 && inboxStreams <= 3);
+
+  // Renewal replaces streams that opened before its cookie response. Capture
+  // this reader phase before clock advancement and later writer sessions.
+  const metadataCounts = {presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams};
+
+  phase = 'renewal-activity';
+  // Advance only Chromium's clock across client throttle admission. The real
+  // daemon still issues and checks its ordinary24-hour cookies.
+  await page.clock.fastForward(300001);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  need(sessionRenewals === 1); // Timers and SSE alone are not user activity.
+  // Control only this disposable document's visibility getter; this is client
+  // admission proof, not a physical-device background/lifecycle assertion.
+  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', {configurable:true, value:'hidden'}); document.dispatchEvent(new Event('visibilitychange')); });
+  await page.keyboard.press('Shift');
+  await page.mouse.click(385, 895);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  need(sessionRenewals === 1);
+  await page.evaluate(() => { delete document.visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
+  await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(2);
+  await page.keyboard.press('Shift');
+  await page.mouse.click(385, 895);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  need(sessionRenewals === 2 && sessionPosts === 1);
+  const privateStorage = await page.evaluate(() => JSON.stringify({session:{...sessionStorage}, local:{...localStorage}}));
+  need(!privateStorage.includes(token) && !privateStorage.includes(admin) && !privateStorage.includes('allow_writes') && !privateStorage.includes('can_edit_presentation'));
 
   phase = 'disconnect';
-  await page.getByRole('button', {name:'Disconnect', exact:true}).click();
+  await page.getByRole('button', {name:'Sign out', exact:true}).click();
   await page.getByRole('button', {name:'Connect to project', exact:true}).waitFor();
   await expect.poll(async () => (await context.cookies()).some(value => value.name === cookieName), {timeout:5000}).toBe(false);
   await defaults();
   need((await appearance()).title === 'FireController');
   need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === null);
+  need(new URL(page.url()).pathname === home);
   need(sessionPosts === 1 && sessionDeletes === 1 && forbiddenWrites === 0 && errors === 0 && external === 0);
 
-  const metadataCounts = {presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams};
   phase = 'explicit-actions-connect';
+ checkpoint='root-url';
+ await page.goto(config.origin + '/?signin=1');
  const actionRootHistoryIndex=await page.evaluate(()=>history.state.idx);
+ // Canonical sign-in replaces its current entry. Retain a real prior global
+ // root entry through ordinary navigation for the later pending-action guard.
+ const rootBrand=page.locator('.mast .brand');
+ await expect(rootBrand).toHaveAttribute('href','/');
+ await rootBrand.click();
+ await page.waitForURL(config.origin + '/');
+ checkpoint='root-form';
+ await expect(page.getByLabel('Project', {exact:true})).toHaveValue('');
   explicitActions = true;
-  await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+ checkpoint='project-input';
+  await page.getByLabel('Project', {exact:true}).fill(config.project);
+ checkpoint='credential-input';
   await page.getByLabel('Project credential', {exact:true}).fill(admin);
-  await page.getByLabel('Enable message and appearance changes', {exact:true}).check();
+  need(await page.getByRole('checkbox').count()===0);
+ checkpoint='submit';
+  const adminLogin=page.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname===prefix+'/browser-session');
   await page.getByRole('button', {name:'Connect to project',exact:true}).click();
+  checkpoint='session-response';
+  const adminResponse=await adminLogin;lastHTTPStatus=adminResponse.status();
+  checkpoint='session-status';
+  need(lastHTTPStatus===200);
+  checkpoint='heading';
   await page.getByRole('heading', {name:title,exact:true}).waitFor();
-  await page.getByRole('button', {name:'Open Builder inbox',exact:true}).click();
+  checkpoint='capabilities-read';
+  const adminCapabilities=await loginAuthority(adminResponse, true, true);
+  lastAllowWrites=adminCapabilities.allow_writes===true; lastCanEditPresentation=adminCapabilities.can_edit_presentation===true;
+  checkpoint='capabilities-check';
+  need(adminCapabilities.allow_writes===true && adminCapabilities.can_edit_presentation===true);
+  need(actionWrites===0 && forbiddenWrites===0);
+
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox',exact:true}).click();
+  await page.getByRole('button', {name:'Select worker Builder',exact:true}).click();
   const incoming = await write('POST','/messages',{recipient_worker_id:config.worker,body:'Action incoming <literal>',reply_to_message_id:''},201,config.other_worker);
   const row = page.locator('.inbox-list > li').filter({hasText:'Action incoming <literal>'});
   await row.waitFor();
+  checkpoint = 'inbox-sidebar';
+  await page.getByRole('button',{name:'Select worker Inspector',exact:true}).waitFor();
+  const inboxSender = row.locator('.message-top strong > span');
+  await expect(inboxSender).toHaveAttribute('title',config.other_worker);
+  await expect(inboxSender).toHaveText(`Inspector (${config.other_worker})`);
+  await expect(inboxSender.locator('.visually-hidden')).toHaveText(` (${config.other_worker})`);
+  await expect(row.getByRole('link',{name:`Read conversation from Inspector (${config.other_worker})`,exact:true})).toBeVisible();
   need(await row.getByText('Unread',{exact:true}).count() === 1);
   await row.getByRole('button',{name:'Mark seen',exact:true}).click();
   await row.getByText('Seen',{exact:true}).waitFor();
   await row.getByRole('button',{name:'Acknowledge',exact:true}).click();
   await row.getByText('Acknowledged',{exact:true}).waitFor();
 
-  phase = 'explicit-actions-send';
+  phase = 'explicit-actions-send'; checkpoint = 'composer-open';
   await page.getByRole('button',{name:'New message',exact:true}).click();
+  checkpoint = 'recipient';
   await page.getByLabel('Recipient worker ID',{exact:true}).fill(config.other_worker);
+  checkpoint = 'send-body';
   await page.getByLabel('Message',{exact:true}).fill('Browser send <literal>');
   const sent = page.waitForResponse(r=>r.request().method()==='POST' && new URL(r.url()).pathname===prefix+'/messages');
+  checkpoint = 'send-dispatch';
   await page.getByRole('button',{name:'Send message',exact:true}).click();
-  need((await sent).status()===201);
+  checkpoint = 'send-response';
+  sendStatus = (await sent).status(); checkpoint = 'send-status';
+  need(sendStatus===201);
+  checkpoint = 'conversation-open';
   await row.getByRole('link').click();
+  checkpoint = 'conversation-body';
   await page.getByText('Action incoming <literal>',{exact:true}).waitFor();
+  const incomingMessage = page.locator('.conversation-list > li').filter({hasText:'Action incoming <literal>'});
+  const conversationSender = incomingMessage.locator('.message-top strong > span[title]');
+  await expect(conversationSender).toHaveAttribute('title',config.other_worker);
+  await expect(conversationSender).toHaveText(`Inspector (${config.other_worker})`);
+  await expect(conversationSender.locator('.visually-hidden')).toHaveText(` (${config.other_worker})`);
+  const conversationRecipient = incomingMessage.locator('.message-direction > span');
+  await expect(conversationRecipient).toHaveAttribute('title',config.worker);
+  await expect(conversationRecipient).toHaveText(`Builder (${config.worker})`);
+  await expect(conversationRecipient.locator('.visually-hidden')).toHaveText(` (${config.worker})`);
+  checkpoint = 'reply-open';
   await page.getByRole('button',{name:'Reply',exact:true}).click();
+  checkpoint = 'reply-body';
   await page.getByLabel('Reply message',{exact:true}).fill('Browser reply <literal>');
   const replied = page.waitForResponse(r=>r.request().method()==='POST' && new URL(r.url()).pathname===prefix+'/messages');
+  checkpoint = 'reply-dispatch';
   await page.getByRole('button',{name:'Send reply',exact:true}).click();
+  checkpoint = 'reply-response';
   const replyResponse = await replied;
-  need(replyResponse.status()===201 && (await replyResponse.json()).conversation_id===incoming.conversation_id);
-  await page.getByText('Browser reply <literal>',{exact:true}).waitFor();
+  replyStatus = replyResponse.status(); checkpoint = 'reply-status';
+  need(replyStatus===201);
+  checkpoint = 'reply-binding';
+  const replyBody = await replyResponse.json();
+  need(replyBody.conversation_id===incoming.conversation_id);
+  const replyRequest = replyResponse.request().postDataJSON();
+  need(replyRequest.reply_to_message_id===incoming.id && replyRequest.recipient_worker_id===config.other_worker && replyRequest.body==='Browser reply <literal>');
+  const originalConversation = config.origin + home + '/inbox/' + incoming.conversation_id;
+  need(page.url()===originalConversation);
+  checkpoint = 'reply-visible';
+  await page.locator('.conversation-list').getByText('Browser reply <literal>',{exact:true}).waitFor();
+  need(page.url()===originalConversation);
+  conversationMatch = true;
 
   phase = 'explicit-actions-settings';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).click();
@@ -320,12 +1328,13 @@ try {
   await page.reload();
   await page.getByRole('heading',{name:'Browser configured project',exact:true}).waitFor();
   need(new URL(page.url()).pathname===home+'/settings');
+  await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(3);
   await page.getByLabel('Project name',{exact:true}).waitFor();
   need(await page.locator('literal').count()===0);
   need(!(await page.evaluate(()=>JSON.stringify(sessionStorage))).includes(admin));
   need(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
 
-  phase = 'explicit-actions-uncertain';
+  phase = 'explicit-actions-uncertain'; checkpoint = 'compose';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
   await page.getByRole('button',{name:'New message',exact:true}).click();
   await page.getByLabel('Recipient worker ID',{exact:true}).fill(config.other_worker);
@@ -345,17 +1354,19 @@ try {
     await releaseResponse;
     await route.abort('failed').catch(()=>{});
   });
-  controlledMessageFailure=true;
+  controlledMessageFailure=true; checkpoint = 'dispatch';
   await page.getByRole('button',{name:'Send message',exact:true}).click();
-  await committedSend;
+  await committedSend; checkpoint = 'switch-view';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Workers',exact:true}).click();
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
-  releaseSend();
+  releaseSend(); checkpoint = 'retry-ready';
   const retry = page.getByRole('button',{name:'Retry exact send',exact:true});
-  if (!(await retry.count())) await page.getByRole('button',{name:'New message',exact:true}).click();
+  // The retained action must expose retry after remount without a manual
+  // composer-open click that could mask disappearing success feedback.
   await expect(retry).toBeEnabled();
   // Pop to the original root route: canceling the explicit discard prompt must
   // preserve this project and the original pending key/body, without a reload.
+  checkpoint = 'navigation-guard';
   const rootDelta=await page.evaluate(root=>history.state.idx-root,actionRootHistoryIndex);
   need(rootDelta>0);
   const exitDialog=page.waitForEvent('dialog');
@@ -363,26 +1374,121 @@ try {
   await (await exitDialog).dismiss();
   await expect(retry).toBeEnabled();
   need(new URL(page.url()).pathname===home+'/inbox');
+  checkpoint = 'retry-response';
   const retryResponse=page.waitForResponse(r=>r.request().method()==='POST' && new URL(r.url()).pathname===prefix+'/messages');
   await retry.click();
   const recovered=await retryResponse;
   need(recovered.status()===201 && (await recovered.json()).id===heldReceipt.id);
+  checkpoint = 'retry-identity';
   need(JSON.stringify(originalWire)===JSON.stringify(retryWire));
+  checkpoint = 'conversation-link';
   await page.getByRole('link',{name:'Open sent conversation',exact:true}).click();
+  checkpoint = 'conversation-body';
   await page.getByText('Uncertain browser message',{exact:true}).waitFor();
   need(await page.getByText('Uncertain browser message',{exact:true}).count()===1);
-  controlledMessageFailure=false;
-  await page.getByRole('button',{name:'Disconnect',exact:true}).click();
+  controlledMessageFailure=false; checkpoint = 'disconnect';
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
   await page.getByRole('button',{name:'Connect to project',exact:true}).waitFor();
-  need(sessionPosts===2 && sessionDeletes===2 && actionWrites===7 && forbiddenWrites===0 && errors===0 && external===0);
+  checkpoint = 'action-counters';
+  need(sessionPosts===2 && sessionDeletes===2 && sessionRenewals===3 && actionWrites===7 && forbiddenWrites===0 && errors===0 && external===0);
+
+  phase = 'renewal-missing-cookie'; checkpoint = 'root-form';
+  // Signout stays on the same friendly project, already selected for login.
+  await page.waitForURL(config.origin + home);
+  await expect(page.getByLabel('Project', {exact:true})).toHaveCount(0);
+  // The old private-route form can precede the unpublished root fallback.
+  // Open the root's explicit inline form so publication resolution cannot
+  // remount it after its credential has been filled.
+  const reconnectSignIn=page.locator('.mast').getByRole('button',{name:'Sign in',exact:true});
+  await expect(reconnectSignIn).toHaveAttribute('aria-expanded','false');
+  await reconnectSignIn.click();
+  await expect(reconnectSignIn).toHaveAttribute('aria-expanded','true');
+  checkpoint = 'project-input';
+  explicitActions = false;
+  checkpoint = 'credential-input';
+  await page.getByLabel('Project credential', {exact:true}).fill(token);
+  checkpoint = 'submit';
+  await expect(page.getByLabel('Project credential', {exact:true})).toHaveValue(token);
+  need(await page.locator('.connect-card form').evaluate(form=>form.checkValidity()));
+  const reconnectedProject=page.waitForResponse(response=>response.request().method()==='GET' && new URL(response.url()).pathname==='/api/v1/projects/'+handle);
+  await page.getByRole('button', {name:'Connect to project', exact:true}).click();
+  checkpoint = 'connect';
+  const reconnectedResponse=await reconnectedProject;
+  need(reconnectedResponse.status()===200);
+  checkpoint = 'heading';
+  await page.getByRole('heading', {name:'Browser configured project',exact:true}).waitFor();
+  checkpoint = 'binding';
+  // A painted heading can precede canonical navigation and live setup. Bind
+  // the deliberate missing-cookie experiment to the completed current session.
+  await page.waitForURL(config.origin+home);
+  await page.locator('.mast .connection-live').waitFor();
+  const missingBinding = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), bindingKey));
+  expectedMissingSession=missingBinding?.sessionID;
+  const beforeRemoval=await authSnapshot('before-cookie-removal');
+  need(beforeRemoval.path_matches && beforeRemoval.search_empty && beforeRemoval.hash_empty && beforeRemoval.binding_present && beforeRemoval.binding_project_matches && beforeRemoval.binding_instance_matches && beforeRemoval.binding_session_matches);
+  need((await context.cookies()).some(value=>value.name==='fc-local-browser-'+expectedMissingSession));
+  need(sessionPosts === 3 && sessionRenewals === 3);
+  // Cookie deletion can itself release an in-flight authenticated read. Arm
+  // its observer before removing authority, including across the following await.
+  controlledAccessFailure=true;
+  await authSnapshot('observer-armed');
+  checkpoint = 'remove-cookie';
+  await context.clearCookies({name:'fc-local-browser-' + missingBinding.sessionID});
+  missingCookieRemoved=!(await context.cookies()).some(value=>value.name==='fc-local-browser-'+missingBinding.sessionID);
+  need(missingCookieRemoved);
+  await authSnapshot('after-cookie-removal');
+  checkpoint = 'reload';
+  await authSnapshot('before-reload');
+  await page.reload();
+  await authSnapshot('after-reload');
+  await page.getByRole('button', {name:'Connect to project',exact:true}).waitFor();
+  await authSnapshot('connect-form');
+  checkpoint = 'cleanup';
+  await expect.poll(() => sessionDeletes, {timeout:5000}).toBe(3);
+  checkpoint = 'storage';
+  need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === null);
+  checkpoint = 'counters';
+  need(terminalResponses > 0 && sessionRenewals === 3 && actionWrites === 7 && forbiddenWrites === 0 && errors === 0 && external === 0);
+  await authSnapshot('cleanup-complete');
+
+  phase = 'progress-access-ended'; checkpoint = 'isolated-progress-refusal';
+  controlledAccessFailure = false;
+  controlledProgressAccessFailure = true;
+  await page.route(config.origin + prefix + '/reviews/rounds/progress?*', async route => {
+    progressAccessFailures++;
+    await route.fulfill({status:401,contentType:'application/json',body:JSON.stringify({error:{code:'unauthorized',message:'Synthetic progress-only access refusal.'}})});
+  });
+  // Access failure preserves the selected project route for reconnect.
+  checkpoint = 'reconnect-input';
+  await expect(page.getByLabel('Project', {exact:true})).toHaveCount(0);
+  await page.getByLabel('Project credential', {exact:true}).fill(token);
+  await page.getByRole('button', {name:'Connect to project',exact:true}).click();
+  checkpoint = 'progress-refusal';
+  await expect.poll(() => progressAccessFailures).toBe(1);
+  checkpoint = 'session-cleanup';
+  await expect.poll(() => sessionDeletes).toBe(4);
+  await page.getByRole('button', {name:'Connect to project',exact:true}).waitFor();
+  need(await page.evaluate(key => sessionStorage.getItem(key), bindingKey) === null);
+  need(sessionPosts === 4 && sessionRenewals === 3 && actionWrites === 7 && forbiddenWrites === 0 && errors === 0 && external === 0 && reviewOperationReads === 0);
+
+  phase = 'cleanup'; operation = 'cleanup'; checkpoint = 'context-close'; publishProgress();
   await context.close();
+  checkpoint = 'browser-close'; publishProgress();
   await browser.close(); browser = undefined;
+  checkpoint = 'server-close'; publishProgress();
   await server.close(); server = undefined;
-  console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
-} catch {
-  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, ...diagnostics()}));
+  need(!progressFailed);
+  console.log(JSON.stringify({state:'PASS', repeated_fallback_hash:repeatedFallbackHash, fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, progress_access_refusals:progressAccessFailures, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
+} catch (error) {
+  failureClass = classifyBrowserFailure(error);
+  const failureName = ['TimeoutError','Error','AssertionError','TypeError','ReferenceError','RangeError'].includes(error?.name) ? error.name : 'Other';
+  operation = 'failure-snapshot'; publishProgress();
+  const snapshot = await failureSnapshot().catch(()=>({diagnostic_failed:true}));
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, failure_name:failureName, http_status:lastHTTPStatus, allow_writes:lastAllowWrites, can_edit_presentation:lastCanEditPresentation, send_status:sendStatus, reply_status:replyStatus, conversation_match:conversationMatch, ...counters(), ...diagnostics(), ...snapshot}));
   process.exitCode = 1;
 } finally {
-  if (browser) await browser.close().catch(() => {});
-  if (server) await server.close().catch(() => {});
+  phase = 'cleanup'; operation = 'cleanup';
+  if (browser) { checkpoint = 'browser-close'; publishProgress(); await browser.close().catch(() => {}); }
+  if (server) { checkpoint = 'server-close'; publishProgress(); await server.close().catch(() => {}); }
+  stopProgress();
 }

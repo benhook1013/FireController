@@ -33,11 +33,28 @@ func reviewHold(reason string) error {
 }
 
 func sameOperation(left, right reviewexec.Operation) bool {
-	return left.ID == right.ID && left.ProjectID == right.ProjectID && left.ActorID == right.ActorID && left.WorkerID == right.WorkerID && left.ConfigurationRevision == right.ConfigurationRevision && left.PolicyRevision == right.PolicyRevision && left.CapabilityFingerprint == right.CapabilityFingerprint && left.PullNumber == right.PullNumber && left.HeadSHA == right.HeadSHA && left.Channel == right.Channel
+	return left.ID == right.ID && left.ProjectID == right.ProjectID && left.ActorID == right.ActorID && left.WorkerID == right.WorkerID && left.ConfigurationRevision == right.ConfigurationRevision && left.PolicyRevision == right.PolicyRevision && left.CapabilityFingerprint == right.CapabilityFingerprint && left.PullNumber == right.PullNumber && left.HeadSHA == right.HeadSHA && left.Channel == right.Channel && left.AllowOutOfOrder == right.AllowOutOfOrder
 }
 
 func operationRequest(operation reviewexec.Operation) reviewexec.Request {
-	return reviewexec.Request{ExpectedConfigurationRevision: operation.ConfigurationRevision, PullNumber: operation.PullNumber, HeadSHA: operation.HeadSHA, Channel: operation.Channel}
+	return reviewexec.Request{ExpectedConfigurationRevision: operation.ConfigurationRevision, PullNumber: operation.PullNumber, HeadSHA: operation.HeadSHA, Channel: operation.Channel, AllowOutOfOrder: operation.AllowOutOfOrder}
+}
+
+func samePreparedSource(left, right reviewexec.SourcePlan) bool {
+	return left.Repository == right.Repository && left.Pull.Number == right.Pull.Number && left.Pull.RepositoryID == right.Pull.RepositoryID && left.Pull.HeadSHA == right.Pull.HeadSHA && left.Pull.BaseSHA == right.Pull.BaseSHA && left.Pull.BaseRef == right.Pull.BaseRef && left.ParentSHA == right.ParentSHA && left.ParentPullNumber == right.ParentPullNumber
+}
+
+// Slow cold materialization must not turn an aged observation into fresh facts.
+// Read the provider again and require the exact comparison we materialized.
+func refreshMaterializedSource(ctx context.Context, reader reviewexec.TargetReader, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation, prepared reviewexec.SourcePlan) (reviewexec.SourcePlan, error) {
+	current, err := reviewexec.ResolveSource(ctx, newSourceReads(reader), repositoryID, configuration, operationRequest(operation))
+	if err != nil {
+		return reviewexec.SourcePlan{}, err
+	}
+	if !samePreparedSource(current, prepared) {
+		return reviewexec.SourcePlan{}, reviewHold("source_changed")
+	}
+	return current, nil
 }
 
 // Each phase has its own memoizer. Repeated stack-resolution reads within one
@@ -46,6 +63,7 @@ type sourceReads struct {
 	reader       reviewexec.TargetReader
 	repositories map[int64]reviewprovider.Repository
 	pulls        map[sourcePullKey]reviewprovider.Pull
+	parents      map[string]reviewprovider.Pull
 }
 type sourcePullKey struct {
 	repository string
@@ -53,7 +71,7 @@ type sourcePullKey struct {
 }
 
 func newSourceReads(reader reviewexec.TargetReader) *sourceReads {
-	return &sourceReads{reader: reader, repositories: map[int64]reviewprovider.Repository{}, pulls: map[sourcePullKey]reviewprovider.Pull{}}
+	return &sourceReads{reader: reader, repositories: map[int64]reviewprovider.Repository{}, pulls: map[sourcePullKey]reviewprovider.Pull{}, parents: map[string]reviewprovider.Pull{}}
 }
 func (r *sourceReads) Repository(ctx context.Context, id int64) (reviewprovider.Repository, error) {
 	if value, ok := r.repositories[id]; ok {
@@ -77,6 +95,25 @@ func (r *sourceReads) Pull(ctx context.Context, repository string, number int64)
 	return value, err
 }
 
+func (r *sourceReads) ParentPull(ctx context.Context, repository, branch string) (reviewprovider.Pull, error) {
+	key := repository + "\x00" + branch
+	if value, ok := r.parents[key]; ok {
+		return value, nil
+	}
+	reader, ok := r.reader.(reviewexec.ParentReader)
+	if !ok {
+		return reviewprovider.Pull{}, reviewHold("parent_unavailable")
+	}
+	value, err := reader.ParentPull(ctx, repository, branch)
+	if err == nil {
+		r.parents[key] = value
+		if value.Number > 0 {
+			r.pulls[sourcePullKey{repository, value.Number}] = value
+		}
+	}
+	return value, err
+}
+
 func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *sourceReads, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation) (reviewexec.SourcePlan, []reviewexec.SourcePlan, error) {
 	plan, err := reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, operationRequest(operation))
 	if err != nil {
@@ -89,15 +126,31 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 	if comparison.Pending {
 		return plan, nil, core.Fail("review_evidence_pending", "Resolve retained native evidence in the selected channel before starting another review.", 409)
 	}
-	if comparison.Covered {
+	rounds := false
+	if comparison.RoundsConfigured {
+		rounds, err = engine.RoundAdmission(ctx, operation.ProjectID, operation.ID)
+		if err != nil {
+			return plan, nil, err
+		}
+	}
+	if comparison.Covered && !rounds {
 		return plan, nil, reviewHold("target_already_covered")
 	}
-	if configuration.Mode != "stacked" {
+	if configuration.Mode != "stacked" || operation.AllowOutOfOrder {
 		return plan, nil, nil
 	}
-	position := slices.Index(configuration.Queue, operation.PullNumber)
-	predecessors := make([]reviewexec.SourcePlan, 0, position)
-	for _, number := range configuration.Queue[:position] {
+
+	predecessors := []reviewexec.SourcePlan{}
+	seen := map[int64]bool{operation.PullNumber: true}
+	number := plan.ParentPullNumber
+	for number != 0 {
+		if seen[number] || len(predecessors) >= 100 {
+			return plan, nil, reviewHold("predecessor_identity_changed")
+		}
+		seen[number] = true
+		if !slices.Contains(configuration.Queue, number) {
+			return plan, nil, reviewHold("predecessor_unfinished")
+		}
 		pull, err := reads.Pull(ctx, plan.Repository.FullName, number)
 		if err != nil {
 			return plan, nil, err
@@ -105,11 +158,7 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 		if pull.RepositoryID != repositoryID || pull.Number != number {
 			return plan, nil, reviewHold("predecessor_identity_changed")
 		}
-		if pull.Merged {
-			predecessors = append(predecessors, reviewexec.SourcePlan{Repository: plan.Repository, Pull: pull, ObservedAt: plan.ObservedAt})
-			continue
-		}
-		if pull.State != "open" {
+		if pull.State != "open" || pull.Merged {
 			return plan, nil, reviewHold("predecessor_unavailable")
 		}
 		request := operationRequest(operation)
@@ -118,7 +167,7 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 		if err != nil {
 			return plan, nil, err
 		}
-		covered, err := engine.Coverage(ctx, operation.ProjectID, preceding, operation.Channel)
+		covered, err := engine.DiscoveryComplete(ctx, operation.ProjectID, preceding, operation.Channel)
 		if err != nil {
 			return plan, nil, err
 		}
@@ -126,7 +175,9 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 			return plan, nil, reviewHold("predecessor_unfinished")
 		}
 		predecessors = append(predecessors, preceding)
+		number = preceding.ParentPullNumber
 	}
+
 	return plan, predecessors, nil
 }
 
@@ -134,6 +185,9 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 // reading provider metadata or obtaining any channel's allowance.
 func prepareReviewWorkspace(ctx context.Context, fetch func(context.Context, int64, string, string, string, string) error, verify func(context.Context, reviewworkspace.Workspace) error, manager *reviewworkspace.Manager, credential string, current reviewexec.ExecutionContext, plan reviewexec.SourcePlan, attemptID string) (reviewworkspace.Workspace, int64, error) {
 	if err := fetch(ctx, current.RepositoryID, plan.Repository.FullName, plan.Pull.HeadSHA, plan.Pull.BaseSHA, credential); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return reviewworkspace.Workspace{}, 0, reviewHold("source_fetch_timeout")
+		}
 		return reviewworkspace.Workspace{}, 0, reviewHold("source_unavailable")
 	}
 	workspace, err := manager.Prepare(ctx, current.RepositoryID, attemptID, plan.Pull.HeadSHA, plan.Pull.BaseSHA)
@@ -147,11 +201,10 @@ func prepareReviewWorkspace(ctx context.Context, fetch func(context.Context, int
 	if err := verify(ctx, workspace); err != nil {
 		return reviewworkspace.Workspace{}, 0, reviewHold("workspace_changed")
 	}
-	paths, err := manager.ChangedFiles(ctx, workspace)
-	if err != nil || len(paths) == 0 {
+	count, err := manager.ReviewFileCount(ctx, workspace)
+	if err != nil || count == 0 {
 		return reviewworkspace.Workspace{}, 0, reviewHold("comparison_unavailable")
 	}
-	count := int64(len(paths))
 	if ceiling := current.Policy.Policy.MaxReviewFiles; ceiling > 0 && count > ceiling {
 		return reviewworkspace.Workspace{}, 0, reviewHold("project_file_limit")
 	}

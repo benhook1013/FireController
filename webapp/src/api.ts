@@ -1,15 +1,20 @@
+import type { AdoptionObligationPage, AdoptionObligationDetail } from './review-obligations';
+import { presenceWorkers, validWorkerPresence, type WorkerPresence } from './worker-presence';
 import type { WorkerPrimary, WorkerPrimaryHistoryEntry, WorkerPause, WorkerPauseHistoryEntry, NoteOptions, NoteSummary, Note, NoteHistorySummary, NoteRevision } from './types';
 import type {
-  Checkpoint, ConversationPage, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
-  JobSummary, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
+  Checkpoint, ConversationPage, DeliverySnapshot, DeliveryOptions, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
+  JobSummary, JobPublicSummary, JobProgress, JobProgressEntry, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
   Project, WatchCallbacks, Worker, ProjectMapEntry, ProjectMapSummary, ProjectMapOptions, ProjectMapHistorySummary, ProjectMapRevision, JobWorkstream, JobWorkstreamHistoryEntry,
   ReviewAttemptSummary, ReviewFinding, ReviewPull, ReviewPullSummary, ReviewQueue, ReviewRunDetail,
-  ReviewRunOptions, ReviewRuns, ReviewRunSummary, ReviewPolicyAssessment,
+  ReviewRunOptions, ReviewRuns, ReviewRunSummary, ReviewPolicyAssessment, ReviewAttemptOptions, ReviewAttempts, ReviewAttemptItem,
 } from './types';
 import { runMessageWatch, runEventWatch, type MessageWatchSource, type EventWatchCallbacks } from './events';
 import { validPresentationSnapshot, validPresentation, validMetadataPage, validPresentationConfig, type PresentationConfig } from './presentation';
+import { progressPulls, validReviewProgress, type ReviewProgress } from './review-progress';
+import type { ReviewFronts } from './review-fronts';
 import type { PresentationSnapshot, PresentationRevision, ProjectMetadataPage } from './types';
 import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
+import { validBackupHealth, type BackupHealth } from './backup-health-model';
 
 const maxBytes = 1 << 20;
 const maxItems = 100;
@@ -45,7 +50,7 @@ export type BrowserPresentationConfig = PresentationConfig;
 export interface BrowserMessageReceipt { id: string; conversation_id: string; outcome: 'sent' | 'seen' | 'acknowledged' | 'unchanged' }
 export interface BrowserPresentationReceipt { project_id: string; revision: number; outcome: 'updated' | 'unchanged' }
 function browserSessionView(value: unknown, selector: string, instance: string, project: string): value is BrowserSessionView {
-  return record(value) && keys(value, ['session_id', 'instance_id', 'project_id', 'expires_at', 'allow_writes', 'can_edit_presentation']) && value.session_id === selector && value.instance_id === instance && value.project_id === project && sessionExpiry(value.expires_at) && Date.parse(value.expires_at) > Date.now() && typeof value.allow_writes === 'boolean' && typeof value.can_edit_presentation === 'boolean' && (!value.can_edit_presentation || value.allow_writes);
+  return record(value) && keys(value, ['session_id', 'instance_id', 'project_id', 'expires_at', 'allow_writes', 'can_edit_presentation']) && value.session_id === selector && value.instance_id === instance && value.project_id === project && sessionExpiry(value.expires_at) && typeof value.allow_writes === 'boolean' && typeof value.can_edit_presentation === 'boolean' && (!value.can_edit_presentation || value.allow_writes);
 }
 function mutationKey(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length <= 128 && value.trim() === value && !/[^\x20-\x7e]/u.test(value); }
 
@@ -157,16 +162,70 @@ async function readFailure(response: Response, signal: AbortSignal): Promise<Api
 }
 
 function validProject(value: unknown, expected: string): value is Project {
-  return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository']) && value.id === expected && contentText(value.name, 200) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
+  const handle = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(v);
+  const publicationAlias = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u.test(expected);
+  // An authenticated address lookup may use an enabled legacy publication
+  // alias. The service resolves and authorizes it; only the initial address
+  // lookup can adopt its canonical ID. Opaque selectors and resumed sessions
+  // remain pinned to their existing identity.
+  return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository'], ['handle']) && id(value.id) && (value.handle === undefined || handle(value.handle)) && (value.id === expected || value.handle === expected || publicationAlias && handle(value.handle)) && contentText(value.name, 200) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
 }
 function validWorker(value: unknown, projectId: string): value is Worker {
   return record(value) && keys(value, ['id', 'project_id', 'name']) && id(value.id) && value.project_id === projectId && displayName(value.name);
 }
 function validSummary(value: unknown): value is JobSummary {
-  return record(value) && keys(value, ['id', 'title', 'worker_id', 'status', 'revision']) && id(value.id) && contentText(value.title, 240) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0;
+  return record(value) && keys(value, ['id', 'title', 'worker_id', 'status', 'revision', 'progress_summary', 'blocker', 'progress_truncated', 'blocker_truncated']) && validProgressPreview(value) && id(value.id) && contentText(value.title, 240) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0;
+}
+function validDelivery(value: unknown, project: string, options: DeliveryOptions): value is DeliverySnapshot {
+  if (!record(value) || !keys(value, ['workers', 'jobs']) || !coordinationPage(value.workers, options.worker_limit ?? 20) || !coordinationPage(value.jobs, options.job_limit ?? 50)) return false;
+  let previousWorker = '';
+  for (const worker of value.workers.items) {
+    if (!record(worker) || !keys(worker, ['id', 'project_id', 'name', 'primary_job_id', 'paused', 'pause_reason', 'pause_reason_truncated']) || !id(worker.id) || worker.id <= previousWorker || worker.project_id !== project || !displayName(worker.name) || worker.primary_job_id !== '' && !id(worker.primary_job_id) || typeof worker.paused !== 'boolean' || !coordinationText(worker.pause_reason, 240, false, true) || typeof worker.pause_reason_truncated !== 'boolean' || !worker.paused && (worker.pause_reason !== '' || worker.pause_reason_truncated)) return false;
+    previousWorker = worker.id;
+  }
+  const ranks: Record<string, number> = { active: 0, blocked: 1, parked: 2 };
+  let previousRank = -1, previousJob = '';
+  for (const job of value.jobs.items) {
+    if (!record(job) || !keys(job, ['id', 'title', 'worker_id', 'status', 'revision', 'worker_name', 'brief_preview', 'brief_preview_truncated', 'updated_at', 'progress', 'checklist'], ['summary']) || !id(job.id) || !contentText(job.title, 240) || job.worker_id !== '' && !id(job.worker_id) || typeof job.status !== 'string' || !Object.hasOwn(ranks, job.status) || !positive(job.revision) || (job.worker_id === '' ? job.worker_name !== '' : !displayName(job.worker_name))) return false;
+    if (job.summary !== undefined && (!validJobPublicSummary(job.summary, job.id) || job.summary.job_revision > Number(job.revision))) return false;
+    const rank = ranks[job.status];
+    if (rank < previousRank || rank === previousRank && job.id <= previousJob) return false;
+    previousRank = rank; previousJob = job.id;
+    if (!contentText(job.brief_preview, 240, true) || typeof job.brief_preview_truncated !== 'boolean' || job.brief_preview_truncated && !job.brief_preview || !assessmentTime(job.updated_at)) return false;
+    const checklist = job.checklist;
+    if (checklist !== null && (!record(checklist) || !keys(checklist, ['revision', 'job_revision', 'total', 'done', 'created_at']) || !positive(checklist.revision) || !positive(checklist.job_revision) || Number(checklist.job_revision) > Number(job.revision) || !nonnegative(checklist.total) || Number(checklist.total) > 100 || !nonnegative(checklist.done) || Number(checklist.done) > Number(checklist.total) || !assessmentTime(checklist.created_at))) return false;
+    const progress = job.progress;
+    if (!record(progress) || !keys(progress, ['summary', 'next', 'blocker', 'summary_truncated', 'next_truncated', 'blocker_truncated'])) return false;
+    for (const field of ['summary', 'next', 'blocker'] as const) {
+      if (!checkpointText(progress[field], 240, false) || typeof progress[`${field}_truncated`] !== 'boolean' || progress[`${field}_truncated`] && progress[field] === '') return false;
+    }
+  }
+  return true;
+}
+function validJobPublicSummary(value: unknown, jobId: string): value is JobPublicSummary {
+  return record(value) && keys(value, ['job_id', 'job_revision', 'revision', 'title', 'body']) && value.job_id === jobId && positive(value.job_revision) && nonnegative(value.revision) && contentText(value.title, 240, true) && contentText(value.body, 2000, true) && (value.body === '' || checkpointText(value.body, 2000, true)) && (value.title === '' && value.body === '' || Number(value.revision) > 0 && typeof value.title === 'string' && value.title.trim().length > 0 && !/[\p{Cc}]/u.test(value.title) && typeof value.body === 'string' && value.body.trim().length > 0);
+}
+function validProgress(value: unknown): value is JobProgress {
+  if (!record(value) || !keys(value, ['summary', 'next', 'blocker', 'evidence']) || !checkpointText(value.summary, 8 << 10, false) || !checkpointText(value.next, 8 << 10, false) || !checkpointText(value.blocker, 4 << 10, false) || !Array.isArray(value.evidence) || value.evidence.length > 10 || !value.evidence.every(item => checkpointText(item, 1024, true))) return false;
+  return [value.summary, value.next, value.blocker, ...value.evidence].reduce((size, item) => size + new TextEncoder().encode(item).byteLength, 0) <= 16 << 10;
+}
+function validProgressPreview(value: Record<string, unknown>): boolean {
+  return checkpointText(value.progress_summary, 240, false) && checkpointText(value.blocker, 240, false) && typeof value.progress_truncated === 'boolean' && typeof value.blocker_truncated === 'boolean' && (!value.progress_truncated || value.progress_summary !== '') && (!value.blocker_truncated || value.blocker !== '');
 }
 function validJob(value: unknown, projectId: string): value is Job {
-  return record(value) && keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at']) && value.project_id === projectId && id(value.id) && contentText(value.title, 240) && contentText(value.brief, 32768, true) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && timestamp(value.created_at) && timestamp(value.updated_at);
+  if (!record(value) || !keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at', 'progress', 'checklist', 'notes']) || value.project_id !== projectId || !id(value.id) || !contentText(value.title, 240) || !contentText(value.brief, 32768, true) || !text(value.worker_id, 128, true) || typeof value.status !== 'string' || !jobStatuses.has(value.status) || !positive(value.revision) || !timestamp(value.created_at) || !timestamp(value.updated_at) || !validProgress(value.progress)) return false;
+  const checklist = value.checklist;
+  if (!record(checklist) || !keys(checklist, ['revision', 'remaining', 'completed', 'total']) || !nonnegative(checklist.revision) || !validChecklistItems(checklist.remaining) || checklist.remaining.some(item => item.done) || !nonnegative(checklist.completed) || !nonnegative(checklist.total) || checklist.total > 100 || checklist.remaining.length + checklist.completed !== checklist.total || checklist.revision === 0 && checklist.total !== 0) return false;
+  if (!coordinationPage(value.notes, 5)) return false;
+  const seen = new Set<string>(); let previous: NoteSummary | undefined;
+  for (const note of value.notes.items) {
+    if (!validNoteSummary(note, projectId) || note.job_id !== value.id || note.status !== 'pending' || seen.has(note.id) || previous && (coordinationTimeKey(note.created_at) > coordinationTimeKey(previous.created_at) || coordinationTimeKey(note.created_at) === coordinationTimeKey(previous.created_at) && note.id >= previous.id)) return false;
+    seen.add(note.id); previous = note;
+  }
+  return true;
+}
+function validProgressEntry(value: unknown, project: string, job: string): value is JobProgressEntry {
+  return record(value) && keys(value, ['id', 'project_id', 'job_id', 'job_revision', 'sequence', 'actor_id', 'worker_id', 'progress', 'created_at']) && id(value.id) && value.project_id === project && value.job_id === job && positive(value.job_revision) && positive(value.sequence) && id(value.actor_id) && (value.worker_id === '' || id(value.worker_id)) && assessmentTime(value.created_at) && validProgress(value.progress);
 }
 function checkpointText(value: unknown, max: number, required: boolean): value is string {
   if (!text(value, max, !required) || required && /^\p{White_Space}*$/u.test(value)) return false;
@@ -269,18 +328,19 @@ export function projectMapURL(value: unknown): value is string {
   catch { return false; }
 }
 function validMapSummary(value: unknown): value is ProjectMapSummary {
-  return record(value) && keys(value, ['id', 'kind', 'title', 'state', 'archived', 'revision']) && id(value.id) && (value.kind === 'workstream' || value.kind === 'return_point') && mapName(value.title, 240) && mapText(value.state, 240) && typeof value.archived === 'boolean' && positive(value.revision);
+  return record(value) && keys(value, ['id', 'kind', 'title', 'state', 'archived', 'revision']) && id(value.id) && (value.kind === 'workstream' || value.kind === 'return_point' || value.kind === 'section') && mapName(value.title, 240) && mapText(value.state, 240) && typeof value.archived === 'boolean' && positive(value.revision);
 }
 function validMapEntry(value: unknown, project: string, expected: string): value is ProjectMapEntry {
-  if (!record(value) || !keys(value, ['id', 'kind', 'title', 'state', 'archived', 'revision', 'project_id', 'description', 'where', 'next', 'trigger', 'phases', 'links', 'created_at', 'updated_at']) || value.id !== expected || !id(value.id) || value.project_id !== project || (value.kind !== 'workstream' && value.kind !== 'return_point') || !mapName(value.title, 240) || !mapText(value.state, 240) || typeof value.archived !== 'boolean' || !positive(value.revision) || !assessmentTime(value.created_at) || !assessmentTime(value.updated_at) || !mapText(value.description, 8192, true) || !mapText(value.where, 8192, true) || !mapText(value.next, 8192, true) || !mapText(value.trigger, 8192, true) || !Array.isArray(value.phases) || value.phases.length > 64 || !Array.isArray(value.links) || value.links.length > 12) return false;
+  if (!record(value) || !keys(value, ['id', 'kind', 'title', 'state', 'archived', 'revision', 'project_id', 'description', 'where', 'next', 'trigger', 'phases', 'links', 'created_at', 'updated_at'], ['position']) || value.id !== expected || !id(value.id) || value.project_id !== project || (value.kind !== 'workstream' && value.kind !== 'return_point' && value.kind !== 'section') || !mapName(value.title, 240) || !mapText(value.state, 240) || typeof value.archived !== 'boolean' || !positive(value.revision) || !assessmentTime(value.created_at) || !assessmentTime(value.updated_at) || !mapText(value.description, 8192, true) || !mapText(value.where, 8192, true) || !mapText(value.next, 8192, true) || !mapText(value.trigger, 8192, true) || !Array.isArray(value.phases) || value.phases.length > 64 || !Array.isArray(value.links) || value.links.length > 12) return false;
+  if (value.position !== undefined && (!nonnegative(value.position) || Number(value.position) > 1000000)) return false;
   const seen = new Set<string>();
   for (const phase of value.phases) {
     if (!record(phase) || !keys(phase, ['id', 'name', 'state', 'archived']) || typeof phase.id !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/u.test(phase.id) || seen.has(phase.id) || !mapName(phase.name, 160) || !mapText(phase.state, 240) || typeof phase.archived !== 'boolean') return false;
     seen.add(phase.id);
   }
   if (!value.links.every(link => record(link) && keys(link, ['label', 'url']) && mapName(link.label, 120) && projectMapLinkText(link.url))) return false;
-  if (value.kind === 'workstream' ? value.trigger !== '' : value.where !== '' || value.next !== '' || value.phases.length !== 0) return false;
-  const editable = { kind: value.kind, title: value.title, description: value.description, state: value.state, where: value.where, next: value.next, trigger: value.trigger, phases: value.phases, links: value.links, archived: value.archived };
+  if (value.kind === 'workstream' ? value.trigger !== '' : value.where !== '' || value.next !== '' || value.phases.length !== 0 || value.kind === 'section' && value.trigger !== '') return false;
+  const editable = { kind: value.kind, title: value.title, description: value.description, state: value.state, where: value.where, next: value.next, trigger: value.trigger, phases: value.phases, links: value.links, archived: value.archived, ...(value.position ? { position: value.position } : {}) };
   // Match the service's encoded editable budget, including Go's HTML escapes.
   return new TextEncoder().encode(JSON.stringify(editable).replace(/[<>&\u2028\u2029]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`)).byteLength <= 64 << 10;
 }
@@ -342,16 +402,18 @@ function validAssessmentAnchor(value: unknown): boolean {
   return positive(value.repository_id) && repository.length === 2 && repository.every(part => /^[A-Za-z0-9._-]{1,100}$/u.test(part) && part !== '.' && part !== '..') && pullNumber(value.pull_number) && nonnegative(value.parent_pull_number) && value.parent_pull_number <= 2147483647 && [value.candidate_sha, value.base_sha, value.parent_sha, value.merge_base_sha].every(item => typeof item === 'string' && /^[a-f0-9]{40}$/u.test(item)) && typeof value.patch_sha256 === 'string' && /^[a-f0-9]{64}$/u.test(value.patch_sha256) && checkpointText(value.base_ref, 256, true) && !/[\u0080-\u009f]/u.test(value.base_ref) && assessmentTime(value.observed_at);
 }
 function validPolicyAssessment(value: unknown, project: string, evidence: string): value is ReviewPolicyAssessment {
-  if (!record(value) || !keys(value, ['project_id', 'evidence_id', 'anchor', 'source', 'policy_revision', 'evaluated_at', 'state', 'channels'], ['incoming_routes_pending', 'incoming_routes_capacity', 'reason']) || value.project_id !== project || value.evidence_id !== evidence || !validAssessmentAnchor(value.anchor) || value.source !== 'captured_comparison' || !nonnegative(value.policy_revision) || !assessmentTime(value.evaluated_at) || !Array.isArray(value.channels) || value.channels.length > 2) return false;
+  if (!record(value) || !keys(value, ['project_id', 'evidence_id', 'anchor', 'source', 'policy_revision', 'evaluated_at', 'state', 'channels'], ['incoming_routes_pending', 'incoming_routes_capacity', 'source_obligations_pending', 'reason']) || value.project_id !== project || value.evidence_id !== evidence || !validAssessmentAnchor(value.anchor) || value.source !== 'captured_comparison' || !nonnegative(value.policy_revision) || !assessmentTime(value.evaluated_at) || !Array.isArray(value.channels) || value.channels.length > 2) return false;
   const channels = value.channels;
-  if (!channels.every(item => record(item) && keys(item, ['channel', 'covered', 'pending']) && (item.channel === 'cli' || item.channel === 'hosted') && typeof item.covered === 'boolean' && typeof item.pending === 'boolean') || new Set(channels.map(item => (item as Record<string, unknown>).channel)).size !== channels.length) return false;
+  if (!channels.every(item => record(item) && keys(item, ['channel', 'covered', 'pending'], ['rounds_configured', 'rounds_complete']) && (item.rounds_configured === undefined || typeof item.rounds_configured === 'boolean') && (item.rounds_complete === undefined || typeof item.rounds_complete === 'boolean') && (!item.rounds_complete || item.rounds_configured === true) && (item.channel === 'cli' || item.channel === 'hosted') && typeof item.covered === 'boolean' && typeof item.pending === 'boolean') || new Set(channels.map(item => (item as Record<string, unknown>).channel)).size !== channels.length) return false;
   if (value.incoming_routes_pending !== undefined && !nonnegative(value.incoming_routes_pending) || value.incoming_routes_capacity !== undefined && typeof value.incoming_routes_capacity !== 'boolean' || value.reason !== undefined && typeof value.reason !== 'string') return false;
+  const sourcePending = value.source_obligations_pending ?? 0;
+  if (!nonnegative(sourcePending) || value.source_obligations_pending === null) return false;
   const incoming = value.incoming_routes_pending ?? 0;
   const capacity = value.incoming_routes_capacity ?? false;
   const reason = value.reason ?? '';
-  if (!nonnegative(incoming) || incoming > 100 || typeof capacity !== 'boolean' || (capacity && incoming !== 0) || (capacity ? reason !== 'routed_findings_capacity' : incoming > 0 ? reason !== 'routed_findings_pending' : reason !== '')) return false;
-  if (value.state === 'unconfigured') return value.policy_revision === 0 && channels.length === 0 && incoming === 0 && !capacity;
-  return value.policy_revision > 0 && channels.length > 0 && (value.state === 'sufficient' || value.state === 'held') && (incoming === 0 && !capacity && channels.every(item => (item as Record<string, unknown>).covered && !(item as Record<string, unknown>).pending)) === (value.state === 'sufficient');
+  if (!nonnegative(incoming) || typeof capacity !== 'boolean' || (capacity && incoming !== 0) || (capacity ? reason !== 'routed_findings_capacity' : incoming > 0 ? reason !== 'routed_findings_pending' : sourcePending > 0 ? reason !== 'source_obligations_pending' : reason !== '')) return false;
+  if (value.state === 'unconfigured') return value.policy_revision === 0 && channels.length === 0 && sourcePending === 0 && incoming === 0 && !capacity;
+  return value.policy_revision > 0 && channels.length > 0 && (value.state === 'sufficient' || value.state === 'held') && (sourcePending === 0 && incoming === 0 && !capacity && channels.every(item => (item as Record<string, unknown>).covered && !(item as Record<string, unknown>).pending && (!(item as Record<string, unknown>).rounds_configured || (item as Record<string, unknown>).rounds_complete))) === (value.state === 'sufficient');
 }
 const reviewMetadata = ['project_id', 'revision', 'snapshot_id', 'source', 'observed_at', 'recorded_at'];
 const reviewOutcomes = new Set(['completed', 'active', 'prepared', 'posting', 'failed', 'cancelled', 'rate_limited', 'uncertain', 'unknown']);
@@ -367,14 +429,40 @@ function orderedTimes(start: string, finish: string): boolean { return !start ||
 function validReviewSnapshot(value: Record<string, unknown>, project: string, expected?: string): boolean {
   return value.project_id === project && positive(value.revision) && reviewSnapshotID(value.snapshot_id) && (expected === undefined || value.snapshot_id === expected) && checkpointText(value.source, 128, true) && timestamp(value.observed_at) && timestamp(value.recorded_at);
 }
+function validAcceptedSeverity(value: unknown, accepted: unknown): boolean {
+  if (!record(value) || !keys(value, ['critical', 'major', 'minor', 'trivial', 'unknown', 'complete']) || typeof value.complete !== 'boolean') return false;
+  const counts = [value.critical, value.major, value.minor, value.trivial, value.unknown];
+  return counts.every(nonnegative) && (!value.complete || counts.reduce<number>((total, count) => total + Number(count), 0) === accepted);
+}
 function validReviewRun(value: unknown, number?: number): value is ReviewRunSummary {
-  return record(value) && keys(value, ['source', 'id', 'pull_number', 'source_run_id', 'channel', 'head_sha', 'reviewer', 'scope', 'coverage_limits', 'outcome', 'attributable', 'complete', 'started_at', 'finished_at', 'found', 'accepted', 'routed', 'finalized', 'fixed']) && checkpointText(value.source, 128, true) && reviewRunID(value.id) && pullNumber(value.pull_number) && (number === undefined || value.pull_number === number) && checkpointText(value.source_run_id, 256, true) && typeof value.channel === 'string' && ['cli', 'hosted', 'manual', 'subagent'].includes(value.channel) && sha(value.head_sha) && checkpointText(value.reviewer, 128, false) && checkpointText(value.scope, 128, true) && Array.isArray(value.coverage_limits) && value.coverage_limits.length <= 16 && value.coverage_limits.every(item => checkpointText(item, 1024, true)) && typeof value.outcome === 'string' && reviewOutcomes.has(value.outcome) && typeof value.attributable === 'boolean' && typeof value.complete === 'boolean' && maybeTimestamp(value.started_at) && maybeTimestamp(value.finished_at) && orderedTimes(value.started_at, value.finished_at) && ((value.outcome !== 'completed' && !value.complete) || (!!value.started_at && !!value.finished_at)) && nonnegative(value.found) && nonnegative(value.accepted) && nonnegative(value.routed) && value.accepted + value.routed <= value.found && nonnegative(value.fixed) && value.fixed <= value.found && typeof value.finalized === 'boolean';
+  return record(value) && keys(value, ['source', 'id', 'pull_number', 'source_run_id', 'channel', 'head_sha', 'reviewer', 'scope', 'coverage_limits', 'outcome', 'attributable', 'complete', 'started_at', 'finished_at', 'found', 'accepted', 'routed', 'finalized', 'fixed'], ['accepted_severity']) && (value.accepted_severity === undefined || validAcceptedSeverity(value.accepted_severity, value.accepted)) && checkpointText(value.source, 128, true) && reviewRunID(value.id) && pullNumber(value.pull_number) && (number === undefined || value.pull_number === number) && checkpointText(value.source_run_id, 256, true) && typeof value.channel === 'string' && ['cli', 'hosted', 'manual', 'subagent'].includes(value.channel) && sha(value.head_sha) && checkpointText(value.reviewer, 128, false) && checkpointText(value.scope, 128, true) && Array.isArray(value.coverage_limits) && value.coverage_limits.length <= 16 && value.coverage_limits.every(item => checkpointText(item, 1024, true)) && typeof value.outcome === 'string' && reviewOutcomes.has(value.outcome) && typeof value.attributable === 'boolean' && typeof value.complete === 'boolean' && maybeTimestamp(value.started_at) && maybeTimestamp(value.finished_at) && orderedTimes(value.started_at, value.finished_at) && ((value.outcome !== 'completed' && !value.complete) || (!!value.started_at && !!value.finished_at)) && nonnegative(value.found) && nonnegative(value.accepted) && nonnegative(value.routed) && value.accepted + value.routed <= value.found && nonnegative(value.fixed) && value.fixed <= value.found && typeof value.finalized === 'boolean';
 }
 function validReviewAttempt(value: unknown): value is ReviewAttemptSummary {
-  return record(value) && keys(value, ['source_attempt_id', 'channel', 'head_sha', 'state', 'started_at', 'finished_at', 'duration_seconds', 'source_run_id', 'trigger_id', 'provider_review_id']) && checkpointText(value.source_attempt_id, 256, true) && typeof value.channel === 'string' && ['cli', 'hosted', 'manual', 'subagent'].includes(value.channel) && sha(value.head_sha) && typeof value.state === 'string' && reviewAttemptStates.has(value.state) && maybeTimestamp(value.started_at) && maybeTimestamp(value.finished_at) && orderedTimes(value.started_at, value.finished_at) && (value.state !== 'completed' || (!!value.started_at && !!value.finished_at)) && (value.duration_seconds === null || nonnegative(value.duration_seconds)) && checkpointText(value.source_run_id, 256, false) && checkpointText(value.trigger_id, 128, false) && checkpointText(value.provider_review_id, 128, false);
+  return record(value) && keys(value, ['source_attempt_id', 'channel', 'head_sha', 'state', 'started_at', 'finished_at', 'duration_seconds', 'source_run_id', 'trigger_id', 'provider_review_id'], ['reason']) && checkpointText(value.source_attempt_id, 256, true) && typeof value.channel === 'string' && ['cli', 'hosted', 'manual', 'subagent'].includes(value.channel) && sha(value.head_sha) && typeof value.state === 'string' && reviewAttemptStates.has(value.state) && (!('reason' in value) || ['held', 'uncertain', 'rate_limited', 'failed'].includes(value.state) && typeof value.reason === 'string' && /^[a-z][a-z0-9_]{0,127}$/u.test(value.reason)) && maybeTimestamp(value.started_at) && maybeTimestamp(value.finished_at) && orderedTimes(value.started_at, value.finished_at) && (value.state !== 'completed' || (!!value.started_at && !!value.finished_at)) && (value.duration_seconds === null || nonnegative(value.duration_seconds)) && checkpointText(value.source_run_id, 256, false) && checkpointText(value.trigger_id, 128, false) && checkpointText(value.provider_review_id, 128, false);
+}
+function validReviewAttemptItem(value: unknown): value is ReviewAttemptItem {
+  if (!record(value) || !checkpointText(value.source, 128, true)) return false;
+  const { source: _source, ...attempt } = value;
+  return validReviewAttempt(attempt);
+}
+function validObservationHealth(value: unknown): boolean {
+ if (!record(value) || !keys(value,['state'],['checked_at','last_success_at','next_check_at','error','ci_checked_at','ci_error','hosted_checked_at','hosted_error']) || !['not_enrolled','unavailable','waiting','current','comparison_changed','overdue','retrying'].includes(String(value.state))) return false;
+ for (const field of ['checked_at','last_success_at','next_check_at','ci_checked_at','hosted_checked_at']) if (Object.hasOwn(value,field) && !assessmentTime(value[field])) return false;
+ for (const field of ['error','ci_error','hosted_error']) if (Object.hasOwn(value,field) && (typeof value[field]!=='string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(value[field]))) return false;
+ return (!['current','comparison_changed'].includes(String(value.state)) || typeof value.last_success_at==='string') && (value.state!=='retrying' || typeof value.error==='string');
+}
+function validObserver(value: unknown): boolean {
+ return record(value) && keys(value,['state'],['started_at']) && ['running','unavailable','unconfigured'].includes(String(value.state)) && (value.state==='running' ? assessmentTime(value.started_at) : !Object.hasOwn(value,'started_at'));
 }
 function validReviewPull(value: unknown): value is ReviewPullSummary {
-  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'attempt_count', 'recent_runs', 'latest_attempts']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || value.run_count > 100 || !nonnegative(value.attempt_count) || value.attempt_count > 100 || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(validReviewAttempt) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
+  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'run_counts', 'attempt_count', 'recent_runs', 'latest_attempts'], ['diff', 'is_draft', 'merged_at', 'queue_position', 'observation']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure', 'not_required'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || !nonnegative(value.attempt_count) || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(validReviewAttempt) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
+  if (Object.hasOwn(value,'observation') && !validObservationHealth(value.observation)) return false;
+  if (!record(value.run_counts) || !keys(value.run_counts, ['hosted', 'cli', 'subagent', 'manual']) || !Object.values(value.run_counts).every(nonnegative) || Object.values(value.run_counts).reduce<number>((sum, count) => sum + Number(count), 0) !== value.run_count) return false;
+  for (const channel of ['hosted', 'cli', 'subagent', 'manual']) if (value.recent_runs.filter(item => item.channel === channel).length > Number(value.run_counts[channel])) return false;
+  if (Object.hasOwn(value, 'diff') && (!record(value.diff) || !keys(value.diff, ['files', 'additions', 'deletions']) || ![value.diff.files, value.diff.additions, value.diff.deletions].every(count => nonnegative(count) && count <= 2147483647))) return false;
+  if (Object.hasOwn(value, 'is_draft') && typeof value.is_draft !== 'boolean') return false;
+  if (Object.hasOwn(value, 'merged_at') && (value.state !== 'merged' || !timestamp(value.merged_at))) return false;
+  if (Object.hasOwn(value, 'queue_position') && (!nonnegative(value.queue_position) || Number(value.queue_position) > 2147483647)) return false;
   return new Set(value.recent_runs.map(item => item.id)).size === value.recent_runs.length && new Set(value.latest_attempts.map(item => item.channel)).size === value.latest_attempts.length;
 }
 function validFindingRoute(value: unknown): boolean {
@@ -385,7 +473,7 @@ function validFindingRoute(value: unknown): boolean {
   return value.disposition === 'accepted' && checkpointText(value.proof_note,2048,true) && timestamp(value.fixed_at);
 }
 function validReviewFinding(value: unknown): value is ReviewFinding {
-  return record(value) && keys(value, ['source_finding_id', 'title', 'detail', 'severity', 'disposition', 'decision_reason', 'actor', 'decided_at', 'fix_sha', 'proof_note', 'resolved_at'], ['route']) && (value.route === undefined || value.disposition === 'routed' && validFindingRoute(value.route)) && checkpointText(value.source_finding_id, 256, true) && checkpointText(value.title, 500, true) && checkpointText(value.detail, 16 << 10, false) && typeof value.severity === 'string' && ['info', 'low', 'medium', 'high', 'critical', 'unknown'].includes(value.severity) && typeof value.disposition === 'string' && ['unadjudicated', 'accepted', 'routed', 'rejected'].includes(value.disposition) && checkpointText(value.decision_reason, 2048, false) && checkpointText(value.actor, 128, false) && maybeTimestamp(value.decided_at) && sha(value.fix_sha) && checkpointText(value.proof_note, 2048, false) && maybeTimestamp(value.resolved_at) && (value.disposition === 'accepted' || value.fix_sha === '' && value.proof_note === '' && value.resolved_at === '') && (value.resolved_at === '' || value.fix_sha !== '');
+  return record(value) && keys(value, ['source_finding_id', 'title', 'detail', 'severity', 'disposition', 'decision_reason', 'actor', 'decided_at', 'fix_sha', 'proof_note', 'resolved_at'], ['route', 'display_severity']) && (value.display_severity === undefined || typeof value.display_severity === 'string' && ['info', 'low', 'medium', 'high', 'critical', 'unknown'].includes(value.display_severity)) && (value.route === undefined || value.disposition === 'routed' && validFindingRoute(value.route)) && checkpointText(value.source_finding_id, 256, true) && checkpointText(value.title, 500, true) && checkpointText(value.detail, 16 << 10, false) && typeof value.severity === 'string' && ['info', 'low', 'medium', 'high', 'critical', 'unknown'].includes(value.severity) && typeof value.disposition === 'string' && ['unadjudicated', 'accepted', 'routed', 'rejected'].includes(value.disposition) && checkpointText(value.decision_reason, 2048, false) && checkpointText(value.actor, 128, false) && maybeTimestamp(value.decided_at) && sha(value.fix_sha) && checkpointText(value.proof_note, 2048, false) && maybeTimestamp(value.resolved_at) && (value.disposition === 'accepted' || value.fix_sha === '' && value.proof_note === '' && value.resolved_at === '') && (value.resolved_at === '' || value.fix_sha !== '');
 }
 function reviewQuery(snapshot?: string): URLSearchParams {
   if (snapshot !== undefined && !reviewSnapshotID(snapshot)) throw new ApiError('invalid_request', 'The review snapshot identifier is invalid.');
@@ -414,7 +502,8 @@ export function validateMessageEventPage(value: unknown, project: string, worker
 }
 
 export class Api {
-  readonly projectId: string;
+  private boundProjectId: string;
+  get projectId(): string { return this.boundProjectId; }
   private token: string;
   private readonly session = new AbortController();
   private closed = false;
@@ -425,13 +514,17 @@ export class Api {
   private pendingBrowserSessionID?: string;
   private expectedInstanceID?: string;
   private capabilities: BrowserCapabilities = { allow_writes: false, can_edit_presentation: false };
+  private renewal?: Promise<BrowserSessionView>;
+  private currentSession?: BrowserSessionView;
+  private readonly streamConnections = new Set<AbortController>();
 
   constructor(token: string, projectId: string) {
     if (!text(token, 4096) || !id(projectId)) throw new ApiError('invalid_binding', 'Select a valid project and credential.');
     this.token = token;
-    this.projectId = projectId;
+    this.boundProjectId = projectId;
   }
   get instanceId(): string | undefined { return this.verifiedInstanceId; }
+  get browserSession(): BrowserSessionView | undefined { return this.currentSession && { ...this.currentSession }; }
   get browserCapabilities(): BrowserCapabilities { return { ...this.capabilities }; }
 
   static resume(projectID: string, sessionID: string, expectedInstanceID: string): Api {
@@ -450,6 +543,7 @@ export class Api {
     this.closed = true;
     this.verifiedInstanceId = undefined;
     this.capabilities = { allow_writes: false, can_edit_presentation: false };
+    this.currentSession = undefined;
     this.token = '';
     this.session.abort();
     this.activeWatch?.abort();
@@ -461,29 +555,33 @@ export class Api {
     const budget = requestBudget([signal, this.session.signal], 5000);
     this.verifiedInstanceId = undefined;
     this.capabilities = { allow_writes: false, can_edit_presentation: false };
+    this.currentSession = undefined;
     try {
       const value = await this.getJson('/api/v1/instance', this.expectedInstanceID, budget.signal);
       if (!record(value) || !keys(value, ['instance_id']) || !id(value.instance_id)) throw new ApiError('invalid_response', 'The service returned an invalid instance identity.');
       if (this.expectedInstanceID && value.instance_id !== this.expectedInstanceID) throw new ApiError('instance_mismatch', 'The service identity differs from this saved project session.', 409);
       const project = await this.getJson(this.projectRoute(''), value.instance_id, budget.signal);
-      if (!validProject(project, this.projectId)) throw new ApiError('invalid_response', 'The service returned a project outside this binding.');
+      if (!validProject(project, this.projectId) || this.browserSessionID !== undefined && project.id !== this.projectId) throw new ApiError('invalid_response', 'The service returned a project outside this binding.');
+      this.boundProjectId = project.id;
       let capabilities: BrowserCapabilities = { allow_writes: false, can_edit_presentation: false };
+      let session: BrowserSessionView | undefined;
       if (this.browserSessionID) {
         const current = await this.getJson(this.projectRoute('browser-session'), value.instance_id, budget.signal, undefined, 4096, assessmentJSON);
         if (!browserSessionView(current, this.browserSessionID, value.instance_id, this.projectId)) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
         capabilities = { allow_writes: current.allow_writes, can_edit_presentation: current.can_edit_presentation };
+        session = current;
       }
       if (budget.signal.aborted) throw new ApiError('cancelled', 'The browser connection was cancelled.');
       this.verifiedInstanceId = value.instance_id;
       this.capabilities = capabilities;
+      this.currentSession = session;
       return project;
     } catch (error) { throw this.transportError(error, budget.expired(), budget.signal); }
     finally { budget.close(); }
   }
 
-  async startBrowserSession(signal?: AbortSignal, allowWrites = false): Promise<BrowserSessionView> {
+  async startBrowserSession(signal?: AbortSignal): Promise<BrowserSessionView> {
     this.ensureOpen();
-    if (typeof allowWrites !== 'boolean') throw new ApiError('invalid_request', 'Choose whether browser changes are enabled.');
     if (!this.verifiedInstanceId || !this.token || this.browserSessionID || this.pendingBrowserSessionID) throw new ApiError('not_connected', 'Verify the project credential before starting a browser session.');
     const selector = newSessionID();
     const instance = this.verifiedInstanceId;
@@ -493,15 +591,16 @@ export class Api {
     this.expectedInstanceID = instance;
     try {
       const headers = new Headers({ Authorization: `Bearer ${this.token}`, Accept: 'application/json', 'Content-Type': 'application/json', 'X-FC-Instance': instance });
-      const response = await fetch(urlFor(this.projectRoute('browser-session')), { method: 'POST', headers, body: JSON.stringify({ session_id: selector, allow_writes: allowWrites }), redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
+      const response = await fetch(urlFor(this.projectRoute('browser-session')), { method: 'POST', headers, body: JSON.stringify({ session_id: selector }), redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
       if (!response.ok) throw await readFailure(response, budget.signal);
       const value = await readJson(response, budget.signal, 4096, assessmentJSON);
-      if (!browserSessionView(value, selector, instance, this.projectId) || !allowWrites && value.allow_writes) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
+      if (!browserSessionView(value, selector, instance, this.projectId)) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
       if (budget.signal.aborted) throw new ApiError('cancelled', 'The browser connection was cancelled.');
       this.browserSessionID = selector;
       this.pendingBrowserSessionID = undefined;
       this.token = '';
       this.capabilities = { allow_writes: value.allow_writes, can_edit_presentation: value.can_edit_presentation };
+      this.currentSession = { ...value };
       return value;
     } catch (error) { throw this.transportError(error, budget.expired(), budget.signal); }
     finally { budget.close(); }
@@ -519,8 +618,52 @@ export class Api {
       const value = await readJson(response, budget.signal, 4096);
       if (!record(value) || !keys(value, ['session_id', 'logged_out']) || value.session_id !== selector || value.logged_out !== true) throw new ApiError('invalid_response', 'The service returned an invalid logout response.');
       this.capabilities = { allow_writes: false, can_edit_presentation: false };
+      this.currentSession = undefined;
     } catch (error) { throw this.transportError(error, budget.expired(), budget.signal); }
     finally { budget.close(); }
+  }
+
+  renewBrowserSession(signal?: AbortSignal): Promise<BrowserSessionView> {
+    if (this.closed) return Promise.reject(new ApiError('cancelled', 'This service session is closed.'));
+    if (!this.browserSessionID || !this.verifiedInstanceId) return Promise.reject(new ApiError('not_connected', 'Verify the browser session before renewing it.'));
+    if (this.renewal) return this.renewal;
+    const pending = this.renewSession(signal).finally(() => { if (this.renewal === pending) this.renewal = undefined; });
+    this.renewal = pending;
+    return pending;
+  }
+
+  private async renewSession(signal?: AbortSignal): Promise<BrowserSessionView> {
+    const selector = this.browserSessionID!, instance = this.verifiedInstanceId!;
+    const budget = requestBudget([signal, this.session.signal], 5000);
+    let dispatched = false, knownRefusal = false;
+    try {
+      const headers = this.headers(instance);
+      headers.set('Content-Type', 'application/json');
+      if (budget.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      dispatched = true;
+      const response = await fetch(urlFor(this.projectRoute('browser-session/renew')), { method: 'POST', headers, body: '{}', redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
+      knownRefusal = !response.ok && response.status < 500;
+      if (!response.ok) throw await readFailure(response, budget.signal);
+      const value = await readJson(response, budget.signal, 4096, assessmentJSON);
+      if (!browserSessionView(value, selector, instance, this.projectId)) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
+      if (budget.signal.aborted || this.closed) throw new DOMException('Aborted', 'AbortError');
+      this.capabilities = { allow_writes: value.allow_writes, can_edit_presentation: value.can_edit_presentation };
+      this.currentSession = { ...value };
+      // Replace transport connections, not watch lifetimes. Their processed
+      // cursors survive, so renewal does not resnapshot or expand archives.
+      this.retireStreamConnections();
+      return value;
+    } catch (error) {
+      // Set-Cookie can succeed before its response body is lost. Reopen using
+      // the actual cookie instead of trusting an old connection's expiry.
+      if (dispatched && !knownRefusal) this.retireStreamConnections();
+      throw this.transportError(error, budget.expired(), budget.signal);
+    } finally { budget.close(); }
+  }
+
+  private retireStreamConnections(): void {
+    const reason = new ApiError('stream_retired', 'The event connection was replaced.');
+    for (const connection of this.streamConnections) connection.abort(reason);
   }
 
   async sendMessage(worker: string, recipient: string, body: string, replyTo: string, key: string, signal?: AbortSignal): Promise<BrowserMessageReceipt & { outcome: 'sent' }> {
@@ -575,6 +718,12 @@ export class Api {
       const failure = this.transportError(error, budget.expired(), budget.signal);
       throw new ApiError(failure.code, failure.message, failure.status, dispatched && !knownRefusal);
     } finally { budget.close(); }
+  }
+
+  async backupHealth(signal?: AbortSignal): Promise<BackupHealth> {
+    const value = await this.finiteGet(this.projectRoute('backup-health'), signal, undefined, 16384, assessmentJSON);
+    if (!validBackupHealth(value)) throw new ApiError('invalid_response', 'Backup status is unavailable.');
+    return value;
   }
 
   async workers(options: PageOptions = {}, signal?: AbortSignal): Promise<Page<Worker>> {
@@ -662,16 +811,53 @@ export class Api {
   async jobs(options: JobOptions = {}, signal?: AbortSignal): Promise<Page<JobSummary>> {
     const query = pageOptions(options);
     if (options.worker_id !== undefined) { if (!id(options.worker_id)) throw new ApiError('invalid_request', 'The worker filter is invalid.'); query.set('worker_id', options.worker_id); }
-    if (options.status !== undefined) { if (!jobStatuses.has(options.status)) throw new ApiError('invalid_request', 'The job status filter is invalid.'); query.set('status', options.status); }
+    if (options.status !== undefined) { if (options.status !== 'open' && !jobStatuses.has(options.status)) throw new ApiError('invalid_request', 'The job status filter is invalid.'); query.set('status', options.status); }
     const value = await this.finiteGet(withQuery(this.projectRoute('jobs'), query), signal);
-    if (!validPage(value, defaultLimit(options)) || !value.items.every(validSummary)) throw new ApiError('invalid_response', 'The service returned an invalid job page.');
+    if (!validPage(value, defaultLimit(options)) || !value.items.every(item => validSummary(item) && (options.worker_id === undefined || item.worker_id === options.worker_id) && (options.status === undefined || (options.status === 'open' ? item.status !== 'completed' : item.status === options.status)))) throw new ApiError('invalid_response', 'The service returned an invalid job page.');
     return value as Page<JobSummary>;
+  }
+  async delivery(options: DeliveryOptions = {}, signal?: AbortSignal): Promise<DeliverySnapshot> {
+    const query = new URLSearchParams();
+    for (const name of ['worker_limit', 'job_limit'] as const) {
+      const value = options[name];
+      if (value !== undefined) {
+        if (!Number.isInteger(value) || value < 1 || value > 100) throw new ApiError('invalid_request', 'Choose a Delivery page limit from 1 to 100.');
+        query.set(name, String(value));
+      }
+    }
+    for (const name of ['worker_cursor', 'job_cursor'] as const) {
+      const value = options[name];
+      if (value !== undefined) {
+        if (!cursor(value) || /\s/u.test(value)) throw new ApiError('invalid_request', 'The Delivery cursor is invalid.');
+        query.set(name, value);
+      }
+    }
+    const value = await this.finiteGet(withQuery(this.projectRoute('delivery'), query), signal, undefined, maxBytes, assessmentJSON);
+    if (!validDelivery(value, this.projectId, options)) throw new ApiError('invalid_response', 'The service returned an invalid Delivery overview.');
+    return value;
+  }
+  async jobSummary(jobId: string, signal?: AbortSignal): Promise<JobPublicSummary> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'Choose a valid job.');
+    const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/summary`), signal);
+    if (!validJobPublicSummary(value, jobId)) throw new ApiError('invalid_response', 'The service returned an invalid job summary.');
+    return value;
   }
   async job(jobId: string, signal?: AbortSignal): Promise<Job> {
     if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
-    const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}`), signal);
+    const value = await this.finiteGet(this.projectRoute(`jobs/${encodeURIComponent(jobId)}`), signal, undefined, maxBytes, assessmentJSON);
     if (!validJob(value, this.projectId) || value.id !== jobId) throw new ApiError('invalid_response', 'The service returned a job outside this binding.');
     return value;
+  }
+  async jobProgressHistory(jobId: string, options: PageOptions = {}, signal?: AbortSignal): Promise<Page<JobProgressEntry>> {
+    if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`jobs/${encodeURIComponent(jobId)}/progress/history`), pageOptions(options)), signal, undefined, 4 << 20, assessmentJSON);
+    if (!validPage(value, defaultLimit(options)) || !value.has_more && !!value.cursor) throw new ApiError('invalid_response', 'The service returned invalid progress history.');
+    let previous = Infinity; const seen = new Set<string>();
+    for (const item of value.items) {
+      if (!validProgressEntry(item, this.projectId, jobId) || item.sequence >= previous || seen.has(item.id)) throw new ApiError('invalid_response', 'The service returned invalid progress history.');
+      previous = item.sequence; seen.add(item.id);
+    }
+    return value as Page<JobProgressEntry>;
   }
   async checkpointLatest(jobId: string, signal?: AbortSignal): Promise<LatestCheckpoint> {
     if (!id(jobId)) throw new ApiError('invalid_request', 'The job identifier is invalid.');
@@ -721,7 +907,7 @@ export class Api {
   }
   async projectMapEntries(options: ProjectMapOptions = {}, signal?: AbortSignal): Promise<Page<ProjectMapSummary>> {
     const query = mapPageQuery(options);
-    if (options.kind !== undefined) { if (options.kind !== 'workstream' && options.kind !== 'return_point') throw new ApiError('invalid_request', 'The map kind filter is invalid.'); query.set('kind', options.kind); }
+    if (options.kind !== undefined) { if (options.kind !== 'workstream' && options.kind !== 'return_point' && options.kind !== 'section') throw new ApiError('invalid_request', 'The map kind filter is invalid.'); query.set('kind', options.kind); }
     if (options.archived !== undefined && typeof options.archived !== 'boolean') throw new ApiError('invalid_request', 'The map archive filter is invalid.');
     query.set('archived', String(options.archived ?? false));
     const value = await this.finiteGet(withQuery(this.projectRoute('map/entries'), query), signal, undefined, maxBytes, assessmentJSON);
@@ -732,6 +918,21 @@ export class Api {
       previous = row.id;
     }
     return value as Page<ProjectMapSummary>;
+  }
+  async projectMapEditorial(options: PageOptions = {}, signal?: AbortSignal): Promise<Page<ProjectMapEntry>> {
+    const limit = options.limit ?? 5;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10) throw new ApiError('invalid_request', 'Choose an editorial page limit from 1 to 10.');
+    const query = coordinationQuery({ ...options, limit });
+    const value = await this.finiteGet(withQuery(this.projectRoute('map/editorial'), query), signal, undefined, maxBytes, assessmentJSON);
+    if (!coordinationPage(value, limit)) throw new ApiError('invalid_response', 'The service returned an invalid Project page.');
+    let previousPosition = -1, previousID = '';
+    for (const item of value.items) {
+      if (!record(item) || typeof item.id !== 'string' || !validMapEntry(item, this.projectId, item.id) || item.archived) throw new ApiError('invalid_response', 'The service returned invalid Project content.');
+      const position = item.position ?? 0;
+      if (position < previousPosition || position === previousPosition && item.id <= previousID) throw new ApiError('invalid_response', 'The service returned unordered Project content.');
+      previousPosition = position; previousID = item.id;
+    }
+    return value as Page<ProjectMapEntry>;
   }
   async projectMapEntry(entryId: string, signal?: AbortSignal): Promise<ProjectMapEntry> {
     if (!id(entryId)) throw new ApiError('invalid_request', 'The map entry identifier is invalid.');
@@ -770,31 +971,96 @@ export class Api {
     }
     return value as Page<JobWorkstreamHistoryEntry>;
   }
-  async reviewQueue(options: PageOptions = {}, signal?: AbortSignal): Promise<ReviewQueue> {
-    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), pageOptions(options)), signal);
-    if (!record(value) || !keys(value, [...reviewMetadata, 'configured', 'items', 'has_more'], ['cursor']) || typeof value.configured !== 'boolean' || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options)) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
+  async workerPresence(workers: string[], signal?: AbortSignal): Promise<WorkerPresence> {
+    if (!presenceWorkers(workers)) throw new ApiError('invalid_request', 'Select between one and one hundred distinct worker IDs.');
+    const selected = [...workers];
+    const value = await this.finiteGet(withQuery(this.projectRoute('workers/presence'), new URLSearchParams({worker_ids:selected.join(',')})), signal, undefined, 64 * 1024, assessmentJSON);
+    if (!validWorkerPresence(value, this.projectId, selected)) throw new ApiError('invalid_response', 'The service returned invalid worker contact.');
+    return value;
+  }
+  async reviewProgress(pulls: number[], signal?: AbortSignal): Promise<ReviewProgress> {
+    if (!progressPulls(pulls)) throw new ApiError('invalid_request', 'Select between one and one hundred distinct pull request numbers.');
+    const selected = [...pulls];
+    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/rounds/progress'), new URLSearchParams({ pull_numbers: selected.join(','), view: 'stages' })), signal, undefined, 128 * 1024, assessmentJSON);
+    if (!validReviewProgress(value, this.projectId, selected)) throw new ApiError('invalid_response', 'The service returned invalid current round limits.');
+    return value;
+  }
+  async reviewFronts(signal?: AbortSignal): Promise<ReviewFronts> {
+    const value = await this.finiteGet(this.projectRoute('reviews/fronts'), signal, undefined, 64 * 1024, assessmentJSON);
+    const bad = () => new ApiError('invalid_response', 'The service returned invalid current review fronts.');
+    if (!record(value) || !keys(value, ['project_id','configured','repository_id','configuration_revision','policy_revision','queue','channels'], ['snapshot_id']) || value.project_id !== this.projectId || typeof value.configured !== 'boolean' || !positive(value.repository_id) || !nonnegative(value.configuration_revision) || !nonnegative(value.policy_revision) || value.snapshot_id !== undefined && (!id(value.snapshot_id) || !value.snapshot_id.startsWith('review_snapshot_')) || !Array.isArray(value.queue) || value.queue.length > 100 || !value.queue.every(pullNumber) || new Set(value.queue).size !== value.queue.length || !Array.isArray(value.channels) || value.channels.length > 2) throw bad();
+    const seen = new Set<string>();
+    for (const channel of value.channels) {
+      if (!record(channel) || !keys(channel, ['channel','state'], ['reason','pull_number','head_sha','base_sha','base_ref','source_observed_at','checked_at']) || channel.channel !== 'hosted' && channel.channel !== 'cli' || seen.has(channel.channel) || typeof channel.state !== 'string' || !['ready','held','complete','unknown'].includes(channel.state) || channel.reason !== undefined && (typeof channel.reason !== 'string' || !/^[a-z][a-z0-9_]{0,127}$/u.test(channel.reason)) || channel.source_observed_at !== undefined && !assessmentTime(channel.source_observed_at) || channel.checked_at !== undefined && !assessmentTime(channel.checked_at)) throw bad();
+      seen.add(channel.channel);
+      if (channel.pull_number !== undefined) {
+        if (!pullNumber(channel.pull_number) || !value.queue.includes(channel.pull_number) || channel.state !== 'ready' && channel.state !== 'held' || ![channel.head_sha,channel.base_sha].every(item => typeof item === 'string' && /^[a-f0-9]{40}$/u.test(item)) || !checkpointText(channel.base_ref,256,true) || !assessmentTime(channel.source_observed_at) || !assessmentTime(channel.checked_at)) throw bad();
+      } else if (['head_sha','base_sha','base_ref'].some(key => Object.hasOwn(channel,key)) || channel.state === 'ready') throw bad();
+    }
+    if (value.configured ? !positive(value.configuration_revision) || value.queue.length === 0 || value.channels.length === 0 : value.configuration_revision !== 0 || value.policy_revision !== 0 || value.queue.length !== 0 || value.channels.length !== 0) throw bad();
+    if (value.channels.some(channel => record(channel) && channel.state === 'ready') && (!value.snapshot_id || !positive(value.policy_revision))) throw bad();
+    return value as unknown as ReviewFronts;
+  }
+  async reviewObligations(number: number, options: {cursor?: string; limit?: number; status:'open'}, signal?: AbortSignal): Promise<AdoptionObligationPage> {
+    if (!pullNumber(number) || options.status!=='open') throw new ApiError('invalid_request','Select one PR and open carried obligations.');
+    const query=pageOptions(options);query.set('pull_number',String(number));query.set('status',options.status);
+    const value=await this.finiteGet(withQuery(this.projectRoute('reviews/adoption-obligations'),query),signal);
+    if (!record(value) || !keys(value,['items'],['next_cursor']) || !Array.isArray(value.items) || value.items.length>(options.limit??20) || (value.next_cursor!==undefined && !cursor(value.next_cursor)) || !value.items.every(item=>validObligationItem(item,number)) || new Set(value.items.map(item=>(item as {id:string}).id)).size!==value.items.length) throw new ApiError('invalid_response','The service returned invalid carried obligations.');
+    return value as unknown as AdoptionObligationPage;
+  }
+  async reviewObligation(selected: string, signal?: AbortSignal): Promise<AdoptionObligationDetail> {
+    if (!obligationID(selected)) throw new ApiError('invalid_request','Select a carried obligation.');
+    const value=await this.finiteGet(this.projectRoute(`reviews/adoption-obligations/${encodeURIComponent(selected)}`),signal);
+    if (!validObligationDetail(value,this.projectId,selected)) throw new ApiError('invalid_response','The service returned an invalid carried obligation.');
+    return value as unknown as AdoptionObligationDetail;
+  }
+  async reviewQueue(options: PageOptions & {view?: 'recent'|'merged'} = {}, signal?: AbortSignal): Promise<ReviewQueue> {
+    if (options.view !== undefined && options.view !== 'recent' && options.view !== 'merged') throw new ApiError('invalid_request', 'Choose a supported review queue view.');
+    const query = pageOptions(options);
+    if (options.view) query.set('view', options.view);
+    query.set('include_observation','true');
+    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), query), signal);
+    if (!record(value) || !keys(value, [...reviewMetadata, 'configured', 'items', 'has_more'], ['cursor', 'head_position', 'observer']) || typeof value.configured !== 'boolean' || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options)) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
     if (value.configured ? !validReviewSnapshot(value, this.projectId) : value.project_id !== this.projectId || value.revision !== 0 || value.snapshot_id !== '' || value.source !== '' || value.observed_at !== '' || value.recorded_at !== '' || value.items.length !== 0 || value.has_more) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
+    if (Object.hasOwn(value,'observer') && !validObserver(value.observer)) throw new ApiError('invalid_response','The service returned invalid observation health.');
     if (!value.items.every(validReviewPull) || new Set(value.items.map(item => item.number)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
+    if (Object.hasOwn(value, 'head_position') && (!options.view || !nonnegative(value.head_position) || Number(value.head_position) > 2147483647 || !value.configured)) throw new ApiError('invalid_response', 'The service returned an invalid review queue position.');
+    const positions = value.items.map(item => (item as ReviewPullSummary).queue_position);
+    if (options.view ? positions.some(position => position === undefined) : positions.some(position => position !== undefined)) throw new ApiError('invalid_response', 'The service returned invalid review queue positions.');
+    if (options.view && (new Set(positions).size !== positions.length || positions.some((position, index) => index > 0 && (options.view === 'merged' ? Number(position) >= Number(positions[index - 1]) : Number(position) <= Number(positions[index - 1]))) || options.view === 'merged' && value.items.some(item => (item as ReviewPullSummary).state !== 'merged'))) throw new ApiError('invalid_response', 'The service returned an invalid review queue order.');
     return value as unknown as ReviewQueue;
   }
   async reviewPull(number: number, snapshot?: string, signal?: AbortSignal): Promise<ReviewPull> {
     if (!pullNumber(number)) throw new ApiError('invalid_request', 'The pull request number is invalid.');
     const query = reviewQuery(snapshot);
     const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}`), query), signal);
-    if (!record(value) || !keys(value, [...reviewMetadata, 'pull', 'attempts']) || !validReviewSnapshot(value, this.projectId, snapshot) || !validReviewPull(value.pull) || value.pull.number !== number || !Array.isArray(value.attempts) || value.attempts.length !== value.pull.attempt_count || !value.attempts.every(validReviewAttempt) || new Set(value.attempts.map(item => item.source_attempt_id)).size !== value.attempts.length) throw new ApiError('invalid_response', 'The service returned an invalid review pull request.');
+    if (!record(value) || !keys(value, [...reviewMetadata, 'pull']) || !validReviewSnapshot(value, this.projectId, snapshot) || !validReviewPull(value.pull) || value.pull.number !== number) throw new ApiError('invalid_response', 'The service returned an invalid review pull request.');
     return value as unknown as ReviewPull;
   }
   async reviewRuns(number: number, options: ReviewRunOptions = {}, signal?: AbortSignal): Promise<ReviewRuns> {
     if (!pullNumber(number)) throw new ApiError('invalid_request', 'The pull request number is invalid.');
+    if (options.channel !== undefined && !['hosted', 'cli', 'subagent', 'manual'].includes(options.channel)) throw new ApiError('invalid_request', 'Choose a valid review channel.');
+    if (options.view !== undefined && options.view !== 'timeline') throw new ApiError('invalid_request', 'Choose a valid review history view.');
     const query = pageOptions(options);
+    if (options.view !== undefined) query.set('view', options.view);
+    if (options.channel !== undefined) query.set('channel', options.channel);
     for (const [name, value] of reviewQuery(options.snapshot)) query.set(name, value);
     const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}/runs`), query), signal);
-    if (!record(value) || !keys(value, [...reviewMetadata, 'items', 'has_more'], ['cursor']) || !validReviewSnapshot(value, this.projectId, options.snapshot) || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options) || !value.items.every(item => validReviewRun(item, number)) || new Set(value.items.map(item => item.id)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review run page.');
+    if (!record(value) || !keys(value, [...reviewMetadata, 'items', 'has_more'], ['cursor']) || !validReviewSnapshot(value, this.projectId, options.snapshot) || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options) || !value.items.every(item => validReviewRun(item, number) && (options.channel === undefined || item.channel === options.channel)) || new Set(value.items.map(item => item.id)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review run page.');
     return value as unknown as ReviewRuns;
+  }
+  async reviewAttempts(number: number, options: ReviewAttemptOptions = {}, signal?: AbortSignal): Promise<ReviewAttempts> {
+    if (!pullNumber(number)) throw new ApiError('invalid_request', 'The pull request number is invalid.');
+    const query = pageOptions(options);
+    for (const [name, value] of reviewQuery(options.snapshot)) query.set(name, value);
+    const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}/attempts`), query), signal);
+    if (!record(value) || !keys(value, [...reviewMetadata, 'items', 'has_more'], ['cursor']) || !validReviewSnapshot(value, this.projectId, options.snapshot) || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options) || !value.items.every(validReviewAttemptItem) || new Set(value.items.map(item => JSON.stringify([item.source, item.source_attempt_id]))).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review attempt page.');
+    return value as unknown as ReviewAttempts;
   }
   async reviewRun(runId: string, snapshot?: string, signal?: AbortSignal): Promise<ReviewRunDetail> {
     if (!reviewRunID(runId)) throw new ApiError('invalid_request', 'The review run identifier is invalid.');
-    const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/runs/${encodeURIComponent(runId)}`), reviewQuery(snapshot)), signal, undefined, 4 << 20);
+    const query = reviewQuery(snapshot); query.set('view', 'display');
+    const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/runs/${encodeURIComponent(runId)}`), query), signal, undefined, 4 << 20);
     if (!record(value) || !keys(value, [...reviewMetadata, 'pull_number', 'run', 'findings']) || !validReviewSnapshot(value, this.projectId, snapshot) || !pullNumber(value.pull_number) || !validReviewRun(value.run, value.pull_number) || value.run.id !== runId || !Array.isArray(value.findings)) throw new ApiError('invalid_response', 'The service returned an invalid review run detail.');
     const run = value.run;
     if (value.findings.length > 100 || value.findings.length > run.found || run.complete && value.findings.length !== run.found || !value.findings.every(item => validReviewFinding(item) && (item.route === undefined || item.route.target_pull_number !== value.pull_number) && (run.source !== 'native-executor' || item.disposition !== 'routed' || item.route?.state === 'active')) || new Set(value.findings.map(item => item.source_finding_id)).size !== value.findings.length || value.findings.filter(item => item.fix_sha !== '').length !== value.run.fixed) throw new ApiError('invalid_response', 'The service returned an invalid review run detail.');
@@ -924,10 +1190,11 @@ export class Api {
     if (worker) value.set('X-FC-Worker', worker);
     return value;
   }
-  private async openEventStream(feed: string, after: string, limit: number, signal: AbortSignal, worker?: string): Promise<{ response: Response; close: () => void }> {
+  private async openEventStream(feed: string, after: string, limit: number, signal: AbortSignal, worker?: string): Promise<{ response: Response; close: () => void; signal: AbortSignal }> {
     if (worker !== undefined && !id(worker) || !cursor(after) || !Number.isInteger(limit) || limit < 1 || limit > maxItems) throw new ApiError('invalid_request', 'The event stream request is invalid.');
     if (!this.verifiedInstanceId) throw new ApiError('not_connected', 'Connect to the selected project before watching messages.');
     const controller = new AbortController();
+    this.streamConnections.add(controller);
     const abort = () => controller.abort();
     if (signal.aborted) controller.abort(); else signal.addEventListener('abort', abort, { once: true });
     let expired = false;
@@ -936,10 +1203,13 @@ export class Api {
       const query = new URLSearchParams({ cursor: after, limit: String(limit) });
       const response = await fetch(urlFor(`${this.projectRoute(`${feed}/stream`)}?${query}`), { method: 'GET', headers: this.headers(this.verifiedInstanceId, worker), redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal: controller.signal });
       clearTimeout(timer);
-      return { response, close: () => { signal.removeEventListener('abort', abort); controller.abort(); } };
+      return { response, signal: controller.signal, close: () => { signal.removeEventListener('abort', abort); this.streamConnections.delete(controller); controller.abort(); } };
     } catch (error) {
       clearTimeout(timer);
       signal.removeEventListener('abort', abort);
+      this.streamConnections.delete(controller);
+      const reason = controller.signal.reason;
+      if (controller.signal.aborted && reason instanceof ApiError && reason.code === 'stream_retired') throw reason;
       throw this.transportError(error, expired, controller.signal);
     }
   }
@@ -952,4 +1222,17 @@ export class Api {
   private ensureOpen(): void {
     if (this.closed) throw new ApiError('cancelled', 'This service session is closed.');
   }
+}
+
+function obligationID(value:unknown):value is string {return typeof value==='string' && /^adoption_obligation_[a-f0-9]{32}$/u.test(value);}
+function obligationPulls(value:unknown):value is number[] {return Array.isArray(value) && value.length>0 && value.length<=100 && value.every(pullNumber) && new Set(value).size===value.length;}
+function validObligationItem(value:unknown,number:number):boolean {
+ return record(value) && keys(value,['id','namespace','source_key','kind','status','revision','affected_pull_numbers']) && obligationID(value.id) && checkpointText(value.namespace,200,true) && checkpointText(value.source_key,512,true) && ['finding','route','result'].includes(String(value.kind)) && value.status==='open' && positive(value.revision) && obligationPulls(value.affected_pull_numbers) && value.affected_pull_numbers.includes(number);
+}
+function validObligationDetail(value:unknown,project:string,selected:string):boolean {
+ if (!record(value) || !keys(value,['id','project_id','source','source_revision','original','status','revision','actor_id','worker_id','created_at','resolution']) || value.id!==selected || value.project_id!==project || !positive(value.source_revision) || !positive(value.revision) || !id(value.actor_id) || !id(value.worker_id) || !assessmentTime(value.created_at) || !['open','resolved'].includes(String(value.status))) return false;
+ const source=value.source, original=value.original;
+ if (!record(source) || !keys(source,['namespace','repository_id','snapshot_sha256']) || !checkpointText(source.namespace,200,true) || !positive(source.repository_id) || typeof source.snapshot_sha256!=='string' || !/^[a-f0-9]{64}$/u.test(source.snapshot_sha256) || !record(original) || !keys(original,['source_key','kind','affected_pull_numbers','summary','evidence','original_status']) || !checkpointText(original.source_key,512,true) || !['finding','route','result'].includes(String(original.kind)) || !obligationPulls(original.affected_pull_numbers) || !checkpointText(original.summary,16 << 10,true) || !Array.isArray(original.evidence) || original.evidence.length>100 || !original.evidence.every(x=>checkpointText(x,4096,true)) || !['open','pending'].includes(String(original.original_status))) return false;
+ const resolution=value.resolution;
+ return value.status==='open' ? resolution===null : record(resolution) && keys(resolution,['revision','reason','evidence','actor_id','worker_id','resolved_at']) && resolution.revision===value.revision && checkpointText(resolution.reason,8192,true) && Array.isArray(resolution.evidence) && resolution.evidence.length<=100 && resolution.evidence.every(x=>checkpointText(x,4096,true)) && id(resolution.actor_id) && id(resolution.worker_id) && assessmentTime(resolution.resolved_at);
 }

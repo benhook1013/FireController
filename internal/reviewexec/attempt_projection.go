@@ -10,12 +10,12 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-func attemptProjectionCapacity(ctx context.Context, tx *sql.Tx, operation Operation) (bool, error) {
+func validateAttemptProjection(ctx context.Context, tx *sql.Tx, operation Operation) error {
 	_, err := currentReviewPull(ctx, tx, operation.ProjectID, operation.PullNumber)
 	if err != nil && !missingCurrentPull(err) {
-		return false, err
+		return err
 	}
-	return reviews.NativeAttemptCapacity(ctx, tx, operation.ProjectID, operation.PullNumber)
+	return nil
 }
 
 // Only the named absent-row result permits automatic ledger-only operation.
@@ -91,26 +91,14 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 	if err != nil || unchanged {
 		return receipt, err
 	}
-	if allowMissing {
-		var exists bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_workspace w JOIN review_attempts a ON a.project_id=w.project_id AND a.snapshot_id=w.snapshot_id WHERE w.project_id=? AND a.source='native-executor' AND a.source_attempt_id=?)`, attempt.ProjectID, attempt.ID).Scan(&exists); err != nil {
-			return reviews.Receipt{}, err
-		}
-		if !exists {
-			available, err := reviews.NativeAttemptCapacity(ctx, tx, attempt.ProjectID, operation.PullNumber)
-			if err != nil || !available {
-				// A replacement snapshot may omit this live attempt and fill the
-				// projection. Keep automatic transitions ledger-only without
-				// copying any snapshot rows; explicit publication still refuses.
-				return reviews.Receipt{}, err
-			}
-		}
-	}
 	return reviews.PublishNative(ctx, tx, core.Scope{ProjectID: operation.ProjectID, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}, reviews.NativePublication{Pull: pull, Attempt: &projected})
 }
 
 func journalBrowserAttempt(ctx context.Context, tx *sql.Tx, operation Operation, attempt Attempt) (reviews.Attempt, error) {
 	projected := reviews.Attempt{SourceAttemptID: attempt.ID, Channel: operation.Channel, HeadSHA: operation.HeadSHA, State: attempt.State}
+	if reviews.ValidAttemptReason(attempt.State, operation.Reason) {
+		projected.Reason = operation.Reason
+	}
 	var firstRevision int64
 	if err := tx.QueryRowContext(ctx, `SELECT revision,created_at FROM review_execution_transitions WHERE attempt_id=? ORDER BY revision LIMIT 1`, attempt.ID).Scan(&firstRevision, &projected.StartedAt); err != nil {
 		return projected, err
@@ -155,9 +143,9 @@ func attemptProjectionReplay(ctx context.Context, tx *sql.Tx, project string, nu
 	var receipt reviews.Receipt
 	var actual reviews.Attempt
 	var actualNumber int64
-	err := tx.QueryRowContext(ctx, `SELECT w.snapshot_id,w.revision,a.pull_number,a.source_attempt_id,a.channel,a.head_sha,a.state,a.started_at,a.finished_at,a.duration_seconds,a.source_run_id,a.trigger_id,a.provider_review_id
+	err := tx.QueryRowContext(ctx, `SELECT w.snapshot_id,w.revision,a.pull_number,a.source_attempt_id,a.channel,a.head_sha,a.state,a.started_at,a.finished_at,a.duration_seconds,a.source_run_id,a.trigger_id,a.provider_review_id,a.reason
  FROM review_workspace w JOIN review_attempts a ON a.project_id=w.project_id AND a.snapshot_id=w.snapshot_id
- WHERE w.project_id=? AND a.source='native-executor' AND a.source_attempt_id=?`, project, expected.SourceAttemptID).Scan(&receipt.ID, &receipt.Revision, &actualNumber, &actual.SourceAttemptID, &actual.Channel, &actual.HeadSHA, &actual.State, &actual.StartedAt, &actual.FinishedAt, &actual.DurationSeconds, &actual.SourceRunID, &actual.TriggerID, &actual.ProviderReviewID)
+ WHERE w.project_id=? AND a.source='native-executor' AND a.source_attempt_id=?`, project, expected.SourceAttemptID).Scan(&receipt.ID, &receipt.Revision, &actualNumber, &actual.SourceAttemptID, &actual.Channel, &actual.HeadSHA, &actual.State, &actual.StartedAt, &actual.FinishedAt, &actual.DurationSeconds, &actual.SourceRunID, &actual.TriggerID, &actual.ProviderReviewID, &actual.Reason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return reviews.Receipt{}, false, nil
 	}

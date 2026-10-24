@@ -58,14 +58,20 @@ func routeFix(t *testing.T, f *attemptFixture, id, key string, revision int64, p
 }
 func routeState(t *testing.T, f *attemptFixture, a Attempt) string {
 	t.Helper()
-	var rows, history string
+	var rows, history, facts, invalidations string
 	if err := f.store.DB().QueryRow(`SELECT coalesce(group_concat(id||revision||body_json,''),'') FROM review_finding_routes`).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.store.DB().QueryRow(`SELECT coalesce(group_concat(route_id||revision||actor_id||kind||created_at||body_json,''),'') FROM review_finding_route_revisions`).Scan(&history); err != nil {
 		t.Fatal(err)
 	}
-	return adjudicationState(t, f, a) + policyState(t, f) + rows + history
+	if err := f.store.DB().QueryRow(`SELECT coalesce(group_concat(record,''),'') FROM (SELECT route_id||project_id||target_pull_number||revision||active||pending AS record FROM review_route_policy_facts ORDER BY route_id)`).Scan(&facts); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT coalesce(group_concat(record,''),'') FROM (SELECT project_id||target_pull_number||route_id AS record FROM review_route_policy_invalidations ORDER BY project_id,target_pull_number,route_id)`).Scan(&invalidations); err != nil {
+		t.Fatal(err)
+	}
+	return adjudicationState(t, f, a) + policyState(t, f) + rows + history + facts + invalidations
 }
 func routePending(t *testing.T, f *attemptFixture, target int64) (int64, error) {
 	t.Helper()
@@ -462,6 +468,9 @@ func TestFindingRouteAdjudicationV1MigrationAndRestartRetention(t *testing.T) {
 	f, a, id := routeFixture(t, 1)
 	adjudicationDecide(t, f, id, "legacy-decision", 0, 0, "accepted")
 	before := adjudicationState(t, f, a)
+	// The predecessor had neither route tables nor the later derived domain.
+	// Remove only that optional domain before constructing its genuine shape.
+	routePolicyPreDomain(t, f)
 	admissionSQL(t, f, `DROP TABLE review_finding_route_revisions`)
 	admissionSQL(t, f, `DROP TABLE review_finding_routes`)
 	admissionSQL(t, f, `UPDATE metadata SET value='1' WHERE key='schema:review_adjudication'`)
@@ -473,6 +482,9 @@ func TestFindingRouteAdjudicationV1MigrationAndRestartRetention(t *testing.T) {
 	}
 	raw, err := f.e.DecideReviewFinding(t.Context(), f.scope(t, attemptProject, f.writer, false), "legacy-decision", id, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Explicit reason <script>literal</script>"})
 	adjudicationReceipt(t, raw, err, id, "adjudicated", 1)
+	if err := ensureRoutePolicySchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
 	r := routeCreate(t, f, id, "route-after-migration", routeRequest(1, 0, 4))
 	initial := routeRead(t, f, r.ID)
 	var file string
@@ -500,7 +512,7 @@ func TestFindingRouteAdjudicationV1MigrationAndRestartRetention(t *testing.T) {
 	}
 }
 
-func TestFindingRoutePendingBoundAt100And101UsesIndexedActiveHistory(t *testing.T) {
+func TestFindingRoutePendingCountAt100And101KeepsPageBound(t *testing.T) {
 	f, a, id := routeFixture(t, 100)
 	for i := range 100 {
 		routeCreate(t, f, id, fmt.Sprintf("capacity-route-%d", i), routeRequest(int64(i), int64(i), 4))
@@ -534,11 +546,12 @@ func TestFindingRoutePendingBoundAt100And101UsesIndexedActiveHistory(t *testing.
 		t.Fatal(err)
 	}
 	routeCreate(t, f, retained.ID, "capacity-101", routeRequest(0, 0, 4))
-	_, err = routePending(t, f, 4)
-	attemptCode(t, err, "review_capacity")
+	if count, err := routePending(t, f, 4); err != nil || count != 101 {
+		t.Fatal("101 valid pending routes not assessed exactly", count, err)
+	}
 	page, err := f.e.ListFindingRoutes(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), 4, 100, "")
 	if err != nil || len(page.Items) != 100 || !page.HasMore {
-		t.Fatal("capacity prevents explicit inspection", len(page.Items), page.HasMore, err)
+		t.Fatal("exact assessment changed the explicit page bound", len(page.Items), page.HasMore, err)
 	}
 }
 
@@ -779,4 +792,29 @@ func TestFindingRouteClockRollbackRerouteAndSourceUnroute(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFindingRouteRealProducerMetadataEnvelope(t *testing.T) {
+	f, _, id := routeFixture(t, 2)
+	reader := evidenceReadScope(t, f, attemptProject, f.reader)
+	before := producerProjectCursor(t, f, reader)
+	fixed := routeCreate(t, f, id, "producer-route-fixed", routeRequest(0, 0, 4))
+	routeDecision(t, f, fixed.ID, "producer-route-decision", 1, "accepted")
+	routeFix(t, f, fixed.ID, "producer-route-fix", 2, "", strings.Repeat("a", 40))
+	old := routeCreate(t, f, id, "producer-route-old", routeRequest(1, 1, 4))
+	reroute := routeRequest(2, 1, 6)
+	reroute.ExpectedRouteRevision = 1
+	replacement := routeCreate(t, f, id, "producer-route-replacement", reroute)
+	// All kinds are actual producers; source and receiving revisions are distinct.
+	assertProducerProjectPage(t, f, reader, before, []core.ProjectEventItem{
+		{EventType: "review.route.routed", ResourceID: fixed.ID, Revision: 1},
+		{EventType: "review.evidence.routed", ResourceID: id, Revision: 1},
+		{EventType: "review.route.adjudicated", ResourceID: fixed.ID, Revision: 2},
+		{EventType: "review.route.fix_recorded", ResourceID: fixed.ID, Revision: 3},
+		{EventType: "review.route.routed", ResourceID: old.ID, Revision: 1},
+		{EventType: "review.evidence.routed", ResourceID: id, Revision: 2},
+		{EventType: "review.route.superseded", ResourceID: old.ID, Revision: 2},
+		{EventType: "review.route.routed", ResourceID: replacement.ID, Revision: 1},
+		{EventType: "review.evidence.routed", ResourceID: id, Revision: 3},
+	})
 }

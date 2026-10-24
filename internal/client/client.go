@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -32,13 +34,19 @@ func SourceRefreshBudget(waitSeconds int) time.Duration {
 
 type Client struct {
 	identity              profile.Context
+	sessionID             string
 	base                  *url.URL
 	token, credentialFile string
 	http                  *http.Client
 	transport             *http.Transport
+	borrowedTransport     bool
 }
 
 func New(ctx context.Context, binding profile.Binding) (*Client, error) {
+	return newClient(ctx, binding, nil)
+}
+
+func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool) (*Client, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, contextError(err)
 	}
@@ -51,14 +59,21 @@ func New(ctx context.Context, binding profile.Binding) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, IdleConnTimeout: 90 * time.Second, ExpectContinueTimeout: time.Second}
-	transport.DialContext = (&net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}).DialContext
-	transport.ResponseHeaderTimeout = requestTimeout
-	transport.TLSHandshakeTimeout = requestTimeout
-	transport.MaxConnsPerHost = 4
-	transport.MaxIdleConns = 4
-	transport.DisableCompression = true
-	c := &Client{identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	var transport *http.Transport
+	var sessionID string
+	if pool == nil {
+		sessionID, err = newConnectionID()
+		if err != nil {
+			return nil, err
+		}
+		transport = newTransport()
+	} else {
+		transport, sessionID, err = pool.borrow()
+		if err != nil {
+			return nil, err
+		}
+	}
+	c := &Client{sessionID: sessionID, identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, borrowedTransport: pool != nil, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	var instance struct {
 		InstanceID string `json:"instance_id"`
 	}
@@ -73,7 +88,19 @@ func New(ctx context.Context, binding profile.Binding) (*Client, error) {
 	return c, nil
 }
 
-func (c *Client) Close()                    { c.transport.CloseIdleConnections() }
+func newConnectionID() (string, error) {
+	var session [16]byte
+	if _, err := rand.Read(session[:]); err != nil {
+		return "", fail("client_unavailable", "A client connection identity could not be created.", "Retry client setup.", 0)
+	}
+	return hex.EncodeToString(session[:]), nil
+}
+
+func (c *Client) Close() {
+	if !c.borrowedTransport {
+		c.transport.CloseIdleConnections()
+	}
+}
 func (c *Client) Identity() profile.Context { return c.identity }
 
 func fail(code, message, action string, status int) *Error {
@@ -136,14 +163,11 @@ func requestOperation(method string, segments []string) string {
 		return "service mutation"
 	}
 	resource := segments[4:]
-	if len(resource) == 3 && resource[0] == "jobs" && resource[2] == "checkpoints" && method == http.MethodPost {
-		return "checkpoint append"
-	}
 	if len(resource) == 1 && resource[0] == "jobs" {
 		return "job creation"
 	}
 	if len(resource) == 2 && resource[0] == "jobs" && method == http.MethodPatch {
-		return "job edit"
+		return "job update"
 	}
 	if len(resource) == 1 && resource[0] == "messages" {
 		return "message send"
@@ -252,6 +276,7 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 type sourceWaitOptions struct {
 	seconds int
 	status  *int
+	budget  time.Duration // Optional domain-owned budget; zero preserves existing waits.
 }
 
 func (c *Client) requestBoundedOptions(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions) error {
@@ -273,6 +298,9 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	timeout := requestTimeout
 	if wait != nil {
 		timeout = providerWaitBudget(wait.seconds)
+		if wait.budget > 0 {
+			timeout = wait.budget
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -300,6 +328,7 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	}
 	if scoped {
 		r.Header.Set("X-FC-Worker", c.identity.WorkerID)
+		r.Header.Set("X-FC-Session", c.sessionID)
 	}
 	if err := ctx.Err(); err != nil {
 		if mutation {
@@ -311,7 +340,7 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	if wait != nil {
 		ownedClient := *c.http
 		ownedClient.Timeout = timeout
-		if wait.seconds > 2 {
+		if timeout > requestTimeout {
 			ownedTransport := c.transport.Clone()
 			ownedTransport.ResponseHeaderTimeout = timeout
 			defer ownedTransport.CloseIdleConnections()
@@ -341,6 +370,12 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	}
 	media, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" || response.Header.Get("Content-Encoding") != "" {
+		if response.StatusCode >= 500 && response.StatusCode < 600 {
+			if mutation {
+				return unknownRequest("service_unavailable", operation, "returned a service error", response.StatusCode)
+			}
+			return fail("service_unavailable", "The service returned an HTTP server error.", "Check the service and retry the read when it is available.", response.StatusCode)
+		}
 		if mutation {
 			return unknownRequest("invalid_response", operation, "response was invalid", response.StatusCode)
 		}
@@ -424,6 +459,14 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	result := fail(value.Error.Code, "The service refused this scoped request.", "Check the selected instance, project, worker and current access.", status)
 	result.RequestID = value.RequestID
 	result.Details = c.safeDetails(value.Error.Details, result.Code)
+	if result.Code == "reviews_readiness_unavailable" {
+		result.Message = "No completed source refresh with readiness is available for this PR."
+		result.Action = "Read the last source-refresh operation. If held, resolve its reason first; then refresh the current comparison with include_readiness and assess the completed result. Do not change credentials after a successful identity check."
+	}
+	if result.Code == "review_result_unsettled" {
+		result.Message = "The complete captured result awaits settlement of its original review attempt."
+		result.Action = "Read the original review operation and retained evidence. Resolve its local settlement hold before retrying finalization; contact the controller owner if it persists. Do not rerun the provider review or change credentials."
+	}
 	if result.Code == "instance_mismatch" {
 		result.Message = "The service instance does not match the selected profile."
 		result.Action = "Verify the service and explicitly update the private profile if its identity changed."

@@ -7,9 +7,10 @@ const inboxItem = {
   id: 'msg_one', conversation_id: 'conv_one', sender_worker_id: 'worker_two', recipient_worker_id: 'worker_one',
   preview: 'hello', preview_truncated: false, seen: false, acknowledged: false, created_at: '2026-10-15T12:00:00Z',
 };
-const jobSummary = { id: 'job_one', title: 'Task', worker_id: 'worker_one', status: 'active', revision: 1 };
+const jobIdentity = { id: 'job_one', title: 'Task', worker_id: 'worker_one', status: 'active', revision: 1 };
+const jobSummary = {...jobIdentity, progress_summary:'',blocker:'',progress_truncated:false,blocker_truncated:false};
 const job = {
-  ...jobSummary, project_id: 'project_one', brief: 'private brief', created_at: '2026-10-15T12:00:00Z', updated_at: '2026-10-15T12:00:00Z',
+  ...jobIdentity, project_id: 'project_one', brief: 'private brief', progress:{summary:'',next:'',blocker:'',evidence:[]}, checklist:{revision:0,remaining:[],completed:0,total:0}, notes:{items:[],has_more:false}, created_at: '2026-10-15T12:00:00Z', updated_at: '2026-10-15T12:00:00Z',
 };
 const message = {
   id: 'msg_one', conversation_id: 'conv_one', sender_worker_id: 'worker_two', recipient_worker_id: 'worker_one',
@@ -42,7 +43,7 @@ const reviewAttempt = {
 };
 const reviewPull = {
   number: 1, title: 'Retained merged work', state: 'merged', head_sha: reviewRun.head_sha, base_ref: 'main', base_sha: 'e'.repeat(40),
-  ci_state: 'success', mergeability: 'unknown', complete: true, run_count: 1, attempt_count: 1,
+  ci_state: 'success', mergeability: 'unknown', complete: true, run_count: 1, run_counts: { hosted: 1, cli: 0, subagent: 0, manual: 0 }, attempt_count: 1,
   recent_runs: [reviewRun], latest_attempts: [reviewAttempt],
 };
 const reviewQueue = { ...reviewSnapshot, configured: true, items: [reviewPull], has_more: false };
@@ -72,7 +73,7 @@ describe('read-only browser cookie session transport', () => {
       if (init?.method === 'POST') {
         selector = (JSON.parse(String(init.body)) as { session_id: string }).session_id;
         expect(selector).toMatch(/^[a-f0-9]{32}$/);
-        expect(JSON.parse(String(init.body))).toEqual({ session_id: selector, allow_writes: false });
+        expect(JSON.parse(String(init.body))).toEqual({ session_id: selector });
         expect(new Headers(init.headers).get('authorization')).toBe('Bearer private-token-do-not-leak');
         expect(new Headers(init.headers).has('x-fc-browser-session')).toBe(false);
         return json({ session_id: selector, instance_id: 'instance_one', project_id: 'project_one', expires_at: new Date(Date.now() + 24 * 3600000).toISOString(), allow_writes: false, can_edit_presentation: false });
@@ -146,7 +147,7 @@ describe('read-only browser cookie session transport', () => {
 
   it('strictly rejects incomplete, unbound or oversized session receipts and supports safe cleanup after failure', async () => {
     setupLocation();
-    for (const kind of ['missing', 'null', 'unknown', 'project', 'instance', 'selector', 'expiry', 'oversize']) {
+    for (const kind of ['missing', 'null', 'unknown', 'project', 'instance', 'selector', 'oversize']) {
       const client = api(); await connect(client);
       let selector = '';
       vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -159,13 +160,27 @@ describe('read-only browser cookie session transport', () => {
         if (kind === 'project') value.project_id = 'project_two';
         if (kind === 'instance') value.instance_id = 'instance_other';
         if (kind === 'selector') value.session_id = 'b'.repeat(32);
-        if (kind === 'expiry') value.expires_at = '2000-01-01T00:00:00Z';
         if (kind === 'oversize') return new Response('x'.repeat(4097), { headers: { 'content-type': 'application/json' } });
         return json(value);
       }));
       await expect(client.startBrowserSession()).rejects.toMatchObject({ code: kind === 'oversize' ? 'response_too_large' : 'invalid_response' });
       client.close(); await client.endBrowserSession();
     }
+  });
+
+  it('accepts a canonical server expiry even when it is past the device clock', async () => {
+    setupLocation();
+    const client = api(); await connect(client);
+    let selector = '';
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return json({ session_id: selector, logged_out: true });
+      selector = (JSON.parse(String(init?.body)) as { session_id: string }).session_id;
+      return json({ session_id: selector, instance_id: 'instance_one', project_id: 'project_one', expires_at: '2000-01-01T00:00:00Z', allow_writes: false, can_edit_presentation: false });
+    }));
+    const started = await client.startBrowserSession();
+    expect(started).toMatchObject({ expires_at: '2000-01-01T00:00:00Z', allow_writes: false, can_edit_presentation: false });
+    expect(client.browserSession).toEqual(started);
+    await client.endBrowserSession();
   });
 
   it('cancels an old restore and permits a fresh StrictMode-style instance to verify the retained binding', async () => {
@@ -199,6 +214,33 @@ describe('read-only browser cookie session transport', () => {
 });
 
 describe('Api stored review workspace', () => {
+  it('preserves optional PR display facts, including known zero and false, in queue and pinned detail', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    for (const metadata of [{}, { diff: { files: 0, additions: 0, deletions: 0 }, is_draft: false }, { diff: { files: 73, additions: 6160, deletions: 136 }, merged_at: '2026-10-15T12:00:00.123456789Z' }]) {
+      const pull = { ...reviewPull, ...metadata };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] })).mockResolvedValueOnce(json({ ...reviewSnapshot, pull })));
+      expect((await client.reviewQueue()).items[0]).toEqual(pull);
+      expect((await client.reviewPull(1, reviewSnapshot.snapshot_id)).pull).toEqual(pull);
+    }
+    client.close();
+  });
+  it('refuses malformed optional PR display facts instead of treating them as known values', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    const invalid = [
+      { diff: null }, { diff: { files: 1, additions: 2 } }, { diff: { files: 1, additions: 2, deletions: 3, extra: 0 } },
+      ...[-1, 0.5, 2147483648, '3', null].map(files => ({ diff: { files, additions: 0, deletions: 0 } })),
+      { is_draft: null }, { is_draft: 'false' }, { merged_at: null }, { merged_at: '' }, { merged_at: 'yesterday' },
+      { state: 'open', merged_at: '2026-10-15T12:00:00Z' },
+    ];
+    for (const metadata of invalid) {
+      const pull = { ...reviewPull, ...metadata };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] })).mockResolvedValueOnce(json({ ...reviewSnapshot, pull })));
+      await expect(client.reviewQueue()).rejects.toMatchObject({ code: 'invalid_response' });
+      await expect(client.reviewPull(1)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    client.close();
+  });
+
   it('requires a bounded original run source in compact and full reads independently of the publisher', async () => {
     setupLocation();
     const client = api();
@@ -207,7 +249,7 @@ describe('Api stored review workspace', () => {
     for (const kind of ['queue', 'pull', 'runs', 'detail']) {
       for (const run of [missingSource, ...[null, '', ' \t\n', '🔥'.repeat(33), 'bad\u0000source'].map(source => ({ ...reviewRun, source }))]) {
         const envelope = kind === 'queue' ? { ...reviewQueue, items: [{ ...reviewPull, recent_runs: [run] }] }
-          : kind === 'pull' ? { ...reviewSnapshot, pull: { ...reviewPull, recent_runs: [run] }, attempts: [reviewAttempt] }
+          : kind === 'pull' ? { ...reviewSnapshot, pull: { ...reviewPull, recent_runs: [run] } }
           : kind === 'runs' ? { ...reviewSnapshot, items: [run], has_more: false }
           : { ...reviewDetail, run };
         vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(envelope)));
@@ -215,6 +257,27 @@ describe('Api stored review workspace', () => {
         await expect(request).rejects.toMatchObject({ code: 'invalid_response' });
       }
     }
+  });
+
+  it('selects bounded chronological summaries and validates presentation-only severity without changing source severity', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    const counts = {critical:0,major:0,minor:1,trivial:0,unknown:0,complete:true};
+    const fetch = vi.fn().mockResolvedValueOnce(json({...reviewSnapshot,items:[{...reviewRun,accepted_severity:counts}],has_more:false})).mockResolvedValueOnce(json({...reviewDetail,findings:[{...reviewFinding,severity:'unknown',display_severity:'low'}]}));
+    vi.stubGlobal('fetch',fetch);
+    const page = await client.reviewRuns(1,{view:'timeline',snapshot:reviewSnapshot.snapshot_id,limit:25});
+    expect(page.items[0].accepted_severity).toEqual(counts);
+    const url = new URL(String(fetch.mock.calls[0][0]),'https://service.example');
+    expect(url.searchParams.get('view')).toBe('timeline'); expect(url.searchParams.get('limit')).toBe('25');
+    const result = await client.reviewRun(reviewRun.id,reviewSnapshot.snapshot_id);
+    expect(new URL(String(fetch.mock.calls[1][0]),'https://service.example').searchParams.get('view')).toBe('display');
+    expect(result.findings[0].severity).toBe('unknown'); expect(result.findings[0].display_severity).toBe('low');
+    for (const accepted_severity of [{...counts,minor:-1},{...counts,minor:2},{...counts,extra:1},null]) {
+      vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json({...reviewSnapshot,items:[{...reviewRun,accepted_severity}],has_more:false})));
+      await expect(client.reviewRuns(1,{view:'timeline'})).rejects.toMatchObject({code:'invalid_response'});
+    }
+    const untouched = vi.fn(); vi.stubGlobal('fetch',untouched);
+    await expect(client.reviewRuns(1,{view:'unknown'} as never)).rejects.toMatchObject({code:'invalid_request'});
+    expect(untouched).not.toHaveBeenCalled(); client.close();
   });
 
   it('reads retained merged history and four source channels using scoped GETs and explicit snapshot pages', async () => {
@@ -227,13 +290,13 @@ describe('Api stored review workspace', () => {
     const runs = channels.map((channel, index) => ({ ...reviewRun, channel, id: `review_run_${String(index).repeat(32)}`, source_run_id: `run-${index}` }));
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull], has_more: true, cursor: 'signed_queue_cursor' }))
-      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
       .mockResolvedValueOnce(json({ ...reviewSnapshot, items: runs, has_more: true, cursor: 'signed_runs_cursor' }))
       .mockResolvedValueOnce(json(reviewDetail))
       .mockResolvedValueOnce(json({ project_id: 'project_one', configured: false, revision: 0, snapshot_id: '', source: '', observed_at: '', recorded_at: '', items: [], has_more: false }));
     vi.stubGlobal('fetch', fetchMock);
     expect((await client.reviewQueue({ limit: 1, cursor: 'previous_queue_cursor' })).items[0].state).toBe('merged');
-    expect((await client.reviewPull(1, reviewSnapshot.snapshot_id)).attempts.map(item => item.channel)).toEqual(channels);
+    expect((await client.reviewPull(1, reviewSnapshot.snapshot_id)).pull.latest_attempts.map(item => item.channel)).toEqual(channels);
     expect((await client.reviewRuns(1, { snapshot: reviewSnapshot.snapshot_id, limit: 4, cursor: 'previous_runs_cursor' })).items.map(item => item.id)).toEqual(runs.map(item => item.id));
     const detail = await client.reviewRun(reviewRun.id, reviewSnapshot.snapshot_id);
     expect(detail.findings[0]).toEqual(reviewFinding);
@@ -267,9 +330,9 @@ describe('Api stored review workspace', () => {
     const pull = { ...reviewPull, latest_attempts: [attempt] };
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
-      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] })));
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull })));
     expect((await client.reviewQueue()).items[0].latest_attempts[0].state).toBe(state);
-    expect((await client.reviewPull(1)).attempts[0].state).toBe(state);
+    expect((await client.reviewPull(1)).pull.latest_attempts[0].state).toBe(state);
     client.close();
   });
 
@@ -282,7 +345,7 @@ describe('Api stored review workspace', () => {
       const pull = { ...reviewPull, latest_attempts: [attempt] };
       vi.stubGlobal('fetch', vi.fn()
         .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
-        .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] })));
+        .mockResolvedValueOnce(json({ ...reviewSnapshot, pull })));
       await expect(client.reviewQueue()).rejects.toMatchObject({ code: 'invalid_response' });
       await expect(client.reviewPull(1)).rejects.toMatchObject({ code: 'invalid_response' });
     }
@@ -291,7 +354,7 @@ describe('Api stored review workspace', () => {
       const pull = { ...reviewPull, recent_runs: [run] };
       vi.stubGlobal('fetch', vi.fn()
         .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
-        .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [reviewAttempt] }))
+        .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
         .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [run], has_more: false }))
         .mockResolvedValueOnce(json({ ...reviewDetail, run })));
       await expect(client.reviewQueue()).rejects.toMatchObject({ code: 'invalid_response' });
@@ -309,7 +372,7 @@ describe('Api stored review workspace', () => {
     for (const value of ['A'.repeat(40), `aB${'c'.repeat(38)}`]) {
       const cases: Array<{ name: string; body: unknown; read: () => Promise<unknown> }> = [
         { name: 'queue pull head', body: { ...reviewQueue, items: [{ ...reviewPull, head_sha: value }] }, read: () => client.reviewQueue() },
-        { name: 'pull base', body: { ...reviewSnapshot, pull: { ...reviewPull, base_sha: value }, attempts: [reviewAttempt] }, read: () => client.reviewPull(1) },
+        { name: 'pull base', body: { ...reviewSnapshot, pull: { ...reviewPull, base_sha: value } }, read: () => client.reviewPull(1) },
         { name: 'queue run head', body: { ...reviewQueue, items: [{ ...reviewPull, recent_runs: [{ ...reviewRun, head_sha: value }] }] }, read: () => client.reviewQueue() },
         { name: 'run page head', body: { ...reviewSnapshot, items: [{ ...reviewRun, head_sha: value }], has_more: false }, read: () => client.reviewRuns(1) },
         { name: 'run detail head', body: { ...reviewDetail, run: { ...reviewRun, head_sha: value } }, read: () => client.reviewRun(reviewRun.id) },
@@ -337,7 +400,7 @@ describe('Api stored review workspace', () => {
     const finding = { ...reviewFinding, fix_sha: '', proof_note: '', resolved_at: '' };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
-      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
       .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [run], has_more: false }))
       .mockResolvedValueOnce(json({ ...reviewDetail, run, findings: [finding] }));
     vi.stubGlobal('fetch', fetchMock);
@@ -363,7 +426,7 @@ describe('Api stored review workspace', () => {
     const pull = { ...reviewPull, recent_runs: [run] };
     const views: Array<[unknown, () => Promise<unknown>]> = [
       [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
-      [{ ...reviewSnapshot, pull, attempts: [reviewAttempt] }, () => client.reviewPull(1)],
+      [{ ...reviewSnapshot, pull }, () => client.reviewPull(1)],
       [{ ...reviewSnapshot, items: [run], has_more: false }, () => client.reviewRuns(1)],
       [{ ...reviewDetail, run }, () => client.reviewRun(run.id)],
     ];
@@ -388,7 +451,7 @@ describe('Api stored review workspace', () => {
     const pull = { ...reviewPull, latest_attempts: [attempt] };
     for (const [body, read] of [
       [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
-      [{ ...reviewSnapshot, pull, attempts: [attempt] }, () => client.reviewPull(1)],
+      [{ ...reviewSnapshot, pull }, () => client.reviewPull(1)],
     ] as Array<[unknown, () => Promise<unknown>]>) {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(body)));
       await expect(read()).rejects.toMatchObject({ code: 'invalid_response' });
@@ -402,7 +465,7 @@ describe('Api stored review workspace', () => {
     const pull = kind === 'runs' ? { ...reviewPull, recent_runs: [] } : { ...reviewPull, latest_attempts: [] };
     for (const [body, read] of [
       [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
-      [{ ...reviewSnapshot, pull, attempts: [reviewAttempt] }, () => client.reviewPull(1)],
+      [{ ...reviewSnapshot, pull }, () => client.reviewPull(1)],
     ] as Array<[unknown, () => Promise<unknown>]>) {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(body)));
       await expect(read()).rejects.toMatchObject({ code: 'invalid_response' });
@@ -429,29 +492,59 @@ describe('Api stored review workspace', () => {
     const pull = { ...reviewPull, recent_runs: [run], latest_attempts: [attempt] };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
-      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
       .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [run], has_more: false }))
       .mockResolvedValueOnce(json({ ...reviewDetail, run, findings: [finding] }));
     vi.stubGlobal('fetch', fetchMock);
     expect((await client.reviewQueue()).items[0].recent_runs[0]).toEqual(run);
-    expect((await client.reviewPull(1)).attempts[0]).toEqual(attempt);
+    expect((await client.reviewPull(1)).pull.latest_attempts[0]).toEqual(attempt);
     expect((await client.reviewRuns(1)).items[0]).toEqual(run);
     expect((await client.reviewRun(run.id)).findings[0]).toEqual(finding);
     expect(fetchMock).toHaveBeenCalledTimes(4);
     for (const call of fetchMock.mock.calls) expect(call[1].method ?? 'GET').toBe('GET');
   });
 
+  it('requires exact per-channel totals on both current queue and pinned pull reads', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    const counts = { hosted: 27, cli: 1, manual: 8, subagent: 2 };
+    const pull = { ...reviewPull, run_count: 38, run_counts: counts };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await client.reviewQueue()).items[0].run_counts).toEqual(counts);
+    expect((await client.reviewPull(1, reviewSnapshot.snapshot_id)).pull.run_counts).toEqual(counts);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(String(fetchMock.mock.calls[1][0])).searchParams.get('snapshot')).toBe(reviewSnapshot.snapshot_id);
+    const { run_counts: _counts, ...missing } = reviewPull;
+    const invalid = [missing, ...[
+      null, [], {}, { hosted: 1, cli: 0, manual: 0 },
+      { ...reviewPull.run_counts, extra: 0 }, { ...reviewPull.run_counts, hosted: null },
+      { ...reviewPull.run_counts, hosted: -1 }, { ...reviewPull.run_counts, hosted: 0.5 },
+      { ...reviewPull.run_counts, hosted: Number.MAX_SAFE_INTEGER + 1 },
+      { ...reviewPull.run_counts, hosted: 2 },
+      // The aggregate still matches, but the observed Hosted row exceeds its channel total.
+      { hosted: 0, cli: 1, manual: 0, subagent: 0 },
+    ].map(run_counts => ({ ...reviewPull, run_counts }))];
+    for (const value of invalid) {
+      vi.stubGlobal('fetch', vi.fn(async () => json({ ...reviewQueue, items: [value] })));
+      await expect(client.reviewQueue()).rejects.toMatchObject({ code: 'invalid_response' });
+      vi.stubGlobal('fetch', vi.fn(async () => json({ ...reviewSnapshot, pull: value })));
+      await expect(client.reviewPull(1, reviewSnapshot.snapshot_id)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
+
   it('retains genuinely empty zero-count review histories', async () => {
     setupLocation();
     const client = api();
     await connect(client);
-    const pull = { ...reviewPull, run_count: 0, attempt_count: 0, recent_runs: [], latest_attempts: [] };
+    const pull = { ...reviewPull, run_count: 0, run_counts: { hosted: 0, cli: 0, subagent: 0, manual: 0 }, attempt_count: 0, recent_runs: [], latest_attempts: [] };
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
-      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
       .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [], has_more: false })));
     expect((await client.reviewQueue()).items[0]).toEqual(pull);
-    expect((await client.reviewPull(1)).attempts).toEqual([]);
+    expect((await client.reviewPull(1)).pull.latest_attempts).toEqual([]);
     expect((await client.reviewRuns(1)).items).toEqual([]);
   });
 
@@ -493,8 +586,8 @@ describe('Api stored review workspace', () => {
       expect((error as Error).message).not.toContain('private-token');
     }
     for (const value of [
-      { ...reviewSnapshot, pull: { ...reviewPull, number: 2, recent_runs: [] }, attempts: [reviewAttempt] },
-      { ...reviewSnapshot, snapshot_id: `review_snapshot_${'f'.repeat(32)}`, pull: reviewPull, attempts: [reviewAttempt] },
+      { ...reviewSnapshot, pull: { ...reviewPull, number: 2, recent_runs: [] } },
+      { ...reviewSnapshot, snapshot_id: `review_snapshot_${'f'.repeat(32)}`, pull: reviewPull },
       { ...reviewSnapshot, pull: reviewPull, attempts: [] },
     ]) {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
@@ -506,7 +599,7 @@ describe('Api stored review workspace', () => {
     setupLocation();
     const client = api();
     await connect(client);
-    const pulls = Array.from({ length: 21 }, (_, index) => ({ ...reviewPull, number: index + 1, run_count: 0, recent_runs: [], attempt_count: 0, latest_attempts: [] }));
+    const pulls = Array.from({ length: 21 }, (_, index) => ({ ...reviewPull, number: index + 1, run_count: 0, run_counts: { hosted: 0, cli: 0, subagent: 0, manual: 0 }, recent_runs: [], attempt_count: 0, latest_attempts: [] }));
     const runs = Array.from({ length: 21 }, (_, index) => ({ ...reviewRun, id: `review_run_${index.toString(16).padStart(32, '0')}`, source_run_id: `run-${index}` }));
     for (const kind of ['queue', 'runs']) {
       const page = { ...reviewSnapshot, ...(kind === 'queue' ? { configured: true } : {}), items: kind === 'queue' ? pulls : runs, has_more: false };
@@ -559,10 +652,10 @@ describe('Api stored review workspace', () => {
     const client = api();
     await connect(client);
     const attempt = { ...reviewAttempt, duration_seconds: null };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewSnapshot, pull: { ...reviewPull, latest_attempts: [attempt] }, attempts: [attempt] })));
-    expect((await client.reviewPull(1)).attempts[0].duration_seconds).toBeNull();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewSnapshot, pull: { ...reviewPull, latest_attempts: [attempt] } })));
+    expect((await client.reviewPull(1)).pull.latest_attempts[0].duration_seconds).toBeNull();
     for (const duration_seconds of [-1, '0', Number.MAX_SAFE_INTEGER + 1]) {
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewSnapshot, pull: reviewPull, attempts: [{ ...reviewAttempt, duration_seconds }] })));
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewSnapshot, pull: { ...reviewPull, latest_attempts: [{ ...reviewAttempt, duration_seconds }] } })));
       await expect(client.reviewPull(1)).rejects.toMatchObject({ code: 'invalid_response' });
     }
   });
@@ -1092,6 +1185,24 @@ describe('captured comparison policy assessment', () => {
       patch_sha256: 'f'.repeat(64), base_ref: 'main', observed_at: '2026-10-15T12:00:00Z' },
     channels: [{ channel: 'hosted', covered: true, pending: true }, { channel: 'cli', covered: false, pending: false }],
   };
+  it('separates current capture coverage from unfinished configured rounds and refuses invented sufficiency', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    for (const complete of [false, true]) {
+      const value = { ...assessment, state: complete ? 'sufficient' : 'held', channels: [{ channel: 'cli', covered: true, pending: false, rounds_configured: true, rounds_complete: complete }] };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
+      await expect(client.reviewPolicyAssessment(evidenceID)).resolves.toEqual(value);
+    }
+    for (const channel of [
+      { channel: 'cli', covered: true, pending: false, rounds_complete: true },
+      { channel: 'cli', covered: true, pending: false, rounds_configured: false, rounds_complete: true },
+      { channel: 'cli', covered: true, pending: false, rounds_configured: true, rounds_complete: false },
+      { channel: 'cli', covered: true, pending: false, rounds_configured: 'true', rounds_complete: true },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...assessment, state: 'sufficient', channels: [channel] })));
+      await expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    client.close();
+  });
   it('makes one scoped finite GET, preserves pending dominance, and returns no findings', async () => {
     setupLocation();
     const client = api();
@@ -1117,6 +1228,7 @@ describe('captured comparison policy assessment', () => {
       { ...assessment, state: 'sufficient', channels: [{ channel: 'cli', covered: true, pending: false }] },
       { ...assessment, state: 'unconfigured', policy_revision: 0, channels: [] },
       { ...assessment, channels: [{ channel: 'hosted', covered: false, pending: true }] },
+      { ...assessment, source_obligations_pending: 2, reason: 'source_obligations_pending', channels: [{ channel: 'cli', covered: true, pending: false }] },
     ]) {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
       await expect(client.reviewPolicyAssessment(evidenceID)).resolves.toEqual(value);
@@ -1145,6 +1257,13 @@ describe('captured comparison policy assessment', () => {
       { ...assessment, state: 'sufficient' }, { ...assessment, state: 'merge_ready' }, { ...assessment, channels: [] },
       { ...assessment, state: 'unconfigured', channels: [], policy_revision: 1 },
       { ...assessment, state: 'held', channels: [{ channel: 'cli', covered: true, pending: false }] },
+      { ...assessment, state: 'sufficient', source_obligations_pending: 1, reason: 'source_obligations_pending', channels: [{ channel: 'cli', covered: true, pending: false }] },
+      { ...assessment, source_obligations_pending: 1, channels: [{ channel: 'cli', covered: true, pending: false }] },
+      { ...assessment, source_obligations_pending: 0, reason: 'source_obligations_pending' },
+      { ...assessment, source_obligations_pending: -1, reason: 'source_obligations_pending' },
+      { ...assessment, source_obligations_pending: Number.MAX_SAFE_INTEGER + 1, reason: 'source_obligations_pending' },
+      { ...assessment, source_obligations_pending: null, reason: 'source_obligations_pending' },
+      { ...assessment, source_obligations_pending: '1', reason: 'source_obligations_pending' },
       { ...assessment, channels: [assessment.channels[0], assessment.channels[0]] },
       { ...assessment, channels: [{ channel: 'manual', covered: false, pending: false }] },
       { ...assessment, channels: [{ channel: 'cli', covered: 1, pending: false }] },
@@ -1252,5 +1371,36 @@ describe('captured comparison policy assessment', () => {
     const session = expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'cancelled' });
     client.close(); await session;
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+
+describe('open job list filter', () => {
+  it('passes explicit open/worker filters and preserves bounded continuation', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input)); calls.push(url.href);
+      expect(url.searchParams.get('status')).toBe('open');
+      expect(url.searchParams.get('worker_id')).toBe('worker_one');
+      expect(url.searchParams.get('limit')).toBe('1');
+      return url.searchParams.has('cursor') ? json({ items: [{ ...jobSummary, status: 'parked' }], has_more: false }) : json({ items: [jobSummary], has_more: true, cursor: 'signed-next' });
+    }));
+    const first = await client.jobs({ status: 'open', worker_id: 'worker_one', limit: 1 });
+    expect(first.has_more).toBe(true);
+    const last = await client.jobs({ status: 'open', worker_id: 'worker_one', limit: 1, cursor: first.cursor });
+    expect(last.items[0].status).toBe('parked'); expect(last.has_more).toBe(false);
+    expect(new URL(calls[1]).searchParams.get('cursor')).toBe('signed-next'); expect(calls).toHaveLength(2); client.close();
+  });
+  it.each([{ status: 'completed' }, { status: 'open' }, { worker_id: 'foreign_worker' }])('rejects a mismatched open job response %j', async change => {
+    setupLocation(); const client = api(); await connect(client);
+    vi.stubGlobal('fetch', vi.fn(async () => json({ items: [{ ...jobSummary, ...change }], has_more: false })));
+    await expect(client.jobs({ status: 'open', worker_id: 'worker_one' })).rejects.toMatchObject({ code: 'invalid_response' }); client.close();
+  });
+  it('refuses invalid list filters before network and never accepts open as a returned job state', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    const fetchMock = vi.fn(async () => json({ ...job, status: 'open' })); vi.stubGlobal('fetch', fetchMock);
+    await expect(client.jobs({ status: 'Open' as 'open' })).rejects.toMatchObject({ code: 'invalid_request' }); expect(fetchMock).not.toHaveBeenCalled();
+    await expect(client.job('job_one')).rejects.toMatchObject({ code: 'invalid_response' }); client.close();
   });
 });

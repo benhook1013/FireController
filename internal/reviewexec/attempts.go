@@ -113,17 +113,20 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if reason != "" {
 			return holdOperation(ctx, tx, o, reason, at)
 		}
+		if _, err := admitRoundControl(ctx, tx, o); err != nil {
+			var refusal *core.Error
+			if errors.As(err, &refusal) && (refusal.Code == "review_held" || roundControlRefusal(refusal.Code)) {
+				return holdOperation(ctx, tx, o, preparationReason(err), at)
+			}
+			return err
+		}
 		var repositoryID int64
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
 		}
 		if e.publishAttempt != nil {
-			available, err := attemptProjectionCapacity(ctx, tx, o)
-			if err != nil {
+			if err := validateAttemptProjection(ctx, tx, o); err != nil {
 				return err
-			}
-			if !available {
-				return holdOperation(ctx, tx, o, "projection_capacity", at)
 			}
 		}
 		var busy int
@@ -154,10 +157,13 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 
 func holdOperation(ctx context.Context, tx *sql.Tx, o Operation, reason, at string) error {
 	_, err := tx.ExecContext(ctx, `UPDATE review_operations SET state='held',reason=?,revision=revision+1,updated_at=? WHERE id=?`, reason, at, o.ID)
-	return err
+	if err != nil {
+		return err
+	}
+	return core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{})
 }
 
-func readAttempt(ctx context.Context, tx *sql.Tx, project, id string) (Attempt, error) {
+func readAttempt(ctx context.Context, tx EvidenceQuery, project, id string) (Attempt, error) {
 	var a Attempt
 	var anchor string
 	err := tx.QueryRowContext(ctx, `SELECT id,operation_id,project_id,provider,account,state,revision,anchor_json,intent,external_id FROM review_execution_attempts WHERE project_id=? AND id=?`, project, id).Scan(&a.ID, &a.OperationID, &a.ProjectID, &a.Provider, &a.Account, &a.State, &a.Revision, &anchor, &a.Intent, &a.ExternalID)
@@ -193,6 +199,12 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if anchor.PullNumber != o.PullNumber || anchor.CandidateSHA != o.HeadSHA {
 			return conflict()
 		}
+		if err := requireSourceObligationsClear(ctx, tx, project, o.PullNumber); err != nil {
+			return err
+		}
+		if err := requireIncomingRoutesClear(ctx, tx, project, o.PullNumber); err != nil {
+			return err
+		}
 		var repositoryID int64
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
@@ -222,6 +234,9 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if reason != "" {
 			return policyAdmissionConflict()
 		}
+		if _, err := admitRoundControl(ctx, tx, o); err != nil {
+			return err
+		}
 		state := "active"
 		if o.Channel == "hosted" {
 			state = "posting"
@@ -247,6 +262,11 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		}
 		if err = e.transitionRow(ctx, tx, a, "admitted", at); err != nil {
 			return err
+		}
+		if state != "posting" && state != "active" && state != "uncertain" {
+			if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+				return err
+			}
 		}
 		result = a
 		return nil
@@ -324,6 +344,19 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 		}
 		if err = e.transitionRow(ctx, tx, a, reason, at); err != nil {
 			return err
+		}
+		if state == "completed" {
+			if err = refreshComparisonProof(ctx, tx, project, a.OperationID); err != nil {
+				return err
+			}
+			if err = completeRoundControl(ctx, tx, project, a.OperationID); err != nil {
+				return err
+			}
+		}
+		if state != "posting" && state != "active" && state != "uncertain" {
+			if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+				return err
+			}
 		}
 		result = a
 		return nil
@@ -409,6 +442,11 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			}
 			if err = e.transitionRow(ctx, tx, a, "supervisor_interrupted", at); err != nil {
 				return err
+			}
+			if state == "cancelled" {
+				if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+					return err
+				}
 			}
 			changed = append(changed, a.OperationID)
 		}
