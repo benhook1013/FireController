@@ -109,3 +109,36 @@ func TestHostedDecoratedSeverityNativeExamplesAndConflicts(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedMiddleDotMetadataNativeAndDisplay(t *testing.T) {
+	for label, want := range map[string]string{"Major": "high", "Minor": "low", "Trivial": "info", "Critical": "critical"} {
+		detail := "<!-- coderabbit-ai-generated:v1 -->\n\n**" + standingTestPicture(false) + " " + label + "** · **Functional Correctness** · **Quick win**\n\n**Keep a useful finding.**\n\nUseful issue prose.\n\n" + hfMarker(1)
+		f := hfNew(t, []string{detail}, "")
+		got := hfWant(t, f, true, 1)
+		if len(got.Findings) != 1 || got.Findings[0].Severity != want || HostedDisplaySeverity(detail) != want {
+			t.Fatalf("%s: %+v, display %s", label, got.Findings, HostedDisplaySeverity(detail))
+		}
+		if got.Findings[0].Detail != detail {
+			t.Fatal("original bytes changed")
+		}
+	}
+	if HostedDisplaySeverity("**Major** · **Minor** · **Quick win**") != "unknown" {
+		t.Fatal("conflicting severity accepted")
+	}
+	if HostedDisplaySeverity("**Title.**\n\n**Major** · **Category** · **Quick win**") != "unknown" {
+		t.Fatal("narrative metadata inferred")
+	}
+	if HostedDisplaySeverity("**Major** · **Category** | **Quick win**") != "unknown" {
+		t.Fatal("mixed separator grammar accepted")
+	}
+}
+
+func TestHostedDisplaySeverityKeepsLeadingMetadataBeforeBoundedDiagnostic(t *testing.T) {
+	detail := "**Category** | **" + standingTestPicture(false) + " Minor** | **Quick win**\n\n<details>\n<summary>Supported by static analysis</summary>\n" + strings.Repeat("Diagnostic output. ", 500)
+	if HostedDisplaySeverity(detail[:4096]) != "low" {
+		t.Fatal("truncated diagnostic erased proven leading metadata")
+	}
+	if HostedDisplaySeverity("<details>\n<summary>Example</summary>\n**Major**") != "unknown" {
+		t.Fatal("unclosed example supplied metadata")
+	}
+}

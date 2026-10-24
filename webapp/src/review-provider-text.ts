@@ -54,7 +54,7 @@ function headingText(value: string): string {
 }
 
 function technicalHeading(value: string): boolean {
-  return /^(?:prompt for ai agents?|ai (?:agent )?prompt|suggested (?:change|fix|code)|code suggestion|committable suggestion|proposed (?:fix|refactor)|tools?|diagnostics?|analysis chain|verification (?:output|details)|script (?:output|executed)|learn more)$/u.test(headingText(value));
+  return /^(?:prompt for ai agents?|ai (?:agent )?prompt|suggested (?:change|fix|code)|code suggestion|committable suggestion|proposed (?:fix|refactor)|tools?|diagnostics?|analysis chain|verification (?:output|details)|script (?:output|executed)|supported by static analysis|learn more)$/u.test(headingText(value));
 }
 
 function omitTechnicalDetails(text: string): string {
@@ -103,10 +103,14 @@ function unwrapProviderHTML(text: string): string {
 }
 
 function providerMetadata(line: string): boolean {
-  const fields = headingText(line).split(/\s*\|\s*/u);
-  return fields.length >= 2 && fields.length <= 4
-    && /^(?:potential issue|nitpick|suggestion|refactor suggestion|security issue|bug)$/u.test(fields[0])
-    && fields.slice(1).some(field => /^(?:[^\p{L}\p{N}]*)(?:critical|major|minor|trivial|high|medium|low|info|p[0-3])$/u.test(field));
+  const source = line.trim().replace(/^(?:>[ \t]*)+/u, '');
+  const fields = source.split(/ (?:·|\|) /u);
+  if (fields.length === 3 && fields.every(field => /^\*\*.+\*\*$/u.test(field))
+    && fields.some(field => /^(?:critical|major|minor|trivial)$/u.test(headingText(field)))) return true;
+  const legacyFields = headingText(line).split(/\s*\|\s*/u);
+  return legacyFields.length >= 2 && legacyFields.length <= 4
+    && /^(?:potential issue|nitpick|suggestion|refactor suggestion|security issue|bug)$/u.test(legacyFields[0])
+    && legacyFields.slice(1).some(field => /^(?:[^\p{L}\p{N}]*)(?:critical|major|minor|trivial|high|medium|low|info|p[0-3])$/u.test(field));
 }
 
 function cleanedLines(text: string, title: string, compact: boolean, restore: (value: string) => string): string {

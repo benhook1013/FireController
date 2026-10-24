@@ -112,3 +112,30 @@ describe('outside-diff display header', () => {
     expect(display.full).toContain('<strong>Literal example</strong>');
   });
 });
+
+
+describe('middle-dot provider metadata', () => {
+  it('omits the closed decorated severity/category/effort header while keeping issue prose', () => {
+    const source = '<!-- coderabbit-ai-generated:v1 -->\n\n**<picture><img src="https://example.invalid/icon"></picture> Major** · **Functional Correctness** · **Quick win**\n\n**Example issue**\n\nUseful issue prose.';
+    const display = reviewProviderText(source,'Example issue');
+    expect(display.rationale).toBe('Useful issue prose.');
+    expect(display.full).toBe('Useful issue prose.');
+  });
+});
+
+
+describe('provider diagnostic disclosure scope', () => {
+  it('omits a static-analysis block without dropping the later issue rationale', () => {
+    const source='**Minor** · **Functional Correctness** · **Quick win**\n\n<details>\n<summary>🔎 Supported by static analysis</summary>\n\nScript executed:\n\n```sh\nprintf diagnostic\n```\n\nScript output:\n\nPrivate diagnostic output.\n</details>\n\n**Example title**\n\nUseful issue paragraph after diagnostics.';
+    const value=reviewProviderText(source,'Example title');
+    expect(value.rationale).toBe('Useful issue paragraph after diagnostics.');
+    expect(value.full).toContain('Private diagnostic output.');
+    expect(value.full).toContain('Useful issue paragraph after diagnostics.');
+  });
+});
+
+
+it('omits closed modern pipe metadata with category before severity', () => {
+  const source='**🩺 Stability & Availability** | **<picture><img src="https://example.invalid/icon"></picture> Minor** | **⚡ Quick win**\n\n**Example title**\n\nUseful issue paragraph.';
+  expect(reviewProviderText(source,'Example title').rationale).toBe('Useful issue paragraph.');
+});

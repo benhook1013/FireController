@@ -218,7 +218,14 @@ func (f *findingFields) severityValue(value string) {
 }
 
 func (f *findingFields) metadata(text string) (valid, explicitSeverity bool) {
-	parts := strings.Split(text, " | ")
+	separator := " | "
+	if strings.Contains(text, " · ") {
+		if strings.Contains(text, separator) {
+			return false, false
+		}
+		separator = " · "
+	}
+	parts := strings.Split(text, separator)
 	for i, p := range parts {
 		switch {
 		case len(p) >= 4 && strings.HasPrefix(p, "**") && strings.HasSuffix(p, "**"):

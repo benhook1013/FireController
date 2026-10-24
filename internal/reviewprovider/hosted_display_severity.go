@@ -48,7 +48,9 @@ func HostedDisplaySeverity(detail string) string {
 			// of prompts or examples never supply presentation metadata.
 			end, complete := findingBlock(lines, i, quote)
 			if !complete {
-				return "unknown"
+				// A bounded prefix may end inside diagnostic detail. It cannot
+				// erase explicit metadata already established before that block.
+				break
 			}
 			i = end
 			continue
