@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+var hostedAddressedRangeFooter = regexp.MustCompile(`^\n\n✅ Addressed in commits [a-f0-9]{7,40} to ([a-f0-9]{7,40})\n?$`)
 var hostedAddressedFooter = regexp.MustCompile(`^\n\n✅ Addressed in commit ([a-f0-9]{7,40})\n?$`)
 
 // ExtractHostedFindingsWithBaseline preserves strict extraction except for
@@ -103,6 +104,12 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 func sameAnnotatedRoot(current, baseline ReviewComment, head string) bool {
 	suffix, ok := strings.CutPrefix(current.Body, baseline.Body)
 	footer := hostedAddressedFooter.FindStringSubmatch(suffix)
+	if footer == nil {
+		// A range footer is only a presentation annotation on an otherwise
+		// unchanged historical root. Its endpoint names this candidate; the
+		// first endpoint makes no ancestry, fix, or completion claim here.
+		footer = hostedAddressedRangeFooter.FindStringSubmatch(suffix)
+	}
 	if !ok || footer == nil || !strings.HasPrefix(head, footer[1]) {
 		return false
 	}

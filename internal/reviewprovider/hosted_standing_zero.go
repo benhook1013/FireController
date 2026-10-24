@@ -3,6 +3,7 @@ package reviewprovider
 import (
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,9 +19,14 @@ type HostedStandingZero struct {
 }
 
 var standingRunID = regexp.MustCompile("^- \\*\\*Run ID\\*\\*: `(" + publicationUUID + ")`$")
-var standingSelected = regexp.MustCompile(`^<summary><strong>📒 Files selected for processing: (0|[1-9][0-9]{0,4})</strong></summary>$`)
-var standingIgnored = regexp.MustCompile(`^<summary><strong>⛔ Files ignored due to path filters: (0|[1-9][0-9]{0,4})</strong></summary>$`)
-var standingNoReviewable = regexp.MustCompile(`^<summary><strong>💤 Files with no reviewable changes: (0|[1-9][0-9]{0,4})</strong></summary>$`)
+
+// Icons are presentation only. Match the two observed closed picture shapes,
+// never generic HTML stripping, and never fetch or trust the asset URL.
+const standingPicture = `<picture>(?:<source media="\(prefers-color-scheme: dark\)" srcset="https://[^"<>\s]+">)?<img src="https://[^"<>\s]+" width="[1-9][0-9]{0,2}" height="[1-9][0-9]{0,2}" align="absmiddle" alt=""></picture>`
+
+var standingSelected = regexp.MustCompile(`^<summary><strong>(?:📒|` + standingPicture + `) Files selected for processing: (0|[1-9][0-9]{0,4})</strong></summary>$`)
+var standingIgnored = regexp.MustCompile(`^<summary><strong>(?:⛔|` + standingPicture + `) Files ignored due to path filters: (0|[1-9][0-9]{0,4})</strong></summary>$`)
+var standingNoReviewable = regexp.MustCompile(`^<summary><strong>(?:💤|` + standingPicture + `) Files with no reviewable changes: (0|[1-9][0-9]{0,4})</strong></summary>$`)
 var standingFile = regexp.MustCompile("^\\* `([^`]+)`$")
 var standingIgnoredFile = regexp.MustCompile("^\\* `([^`]+)` is excluded by `[^`\\r\\n]+`(?:, `[^`\\r\\n]+`)*$")
 var standingCoverage = regexp.MustCompile(`^<!-- final_review_risk_coverage:\{"sourceCommitId":"([a-f0-9]{40})","coveredCommitId":"([a-f0-9]{40})","kind":"reviewed"\} -->$`)
@@ -28,7 +34,7 @@ var standingAckInvocation = regexp.MustCompile(`^<!-- CodeRabbit review command 
 var standingAvailability = regexp.MustCompile(`^\*\*Included review availability:\*\* This review used your included allowance\. Your plan provides up to [1-9][0-9]{0,4} included reviews? per hour; (0|[1-9][0-9]{0,4}) remain after this review\.$`)
 var standingConfigurationLink = regexp.MustCompile(`^\[([^\[\]\r\n]+)\]\((?:<([^<>\r\n]+)>|([^()<>\r\n]+))\)$`)
 var standingFindingClaim = regexp.MustCompile(`(?i)\b(?:comments?|findings?)\s*[:(]\s*[0-9]`)
-var standingRiskLabel = regexp.MustCompile(`^<summary><strong>Merge Risk:</strong> <strong>(?:🔵 Low|⚪ Minimal|🟡 Moderate)</strong> · up to <code>([a-f0-9]{5})</code></summary>$`)
+var standingRiskLabel = regexp.MustCompile(`^<summary><strong>Merge Risk:</strong> <strong>(?:🔵 Low|⚪ Minimal|🟡 Moderate|` + standingPicture + ` (?:Low|Minimal|Moderate))</strong> · up to <code>([a-f0-9]{5})</code></summary>$`)
 
 const standingRecentStart = "<!-- recent_review_start -->"
 const standingRecentEnd = "<!-- recent_review_end -->"
@@ -249,8 +255,24 @@ func (p *standingRecentParser) take(want ...string) bool {
 	}
 	return true
 }
+
+var standingDecoratedBlocks = map[string]*regexp.Regexp{
+	"ℹ️ Recent review info": regexp.MustCompile(`^<summary><strong>` + standingPicture + ` Recent review info</strong></summary>$`),
+	"⚙️ Run configuration":  regexp.MustCompile(`^<summary><strong>` + standingPicture + ` Run configuration</strong></summary>$`),
+	"📥 Commits":             regexp.MustCompile(`^<summary><strong>` + standingPicture + ` Commits</strong></summary>$`),
+}
+
 func (p *standingRecentParser) block(label string) bool {
-	return p.take("<details>", "<summary><strong>"+label+"</strong></summary>", "<dl>", "<dd>")
+	if !p.take("<details>") || p.at >= len(p.lines) {
+		return false
+	}
+	line := p.lines[p.at]
+	decorated := standingDecoratedBlocks[label]
+	if line != "<summary><strong>"+label+"</strong></summary>" && (decorated == nil || !decorated.MatchString(line)) {
+		return false
+	}
+	p.at++
+	return p.take("<dl>", "<dd>")
 }
 func (p *standingRecentParser) close() bool { return p.take("</dd>", "</dl>", "</details>") }
 
@@ -367,7 +389,11 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 		}
 		p.lines = append(p.lines, line)
 	}
-	if !p.take("No actionable comments were generated in the recent review. 🎉") || !p.block("ℹ️ Recent review info") || !p.block("⚙️ Run configuration") {
+	if len(p.lines) == 0 || (p.lines[0] != "No actionable comments were generated in the recent review. 🎉" && p.lines[0] != "No actionable comments were generated in the recent review.") {
+		return zero, false
+	}
+	p.at++
+	if !p.block("ℹ️ Recent review info") || !p.block("⚙️ Run configuration") {
 		return zero, false
 	}
 	prefixes := []string{"- **Configuration used**: ", "- **Review profile**: ", "- **Plan**: "}
@@ -467,10 +493,23 @@ func standingFinishedAck(body string) bool {
 			lines = append(lines, line)
 		}
 	}
-	if len(lines) == 7 && lines[0] == "<!-- coderabbit-ai-generated:v1 -->" {
+	if len(lines) > 0 && lines[0] == "<!-- coderabbit-ai-generated:v1 -->" {
 		lines = lines[1:]
 	}
-	return len(lines) == 6 && lines[0] == "<!-- This is an auto-generated reply by CodeRabbit -->" && standingAckInvocation.MatchString(lines[1]) && lines[2] == "<details>" && lines[3] == "<summary>✅ Action performed</summary>" && lines[4] == "Full review finished." && lines[5] == "</details>"
+	if len(lines) < 6 || lines[0] != "<!-- This is an auto-generated reply by CodeRabbit -->" || !standingAckInvocation.MatchString(lines[1]) || lines[2] != "<details>" {
+		return false
+	}
+	lines = lines[3:]
+	if lines[0] == "<summary>✅ Action performed</summary>" {
+		lines = lines[1:]
+	} else if len(lines) >= 3 && slices.Equal(lines[:3], []string{"<summary>", "✅ Action performed", "</summary>"}) {
+		lines = lines[3:]
+	} else {
+		return false
+	}
+	// Only the two observed closed envelopes are accepted. Generic HTML
+	// removal could turn quoted examples or unknown outcomes into an ACK.
+	return slices.Equal(lines, []string{"Full review finished.", "</details>"}) || slices.Equal(lines, []string{"<dl>", "<dd>", "Full review finished.", "</dd>", "</dl>", "</details>"})
 }
 
 // This single-snapshot resolver establishes inventory attribution only. Neither
