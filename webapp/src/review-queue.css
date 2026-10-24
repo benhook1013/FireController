@@ -50,3 +50,6 @@
 .review-queue-content>.review-history{margin-bottom:0}
 
 .review-ci.review-fact-not_required{background:#edf0f4;color:#43505d;border-color:#c7cdd5}
+
+/* Channel holds share the heading instead of creating another content row. */
+.review-lane-heading h4{display:flex;align-items:center;flex-wrap:wrap;gap:4px 7px;min-width:0}.review-lane-heading .review-channel-position{margin-left:0}.review-lane-heading .review-attempt-state{margin:0;letter-spacing:normal;text-transform:none}
