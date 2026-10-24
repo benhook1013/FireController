@@ -332,11 +332,11 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	if len(lines) == 2 {
 		_ = json.Unmarshal(lines[1], &result)
 	}
-	// Twenty explicit archive reads, one bounded current-hero read on the
-	// pinned tab, one or two first-page hero reads after reload's workspace
-	// restoration, and one selected old merged PR;
+	// Twenty-five-row timeline pages and twenty-row attempt pages are read
+	// only on explicit continuation. Separate six-row channel summaries serve
+	// the hero and queue, including the old merged PR and bounded reload;
 	// no automatic archive walking.
-	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 20 || result.ArchiveRequests < 23 || result.ArchiveRequests > 24 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
+	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 25 || result.ArchiveRequests < 26 || result.ArchiveRequests > 27 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
 		phase := "unavailable"
 		switch result.Phase {
 		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation", "recent-queue", "merged-history":
@@ -375,7 +375,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	if external.Load() != 0 || observations.Load() != 1 {
 		t.Fatal("archive workload attempted provider/external HTTP")
 	}
-	t.Logf("packaged archives passed in %s: runs=123 attempts=123 CLI/MCP default5+explicit continuation, browser max20 pinned-tail/current-reset/source-collision, fixture_observations=1 daemon_external=0 blocked_engine=%d owned_processes=0", time.Since(started).Round(time.Millisecond), engine.Load())
+	t.Logf("packaged archives passed in %s: runs=123 attempts=123 CLI/MCP default5+explicit continuation, browser timeline25/channel6/attempts20 pinned-tail/current-reset/source-collision, fixture_observations=1 daemon_external=0 blocked_engine=%d owned_processes=0", time.Since(started).Round(time.Millisecond), engine.Load())
 }
 
 func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project, worker, instance, admin string) (string, string, string, []byte) {

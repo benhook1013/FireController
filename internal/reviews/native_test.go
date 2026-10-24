@@ -315,7 +315,7 @@ func TestNativePreservesImportedOriginEvidenceAndOldBytes(t *testing.T) {
 	var importedDetail, nativeDetail RunDetailResponse
 	nativeRead(t, f, "/runs/"+importedID, &importedDetail)
 	nativeRead(t, f, "/runs/"+runOpaqueID(f.project, nativeSource, captured.SourceRunID), &nativeDetail)
-	if importedDetail.Source != nativeSource || importedDetail.Run.Source != request.Source || !reflect.DeepEqual(importedDetail.Findings, imported.Findings) || nativeDetail.Run.Source != nativeSource || !reflect.DeepEqual(nativeDetail.Findings, captured.Findings) {
+	if importedDetail.Source != nativeSource || importedDetail.Run.Source != request.Source || !reflect.DeepEqual(plainFindingsForTest(importedDetail.Findings), imported.Findings) || nativeDetail.Run.Source != nativeSource || !reflect.DeepEqual(plainFindingsForTest(nativeDetail.Findings), captured.Findings) {
 		t.Fatal("full finding text/decision/fix or producer identity changed")
 	}
 	for _, body := range [][]byte{queueBytes, pullBytes, runBytes} {
@@ -728,7 +728,7 @@ func TestNativePublicationRunRowsBindOwningSnapshotRevision(t *testing.T) {
 		t.Fatal("copy lost finalized counts or corrected fix projection")
 	}
 	nativeRead(t, f, "/runs/"+runOpaqueID(f.project, nativeSource, run.SourceRunID), &detail)
-	if !reflect.DeepEqual(detail.Findings, run.Findings) {
+	if !reflect.DeepEqual(plainFindingsForTest(detail.Findings), run.Findings) {
 		t.Fatal("new native row lost retained finding/decision/fix")
 	}
 	if nativeSnapshotBytes(t, f, first) != firstBytes || nativeSnapshotBytes(t, f, corrected) != correctedBytes || nativeSnapshotBytes(t, f, appended.ID) != appendedBytes {

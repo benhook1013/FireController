@@ -256,7 +256,7 @@ describe('truthful stored review presentation', () => {
   it('renders full finding Markdown safely while leaving titles and commit IDs literal', () => {
     const finding: ReviewFinding = { source_finding_id: 'id', title: '**Literal title**', detail: 'Useful **detail**\n\n- A step\n\n[unsafe](javascript:alert(1)) ![image](https://outside.invalid/image.png)', severity: 'low', disposition: 'accepted', decision_reason: 'Keep *context*.', actor: '', decided_at: '', fix_sha: '', proof_note: '`tested` with **evidence**', resolved_at: '' };
     const html = markup(<ReviewFindingView finding={finding} />);
-    expect(html).toContain('<h3>**Literal title**</h3>'); expect(html).toContain('<strong>detail</strong>'); expect(html).toContain('<li>A step</li>'); expect(html).toContain('<em>context</em>'); expect(html).toContain('<code>tested</code>');
+    expect(html).toContain('>**Literal title**</h4>'); expect(html).toContain('<strong>detail</strong>'); expect(html).toContain('<li>A step</li>'); expect(html).toContain('<em>context</em>'); expect(html).toContain('<code>tested</code>');
     expect(html).not.toContain('<img'); expect(html).not.toContain('href="javascript:');
   });
 });

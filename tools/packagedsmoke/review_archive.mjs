@@ -19,9 +19,13 @@ try {
   server = await chromium.launchServer({ headless:true, ...(config.executable ? {executablePath:config.executable} : {}), timeout:5000, proxy:{server:config.proxy,bypass:'127.0.0.1,localhost'}, args:['--disable-background-networking','--no-first-run'] });
   console.log(JSON.stringify({event:'browser_started',pid:server.process().pid}));
   browser = await chromium.connect(server.wsEndpoint(),{timeout:5000});
-  const context = await browser.newContext({viewport:{width:390,height:900}});
-  await context.route('**/*',async route => { if (new URL(route.request().url()).origin !== config.origin) { await route.abort(); return; } await route.continue(); });
+  const contexts = [];
   const connect = async (name,snapshot) => {
+    // Independent cookie/storage jars keep both explicit fixture logins and
+    // prevent intentional same-context recovery from bypassing the second.
+    const context = await browser.newContext({viewport:{width:390,height:900}});
+    contexts.push(context);
+    await context.route('**/*',async route => { if (new URL(route.request().url()).origin !== config.origin) { await route.abort(); return; } await route.continue(); });
     const page = await context.newPage(); page.setDefaultTimeout(5000); page.setDefaultNavigationTimeout(5000);
     page.on('pageerror',() => errors++);
     page.on('console',message => { if (message.type() === 'error') errors++; });
@@ -38,13 +42,16 @@ try {
       const detail = url.pathname.match(/\/reviews\/runs\/(review_run_[a-f0-9]{32})$/u);
       if (detail) {
         details.push({name,id:detail[1],snapshot:url.searchParams.get('snapshot')});
+        if (url.searchParams.get('view') !== 'display') errors++;
         if (!/^review_snapshot_[a-f0-9]{32}$/u.test(url.searchParams.get('snapshot') ?? '')) errors++;
       }
       const match = url.pathname.match(/\/reviews\/pulls\/[1-9][0-9]*\/(runs|attempts)$/u);
       if (match) {
         const limit = Number(url.searchParams.get('limit'));
-        archives.push({name,feed:match[1],snapshot:url.searchParams.get('snapshot'),cursor:url.searchParams.get('cursor'),limit});
-        if (limit !== 20 || !/^review_snapshot_[a-f0-9]{32}$/u.test(url.searchParams.get('snapshot') ?? '')) errors++;
+        const view = url.searchParams.get('view'), channel = url.searchParams.get('channel');
+        archives.push({name,feed:match[1],snapshot:url.searchParams.get('snapshot'),cursor:url.searchParams.get('cursor'),limit,view,channel});
+        const bounded = match[1] === 'attempts' ? limit === 20 && view === null && channel === null : view === 'timeline' ? limit === 25 && channel === null : view === null && limit === 6 && ['cli','hosted','manual','subagent'].includes(channel);
+        if (!bounded || !/^review_snapshot_[a-f0-9]{32}$/u.test(url.searchParams.get('snapshot') ?? '')) errors++;
       }
     });
     await page.goto(config.origin+path+(snapshot ? `?snapshot=${snapshot}` : ''));
@@ -63,27 +70,31 @@ try {
     await expect(page.locator('.review-pull-summary .review-diff')).toHaveText('0 files · +0 / −0 lines');
     await expect(page.locator('.review-pull-summary .review-state-draft')).toHaveText('Draft');
     await attempts.locator('summary').click();
-    await expect.poll(() => rounds.locator('.review-history-row').count()).toBe(20);
+    await expect.poll(() => rounds.locator('.review-history-row').count()).toBe(25);
     await expect.poll(() => attempts.locator('li').count()).toBe(20);
-    need(await rounds.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).count() === 1);
-    need(await rounds.getByRole('region',{name:'CLI CodeRabbit',exact:true}).count() === 1);
+    await expect(rounds.locator('.review-timeline')).toHaveCount(1);
+    need(await rounds.locator('.review-lanes').count() === 0);
+    await expect(rounds.locator('.review-history-kind')).toHaveText(Array.from({length:25},(_,i)=>`CLI #${count-24+i}`));
+    await expect(rounds.locator('.section-heading')).toContainText(`${count} runs`);
+    const continuation = rounds.locator('.review-timeline-continuation');
+    await expect(continuation).toContainText(`25 of ${count} rounds`);
+    need(await rounds.evaluate(section => section.querySelector('.review-timeline-continuation').compareDocumentPosition(section.querySelector('.review-timeline')) & Node.DOCUMENT_POSITION_FOLLOWING));
     need(await page.locator('.review-pull-summary').getByText(`${count} runs · ${count} attempts`,{exact:true}).count() === 0);
-    await expect(rounds.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText(`${count} runs`);
-    await expect(rounds.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText('0 runs');
     const stored = await page.evaluate(() => JSON.stringify({session:{...sessionStorage},local:{...localStorage}}));
     need(!stored.includes(token) && !stored.includes(admin));
     return {page,rounds,attempts,name,snapshot,home,path:canonicalPath};
   };
-  const requests = (view,feed) => archives.filter(item => item.name === view.name && item.feed === feed && (!view.snapshot || item.snapshot === view.snapshot));
+  const requests = (view,feed) => archives.filter(item => item.name === view.name && item.feed === feed && (feed !== 'runs' || item.view === 'timeline') && (!view.snapshot || item.snapshot === view.snapshot));
   const more = async (view,feed,shown) => {
     const section = feed === 'runs' ? view.rounds : view.attempts;
     const before = requests(view,feed).length;
-    await section.getByRole('button',{name:feed === 'runs' ? 'Load more review rounds' : 'Load more attempts',exact:true}).click();
+    await section.getByRole('button',{name:feed === 'runs' ? 'Load earlier rounds' : 'Load more attempts',exact:true}).click();
     await expect.poll(() => section.locator(feed === 'runs' ? '.review-history-row' : 'li').count()).toBe(shown);
     need(requests(view,feed).length === before+1);
     if (feed === 'runs') {
-      await expect(section.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText(`${count} runs`);
-      if(shown<count) await expect(section.locator('.pager')).toContainText(`${shown} of ${count} review rounds`);
+      await expect(section.locator('.section-heading')).toContainText(`${count} runs`);
+      await expect(section.locator('.review-history-kind')).toHaveText(Array.from({length:shown},(_,i)=>`CLI #${count-shown+1+i}`));
+      if(shown<count) await expect(section.locator('.review-timeline-continuation')).toContainText(`${shown} of ${count} rounds`);
     }
   };
   // The real head summary shares the archive fixture. Check rendered geometry,
@@ -138,7 +149,7 @@ try {
   await readableMergeHead(current.page);
   need(requests(current,'runs').length === 1 && requests(current,'attempts').length === 1);
   need(details.length === 0); // Summary rendering does not collect every finding body.
-  await more(current,'runs',40); await more(current,'attempts',40);
+  await more(current,'runs',50); await more(current,'attempts',40);
   phase = 'pinned-first-pages';
   const pinned = await connect('pinned',config.snapshot);
   need(requests(pinned,'runs').length === 1 && requests(pinned,'attempts').length === 1);
@@ -147,11 +158,11 @@ try {
   need(details.length === 0);
   phase = 'inline-empty-findings';
   const pinnedRow = pinned.rounds.locator(`[data-run-id="${config.first_run_id}"]`);
-  await pinnedRow.getByRole('button', {name:/^Show findings for cli run /}).click();
+  await pinnedRow.getByRole('button', {name:'Show findings for CLI #123',exact:true}).click();
   await pinnedRow.getByText('No findings reported for this run.', {exact:true}).waitFor();
   need(details.length === 1 && details[0].name === 'pinned' && details[0].id === config.first_run_id && details[0].snapshot === config.snapshot);
   need(new URL(pinned.page.url()).pathname === pinned.path);
-  await pinnedRow.getByRole('button', {name:/^Hide findings for cli run /}).click();
+  await pinnedRow.getByRole('button', {name:'Hide findings for CLI #123',exact:true}).click();
   need(await pinnedRow.locator('.review-history-findings').count() === 0 && details.length === 1);
 
   phase = 'metadata-refresh';
@@ -161,20 +172,42 @@ try {
   await expect.poll(() => current.rounds.locator('.review-history-row').count()).toBe(1);
   await expect.poll(() => current.attempts.locator('li').count()).toBe(1);
   await current.page.locator('.page-heading').getByRole('heading',{name:'Current archive metadata',exact:true}).waitFor();
-  need(await current.rounds.getByRole('link',{name:/current-only-run/u}).count() === 1);
+  await expect(current.rounds.locator('.review-history-kind')).toHaveText('CLI #1');
+  await expect(current.rounds.getByRole('link',{name:'Open CLI #1 run details',exact:true})).toHaveCount(1);
   need(await current.attempts.getByText('current-only-attempt',{exact:true}).count() === 1);
-  need(await current.rounds.getByRole('button',{name:'Load more review rounds',exact:true}).count() === 0);
+  need(await current.rounds.getByRole('button',{name:'Load earlier rounds',exact:true}).count() === 0);
   need(await current.attempts.getByRole('button',{name:'Load more attempts',exact:true}).count() === 0);
   need(requests(current,'runs').filter(item => item.snapshot !== config.snapshot).length === 1);
   need(requests(current,'attempts').filter(item => item.snapshot !== config.snapshot).length === 1);
   phase = 'inline-current-findings';
   const currentRow = current.rounds.locator('.review-history-row');
   need(details.length === 1);
-  await expect(currentRow.locator('.review-history-counts')).toHaveText('1 found · 0 accepted · 0 routed');
-  await currentRow.getByRole('button', {name:'Show findings for cli run current-only-run', exact:true}).click();
+  await expect(currentRow.locator('.review-history-counts > span').first()).toHaveText('1 found');
+  await expect(currentRow.locator('.review-history-accepted')).toHaveText('0 Major / 0 Minor / 0 Trivial accepted');
+  await expect(currentRow.locator('.review-history-counts > span').last()).toHaveText('0 routed');
+  await currentRow.getByRole('button', {name:'Show findings for CLI #1', exact:true}).click();
   await currentRow.getByRole('heading', {name:'Inline retained finding', exact:true}).waitFor();
-  await expect(currentRow.locator('.review-history-findings strong')).toHaveText('inline detail');
-  await expect(currentRow.locator('.review-history-findings li').filter({hasText:'Kept in this PR'}).last()).toHaveText('Kept in this PR');
+  const finding = currentRow.locator('.review-finding-compact');
+  await expect(finding.locator('.review-severity-low')).toHaveText('Minor');
+  await expect(finding.locator('.review-finding-compact-rationale strong')).toHaveText('inline detail');
+  await expect(finding.locator('.review-finding-compact-rationale li')).toHaveText('Kept in this PR');
+  await expect(finding.locator('.review-finding-compact-decision')).toContainText('Reviewed source proof.');
+  const disclosures = finding.locator(':scope > details');
+  await expect(disclosures).toHaveCount(3);
+  need(await disclosures.evaluateAll(items=>items.every(item=>!item.open)));
+  const full = finding.locator('.review-finding-disclosure:not(.review-finding-technical):not(.review-finding-raw)');
+  await full.locator('summary').click();
+  await expect(full.locator('strong')).toHaveText('inline detail');
+  await expect(full.locator('li')).toHaveText('Kept in this PR');
+  const technical = finding.locator('.review-finding-technical');
+  need(await technical.locator('dl').isVisible() === false);
+  await technical.locator('summary').click();
+  await expect(technical.getByText('Fixture reviewer',{exact:true})).toBeVisible();
+  const originalFields = finding.locator('.review-finding-raw');
+  need(await originalFields.locator('pre').isVisible() === false);
+  await originalFields.locator('summary').click();
+  await expect(originalFields.locator('pre')).toContainText('"severity": "low"');
+  await expect(originalFields.locator('pre')).toContainText('Useful **inline detail**');
   need(await currentRow.locator('.review-history-findings img').count() === 0 && await currentRow.locator('.review-history-findings a[href^="javascript:"]').count() === 0);
   need(details.length === 2 && details[1].name === 'current' && details[1].snapshot !== config.snapshot && new URL(current.page.url()).pathname === current.path);
   await expect(current.page.locator('.review-pull-summary .review-diff')).toHaveText('73 files · +6,160 / −136 lines');
@@ -191,7 +224,7 @@ try {
     await current.page.setViewportSize({width:390,height:900});
   }
 
-  await currentRow.getByRole('button', {name:'Hide findings for cli run current-only-run', exact:true}).click();
+  await currentRow.getByRole('button', {name:'Hide findings for CLI #1', exact:true}).click();
   need(await currentRow.locator('.review-history-findings').count() === 0 && details.length === 2);
 
   phase = 'recent-queue';
@@ -210,7 +243,7 @@ try {
   need(await provenance.locator('dl').isVisible() === false && !(await provenance.innerText()).includes('As of'));
   const technicalReads=queueReads.length;
   await provenance.getByLabel('Technical details',{exact:true}).click();
-  await expect(provenance.getByText('Source timestamp',{exact:true})).toBeVisible();
+  await expect(provenance.getByText('Snapshot origin timestamp',{exact:true})).toBeVisible();
   await expect(provenance.getByText('Saved locally',{exact:true})).toBeVisible();
   await current.page.keyboard.press('Escape');
   need(await provenance.getAttribute('open') === null && queueReads.length===technicalReads);
@@ -258,36 +291,37 @@ try {
   }
   await queue.locator('#review-pr-201').getByRole('link',{name:'Review details for PR #201',exact:true}).click();
   const original = current.page.locator('.main-content').getByRole('region',{name:'PR #201 review rounds',exact:true});
-  await original.getByRole('button',{name:'Show findings for cli run old-merged-original-round',exact:true}).click();
+  await original.getByRole('button',{name:'Show findings for CLI #1',exact:true}).click();
   await expect(original.getByRole('heading',{name:'Original merged finding',exact:true})).toBeVisible();
-  await expect(original.locator('.review-history-findings strong')).toHaveText('retained evidence');
-  await expect(original.locator('.review-decision')).toContainText('Original retained reviewer');
+  await expect(original.locator('.review-finding-compact-rationale strong')).toHaveText('retained evidence');
+  await original.locator('.review-finding-technical > summary').click();
+  await expect(original.locator('.review-finding-technical')).toContainText('Original retained reviewer');
   need(details.length === 3 && details[2].snapshot !== config.snapshot);
 
-  need(await pinned.rounds.locator('.review-history-row').count() === 20 && await pinned.attempts.locator('li').count() === 20);
+  need(await pinned.rounds.locator('.review-history-row').count() === 25 && await pinned.attempts.locator('li').count() === 20);
 
   phase = 'pinned-continuation';
-  for (const shown of [40,60,80,100,120,123]) await more(pinned,'runs',shown);
+  for (const shown of [50,75,100,123]) await more(pinned,'runs',shown);
   for (const shown of [40,60,80,100,120,123]) await more(pinned,'attempts',shown);
   need(requests(pinned,'runs').every(item => item.snapshot === config.snapshot));
   need(requests(pinned,'attempts').every(item => item.snapshot === config.snapshot));
   const links = await pinned.rounds.locator('.review-history-details-link').evaluateAll(elements => elements.map(element => element.getAttribute('href')));
-  need(new Set(links).size === count && links.some(link => link.includes(config.first_run_id)) && links.some(link => link.includes(config.tail_run_id)));
+  need(new Set(links).size === count && links.at(-1).includes(config.first_run_id) && links[0].includes(config.tail_run_id));
   need(await pinned.attempts.getByText(config.first_attempt_id,{exact:true}).count() === 1);
   const shared = pinned.attempts.locator('li').filter({hasText:config.tail_attempt_id});
   need(await shared.count() === 2 && await shared.getByText(config.source_a,{exact:true}).count() === 1 && await shared.getByText(config.source_b,{exact:true}).count() === 1);
-  need(await pinned.rounds.getByRole('button',{name:'Load more review rounds',exact:true}).count() === 0);
+  need(await pinned.rounds.getByRole('button',{name:'Load earlier rounds',exact:true}).count() === 0);
   need(await pinned.attempts.getByRole('button',{name:'Load more attempts',exact:true}).count() === 0);
   for (const view of [current,pinned]) need(await view.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   // The pinned detail retains its original snapshot while its current hero
   // reads one bounded page for the new comparison. Neither walks that archive.
-  const pinnedCurrentHero = archives.filter(item => item.name === pinned.name && item.feed === 'runs' && item.snapshot !== config.snapshot);
-  need(pinnedCurrentHero.length === 1 && pinnedCurrentHero[0].cursor === null && pinnedCurrentHero[0].limit === 20);
+  const pinnedCurrentHero = archives.filter(item => item.name === pinned.name && item.feed === 'runs' && item.channel === 'cli' && item.snapshot !== config.snapshot);
+  need(pinnedCurrentHero.length === 1 && pinnedCurrentHero[0].cursor === null && pinnedCurrentHero[0].limit === 6);
   // Reload restores the current hero and may invalidate its first page once
   // when the live workspace snapshot arrives. Neither read follows a cursor.
-  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && archives.length >= 23 && archives.length <= 24 && details.length === 3);
-  await context.close(); await browser.close(); browser=undefined; await server.close(); server=undefined;
-  console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,max_limit:20,source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
+  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && archives.length >= 26 && archives.length <= 27 && details.length === 3);
+  await Promise.all(contexts.map(context=>context.close())); await browser.close(); browser=undefined; await server.close(); server=undefined;
+  console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,max_limit:25,source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
 } catch (error) {
   // Retain only the fixed phase and bounded source line, never error text.
   const line = /review_archive\.mjs:(\d+):\d+/u.exec(error?.stack ?? '');

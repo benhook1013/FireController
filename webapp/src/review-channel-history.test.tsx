@@ -80,32 +80,42 @@ describe('bounded channel review history', () => {
     }
     const hosted = pages.find(page => page.items[0].channel === 'hosted')!;
     expect(hosted.items.map(item => item.source_run_id)).toEqual(['hosted-2', 'hosted-1']);
-    const html = render(<ReviewHistoryGroups number={2967} snapshot={snapshot} head={'b'.repeat(40)} runs={pages.flatMap(page => page.items).reverse()} partial loading={false} failed={false} channelTotals={totals} />);
+    const html = render(<ReviewHistoryGroups number={2967} snapshot={snapshot} head={'b'.repeat(40)} runs={pages.flatMap(page => page.items)} partial loading={false} failed={false} channelTotals={totals} />);
     expect(html).toContain('data-run-id="' + run('hosted', 1).id + '"');
-    expect(html).toContain('40 runs');
+    expect(html).toContain('CLI #40');
     expect(html).not.toContain('PRIVATE_FINDING_BODY');
   });
 
-  it('loads twenty-five summaries per full-history channel and continues only the selected channel', async () => {
-    const { client, render } = await fixture(); const fetch = fetchChannels();
+  it('loads one mixed chronological page and prepends only one earlier page on demand', async () => {
+    const { client, render } = await fixture();
+    const newest = [run('cli',40), run('hosted',2), ...Array.from({length:23},(_,i)=>run('cli',39-i))];
+    const earlier = [run('hosted',1), ...Array.from({length:16},(_,i)=>run('cli',16-i)), ...Array.from({length:5},(_,i)=>run('subagent',5-i))];
+    const fetch = vi.fn(async(input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      return json({...metadata,items:url.searchParams.has('cursor')?earlier:newest,has_more:!url.searchParams.has('cursor'),...(!url.searchParams.has('cursor')?{cursor:'mixed_continuation'}:{})});
+    });
+    vi.stubGlobal('fetch',fetch);
     render(<ReviewRoundHistory number={2967} snapshot={snapshot} head={'b'.repeat(40)} expected={47} channelTotals={totals} />);
     const queries = client.getQueryCache().getAll();
-    expect(queries).toHaveLength(3);
-    expect(queries.every(query => query.queryKey.at(-1) === 25)).toBe(true);
-    const pages = await Promise.all(queries.map(query => client.fetchQuery({ ...query.options, queryKey: query.queryKey }) as Promise<ReviewRuns>));
-    const index = queries.findIndex(query => query.queryKey.at(-3) === 'cli');
-    const archive = retained.archives[index] as ReviewArchive<ReviewRunSummary>;
-    archive.reset(pages[index]);
+    expect(queries).toHaveLength(1);
+    expect(queries[0].queryKey).toContain('timeline');
+    const page = await client.fetchQuery({...queries[0].options,queryKey:queries[0].queryKey}) as ReviewRuns;
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const archive = retained.archives[0] as ReviewArchive<ReviewRunSummary>;
+    archive.reset(page);
     await archive.more();
-    expect(archive.snapshot().items).toHaveLength(40);
-    expect(archive.snapshot().items.every(item => item.channel === 'cli')).toBe(true);
+    expect(archive.snapshot().items).toHaveLength(47);
+    expect(archive.snapshot().items.slice(0,25)).toEqual(newest);
     expect(archive.snapshot().hasMore).toBe(false);
-    expect(fetch).toHaveBeenCalledTimes(4);
-    const next = new URL(String(fetch.mock.calls[3][0]));
-    expect(next.searchParams.get('channel')).toBe('cli');
-    expect(next.searchParams.get('limit')).toBe('25');
-    expect(next.searchParams.get('cursor')).toBe('only_cli_continuation');
-    expect(next.pathname.endsWith('/runs')).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    for (const call of fetch.mock.calls) {
+      const url = new URL(String(call[0]));
+      expect(url.searchParams.get('view')).toBe('timeline');
+      expect(url.searchParams.get('limit')).toBe('25');
+      expect(url.searchParams.has('channel')).toBe(false);
+      expect(url.searchParams.get('snapshot')).toBe(snapshot);
+    }
+    expect(new URL(String(fetch.mock.calls[1][0])).searchParams.get('cursor')).toBe('mixed_continuation');
   });
 
   it('marks a missing expected channel page unavailable instead of treating it as empty or outside a global preview', async () => {

@@ -144,7 +144,7 @@ func TestFinalizedHistoryVersionOneMigrationAndReplay(t *testing.T) {
 	}
 	receipt := httptest.NewRecorder()
 	core.WriteJSON(receipt, 201, json.RawMessage(result))
-	expected := RunDetailResponse{ProjectID: f.project, Revision: 1, SnapshotID: snapshot, Source: original.Source, ObservedAt: original.ObservedAt, RecordedAt: recorded, PullNumber: pull.Number, Run: summarizeRun(f.project, original.Source, pull.Number, original.Queue[0].Runs[0]), Findings: original.Queue[0].Runs[0].Findings}
+	expected := RunDetailResponse{ProjectID: f.project, Revision: 1, SnapshotID: snapshot, Source: original.Source, ObservedAt: original.ObservedAt, RecordedAt: recorded, PullNumber: pull.Number, Run: summarizeRun(f.project, original.Source, pull.Number, original.Queue[0].Runs[0]), Findings: findingViewsForTest(original.Queue[0].Runs[0].Findings)}
 	oldEncoded, err := json.Marshal(expected)
 	if err != nil {
 		t.Fatal(err)

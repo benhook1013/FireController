@@ -120,26 +120,44 @@ type AttemptSummary struct {
 	Reason           string `json:"reason,omitempty"`
 }
 
+// AcceptedSeverity is a read-only breakdown of the authoritative accepted scalar.
+// Incomplete inventories return complete=false and zero buckets for scalar fallback.
+type AcceptedSeverity struct {
+	Critical int64 `json:"critical"`
+	Major    int64 `json:"major"`
+	Minor    int64 `json:"minor"`
+	Trivial  int64 `json:"trivial"`
+	Unknown  int64 `json:"unknown"`
+	Complete bool  `json:"complete"`
+}
+
+// FindingView preserves the original finding and adds presentation-only evidence.
+type FindingView struct {
+	Finding
+	DisplaySeverity string `json:"display_severity,omitempty"`
+}
+
 type RunSummary struct {
-	Source         string   `json:"source"`
-	ID             string   `json:"id"`
-	PullNumber     int64    `json:"pull_number"`
-	SourceRunID    string   `json:"source_run_id"`
-	Channel        string   `json:"channel"`
-	HeadSHA        string   `json:"head_sha"`
-	Reviewer       string   `json:"reviewer"`
-	Scope          string   `json:"scope"`
-	Outcome        string   `json:"outcome"`
-	Attributable   bool     `json:"attributable"`
-	Complete       bool     `json:"complete"`
-	StartedAt      string   `json:"started_at"`
-	FinishedAt     string   `json:"finished_at"`
-	Found          int64    `json:"found"`
-	Accepted       int64    `json:"accepted"`
-	Routed         int64    `json:"routed"`
-	Finalized      bool     `json:"finalized"`
-	Fixed          int64    `json:"fixed"`
-	CoverageLimits []string `json:"coverage_limits"`
+	AcceptedSeverity *AcceptedSeverity `json:"accepted_severity,omitempty"`
+	Source           string            `json:"source"`
+	ID               string            `json:"id"`
+	PullNumber       int64             `json:"pull_number"`
+	SourceRunID      string            `json:"source_run_id"`
+	Channel          string            `json:"channel"`
+	HeadSHA          string            `json:"head_sha"`
+	Reviewer         string            `json:"reviewer"`
+	Scope            string            `json:"scope"`
+	Outcome          string            `json:"outcome"`
+	Attributable     bool              `json:"attributable"`
+	Complete         bool              `json:"complete"`
+	StartedAt        string            `json:"started_at"`
+	FinishedAt       string            `json:"finished_at"`
+	Found            int64             `json:"found"`
+	Accepted         int64             `json:"accepted"`
+	Routed           int64             `json:"routed"`
+	Finalized        bool              `json:"finalized"`
+	Fixed            int64             `json:"fixed"`
+	CoverageLimits   []string          `json:"coverage_limits"`
 }
 
 type PullSummary struct {
@@ -224,13 +242,13 @@ type RunsResponse struct {
 }
 
 type RunDetailResponse struct {
-	ProjectID  string     `json:"project_id"`
-	Revision   int64      `json:"revision"`
-	SnapshotID string     `json:"snapshot_id"`
-	Source     string     `json:"source"`
-	ObservedAt string     `json:"observed_at"`
-	RecordedAt string     `json:"recorded_at"`
-	PullNumber int64      `json:"pull_number"`
-	Run        RunSummary `json:"run"`
-	Findings   []Finding  `json:"findings"`
+	ProjectID  string        `json:"project_id"`
+	Revision   int64         `json:"revision"`
+	SnapshotID string        `json:"snapshot_id"`
+	Source     string        `json:"source"`
+	ObservedAt string        `json:"observed_at"`
+	RecordedAt string        `json:"recorded_at"`
+	PullNumber int64         `json:"pull_number"`
+	Run        RunSummary    `json:"run"`
+	Findings   []FindingView `json:"findings"`
 }

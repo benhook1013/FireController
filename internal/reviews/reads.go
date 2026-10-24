@@ -233,7 +233,7 @@ func runs(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "validation_failed", "snapshot", "limit", "cursor", "channel")
+		query, err := core.QueryKeys(r, "validation_failed", "snapshot", "limit", "cursor", "channel", "view")
 		if err != nil {
 			core.WriteError(w, err)
 			return
@@ -255,6 +255,14 @@ func runs(store *core.Store) http.HandlerFunc {
 		channel := query.Get("channel")
 		if _, selected := query["channel"]; selected && !oneOf(channel, "hosted", "cli", "subagent", "manual") {
 			core.WriteError(w, validationError("Select hosted, cli, subagent or manual for the runs channel."))
+			return
+		}
+		if view, selected := query["view"]; selected {
+			if len(view) != 1 || view[0] != "timeline" {
+				core.WriteError(w, validationError("Select timeline for the runs view."))
+				return
+			}
+			serveTimelineRuns(w, r, store, scope, number, channel, limit, query.Get("snapshot"), query.Get("cursor"))
 			return
 		}
 		filter := fmt.Sprintf("reviews.runs:%d:v1", number)
@@ -354,13 +362,17 @@ func runDetail(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "validation_failed", "snapshot")
+		query, err := core.QueryKeys(r, "validation_failed", "snapshot", "view")
 		if err != nil {
 			core.WriteError(w, err)
 			return
 		}
 		if len(r.URL.RawQuery) > 4096 {
 			core.WriteError(w, validationError("The query exceeds its bounded size."))
+			return
+		}
+		if view, selected := query["view"]; selected && (len(view) != 1 || view[0] != "display") {
+			core.WriteError(w, validationError("Select display for the run detail view."))
 			return
 		}
 		runID := r.PathValue("run_id")
@@ -372,7 +384,7 @@ func runDetail(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, validationError("Use a valid review run identity."))
 			return
 		}
-		response := RunDetailResponse{ProjectID: scope.ProjectID, Findings: []Finding{}}
+		response := RunDetailResponse{ProjectID: scope.ProjectID, Findings: []FindingView{}}
 		err = store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
 			meta, found, err := selectSnapshot(ctx, tx, scope.ProjectID, query.Get("snapshot"))
 			if err != nil {
@@ -387,6 +399,9 @@ func runDetail(store *core.Store) http.HandlerFunc {
 		if err != nil {
 			core.WriteError(w, err)
 			return
+		}
+		if query.Get("view") == "display" {
+			addFindingDisplaySeverity(&response)
 		}
 		body, err := json.Marshal(response)
 		if err != nil || len(body)+1 > maxRunDetailBytes {

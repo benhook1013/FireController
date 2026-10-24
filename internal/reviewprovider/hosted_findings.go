@@ -178,8 +178,13 @@ func (d *findingDecoder) add(body string, start int, line findingLine, f HostedF
 	d.inventory.Findings = append(d.inventory.Findings, f)
 }
 
+var findingPictureSeverity = regexp.MustCompile(`^` + standingPicture + ` (Trivial|Minor|Major|Critical)$`)
+
 func findingSeverity(text string) string {
 	text = strings.TrimSpace(text)
+	if match := findingPictureSeverity.FindStringSubmatch(text); match != nil {
+		text = match[1]
+	}
 	for _, prefix := range []string{"🔵 ", "🟡 ", "🟠 ", "🔴 "} {
 		text = strings.TrimPrefix(text, prefix)
 	}
@@ -212,7 +217,7 @@ func (f *findingFields) severityValue(value string) {
 	f.severity = value
 }
 
-func (f *findingFields) metadata(text string) {
+func (f *findingFields) metadata(text string) (valid, explicitSeverity bool) {
 	parts := strings.Split(text, " | ")
 	for i, p := range parts {
 		switch {
@@ -221,12 +226,15 @@ func (f *findingFields) metadata(text string) {
 		case len(p) >= 2 && strings.HasPrefix(p, "_") && strings.HasSuffix(p, "_"):
 			parts[i] = p[1 : len(p)-1]
 		default:
-			return
+			return false, false
 		}
 	}
 	for _, p := range parts {
-		f.severityValue(findingSeverity(p))
+		value := findingSeverity(p)
+		f.severityValue(value)
+		explicitSeverity = explicitSeverity || value != ""
 	}
+	return true, explicitSeverity
 }
 
 func (f *findingFields) observe(text string) {

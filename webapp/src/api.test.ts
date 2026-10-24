@@ -259,6 +259,27 @@ describe('Api stored review workspace', () => {
     }
   });
 
+  it('selects bounded chronological summaries and validates presentation-only severity without changing source severity', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    const counts = {critical:0,major:0,minor:1,trivial:0,unknown:0,complete:true};
+    const fetch = vi.fn().mockResolvedValueOnce(json({...reviewSnapshot,items:[{...reviewRun,accepted_severity:counts}],has_more:false})).mockResolvedValueOnce(json({...reviewDetail,findings:[{...reviewFinding,severity:'unknown',display_severity:'low'}]}));
+    vi.stubGlobal('fetch',fetch);
+    const page = await client.reviewRuns(1,{view:'timeline',snapshot:reviewSnapshot.snapshot_id,limit:25});
+    expect(page.items[0].accepted_severity).toEqual(counts);
+    const url = new URL(String(fetch.mock.calls[0][0]),'https://service.example');
+    expect(url.searchParams.get('view')).toBe('timeline'); expect(url.searchParams.get('limit')).toBe('25');
+    const result = await client.reviewRun(reviewRun.id,reviewSnapshot.snapshot_id);
+    expect(new URL(String(fetch.mock.calls[1][0]),'https://service.example').searchParams.get('view')).toBe('display');
+    expect(result.findings[0].severity).toBe('unknown'); expect(result.findings[0].display_severity).toBe('low');
+    for (const accepted_severity of [{...counts,minor:-1},{...counts,minor:2},{...counts,extra:1},null]) {
+      vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json({...reviewSnapshot,items:[{...reviewRun,accepted_severity}],has_more:false})));
+      await expect(client.reviewRuns(1,{view:'timeline'})).rejects.toMatchObject({code:'invalid_response'});
+    }
+    const untouched = vi.fn(); vi.stubGlobal('fetch',untouched);
+    await expect(client.reviewRuns(1,{view:'unknown'} as never)).rejects.toMatchObject({code:'invalid_request'});
+    expect(untouched).not.toHaveBeenCalled(); client.close();
+  });
+
   it('reads retained merged history and four source channels using scoped GETs and explicit snapshot pages', async () => {
     setupLocation();
     const client = api();

@@ -102,6 +102,7 @@ function ReviewObligationList({ number }: { number: number }) {
   });
   useEffect(() => { if (query.error) fail(query.error); }, [query.error, fail]);
   const page = query.data;
+  if (page && !page.items.length && paging.number === 1 && !page.next_cursor && !query.error) return null;
   return <section className="panel review-history" aria-label={`PR #${number} carried review work`}>
     <h3>Carried review work</h3>
     {query.error ? <div role="alert" className="notice"><p>Carried review work could not be checked. {errorText(query.error)}</p><button type="button" disabled={query.isFetching} onClick={() => { void query.refetch(); }}>Retry carried work</button></div>

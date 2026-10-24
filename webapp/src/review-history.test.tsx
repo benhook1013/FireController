@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiError } from './api';
-import { InlineReviewFindings, ReviewHistoryGroups, ReviewHistoryRow, ReviewRunsView } from './review-workspace';
+import { InlineReviewFindings, ReviewHistoryGroups, ReviewHistoryRow, ReviewRunsView, ReviewAcceptedCounts, reviewDuration } from './review-workspace';
 import { WorkspaceContext, type Session } from './workspace';
 import type { ReviewRunDetail, ReviewRunSummary } from './types';
 
@@ -46,21 +46,36 @@ describe('per-PR inline retained review history', () => {
     expect(html).not.toContain('Private'); expect(html).not.toContain('review-history-findings"><');
     expect(html).not.toMatch(/Ready to merge|Round 1/u);
   });
-  it('groups channels while retaining their supplied producer order and source-qualified identities', () => {
-    const items = [run('first'), run('hosted', 'hosted'), { ...run('second'), source: 'producer-b', source_run_id: 'original-first' }, run('manual', 'manual')];
-    const html = markup(<ReviewHistoryGroups number={27} runs={items} snapshot={snapshot} head="head" partial={false} loading={false} failed={false} channelTotals={{hosted: 1, cli: 2, manual: 1, subagent: 0}} />);
-    expect(html).toContain('Hosted CodeRabbit'); expect(html).toContain('CLI CodeRabbit'); expect(html).toContain('Manual reviews');
-    expect(html).not.toContain('Subagent Reviews'); expect(html.indexOf('data-run-id="first"')).toBeLessThan(html.indexOf('data-run-id="second"'));
-    expect(html).toContain('2 runs'); expect(html).not.toContain('2 runs shown');
+  it('interleaves channels in supplied chronology and numbers each channel across a partial newest prefix', () => {
+    const items = [run('last'), run('hosted', 'hosted'), { ...run('previous'), source: 'producer-b', source_run_id: 'original-first' }, run('manual', 'manual')];
+    const html = markup(<ReviewHistoryGroups number={27} runs={items} snapshot={snapshot} head="head" partial loading={false} failed={false} channelTotals={{hosted: 5, cli: 8, manual: 1, subagent: 0}} />);
+    const positions = ['manual', 'previous', 'hosted', 'last'].map(id => html.indexOf(`data-run-id="${id}"`));
+    expect(positions.every((value, index) => index === 0 || value > positions[index - 1])).toBe(true);
+    for (const label of ['CLI #8', 'CLI #7', 'Hosted #5', 'Manual #1']) expect(html).toContain(label);
+    expect(html).not.toContain('original-first');
+    expect(html.match(/<ul class="review-history-run-list">/gu)).toHaveLength(1);
   });
-  it('uses the same capitalized Subagent Reviews heading in queue lanes and full history', () => {
+  it('keeps capitalized Subagent Reviews in queue lanes and compact Subagent round labels in the mixed timeline', () => {
     const totals = { hosted: 0, cli: 0, manual: 0, subagent: 1 };
     const history = markup(<ReviewHistoryGroups number={27} runs={[run('subagent', 'subagent')]} snapshot={snapshot} head="head" partial={false} loading={false} failed={false} channelTotals={totals} />);
     const lanes = markup(<ReviewRunsView number={27} snapshot={snapshot} head="head" attempts={[]} expected={1} channelTotals={totals} />);
-    for (const html of [history, lanes]) {
-      expect(html).toContain('<h4>Subagent Reviews</h4>');
-      expect(html).not.toContain('Subagent reviews');
-    }
+    expect(history).toContain('Subagent #1');
+    expect(lanes).toContain('<h4>Subagent Reviews</h4>');
+    expect(lanes).not.toContain('Subagent reviews');
+  });
+  it('shows captured accepted severities without fabricating missing breakdowns', () => {
+    const value = { ...run('counts'), accepted: 4, accepted_severity: {critical: 1, major: 1, minor: 1, trivial: 0, unknown: 1, complete: true} };
+    const html = markup(<ReviewAcceptedCounts run={value} />);
+    for (const text of ['Critical', 'Major', 'Minor', 'Trivial', 'severity unknown']) expect(html).toContain(text);
+    expect(html).toContain('4 accepted findings');
+    const incomplete = markup(<ReviewAcceptedCounts run={{...value, accepted_severity:{...value.accepted_severity,complete:false}}} />);
+    expect(incomplete).toContain('<strong>4</strong> accepted');
+    expect(incomplete).not.toContain('Major');
+  });
+  it('shows review duration only when original timing is known and ordered', () => {
+    expect(reviewDuration(run('timed'))).toBe('1m 0s');
+    expect(reviewDuration({...run('unknown'), started_at:''})).toBeUndefined();
+    expect(reviewDuration({...run('reversed'), started_at:'2026-10-19T00:00:00Z'})).toBeUndefined();
   });
   it('keeps evidence qualification without treating later Git changes as lost progress', () => {
     const value = { ...run('pending'), outcome: 'failed' as const, complete: false, attributable: false, finalized: false, finished_at: '' };

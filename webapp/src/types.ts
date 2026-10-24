@@ -45,7 +45,8 @@ export interface WatchCallbacks {snapshot(value: InboxSnapshot): void|Promise<vo
 export type ReviewChannel = 'cli'|'hosted'|'manual'|'subagent';
 export type ReviewOutcome = 'completed'|'active'|'prepared'|'posting'|'failed'|'cancelled'|'rate_limited'|'uncertain'|'unknown';
 export type ReviewAttemptState = ReviewOutcome|'preparing'|'held';
-export interface ReviewRunSummary {source: string; id: string; pull_number: number; source_run_id: string; channel: ReviewChannel; head_sha: string; reviewer: string; scope: string; coverage_limits: string[]; outcome: ReviewOutcome; attributable: boolean; complete: boolean; started_at: string; finished_at: string; found: number; accepted: number; routed: number; finalized: boolean; fixed: number}
+export interface ReviewAcceptedSeverity {critical: number; major: number; minor: number; trivial: number; unknown: number; complete: boolean}
+export interface ReviewRunSummary {accepted_severity?: ReviewAcceptedSeverity; source: string; id: string; pull_number: number; source_run_id: string; channel: ReviewChannel; head_sha: string; reviewer: string; scope: string; coverage_limits: string[]; outcome: ReviewOutcome; attributable: boolean; complete: boolean; started_at: string; finished_at: string; found: number; accepted: number; routed: number; finalized: boolean; fixed: number}
 export interface ReviewAttemptSummary {reason?: string; source_attempt_id: string; channel: ReviewChannel; head_sha: string; state: ReviewAttemptState; started_at: string; finished_at: string; duration_seconds: number | null; source_run_id: string; trigger_id: string; provider_review_id: string}
 export interface ReviewPullDiff {files: number; additions: number; deletions: number}
 export type ReviewRunCounts = Record<ReviewChannel, number>;
@@ -53,11 +54,11 @@ export interface ReviewPullObservationHealth {state: 'not_enrolled'|'unavailable
 export interface ReviewObserverHealth {state: 'running'|'unavailable'|'unconfigured'; started_at?:string}
 export interface ReviewPullSummary {observation?:ReviewPullObservationHealth;queue_position?: number; diff?: ReviewPullDiff; is_draft?: boolean; merged_at?: string; number: number; title: string; state: 'open'|'merged'|'closed'|'unknown'; head_sha: string; base_ref: string; base_sha: string; ci_state: 'unknown'|'pending'|'success'|'failure'; mergeability: 'unknown'|'mergeable'|'conflicting'; complete: boolean; run_count: number; run_counts: ReviewRunCounts; attempt_count: number; recent_runs: ReviewRunSummary[]; latest_attempts: ReviewAttemptSummary[]}
 export interface ReviewFindingRoute {id:string;target_pull_number:number;revision:number;state:"active"|"superseded";disposition:"unadjudicated"|"accepted"|"rejected";reason:string;actor:string;decided_at:string;fix_sha:string;proof_note:string;fixed_at:string}
-export interface ReviewFinding {route?:ReviewFindingRoute;source_finding_id: string; title: string; detail: string; severity: 'info'|'low'|'medium'|'high'|'critical'|'unknown'; disposition: 'unadjudicated'|'accepted'|'routed'|'rejected'; decision_reason: string; actor: string; decided_at: string; fix_sha: string; proof_note: string; resolved_at: string}
+export interface ReviewFinding {display_severity?: ReviewFinding['severity']; route?:ReviewFindingRoute;source_finding_id: string; title: string; detail: string; severity: 'info'|'low'|'medium'|'high'|'critical'|'unknown'; disposition: 'unadjudicated'|'accepted'|'routed'|'rejected'; decision_reason: string; actor: string; decided_at: string; fix_sha: string; proof_note: string; resolved_at: string}
 export interface ReviewSnapshot {project_id: string; revision: number; snapshot_id: string; source: string; observed_at: string; recorded_at: string}
 export interface ReviewQueue extends ReviewSnapshot, Page<ReviewPullSummary> {observer?:ReviewObserverHealth;configured: boolean; head_position?: number}
 export interface ReviewPull extends ReviewSnapshot {pull: ReviewPullSummary}
-export interface ReviewRunOptions extends PageOptions {snapshot?: string; channel?: ReviewChannel}
+export interface ReviewRunOptions extends PageOptions {snapshot?: string; channel?: ReviewChannel; view?: 'timeline'}
 export interface ReviewRuns extends ReviewSnapshot, Page<ReviewRunSummary> {}
 export interface ReviewAttemptItem extends ReviewAttemptSummary {source: string}
 export interface ReviewAttemptOptions extends PageOptions {snapshot?: string}

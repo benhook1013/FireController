@@ -193,7 +193,11 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	if err != nil {
 		return Receipt{}, false, err
 	}
-	run := RunInput{SourceRunID: detail.Run.SourceRunID, Channel: detail.Run.Channel, HeadSHA: detail.Run.HeadSHA, Reviewer: detail.Run.Reviewer, Scope: detail.Run.Scope, Outcome: detail.Run.Outcome, Attributable: detail.Run.Attributable, Complete: detail.Run.Complete, StartedAt: detail.Run.StartedAt, FinishedAt: detail.Run.FinishedAt, Found: found, Accepted: accepted, Routed: routed, Finalized: input.Finalized, CoverageLimits: detail.Run.CoverageLimits, Findings: detail.Findings}
+	findings := make([]Finding, len(detail.Findings))
+	for i, finding := range detail.Findings {
+		findings[i] = finding.Finding
+	}
+	run := RunInput{SourceRunID: detail.Run.SourceRunID, Channel: detail.Run.Channel, HeadSHA: detail.Run.HeadSHA, Reviewer: detail.Run.Reviewer, Scope: detail.Run.Scope, Outcome: detail.Run.Outcome, Attributable: detail.Run.Attributable, Complete: detail.Run.Complete, StartedAt: detail.Run.StartedAt, FinishedAt: detail.Run.FinishedAt, Found: found, Accepted: accepted, Routed: routed, Finalized: input.Finalized, CoverageLimits: detail.Run.CoverageLimits, Findings: findings}
 	for i := range run.Findings {
 		finding := &run.Findings[i]
 		update := updates[finding.SourceFindingID]

@@ -84,7 +84,7 @@ describe('private carried review work', () => {
     const loading = fixture();
     const failed = fixture({ items: [{ ...item, affected_pull_numbers: [3251] }] });
     try {
-      expect(empty.render()).toContain('No open carried review work for this PR.');
+      expect(empty.render()).toBe('');
       const pending = loading.render();
       expect(pending).toContain('Loading carried review work');
       expect(pending).not.toContain('No open carried');
