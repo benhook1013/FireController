@@ -23,7 +23,7 @@ type helpResponse struct {
 func localHelp() helpResponse {
 	out := helpResponse{
 		Usage:   "<bound launcher> <command> [arguments]",
-		Binding: "Use the launcher assigned to this role/project. Global --profile and --profiles-file select an explicit local binding; no mutable active selection is saved.",
+		Binding: "Use this role/project launcher. --profile and --profiles-file select an explicit binding; no mutable active selection.",
 		CommandGroups: []helpGroup{
 			{"local discovery", []helpCommand{
 				{"help | --help | -h", "Local orientation; selected commands accept --help. No profile, credential or network reads."},
@@ -46,19 +46,19 @@ func localHelp() helpResponse {
 				{"inbox send --to WORKER_ID --body TEXT --key KEY", "Send one message as the bound worker; explicit mutation with a recoverable key."},
 			}},
 			{"guarded changes and archives", []helpCommand{
-				{"jobs update | checklist-item | checklist-set | summary-set", "Deliberate job changes use explicit keys and required revision guards. See release documentation for fields and byte limits."},
+				{"jobs update | checklist-item | checklist-set | summary-set", "Job changes need explicit keys and revision guards; release docs specify fields and limits."},
 				{"map update ENTRY_ID --expect-revision N --file CHANGES_JSON --key KEY", "Change only selected Project fields; omitted content stays unchanged."},
 				{"publication prepare --file CHANGES_JSON --output NEW_PRIVATE_FILE", "Administrator linked-selection preview; writes an exact private apply file without publishing."},
 				{"jobs progress-history JOB_ID", "One explicit current-progress archive page; no automatic continuation."},
 				{"jobs history JOB_ID", "One explicit private job-history page; list/history/thread commands never silently fetch every page."},
-				{"reviews queue", "Stored review workspace only. Review requests, source refreshes and publication are separate authorized operations; help grants no permission."},
+				{"reviews queue", "Stored workspace; requests, refreshes and publication are separate authorized actions."},
 				{"reviews operations", "Pending operations; --all finds lost receipts in history. reviews operation ID reads detail; no provider work."},
 				{"reviews help", "Local review command discovery; decide, fix, finalize and publish each accept --help with exact fields, guards and side effects."},
 				{"reviews evidence | adjudication | decide | fix | finalize", "Native evidence and guarded decisions/fix proof: docs/review-controls.md. reviews publish --help covers GitHub checkpoints."},
 			}},
 		},
 	}
-	out.Documentation.Basis = "Use documentation from the same release as this executable; a current source checkout or server may expose newer behavior. Client source metadata does not identify the service deployment."
+	out.Documentation.Basis = "Use documentation from the same release. Client source metadata identifies this executable, not the service deployment."
 	out.Documentation.Paths = []string{"docs/development.md", "docs/agent-client.md", "docs/local-api.md"}
 	return out
 }
