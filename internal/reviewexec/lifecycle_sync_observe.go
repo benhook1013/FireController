@@ -109,10 +109,11 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		if reader, ok := target.reader.(sourceCIReader); ok {
 			ciCtx, ciCancel := context.WithTimeout(ctx, 30*time.Second)
 			observation, readErr := reader.ObserveRequiredCI(ciCtx, sourceCITarget(sourcePlanObservation(plan)))
-			ciCancel()
 			if readErr != nil {
 				providerErr = readErr
-				ciReason = lifecycleErrorCode(readErr)
+				// Classify before cleanup cancels the collection context, or an
+				// ordinary provider failure would look like caller cancellation.
+				ciReason = sourceCIErrorReason(ciCtx, readErr)
 			} else if validSourceCI(observation, sourcePlanObservation(plan)) && !observation.StartedAt.Before(mustLifecycleTime(plan.ObservedAt)) && !observation.ObservedAt.Before(observation.StartedAt) && !observation.ObservedAt.After(time.Now().Add(5*time.Second)) {
 				ciReason = observation.Reason
 				if ciReason == "" && observation.State == "unproven" {
@@ -127,6 +128,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 					ciState = "pending"
 				}
 			}
+			ciCancel()
 		}
 	}
 	if ctx.Err() != nil {

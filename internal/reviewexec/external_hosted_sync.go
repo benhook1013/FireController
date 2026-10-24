@@ -84,7 +84,7 @@ func (e *Engine) externalHostedInputs(ctx context.Context, tx *sql.Tx, target li
 		if !known && cutoff != "" && !run.FinishedAt.IsZero() && !run.FinishedAt.After(floor) {
 			continue
 		}
-		if !run.Inventory.Complete || run.FinishedAt.IsZero() || len(run.Inventory.Findings) > 100 {
+		if run.FinishedAt.IsZero() || len(run.Inventory.Findings) > 100 {
 			held = true
 			continue
 		}
@@ -101,13 +101,13 @@ func (e *Engine) externalHostedInputs(ctx context.Context, tx *sql.Tx, target li
 				held = true
 				continue
 			}
-			// A retired observer identity or another historical producer cannot
-			// require repair. Avoid native capture parsing on every later tick.
+			// Complete retired identities cannot require repair. An incomplete
+			// inventory still needs exact native capture proof before it can skip.
 			var currentObserver bool
 			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_run_versions v INDEXED BY review_run_versions_external_source JOIN review_current_runs c ON c.project_id=v.project_id AND c.id=v.id WHERE v.project_id=? AND v.source_run_id=? AND v.source='github-hosted-observer')`, target.project, run.SourceID).Scan(&currentObserver); err != nil {
 				return nil, false, err
 			}
-			if !currentObserver {
+			if !currentObserver && run.Inventory.Complete {
 				continue
 			}
 		}
@@ -133,6 +133,13 @@ func (e *Engine) externalHostedInputs(ctx context.Context, tx *sql.Tx, target li
 			continue
 		}
 		if ambiguous {
+			held = true
+			continue
+		}
+		// Later mutable provider text cannot invalidate exact retained native
+		// ownership. All other incomplete inventories remain unproven, including
+		// sources carrying only a native operation marker.
+		if !run.Inventory.Complete {
 			held = true
 			continue
 		}
