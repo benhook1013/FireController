@@ -33,11 +33,18 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	switch operation {
 	case "reviews help":
 		out.Usage = "<bound launcher> reviews help"
-		out.Optional = []string{"reviews decide --help", "reviews fix --help", "reviews finalize --help", "reviews publish --help", "reviews request --help", "reviews operation --help"}
+		out.Optional = []string{"reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews finalize --help", "reviews publish --help", "reviews request --help", "reviews operation --help"}
 		out.Semantics = []string{"Read retained findings with reviews evidence EVIDENCE_ID and current decisions/revision with reviews adjudication EVIDENCE_ID.", "decide, fix and finalize are guarded local evidence changes. publish explicitly requests a historical-count checkpoint comment on GitHub; request explicitly requests a review. Neither is implied by adjudication or help.", "Use the help for the selected operation; all help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
 		out.Example = "<bound launcher> reviews decide --help"
 		out.Documentation = "docs/review-controls.md"
 		out.Next = "docs/review-publication.md describes GitHub checkpoint publication; docs/review-execution.md describes review requests and retained operations."
+	case "reviews runs":
+		out.Usage = "<bound launcher> reviews runs NUMBER [--snapshot SNAPSHOT_ID] [--limit N] [--cursor CURSOR]"
+		out.Required = []string{"NUMBER (canonical positive PR number)"}
+		out.Optional = []string{"--snapshot SNAPSHOT_ID (retained snapshot; omission reads the current stored workspace)", "--limit N (1-100, default 5)", "--cursor CURSOR (continue the same scoped snapshot)"}
+		out.Semantics = []string{"Reads one newest-first stored run-summary page without full findings, automatic pagination, provider refresh or new review.", "Top-level observed_at is the retained workspace source-observation time. Publishing one native run preserves it; it can be older than that run's finished_at and does not mean the run is stale.", "Top-level recorded_at is when that workspace snapshot was recorded, not when every PR was refreshed. Each item's started_at/finished_at describes that review's capture window; item source identifies its original producer, distinct from top-level source.", "Use reviews run RUN_ID for full retained findings and original native operation/evidence anchors for execution status and applicability. Neither envelope nor run timestamps alone establish current GitHub freshness or coverage."}
+		out.Example = "<bound launcher> reviews runs 42 --limit 5"
+		out.Documentation = "docs/review-workspace.md"
 	case "reviews decide":
 		out.Usage = "<bound launcher> reviews decide EVIDENCE_ID --key KEY --expect-revision N --finding INDEX --disposition accepted|rejected --reason TEXT [--expect-route-revision N]"
 		out.Required = []string{"EVIDENCE_ID", "--key KEY", "--expect-revision N (current adjudication revision, initially 0)", "--finding INDEX (zero-based, 0-99)", "--disposition accepted|rejected", "--reason TEXT (nonblank, up to 2048 UTF-8 bytes)"}

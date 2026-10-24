@@ -24,7 +24,7 @@ func TestOperationHelpIsOfflineBoundedAndDoesNotReadFiles(t *testing.T) {
 	if err := os.WriteFile(path, before, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews fix", "reviews decide", "reviews finalize", "reviews publish"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews finalize", "reviews publish"} {
 		for _, spelling := range [][]string{append(strings.Fields(operation), "--help"), append([]string{"help"}, strings.Fields(operation)...)} {
 			for _, profilePath := range []string{path, filepath.Join(t.TempDir(), "missing.json")} {
 				args := append([]string{"--profile=bound-role", "--profiles-file", profilePath}, spelling...)
@@ -112,8 +112,19 @@ func TestReviewHelpDiscoveryIsLocalAndKeepsOperationSemantics(t *testing.T) {
 	}
 }
 
+func TestRunHelpKeepsSnapshotAndRunTimeMeaningSeparate(t *testing.T) {
+	call, ok := parseInvocation([]string{"reviews", "runs", "42", "--snapshot", "review_snapshot_0123456789abcdef0123456789abcdef", "--limit", "2", "--cursor", "retained-page"})
+	if !ok || call.mutation != nil || call.pullNumber != 42 || call.limit != 2 || call.cursor != "retained-page" || call.helpOperation != "" {
+		t.Fatal("help example does not select the bounded stored run read")
+	}
+	help, ok := operationHelp("reviews runs")
+	if !ok || !strings.Contains(strings.Join(help.Semantics, " "), "older than that run's finished_at") || !strings.Contains(strings.Join(help.Semantics, " "), "not when every PR was refreshed") || !strings.Contains(strings.Join(help.Semantics, " "), "original native operation/evidence anchors") {
+		t.Fatal("run help conflates snapshot times, capture times or current coverage")
+	}
+}
+
 func TestOperationErrorsPointToSelectedHelpWithoutEchoingArguments(t *testing.T) {
-	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare", "reviews fix", "reviews decide", "reviews finalize", "reviews publish"} {
+	for _, operation := range []string{"jobs create", "jobs update", "jobs checklist-item", "inbox send", "notes add", "notes update", "map update", "publication prepare", "reviews fix", "reviews decide", "reviews finalize", "reviews publish", "reviews runs"} {
 		var stdout, stderr bytes.Buffer
 		args := append(strings.Fields(operation), "--private-typo=DO_NOT_ECHO")
 		if code := RunContext(t.Context(), args, map[string]string{"FC_PROFILE": "missing"}, &stdout, &stderr); code != ExitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), operation+" --help") || strings.Contains(stderr.String(), "DO_NOT_ECHO") {
