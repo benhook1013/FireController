@@ -33,11 +33,23 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	switch operation {
 	case "reviews help":
 		out.Usage = "<bound launcher> reviews help"
-		out.Optional = []string{"reviews queue --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews finalize --help", "reviews publish --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
-		out.Semantics = []string{"queue, assess, source-assess, ci-assess and readiness read retained state. Read findings with reviews evidence EVIDENCE_ID and decisions/revision with reviews adjudication EVIDENCE_ID.", "source-refresh explicitly reads GitHub. request submits review work; publish requests a checkpoint comment. decide, fix and finalize change local evidence. Help performs none of these actions.", "All help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
+		out.Optional = []string{"reviews queue --help", "reviews rounds --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews finalize --help", "reviews publish --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
+		out.Semantics = []string{"queue, rounds read, assess, source-assess, ci-assess and readiness read retained state. Read findings with reviews evidence EVIDENCE_ID and decisions/revision with reviews adjudication EVIDENCE_ID.", "source-refresh explicitly reads GitHub. request submits review work; publish requests a checkpoint comment. decide, fix and finalize change local evidence. Help performs none of these actions.", "All help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
 		out.Example = "<bound launcher> reviews decide --help"
 		out.Documentation = "docs/review-controls.md"
 		out.Next = "docs/review-publication.md describes GitHub checkpoint publication; docs/review-execution.md describes review requests and retained operations."
+	case "reviews rounds":
+		out.Usage = "<bound launcher> reviews rounds read --pr NUMBER --channel cli|hosted"
+		out.Optional = []string{"reviews rounds read --help"}
+		out.Semantics = []string{"read returns current local per-PR/channel minimum, maximum, used, dry streak, taper, closure and revision without provider work.", "grant and close are separate explicit mutations described in the matching documentation. Help does not change settings or request a review."}
+		out.Example = "<bound launcher> reviews rounds read --pr 42 --channel hosted"
+		out.Documentation = "docs/review-round-controls.md"
+	case "reviews rounds read":
+		out.Usage = "<bound launcher> reviews rounds read --pr NUMBER --channel cli|hosted"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)", "--channel cli|hosted"}
+		out.Semantics = []string{"Reads current local settings and credited completion counters for one PR/channel without provider work or writes. configured:false and revision zero explicitly mean no retained grant.", "Returns minimum, maximum, used, dry, taper, tapered, closed and revision. These counters are separate from historical run totals.", "For a finite maximum, maximum minus used is remaining completed-round capacity before in-flight work. maximum_unbounded:true has no finite remainder. Taper, closure, pending finalization and other admission requirements can still prevent another start; this read grants no permission."}
+		out.Example = "<bound launcher> reviews rounds read --pr 42 --channel cli"
+		out.Documentation = "docs/review-round-controls.md"
 	case "reviews queue":
 		out.Usage = "<bound launcher> reviews queue [--limit N] [--cursor CURSOR]"
 		out.Optional = []string{"--limit N (1-100, default 5)", "--cursor CURSOR (continue the returned retained-snapshot page)"}

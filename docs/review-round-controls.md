@@ -34,6 +34,8 @@ Control reads are local, compact and provider-free. Project write mutations use 
 
 ## Bound commands and API
 
+`fc reviews help` lists local round-control discovery. `fc reviews rounds --help` identifies the existing settings read, and `fc reviews rounds read --help` explains its selectors and counters without loading profiles or contacting the service. The read selects one explicit PR and Hosted or CLI channel; inspecting both channels uses two reads.
+
 Commands use the selected project profile with ordinary project write permission. Workers can grant, close and reopen a PR/channel directly; no Overseer identity or administrator handoff is required. Read-only credentials and read-only browser sessions cannot change controls. Reads retain the ordinary five-second budget and perform no provider work. `--min` defaults to zero; `--exact` is exclusive with `--min` and `--max`. A close requires the current revision and omits allocation fields.
 
 ```sh

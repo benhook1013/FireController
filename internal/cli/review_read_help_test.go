@@ -136,3 +136,35 @@ func TestReviewReadHelpDiscoveryRemainsLocalAndSeparatesExternalRefresh(t *testi
 		}
 	}
 }
+
+func TestReviewRoundReadHelpRemainsLocalWithExactSelectors(t *testing.T) {
+	for _, spelling := range [][]string{{"reviews", "rounds", "--help"}, {"help", "reviews", "rounds"}, {"reviews", "rounds", "read", "--help"}, {"help", "reviews", "rounds", "read"}} {
+		args := append([]string{"--profiles-file", "/missing/PRIVATE_ROUND_PROFILE", "--profile", "builder"}, spelling...)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		var stdout, stderr bytes.Buffer
+		code := RunContext(ctx, args, nil, &stdout, &stderr)
+		var help operationHelpResponse
+		if code != ExitSuccess || stderr.Len() != 0 || stdout.Len() > 4096 || json.Unmarshal(stdout.Bytes(), &help) != nil || help.Usage != "<bound launcher> reviews rounds read --pr NUMBER --channel cli|hosted" || help.Documentation != "docs/review-round-controls.md" || strings.Contains(stdout.String(), "PRIVATE") {
+			t.Fatal("round-read discovery reached profile access or lost its selectors", spelling, code, &stdout, &stderr)
+		}
+		if call, ok := parseInvocation(strings.Fields(strings.TrimPrefix(help.Example, "<bound launcher> "))); !ok || call.rounds == nil || call.rounds.operation != "read" || call.rounds.pull != 42 {
+			t.Fatal("help example does not select the existing read parser")
+		}
+	}
+	group, ok := operationHelp("reviews help")
+	if !ok || !strings.Contains(strings.Join(group.Optional, " "), "reviews rounds --help") {
+		t.Fatal("review discovery omitted the current-control read")
+	}
+	for _, args := range [][]string{
+		{"reviews", "rounds", "read", "--help", "--pr", "42"},
+		{"reviews", "rounds", "read", "--pr", "--help", "--channel", "cli"},
+		{"reviews", "rounds", "read", "--pr", "42", "--channel", "--help"},
+		{"help", "reviews", "rounds", "read", "extra"},
+		{"reviews", "rounds", "grant", "--help"},
+	} {
+		if _, ok := parseInvocation(args); ok {
+			t.Fatal("help expanded unsupported argument grammar", args)
+		}
+	}
+}

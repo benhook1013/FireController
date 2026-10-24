@@ -413,6 +413,10 @@ func parseInvocation(args []string) (invocation, bool) {
 		return call, validHelpOptions(call.options)
 	}
 	if call.command == "version" || call.command == "help" {
+		if remaining[0] == "help" && len(remaining) == 4 && remaining[1] == "reviews" && remaining[2] == "rounds" && remaining[3] == "read" {
+			call.helpOperation = "reviews rounds read"
+			return call, validHelpOptions(call.options)
+		}
 		if remaining[0] == "help" && len(remaining) == 3 {
 			call.helpOperation = remaining[1] + " " + remaining[2]
 			_, exists := operationHelp(call.helpOperation)
@@ -439,6 +443,10 @@ func parseInvocation(args []string) (invocation, bool) {
 	operationArgs := remaining[2:]
 	// Help is an exact grammar, not a scan for help-looking values. In
 	// particular, --body --help remains ordinary submitted text.
+	if call.command == "reviews" && call.subcommand == "rounds" && len(operationArgs) == 2 && operationArgs[0] == "read" && operationArgs[1] == "--help" {
+		call.command, call.helpOperation = "help", "reviews rounds read"
+		return call, validHelpOptions(call.options)
+	}
 	if len(operationArgs) == 1 && operationArgs[0] == "--help" {
 		if _, exists := operationHelp(call.command + " " + call.subcommand); exists {
 			call.helpOperation = call.command + " " + call.subcommand
