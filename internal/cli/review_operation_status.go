@@ -59,5 +59,6 @@ func executeReviewOperationStatus(ctx context.Context, service *client.Client, v
 	if value.Diagnostics {
 		return service.WaitReviewOperation(ctx, value.ID, value.WaitSeconds)
 	}
-	return service.WaitReviewOperationStatus(ctx, value.ID, value.WaitSeconds)
+	status, err := service.WaitReviewOperationStatus(ctx, value.ID, value.WaitSeconds)
+	return client.AgentReviewOperationStatus(status), err
 }

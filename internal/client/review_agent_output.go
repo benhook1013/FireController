@@ -15,6 +15,15 @@ func AgentReviewRuns(value ReviewRuns) ReviewRunsOutput {
 	return ReviewRunsOutput{value.ProjectID, value.Revision, value.SnapshotID, value.Items, value.Cursor, value.HasMore}
 }
 
+// Scheduled observation owns this issued Hosted trigger. Preserve uncertainty
+// and every original identity; the caller need not escalate an ordinary gap.
+func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStatus {
+	if value.Channel == "hosted" && value.State == "uncertain" && value.Stage == "uncertain" && value.Reason == "hosted_observation_pending" && value.AttemptID != "" && value.NextAction == "contact_controller_owner" {
+		value.NextAction = "wait_for_observation"
+	}
+	return value
+}
+
 type ReviewCIDiagnostic struct {
 	Explanation string `json:"explanation"`
 	NextAction  string `json:"next_action"`

@@ -15,6 +15,33 @@ func TestAgentRunOutputKeepsRunDatesAndCursor(t *testing.T) {
 		t.Fatal(string(b))
 	}
 }
+
+func TestAgentOperationStatusOnlySoftensKnownScheduledObservation(t *testing.T) {
+	base := ReviewOperationStatus{ID: "original", Channel: "hosted", State: "uncertain", Stage: "uncertain", Reason: "hosted_observation_pending", AttemptID: "original_attempt", Revision: 5, UpdatedAt: "original_time", NextAction: "contact_controller_owner"}
+	for _, change := range []func(*ReviewOperationStatus){nil,
+		func(v *ReviewOperationStatus) { v.Channel = "cli" },
+		func(v *ReviewOperationStatus) { v.Reason = "trigger_post_unproven" },
+		func(v *ReviewOperationStatus) { v.Reason = "hosted_observation_conflict" },
+		func(v *ReviewOperationStatus) {
+			v.Reason = "hosted_finished_inventory_unproven"
+			v.Stage = "capture_blocked"
+		},
+		func(v *ReviewOperationStatus) { v.State = "active"; v.Stage = "provider_wait"; v.NextAction = "wait" },
+		func(v *ReviewOperationStatus) { v.AttemptID = "" },
+	} {
+		value := base
+		if change != nil {
+			change(&value)
+		}
+		want := value
+		if change == nil {
+			want.NextAction = "wait_for_observation"
+		}
+		if got := AgentReviewOperationStatus(value); got != want {
+			t.Fatal("guidance changed retained facts or unrelated uncertainty", got, want)
+		}
+	}
+}
 func TestAgentCIDiagnosticPreservesRefusal(t *testing.T) {
 	for _, reason := range []string{"ci_merge_identity_unproven", "ci_merge_pending", "ci_provider_observation_changed_assessment", "ci_observation_changed", "ci_provider_invalid_response_assessment", "other_reason"} {
 		v := ReviewSourceCIAssessment{State: "unproven", Reason: reason}
