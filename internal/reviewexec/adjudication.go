@@ -230,6 +230,9 @@ func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, k
 			return nil, err
 		}
 		if a.State != "completed" {
+			if a.State == "uncertain" {
+				return nil, core.Fail("review_result_unsettled", "The complete captured result awaits settlement of its original review attempt.", 409)
+			}
 			return nil, conflict()
 		}
 		counts := FindingCounts{Found: int64(len(state.Findings))}

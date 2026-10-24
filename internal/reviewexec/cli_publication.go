@@ -167,8 +167,10 @@ func publicationReplay(ctx context.Context, tx *sql.Tx, project string, number i
 		FROM review_workspace w JOIN review_runs r ON r.project_id=w.project_id AND r.snapshot_id=w.snapshot_id
 		WHERE w.project_id=? AND r.source='native-executor' AND r.source_run_id=?`, project, expected.SourceRunID).Scan(&receipt.ID, &receipt.Revision, &actualNumber, &runID, &actual.SourceRunID, &actual.Channel, &actual.HeadSHA, &actual.Reviewer, &actual.Scope, &actual.Outcome, &actual.Attributable, &actual.Complete, &actual.StartedAt, &actual.FinishedAt, &actual.Found, &actual.Accepted, &actual.Routed, &actual.Finalized, &fixed, &limits)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Source existence is indexed retained authority. Expanding the historical
+		// snapshot view here multiplies an absent capture across every snapshot.
 		var historical bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_runs WHERE project_id=? AND source='native-executor' AND source_run_id=?)`, project, expected.SourceRunID).Scan(&historical); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_run_versions WHERE project_id=? AND source='native-executor' AND source_run_id=?)`, project, expected.SourceRunID).Scan(&historical); err != nil {
 			return reviews.Receipt{}, false, err
 		}
 		if historical {

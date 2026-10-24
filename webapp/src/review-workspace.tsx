@@ -244,7 +244,7 @@ export function ReviewPullView() {
   const { session, key, home } = useWorkspace();
   const query = useQuery({ queryKey: [...key, 'reviews', snapshot ?? 'current', 'pull', number], queryFn: ({ signal }) => session.api.reviewPull(number, snapshot, signalFor(session, signal)), staleTime: Infinity });
   const value = query.data;
-  return <article className="review-detail-page"><Link className="back-link" to={`${home}/reviews`}>← Review queue</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <>
+  return <article className="review-detail-page"><Link className="back-link" to={`${home}/reviews#review-pr-${number}`}>← Review queue</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <>
     <header className="review-detail-heading"><div className="review-detail-title"><a className="review-detail-number" href={githubLink(session.project, `pull/${value.pull.number}`)} target="_blank" rel="noopener noreferrer">#{value.pull.number}</a><h2>{value.pull.title}</h2></div><ReviewPullFacts pull={value.pull} /></header>
     <ReviewObligations number={number} />
     <ReviewRoundHistory key={`${number}:${value.snapshot_id}`} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} expected={value.pull.run_count} channelTotals={value.pull.run_counts} />

@@ -463,6 +463,10 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 		result.Message = "No completed source refresh with readiness is available for this PR."
 		result.Action = "Read the last source-refresh operation. If held, resolve its reason first; then refresh the current comparison with include_readiness and assess the completed result. Do not change credentials after a successful identity check."
 	}
+	if result.Code == "review_result_unsettled" {
+		result.Message = "The complete captured result awaits settlement of its original review attempt."
+		result.Action = "Read the original review operation and retained evidence. Resolve its local settlement hold before retrying finalization; contact the controller owner if it persists. Do not rerun the provider review or change credentials."
+	}
 	if result.Code == "instance_mismatch" {
 		result.Message = "The service instance does not match the selected profile."
 		result.Action = "Verify the service and explicitly update the private profile if its identity changed."

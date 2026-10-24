@@ -223,7 +223,11 @@ func TestCLIAdjudicationFinalizationRequiresCompleteSettledDecisions(t *testing.
 					t.Fatal("empty completed capture did not finalize", got)
 				}
 			} else {
-				attemptCode(t, err, "review_conflict")
+				code := "review_conflict"
+				if name == "uncertain" {
+					code = "review_result_unsettled"
+				}
+				attemptCode(t, err, code)
 				if adjudicationState(t, f, a) != before {
 					t.Fatal("ineligible finalization changed state")
 				}
