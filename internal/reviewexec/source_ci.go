@@ -98,6 +98,14 @@ func observeSourceCI(ctx context.Context, reader TargetReader, plan SourcePlan) 
 // Retain only known safe classes. Adapter messages, URLs and partial inventories
 // are not evidence of a complete CI collection and never enter this outcome.
 func sourceCIErrorReason(ctx context.Context, err error) string {
+	reason := sourceCIErrorClass(ctx, err)
+	if stage := reviewprovider.CICollectionStage(err); stage != "" {
+		return reason + "_" + stage
+	}
+	return reason
+}
+
+func sourceCIErrorClass(ctx context.Context, err error) string {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
 		return "ci_collection_deadline"
 	}

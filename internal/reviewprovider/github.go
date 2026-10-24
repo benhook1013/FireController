@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -271,7 +272,7 @@ func (g *GitHub) getJSON(ctx context.Context, path string, query url.Values, dst
 
 func (g *GitHub) requestJSON(ctx context.Context, method, path string, query url.Values, body []byte, expectedStatus int, dst any) error {
 	if ctx == nil || ctx.Err() != nil {
-		return providerError("provider_unavailable", "The provider request was canceled.", 0, 0, false)
+		return providerTransportError(ctx, nil, false)
 	}
 	if g == nil || g.httpClient == nil || !validBaseURL(g.baseURL) || path == "" || path[0] != '/' {
 		return providerError("provider_unavailable", "The provider adapter is unavailable.", 0, 0, false)
@@ -308,15 +309,18 @@ func (g *GitHub) requestJSON(ctx context.Context, method, path string, query url
 	}
 	response, err := g.httpClient.Do(request)
 	if err != nil {
-		return providerError("provider_unavailable", "The provider request failed.", 0, 0, method == http.MethodPost)
+		return providerTransportError(ctx, err, method == http.MethodPost)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != expectedStatus {
 		return statusError(response, method == http.MethodPost)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, githubMaxBody+1))
-	if err != nil || len(data) > githubMaxBody {
+	if len(data) > githubMaxBody {
 		return invalidResponse(method == http.MethodPost, response.StatusCode)
+	}
+	if err != nil {
+		return providerTransportError(ctx, err, method == http.MethodPost)
 	}
 	if err := decodeProviderJSON(data, dst); err != nil {
 		return invalidResponse(method == http.MethodPost, response.StatusCode)
@@ -326,7 +330,7 @@ func (g *GitHub) requestJSON(ctx context.Context, method, path string, query url
 
 func (g *GitHub) getPages(ctx context.Context, path string, dst any) error {
 	if ctx == nil || ctx.Err() != nil {
-		return providerError("provider_unavailable", "The provider request was canceled.", 0, 0, false)
+		return providerTransportError(ctx, nil, false)
 	}
 	if g == nil || g.httpClient == nil || !validBaseURL(g.baseURL) || path == "" || path[0] != '/' {
 		return providerError("provider_unavailable", "The provider adapter is unavailable.", 0, 0, false)
@@ -381,7 +385,7 @@ func (g *GitHub) getPages(ctx context.Context, path string, dst any) error {
 
 func (g *GitHub) requestBytes(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, http.Header, int, error) {
 	if ctx == nil || ctx.Err() != nil {
-		return nil, nil, 0, providerError("provider_unavailable", "The provider request was canceled.", 0, 0, false)
+		return nil, nil, 0, providerTransportError(ctx, nil, false)
 	}
 	requestURL := strings.TrimRight(g.baseURL, "/") + path + "?" + query.Encode()
 	request, err := http.NewRequestWithContext(ctx, method, requestURL, bytes.NewReader(body))
@@ -397,7 +401,7 @@ func (g *GitHub) requestBytes(ctx context.Context, method, path string, query ur
 	cached, conditional := g.conditionalRequest(request)
 	response, err := g.httpClient.Do(request)
 	if err != nil {
-		return nil, nil, 0, providerError("provider_unavailable", "The provider request failed.", 0, 0, false)
+		return nil, nil, 0, providerTransportError(ctx, err, false)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusNotModified {
@@ -410,11 +414,42 @@ func (g *GitHub) requestBytes(ctx context.Context, method, path string, query ur
 		return nil, response.Header.Clone(), response.StatusCode, nil
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, githubMaxBody+1))
-	if err != nil || len(data) > githubMaxBody {
+	if len(data) > githubMaxBody {
 		return nil, nil, 0, invalidResponse(false, response.StatusCode)
+	}
+	if err != nil {
+		return nil, nil, 0, providerTransportError(ctx, err, false)
 	}
 	g.rememberConditional(request, response, data)
 	return data, response.Header.Clone(), response.StatusCode, nil
+}
+
+// Transport failures include reads after successful response headers. Retain
+// only caller cancellation identity, never a raw transport error or its URL.
+func providerTransportError(ctx context.Context, err error, unknown bool) *Error {
+	failure := providerError("provider_unavailable", "The provider request failed.", 0, 0, unknown)
+	if ctx != nil {
+		failure.cause = ctx.Err()
+	}
+	switch {
+	case ctx == nil || errors.Is(failure.cause, context.Canceled):
+		failure.Message = "The provider request was canceled."
+	case errors.Is(failure.cause, context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) || providerTransportTimeout(err):
+		failure.Status = http.StatusRequestTimeout
+		failure.Message = "The provider request timed out."
+	}
+	return failure
+}
+
+func providerTransportTimeout(err error) bool {
+	// A url.Error may report false for Timeout when its immediate wrapped error
+	// lacks that method, even though a deeper transport error is a timeout.
+	for ; err != nil; err = errors.Unwrap(err) {
+		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+			return true
+		}
+	}
+	return false
 }
 
 func statusError(response *http.Response, mutation bool) error {

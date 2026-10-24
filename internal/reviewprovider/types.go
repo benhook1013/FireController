@@ -12,9 +12,18 @@ type Error struct {
 	Status            int
 	RetryAfterSeconds int64
 	OutcomeUnknown    bool
+	cause             error
 }
 
 func (e *Error) Error() string { return e.Message }
+
+// Unwrap retains only a safe caller-context sentinel, never a transport body or URL.
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
 
 type Author struct {
 	ID    int64

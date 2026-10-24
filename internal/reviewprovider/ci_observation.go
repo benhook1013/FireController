@@ -48,7 +48,13 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 		return CIObservation{}, invalidSelector()
 	}
 	out = CIObservation{Target: target, State: "unproven", Reason: "ci_authority_unproven", StartedAt: time.Now().UTC()}
-	defer func() { out.ObservedAt = time.Now().UTC() }()
+	stage := "authority"
+	defer func() {
+		out.ObservedAt = time.Now().UTC()
+		if err != nil {
+			err = &ciCollectionError{stage: stage, cause: err}
+		}
+	}()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	out.Authority, err = g.RequiredCheckAuthority(ctx, target.Repository, target.BaseRef)
@@ -59,6 +65,7 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 		out.Reason = "ci_required_context_capacity"
 		return out, nil
 	}
+	stage = "candidate"
 	candidate, err := g.PullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA)
 	out.Candidate, out.MergeState = &candidate, candidate.MergeState
 	if err != nil {
@@ -87,6 +94,7 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 		out.State, out.Reason = assessment.State, assessment.Reason
 	} else {
 		if candidate.MergeState == "verified" {
+			stage = "merge_results"
 			merge, readErr := g.CIResults(ctx, target.Repository, candidate.MergeSHA)
 			if readErr != nil {
 				out.Reason = "ci_merge_results_unavailable"
@@ -99,6 +107,7 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 		}
 		if out.Results == nil {
 			out.SelectedCommitSHA, out.Selection = target.HeadSHA, "head"
+			stage = "head_results"
 			results, readErr := g.CIResults(ctx, target.Repository, target.HeadSHA)
 			if readErr != nil {
 				out.Reason = "ci_results_unavailable"
@@ -106,12 +115,14 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 			}
 			out.Results = &results
 		}
+		stage = "actions"
 		actions, readErr := g.ActionsRunsForHead(ctx, target.Repository, target.RepositoryID, out.SelectedCommitSHA)
 		if readErr != nil {
 			out.Reason = "ci_actions_unavailable"
 			return out, readErr
 		}
 		out.Actions = &actions
+		stage = "workflow_identity"
 		latest, readErr := LatestActionsRuns(actions)
 		if readErr != nil {
 			return out, readErr
@@ -126,6 +137,7 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 			if !relevant[run.WorkflowID] {
 				continue
 			}
+			stage = "attempt"
 			attempt, readErr := g.CurrentActionsAttempt(ctx, target.Repository, out.SelectedCommitSHA, run.CheckSuiteID)
 			if readErr != nil {
 				out.Reason = "ci_attempt_unavailable"
@@ -133,6 +145,7 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 			}
 			out.Attempts = append(out.Attempts, attempt)
 		}
+		stage = "assessment"
 		assessment, assessErr := AssessRequiredCI(out.Authority, *out.Results, actions, out.Attempts)
 		if assessErr != nil {
 			return out, assessErr
@@ -146,24 +159,29 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 	// A green result is provisional until these independently bounded reads
 	// still agree. Status order is semantic: the provider's first context wins.
 	out.State, out.Reason = "unproven", "ci_observation_changed"
+	stage = "authority_recheck"
 	authority, err := g.RequiredCheckAuthority(ctx, target.Repository, target.BaseRef)
 	if err != nil || !sameCIAuthority(out.Authority, authority) {
 		return out, err
 	}
+	stage = "candidate_recheck"
 	finalCandidate, err := g.PullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA)
 	if err != nil || !sameCICandidate(candidate, finalCandidate) || !matchesCITarget(finalCandidate, target) {
 		return out, err
 	}
 	if out.Results != nil {
+		stage = "results_recheck"
 		results, readErr := g.CIResults(ctx, target.Repository, out.SelectedCommitSHA)
 		if readErr != nil || !sameCIResults(*out.Results, results) {
 			return out, readErr
 		}
+		stage = "actions_recheck"
 		actions, readErr := g.ActionsRunsForHead(ctx, target.Repository, target.RepositoryID, out.SelectedCommitSHA)
 		if readErr != nil || !sameCIActions(*out.Actions, actions) {
 			return out, readErr
 		}
 		if out.TestMergeResults != nil && out.Selection == "head" {
+			stage = "merge_results_recheck"
 			merge, readErr := g.CIResults(ctx, target.Repository, candidate.MergeSHA)
 			if readErr != nil || !sameCIResults(*out.TestMergeResults, merge) {
 				return out, readErr
