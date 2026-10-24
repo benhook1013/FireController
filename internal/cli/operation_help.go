@@ -33,11 +33,41 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	switch operation {
 	case "reviews help":
 		out.Usage = "<bound launcher> reviews help"
-		out.Optional = []string{"reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews finalize --help", "reviews publish --help", "reviews request --help", "reviews operation --help"}
-		out.Semantics = []string{"Read retained findings with reviews evidence EVIDENCE_ID and current decisions/revision with reviews adjudication EVIDENCE_ID.", "decide, fix and finalize are guarded local evidence changes. publish explicitly requests a historical-count checkpoint comment on GitHub; request explicitly requests a review. Neither is implied by adjudication or help.", "Use the help for the selected operation; all help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
+		out.Optional = []string{"reviews queue --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews finalize --help", "reviews publish --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
+		out.Semantics = []string{"queue, assess, source-assess, ci-assess and readiness read retained state. Read findings with reviews evidence EVIDENCE_ID and decisions/revision with reviews adjudication EVIDENCE_ID.", "source-refresh explicitly reads GitHub. request submits review work; publish requests a checkpoint comment. decide, fix and finalize change local evidence. Help performs none of these actions.", "All help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
 		out.Example = "<bound launcher> reviews decide --help"
 		out.Documentation = "docs/review-controls.md"
 		out.Next = "docs/review-publication.md describes GitHub checkpoint publication; docs/review-execution.md describes review requests and retained operations."
+	case "reviews queue":
+		out.Usage = "<bound launcher> reviews queue [--limit N] [--cursor CURSOR]"
+		out.Optional = []string{"--limit N (1-100, default 5)", "--cursor CURSOR (continue the returned retained-snapshot page)"}
+		out.Semantics = []string{"Reads one ordered retained queue page, including merged and closed history, without provider work or automatic pagination.", "The default 5 is the retained page size, not the first five active PRs or channel-front selection. Continue with the returned cursor to inspect remaining entries.", "Accepts no positional PR number or --snapshot flag. Queue entries alone do not establish review coverage, current CI or merge readiness."}
+		out.Example = "<bound launcher> reviews queue --limit 20"
+		out.Documentation = "docs/review-workspace.md"
+	case "reviews assess":
+		out.Usage = "<bound launcher> reviews assess EVIDENCE_ID"
+		out.Required = []string{"EVIDENCE_ID (native retained evidence identity)"}
+		out.Semantics = []string{"Applies current project policy and local finding obligations to the immutable captured comparison identified by native evidence.", "sufficient describes required-channel coverage for that captured comparison. It does not verify current GitHub source, required CI or unresolved provider threads, or declare merge readiness.", "Reads retained facts without provider work or writes. Use reviews source-assess --pr NUMBER for source policy or reviews readiness --pr NUMBER for the combined retained assessment."}
+		out.Example = "<bound launcher> reviews assess review_evidence_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/review-controls.md"
+	case "reviews source-assess":
+		out.Usage = "<bound launcher> reviews source-assess --pr NUMBER"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)"}
+		out.Semantics = []string{"Applies current local review policy, required-channel coverage and finding obligations to the latest retained source comparison for the selected PR.", "Source observation and policy evaluation times differ. This result does not establish current GitHub freshness or assess required CI, provider threads or merge-state gates; reviews readiness --pr NUMBER combines those retained components.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help for explicit external collection."}
+		out.Example = "<bound launcher> reviews source-assess --pr 42"
+		out.Documentation = "docs/review-source.md"
+	case "reviews ci-assess":
+		out.Usage = "<bound launcher> reviews ci-assess --pr NUMBER"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)"}
+		out.Semantics = []string{"Assesses retained required CI for the latest stored source comparison and current local repository, configuration and capability binding.", "Reports satisfied, failed, pending, unproven or not required. Review-channel policy, findings and provider thread/merge-state gates remain separate; reviews readiness --pr NUMBER combines the retained assessments.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help for explicit CI or readiness collection."}
+		out.Example = "<bound launcher> reviews ci-assess --pr 42"
+		out.Documentation = "docs/review-ci.md"
+	case "reviews readiness":
+		out.Usage = "<bound launcher> reviews readiness --pr NUMBER"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)"}
+		out.Semantics = []string{"Combines current local policy, applicable finalized review coverage, finding/route obligations, retained required CI, thread resolution and provider merge-state facts for the latest stored comparison.", "ready_as_observed describes the retained observation times. Missing, changed or conflicting input bindings remain held; it does not authorize a merge or guarantee GitHub remains unchanged.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help to explicitly collect readiness with --readiness."}
+		out.Example = "<bound launcher> reviews readiness --pr 42"
+		out.Documentation = "docs/review-readiness.md"
 	case "reviews runs":
 		out.Usage = "<bound launcher> reviews runs NUMBER [--snapshot SNAPSHOT_ID] [--limit N] [--cursor CURSOR]"
 		out.Required = []string{"NUMBER (canonical positive PR number)"}
