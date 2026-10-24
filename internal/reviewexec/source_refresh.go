@@ -567,6 +567,10 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 	if readErr == nil && r.IncludeReadiness && ctx.Err() == nil {
 		review = observeSourceReviewState(operationCtx, readers[r.capability], plan)
 	}
+	var applicability []ReviewApplicability
+	if readErr == nil && ctx.Err() == nil {
+		applicability = e.prepareReviewApplicability(operationCtx, r.ProjectID, plan, r.capability)
+	}
 	if ctx.Err() != nil {
 		return true, nil
 	}
@@ -600,6 +604,9 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			}
 			retainedCI, retainedReview := "null", "null"
 			if state == "completed" {
+				if err = e.retainReviewApplicability(ctx, tx, r.ProjectID, plan, applicability); err != nil {
+					return err
+				}
 				retainedCI, retainedReview = ciBody, reviewBody
 				if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: r.ProjectID, PrincipalID: r.actor, WorkerID: r.worker}, r.repositoryID, metadataPins, []SourcePlan{plan}); err != nil {
 					return err

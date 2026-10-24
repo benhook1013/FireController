@@ -49,6 +49,10 @@ Single checklist completion uses `fc jobs checklist-item JOB_ID ITEM_ID --done t
 
 `jobs assigned` defaults to `--status open`; `--all` explicitly includes completed history and conflicts with `--status`. Management `jobs list` and raw HTTP/typed-client filters keep their explicit existing semantics.
 
+## Recovering review operations
+
+Use `fc reviews operations` to find pending local operations when their receipt IDs are unavailable. Optional `--pr`, `--channel`, `--limit` and `--cursor` select one explicit page; `--all` includes terminal history. This is a provider-free read, with no automatic continuation or review request. See [operation discovery](review-operations.md) for exact filters and cursor behavior. `inbox wait --help` and `help inbox wait` describe the existing quiet bounded subscription locally, without loading a profile or contacting the service.
+
 ## Private profile file
 
 Use the local [profile setup commands](onboarding.md#private-agent-setup-commands) to create a private configuration and optional POSIX bound launcher. Setup returns the configured identity with `verified: false`; `doctor` performs the separate authenticated check. Creation requires explicit profile selectors, preserves existing files, and never provisions or reads credentials.

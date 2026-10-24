@@ -81,6 +81,12 @@ func comparison(ctx context.Context, tx *sql.Tx, project string, repositoryID, n
 	if dirty {
 		return ComparisonState{}, adjudicationStorageError()
 	}
+	if !result.Covered {
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_applicability a JOIN review_comparison_proofs p ON p.evidence_id=a.evidence_id AND p.project_id=a.project_id AND p.pull_number=a.pull_number AND p.channel=a.channel WHERE a.project_id=? AND a.repository_id=? AND a.pull_number=? AND a.channel=? AND a.candidate_sha=? AND a.base_sha=? AND a.parent_sha=? AND a.parent_pull_number=? AND a.base_ref=? AND p.state='ready')`, project, repositoryID, number, channel, current.CandidateSHA, current.BaseSHA, current.ParentSHA, current.ParentPullNumber, current.BaseRef).Scan(&result.Covered)
+		if err != nil {
+			return ComparisonState{}, err
+		}
+	}
 	rounds, err := readRoundControl(ctx, tx, project, number, channel)
 	if err != nil {
 		return ComparisonState{}, err

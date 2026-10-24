@@ -53,6 +53,7 @@ type arguments struct {
 	reviewRequest              client.ReviewRequest
 	reviewSource               client.ReviewSourceRequest
 	reviewSourceWait           int
+	reviewOperations           client.ReviewOperationsOptions
 }
 type definition struct {
 	name, description string
@@ -71,6 +72,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, noteDefinitions()...)
 	definitions = append(definitions, projectMapDefinitions()...)
 	definitions = append(definitions, messageWaitDefinition())
+	definitions = append(definitions, operationListDefinition())
 	known := make(map[string]bool)
 	transports := sessionTransports{pools: make(map[*mcp.ServerSession]*client.TransportPool)}
 	for _, tool := range definitions {
@@ -149,6 +151,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.ReviewExecution(ctx)
 			case "review_operation_read":
 				value, err = service.WaitReviewOperation(ctx, args.id, args.reviewSourceWait)
+			case "review_operations_list":
+				value, err = service.ReviewOperations(ctx, args.reviewOperations)
 			case "review_request":
 				value, err = service.RequestReview(ctx, args.key, args.reviewRequest, args.reviewSourceWait)
 			case "review_checkpoint_publish":

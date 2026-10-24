@@ -40,6 +40,13 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 		if err != nil {
 			return nil, nil, err
 		}
+		verifier, err := reviewruntime.NewApplicabilityVerifier(manager, capability.GitHubCredential())
+		if err != nil {
+			return nil, nil, err
+		}
+		if err = engine.RegisterApplicabilityVerifier(capability.ID, verifier); err != nil {
+			return nil, nil, err
+		}
 		provider, err := reviewprovider.NewGitHub(capability.GitHubCredential())
 		if err != nil {
 			return nil, nil, err

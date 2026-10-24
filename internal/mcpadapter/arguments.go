@@ -101,6 +101,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if name == "review_rounds_read" || name == "review_rounds_configure" {
 		return roundControlArguments(name, data)
 	}
+	if name == "review_operations_list" {
+		return operationListArguments(data)
+	}
 	if reviewControlTool(name) {
 		return reviewControlArguments(name, data)
 	}

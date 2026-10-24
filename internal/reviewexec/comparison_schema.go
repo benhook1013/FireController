@@ -63,7 +63,10 @@ func ComparisonSchemaSQL() []string {
 }
 
 func ensureComparisonSchema(ctx context.Context, store *core.Store) error {
-	return store.EnsureSchemaWithBackfill(ctx, "review_comparison", [][]string{ComparisonSchemaSQL()}, backfillComparisonProofs)
+	if err := store.EnsureSchemaWithBackfill(ctx, "review_comparison", [][]string{ComparisonSchemaSQL()}, backfillComparisonProofs); err != nil {
+		return err
+	}
+	return store.EnsureSchema(ctx, "review_applicability", ApplicabilitySchemaSQL())
 }
 
 func backfillComparisonProofs(ctx context.Context, conn *sql.Conn) error {

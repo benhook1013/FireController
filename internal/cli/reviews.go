@@ -11,6 +11,9 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
+	if call.subcommand == "operations" {
+		return parseOperationList(call, args)
+	}
 	if call.subcommand == "start" || call.subcommand == "run-read" {
 		return parseReviewRun(call, args)
 	}
@@ -133,6 +136,8 @@ func reviewID(value, prefix string) bool {
 
 func executeReview(ctx context.Context, service *client.Client, call invocation) (any, error) {
 	switch call.subcommand {
+	case "operations":
+		return service.ReviewOperations(ctx, call.reviewOperations)
 	case "publication":
 		return service.ReviewCheckpointPublication(ctx, call.position[0])
 	case "route":

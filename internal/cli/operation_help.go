@@ -33,7 +33,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	switch operation {
 	case "reviews help":
 		out.Usage = "<bound launcher> reviews help"
-		out.Optional = []string{"reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews finalize --help", "reviews publish --help", "reviews request --help", "reviews operation --help"}
+		out.Optional = []string{"reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews finalize --help", "reviews publish --help", "reviews request --help", "reviews operation --help"}
 		out.Semantics = []string{"Read retained findings with reviews evidence EVIDENCE_ID and current decisions/revision with reviews adjudication EVIDENCE_ID.", "decide, fix and finalize are guarded local evidence changes. publish explicitly requests a historical-count checkpoint comment on GitHub; request explicitly requests a review. Neither is implied by adjudication or help.", "Use the help for the selected operation; all help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
 		out.Example = "<bound launcher> reviews decide --help"
 		out.Documentation = "docs/review-controls.md"
@@ -71,6 +71,12 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"Read reviews adjudication EVIDENCE_ID for the current revision and finding fix SHA. Record a verified published fix for an accepted finding; use the returned revision for the next edit. Existing source finalization does not prevent fix proof.", "Empty --expect-sha= asserts no fix is recorded; replacing proof requires its exact current SHA. Retains original finding text, disposition, finalized counts and history. No provider work, source refresh, new review or allowance change.", recovery}
 		out.Example = "<bound launcher> reviews fix review_evidence_0123456789abcdef0123456789abcdef --key fix-1 --expect-revision 4 --finding 0 --expect-sha= --fix-sha 0123456789abcdef0123456789abcdef01234567 --proof 'Verified published fix and focused test'"
 		out.Documentation = "docs/review-controls.md"
+	case "reviews operations":
+		out.Usage = "<bound launcher> reviews operations [--pr NUMBER] [--channel cli|hosted] [--all] [--limit N] [--cursor CURSOR]"
+		out.Optional = []string{"--pr NUMBER (positive PR number)", "--channel cli|hosted", "--all (include terminal and held history)", "--limit N (1-100, default 5)", "--cursor CURSOR (continue with the same filters)"}
+		out.Semantics = []string{"Reads one compact newest-first page of retained project operations without provider work or automatic continuation. Defaults to pending queued/preparing/posting/active/uncertain operations and held operations retaining an execution reservation.", "--all recovers lost operation receipts from history. Mutable state is evaluated on each page; pagination does not promise a historical snapshot. Select reviews operation OPERATION_ID for detail and recovery; listing never requests or retries a review."}
+		out.Example = "<bound launcher> reviews operations --pr 42 --all --limit 5"
+		out.Documentation = "docs/review-operations.md"
 	case "reviews operation":
 		out.Usage = "<bound launcher> reviews operation OPERATION_ID [--wait-seconds N]"
 		out.Required = []string{"OPERATION_ID"}
@@ -122,6 +128,13 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"The body must be nonblank UTF-8 and at most 16 KiB. Body files preserve exact text and must be regular with owner-private POSIX permissions. Inline and file forms are mutually exclusive.", "Send to a worker in this project. --reply-to retains the existing conversation; reads never mark a message seen or acknowledged.", recovery}
 		out.Example = "<bound launcher> inbox send --to WORKER_ID --body-file /private/message.md --key message-1"
 		out.Documentation = "docs/development.md"
+	case "inbox wait":
+		out.Usage = "<bound launcher> inbox wait --cursor EVENT_CURSOR [--limit N] [--wait-seconds N]"
+		out.Required = []string{"--cursor EVENT_CURSOR (event_cursor from inbox snapshot or cursor from a prior successful wait; not inbox.cursor pagination)"}
+		out.Optional = []string{"--limit N (1-100, default 20)", "--wait-seconds N (1-60, default 25)"}
+		out.Semantics = []string{"One quiet bounded wait returns new incoming-message event metadata, or an empty timed_out result with a continuation cursor. Full message bodies require inbox read MESSAGE_ID; this is not a pending-inbox query.", "No automatic retry, reconnect, pagination or acknowledgment occurs; reads never acknowledge or mark messages seen. On error retain the saved cursor, then retry the wait or read the bound-worker inbox when the service is available."}
+		out.Example = "<bound launcher> inbox wait --cursor saved-event-cursor --wait-seconds 25"
+		out.Documentation = "docs/message-wait.md"
 	case "inbox list", "inbox snapshot":
 		out.Usage = "<bound launcher> " + operation + " [--limit N] [--cursor CURSOR] [--unread] [--unacknowledged] | <bound launcher> " + operation + " [--limit N] [--cursor CURSOR] --all"
 		out.Optional = []string{"--limit N (1-100)", "--cursor CURSOR (inbox pagination)", "--unread", "--unacknowledged (default)", "--all (cannot combine with --unread or --unacknowledged)"}

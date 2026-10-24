@@ -48,25 +48,26 @@ type options struct {
 
 type invocation struct {
 	options
-	command       string
-	subcommand    string
-	position      []string
-	limit         int
-	waitMS        int
-	cursor        string
-	worker        string
-	status        string
-	unread        bool
-	unack         bool
-	snapshot      string
-	pullNumber    int64
-	mutation      *mutationInvocation
-	setup         *profileSetupInvocation
-	notes         *noteInvocation
-	projectMap    *projectMapInvocation
-	presentation  *presentationInvocation
-	publication   *publicationInvocation
-	helpOperation string
+	command          string
+	subcommand       string
+	position         []string
+	limit            int
+	waitMS           int
+	cursor           string
+	worker           string
+	status           string
+	unread           bool
+	unack            bool
+	snapshot         string
+	pullNumber       int64
+	mutation         *mutationInvocation
+	setup            *profileSetupInvocation
+	notes            *noteInvocation
+	projectMap       *projectMapInvocation
+	presentation     *presentationInvocation
+	publication      *publicationInvocation
+	helpOperation    string
+	reviewOperations client.ReviewOperationsOptions
 
 	reviewQueueEdit     *reviewQueueEditInvocation
 	reviewImport        *reviewImportInvocation

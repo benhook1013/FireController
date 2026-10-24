@@ -669,6 +669,11 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 				if err := store.DB().QueryRow(`SELECT count(*) FROM review_comparison_proofs`).Scan(&comparisonCount); err != nil || comparisonCount != 0 {
 					t.Fatal("predecessor fixture must not discard comparison proofs", comparisonCount, err)
 				}
+				var applicabilityCount int
+				if err := store.DB().QueryRow(`SELECT count(*) FROM review_applicability`).Scan(&applicabilityCount); err != nil || applicabilityCount != 0 {
+					t.Fatal("predecessor fixture must not discard review applicability", applicabilityCount, err)
+				}
+				statements = append(statements, `DROP TABLE review_applicability`, `DELETE FROM metadata WHERE key='schema:review_applicability'`)
 				for _, definition := range reviewexec.ComparisonSchemaSQL() {
 					fields := strings.Fields(definition)
 					if len(fields) > 2 && fields[1] == "TRIGGER" {
