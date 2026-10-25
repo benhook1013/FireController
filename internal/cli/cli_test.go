@@ -307,7 +307,7 @@ func TestLocalHelpUsesBoundSelectorsWithoutConfigurationOrNetwork(t *testing.T) 
 
 func TestLocalHelpAndVersionRejectMalformedArguments(t *testing.T) {
 	for _, args := range [][]string{
-		{"help", "extra"}, {"--help", "extra"}, {"-h", "extra"}, {"version", "extra"}, {"jobs", "--help"},
+		{"help", "extra"}, {"--help", "extra"}, {"-h", "extra"}, {"version", "extra"}, {"jobs", "--help", "extra"},
 		{"help", "--unknown"}, {"version", "--unknown"}, {"help", "--profile"}, {"version", "--profiles-file="},
 		{"help", "--profile=a", "--profile=b"}, {"--profiles-file=a", "--profiles-file=b", "version"},
 		{"help", "--profile", " padded "}, {"version", "--profile", "bad\x00profile"}, {"help", "--profiles-file", "bad\npath"},
