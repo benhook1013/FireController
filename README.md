@@ -5,7 +5,7 @@
 
 **A clear view of your AI agents, their jobs, and your review and merge trains.**
 
-FireController is a self-hosted coordination service for AI-assisted software development. It gives agents shared jobs, durable messages and review history, with a live project website for the people overseeing their work.
+FireController is a self-hosted coordination service for AI-assisted software development on GitHub projects. It gives agents shared jobs, durable messages and review history, with a live project website for the people overseeing their work.
 
 Use it when several agents are working across chats and worktrees, or when one agent needs to pick up a project across many sessions. Assignments, working context and outstanding findings stay with the project, ready for the next agent or session to read.
 
@@ -17,16 +17,18 @@ Use it when several agents are working across chats and worktrees, or when one a
 - **Manage review and merge trains.** Follow ordered or independent PRs, CodeRabbit Hosted and CLI rounds, and recorded subagent reviews. One chronological history shows findings, accepted Major/Minor/Trivial counts, decisions and fix evidence. Configure round limits and early stopping, route findings to related work, and keep completed reviews as the code moves forward. You retain merge authority.
 - **Share the project's direction.** Publish an overview, roadmap and selected progress at the same project URL people use to sign in. Public content is deliberately selected; private briefs, messages, notes and finding bodies stay private.
 
-Jobs and messages work independently of GitHub. The service handles configured GitHub observation and review execution in the background, so an ordinary inbox or job read does not repeatedly fetch PRs or wait for a provider.
+After project registration, everyday jobs and messages work independently of GitHub availability. The service handles configured GitHub observation and review execution in the background, so an ordinary inbox or job read does not repeatedly fetch PRs or wait for a provider.
 
 ## A typical workflow
 
-1. An orchestrator assigns jobs to workers, each with its own bound connection.
-2. Workers read their current jobs, do the work and send messages when another agent needs to act. Material progress replaces one current record; earlier versions remain in history.
+1. Your existing lead agent assigns jobs to workers. Give the lead and each builder its own bound connection and a short handover pointing to its job and usage instructions.
+2. A builder reads its assigned job when resuming, updates current progress for the next handoff, and messages the lead when another agent needs to act. Earlier progress remains in history.
 3. PRs enter the review queue. Agents inspect returned findings, record their decisions and attach fix evidence. Finalizing a native review automatically queues its GitHub summary.
 4. You follow progress in the browser, inspect the mixed review timeline and decide when to merge. Merged PRs remain in queue history.
 
 Start with jobs and messaging, and add review execution when you need it. FireController works with your chosen agent host and models through a CLI, a stdio MCP adapter and the service API.
+
+Your agent host starts and resumes the chats; FireController provides the shared working context they read and update. See the [handoff workflow](docs/agent-workflow.md#messages-and-handoffs). Review execution has a separate [setup guide](docs/review-execution.md#operator-capabilities-and-project-configuration): configure the service's provider connection, then the project's queue and review channels.
 
 ## Built for agents
 
@@ -47,13 +49,17 @@ The bundled [everyday-use skill](skills/firecontroller-use/SKILL.md) teaches the
 
 ## Get started
 
+Each managed project needs a GitHub repository. First-time registration verifies that repository through GitHub; private repositories also need a configured service credential. See [project registration and access](docs/local-api.md#project-and-worker-setup).
+
 ### Ask your agent to set it up
 
 Give your agent a FireController checkout and point it to the [onboarding skill](skills/firecontroller-onboard/SKILL.md). For example:
 
-> Read FireController's onboarding skill and connect this repository to my controller. Set up private worker connections, verify a job and message round trip, and help me choose which history to bring in and what to share publicly.
+> My project is at `/path/to/my-project`, and the FireController checkout is at `/path/to/FireController`. Read FireController's onboarding skill and connect my project to an existing or new local instance. Set up private worker connections, verify a job and message round trip, and help me choose which history to bring in and what to share publicly.
 
 The skill guides connection to an existing instance or setup of a local one, project registration, private agent profiles and verification. It preserves existing project instructions. Historical imports have explicit scope and preview steps; you can begin with new work. See the [onboarding guide](docs/onboarding.md).
+
+A successful setup leaves each agent with a verified connection and gives you a project URL and private browser access. The agent should explain where the credentials are stored and demonstrate the first job and message round trip.
 
 ### Run a local instance from source
 
