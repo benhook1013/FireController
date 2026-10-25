@@ -1,109 +1,98 @@
 # FireController
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-[![Status: Under development](https://img.shields.io/badge/Status-Under_development-yellow)](docs/delivery.md)
+[![Status: Active development](https://img.shields.io/badge/Status-Active_development-yellow)](docs/delivery.md)
 
-FireController is self-hosted coordination infrastructure for AI workers and the people running their projects. It brings jobs, durable messaging, review orchestration, and a live browser together behind one service API.
+**A clear view of your AI agents, their jobs, and your review and merge trains.**
 
-AI workers are the primary clients. Everyday commands return concise, useful information promptly; jobs and messages work independently of GitHub availability. The service owns provider refresh and long-running reviews so each command does not repeat that work.
+FireController is a self-hosted coordination service for AI-assisted software development. It gives agents shared jobs, durable messages and review history, with a live project website for the people overseeing their work.
 
-## Current status
+Use it when several agents are working across chats and worktrees, or when one agent needs to pick up a project across many sessions. Assignments, working context and outstanding findings stay with the project, ready for the next agent or session to read.
 
-The standalone application is under development. The merged [PR #1](https://github.com/benhook1013/FireController/pull/1) contains the design and repository validation. [PR #2](https://github.com/benhook1013/FireController/pull/2) combines the first local CLI commands, `fc version` and `fc context`, private profile validation, and the durable coordination service. [PR #4](https://github.com/benhook1013/FireController/pull/4) brings together the agent clients, live message transport and embedded browser. [PR #7](https://github.com/benhook1013/FireController/pull/7) adds immutable job checkpoints and the native review workspace.
+## Why use FireController?
 
-The coordination slice implements a loopback service API, scoped projects/workers and access grants, basic jobs with guarded edits/history, and durable message reads and explicit seen/ack actions. See the [local API](docs/local-api.md). An embedded browser displays jobs/checkpoints, workers, live incoming conversations and stored review queue/history/findings; open the service address and connect with a project credential. Explicit [coordination views](docs/browser-coordination.md) add notes and their revisions, worker pause and primary focus. Browser messaging and administrator appearance controls follow the connected credential’s permissions. The [browser guide](docs/browser-guide.md) describes current scope and proof. Optional native review execution and retained review controls are described in [review execution](docs/review-execution.md). Local [backups, managed scheduling, retention, inactive restore and coordination activation](docs/backups.md) have packaged proof. Local [profile creation and POSIX bound launchers](docs/onboarding.md#private-agent-setup-commands) simplify agent setup. The [project map](docs/project-map.md), [job progress](docs/job-progress.md) and [restore resumption](docs/provider-resumption.md) have their implemented boundaries and proof at those owners. Revisioned [project appearance](docs/project-presentation.md) and live metadata updates have packaged browser proof. AI-guided setup and [prepared review import](docs/review-import.md) are available; a separate opt-in [public project website](docs/public-site.md) publishes approved progress and review summaries without requiring a login. Broad historical collection and operational cutover remain separate boundaries. The capabilities below describe the selected product design. [Delivery and proof status](docs/delivery.md) records what has actually been built and checked.
+- **Keep track of who is doing what.** The Delivery page brings worker lanes, assigned jobs, unassigned work and the review queue together. See the current work and merge-train head without opening every agent's chat.
+- **Make handoffs useful.** Give a job a brief, current progress, next action and an optional checklist. Agents read that working context directly; history is retained automatically. Attached notes keep distinct reminders visible until they are resolved.
+- **Let agents coordinate.** Workers exchange durable messages through their own CLI or MCP connections. Messages survive reconnects, and reading a message is separate from marking it handled. Quiet waits let a capable host collect incoming messages while other work continues.
+- **Manage review and merge trains.** Follow ordered or independent PRs, CodeRabbit Hosted and CLI rounds, and recorded subagent reviews. One chronological history shows findings, accepted Major/Minor/Trivial counts, decisions and fix evidence. Configure round limits and early stopping, route findings to related work, and keep completed reviews as the code moves forward. You retain merge authority.
+- **Share the project's direction.** Publish an overview, roadmap and selected progress at the same project URL people use to sign in. Public content is deliberately selected; private briefs, messages, notes and finding bodies stay private.
 
-## What FireController provides
+Jobs and messages work independently of GitHub. The service handles configured GitHub observation and review execution in the background, so an ordinary inbox or job read does not repeatedly fetch PRs or wait for a provider.
 
-- **Jobs and working context:** current briefs, assignments, checklists, updates, checkpoints, deferred notes, and retained history. Workers can keep several jobs active and choose one primary job for resume context.
-- **Durable messaging:** conversations with explicit seen and handled states, reconnectable event delivery, and quiet waits for relevant messages.
-- **Review orchestration:** hosted and local review executors, exact PR/comparison identity, attributable findings, fix evidence, and recovery of uncertain external actions.
-- **A live project browser:** worker lanes, jobs, inboxes, project maps, review queues and evidence, with project-owned headings, colors, and branding.
-- **Multiple projects per installation:** project-scoped workers, profiles, credentials, state and provider configuration. Initially each project owns one GitHub repository, with duplicate bindings rejected within an instance.
-- **Managed recovery:** consistent backups, scheduling, retention, and visible failures. Local backups come first; optional cloud destinations and trusted custom commands share the same restore format.
+## A typical workflow
 
-Private project access is the default. Public status is an optional, filtered projection; private briefs, messages, credentials and raw captures are excluded.
+1. An orchestrator assigns jobs to workers, each with its own bound connection.
+2. Workers read their current jobs, do the work and send messages when another agent needs to act. Material progress replaces one current record; earlier versions remain in history.
+3. PRs enter the review queue. Agents inspect returned findings, record their decisions and attach fix evidence. Finalizing a native review automatically queues its GitHub summary.
+4. You follow progress in the browser, inspect the mixed review timeline and decide when to merge. Merged PRs remain in queue history.
 
-## Working with AI agents
+Start with jobs and messaging, and add review execution when you need it. FireController works with your chosen agent host and models through a CLI, a stdio MCP adapter and the service API.
 
-Bind a private profile through the agent host's process environment or a generated launcher. Routine service calls then omit project and worker flags:
+## Built for agents
+
+Each private profile binds an instance, project and worker. A generated launcher keeps that identity fixed, including when agents share a checkout. Everyday calls stay short:
 
 ```sh
-fc jobs assigned
-fc inbox list
+fc-builder doctor
+fc-builder jobs assigned
+fc-builder inbox list
+fc-builder reviews queue --active
 ```
 
-The current CLI supports these compact reads plus verified `doctor`, workers, explicit job detail/history and conversation pages. `version` and `context` remain local. Explicit-key job/message mutations return compact completed outcomes with safe retry guidance. The [stdio MCP adapter](docs/mcp.md) exposes bound read tools and explicit-key mutations through the official Go SDK, including local evidence routing and explicit source/CI collection. The [quiet CLI/MCP message wait](docs/message-wait.md) consumes the reconnectable [HTTP message feed](docs/message-events.md) for one bounded call. Actual host wakeup and delivery across turns remain unproven. Profiles belong to the individual client process or connection, without a shared workspace-wide active identity.
+`fc-builder` is an example bound launcher created during setup. MCP connections carry the same binding and expose native tools for jobs, messages and reviews.
 
-The CLI and MCP adapter use the same API as the browser. Results are structured and bounded, errors give a useful next action, and full context or archives are explicit reads. Fast operations return useful results directly. Variable-duration [source refresh](docs/review-source.md) uses a short bounded wait, returning a pending receipt only if needed; explicit immediate or longer waits are available. Long operations retain durable identity internally; capable adapters can deliver completion while the agent continues other work. Host support for concurrent tools and result delivery is verified rather than assumed.
+Routine results are structured and bounded. Full briefs, findings and archives are explicit reads. Fast operations return directly; variable-duration work allows a bounded wait and returns a durable operation handle when needed. Actual background delivery and idle-agent wakeups depend on the agent host.
 
-See the [client contract](docs/agent-client.md) for mechanical behavior, [AI usability](docs/ai-usability.md) for output and attention requirements, and the optional [agent workflow](docs/agent-workflow.md) for project-specific working habits.
+The bundled [everyday-use skill](skills/firecontroller-use/SKILL.md) teaches the supported workflow. The [agent client guide](docs/agent-client.md) and [MCP guide](docs/mcp.md) cover the integration details.
 
-## Deployment and architecture
+## Get started
 
-Start with one service on a single computer or a network host. One instance serves several projects. Local use binds to loopback; remote clients use scoped credentials and encrypted transport, commonly through a reverse proxy.
+### Ask your agent to set it up
 
-| Component | Choice |
-| --- | --- |
-| Service and CLI | Go |
-| Durable state | SQLite on local storage; one active service replica |
-| Browser | React, TypeScript, React Router and TanStack Query; Vite builds assets embedded in the service binary |
-| Native AI interface | Packaged MCP adapter using the official Go SDK |
-| Checks and review | GitHub Actions, focused functional tests, documentation validation, and CodeRabbit |
+Give your agent a FireController checkout and point it to the [onboarding skill](skills/firecontroller-onboard/SKILL.md). For example:
 
-```mermaid
-flowchart LR
-    CLI[CLI] --> Service[Go service API and events]
-    MCP[MCP adapter] --> Service
-    Browser[Live browser] --> Service
-    Service --> State[(SQLite and retained artifacts)]
-    Service --> Background[Background provider work]
-    Background --> Providers[GitHub and review providers]
+> Read FireController's onboarding skill and connect this repository to my controller. Set up private worker connections, verify a job and message round trip, and help me choose which history to bring in and what to share publicly.
+
+The skill guides connection to an existing instance or setup of a local one, project registration, private agent profiles and verification. It preserves existing project instructions. Historical imports have explicit scope and preview steps; you can begin with new work. See the [onboarding guide](docs/onboarding.md).
+
+### Run a local instance from source
+
+Use Go 1.27, Node.js 22.22 or newer, and Make on Linux or WSL:
+
+```sh
+git clone https://github.com/benhook1013/FireController.git
+cd FireController
+npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
+make build
+./bin/fcd --data-dir "$HOME/.local/share/firecontroller" --listen 127.0.0.1:8080
 ```
 
-Ordinary coordination and stored views perform no provider calls. Explicit or scheduled refresh collects only the required facts, coalesces matching requests, and makes freshness and failure visible. Provider work never waits inside a database transaction or blocks unrelated coordination.
+Open [http://127.0.0.1:8080](http://127.0.0.1:8080). This starts an empty local instance; use the onboarding skill or [project and worker setup](docs/local-api.md#project-and-worker-setup) to create your first project and agent connections. First startup writes the administrator credential to `bootstrap-admin.token` in the private data directory. Keep that credential private.
 
-Multiple active replicas and distributed executors are later capabilities. The first release prioritizes straightforward installation, transactional correctness, bounded resource use and proven recovery. Read the [architecture](docs/architecture.md) and [design decisions](docs/decisions.md) for the owning contracts.
+The build produces `fcd` (the service with its embedded website), `fc` (the CLI) and `fcmcp` (the agent adapter). The browser needs no separate web server. [Development instructions](docs/development.md) cover other platforms, toolchain setup and validation.
 
-## Adding FireController to a project
+## Host it your way
 
-AI-guided onboarding connects to an instance or sets up a local one, creates the project and private worker profiles, and verifies the resulting workflow. Historical import is scoped: choose a date or PR range, select sources, preview the project map and retained history, then apply the import with provenance and conflict checks.
+One installation can serve several projects, each with its own workers, jobs, messages, review configuration and appearance. Each project binds one GitHub repository. Run it on a single computer or host it on a network server with HTTPS; local and remote clients use the same API.
 
-A packaged onboarding skill teaches those supported operations while preserving the project's existing instructions. Project appearance is configurable, and the browser includes a small repository link so other users can discover FireController.
+The service and clients are written in Go, the embedded browser uses React and TypeScript, and durable state lives in SQLite on local storage. The current deployment model is one active service replica. Multiple active replicas and distributed review executors are future work.
 
-The [onboarding guide](docs/onboarding.md) defines this flow and documents the implemented local profile/launcher setup. The bundled [onboarding skill](skills/firecontroller-onboard/SKILL.md) guides the supported API and client setup. [Prepared review import](docs/review-import.md) is available; a dedicated onboarding wizard and broader historical collection remain to be implemented.
+Managed local backups provide verified bundles, scheduling and retention. Optional offsite backups use rclone, including cloud storage and encrypted destinations, with separate credentials and retention. The website can display backup health. See [hosting and HTTPS](docs/hosting.md), the [container guide](docs/container-runtime.md), [backups](docs/backups.md) and [offsite recovery](docs/offsite-backups.md).
 
-## Development and contribution
+## Project status and contributing
 
-For documentation checks, use Node.js 22.22 or newer:
+FireController is in active development before its first stable release. It is already used for real project coordination and reviews; interfaces and setup are still evolving. The [delivery plan](docs/delivery.md) and individual feature guides record implemented behavior, validation and remaining limits.
+
+Feedback from actual agent workflows is especially useful: confusing output, repeated context, unnecessary commands, slow coordination, difficult handoffs and recovery problems. Include the workflow, what you expected and what happened, with private data removed.
+
+For a documentation-only change, install the root dependencies and run the Markdown and link checks:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
 npm run docs:check
 ```
 
-The check runs Markdown lint, focused link-checker tests, and repository-link validation. For the service, CLI and embedded browser, install Go 1.27, Make and a C compiler such as `gcc`, with cgo enabled for the race-enabled checks. `make check` also runs the documentation checks, so complete the Node.js setup and root `npm ci` above before running:
-
-```sh
-npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
-make check build
-./bin/fc version
-./bin/fcd --data-dir /private/firecontroller --listen 127.0.0.1:8080
-```
-
-The [development guide](docs/development.md) documents private profiles, implemented commands, build checks and proof limits.
-
-Contributions should advance a coherent capability, update its owning contract when behavior changes, and prove the public outcome and relevant failure cases. Source inventories identify inherited scenarios; they do not substitute for fresh runtime tests. Design and implementation changes use pull requests and CodeRabbit review.
-
-AI contributors should read [AGENTS.md](AGENTS.md). The [documentation index](docs/README.md) is the entry point for the full design.
-
-| Topic | Start here |
-| --- | --- |
-| Scope and technical direction | [Product](docs/product.md), [architecture](docs/architecture.md), [decisions](docs/decisions.md) |
-| Agent integration | [Client contract](docs/agent-client.md), [AI usability](docs/ai-usability.md) |
-| Setup and presentation | [Onboarding](docs/onboarding.md), [browser](docs/browser.md) |
-| Reviews and proof | [Review orchestration](docs/reviews.md), [acceptance](docs/acceptance.md), [delivery](docs/delivery.md) |
-| Source provenance | [Inherited evidence](docs/inherited-evidence.md), [source adjudication](docs/source-review.md) |
+For application changes, follow the [development guide](docs/development.md). AI contributors should read [AGENTS.md](AGENTS.md). The [documentation index](docs/README.md) links the product design, API contracts and feature guides.
 
 ## License
 
