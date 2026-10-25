@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-Direct worker API, CLI and MCP recording/read/update are implemented over the existing immutable history. Focused public-handler, actual SDK, replay, rollback and client checks pass; packaged website proof and installed deployment are still pending. Administrator history import is not the ordinary recording workflow.
+Direct worker API, CLI and MCP recording/read/update are implemented over the existing immutable history. Focused public-handler, actual SDK, replay, rollback and client checks pass. The packaged CLI/MCP/browser check proves record, adjudication, fix proof, restart retention and the existing mixed timeline, with unchanged Hosted/CLI history and no provider calls. Installed deployment remains pending. Administrator history import is not the ordinary recording workflow.
 
 ## Worker workflow
 

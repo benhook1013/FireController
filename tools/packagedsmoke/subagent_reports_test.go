@@ -121,6 +121,11 @@ func TestPackagedSubagentReportsSmoke(t *testing.T) {
 		}
 		return path
 	}
+	var originalRuns client.ReviewRuns
+	decode(t, cli("reviews", "runs", "42", "--limit", "10"), &originalRuns)
+	if len(originalRuns.Items) != 2 {
+		t.Fatal("original history fixture missing")
+	}
 	input := client.SubagentRecordRequest{PullNumber: 42, HeadSHA: strings.Repeat("a", 40), Reviewer: "Independent Sol", Scope: "Database invariants", StartedAt: "2026-10-15T00:04:00Z", FinishedAt: "2026-10-15T00:05:00Z", Findings: []client.SubagentFindingInput{{Title: "Preserve database invariant", Detail: "Original **database proof** at `source.go:12`.", Severity: "high"}}}
 	inputFile := file("review.json", input)
 	var recorded, replay client.SubagentReceipt
@@ -221,6 +226,18 @@ func TestPackagedSubagentReportsSmoke(t *testing.T) {
 	if len(runs.Items) != 3 || counts["cli"] != 1 || counts["hosted"] != 1 || counts["subagent"] != 1 {
 		t.Fatal("report changed existing channel inventory", counts)
 	}
+	for _, original := range originalRuns.Items {
+		retained := false
+		for _, current := range runs.Items {
+			if current.ID == original.ID {
+				retained = reflect.DeepEqual(current, original)
+				break
+			}
+		}
+		if !retained {
+			t.Fatal("subagent record changed original Hosted/CLI history")
+		}
+	}
 	if reportWrites.Load() != 6 || forbiddenWrites.Load() != 0 || external.Load() != 0 || binaryHash(t, profiles) != profileHash {
 		t.Fatal("unexpected write/provider/profile change", reportWrites.Load(), forbiddenWrites.Load(), external.Load())
 	}
@@ -282,6 +299,12 @@ func runSubagentReportBrowser(t *testing.T, ctx context.Context, private string,
 		browserPath = filepath.Join(cache, "ms-playwright")
 	}
 	config := map[string]string{"origin": origin, "project": project, "credential_file": credential, "run_id": run, "proxy": proxy, "executable": os.Getenv("FC_BROWSER_EXECUTABLE")}
+	if proof := os.Getenv("FC_BROWSER_PROOF_DIR"); proof != "" {
+		if !filepath.IsAbs(proof) || os.MkdirAll(proof, 0700) != nil {
+			t.Fatal("private proof directory unavailable")
+		}
+		config["proof_directory"] = proof
+	}
 	raw, _ := json.Marshal(config)
 	file := filepath.Join(private, "browser.json")
 	if os.WriteFile(file, raw, 0600) != nil {
@@ -319,16 +342,27 @@ func runSubagentReportBrowser(t *testing.T, ctx context.Context, private string,
 	case <-ctx.Done():
 		t.Fatal("browser proof exceeded bound")
 	}
-	if err != nil || stderr.len() != 0 {
-		t.Fatalf("browser render proof failed (stderr_bytes=%d)", stderr.len())
-	}
 	lines := bytes.Split(bytes.TrimSpace(out.bytes()), []byte("\n"))
 	var result struct {
-		State    string `json:"state"`
-		Errors   int    `json:"errors"`
-		External int    `json:"external"`
-		Writes   int    `json:"writes"`
-		Rows     int    `json:"rows"`
+		State        string `json:"state"`
+		Phase        string `json:"phase"`
+		DetailStatus int    `json:"detail_status"`
+		Errors       int    `json:"errors"`
+		External     int    `json:"external"`
+		Writes       int    `json:"writes"`
+		Rows         int    `json:"rows"`
+	}
+	if len(lines) > 0 {
+		_ = json.Unmarshal(lines[len(lines)-1], &result)
+	}
+	if err != nil || stderr.len() != 0 {
+		phase := "unknown"
+		for _, allowed := range []string{"configuration", "launch", "login", "queue", "timeline", "finding", "finding-title", "finding-body", "finding-markdown", "finding-code"} {
+			if result.Phase == allowed {
+				phase = allowed
+			}
+		}
+		t.Fatalf("browser render proof failed phase=%s errors=%d external=%d writes=%d detail_status=%d stderr_bytes=%d", phase, result.Errors, result.External, result.Writes, result.DetailStatus, stderr.len())
 	}
 	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.Errors != 0 || result.External != 0 || result.Writes != 0 || result.Rows != 3 {
 		t.Fatal("browser safe render result invalid")
