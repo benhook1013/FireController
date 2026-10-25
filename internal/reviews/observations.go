@@ -405,6 +405,9 @@ func admitObservation(ctx context.Context, tx *sql.Tx, projectID string, req Obs
 	}
 	reads := newHistoryReads(tx)
 	defer reads.close()
+	if err := guardSubagentImport(ctx, reads, projectID, req.Source, req.Queue); err != nil {
+		return 0, err
+	}
 	if err := validateFinalizedCounts(ctx, reads, projectID, req.Source, req.Queue); err != nil {
 		return 0, err
 	}

@@ -157,6 +157,7 @@ type ReviewAttempt struct {
 }
 
 type ReviewFinding struct {
+	DisplaySeverity string              `json:"display_severity,omitempty"`
 	Route           *ReviewFindingRoute `json:"route,omitempty"`
 	SourceFindingID string              `json:"source_finding_id"`
 	Title           string              `json:"title"`

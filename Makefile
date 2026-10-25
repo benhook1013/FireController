@@ -108,6 +108,7 @@ browser-smoke:
 	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedAccumulatedBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedMultiProjectBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedSessionFailureBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedSubagentReportsSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 
 # Optional source adapters: no installed source root is discovered by tests.
 source-converter-check:

@@ -98,6 +98,12 @@ func validateNativeAdjudication(input NativeAdjudication) (map[string]NativeFind
 // caller owns authorization and ledger revisions in this same transaction.
 // Missing projections and exact unchanged state produce no snapshot or event.
 func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, input NativeAdjudication) (Receipt, bool, error) {
+	return updateSourceAdjudication(ctx, tx, scope, nativeSource, input)
+}
+
+// updateSourceAdjudication preserves one history/projection implementation for
+// trusted native evidence and explicitly worker-reported independent reviews.
+func updateSourceAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, source string, input NativeAdjudication) (Receipt, bool, error) {
 	updates, decisions, fixed, err := validateNativeAdjudication(input)
 	if err != nil {
 		return Receipt{}, false, err
@@ -108,7 +114,7 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	err = tx.QueryRowContext(ctx, `SELECT w.revision,w.snapshot_id,s.repository_id,s.observed_at,r.pull_number,r.id,r.found,r.accepted,r.routed,r.finalized,r.fixed,r.complete,r.outcome
 		FROM review_workspace w JOIN review_snapshots s ON s.project_id=w.project_id AND s.snapshot_id=w.snapshot_id
 		JOIN review_runs r ON r.project_id=w.project_id AND r.snapshot_id=w.snapshot_id
-		WHERE w.project_id=? AND r.source=? AND r.source_run_id=?`, scope.ProjectID, nativeSource, input.SourceRunID).Scan(&revision, &previous, &repositoryID, &observed, &number, &runID, &found, &accepted, &routed, &finalized, &oldFixed, &complete, &outcome)
+		WHERE w.project_id=? AND r.source=? AND r.source_run_id=?`, scope.ProjectID, source, input.SourceRunID).Scan(&revision, &previous, &repositoryID, &observed, &number, &runID, &found, &accepted, &routed, &finalized, &oldFixed, &complete, &outcome)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Receipt{}, false, nil
 	}
@@ -182,10 +188,10 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	id := core.NewID("review_snapshot")
 	next := revision + 1
 	recordedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	if err = preflightNativeAdjudicationDetail(ctx, tx, scope.ProjectID, previous, runID, snapshotMeta{ProjectID: scope.ProjectID, Revision: next, SnapshotID: id, Source: nativeSource, ObservedAt: observed, RecordedAt: recordedAt}, updates, accepted, routed, input.Finalized, fixed); err != nil {
+	if err = preflightNativeAdjudicationDetail(ctx, tx, scope.ProjectID, previous, runID, snapshotMeta{ProjectID: scope.ProjectID, Revision: next, SnapshotID: id, Source: source, ObservedAt: observed, RecordedAt: recordedAt}, updates, accepted, routed, input.Finalized, fixed); err != nil {
 		return Receipt{}, false, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO review_snapshots(project_id,snapshot_id,revision,repository_id,source,observed_at,recorded_at,payload_sha256) VALUES(?,?,?,?,?,?,?,?)`, scope.ProjectID, id, next, repositoryID, nativeSource, observed, recordedAt, hex.EncodeToString(digest[:])); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO review_snapshots(project_id,snapshot_id,revision,repository_id,source,observed_at,recorded_at,payload_sha256) VALUES(?,?,?,?,?,?,?,?)`, scope.ProjectID, id, next, repositoryID, source, observed, recordedAt, hex.EncodeToString(digest[:])); err != nil {
 		return Receipt{}, false, err
 	}
 	write := newHistorySnapshotWrite(scope.ProjectID, next)
@@ -208,7 +214,7 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	if err = tx.QueryRowContext(ctx, "SELECT run_order FROM review_runs WHERE project_id=? AND snapshot_id=? AND id=?", scope.ProjectID, previous, runID).Scan(&order); err != nil {
 		return Receipt{}, false, err
 	}
-	if err = write.run(ctx, tx, nativeSource, number, order, run); err != nil {
+	if err = write.run(ctx, tx, source, number, order, run); err != nil {
 		return Receipt{}, false, err
 	}
 	if err = checkNativeRunDetail(ctx, tx, scope.ProjectID, id, runID); err != nil {
@@ -224,7 +230,7 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	if err = write.applyCurrent(ctx, tx, id, revision); err != nil {
 		return Receipt{}, false, err
 	}
-	if err = core.AppendEvent(ctx, tx, scope, "review.observed", id, next, map[string]any{"snapshot_id": id, "pull_number": number, "source": nativeSource}); err != nil {
+	if err = core.AppendEvent(ctx, tx, scope, "review.observed", id, next, map[string]any{"snapshot_id": id, "pull_number": number, "source": source}); err != nil {
 		return Receipt{}, false, err
 	}
 	if err = publicsite.Refresh(ctx, tx, scope.ProjectID, PublicSiteReviewFacts); err != nil {

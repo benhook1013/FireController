@@ -42,11 +42,29 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	switch operation {
 	case "reviews help":
 		out.Usage = "<bound launcher> reviews help"
-		out.Optional = []string{"reviews queue --help", "reviews rounds --help", "reviews evidence --help", "reviews adjudication --help", "reviews route-create --help", "reviews route --help", "reviews routes --help", "reviews route-decide --help", "reviews route-fix --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
+		out.Optional = []string{"reviews subagent-record --help", "reviews subagent-read --help", "reviews subagent-update --help", "reviews queue --help", "reviews rounds --help", "reviews evidence --help", "reviews adjudication --help", "reviews route-create --help", "reviews route --help", "reviews routes --help", "reviews route-decide --help", "reviews route-fix --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
 		out.Semantics = []string{"queue, rounds read and assessments read retained state. Read findings with reviews evidence EVIDENCE_ID and decisions/revision with reviews adjudication EVIDENCE_ID.", "source-refresh explicitly reads GitHub; request submits review work. finalize records adjudication and automatically queues its GitHub summary; publish repairs historical delivery. decide/fix and their batches change local evidence. Round grants/closure only change local settings.", "All help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
 		out.Example = "<bound launcher> reviews decide --help"
 		out.Documentation = "docs/review-controls.md"
 		out.Next = "docs/review-publication.md describes GitHub checkpoint publication; docs/review-execution.md describes review requests and retained operations."
+	case "reviews subagent-record":
+		out.Usage = "<bound launcher> reviews subagent-record --file PRIVATE_JSON --key KEY"
+		out.Required = []string{"--file PRIVATE_JSON", "--key KEY"}
+		out.Semantics = []string{"Records one actual completed subagent review through the bound worker; no administrator import, provider request or CodeRabbit credit.", "Use a private regular UTF-8 JSON file within256KiB with pull_number, full reviewed head_sha, reviewer, scope, ordered started_at/finished_at and findings. Counts and identities are derived. Optional finalized:true requires all decisions, including a valid zero-finding review.", recovery}
+		out.Example = "<bound launcher> reviews subagent-record --file /private/review.json --key subagent-1"
+		out.Documentation = "docs/subagent-reviews.md"
+	case "reviews subagent-read":
+		out.Usage = "<bound launcher> reviews subagent-read RUN_ID"
+		out.Required = []string{"RUN_ID (review_run_ followed by32 lowercase hexadecimal characters)"}
+		out.Semantics = []string{"Reads one worker-recorded subagent review, its current findings and stable per-run revision without provider work or writes.", "Use the returned revision for guarded changes. Finding indexes are zero-based immutable array order. Does not claim CodeRabbit coverage or merge readiness."}
+		out.Example = "<bound launcher> reviews subagent-read review_run_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/subagent-reviews.md"
+	case "reviews subagent-update":
+		out.Usage = "<bound launcher> reviews subagent-update RUN_ID --file PRIVATE_JSON --key KEY"
+		out.Required = []string{"RUN_ID", "--file PRIVATE_JSON", "--key KEY"}
+		out.Semantics = []string{"Use a private regular UTF-8 JSON file within256KiB with current expected_revision and decisions, fixes or finalize:true. Omitted findings stay unchanged; the selected changes commit atomically.", "Each decision has finding, accepted/rejected disposition and its own reason. Each fix has finding, required expected_sha (empty when absent), full fix_sha and proof_note. Finalization freezes counts and requires every finding decided; later corrections retain captured text and frozen counts.", recovery}
+		out.Example = "<bound launcher> reviews subagent-update review_run_0123456789abcdef0123456789abcdef --file /private/changes.json --key subagent-fix-1"
+		out.Documentation = "docs/subagent-reviews.md"
 	case "reviews rounds":
 		out.Usage = "<bound launcher> reviews rounds read --pr NUMBER --channel cli|hosted"
 		out.Optional = []string{"reviews rounds read --help", "reviews rounds grant --help", "reviews rounds close --help"}

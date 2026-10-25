@@ -73,6 +73,7 @@ type invocation struct {
 
 	reviewQueueEdit     *reviewQueueEditInvocation
 	reviewImport        *reviewImportInvocation
+	subagentReview      *subagentReviewInvocation
 	reviewTransfer      *reviewTransferInvocation
 	coordinationImport  *coordinationImportInvocation
 	mapImport           *mapImportInvocation
@@ -132,6 +133,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.publication != nil {
 		if err := preparePublication(ctx, call.publication); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+	}
+	if call.subagentReview != nil {
+		if err := prepareSubagentReview(ctx, call.subagentReview); err != nil {
 			return reportClientError(stderr, err, ctx)
 		}
 	}
@@ -251,6 +257,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.presentation != nil {
 		return executePresentation(requestCtx, ctx, service, call.presentation, stdout, stderr)
+	}
+	if call.subagentReview != nil {
+		return executeSubagentReview(requestCtx, ctx, service, call.subagentReview, stdout, stderr)
 	}
 	if call.reviewQueueEdit != nil {
 		return executeReviewQueueEdit(requestCtx, ctx, service, call.reviewQueueEdit, stdout, stderr)
@@ -493,6 +502,9 @@ func parseInvocation(args []string) (invocation, bool) {
 		var ok bool
 		call.adoptionObligations, ok = parseAdoptionObligations(operationArgs)
 		return call, ok
+	}
+	if call.command == "reviews" && (call.subcommand == "subagent-record" || call.subcommand == "subagent-read" || call.subcommand == "subagent-update") {
+		return parseSubagentReview(call, operationArgs)
 	}
 	if call.command == "reviews" && call.subcommand == "queue-edit" {
 		return parseReviewQueueEdit(call, operationArgs)

@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-The service stores project-scoped review observations and serves queue, PR history, run, finding, decision and fix-proof views from its own indexed database. Importing an observation is an explicit administrator action. Ordinary reads and browser refresh make no provider calls and do not construct another controller or renderer. Jobs and messaging do not depend on the reviews domain.
+The service stores project-scoped review observations and serves queue, PR history, run, finding, decision and fix-proof views from its own indexed database. Importing an observation is an explicit administrator action. Actual [Subagent reviews](subagent-reviews.md) use normal worker recording and guarded updates over the same history and browser views. Ordinary reads and browser refresh make no provider calls and do not construct another controller or renderer. Jobs and messaging do not depend on the reviews domain.
 
 This slice provides the read model for the [review engine](reviews.md). Optional native execution and revision-bound policy admission are described in the [execution boundary](review-execution.md). Native queue selection and explicit source refresh publish selected current display facts through the guarded path below; browser reads never trigger that provider work. Explicit [captured-comparison policy assessment](review-controls.md#captured-comparison-assessment) is a separate provider-free read. Historical counts, a completed attempt, CI success and a matching head are separate facts. This API never returns a merge-ready verdict or authorizes a merge. Projects without observations return an explicitly unconfigured workspace.
 
@@ -22,6 +22,9 @@ All paths below are relative to `/api/v1/projects/{project_id}`. Existing instan
 
 | Method and path | Result |
 | --- | --- |
+| `POST /reviews/subagent-reports` | Worker recording of one completed independent review; server-derived identities/counts, no provider execution. |
+| `GET /reviews/subagent-reports/{run_id}` | Full report and stable run revision for guarded updates. |
+| `POST /reviews/subagent-reports/{run_id}/updates` | Worker decision/fix batches and explicit finalization; original capture/counts retained. |
 | `POST /reviews/observations` | Administrator-only, revision-guarded observation append with a required idempotency key. |
 | `POST /reviews/import/preview` | Administrator-only, provider-free prepared observation preview; no receipt or write. |
 | `POST /reviews/import/apply` | Administrator-only prepared observation apply bound to its preview, with the existing observation receipt semantics. |

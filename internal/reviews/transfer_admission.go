@@ -71,6 +71,9 @@ func admitTransfer(ctx context.Context, transaction *sql.Tx, project string, req
 		}
 	}
 	for _, group := range req.Groups {
+		if err := guardSubagentImport(ctx, tx, project, group.Source, group.Pulls); err != nil {
+			return plan, err
+		}
 		if err := validateFinalizedCounts(ctx, tx, project, group.Source, group.Pulls); err != nil {
 			return plan, err
 		}

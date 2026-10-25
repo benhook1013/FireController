@@ -20,6 +20,8 @@ import (
 const maxToolWaitSeconds = 50
 
 type arguments struct {
+	subagentRecord             client.SubagentRecordRequest
+	subagentUpdate             client.SubagentUpdateRequest
 	reviewActiveQueue          bool
 	summary                    client.SetJobSummaryRequest
 	reviewRun                  client.ReviewRunRequest
@@ -79,13 +81,14 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, operationListDefinition())
 	definitions = append(definitions, jobStatusDefinitions()...)
 	definitions = append(definitions, reviewBatchDefinitions()...)
+	definitions = append(definitions, subagentDefinitions()...)
 	known := make(map[string]bool)
 	transports := sessionTransports{pools: make(map[*mcp.ServerSession]*client.TransportPool)}
 	for _, tool := range definitions {
 		known[tool.name] = true
 		write := projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		openWorld := checkpointWrite(tool.name) || tool.name == "review_start" || tool.name == "review_request" || tool.name == "review_source_refresh"
-		destructive := tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "map_entry_update" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_update" || tool.name == "job_summary_set" || tool.name == "job_checklist_replace" || tool.name == "job_checklist_item_update" || reviewBatchTool(tool.name) || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
+		destructive := tool.name == "review_subagent_update" || tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "map_entry_update" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_update" || tool.name == "job_summary_set" || tool.name == "job_checklist_replace" || tool.name == "job_checklist_item_update" || reviewBatchTool(tool.name) || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
 			var err error
@@ -129,6 +132,12 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			options := client.PageOptions{Limit: args.limit, Cursor: args.cursor}
 			var value any
 			switch tool.name {
+			case "review_subagent_record":
+				value, err = service.RecordSubagentReview(ctx, args.subagentRecord, args.key)
+			case "review_subagent_read":
+				value, err = service.ReadSubagentReview(ctx, args.id)
+			case "review_subagent_update":
+				value, err = service.UpdateSubagentReview(ctx, args.id, args.subagentUpdate, args.key)
 			case "review_start":
 				value, err = service.RunReview(ctx, args.key, args.reviewRun, args.reviewSourceWait)
 			case "review_selection_read":

@@ -66,6 +66,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if reviewBatchTool(name) {
 		return reviewBatchArguments(name, data)
 	}
+	if subagentTool(name) {
+		return subagentArguments(name, data)
+	}
 	bound := 16 << 10
 	if mutationTool(name) {
 		bound = 256 << 10
@@ -231,6 +234,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 }
 
 func mutationTool(name string) bool {
+	if subagentWrite(name) {
+		return true
+	}
 	if reviewBatchTool(name) {
 		return true
 	}

@@ -90,6 +90,9 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `review_finding_decide` | Required idempotency_key/evidence_id/expected_revision/finding/disposition/reason; completed adjudication result. |
 | `review_finding_fix` | Required idempotency_key/evidence_id/expected_revision/finding/expected_sha/fix_sha/proof_note; completed fix-reference result. |
 | `review_source_finalize` | Required idempotency_key/evidence_id/expected_revision; completed source-count finalization result. |
+| `review_subagent_record` | Record one actual completed independent Subagent review under the bound project writer; counts and identities derived; no provider request or allowance use. |
+| `review_subagent_read` | Read a recorded Subagent run, stable run revision and original findings for decision/fix updates. |
+| `review_subagent_update` | Guarded partial decisions/fix proof/finalization on a recorded Subagent review; original capture and finalized counts retained. |
 | `review_finding_route` | Required idempotency_key/evidence_id/expected_revision/finding/target_pull_number/reason; optional expected_route_revision; compact route/source revision result. |
 | `review_route_read` | Required route_id; explicit route detail with its one original source finding. |
 | `review_routes_list` | Required pull_number; optional limit/cursor; compact incoming routes in the bound project. |
@@ -137,6 +140,8 @@ The 62-file Go/module manifest was unchanged before/after that run: SHA-256 `442
 These checks establish the SDK/protocol and service boundary, not compatibility with every installed agent host. Whether a pending tool permits other model work, delivers completion across turns, or wakes an idle chat remains separate host proof. Native Windows initialization/list/local-context and safe missing-credential behavior passed. Native Windows service-backed MCP read and job-create/replay checks also passed against actual `fcd`; all five mutation tools have Linux packaged proof. The [packaged smoke guide](../tools/packagedsmoke/README.md#native-platform-gate) records newer native Windows/macOS SDK execution, quiet-wait cancellation, concurrent reads and session reuse. Installed-agent-host delivery across turns remains unproven.
 
 ## Native review evidence
+
+The [Subagent review tools](subagent-reviews.md) provide ordinary worker recording, stable run reads and batched decision/fix/finalization updates without provider work or an administrator import.
 
 The [native evidence controls](review-controls.md#bound-cli-and-mcp) add explicit retained capture/adjudication reads and keyed finding decision, fix-reference and source-finalization tools. These operations do not dispatch a review; source finalization atomically queues the GitHub summary for background delivery without waiting for fixes or provider I/O. The [readiness tool](review-readiness.md#service-and-bound-tools) combines retained observations and current local policy without provider work; `include_readiness` on explicit source refresh requests its collection. The five [finding-route tools](review-routes.md#bound-controls) add explicit creation, incoming lists, full route reads, receiving decisions and guarded fix references. They are local, profile-bound operations with independent source and receiving revisions.
 
