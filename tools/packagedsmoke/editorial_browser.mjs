@@ -8,6 +8,7 @@ let checkpoint = '';
 let external = 0;
 let editorialReads = 0, compactReads = 0, individualReads = 0;
 let sessionPosts=0,sessionDeletes=0,sessionRenewals=0,domainWrites=0,errors=0;
+let retiredSnapshotHandles=0,retiredSnapshotBodyReads=0,failureCause='';
 const need = value => { if (!value) throw new Error('assertion'); };
 try {
   config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
@@ -191,15 +192,42 @@ try {
       else{publicReads++;if(url.pathname===publicPath)publicSnapshots++;if(url.pathname.includes('/history'))publicHistory++;const h=request.headers();if(h.authorization||h.cookie||h['x-fc-browser-session']||h['x-fc-worker']||h['x-fc-instance'])publicPrivateRequests++;}
     }
   });
-  await anonymous.route('**/*',async route=>{const request=route.request(),url=new URL(request.url());if(url.origin!==config.origin||!['GET','HEAD'].includes(request.method()))await route.abort();else await route.continue();});
+  let publicSnapshot,ownedSnapshotBodies=0;
+  await anonymous.route('**/*',async route=>{
+    const request=route.request(),url=new URL(request.url());
+    if(url.origin!==config.origin||!['GET','HEAD'].includes(request.method())){await route.abort();return;}
+    if(request.method()==='GET'&&url.pathname===publicPath&&url.search===''){
+      // Own this one original response before page delivery. Route.fetch shares
+      // context cookies, so explicitly suppress them for the anonymous read.
+      let response;
+      try{
+        response=await route.fetch({timeout:5000,maxRedirects:0,maxRetries:0,headers:{...request.headers(),cookie:''}});
+        const rawBody=await response.body();
+        publicSnapshot={url:request.url(),status:response.status(),headers:response.headers(),rawBody};ownedSnapshotBodies++;
+        await route.fulfill({response,body:rawBody});
+      }catch{failureCause='public_snapshot_response_unavailable';await route.abort();}
+      finally{await response?.dispose();}
+      return;
+    }
+    await route.continue();
+  });
   const shared=await anonymous.newPage();shared.setDefaultTimeout(5000);shared.setDefaultNavigationTimeout(5000);
   shared.on('pageerror',()=>publicErrors++);shared.on('console',message=>{if(message.type()==='error')publicErrors++;});shared.on('response',response=>{if(response.status()>=400)publicErrors++;});
   checkpoint='public-content';
-  const snapshotResponse=shared.waitForResponse(response=>new URL(response.url()).pathname===publicPath);
+  const snapshotResponse=shared.waitForResponse(response=>response.request().method()==='GET'&&new URL(response.url()).pathname===publicPath&&new URL(response.url()).search==='').then(response=>{
+    // The page can consume a response after its observer's CDP body handle has
+    // retired. Make that lifetime boundary deterministic for this fixture.
+    retiredSnapshotHandles++;
+    const retiredBody=async()=>{retiredSnapshotBodyReads++;failureCause='public_snapshot_cdp_body_retired';throw new Error('retired fixture response body');};
+    response.json=retiredBody;response.body=retiredBody;response.text=retiredBody;
+    return response;
+  });
   await shared.goto(config.origin+'/public/editorial-smoke');
   checkpoint='public-heading';await shared.getByRole('heading',{name:'Public editorial',exact:true}).waitFor();
-  checkpoint='public-snapshot';const response=await snapshotResponse,snapshot=await response.json();
-  need(response.status()===200&&response.headers()['cache-control']==='no-store');
+  checkpoint='public-snapshot';const response=await snapshotResponse;
+  need(ownedSnapshotBodies===1&&retiredSnapshotHandles===1&&retiredSnapshotBodyReads===0&&publicSnapshot.url===response.url());
+  need(publicSnapshot.status===200&&response.status()===publicSnapshot.status&&publicSnapshot.headers['cache-control']==='no-store'&&response.headers()['cache-control']==='no-store');
+  const snapshot=JSON.parse(publicSnapshot.rawBody.toString('utf8'));
   need(snapshot.revision===1&&JSON.stringify(snapshot.content.project_map)===JSON.stringify(manifest.project_map));
   checkpoint='public-order';const publicEntries=shared.locator('#project-map .public-story');
   await expect(publicEntries).toHaveCount(2);
@@ -227,9 +255,9 @@ try {
   }
   need(publicReads===2&&publicSnapshots===1&&publicHistory===0&&publicPrivateRequests===0&&publicWrites===0&&publicErrors===0&&external===0);
   await anonymous.close();await browser.close(); browser = undefined; await server.close(); server = undefined;
-  console.log(JSON.stringify({state:'PASS',editorial_reads:editorialReads,compact_reads:compactReads,individual_reads:individualReads,external_page_requests:external,fixture_entries:writes,appearance_fixture_calls:1,session_posts:sessionPosts,session_deletes:sessionDeletes,session_renewals:sessionRenewals,domain_writes:domainWrites,errors,publication_fixture_calls:publicationCalls,public_reads:publicReads,public_snapshots:publicSnapshots,public_history:publicHistory,public_private_requests:publicPrivateRequests,public_writes:publicWrites,public_errors:publicErrors,viewports:[1440,390,320]}));
+  console.log(JSON.stringify({state:'PASS',editorial_reads:editorialReads,compact_reads:compactReads,individual_reads:individualReads,external_page_requests:external,fixture_entries:writes,appearance_fixture_calls:1,session_posts:sessionPosts,session_deletes:sessionDeletes,session_renewals:sessionRenewals,domain_writes:domainWrites,errors,publication_fixture_calls:publicationCalls,public_reads:publicReads,public_snapshots:publicSnapshots,public_history:publicHistory,public_private_requests:publicPrivateRequests,public_writes:publicWrites,public_errors:publicErrors,owned_snapshot_bodies:ownedSnapshotBodies,retired_snapshot_handles:retiredSnapshotHandles,retired_snapshot_body_reads:retiredSnapshotBodyReads,viewports:[1440,390,320]}));
 } catch {
-  if(config?.diagnostic_directory)await fs.writeFile(config.diagnostic_directory+'/editorial-failure.json',JSON.stringify({phase,checkpoint,...failureCounts()}),{mode:0o600}).catch(()=>{});
+  if(config?.diagnostic_directory)await fs.writeFile(config.diagnostic_directory+'/editorial-failure.json',JSON.stringify({phase,checkpoint,failure_cause:failureCause,retired_snapshot_handles:retiredSnapshotHandles,retired_snapshot_body_reads:retiredSnapshotBodyReads,...failureCounts()}),{mode:0o600}).catch(()=>{});
   console.log(JSON.stringify({state:'FAIL',phase,checkpoint}));
   process.exitCode = 1;
 } finally {

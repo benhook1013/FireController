@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,6 +72,26 @@ func TestPackagedEditorialBrowserSmoke(t *testing.T) {
 		t.Fatal("editorial browser fixture identity changed")
 	}
 	health(t, ctx, daemon.address)
+	// Observe the actual daemon requests as well as browser events: owning a
+	// response must not add a second GET or forward the anonymous cookie sentinel.
+	// The existing sign-out probe contributes one unpublished-location GET before
+	// the anonymous context's location/snapshot pair.
+	target, _ := url.Parse("http://" + daemon.address)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.FlushInterval = -1
+	var publicWireReads, publicWirePrivate atomic.Int64
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/public/") {
+			publicWireReads.Add(1)
+			for _, header := range []string{"Authorization", "Cookie", "X-FC-Browser-Session", "X-FC-Worker", "X-FC-Instance"} {
+				if r.Header.Get(header) != "" {
+					publicWirePrivate.Add(1)
+				}
+			}
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() { gateway.CloseClientConnections(); gateway.Close() })
 	executable := os.Getenv("FC_BROWSER_EXECUTABLE")
 	if executable != "" {
 		if !filepath.IsAbs(executable) {
@@ -91,7 +113,7 @@ func TestPackagedEditorialBrowserSmoke(t *testing.T) {
 		t.Fatal("PLAYWRIGHT_BROWSERS_PATH must be absolute")
 	}
 	env = append(env, "PLAYWRIGHT_BROWSERS_PATH="+browserPath)
-	config := map[string]string{"origin": "http://" + daemon.address, "project": project, "worker": worker, "other_worker": otherWorker, "instance": daemon.instance, "admin_file": filepath.Join(data, "bootstrap-admin.token"), "credential_file": credential, "executable": executable, "proxy": browserDeny.URL}
+	config := map[string]string{"origin": gateway.URL, "project": project, "worker": worker, "other_worker": otherWorker, "instance": daemon.instance, "admin_file": filepath.Join(data, "bootstrap-admin.token"), "credential_file": credential, "executable": executable, "proxy": browserDeny.URL}
 	if directory := os.Getenv("FC_BROWSER_PROOF_DIR"); directory != "" {
 		if !filepath.IsAbs(directory) {
 			t.Fatal("FC_BROWSER_PROOF_DIR must be absolute")
@@ -156,27 +178,33 @@ func TestPackagedEditorialBrowserSmoke(t *testing.T) {
 	}
 	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
 	var result struct {
-		State                 string `json:"state"`
-		EditorialReads        int    `json:"editorial_reads"`
-		CompactReads          int    `json:"compact_reads"`
-		IndividualReads       int    `json:"individual_reads"`
-		External              int    `json:"external_page_requests"`
-		FixtureEntries        int    `json:"fixture_entries"`
-		SessionPosts          int    `json:"session_posts"`
-		SessionDeletes        int    `json:"session_deletes"`
-		DomainWrites          int    `json:"domain_writes"`
-		Errors                int    `json:"errors"`
-		PublicationCalls      int    `json:"publication_fixture_calls"`
-		AppearanceCalls       int    `json:"appearance_fixture_calls"`
-		PublicReads           int    `json:"public_reads"`
-		PublicSnapshots       int    `json:"public_snapshots"`
-		PublicHistory         int    `json:"public_history"`
-		PublicPrivateRequests int    `json:"public_private_requests"`
-		PublicWrites          int    `json:"public_writes"`
-		PublicErrors          int    `json:"public_errors"`
+		State                    string `json:"state"`
+		EditorialReads           int    `json:"editorial_reads"`
+		CompactReads             int    `json:"compact_reads"`
+		IndividualReads          int    `json:"individual_reads"`
+		External                 int    `json:"external_page_requests"`
+		FixtureEntries           int    `json:"fixture_entries"`
+		SessionPosts             int    `json:"session_posts"`
+		SessionDeletes           int    `json:"session_deletes"`
+		DomainWrites             int    `json:"domain_writes"`
+		Errors                   int    `json:"errors"`
+		PublicationCalls         int    `json:"publication_fixture_calls"`
+		AppearanceCalls          int    `json:"appearance_fixture_calls"`
+		PublicReads              int    `json:"public_reads"`
+		PublicSnapshots          int    `json:"public_snapshots"`
+		PublicHistory            int    `json:"public_history"`
+		PublicPrivateRequests    int    `json:"public_private_requests"`
+		PublicWrites             int    `json:"public_writes"`
+		PublicErrors             int    `json:"public_errors"`
+		OwnedSnapshotBodies      int    `json:"owned_snapshot_bodies"`
+		RetiredSnapshotHandles   int    `json:"retired_snapshot_handles"`
+		RetiredSnapshotBodyReads int    `json:"retired_snapshot_body_reads"`
 	}
 	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.EditorialReads < 2 || result.CompactReads != 1 || result.IndividualReads != 1 || result.External != 0 || result.FixtureEntries != 3 || result.SessionPosts != 1 || result.SessionDeletes != 1 || result.DomainWrites != 0 || result.Errors != 0 || result.AppearanceCalls != 1 || result.PublicationCalls != 5 || result.PublicReads != 2 || result.PublicSnapshots != 1 || result.PublicHistory != 0 || result.PublicPrivateRequests != 0 || result.PublicWrites != 0 || result.PublicErrors != 0 {
 		t.Fatalf("invalid editorial browser result: editorial=%d compact=%d individual=%d external=%d entries=%d", result.EditorialReads, result.CompactReads, result.IndividualReads, result.External, result.FixtureEntries)
+	}
+	if result.OwnedSnapshotBodies != 1 || result.RetiredSnapshotHandles != 1 || result.RetiredSnapshotBodyReads != 0 || publicWireReads.Load() != 3 || publicWirePrivate.Load() != 0 {
+		t.Fatalf("editorial response ownership changed body lifetime, public GET count or anonymous transport: owned=%d retired=%d borrowed=%d wire_reads=%d private_headers=%d", result.OwnedSnapshotBodies, result.RetiredSnapshotHandles, result.RetiredSnapshotBodyReads, publicWireReads.Load(), publicWirePrivate.Load())
 	}
 	daemon.stop(t)
 	if external.Load() != 0 {
@@ -185,5 +213,5 @@ func TestPackagedEditorialBrowserSmoke(t *testing.T) {
 	if binaryHash(t, binary) != hash {
 		t.Fatal("editorial browser smoke changed fcd")
 	}
-	t.Logf("packaged editorial browser passed: elapsed=%s editorial_reads=%d compact_reads=%d individual_reads=%d external_http=0 browser_domain_writes=0 browser_errors=0 session_posts=1 session_deletes=1 fixture_entries=%d appearance_fixture_calls=1 publication_fixture_calls=5 public_reads=2 public_snapshots=1 public_history=0 public_private_requests=0 public_writes=0 public_errors=0 viewports=1440,390,320", time.Since(started).Round(time.Millisecond), result.EditorialReads, result.CompactReads, result.IndividualReads, result.FixtureEntries)
+	t.Logf("packaged editorial browser passed: elapsed=%s editorial_reads=%d compact_reads=%d individual_reads=%d external_http=0 browser_domain_writes=0 browser_errors=0 session_posts=1 session_deletes=1 fixture_entries=%d appearance_fixture_calls=1 publication_fixture_calls=5 public_reads=2 public_snapshots=1 public_history=0 public_private_requests=0 public_writes=0 public_errors=0 owned_snapshot_bodies=1 retired_cdp_handles=1 retired_body_reads=0 wire_public_gets=3 wire_private_headers=0 viewports=1440,390,320", time.Since(started).Round(time.Millisecond), result.EditorialReads, result.CompactReads, result.IndividualReads, result.FixtureEntries)
 }
