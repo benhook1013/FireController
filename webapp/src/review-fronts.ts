@@ -50,14 +50,18 @@ export function currentReviewFronts(snapshot: string, pulls: ReviewPullSummary[]
 
 // Current source/control explanations never apply to another loaded snapshot.
 // Merge-head distance, old attempts and completed history do not select fronts.
-export function reviewQueueBadges(pull: ReviewPullSummary, snapshot: string, fronts?: ReviewFronts, progress?: ReviewProgressItem): ReviewQueueBadge[] {
-  if (pull.state !== 'open' || !fronts?.configured || fronts.snapshot_id !== snapshot || !fronts.queue.includes(pull.number)) return [];
+export function reviewQueueBadges(pull: ReviewPullSummary, snapshot: string, fronts?: ReviewFronts, progress?: ReviewProgressItem, channels?: ('hosted'|'cli')[]): ReviewQueueBadge[] {
+  if (pull.state !== 'open') return [];
   const names = (channels: string[]) => channels.map(channel => channel === 'hosted' ? 'Hosted' : 'CLI').join(' + ');
   const closed = (channel: string) => {
     const value = progress?.pull_number === pull.number ? progress.channels.find(item => item.channel === channel) : undefined;
     return !!value?.configured && (value.closed || value.tapered || !value.maximum_unbounded && value.used >= value.maximum);
   };
-  if (fronts.channels.length > 0 && fronts.channels.every(channel => closed(channel.channel))) return [{kind:'closed',text:'Review closed',description:'Current configured channels allow no further rounds; this is not a merge-readiness verdict.'}];
+  const selected=channels ?? (fronts?.configured ? fronts.channels.map(channel=>channel.channel) : []);
+  // Closure is retained PR/channel control state, independent of the source
+  // snapshot that happens to be loading. Missing controls never mean closed.
+  if (selected.length > 0 && selected.every(closed)) return [{kind:'closed',text:'Review closed',description:'Current configured channels allow no further rounds; this is not a merge-readiness verdict.'}];
+  if (!fronts?.configured || fronts.snapshot_id !== snapshot || !fronts.queue.includes(pull.number)) return [];
   const matching = fronts.channels.filter(channel => (channel.state === 'ready' || channel.state === 'held' && ['reviews_paused','local_queue_position'].includes(channel.reason ?? '')) && channel.pull_number === pull.number && channel.head_sha === pull.head_sha && channel.base_sha === pull.base_sha && channel.base_ref === pull.base_ref && !closed(channel.channel));
   if (matching.length) return [{kind:'front',text:'Review front',channels:matching.map(channel => channel.channel),description:'Next position under the stored queue and local round controls; requests still recheck source and admission.'}];
   const position = fronts.queue.indexOf(pull.number);

@@ -92,6 +92,16 @@ describe('truthful stored review presentation', () => {
     expect(html).toContain('Source and admission have not been verified.');
     expect(html).not.toContain('>Up next</span>');
   });
+	 it('retains the closed badge and striped-rail class while front data catches up',()=>{
+	   const page={...queue([pull(2)]),snapshot_id:'new-snapshot'};
+	   const progress:ReviewProgressItem={pull_number:2,channels:[{channel:'hosted',configured:true,revision:1,epoch:1,closed:true,minimum:0,maximum:3,taper:1,used:1,dry:0,tapered:false,pending:0}]};
+	   const html=markup(<ReviewQueueView/>,page,undefined,{fronts:fronts(),progress:[progress]});
+	   expect(html).toContain('review-status-closed');expect(html).toContain('>Review closed</span>');
+	   expect(html).not.toContain('>Queued</span>');
+	   progress.channels[0]={...progress.channels[0],closed:false};
+	   const reopened=markup(<ReviewQueueView/>,page,undefined,{fronts:{...fronts(),snapshot_id:page.snapshot_id},progress:[progress]});
+	   expect(reopened).not.toContain('review-status-closed');expect(reopened).toContain('>Review front</span>');
+	 });
   it.each([
     ['success', 'ready', 'mergeable', 'Ready'], ['pending', 'pending', 'pending', 'Waiting'], ['failure', 'blocked', 'conflicting', 'Blocked'], ['unknown', 'unknown', 'unknown', 'Unknown'],
   ] as const)('colors observed CI %s and the actual %s merge eligibility', (ci_state, state, colour, label) => {

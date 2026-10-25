@@ -49,6 +49,17 @@ describe('current review position badges',()=>{
     progress.channels[1]={...control('cli'),configured:false,revision:0,epoch:0,maximum:0,taper:0};
     expect(reviewQueueBadges(pull(2),snapshot,value(),progress)).toEqual([]);
   });
+	 it('keeps confirmed closure independent of a replacement source snapshot',()=>{
+	   const progress:ReviewProgressItem={pull_number:2,channels:[control('hosted',true),control('cli',true)]};
+	   const stale=currentReviewFronts('review_snapshot_new',[pull(2)],value());
+	   expect(stale).toBeUndefined();
+	   expect(reviewQueueBadges(pull(2),'review_snapshot_new',stale,progress,['hosted','cli'])[0]?.text).toBe('Review closed');
+	   expect(reviewQueueBadges(pull(2),'review_snapshot_new',stale,undefined,['hosted','cli'])).toEqual([]);
+	   progress.channels[0]=control('hosted');
+	   expect(reviewQueueBadges(pull(2),'review_snapshot_new',stale,progress,['hosted','cli'])).toEqual([]);
+	   const fresh={...value(),snapshot_id:'review_snapshot_new'};
+	   expect(reviewQueueBadges(pull(2),'review_snapshot_new',fresh,progress,['hosted','cli'])[0]?.text).toBe('Review front');
+	 });
   it('does not close an unbounded grant at its required zero placeholder',()=>{
     const progress:ReviewProgressItem={pull_number:2,channels:[{...control('hosted'),maximum_unbounded:true,maximum:0,minimum:3000,used:2000},control('cli',true)]};
     expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review front');
