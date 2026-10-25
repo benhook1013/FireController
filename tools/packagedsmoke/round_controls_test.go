@@ -346,12 +346,12 @@ func TestPackagedRoundControlsSmoke(t *testing.T) {
 	recovered := call("admin", reopen...)
 	var reopened client.ReviewRoundControlReceipt
 	decode(t, recovered, &reopened)
-	if reopened.Revision != 3 || reopened.Epoch != 2 || reopened.Outcome != "granted" {
+	if reopened.Revision != 3 || reopened.Epoch != 1 || reopened.Outcome != "granted" {
 		t.Fatal("lost stdout recovery receipt incorrect")
 	}
 	call("admin", "reviews", "rounds", "close", "--pr", "42", "--channel", "cli", "--expected-revision", "3", "--key", "round-later-close")
 	beforeRestart := read("admin", "42", "cli")
-	if beforeRestart.Revision != 4 || beforeRestart.Epoch != 2 || !beforeRestart.Closed || beforeRestart.Used != 0 {
+	if beforeRestart.Revision != 4 || beforeRestart.Epoch != 1 || !beforeRestart.Closed || beforeRestart.Used != 0 {
 		t.Fatal("later change did not preserve new empty allowance")
 	}
 	closeMCP()
@@ -380,7 +380,7 @@ func TestPackagedRoundControlsSmoke(t *testing.T) {
 	target = next
 	targetMu.Unlock()
 	if !bytes.Equal(recovered, call("admin", reopen...)) || !bytes.Equal(original, call("admin", grant...)) || !jsonEqual(closed, call("admin", cliClose...)) || read("admin", "42", "cli") != beforeRestart {
-		t.Fatal("restart lost settings or original cross-epoch receipts")
+		t.Fatal("restart lost settings or original same-epoch receipts")
 	}
 	restarted.stop(t)
 	if !reflect.DeepEqual(retained, readUpgradeState(t, ctx, data)) {

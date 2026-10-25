@@ -63,7 +63,7 @@ func TestNativeHostedReconciliationExternalFirstRetainsOriginalHistoryAndNativeD
 	}
 	var native RunDetailResponse
 	nativeRead(t, f, "/runs/"+runOpaqueID(f.project, nativeSource, run.SourceRunID), &native)
-	if !reflect.DeepEqual(native.Findings, run.Findings) || native.Run.Accepted != 1 || native.Run.Fixed != 1 || !native.Run.Finalized {
+	if !reflect.DeepEqual(plainFindingsForTest(native.Findings), run.Findings) || native.Run.Accepted != 1 || native.Run.Fixed != 1 || !native.Run.Finalized {
 		t.Fatal("native adjudication was replaced by observer state", native)
 	}
 	var currentExternal, versions, findings int

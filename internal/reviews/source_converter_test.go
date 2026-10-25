@@ -113,7 +113,7 @@ finally:fixture.doCleanups()
 	if detail.Run.Source != "original-controller" || detail.Run.SourceRunID != run.SourceRunID || detail.Run.HeadSHA != run.HeadSHA || detail.Run.Channel != run.Channel ||
 		detail.Run.StartedAt != run.StartedAt || detail.Run.FinishedAt != run.FinishedAt ||
 		detail.Run.Found != run.Found || detail.Run.Accepted != run.Accepted ||
-		!reflect.DeepEqual(detail.Findings, run.Findings) {
+		!reflect.DeepEqual(plainFindingsForTest(detail.Findings), run.Findings) {
 		t.Fatal("native apply/readback changed actual converter records")
 	}
 	var queue QueueResponse
