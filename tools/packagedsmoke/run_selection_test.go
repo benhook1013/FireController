@@ -390,11 +390,12 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	target = next
 	targetMu.Unlock()
 	changedFronts := readFront()
-	if changedFronts.ConfigurationRevision != 2 || changedFronts.SnapshotID != currentSnapshot || !reflect.DeepEqual(changedFronts.Queue, []int64{3, 2}) || changedFronts.Channels[0].State != "unknown" || changedFronts.Channels[0].Reason != "configuration_changed" || changedFronts.Channels[0].PullNumber != 0 || changedFronts.Channels[0].HeadSHA != "" || changedFronts.Channels[0].BaseSHA != "" || changedFronts.Channels[0].BaseRef != "" {
-		t.Fatal("old source frame invented a front after configuration changed")
+	local := changedFronts.Channels[0]
+	if changedFronts.ConfigurationRevision != 2 || changedFronts.SnapshotID != currentSnapshot || !reflect.DeepEqual(changedFronts.Queue, []int64{3, 2}) || local.State != "held" || local.Reason != "local_queue_position" || local.PullNumber != 3 || local.HeadSHA != strings.Repeat("a", 40) || local.BaseSHA != strings.Repeat("b", 40) || local.BaseRef != "main" {
+		t.Fatal("changed configuration lost its stored position or reused provider readiness")
 	}
-	if changedFronts.Channels[0].CheckedAt == "" || changedFronts.Channels[0].SourceObservedAt == "" || !reflect.DeepEqual(provider.inventory(), expectedProvider) {
-		t.Fatal("stale front lost retained observation times or reacquired source")
+	if _, err := time.Parse(time.RFC3339Nano, local.CheckedAt); err != nil || local.SourceObservedAt != "" || !reflect.DeepEqual(provider.inventory(), expectedProvider) {
+		t.Fatal("local position borrowed provider observation time or reacquired source")
 	}
 	if beforeRestart.tables["review_front_frames"] != afterConfig.tables["review_front_frames"] || beforeRestart.counts["review_front_frames"] != afterConfig.counts["review_front_frames"] {
 		t.Fatal("configuration edit changed retained source frame")

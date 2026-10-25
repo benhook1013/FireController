@@ -159,6 +159,7 @@ func TestPackagedRefreshBrowserSmoke(t *testing.T) {
 		t.Fatal("refresh workload exceeded45seconds")
 	}
 	if err != nil || stderr.len() != 0 || output.len() > 64<<10 {
+		t.Logf("safe refresh failure: process_error=%t stderr_bytes=%d stdout_bytes=%d", err != nil, stderr.len(), output.len())
 		for _, line := range bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n")) {
 			var failure struct {
 				State, Phase string
