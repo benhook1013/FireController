@@ -86,11 +86,11 @@ fc reviews evidence EVIDENCE_ID
 fc reviews adjudication EVIDENCE_ID
 fc reviews assess EVIDENCE_ID
 fc reviews decide EVIDENCE_ID --key DECISION_KEY --expect-revision 0 --finding 0 --disposition accepted --reason 'Verified against the current source.'
-fc reviews fix EVIDENCE_ID --key FIX_KEY --expect-revision 1 --finding 0 --expect-sha= --fix-sha COMMIT_SHA --proof 'Focused runtime proof and source reference.'
-fc reviews finalize EVIDENCE_ID --key FINALIZATION_KEY --expect-revision 2
+fc reviews finalize EVIDENCE_ID --key FINALIZATION_KEY --expect-revision 1
+fc reviews fix EVIDENCE_ID --key FIX_KEY --expect-revision 2 --finding 0 --expect-sha= --fix-sha COMMIT_SHA --proof 'Focused runtime proof and source reference.'
 ```
 
-Replace the uppercase placeholders with returned identities and the verified commit. Finalize source decisions when adjudication is complete, including accepted findings awaiting fixes: this freezes the original counts and automatically queues the review summary. Recording fixes later never changes that summary or creates another one. The commands above illustrate available controls rather than requiring fixes before finalization. Read the current revision instead of inferring it from this example.
+Replace the uppercase placeholders with returned identities and the verified commit. Finalize source decisions when adjudication is complete, including accepted findings awaiting fixes: this freezes the original counts and automatically queues the review summary. Recording fixes later never changes that summary or creates another one. The example therefore finalizes before recording fix proof. Read the current revision instead of inferring it from this example.
 
 `reviews evidence --help` and `reviews adjudication --help` explain these reads locally without loading profiles or contacting the service. Native evidence IDs are `review_evidence_` followed by exactly 32 lowercase hexadecimal characters; use the complete ID returned by the original operation. Invalid evidence IDs receive format-specific guidance, without echoing the submitted value.
 
