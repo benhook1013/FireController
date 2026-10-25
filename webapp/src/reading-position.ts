@@ -70,7 +70,7 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
     let point = initial, pendingRestore = !!initial, frame = 0, ownScroll = false, readerUntil = 0;
     const documentRoot = document.documentElement;
     const previousAnchoring = documentRoot.style.overflowAnchor;
-    if (initial || element.querySelector(selector)) documentRoot.style.overflowAnchor = 'none';
+    if (initial || element.querySelector(selector)) { documentRoot.style.overflowAnchor = 'none'; history.scrollRestoration = 'manual'; }
     const header = document.querySelector('.mast');
     const edge = () => Math.max(0, header?.getBoundingClientRect().bottom ?? 0) + 12;
     const landmarks = (): ReadingLandmark[] => [...element.querySelectorAll<HTMLElement>(selector)].flatMap(node => {
@@ -82,6 +82,7 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
       frame = 0;
       const items = landmarks();
       documentRoot.style.overflowAnchor = items.length || pendingRestore ? 'none' : previousAnchoring;
+      history.scrollRestoration = items.length || pendingRestore ? 'manual' : 'auto';
       if (performance.now() < readerUntil) { point = capture(); return; }
       if (point) {
         const region = point.anchor.startsWith('review-') ? 'reviews' : 'delivery';
@@ -96,7 +97,12 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
           pendingRestore = false;
         }
       }
-      point = capture();
+      const retainedIndex = point ? items.findIndex(item => item.id === point!.anchor) : -1;
+      if (point && retainedIndex >= 0) {
+        // Compensation must not select a neighbour or accumulate fractional
+        // scroll rounding. Only reader input chooses a new surviving anchor.
+        point = { ...point, y: window.scrollY, after: items.slice(retainedIndex + 1, retainedIndex + 13).map(item => item.id), before: items.slice(Math.max(0, retainedIndex - 12), retainedIndex).reverse().map(item => item.id) };
+      } else point = capture();
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(reconcile); };
     const scroll = () => {
@@ -141,6 +147,7 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
       cancelAnimationFrame(frame);
       changes.disconnect(); sizes.disconnect();
       documentRoot.style.overflowAnchor = previousAnchoring;
+      history.scrollRestoration = 'auto';
       window.removeEventListener('scroll', scroll); window.removeEventListener('wheel', reader);
       window.removeEventListener('touchmove', reader); window.removeEventListener('pointerdown', scrollbar);
       window.removeEventListener('keydown', key); window.removeEventListener('pagehide', save);
