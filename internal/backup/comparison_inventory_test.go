@@ -111,7 +111,10 @@ func TestComparisonInventoryRehashedCanonicalProofDamageRefused(t *testing.T) {
 		{"wrong-evidence", `UPDATE review_comparison_proofs SET evidence_id='review_evidence_forged'`, false},
 		{"wrong-project", `INSERT INTO projects VALUES('unrelated-project','Other',992,'synthetic/other'); UPDATE review_comparison_proofs SET project_id='unrelated-project'`, false},
 		{"missing-proof", `DROP TRIGGER review_comparison_proofs_retain; DELETE FROM review_comparison_proofs; ` + retain, false},
-		{"missing-native-capture", `DELETE FROM review_adjudication_changes; DELETE FROM review_adjudication_state; DELETE FROM review_execution_evidence; UPDATE review_comparison_proofs SET state='ready'`, false},
+		// Finalization also records summary delivery. Remove its dependent
+		// journal so this still tests missing native proof with valid FKs,
+		// rather than being refused first for a dangling publication.
+		{"missing-native-capture", `DELETE FROM review_checkpoint_intents; DELETE FROM review_checkpoint_revisions; DELETE FROM review_checkpoint_publications; DELETE FROM review_adjudication_changes; DELETE FROM review_adjudication_state; DELETE FROM review_execution_evidence; UPDATE review_comparison_proofs SET state='ready'`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := comparisonInventoryFixture(t, !tc.pending)
