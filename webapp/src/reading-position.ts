@@ -55,8 +55,12 @@ function savePoint(scope: string, point: ReadingPoint | undefined): void {
   } catch { /* Reading remains usable when tab storage is unavailable. */ }
 }
 
-export function scrollToReadingTarget(element: HTMLElement): void {
+export function notifyReadingNavigation(): void {
   window.dispatchEvent(new Event(navigationEvent));
+}
+
+export function scrollToReadingTarget(element: HTMLElement): void {
+  notifyReadingNavigation();
   element.scrollIntoView();
 }
 

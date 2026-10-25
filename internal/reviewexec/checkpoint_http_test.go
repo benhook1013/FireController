@@ -60,8 +60,8 @@ func TestCheckpointHTTPStrictScopeAndPendingReceipt(t *testing.T) {
 			t.Fatal("authority/query/key boundary", w.Code, tc.want, w.Body.String())
 		}
 	}
-	if attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications`) != 0 {
-		t.Fatal("invalid requests created a publication")
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications`) != 1 {
+		t.Fatal("invalid requests changed the automatic publication")
 	}
 	w := sourceHTTPRequest(f, http.MethodPost, path, f.writer, "pending", body, &zero)
 	var receipt Receipt

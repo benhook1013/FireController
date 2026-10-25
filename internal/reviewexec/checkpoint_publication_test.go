@@ -20,6 +20,10 @@ func checkpointFixture(t *testing.T, count int) (*attemptFixture, Attempt, strin
 		adjudicationDecide(t, f, id, fmt.Sprintf("checkpoint-decision-%d", i), int64(i), int64(i), "accepted")
 	}
 	coverageFinalize(t, f, a, id, int64(count))
+	// These explicit-publication tests exercise previously finalized history
+	// without a delivery journal. Current finalization queues it automatically.
+	admissionSQL(t, f, `DELETE FROM review_checkpoint_revisions WHERE publication_id IN (SELECT id FROM review_checkpoint_publications WHERE evidence_id=?)`, id)
+	admissionSQL(t, f, `DELETE FROM review_checkpoint_publications WHERE evidence_id=?`, id)
 	return f, a, id
 }
 func checkpointRequest(t *testing.T, f *attemptFixture, id, key string) (Receipt, []byte) {

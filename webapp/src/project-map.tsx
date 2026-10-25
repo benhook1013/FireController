@@ -5,6 +5,7 @@ import { Pager, ReadState, signalFor, usePaging, useWorkspace } from './workspac
 import { useProjectHeading } from './presentation-context';
 import { projectMapURL } from './api';
 import { EditorialMarkdown } from './editorial-markdown';
+import { notifyReadingNavigation } from './reading-position';
 import type { JobWorkstream, ProjectMapEntry, ProjectMapKind, ProjectMapSummary, ProjectMapHistorySummary, ProjectMapRevision } from './types';
 
 const pageSize = 20;
@@ -44,7 +45,9 @@ function ProjectEditorial() {
   });
   const entries = query.data?.pages.flatMap(page => page.items) ?? [];
   return <>
-    {entries.length > 1 && <nav className="project-editorial-nav" aria-label="Project sections">{entries.map(entry => <a key={entry.id} href={`#${entry.id}`}>{entry.title}</a>)}</nav>}
+    {entries.length > 1 && <nav className="project-editorial-nav" aria-label="Project sections">{entries.map(entry => <a key={entry.id} href={`#${entry.id}`} onClick={event => {
+      if (!event.defaultPrevented && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) notifyReadingNavigation();
+    }}>{entry.title}</a>)}</nav>}
     <ReadState error={entries.length ? undefined : query.error} loading={query.isPending} empty={false}>
       {entries.length ? <div className="project-editorial-body">{entries.map(entry => <ProjectEditorialEntry key={entry.id} entry={entry} />)}</div> : <p className="editorial-empty">No Project content has been added yet.</p>}
     </ReadState>

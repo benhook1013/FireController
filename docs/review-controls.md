@@ -2,7 +2,7 @@
 
 ## Boundary
 
-The service exposes retained native CLI and hosted evidence and its decision/fix ledger through project-scoped API, CLI and MCP operations. These controls use the same authorization and private client binding as jobs and messages. They do not start a review, upload a capture, refresh GitHub or publish a public checkpoint. The [execution contract](review-execution.md) owns trusted capture ingestion and provider admission; the [review workspace](review-workspace.md) owns stored browser projections.
+The service exposes retained native CLI and hosted evidence and its decision/fix ledger through project-scoped API, CLI and MCP operations. These controls use the same authorization and private client binding as jobs and messages. They do not start a review, upload a capture or refresh GitHub. Finalizing complete source adjudication automatically queues its compact historical GitHub summary; delivery runs in the background and does not require fixes. See [review summary delivery](review-publication.md). The [execution contract](review-execution.md) owns trusted capture ingestion and provider admission; the [review workspace](review-workspace.md) owns stored browser projections.
 
 The daemon installs the execution/evidence/adjudication and project-policy schemas and registers the local routes. Its default capability set is empty; an explicitly selected private startup catalog enables CLI, hosted or both pipelines described in the execution contract. Adding these controls does not complete native review cutover or change the separately running development executor.
 
@@ -90,7 +90,7 @@ fc reviews fix EVIDENCE_ID --key FIX_KEY --expect-revision 1 --finding 0 --expec
 fc reviews finalize EVIDENCE_ID --key FINALIZATION_KEY --expect-revision 2
 ```
 
-Replace the uppercase placeholders with returned identities and the verified commit. Explicit source decisions can be finalized before fixes; the commands above are one possible ordering rather than a required project workflow. Read the current revision instead of inferring it from this example.
+Replace the uppercase placeholders with returned identities and the verified commit. Finalize source decisions when adjudication is complete, including accepted findings awaiting fixes: this freezes the original counts and automatically queues the review summary. Recording fixes later never changes that summary or creates another one. The commands above illustrate available controls rather than requiring fixes before finalization. Read the current revision instead of inferring it from this example.
 
 `reviews evidence --help` and `reviews adjudication --help` explain these reads locally without loading profiles or contacting the service. Native evidence IDs are `review_evidence_` followed by exactly 32 lowercase hexadecimal characters; use the complete ID returned by the original operation. Invalid evidence IDs receive format-specific guidance, without echoing the submitted value.
 

@@ -102,8 +102,14 @@ try {
     await page.setViewportSize({width,height:900});
     need(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     checkpoint='section-anchor-'+width;
-    await page.getByRole('navigation',{name:'Project sections',exact:true}).getByRole('link',{name:'Project intent',exact:true}).click();
-    await expect.poll(()=>page.locator('.project-editorial-entry h3').first().evaluate(heading=>heading.getBoundingClientRect().top>=document.querySelector('.mast').getBoundingClientRect().bottom),{timeout:5000}).toBe(true);
+    const sectionLink=page.getByRole('navigation',{name:'Project sections',exact:true}).getByRole('link',{name:'Project intent',exact:true});
+    await expect(sectionLink).toHaveAttribute('href','#'+first.id);
+    await sectionLink.click();
+    await expect.poll(()=>new URL(page.url()).hash).toBe('#'+first.id);
+    await expect.poll(()=>page.locator('.project-editorial-entry h3').first().evaluate(heading=>{
+      const box=heading.getBoundingClientRect();
+      return box.top>=document.querySelector('.mast').getBoundingClientRect().bottom && box.bottom<=innerHeight;
+    }),{timeout:5000}).toBe(true);
     checkpoint='layout-'+width;
     need(await page.locator('.mast .header-utilities .connection-note').count() === 1 && await page.locator('.connection-note').count() === 1);
     const colors = await page.evaluate(() => ({note:getComputedStyle(document.querySelector('.mast .header-utilities .connection-note'),'::before').backgroundColor, header:getComputedStyle(document.querySelector('.mast')).backgroundColor}));

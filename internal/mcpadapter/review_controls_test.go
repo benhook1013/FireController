@@ -245,6 +245,10 @@ func TestReviewControlsStdioReadsDecisionsFixFinalizationAndExactRetry(t *testin
 	if receipt != replay || receipt.Revision != 3 || receipt.State != "finalized" {
 		t.Fatal("finalization receipt or exact retry changed")
 	}
+	var queued int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=? AND state='queued'`, evidenceID).Scan(&queued); err != nil || queued != 1 {
+		t.Fatal("MCP finalization did not queue exactly one summary without a publish call", queued, err)
+	}
 	compact, _ := json.Marshal(receipt)
 	var fields map[string]any
 	_ = json.Unmarshal(compact, &fields)

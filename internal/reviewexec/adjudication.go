@@ -222,7 +222,7 @@ func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, k
 	}
 	expected := *request.ExpectedRevision
 	request.ExpectedRevision = &expected
-	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.finalize", Target: evidenceID, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+	raw, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.finalize", Target: evidenceID, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		evidence, state, err := loadReviewAdjudication(ctx, tx, scope.ProjectID, evidenceID)
 		if err != nil {
 			return nil, err
@@ -261,8 +261,21 @@ func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, k
 		}
 		state.Finalized, state.FrozenCounts = true, &counts
 		state.FrozenAcceptedSeverity = acceptedSourceSeverity(evidence, state)
-		return e.persistReviewAdjudication(ctx, tx, scope, state, "finalized", -1, request, stamp())
+		receipt, err := e.persistReviewAdjudication(ctx, tx, scope, state, "finalized", -1, request, stamp())
+		if err != nil {
+			return nil, err
+		}
+		// Persist delivery with the finalized counts. No provider call or fix
+		// prerequisite belongs on the agent's finalization path.
+		if _, err = e.enqueueCheckpoint(ctx, tx, scope, evidenceID, nil); err != nil {
+			return nil, err
+		}
+		return receipt, nil
 	})
+	if err == nil {
+		e.wakeCheckpoints()
+	}
+	return raw, err
 }
 
 func (e *Engine) RecordFindingFix(ctx context.Context, scope core.Scope, key, evidenceID string, request FindingFixRequest) (json.RawMessage, error) {

@@ -184,10 +184,12 @@ func decodeCheckpoint(body string) (checkpointRecord, error) {
 		return r, checkpointStorage()
 	}
 	v := r.View
+	unbound := r.Unposted && r.Intent == nil && r.CapabilityID == "" && r.Fingerprint == "" && r.Provider == "" && r.Account == "" && (v.State == "held" && (v.Reason == "capability_unavailable" || v.Reason == "repository_changed") || v.State == "cancelled" && v.Reason == "restore_reconciled")
+	validBinding := identifier.MatchString(r.CapabilityID) && hash.MatchString(r.Fingerprint) && identifier.MatchString(r.Provider) && identifier.MatchString(r.Account)
 	created, ok := checkpointTime(v.CreatedAt)
 	updated, uok := checkpointTime(v.UpdatedAt)
 	render, err := reviewprovider.RenderCheckpoint(r.Payload)
-	if err != nil || render.SemanticSHA256 != r.SemanticSHA256 || !validPublicationID(v.ID) || !identifier.MatchString(v.ProjectID) || !hostedObservationID(v.EvidenceID, "review_evidence_") || v.ID != r.Payload.PublicationID || v.EvidenceID != r.Payload.EvidenceID || v.Revision < 1 || v.Revision == math.MaxInt64 || v.SourceRevision < 1 || !ok || !uok || updated.Before(created) || !validEvidenceAnchor(v.Anchor) || v.Anchor.RepositoryID != r.Payload.RepositoryID || v.Anchor.PullNumber != r.Payload.PullNumber || v.Anchor.CandidateSHA != r.Payload.HeadSHA || v.Anchor.BaseSHA != r.Payload.BaseSHA || v.Anchor.ParentSHA != r.Payload.ParentSHA || v.Anchor.ParentPullNumber != r.Payload.ParentPullNumber || v.Anchor.BaseRef != r.Payload.BaseRef || v.Anchor.MergeBaseSHA != r.Payload.MergeBaseSHA || v.Anchor.PatchSHA256 != r.Payload.PatchSHA256 || v.Counts != (FindingCounts{Found: r.Payload.Found, Accepted: r.Payload.Accepted, Routed: r.Payload.Routed}) || !identifier.MatchString(r.CapabilityID) || !hash.MatchString(r.Fingerprint) || !identifier.MatchString(r.Provider) || !identifier.MatchString(r.Account) || !identifier.MatchString(r.ActorID) || r.WorkerID != "" && !identifier.MatchString(r.WorkerID) || (v.Reason != "" && !identifier.MatchString(v.Reason)) || len(encoded(v))+1 > 16<<10 {
+	if err != nil || render.SemanticSHA256 != r.SemanticSHA256 || !validPublicationID(v.ID) || !identifier.MatchString(v.ProjectID) || !hostedObservationID(v.EvidenceID, "review_evidence_") || v.ID != r.Payload.PublicationID || v.EvidenceID != r.Payload.EvidenceID || v.Revision < 1 || v.Revision == math.MaxInt64 || v.SourceRevision < 1 || !ok || !uok || updated.Before(created) || !validEvidenceAnchor(v.Anchor) || v.Anchor.RepositoryID != r.Payload.RepositoryID || v.Anchor.PullNumber != r.Payload.PullNumber || v.Anchor.CandidateSHA != r.Payload.HeadSHA || v.Anchor.BaseSHA != r.Payload.BaseSHA || v.Anchor.ParentSHA != r.Payload.ParentSHA || v.Anchor.ParentPullNumber != r.Payload.ParentPullNumber || v.Anchor.BaseRef != r.Payload.BaseRef || v.Anchor.MergeBaseSHA != r.Payload.MergeBaseSHA || v.Anchor.PatchSHA256 != r.Payload.PatchSHA256 || v.Counts != (FindingCounts{Found: r.Payload.Found, Accepted: r.Payload.Accepted, Routed: r.Payload.Routed}) || !validBinding && !unbound || !identifier.MatchString(r.ActorID) || r.WorkerID != "" && !identifier.MatchString(r.WorkerID) || (v.Reason != "" && !identifier.MatchString(v.Reason)) || len(encoded(v))+1 > 16<<10 {
 		return r, checkpointStorage()
 	}
 	if (v.State == "queued" || v.State == "preparing") && (!r.Unposted || r.Intent != nil) || (v.State == "posting" || v.State == "recovering" || v.State == "recover_queued" || v.State == "uncertain") && r.Unposted {
@@ -236,7 +238,7 @@ func readCheckpoint(ctx context.Context, tx *sql.Tx, project, id string) (checkp
 	if err != nil {
 		return r, err
 	}
-	if !historyActor.Valid || !historyTime.Valid || !originActor.Valid || !originTime.Valid || historyActor.String != r.ActorID || historyTime.String != r.View.UpdatedAt || originActor.String != o.ActorID || originTime.String != o.View.CreatedAt || !o.Unposted || o.View.UpdatedAt != o.View.CreatedAt || !current.Valid || !origin.Valid || current.String != body || r.View.ID != id || r.View.ProjectID != project || r.View.EvidenceID != evidence || r.View.State != state || r.View.Revision != revision || r.View.CreatedAt != created || o.View.Revision != 1 || o.View.State != "queued" || o.Intent != nil || encoded(o.Payload) != encoded(r.Payload) || o.View.Anchor != r.View.Anchor || o.View.SourceRevision != r.View.SourceRevision || o.View.CreatedAt != r.View.CreatedAt {
+	if !historyActor.Valid || !historyTime.Valid || !originActor.Valid || !originTime.Valid || historyActor.String != r.ActorID || historyTime.String != r.View.UpdatedAt || originActor.String != o.ActorID || originTime.String != o.View.CreatedAt || !o.Unposted || o.View.UpdatedAt != o.View.CreatedAt || !current.Valid || !origin.Valid || current.String != body || r.View.ID != id || r.View.ProjectID != project || r.View.EvidenceID != evidence || r.View.State != state || r.View.Revision != revision || r.View.CreatedAt != created || o.View.Revision != 1 || (o.View.State != "queued" && o.View.State != "held") || o.Intent != nil || encoded(o.Payload) != encoded(r.Payload) || o.View.Anchor != r.View.Anchor || o.View.SourceRevision != r.View.SourceRevision || o.View.CreatedAt != r.View.CreatedAt {
 		return r, checkpointStorage()
 	}
 	if r.Intent != nil {
@@ -290,51 +292,70 @@ func (e *Engine) RequestCheckpointPublication(ctx context.Context, scope core.Sc
 	revision := *in.ExpectedRevision
 	in.ExpectedRevision = &revision
 	raw, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.checkpoint.publish", Target: in.EvidenceID, Key: key, Request: in}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		var id string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM review_checkpoint_publications WHERE project_id=? AND evidence_id=?`, scope.ProjectID, in.EvidenceID).Scan(&id)
-		existing := err == nil
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-		if !existing {
-			id = core.NewID("review_publication")
-		}
-		ev, state, payload, err := checkpointSource(ctx, tx, scope.ProjectID, in.EvidenceID, id)
-		if err != nil {
-			return nil, err
-		}
-		if state.Revision != revision {
-			return nil, conflict()
-		}
-		if existing {
-			r, err := readCheckpoint(ctx, tx, scope.ProjectID, id)
-			if err != nil {
-				return nil, err
-			}
-			if encoded(payload) != encoded(r.Payload) {
-				return nil, checkpointStorage()
-			}
-			return checkpointReceipt(r), nil
-		}
-		cap, err := e.checkpointBinding(ctx, tx, scope.ProjectID, ev.Anchor.RepositoryID)
-		if err != nil {
-			return nil, err
-		}
-		if err = checkpointCapacity(ctx, tx, scope.ProjectID); err != nil {
-			return nil, err
-		}
-		render, _ := reviewprovider.RenderCheckpoint(payload)
-		now := e.checkpointStamp("")
-		r := checkpointRecord{View: CheckpointPublication{ID: id, ProjectID: scope.ProjectID, EvidenceID: in.EvidenceID, State: "queued", Revision: 1, SourceRevision: state.Revision, Anchor: ev.Anchor, Counts: *state.FrozenCounts, CreatedAt: now, UpdatedAt: now}, Payload: payload, SemanticSHA256: render.SemanticSHA256, CapabilityID: cap.ID, Fingerprint: cap.Fingerprint, Provider: cap.Provider, Account: cap.Account, ActorID: scope.PrincipalID, WorkerID: scope.WorkerID, Unposted: true}
-		if err = persistCheckpoint(ctx, tx, r, 0); err != nil {
-			return nil, err
-		}
-		return checkpointReceipt(r), nil
+		return e.enqueueCheckpoint(ctx, tx, scope, in.EvidenceID, &revision)
 	})
 	if err == nil {
 		e.wakeCheckpoints()
 	}
 	return raw, err
+}
+
+// enqueueCheckpoint runs inside the caller's transaction. A nil expected revision
+// is automatic source finalization; a revision selects explicit historical repair.
+func (e *Engine) enqueueCheckpoint(ctx context.Context, tx *sql.Tx, scope core.Scope, evidenceID string, expected *int64) (any, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, `SELECT id FROM review_checkpoint_publications WHERE project_id=? AND evidence_id=?`, scope.ProjectID, evidenceID).Scan(&id)
+	existing := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if !existing {
+		id = core.NewID("review_publication")
+	}
+	ev, state, payload, err := checkpointSource(ctx, tx, scope.ProjectID, evidenceID, id)
+	if err != nil {
+		return nil, err
+	}
+	if expected != nil && state.Revision != *expected {
+		return nil, conflict()
+	}
+	if existing {
+		r, err := readCheckpoint(ctx, tx, scope.ProjectID, id)
+		if err != nil {
+			return nil, err
+		}
+		if encoded(payload) != encoded(r.Payload) {
+			return nil, checkpointStorage()
+		}
+		return checkpointReceipt(r), nil
+	}
+	cap, err := e.checkpointBinding(ctx, tx, scope.ProjectID, ev.Anchor.RepositoryID)
+	var bindingFailure *core.Error
+	if err != nil && (expected != nil || !errors.As(err, &bindingFailure) || bindingFailure.Code != "review_publication_held") {
+		return nil, err
+	}
+	// A durable automatic backlog contains one small row per real finalized
+	// review. It must not refuse adjudication when delivery capacity is full.
+	// The worker still claims and delivers only one record at a time.
+	if expected != nil {
+		if err = checkpointCapacity(ctx, tx, scope.ProjectID); err != nil {
+			return nil, err
+		}
+	}
+	render, _ := reviewprovider.RenderCheckpoint(payload)
+	now := e.checkpointStamp("")
+	r := checkpointRecord{View: CheckpointPublication{ID: id, ProjectID: scope.ProjectID, EvidenceID: evidenceID, State: "queued", Revision: 1, SourceRevision: state.Revision, Anchor: ev.Anchor, Counts: *state.FrozenCounts, CreatedAt: now, UpdatedAt: now}, Payload: payload, SemanticSHA256: render.SemanticSHA256, CapabilityID: cap.ID, Fingerprint: cap.Fingerprint, Provider: cap.Provider, Account: cap.Account, ActorID: scope.PrincipalID, WorkerID: scope.WorkerID, Unposted: true}
+	if bindingFailure != nil {
+		r.View.State = "held"
+		r.View.Reason = "capability_unavailable"
+		if details, ok := bindingFailure.Details.(map[string]string); ok && details["reason"] != "" {
+			r.View.Reason = details["reason"]
+		}
+	}
+	if err = persistCheckpoint(ctx, tx, r, 0); err != nil {
+		return nil, err
+	}
+	return checkpointReceipt(r), nil
 }
 func (e *Engine) ReadCheckpointPublication(ctx context.Context, scope core.Scope, id string) (CheckpointPublication, error) {
 	if ctx == nil || e == nil || e.store == nil || !validPublicationID(id) {

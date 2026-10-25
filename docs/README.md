@@ -37,7 +37,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Local API](local-api.md): implemented coordination endpoints, bootstrap and limits.
 - [Retained review history](review-history-growth.md): lifetime growth, original producers, immutable versions and bounded transfer/read requirements.
 - [Native review workspace](review-workspace.md): stored queue, PR/run history, findings, fix proof and explicit administrator observations.
-- [Public review checkpoints](review-publication.md): explicit historical source summaries, durable posting intent and recovery without blind reposting.
+- [Public review checkpoints](review-publication.md): automatically queued finalized source summaries, durable posting intent and recovery without blind reposting.
 - [Observed review readiness](review-readiness.md): explicit thread/merge-state collection and provider-free combined assessment.
 - [Required CI observations](review-ci.md): explicit collection, current workflow identity and compact stored assessment.
 - [Native review evidence controls](review-controls.md): explicit retained capture reads, guarded finding decisions, fix references and source finalization.
