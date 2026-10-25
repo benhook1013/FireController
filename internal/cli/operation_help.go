@@ -40,6 +40,24 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	evidenceID := "EVIDENCE_ID (review_evidence_ followed by exactly 32 lowercase hexadecimal characters)"
 	out := operationHelpResponse{Required: []string{}, Optional: []string{}}
 	switch operation {
+	case "jobs help":
+		out.Usage = "<bound launcher> jobs help"
+		out.Optional = []string{"jobs assigned", "jobs read JOB_ID", "jobs status JOB_ID", "jobs history --help", "jobs progress-history --help", "jobs update --help", "jobs checklist-item --help"}
+		out.Semantics = []string{"Use jobs read for the full current standing brief and progress; jobs status and assigned are selection aids.", "jobs history contains private state snapshots including historical briefs; progress-history contains only archived progress. Each archive read is one bounded page with explicit continuation."}
+		out.Example = "<bound launcher> jobs history --help"
+		out.Documentation = "docs/development.md"
+	case "jobs history", "jobs progress-history":
+		out.Usage = "<bound launcher> " + operation + " JOB_ID [--limit N] [--cursor CURSOR]"
+		out.Required = []string{"JOB_ID"}
+		out.Optional = []string{"--limit N (1-100, default 20)", "--cursor CURSOR"}
+		out.Semantics = []string{"One private archive page. Check has_more and use only the returned cursor for deliberate continuation; byte budgets may shorten the page. No automatic pagination, provider work or writes."}
+		if operation == "jobs history" {
+			out.Semantics = append(out.Semantics, "Oldest revision first. Each item's state includes its historical standing brief and job fields. There is no exact --revision selector or direct job-history revision endpoint; select the requested revision from explicitly read pages. This archive does not recreate unimported source history.", "Save larger pages privately and extract only the needed revision locally rather than passing all historical briefs into model context. Use jobs read JOB_ID for current standing instructions.")
+		} else {
+			out.Semantics = append(out.Semantics, "Newest progress sequence first. Contains archived progress, not historical standing briefs; use jobs history JOB_ID when recovering a brief.")
+		}
+		out.Example = "<bound launcher> " + operation + " job_0123456789abcdef0123456789abcdef --limit 20"
+		out.Documentation = "docs/job-state.md"
 	case "reviews help":
 		out.Usage = "<bound launcher> reviews help"
 		out.Optional = []string{"reviews subagent-record --help", "reviews subagent-read --help", "reviews subagent-update --help", "reviews queue --help", "reviews rounds --help", "reviews evidence --help", "reviews adjudication --help", "reviews route-create --help", "reviews route --help", "reviews routes --help", "reviews route-decide --help", "reviews route-fix --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}

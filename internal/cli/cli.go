@@ -421,8 +421,12 @@ func parseInvocation(args []string) (invocation, bool) {
 	if call.command == "--help" || call.command == "-h" {
 		call.command = "help"
 	}
-	if len(remaining) == 2 && (call.command == "reviews" && (remaining[1] == "help" || remaining[1] == "--help") || remaining[0] == "help" && remaining[1] == "reviews") {
-		call.command, call.helpOperation = "help", "reviews help"
+	if len(remaining) == 2 && ((call.command == "reviews" || call.command == "jobs") && (remaining[1] == "help" || remaining[1] == "--help") || remaining[0] == "help" && (remaining[1] == "reviews" || remaining[1] == "jobs")) {
+		group := call.command
+		if group == "help" {
+			group = remaining[1]
+		}
+		call.command, call.helpOperation = "help", group+" help"
 		return call, validHelpOptions(call.options)
 	}
 	if call.command == "version" || call.command == "help" {
