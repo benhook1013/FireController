@@ -241,14 +241,16 @@ function useReviewArchive<T extends ReviewRunSummary | ReviewAttemptItem>(feed: 
   useLayoutEffect(() => { archive.reset(first, loadingFirst); }, [archive, first, loadingFirst]);
   useLayoutEffect(() => { const cancel = () => archive.cancel(); session.controller.signal.addEventListener('abort', cancel, { once: true }); return () => { session.controller.signal.removeEventListener('abort', cancel); cancel(); }; }, [archive, session.controller]);
   const current = !first || first.snapshot_id === snapshot;
-  return { ...state, snapshot: state.snapshot ?? first?.snapshot_id ?? snapshot, busy: state.busy || query.isFetching || !current, error: error ?? state.error, loading: expected > 0 && !first && query.isPending && state.items.length === 0, more: () => { if (!query.isFetching && current) void archive.more(); } };
+  const displayedExpected = useRetainedRead(`${scope}:count`, current ? expected : undefined, expected > 0) ?? expected;
+  return { ...state, expected: displayedExpected, snapshot: state.snapshot ?? first?.snapshot_id ?? snapshot, busy: state.busy || query.isFetching || !current, error: error ?? state.error, loading: expected > 0 && !first && query.isPending && state.items.length === 0, more: () => { if (!query.isFetching && current) void archive.more(); } };
 }
 function ArchiveProgress({ shown, expected, snapshot, label, hasMore, busy, more }: { shown: number; expected: number; snapshot: string; label: string; hasMore: boolean; busy: boolean; more(): void }) {
   if (!hasMore && shown === expected) return null;
   return <div className="pager"><span>{shown} of {expected} {label}{!hasMore && <small>History count changed; refresh to reload.</small>}</span>{hasMore && <button type="button" onClick={more} disabled={busy}>Load more {label}</button>}</div>;
 }
-export function ReviewAttempts({ number, snapshot, expected }: { number: number; snapshot: string; expected: number }) {
-  const archive = useReviewArchive<ReviewAttemptItem>('attempts', number, snapshot, expected);
+export function ReviewAttempts({ number, snapshot, expected: latestExpected }: { number: number; snapshot: string; expected: number }) {
+  const archive = useReviewArchive<ReviewAttemptItem>('attempts', number, snapshot, latestExpected);
+  const expected = archive.expected;
   return <section className="panel review-attempts" aria-label={`PR #${number} attempts`}><details><summary>Attempts ({expected})</summary>{!!archive.error && <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>}{archive.loading ? <PageSkeleton rows={2} label="Loading retained attempts" /> : archive.items.length === 0 ? <p className="review-empty">{expected === 0 ? 'No attempts recorded.' : 'No attempts loaded.'}</p> : <ul>{archive.items.map(attempt => <li key={JSON.stringify([attempt.source, attempt.source_attempt_id])}><div><span className="review-channel">{attempt.channel}</span><strong>{reviewLabel(attempt.state)}</strong>{reviewAttemptReason(attempt) && <><small>Reason</small><span title={attempt.reason}>{reviewAttemptReason(attempt)}</span></>}</div><div><small>Original source</small><span>{attempt.source}</span></div><div><small>Started</small>{attempt.started_at ? <RelativeTime value={attempt.started_at} /> : 'Unknown'}</div><div><small>Duration</small>{attempt.duration_seconds === null ? 'Unknown' : `${attempt.duration_seconds}s`}</div><div><small>Head</small><code>{attempt.head_sha || 'Unknown'}</code></div><div><small>Source attempt / run</small><span>{attempt.source_attempt_id}</span><span>{attempt.source_run_id || 'No run attached'}</span></div></li>)}</ul>}<ArchiveProgress shown={archive.items.length} expected={expected} snapshot={snapshot} label="attempts" hasMore={archive.hasMore} busy={archive.busy} more={archive.more} /></details></section>;
 }
 export function ReviewPullView() {
@@ -261,7 +263,7 @@ export function ReviewPullView() {
   return <article className="review-detail-page"><Link className="back-link" to={`${home}/reviews#review-pr-${number}`}>← Review queue</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <>
     <header className="review-detail-heading"><div className="review-detail-title"><a className="review-detail-number" href={githubLink(session.project, `pull/${value.pull.number}`)} target="_blank" rel="noopener noreferrer">#{value.pull.number}</a><h2>{value.pull.title}</h2></div><ReviewPullFacts pull={value.pull} /></header>
     <ReviewObligations number={number} />
-    <ReviewRoundHistory key={`${number}:${value.snapshot_id}`} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} expected={value.pull.run_count} channelTotals={value.pull.run_counts} />
+    <ReviewRoundHistory key={number} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} expected={value.pull.run_count} channelTotals={value.pull.run_counts} />
     <footer className="review-detail-technical"><details className="review-comparison-details"><summary>Comparison and source details</summary><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div><div><dt>Source</dt><dd>{value.source}</dd></div><div><dt>Snapshot origin timestamp</dt><dd>{time(value.observed_at)}</dd></div><div><dt>Recorded</dt><dd>{time(value.recorded_at)}</dd></div><div><dt>Snapshot</dt><dd><code>{value.snapshot_id}</code> · revision {value.revision}</dd></div></dl></details><ReviewAttempts key={`attempts:${number}`} number={number} snapshot={value.snapshot_id} expected={value.pull.attempt_count} /></footer>
   </>}</ReadState></article>;
 }
@@ -294,7 +296,7 @@ function ChannelReviewLane({ number, ...props }: Omit<Parameters<typeof ReviewLa
   const highlights = useRef(new Map<string, string>()).current;
   const runs = [...archive.items].reverse();
   if (terminal(archive.error)) return <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>;
-  return <ReviewLane {...props} snapshot={archive.snapshot} updateFailed={!!archive.error && runs.length > 0} runs={runs} loading={archive.loading} failed={!!archive.error && runs.length === 0} partial={archive.hasMore || runs.length !== props.total} highlights={highlights} />;
+  return <ReviewLane {...props} total={archive.expected} snapshot={archive.snapshot} updateFailed={!!archive.error && runs.length > 0} runs={runs} loading={archive.loading} failed={!!archive.error && runs.length === 0} partial={archive.hasMore || runs.length !== props.total} highlights={highlights} />;
 }
 export function ReviewRunsView({ number, snapshot, head, attempts, detail = false, compact = false, progress, channelTotals, positions = {}, readingPrefix }: { readingPrefix?: string; number: number; snapshot: string; head: string; attempts: ReviewAttemptSummary[]; expected: number; detail?: boolean; compact?: boolean; progress?: ReviewProgressItem; channelTotals: ReviewRunCounts; positions?: Partial<Record<ReviewChannel, ReviewChannelPosition>> }) {
   const lane = (channel: ReviewChannel, title: string) => <ChannelReviewLane key={channel} readingAnchor={readingPrefix ? `${readingPrefix}-${channel}` : undefined} number={number} channel={channel} title={title} attempts={attempts} snapshot={snapshot} head={head} compact={compact} total={channelTotals[channel]} progress={progress?.channels.find(item => item.channel === channel)} positionHint={positions[channel]} />;
@@ -363,8 +365,11 @@ export function ReviewHistoryGroups({ number, runs, snapshot, head, loading, fai
   const total = Object.values(channelTotals).reduce((a, b) => a + b, 0);
   return <div className="review-timeline">{loading ? <PageSkeleton rows={3} label="Loading retained rounds" /> : rows.length ? <ul className="review-history-run-list">{rows.map(({run, ordinal}) => <ReviewHistoryRow key={run.id} number={number} run={run} snapshot={snapshot} head={head} ordinal={ordinal > 0 ? ordinal : undefined} />)}</ul> : <p className="review-empty">{failed || total > 0 ? 'Round history could not be loaded.' : 'No rounds recorded. Coverage is unknown.'}</p>}</div>;
 }
-export function ReviewRoundHistory({ number, snapshot, head, channelTotals, expected }: { number: number; snapshot: string; head: string; expected: number; channelTotals: ReviewRunCounts }) {
-  const archive = useReviewArchive<ReviewRunSummary>('runs', number, snapshot, expected, undefined, 25, 'timeline');
+export function ReviewRoundHistory({ number, snapshot, head, channelTotals: latestTotals, expected: latestExpected }: { number: number; snapshot: string; head: string; expected: number; channelTotals: ReviewRunCounts }) {
+  const { key } = useWorkspace();
+  const archive = useReviewArchive<ReviewRunSummary>('runs', number, snapshot, latestExpected, undefined, 25, 'timeline');
+  const channelTotals = useRetainedRead(JSON.stringify([key, number, 'timeline-counts']), archive.snapshot === snapshot ? latestTotals : undefined) ?? latestTotals;
+  const expected = archive.expected;
   if (terminal(archive.error)) return <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>;
   return <section className="panel review-history review-round-history" aria-label={`PR #${number} review rounds`}>
     <div className="section-heading"><h3>Review rounds</h3><span className="small-label">{expected} {expected === 1 ? 'run' : 'runs'}</span></div>

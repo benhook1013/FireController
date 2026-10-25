@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 
 // Only disposable synthetic fixture inputs enter this driver. Never print
 // request headers, credentials, captured response bodies or raw diagnostics.
-let server, browser;
+let server, browser, releaseRefresh;
 let phase = 'configuration';
 let selectedProjectStatus = 0;
 const need = value => { if (!value) { const error = new Error('assertion'); Error.captureStackTrace(error,need); throw error; } };
@@ -75,7 +75,7 @@ try {
     await expect.poll(() => attempts.locator('li').count()).toBe(20);
     await expect(rounds.locator('.review-timeline')).toHaveCount(1);
     need(await rounds.locator('.review-lanes').count() === 0);
-    await expect(rounds.locator('.review-history-kind')).toHaveText(Array.from({length:25},(_,i)=>`CLI #${count-24+i}`));
+    await expect(rounds.locator('.review-history-kind')).toHaveText(Array.from({length:25},(_,i)=>`CodeRabbit CLI #${count-24+i}`));
     await expect(rounds.locator('.section-heading')).toContainText(`${count} runs`);
     const continuation = rounds.locator('.review-timeline-continuation');
     await expect(continuation).toContainText(`25 of ${count} rounds`);
@@ -94,7 +94,7 @@ try {
     need(requests(view,feed).length === before+1);
     if (feed === 'runs') {
       await expect(section.locator('.section-heading')).toContainText(`${count} runs`);
-      await expect(section.locator('.review-history-kind')).toHaveText(Array.from({length:shown},(_,i)=>`CLI #${count-shown+1+i}`));
+      await expect(section.locator('.review-history-kind')).toHaveText(Array.from({length:shown},(_,i)=>`CodeRabbit CLI #${count-shown+1+i}`));
       if(shown<count) await expect(section.locator('.review-timeline-continuation')).toContainText(`${shown} of ${count} rounds`);
     }
   };
@@ -159,22 +159,44 @@ try {
   need(details.length === 0);
   phase = 'inline-empty-findings';
   const pinnedRow = pinned.rounds.locator(`[data-run-id="${config.first_run_id}"]`);
-  await pinnedRow.getByRole('button', {name:'Show findings for CLI #123',exact:true}).click();
+  await pinnedRow.getByRole('button', {name:'Show findings for CodeRabbit CLI #123',exact:true}).click();
   await pinnedRow.getByText('No findings reported for this run.', {exact:true}).waitFor();
   need(details.length === 1 && details[0].name === 'pinned' && details[0].id === config.first_run_id && details[0].snapshot === config.snapshot);
   need(new URL(pinned.page.url()).pathname === pinned.path);
-  await pinnedRow.getByRole('button', {name:'Hide findings for CLI #123',exact:true}).click();
+  await pinnedRow.getByRole('button', {name:'Hide findings for CodeRabbit CLI #123',exact:true}).click();
   need(await pinnedRow.locator('.review-history-findings').count() === 0 && details.length === 1);
 
   phase = 'metadata-refresh';
+  // Hold the replacement summaries after the new queue metadata arrives.
+  // Populated history and its original links must survive the transition.
+  const refreshGate = new Promise(resolve => { releaseRefresh = resolve; });
+  let heldRefreshReads = 0;
+  const refreshPattern = config.origin+prefix+`/reviews/pulls/${number}/*`;
+  await current.page.route(refreshPattern, async route => {
+    const url = new URL(route.request().url());
+    if (!/\/(runs|attempts)$/u.test(url.pathname) || url.searchParams.get('snapshot') === config.snapshot) return route.fallback();
+    const response = await route.fetch();
+    heldRefreshReads++;
+    await refreshGate;
+    await route.fulfill({response});
+  });
   const raw = await fs.readFile(config.new_observation_file,'utf8'); need(Buffer.byteLength(raw) <= 256<<10);
   const response = await fetch(config.origin+prefix+'/reviews/observations',{method:'POST',headers:{Authorization:'Bearer '+admin,'X-FC-Instance':config.instance,'X-FC-Worker':config.worker,'Idempotency-Key':'packaged-archive-new-observation','Content-Type':'application/json'},body:raw,signal:AbortSignal.timeout(5000)});
   need(response.status === 201); await response.arrayBuffer();
+  await current.page.locator('.review-detail-heading').getByRole('heading',{name:'Current archive metadata',exact:true}).waitFor();
+  await expect.poll(() => heldRefreshReads).toBeGreaterThanOrEqual(3);
+  await expect(current.rounds.locator('.review-history-row')).toHaveCount(50);
+  await expect(current.attempts.locator('li')).toHaveCount(40);
+  await expect(current.page.locator('.delivery-merge-head .review-round-pill')).toHaveCount(6);
+  await expect(current.page.locator('.delivery-merge-head .review-round-placeholder')).toHaveCount(0);
+  need(await current.rounds.locator('.review-history-details-link').evaluateAll((links,snapshot)=>links.every(link=>new URL(link.href).searchParams.get('snapshot')===snapshot),config.snapshot));
+  releaseRefresh(); releaseRefresh=undefined;
+  await current.page.unrouteAll({behavior:'wait'});
   await expect.poll(() => current.rounds.locator('.review-history-row').count()).toBe(1);
   await expect.poll(() => current.attempts.locator('li').count()).toBe(1);
   await current.page.locator('.review-detail-heading').getByRole('heading',{name:'Current archive metadata',exact:true}).waitFor();
-  await expect(current.rounds.locator('.review-history-kind')).toHaveText('CLI #1');
-  await expect(current.rounds.getByRole('link',{name:'Open CLI #1 run details',exact:true})).toHaveCount(1);
+  await expect(current.rounds.locator('.review-history-kind')).toHaveText('CodeRabbit CLI #1');
+  await expect(current.rounds.getByRole('link',{name:'Open CodeRabbit CLI #1 run details',exact:true})).toHaveCount(1);
   need(await current.attempts.getByText('current-only-attempt',{exact:true}).count() === 1);
   need(await current.rounds.getByRole('button',{name:'Load earlier rounds',exact:true}).count() === 0);
   need(await current.attempts.getByRole('button',{name:'Load more attempts',exact:true}).count() === 0);
@@ -186,7 +208,7 @@ try {
   await expect(currentRow.locator('.review-history-counts > span').first()).toHaveText('Found: 1');
   await expect(currentRow.locator('.review-count-accepted')).toHaveText('Accepted: 0/0/0');
   await expect(currentRow.locator('.review-history-counts > span').last()).toHaveText('Routed: 0');
-  await currentRow.getByRole('button', {name:'Show findings for CLI #1', exact:true}).click();
+  await currentRow.getByRole('button', {name:'Show findings for CodeRabbit CLI #1', exact:true}).click();
   await currentRow.getByRole('heading', {name:'Inline retained finding', exact:true}).waitFor();
   const finding = currentRow.locator('.review-finding-compact');
   await expect(finding.locator('.review-severity-low')).toHaveText('Minor');
@@ -225,7 +247,7 @@ try {
     await current.page.setViewportSize({width:390,height:900});
   }
 
-  await currentRow.getByRole('button', {name:'Hide findings for CLI #1', exact:true}).click();
+  await currentRow.getByRole('button', {name:'Hide findings for CodeRabbit CLI #1', exact:true}).click();
   need(await currentRow.locator('.review-history-findings').count() === 0 && details.length === 2);
 
   phase = 'recent-queue';
@@ -292,7 +314,7 @@ try {
   }
   await queue.locator('#review-pr-201').getByRole('link',{name:'Review details for PR #201',exact:true}).click();
   const original = current.page.locator('.main-content').getByRole('region',{name:'PR #201 review rounds',exact:true});
-  await original.getByRole('button',{name:'Show findings for CLI #1',exact:true}).click();
+  await original.getByRole('button',{name:'Show findings for CodeRabbit CLI #1',exact:true}).click();
   await expect(original.getByRole('heading',{name:'Original merged finding',exact:true})).toBeVisible();
   await expect(original.locator('.review-finding-compact-rationale strong')).toHaveText('retained evidence');
   await original.locator('.review-finding-technical > summary').click();
@@ -329,6 +351,7 @@ try {
   const driverLine = line ? Number(line[1]) : 0;
   console.log(JSON.stringify({state:'FAIL',phase,project_status:selectedProjectStatus,failure_kind:error?.name === 'SyntaxError' ? 'invalid_json' : error?.name === 'TimeoutError' ? 'timeout' : 'assertion',driver_line:Number.isInteger(driverLine) && driverLine > 0 && driverLine <= 10000 ? driverLine : 0})); process.exitCode=1;
 } finally {
+  releaseRefresh?.();
   if(browser) await browser.close().catch(() => {});
   if(server) await server.close().catch(() => {});
 }
