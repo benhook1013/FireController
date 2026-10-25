@@ -939,10 +939,11 @@ try {
   const reasonPills = [queueHosted.locator('.review-attempt-state'),heroHosted.locator('.review-attempt-state')];
   for (const pill of reasonPills) {
     await expect(pill).toHaveCount(1);
-    await expect(pill).toHaveText(reasonPillText);
+    await expect(pill).toHaveText('Uncertain');
     await expect(pill).toHaveAttribute('title',`Latest retained attempt: ${reasonPillText}`);
     await expect(pill).toHaveAttribute('aria-label',`Latest retained hosted attempt: ${reasonPillText}`);
   }
+  checkpoint = 'queue-jump-link';
   const jump = hero.getByRole('link', {name:'Jump to review queue', exact:true});
   await expect(jump).toHaveAttribute('href', `${home}#review-pr-32`);
   await expect(jump).toHaveText('Review queue ↗');
@@ -950,14 +951,15 @@ try {
   const jumpStyle = await jump.evaluate(element => { const style = getComputedStyle(element); return {color:style.color, weight:style.fontWeight, family:style.fontFamily, decoration:style.textDecorationLine}; });
   const configuredInk = [1, 3, 5].map(offset => Number.parseInt(theme.surface_text.slice(offset, offset + 2), 16)).join(', ');
   need(jumpStyle.color === `rgb(${configuredInk})` && jumpStyle.weight === '700' && jumpStyle.family === 'ui-sans-serif, system-ui, sans-serif' && jumpStyle.decoration.includes('underline'));
+  checkpoint = 'queue-pull-facts';
   const mergedFacts = deliveryQueue.locator('#review-pr-31 .review-pull-facts');
   const openFacts = deliveryQueue.locator('#review-pr-32 .review-pull-facts');
   await expect(mergedFacts).not.toContainText('Mergeability');
-  await expect(mergedFacts).toContainText('CI: Unknown');
+  await expect(mergedFacts).toContainText('Required CI: Unknown');
   await expect(mergedFacts.locator('.review-diff')).toHaveText('73 files · +6,160 / −136 lines');
   await expect(mergedFacts.locator('.review-merged-age time')).toHaveAttribute('datetime', merged.merged_at);
   await expect(mergedFacts).not.toContainText('Draft');
-  await expect(mergedFacts.locator('.review-ci')).toHaveText('CI: Unknown');
+  await expect(mergedFacts.locator('.review-ci')).toHaveText('Required CI: Unknown');
   await expect(openFacts).toContainText('Mergeability: Unknown');
   await expect(openFacts.locator('.review-mergeability')).toHaveText('Mergeability: Unknown');
   const headRow = page.locator('#review-pr-32');
@@ -989,7 +991,7 @@ try {
   checkpoint = 'attempt-reason-layout';
   await captureLayouts('delivery-populated', [1440, 390, 320], async () => {
     for (const pill of reasonPills) {
-      await expect(pill).toHaveText(reasonPillText);
+      await expect(pill).toHaveText('Uncertain');
       need(await pill.evaluate(element => {
         const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect();
         return box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;
@@ -1021,11 +1023,11 @@ try {
   checkpoint = 'attempt-reason-detail';
   const reasonReadBoundary = {pull:reviewPullReads,attempts:reviewAttemptReads,runs:reviewRunReads};
   const attemptArchiveResponse = page.waitForResponse(response => response.request().method()==='GET' && new URL(response.url()).pathname===prefix+'/reviews/pulls/32/attempts').then(async response => ({status:response.status(),body:await response.json()}));
-  // The detail view has its own bounded channel history page, distinct from
+  // The detail view has its own bounded chronological history page, distinct from
   // the six-round overview. Opening it does not fetch finding bodies.
   const roundArchiveResponse = page.waitForResponse(response => {
     const url=new URL(response.url());
-    return response.request().method()==='GET' && url.pathname===prefix+'/reviews/pulls/32/runs' && url.searchParams.get('channel')==='hosted' && url.searchParams.get('limit')==='25';
+    return response.request().method()==='GET' && url.pathname===prefix+'/reviews/pulls/32/runs' && url.searchParams.get('view')==='timeline' && !url.searchParams.has('channel') && url.searchParams.get('limit')==='25';
   }).then(async response => ({status:response.status(),url:new URL(response.url()),body:await response.json()}));
   await headRow.getByRole('link',{name:'Review details for PR #32',exact:true}).click();
   const attemptArchive = await attemptArchiveResponse;
