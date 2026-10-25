@@ -122,7 +122,7 @@ func TestPackagedHeldAllowanceSmoke(t *testing.T) {
 			return raw
 		}
 		call("profile", "create", "--server", "http://"+daemon.address, "--instance", bootstrap.instance, "--project", project, "--worker", worker, "--credential-file", credential)
-		raw := call("reviews", "operation", operation, "--wait-seconds", "50")
+		raw := call("reviews", "operation", operation, "--wait-seconds", "50", "--diagnostics")
 		var value client.ReviewOperation
 		decode(t, raw, &value)
 		if value.ID != operation || value.State != "held" || value.Reason != "allowance_exhausted" || value.Allowance == nil {
@@ -153,7 +153,7 @@ func TestPackagedHeldAllowanceSmoke(t *testing.T) {
 			t.Fatal("actual SDK initialization failed")
 		}
 		toolCtx, stopTool := context.WithTimeout(ctx, stepTimeout)
-		result, toolErr := session.CallTool(toolCtx, &mcp.CallToolParams{Name: "review_operation_read", Arguments: map[string]any{"operation_id": operation, "wait_seconds": 50}})
+		result, toolErr := session.CallTool(toolCtx, &mcp.CallToolParams{Name: "review_operation_read", Arguments: map[string]any{"operation_id": operation, "wait_seconds": 50, "diagnostics": true}})
 		stopTool()
 		mcpCalls++
 		closeErr := session.Close()

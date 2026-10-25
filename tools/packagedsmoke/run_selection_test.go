@@ -121,7 +121,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 		t.Fatal("fresh packaged front cache is absent or already populated")
 	}
 	// The enabled automatic observer starts independently of explicit selection.
-	// Hold its first source GET before submitting any selection, so that exact
+	// Hold both lanes' first source GETs before submitting any selection, so exact
 	// selection counts and metadata conservation have a deterministic boundary.
 	firstObserver := provider.holdNextObserver(t)
 	daemon := startDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogPath)
@@ -418,7 +418,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	if !reflect.DeepEqual(final, afterConfig) {
 		t.Fatal("restart/recovery/read altered retained tables")
 	}
-	changed := map[string]bool{"review_front_frames": true, "review_selections": true, "review_operations": true, "review_execution_attempts": true, "review_execution_transitions": true, "review_execution_reservations": true, "events": true, "receipts": true, "sqlite_sequence": true}
+	changed := map[string]bool{"review_front_frames": true, "review_selections": true, "review_operations": true, "review_execution_attempts": true, "review_execution_transitions": true, "review_execution_reservations": true, "review_round_operation_bindings": true, "events": true, "receipts": true, "sqlite_sequence": true}
 	for _, name := range []string{"review_snapshots", "review_workspace", "review_current_pulls", "review_pull_versions", "review_pull_memberships", "review_current_attempts", "review_attempt_versions", "review_attempt_memberships", "review_current_totals", "review_current_attempt_order"} {
 		changed[name] = true
 	}
@@ -427,7 +427,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 			t.Fatalf("selection changed unrelated table %s", name)
 		}
 	}
-	if beforeRestart.counts["review_front_frames"] != 1 || beforeRestart.counts["review_selections"] != 2 || beforeRestart.counts["review_operations"] != 1 || beforeRestart.counts["review_execution_attempts"] != 1 || beforeRestart.counts["review_execution_reservations"] != 0 {
+	if beforeRestart.counts["review_front_frames"] != 1 || beforeRestart.counts["review_selections"] != 2 || beforeRestart.counts["review_operations"] != 1 || beforeRestart.counts["review_execution_attempts"] != 1 || beforeRestart.counts["review_execution_reservations"] != 0 || beforeRestart.counts["review_round_operation_bindings"] != 1 {
 		t.Fatal("selection duplicated work or retained false reservation")
 	}
 	for _, name := range []string{"review_execution_evidence", "review_adjudication_state", "review_round_completions"} {
@@ -441,14 +441,14 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 			t.Fatal("private immutable fixture input changed")
 		}
 	}
-	expectedTotal := map[string]int{"GET /repositories/991": 5, "GET /repos/synthetic/packaged-smoke/pulls/2": 2, "GET /repos/synthetic/packaged-smoke/pulls/3": 3}
-	if provider.observerRequests.Load() != 2 || !reflect.DeepEqual(provider.totalInventory(), expectedTotal) {
+	expectedTotal := map[string]int{"GET /repositories/991": 7, "GET /repos/synthetic/packaged-smoke/pulls/2": 2, "GET /repos/synthetic/packaged-smoke/pulls/3": 3}
+	if provider.observerRequests.Load() != 4 || !reflect.DeepEqual(provider.totalInventory(), expectedTotal) {
 		t.Fatalf("selection and held observer total inventory differs: %v", provider.totalInventory())
 	}
 	if frontReads != 2 || unexpected.Load() != 0 || provider.forbidden.Load() != 0 {
 		t.Fatal("fixture observed unexpected method/route/origin")
 	}
-	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d local_front_reads=2 loopback_github_gets=10 selection_source_gets=8 held_observer_gets=2 git_stub_calls=1 cli_review_calls=0 native_operations=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load())
+	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d local_front_reads=2 loopback_github_gets=12 selection_source_gets=8 held_observer_gets=4 git_stub_calls=1 cli_review_calls=0 native_operations=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load())
 }
 
 func runSelectionShellQuote(value string) string {
@@ -488,7 +488,7 @@ func seedRunSelectionConfiguration(t *testing.T, ctx context.Context, data, cata
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, r)
 		if w.Code < 200 || w.Code >= 300 {
-			t.Fatalf("trusted configuration rejected status=%d", w.Code)
+			t.Fatalf("trusted configuration %s rejected status=%d", path, w.Code)
 		}
 		if strings.HasSuffix(path, "/observations") {
 			var receipt reviews.Receipt
@@ -502,7 +502,18 @@ func seedRunSelectionConfiguration(t *testing.T, ctx context.Context, data, cata
 	}
 	call(prefix+"/execution/configuration", fmt.Sprintf("configuration-%d", previous), map[string]any{"expected_revision": previous, "capability_id": cap.ID, "mode": "independent", "queue": queue, "channels": []string{"cli"}, "paused": false})
 	if initial {
-		call(prefix+"/rounds/2/cli", "close-two", map[string]any{"expected_revision": 0, "action": "close"})
+		// Enrollment installs the current product plan before this explicit close.
+		r := httptest.NewRequest("GET", prefix+"/rounds/2/cli", nil).WithContext(ctx)
+		r.Header.Set("Authorization", "Bearer "+admin)
+		r.Header.Set("X-FC-Instance", store.InstanceID())
+		r.Header.Set("X-FC-Worker", worker)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		var control reviewexec.RoundControl
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &control) != nil || !control.Configured {
+			t.Fatal("enrolled round control unavailable")
+		}
+		call(prefix+"/rounds/2/cli", "close-two", map[string]any{"expected_revision": control.Revision, "action": "close"})
 		pulls := []reviews.PullInput{}
 		for _, n := range []int64{2, 3} {
 			draft := true
@@ -525,8 +536,8 @@ type runSelectionHTTPSFixture struct {
 }
 
 type runSelectionObserverGate struct {
-	started, finished chan struct{}
-	cancelled         atomic.Bool
+	started, finished                      chan struct{}
+	startedCount, finishedCount, cancelled atomic.Int64
 }
 
 func (f *runSelectionHTTPSFixture) holdNextObserver(t *testing.T) *runSelectionObserverGate {
@@ -558,8 +569,8 @@ func (g *runSelectionObserverGate) awaitCancelled(t *testing.T, ctx context.Cont
 	defer cancel()
 	select {
 	case <-g.finished:
-		if !g.cancelled.Load() {
-			t.Fatal("observer source gate was released without daemon cancellation")
+		if g.cancelled.Load() != 2 {
+			t.Fatal("observer lane gates were released without daemon cancellation")
 		}
 	case <-waitCtx.Done():
 		t.Fatal("automatic observer source request did not join after daemon shutdown")
@@ -609,21 +620,31 @@ func newRunSelectionHTTPSFixture(t *testing.T, private, token string) *runSelect
 		}
 		f.mu.Lock()
 		gate := f.nextObserver
+		var started int64
 		if r.URL.Path != "/repositories/991" {
 			gate = nil
 		} else if gate != nil {
-			f.nextObserver = nil
+			// Metadata and enrichment reserve the account independently. Hold
+			// one request from each lane before permitting the explicit command.
+			started = gate.startedCount.Add(1)
+			if started == 2 {
+				f.nextObserver = nil
+			}
 			f.observerRequests.Add(1)
 		}
 		f.mu.Unlock()
 		if gate != nil {
-			close(gate.started)
+			if started == 2 {
+				close(gate.started)
+			}
 			select {
 			case <-r.Context().Done():
-				gate.cancelled.Store(true)
+				gate.cancelled.Add(1)
 			case <-f.stopObservers:
 			}
-			close(gate.finished)
+			if gate.finishedCount.Add(1) == 2 {
+				close(gate.finished)
+			}
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

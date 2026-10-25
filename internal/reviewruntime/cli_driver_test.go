@@ -735,9 +735,10 @@ func TestCLIDriverLatePreparationCorrectionNeverRunsReview(t *testing.T) {
 	if _, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "finalize-source", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
 		t.Fatal(err)
 	}
-	// The same Git objects under a different explicit base comparison have no
-	// current coverage. Correct an older closed finding after Prepare's first
+	// Deliberately grant another round; comparison movement does not reopen
+	// earned completion. Correct an older closed finding after Prepare's first
 	// comparison read; Dispatch must still refuse before invoking review.
+	runtimeRoundGrant(t, f, 2, "cli", 1)
 	f.reader.repository.DefaultBranch = "new-main"
 	p := f.reader.pulls[2]
 	p.BaseRef = "new-main"

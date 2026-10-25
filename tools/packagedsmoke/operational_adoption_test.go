@@ -92,7 +92,6 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 	}
 	bootstrap.stop(t)
 	project, builder, inspector, _ := seedAccess(t, ctx, data, bootstrap.instance, strings.TrimSpace(string(admin)), private)
-	seedOperationalAdoptionQueue(t, ctx, data, project, builder, strings.TrimSpace(string(admin)))
 	daemon := startDaemon(t, ctx, binaries["fcd"], data, env)
 	target, _ := url.Parse("http://" + daemon.address)
 	var targetMu sync.RWMutex
@@ -287,8 +286,8 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 	}
 	call("builder", "reviews", "rounds", "grant", "--pr", "2", "--channel", "cli", "--expected-revision", "1", "--max", "3", "--key", "adoption-new-grant")
 	replaced := readRound("2", "cli")
-	if replaced.Revision != 2 || replaced.Epoch != 2 || replaced.Minimum != 0 || replaced.Maximum != 3 || replaced.Closed || replaced.Used != 0 || replaced.Dry != 0 || replaced.InitialDry != 0 || replaced.InitiallyTapered || replaced.OriginSource != "" || replaced.OriginKey != "" || replaced.OriginSHA256 != "" {
-		t.Fatal("ordinary grant retained migrated carry")
+	if replaced.Revision != 2 || replaced.Epoch != carried.Epoch || replaced.Minimum != 0 || replaced.Maximum != 3 || replaced.Closed || replaced.Used != 0 || replaced.Dry != carried.Dry || replaced.InitialDry != carried.InitialDry || replaced.InitiallyTapered != carried.InitiallyTapered || replaced.Tapered || replaced.Taper != carried.Taper || replaced.OriginSource != carried.OriginSource || replaced.OriginKey != carried.OriginKey || replaced.OriginSHA256 != carried.OriginSHA256 {
+		t.Fatal("ordinary grant changed earned carry or ignored additional limits")
 	}
 	if !bytes.Equal(adoptedBytes, call("builder", applyControl...)) || readRound("2", "cli") != replaced {
 		t.Fatal("old adoption retry overwrote later grant")
@@ -427,6 +426,13 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 	if !bytes.Equal(unrelatedJobBefore, call("builder", "jobs", "read", unrelated.ID)) || !bytes.Equal(unrelatedThreadBefore, call("inspector", "inbox", "thread", unrelatedMessage.ConversationID)) {
 		t.Fatal("adoption touched unrelated native coordination")
 	}
+	// Adopt each source-owned rule before enrollment can install product defaults.
+	beforeEnrollmentControls := map[string]client.ReviewRoundControl{}
+	for _, pull := range []string{"2", "3"} {
+		for _, channel := range []string{"cli", "hosted"} {
+			beforeEnrollmentControls[pull+"/"+channel] = readRound(pull, channel)
+		}
+	}
 	daemon.stop(t)
 	retained := readUpgradeState(t, ctx, data)
 	changed := map[string]bool{"review_round_controls": true, "review_round_changes": true, "review_round_adoptions": true, "coordination_import_state": true, "coordination_import_messages": true, "coordination_import_batches": true, "inbox_conversations": true, "inbox_messages": true, "inbox_recipient_state": true, "events": true, "receipts": true, "sqlite_sequence": true}
@@ -450,6 +456,18 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 		t.Fatal("adoption widened or duplicated retained selection")
 	}
 	operationalAdoptionProvenance(t, ctx, data, project, sourceDigest, batch.Messages)
+	// Stopped authenticated enrollment must preserve all four adopted controls,
+	// including their exact revisions, earned carry and source provenance.
+	seedOperationalAdoptionQueue(t, ctx, data, project, builder, strings.TrimSpace(string(admin)))
+	enrolled := readUpgradeState(t, ctx, data)
+	if enrolled.version != retained.version || !reflect.DeepEqual(enrolled.metadata, retained.metadata) || len(enrolled.tables) != len(retained.tables) {
+		t.Fatal("enrollment changed native identity/schema")
+	}
+	for name, hash := range retained.tables {
+		if name != "review_execution_config" && name != "events" && name != "receipts" && name != "sqlite_sequence" && (enrolled.tables[name] != hash || enrolled.counts[name] != retained.counts[name]) {
+			t.Fatalf("enrollment changed adopted or unrelated table %s", name)
+		}
+	}
 	restarted := startDaemon(t, ctx, binaries["fcd"], data, env)
 	if restarted.instance != bootstrap.instance {
 		t.Fatal("restart changed native identity")
@@ -458,6 +476,13 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 	targetMu.Lock()
 	target = next
 	targetMu.Unlock()
+	for _, pull := range []string{"2", "3"} {
+		for _, channel := range []string{"cli", "hosted"} {
+			if readRound(pull, channel) != beforeEnrollmentControls[pull+"/"+channel] {
+				t.Fatal("enrollment changed adopted control meaning or revision")
+			}
+		}
+	}
 	if !bytes.Equal(holdReceipt, call("builder", holdApply...)) || !bytes.Equal(resolvedReceipt, call("builder", resolveArgs...)) {
 		t.Fatal("restart lost obligation receipts")
 	}
@@ -484,7 +509,7 @@ func TestPackagedOperationalAdoptionSmoke(t *testing.T) {
 		t.Fatal("restart lost imported reply")
 	}
 	restarted.stop(t)
-	if !reflect.DeepEqual(retained, readUpgradeState(t, ctx, data)) {
+	if !reflect.DeepEqual(enrolled, readUpgradeState(t, ctx, data)) {
 		t.Fatal("restart/exact replay changed durable rows")
 	}
 	for path, hash := range inputHashes {

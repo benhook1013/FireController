@@ -170,7 +170,7 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 	read := func(receipt client.ReviewRequestReceipt, allow bool) client.ReviewOperation {
 		t.Helper()
 		var op client.ReviewOperation
-		decode(t, call("reviews", "operation", receipt.ID, "--wait-seconds", "2"), &op)
+		decode(t, call("reviews", "operation", receipt.ID, "--wait-seconds", "2", "--diagnostics"), &op)
 		if op.ID != receipt.ID || op.ProjectID != project || op.WorkerID != worker || op.PullNumber != 3 || op.Channel != "cli" || op.HeadSHA != strings.Repeat("a", 40) || op.AllowOutOfOrder != allow || op.State != "held" || op.Reason != "source_unavailable" {
 			t.Fatal("operation lost retained ordering intent or deliberate hold")
 		}
@@ -287,7 +287,7 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 		t.Fatal("automatic bypass refusal contacted service")
 	}
 	var mcpOperation client.ReviewOperation
-	decode(t, tool("review_operation_read", map[string]any{"operation_id": explicitReceipt.ID}, ""), &mcpOperation)
+	decode(t, tool("review_operation_read", map[string]any{"operation_id": explicitReceipt.ID, "diagnostics": true}, ""), &mcpOperation)
 	if mcpOperation != explicitOperation {
 		t.Fatal("MCP read changed operation identity")
 	}
@@ -316,8 +316,8 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 	if body, err := os.ReadFile(gitLog); err != nil || !bytes.Equal(body, gitBefore) {
 		t.Fatal("replay/read/restart launched Git again")
 	}
-	expectedTotal := map[string]int{"GET /repositories/991": 4, "GET /repos/synthetic/packaged-smoke/pulls/3": 2}
-	if provider.observerRequests.Load() != 2 || !reflect.DeepEqual(provider.totalInventory(), expectedTotal) {
+	expectedTotal := map[string]int{"GET /repositories/991": 6, "GET /repos/synthetic/packaged-smoke/pulls/3": 2}
+	if provider.observerRequests.Load() != 4 || !reflect.DeepEqual(provider.totalInventory(), expectedTotal) {
 		t.Fatalf("explicit selection and held observer total inventory differs: %v", provider.totalInventory())
 	}
 	if _, err := os.Stat(reviewLog); !errors.Is(err, os.ErrNotExist) || provider.forbidden.Load() != 0 || unexpected.Load() != 0 || posts.Load() != 7 || binaryHash(t, profiles) != profileHash {
@@ -328,5 +328,5 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 			t.Fatal("immutable fixture input changed")
 		}
 	}
-	t.Logf("packaged explicit order passed: total=%s cli_calls=%d mcp_calls=%d application_http=%d request_posts=7 loopback_source_gets=6 selected_source_gets=4 held_observer_gets=2 git_stub_calls=2 review_calls=0 native_operations=2 owned_processes=0", time.Since(started).Round(time.Millisecond), cliCalls, mcpCalls, requests.Load())
+	t.Logf("packaged explicit order passed: total=%s cli_calls=%d mcp_calls=%d application_http=%d request_posts=7 loopback_source_gets=8 selected_source_gets=4 held_observer_gets=4 git_stub_calls=2 review_calls=0 native_operations=2 owned_processes=0", time.Since(started).Round(time.Millisecond), cliCalls, mcpCalls, requests.Load())
 }
