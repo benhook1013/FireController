@@ -974,6 +974,7 @@ func TestSupervisorPreparationReasonsAreSafeAndInspectable(t *testing.T) {
 	}{
 		{"pending", core.Fail("review_evidence_pending", "private diagnostic", 409), "review_evidence_pending"},
 		{"covered", &core.Error{Code: "review_held", Details: map[string]string{"reason": "target_already_covered"}}, "target_already_covered"},
+		{"ancestor comparison", &core.Error{Code: "review_held", Details: map[string]string{"reason": "predecessor_parent_moved"}}, "predecessor_parent_moved"},
 		{"unavailable", &core.Error{Code: "review_held", Details: map[string]string{"reason": "source_unavailable"}}, "source_unavailable"},
 		{"source deadline", &core.Error{Code: "review_held", Details: map[string]string{"reason": "source_fetch_timeout"}}, "source_fetch_timeout"},
 		{"standing baseline", &core.Error{Code: "review_held", Details: map[string]string{"reason": "standing_baseline_unproven"}}, "standing_baseline_unproven"},

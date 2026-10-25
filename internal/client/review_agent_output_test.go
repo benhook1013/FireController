@@ -37,8 +37,49 @@ func TestAgentOperationStatusOnlySoftensKnownScheduledObservation(t *testing.T) 
 		if change == nil {
 			want.NextAction = "wait_for_observation"
 		}
-		if got := AgentReviewOperationStatus(value); got != want {
+		if got := AgentReviewOperationStatus(value); got.ReviewOperationStatus != want || got.Diagnostic != nil {
 			t.Fatal("guidance changed retained facts or unrelated uncertainty", got, want)
+		}
+	}
+}
+
+func TestAgentOperationParentDiagnosticsPreserveCompactAndFullFacts(t *testing.T) {
+	for _, state := range []string{"held", "queued", "preparing", "active", "completed", "failed", "uncertain", "rate_limited", "cancelled"} {
+		for _, reason := range []string{"parent_moved", "predecessor_parent_moved", "parent_unavailable", "other_reason"} {
+			compact := ReviewOperationStatus{ID: "original_operation", PullNumber: 3300, Channel: "hosted", State: state, Revision: 5, Stage: "held", Reason: reason, AttemptID: "original_attempt", EvidenceID: "original_evidence", UpdatedAt: "original_time", NextAction: "read_diagnostics"}
+			full := ReviewOperation{ID: compact.ID, ProjectID: "original_project", ActorID: "original_actor", WorkerID: "original_worker", ConfigurationRevision: 12, PolicyRevision: 2, CapabilityFingerprint: "original_binding", PullNumber: compact.PullNumber, Channel: compact.Channel, HeadSHA: "original_head", AllowOutOfOrder: true, State: state, Revision: compact.Revision, Reason: reason, AttemptID: compact.AttemptID, CreatedAt: "original_creation", UpdatedAt: compact.UpdatedAt}
+			compactOut, fullOut := AgentReviewOperationStatus(compact), AgentReviewOperation(full)
+			wantHint := state == "held" && (reason == "parent_moved" || reason == "predecessor_parent_moved")
+			if !reflect.DeepEqual(compactOut.ReviewOperationStatus, compact) || !reflect.DeepEqual(fullOut.ReviewOperation, full) || !reflect.DeepEqual(compactOut.Diagnostic, fullOut.Diagnostic) || (compactOut.Diagnostic != nil) != wantHint {
+				t.Fatal("parent diagnostic changed facts, disagreed across views or invented a hold", state, reason)
+			}
+			if wantHint {
+				hint := compactOut.Diagnostic
+				if reason == "parent_moved" && (!strings.Contains(hint.Explanation, "Older operations") || !strings.Contains(hint.Explanation, "does not identify")) || reason == "predecessor_parent_moved" && (!strings.Contains(hint.Explanation, "selected PR's source check passed") || !strings.Contains(hint.Explanation, "ancestor")) {
+					t.Fatal("parent diagnosis invented an edge or lost the proved boundary", hint)
+				}
+				for _, required := range []string{"owning workflow", "stable selected comparison", "current review authorization", "do not automatically retry", "reset review progress", "no-op commit"} {
+					if !strings.Contains(hint.NextAction, required) {
+						t.Fatal("unsafe or incomplete parent repair guidance", hint)
+					}
+				}
+			}
+			for _, value := range []struct{ raw, output any }{{compact, compactOut}, {full, fullOut}} {
+				body, err := json.Marshal(value.output)
+				if err != nil || len(body) > 2048 {
+					t.Fatal("unbounded diagnostic", err)
+				}
+				var got, want map[string]json.RawMessage
+				if json.Unmarshal(body, &got) != nil || (got["diagnostic"] != nil) != wantHint {
+					t.Fatal("missing or invented parent hint", string(body))
+				}
+				delete(got, "diagnostic")
+				original, _ := json.Marshal(value.raw)
+				_ = json.Unmarshal(original, &want)
+				if !reflect.DeepEqual(got, want) {
+					t.Fatal("agent output changed retained operation JSON", string(body))
+				}
+			}
 		}
 	}
 }

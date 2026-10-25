@@ -17,11 +17,49 @@ func AgentReviewRuns(value ReviewRuns) ReviewRunsOutput {
 
 // Scheduled observation owns this issued Hosted trigger. Preserve uncertainty
 // and every original identity; the caller need not escalate an ordinary gap.
-func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStatus {
+func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStatusOutput {
 	if value.Channel == "hosted" && value.State == "uncertain" && value.Stage == "uncertain" && value.Reason == "hosted_observation_pending" && value.AttemptID != "" && value.NextAction == "contact_controller_owner" {
 		value.NextAction = "wait_for_observation"
 	}
-	return value
+	return ReviewOperationStatusOutput{value, agentReviewOperationDiagnostic(value.State, value.Reason)}
+}
+
+type ReviewOperationDiagnostic struct {
+	Explanation string `json:"explanation"`
+	NextAction  string `json:"next_action"`
+}
+
+type ReviewOperationStatusOutput struct {
+	ReviewOperationStatus
+	Diagnostic *ReviewOperationDiagnostic `json:"diagnostic,omitempty"`
+}
+
+type ReviewOperationOutput struct {
+	ReviewOperation
+	Diagnostic *ReviewOperationDiagnostic `json:"diagnostic,omitempty"`
+}
+
+func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
+	return ReviewOperationOutput{value, agentReviewOperationDiagnostic(value.State, value.Reason)}
+}
+
+// Explain retained admission facts without fetching source or authorizing a retry.
+// Legacy parent_moved does not identify whether the selected or an ancestor edge
+// failed; only the distinct predecessor reason proves the selected check passed.
+func agentReviewOperationDiagnostic(state, reason string) *ReviewOperationDiagnostic {
+	if state != "held" {
+		return nil
+	}
+	var explanation string
+	switch reason {
+	case "parent_moved":
+		explanation = "A checked PR's base and its direct parent branch differed. Older operations may report a selected PR or ancestor mismatch with this same reason; it does not identify the affected comparison."
+	case "predecessor_parent_moved":
+		explanation = "The selected PR's source check passed, but a parent/base mismatch was found while checking an ancestor."
+	default:
+		return nil
+	}
+	return &ReviewOperationDiagnostic{explanation, "Inspect the selected and ancestor comparisons and align the mismatched branch in its owning workflow. Use existing allow-out-of-order only for a verified stable selected comparison under the current review authorization; do not automatically retry, reset review progress or create a no-op commit."}
 }
 
 type ReviewCIDiagnostic struct {

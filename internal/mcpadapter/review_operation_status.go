@@ -40,7 +40,8 @@ func operationStatusArguments(raw json.RawMessage) (*operationStatusInput, error
 }
 func executeOperationStatus(ctx context.Context, service *client.Client, in *operationStatusInput) (any, error) {
 	if in.Diagnostics {
-		return service.WaitReviewOperation(ctx, in.ID, in.WaitSeconds)
+		operation, err := service.WaitReviewOperation(ctx, in.ID, in.WaitSeconds)
+		return client.AgentReviewOperation(operation), err
 	}
 	status, err := service.WaitReviewOperationStatus(ctx, in.ID, in.WaitSeconds)
 	return client.AgentReviewOperationStatus(status), err

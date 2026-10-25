@@ -165,6 +165,12 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 		request.PullNumber, request.HeadSHA = number, pull.HeadSHA
 		preceding, err := reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, request)
 		if err != nil {
+			var hold *core.Error
+			if errors.As(err, &hold) && hold.Code == "review_held" {
+				if details, ok := hold.Details.(map[string]string); ok && details["reason"] == "parent_moved" {
+					return plan, nil, reviewHold("predecessor_parent_moved")
+				}
+			}
 			return plan, nil, err
 		}
 		covered, err := engine.DiscoveryComplete(ctx, operation.ProjectID, preceding, operation.Channel)

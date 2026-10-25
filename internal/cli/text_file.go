@@ -15,6 +15,8 @@ const (
 	textFileInvalid
 	textFilePermissions
 	textFileTooLarge
+	textFileMissing
+	textFileUnreadable
 )
 
 func readPrivateTextFile(path string, maxBytes int) (string, bool) {
@@ -32,28 +34,41 @@ func readPrivateTextFileChecked(path string, maxBytes int) (string, textFileFail
 func readPrivateTextFileMeasured(path string, maxBytes int) (string, textFileFailure, int64) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return "", textFileInvalid, 0
+		return "", privateTextFileReadFailure(err), 0
 	}
 	if failure := privateTextFileInfo(info, maxBytes); failure != textFileOK {
 		return "", failure, info.Size()
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", textFileInvalid, 0
+		return "", privateTextFileReadFailure(err), 0
 	}
 	defer f.Close()
 	opened, err := f.Stat()
-	if err != nil || !os.SameFile(info, opened) {
+	if err != nil {
+		return "", textFileUnreadable, 0
+	}
+	if !os.SameFile(info, opened) {
 		return "", textFileInvalid, 0
 	}
 	if failure := privateTextFileInfo(opened, maxBytes); failure != textFileOK {
 		return "", failure, opened.Size()
 	}
 	data, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
-	if err != nil || len(data) > maxBytes || !utf8.Valid(data) {
+	if err != nil {
+		return "", textFileUnreadable, 0
+	}
+	if len(data) > maxBytes || !utf8.Valid(data) {
 		return "", textFileInvalid, 0
 	}
 	return string(data), textFileOK, int64(len(data))
+}
+
+func privateTextFileReadFailure(err error) textFileFailure {
+	if os.IsNotExist(err) {
+		return textFileMissing
+	}
+	return textFileUnreadable
 }
 
 func privateTextFileInfo(info os.FileInfo, maxBytes int) textFileFailure {
@@ -103,6 +118,20 @@ func loadTextFiles(values map[string]string, limits map[string]int) (bool, *diag
 					Code:    "invalid_arguments",
 					Message: "The file supplied for " + flag + "-file has unsafe permissions; group and other access must be disabled.",
 					Action:  "Set the supplied file's permissions to 0600 (chmod 600), then retry with the same file contents and original --key. No request was sent.",
+				}
+			}
+			if failure == textFileMissing {
+				return false, &diagnostic{
+					Code:    "invalid_arguments",
+					Message: "The file supplied for " + flag + "-file does not exist.",
+					Action:  "Create the input file or correct its path, then retry with the original --key. No request was sent.",
+				}
+			}
+			if failure == textFileUnreadable {
+				return false, &diagnostic{
+					Code:    "invalid_arguments",
+					Message: "The file supplied for " + flag + "-file could not be read.",
+					Action:  "Check that the input file and its parent directories are accessible, then retry with the same file contents and original --key. No request was sent.",
 				}
 			}
 			if failure != textFileOK {
