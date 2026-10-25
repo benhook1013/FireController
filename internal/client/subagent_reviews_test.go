@@ -223,3 +223,44 @@ func TestSubagentClientActualHandlerRecordFinalizeFixAndHistory(t *testing.T) {
 		t.Fatal("recording contacted a provider", f.providerCalls.Load())
 	}
 }
+
+func TestSubagentRecordDiagnosticsNameFieldWithoutPrivateValues(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, bound string
+		change             func(*client.SubagentRecordRequest)
+	}{
+		{"scope bytes", "scope", "128", func(x *client.SubagentRecordRequest) { x.Scope = strings.Repeat("界", 43) }},
+		{"reviewer", "reviewer", "128", func(x *client.SubagentRecordRequest) { x.Reviewer = strings.Repeat("PRIVATE", 30) }},
+		{"coverage item", "coverage_limits[0]", "1024", func(x *client.SubagentRecordRequest) { x.CoverageLimits = []string{strings.Repeat("PRIVATE", 200)} }},
+		{"coverage count", "coverage_limits", "16", func(x *client.SubagentRecordRequest) { x.CoverageLimits = make([]string, 17) }},
+		{"title", "findings[0].title", "500", func(x *client.SubagentRecordRequest) { x.Findings[0].Title = strings.Repeat("PRIVATE", 100) }},
+		{"detail", "findings[0].detail", "16384", func(x *client.SubagentRecordRequest) { x.Findings[0].Detail = strings.Repeat("PRIVATE", 3000) }},
+		{"reason", "findings[0].reason", "2048", func(x *client.SubagentRecordRequest) {
+			x.Findings[0].Disposition = "accepted"
+			x.Findings[0].Reason = ""
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := subagentRecord()
+			tc.change(&x)
+			err := client.ValidateSubagentRecordRequest(x)
+			var diagnostic *client.Error
+			if !errors.As(err, &diagnostic) || diagnostic.Code != "validation_failed" || !strings.Contains(diagnostic.Message, tc.field) || !strings.Contains(diagnostic.Action, tc.bound) || strings.Contains(diagnostic.Message+diagnostic.Action, "PRIVATE") {
+				t.Fatalf("missing safe field diagnostic: %v", err)
+			}
+		})
+	}
+	x := subagentRecord()
+	x.Scope = strings.Repeat("界", 42) + "ab"
+	x.CoverageLimits = []string{strings.Repeat("x", 1024)}
+	if err := client.ValidateSubagentRecordRequest(x); err != nil {
+		t.Fatal("exact byte bounds refused", err)
+	}
+	base, _ := json.Marshal(subagentRecord())
+	bad := strings.TrimSuffix(string(base), "}") + `,"coverage_limits":"PRIVATE_LIMIT_BODY"}`
+	_, err := client.DecodeSubagentRecordDocument([]byte(bad))
+	var diagnostic *client.Error
+	if !errors.As(err, &diagnostic) || !strings.Contains(diagnostic.Message, "coverage_limits") || !strings.Contains(diagnostic.Action, "array") || strings.Contains(diagnostic.Message+diagnostic.Action, "PRIVATE_LIMIT_BODY") {
+		t.Fatal("wrong shape diagnostic", err)
+	}
+}

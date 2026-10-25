@@ -68,7 +68,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	case "reviews subagent-record":
 		out.Usage = "<bound launcher> reviews subagent-record --file PRIVATE_JSON --key KEY"
 		out.Required = []string{"--file PRIVATE_JSON", "--key KEY"}
-		out.Semantics = []string{"Records one actual completed subagent review through the bound worker; no administrator import, provider request or CodeRabbit credit.", "Use a private regular UTF-8 JSON file within256KiB with pull_number, full reviewed head_sha, reviewer, scope, ordered started_at/finished_at and findings. Counts and identities are derived. Optional finalized:true requires all decisions, including a valid zero-finding review.", recovery}
+		out.Semantics = []string{"Records one actual completed subagent review through the bound worker; no administrator import, provider request or CodeRabbit credit.", "Use a private regular UTF-8 JSON file within256KiB with pull_number, full reviewed head_sha, reviewer, scope, ordered started_at/finished_at and findings. Counts and identities are derived. Optional finalized:true requires all decisions, including a valid zero-finding review.", "reviewer and scope: nonblank, at most 128 UTF-8 bytes each. coverage_limits: optional array of at most 16 nonblank strings, each at most 1024 UTF-8 bytes; put long limitations there. findings: array of at most 100 entries; title at most 500 bytes, detail at most 16 KiB, decision reason at most 2048 bytes. See matching docs for enums and update fields.", recovery}
 		out.Example = "<bound launcher> reviews subagent-record --file /private/review.json --key subagent-1"
 		out.Documentation = "docs/subagent-reviews.md"
 	case "reviews subagent-read":

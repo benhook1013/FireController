@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"time"
@@ -68,40 +69,82 @@ func ValidateSubagentRunID(id string) error {
 	}
 	return nil
 }
+
+// Field names and requirements are code-owned; private request values never
+// enter a diagnostic, including when malformed provider text supplied a value.
+func subagentFieldValidation(field, requirement string) error {
+	return fail("validation_failed", "Invalid subagent review field: "+field+".", requirement+" Correct the request before retrying with the retained key.", 400)
+}
 func ValidateSubagentRecordRequest(in SubagentRecordRequest) error {
-	if !validPullNumber(in.PullNumber) || !controlHex(in.HeadSHA, 40) || !controlText(in.Reviewer, 128, true) || !controlText(in.Scope, 128, true) || !validTimestamp(in.StartedAt) || !validTimestamp(in.FinishedAt) || in.Findings == nil || len(in.Findings) > 100 || len(in.CoverageLimits) > 16 {
-		return mutationValidation()
+	if !validPullNumber(in.PullNumber) {
+		return subagentFieldValidation("pull_number", "Use an integer from 1 to 2147483647.")
+	}
+	if !controlHex(in.HeadSHA, 40) {
+		return subagentFieldValidation("head_sha", "Use the full reviewed SHA: 40 lowercase hexadecimal characters.")
+	}
+	if !controlText(in.Reviewer, 128, true) {
+		return subagentFieldValidation("reviewer", "Use nonblank UTF-8 text of at most 128 bytes.")
+	}
+	if !controlText(in.Scope, 128, true) {
+		return subagentFieldValidation("scope", "Use a nonblank comparison label of at most 128 UTF-8 bytes; put longer limitations in coverage_limits.")
+	}
+	if !validTimestamp(in.StartedAt) {
+		return subagentFieldValidation("started_at", "Use an RFC3339 timestamp.")
+	}
+	if !validTimestamp(in.FinishedAt) {
+		return subagentFieldValidation("finished_at", "Use an RFC3339 timestamp.")
 	}
 	started, _ := time.Parse(time.RFC3339Nano, in.StartedAt)
 	finished, _ := time.Parse(time.RFC3339Nano, in.FinishedAt)
 	if finished.Before(started) {
-		return mutationValidation()
+		return subagentFieldValidation("finished_at", "Use a timestamp at or after started_at.")
 	}
-	for _, limit := range in.CoverageLimits {
+	if in.Findings == nil || len(in.Findings) > 100 {
+		return subagentFieldValidation("findings", "Supply an array of at most 100 findings; use [] for a clean review.")
+	}
+	if len(in.CoverageLimits) > 16 {
+		return subagentFieldValidation("coverage_limits", "Use an array of at most 16 nonblank strings, each at most 1024 UTF-8 bytes.")
+	}
+	for i, limit := range in.CoverageLimits {
 		if !controlText(limit, 1024, true) {
-			return mutationValidation()
+			return subagentFieldValidation(fmt.Sprintf("coverage_limits[%d]", i), "Use nonblank UTF-8 text of at most 1024 bytes.")
 		}
 	}
-	for _, f := range in.Findings {
-		if !controlText(f.Title, 500, true) || !controlText(f.Detail, 16<<10, false) || !oneReviewOf(f.Severity, "info", "low", "medium", "high", "critical", "unknown") || !controlText(f.Reason, 2048, false) {
-			return mutationValidation()
+	for i, f := range in.Findings {
+		field := func(name, requirement string) error {
+			return subagentFieldValidation(fmt.Sprintf("findings[%d].%s", i, name), requirement)
+		}
+		if !controlText(f.Title, 500, true) {
+			return field("title", "Use nonblank UTF-8 text of at most 500 bytes.")
+		}
+		if !controlText(f.Detail, 16<<10, false) {
+			return field("detail", "Use UTF-8 Markdown of at most 16384 bytes; empty is allowed.")
+		}
+		if !oneReviewOf(f.Severity, "info", "low", "medium", "high", "critical", "unknown") {
+			return field("severity", "Use info, low, medium, high, critical or unknown.")
+		}
+		if !controlText(f.Reason, 2048, false) {
+			return field("reason", "Use UTF-8 text of at most 2048 bytes.")
 		}
 		switch f.Disposition {
 		case "", "unadjudicated":
-			if f.Reason != "" || in.Finalized {
-				return mutationValidation()
+			if f.Reason != "" {
+				return field("reason", "Leave reason empty until the finding is accepted or rejected.")
+			}
+			if in.Finalized {
+				return field("disposition", "Accept or reject each finding before finalized:true.")
 			}
 		case "accepted", "rejected":
 			if !controlText(f.Reason, 2048, true) {
-				return mutationValidation()
+				return field("reason", "Supply a nonblank decision reason of at most 2048 UTF-8 bytes.")
 			}
 		default:
-			return mutationValidation()
+			return field("disposition", "Use unadjudicated, accepted or rejected.")
 		}
 	}
 	body, err := json.Marshal(in)
 	if err != nil || len(body) > maxSubagentDocument {
-		return mutationValidation()
+		return subagentFieldValidation("document", "Use one JSON object of at most 256 KiB.")
 	}
 	return nil
 }
@@ -136,7 +179,7 @@ func ValidateSubagentUpdateRequest(in SubagentUpdateRequest) error {
 func DecodeSubagentRecordDocument(document []byte) (SubagentRecordRequest, error) {
 	var value SubagentRecordRequest
 	if !subagentDocument(document, &value, "pull_number", "head_sha", "reviewer", "scope", "started_at", "finished_at", "findings") {
-		return value, mutationValidation()
+		return value, subagentRecordShapeError(document)
 	}
 	var fields map[string]json.RawMessage
 	_ = json.Unmarshal(document, &fields)
@@ -148,6 +191,28 @@ func DecodeSubagentRecordDocument(document []byte) (SubagentRecordRequest, error
 		}
 	}
 	return value, ValidateSubagentRecordRequest(value)
+}
+
+// Explain declared top-level shape failures without echoing unknown field names
+// or relaxing strict duplicate/unknown/null admission.
+func subagentRecordShapeError(document []byte) error {
+	if len(document) > 0 && len(document) <= maxSubagentDocument && strictjson.Validate(document) == nil {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(document, &fields) == nil && fields != nil {
+			for _, name := range []string{"pull_number", "head_sha", "reviewer", "scope", "started_at", "finished_at", "findings"} {
+				if _, ok := fields[name]; !ok {
+					return subagentFieldValidation(name, "Supply this required field; see docs/subagent-reviews.md.")
+				}
+			}
+			if raw, ok := fields["coverage_limits"]; ok {
+				var limits []string
+				if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &limits) != nil {
+					return subagentFieldValidation("coverage_limits", "Use an array of at most 16 nonblank strings, each at most 1024 UTF-8 bytes; omit it when unused.")
+				}
+			}
+		}
+	}
+	return subagentFieldValidation("document", "Use one strict JSON object with declared, correctly typed fields and no duplicate keys or null values; see docs/subagent-reviews.md.")
 }
 func DecodeSubagentUpdateDocument(document []byte) (SubagentUpdateRequest, error) {
 	var value SubagentUpdateRequest
