@@ -119,16 +119,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 				if ciReason == "" && observation.State == "unproven" {
 					ciReason = "ci_unproven"
 				}
-				switch observation.State {
-				case "satisfied":
-					ciState = "success"
-				case "failed":
-					ciState = "failure"
-				case "pending":
-					ciState = "pending"
-				case "not_required":
-					ciState = "not_required"
-				}
+				ciState = sourceCIQueueState(observation.State)
 			}
 			ciCancel()
 		}

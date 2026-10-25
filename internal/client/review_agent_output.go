@@ -59,7 +59,7 @@ func agentReviewOperationDiagnostic(state, reason string) *ReviewOperationDiagno
 	default:
 		return nil
 	}
-	return &ReviewOperationDiagnostic{explanation, "Inspect the selected and ancestor comparisons and align the mismatched branch in its owning workflow. Use existing allow-out-of-order only for a verified stable selected comparison under the current review authorization; do not automatically retry, reset review progress or create a no-op commit."}
+	return &ReviewOperationDiagnostic{explanation, "Inspect the selected and ancestor comparisons and align the mismatched branch in its owning workflow. Use the existing out-of-order request only for a verified stable selected comparison under the current review authorization; do not automatically retry, reset review progress or create a no-op commit."}
 }
 
 type ReviewCIDiagnostic struct {

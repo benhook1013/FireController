@@ -601,7 +601,7 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			retainedCI, retainedReview := "null", "null"
 			if state == "completed" {
 				retainedCI, retainedReview = ciBody, reviewBody
-				if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: r.ProjectID, PrincipalID: r.actor, WorkerID: r.worker}, r.repositoryID, metadataPins, []SourcePlan{plan}); err != nil {
+				if err = publishSourceRefreshStatus(ctx, tx, core.Scope{ProjectID: r.ProjectID, PrincipalID: r.actor, WorkerID: r.worker}, r.repositoryID, metadataPins, plan, ci, review); err != nil {
 					return err
 				}
 			}

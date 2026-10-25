@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
@@ -43,5 +44,26 @@ func publishSourcePlans(ctx context.Context, tx *sql.Tx, scope core.Scope, repo 
 		pulls = append(pulls, sourceDisplayPull(plan))
 	}
 	_, err := reviews.PublishSourceMetadata(ctx, tx, scope, repo, pins, pulls)
+	return err
+}
+
+// Explicit refreshes reuse their independently collected status in the same
+// transaction as completion. Ordinary selection metadata retains its own path.
+func publishSourceRefreshStatus(ctx context.Context, tx *sql.Tx, scope core.Scope, repo int64, pins map[int64]reviews.SourceMetadataPin, plan SourcePlan, ci *reviewprovider.CIObservation, review *reviewprovider.PullReviewObservation) error {
+	if plan.Repository.ID != repo || !sameTarget(plan.Pull, repo, plan.Pull.Number) {
+		return invalid()
+	}
+	mergeability := plan.Pull.Mergeability
+	if mergeability != "mergeable" && mergeability != "conflicting" {
+		mergeability = "unknown"
+	}
+	if review != nil && review.State == "complete" && validSourceReviewState(*review, sourcePlanObservation(plan)) {
+		mergeability = strings.ToLower(review.Mergeable)
+	}
+	status := reviews.SourceStatus{Pull: sourceDisplayPull(plan), Mergeability: mergeability}
+	if ci != nil {
+		status.CIState = sourceCIQueueState(ci.State)
+	}
+	_, err := reviews.PublishSourceStatus(ctx, tx, scope, repo, pins, []reviews.SourceStatus{status})
 	return err
 }

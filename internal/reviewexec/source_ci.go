@@ -18,6 +18,20 @@ const sourceCIMaxBytes = 8 << 20
 
 const sourceCILatestQuery = `SELECT id FROM review_source_refreshes WHERE project_id=? AND pull_number=? AND state='completed' AND (include_ci=1 OR include_readiness=1) ORDER BY created_at DESC,id DESC LIMIT 1`
 
+// Queue status reports collected CI independently of conflict-free merging.
+func sourceCIQueueState(state string) string {
+	switch state {
+	case "satisfied":
+		return "success"
+	case "failed":
+		return "failure"
+	case "pending", "not_required":
+		return state
+	default:
+		return "unknown"
+	}
+}
+
 // SourceCISummary is an as-of CI observation, never permission to merge. Zero
 // required with state unproven means unknown requirements, not absence.
 type SourceCISummary struct {
