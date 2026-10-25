@@ -101,6 +101,9 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
     const schedule = () => { if (!frame) frame = requestAnimationFrame(reconcile); };
     const scroll = () => {
       if (ownScroll) { ownScroll = false; return; }
+      // Browser reload restoration can emit scroll while only the loading
+      // shell exists. Explicit wheel/touch/key input already cancels restore.
+      if (pendingRestore) return;
       if (frame) return;
       pendingRestore = false;
       point = capture();
