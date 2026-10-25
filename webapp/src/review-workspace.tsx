@@ -120,7 +120,6 @@ export function missingPullFacts(pull: ReviewPullSummary): string[] {
   if (!pull.base_ref) missing.push('Base branch was not captured.');
   if (!pull.base_sha) missing.push('Base commit was not captured.');
   if (pull.state === 'unknown') missing.push('Open or closed state is unknown.');
-  if (!pull.complete && !missing.length && pull.ci_state !== 'unknown' && (pull.state === 'merged' || pull.mergeability !== 'unknown')) missing.push('The source marked this PR incomplete without identifying another missing field.');
   return missing;
 }
 function ReviewObservationBadge({ value }: { value: ReviewPullSummary['observation'] }) {

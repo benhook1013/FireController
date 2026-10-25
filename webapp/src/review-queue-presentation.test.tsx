@@ -234,9 +234,12 @@ describe('truthful stored review presentation', () => {
     const html = markup(<ReviewPullFacts pull={value} />);
     expect(html).toContain('Required CI: Unknown'); expect(html).toContain('Merge: Unknown');
     expect(html).not.toContain('Missing PR details');
-    const explicit = { ...pull(1), complete: false };
-    expect(missingPullFacts(explicit)).toEqual(['The source marked this PR incomplete without identifying another missing field.']);
-    expect(markup(<ReviewPullFacts pull={explicit} />)).toContain('Missing PR details');
+    for (const state of ['open', 'merged', 'closed'] as const) {
+      const retained = { ...pull(1, state), complete: false, ci_state: 'pending' as const, mergeability: 'unknown' as const };
+      expect(missingPullFacts(retained)).toEqual([]);
+      expect(markup(<ReviewPullFacts pull={retained} />)).not.toContain('Missing PR details');
+      expect(retained.complete).toBe(false);
+    }
   });
   it('renders retained merged rails, explicit groups and history arrows without automatic requests', () => {
     const presentation: Presentation = { project_id: 'project', revision: 1, name: 'Project', brand_name: 'FireController', tagline: '', headings: {}, theme: {}, updated_at: '', review_groups: [{ title: 'Foundation <literal>', pull_numbers: [1, 3] }] };
