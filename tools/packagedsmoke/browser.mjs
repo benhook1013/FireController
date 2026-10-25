@@ -955,14 +955,14 @@ try {
   checkpoint = 'queue-pull-facts';
   const mergedFacts = deliveryQueue.locator('#review-pr-31 .review-pull-facts');
   const openFacts = deliveryQueue.locator('#review-pr-32 .review-pull-facts');
-  await expect(mergedFacts).not.toContainText('Mergeability');
-  await expect(mergedFacts).toContainText('Required CI: Unknown');
+  await expect(mergedFacts.locator('.review-mergeability')).toHaveCount(0);
+  await expect(mergedFacts).not.toContainText('Required CI:');
   await expect(mergedFacts.locator('.review-diff')).toHaveText('73 files · +6,160 / −136 lines');
   await expect(mergedFacts.locator('.review-merged-age time')).toHaveAttribute('datetime', merged.merged_at);
   await expect(mergedFacts).not.toContainText('Draft');
-  await expect(mergedFacts.locator('.review-ci')).toHaveText('Required CI: Unknown');
-  await expect(openFacts).toContainText('Mergeability: Unknown');
-  await expect(openFacts.locator('.review-mergeability')).toHaveText('Mergeability: Unknown');
+  await expect(mergedFacts.locator('.review-ci')).toHaveCount(0);
+  await expect(openFacts).toContainText('Required CI: Unknown');
+  await expect(openFacts.locator('.review-mergeability')).toHaveText('Merge: Unknown');
   const headRow = page.locator('#review-pr-32');
   const headJumpPosition = () => headRow.evaluate(element => {
     const box = element.getBoundingClientRect(), mast = document.querySelector('.mast').getBoundingClientRect();
