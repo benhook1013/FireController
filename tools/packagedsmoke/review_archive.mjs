@@ -276,12 +276,12 @@ try {
     const facts = queue.locator(`#review-pr-${merged} .review-pull-facts`);
     await expect(facts.locator(':scope > .review-state-merged')).toHaveCount(1);
     await expect(facts.locator(':scope > .review-state-merged')).toHaveText('Merged');
-    await expect(facts.locator('.review-ci')).toHaveText('Required CI: Success');
+    await expect(facts.locator('.review-ci')).toHaveCount(0);
     need(await facts.locator('.review-mergeability').count()===0);
   }
   need(await queue.locator('#review-pr-205 .review-pull-facts > .badge:not(.review-fact-pill)').count() === 0);
   await expect(queue.locator('#review-pr-205 .review-ci')).toHaveText('Required CI: Success');
-  await expect(queue.locator('#review-pr-205 .review-mergeability')).toHaveText('Mergeability: Mergeable');
+  await expect(queue.locator('#review-pr-205 .review-mergeability')).toHaveText('Merge: Unknown');
   need(await queue.locator('.review-queue-panel').evaluate(panel=>getComputedStyle(panel).borderTopLeftRadius === '0px'));
   if (config.proof_directory) for (const width of [1440,390]) {
     await current.page.setViewportSize({width,height:900});

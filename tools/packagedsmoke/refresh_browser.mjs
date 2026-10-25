@@ -10,7 +10,7 @@ try{
   config=JSON.parse(await fs.readFile(process.argv[2],'utf8'));
   const [admin,token,targetToken,defaults]=await Promise.all([fs.readFile(config.admin_file,'utf8'),fs.readFile(config.credential_file,'utf8'),fs.readFile(config.target_credential_file,'utf8'),fs.readFile(config.defaults_file,'utf8')]);
   const prefix='/api/v1/projects/'+config.project,targetPrefix='/api/v1/projects/'+config.target_project;
-  const unpublishedPaths=new Set();let unpublishedReads=0,unpublishedConsole=0;
+  const unpublishedPaths=new Set(), identities=new Map();let unpublishedReads=0,unpublishedConsole=0;
   const unpublishedLocation=value=>{try{const url=new URL(value);return url.origin===config.origin&&unpublishedPaths.has(url.pathname)&&url.search==='';}catch{return false;}};
   const fixture=async(method,project,worker,path,body,status=200)=>{
     const response=await fetch(config.origin+'/api/v1/projects/'+project+path,{method,headers:{Authorization:'Bearer '+admin.trim(),'X-FC-Instance':config.instance,'X-FC-Worker':worker,'Idempotency-Key':'refresh-browser-fixture-'+(++fixtureCalls),'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(5000)});
@@ -56,6 +56,18 @@ try{
     if(url.origin!==config.origin){await route.abort();return;}
     const ownSession=[prefix+'/browser-session',targetPrefix+'/browser-session'].includes(url.pathname)&&['POST','DELETE'].includes(request.method());
     if(!['GET','HEAD'].includes(request.method())&&!ownSession){await route.abort();return;}
+    // Capture this same real response before browser delivery. Login navigation
+    // may retire the CDP response-body handle before a response.json() reader.
+    // No synthetic response or extra identity request is introduced.
+    if(request.method()==='GET'&&[prefix,targetPrefix].includes(url.pathname)){
+      const response=await route.fetch({timeout:5000}),body=await response.body();
+      need(response.status()===200);
+      const identity=JSON.parse(body.toString('utf8'));
+      need(identity.id===url.pathname.split('/').at(-1)&&typeof identity.handle==='string');
+      identities.set(url.pathname,identity);
+      unpublishedPaths.add('/api/v1/public/project-locations/'+identity.handle);
+      await route.fulfill({response,body});await response.dispose();return;
+    }
     if(request.method()==='GET'&&url.pathname===prefix+'/project-events/stream'){
       injectedRequest=request;injectedFailures++;await route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({error:{code:'invalid_response'}})});return;
     }
@@ -75,12 +87,12 @@ try{
   const screenshot=async name=>{if(config.diagnostic_directory){await fs.mkdir(config.diagnostic_directory,{recursive:true,mode:0o700});await page.screenshot({path:config.diagnostic_directory+'/'+name+'.png',fullPage:false,mask:[page.locator('input,textarea')],timeout:2000});}};
   const connect=async(project,credential,name)=>{
     await page.getByLabel('Project',{exact:true}).fill(project);await page.getByLabel('Project credential',{exact:true}).fill(credential.trim());
-    // Capture the body when the response arrives, before login navigation retires its CDP handle.
-    const resolved=page.waitForResponse(response=>response.request().method()==='GET'&&new URL(response.url()).pathname==='/api/v1/projects/'+project).then(async response=>({status:response.status(),identity:await response.json()}));
+    const identityPath='/api/v1/projects/'+project;
+    const resolved=page.waitForResponse(response=>response.request().method()==='GET'&&new URL(response.url()).pathname===identityPath);
     const accepted=page.waitForResponse(response=>response.request().method()==='POST'&&new URL(response.url()).pathname==='/api/v1/projects/'+project+'/browser-session');
     await page.getByRole('button',{name:'Connect to project',exact:true}).click();need((await accepted).status()===200);
-    const {status,identity}=await resolved;need(status===200&&identity.id===project&&typeof identity.handle==='string');
-    unpublishedPaths.add('/api/v1/public/project-locations/'+identity.handle);
+    const status=(await resolved).status(),identity=identities.get(identityPath);
+    need(status===200&&identity?.id===project&&typeof identity.handle==='string');
     await page.getByRole('heading',{name,exact:true}).waitFor();await page.getByRole('heading',{name:'Delivery',exact:true}).waitFor();
     await page.waitForURL(config.origin+'/projects/'+identity.handle);return identity.handle;
   };
