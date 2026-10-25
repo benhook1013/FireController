@@ -70,7 +70,7 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
     let point = initial, pendingRestore = !!initial, frame = 0, ownScroll = false, readerUntil = 0;
     const documentRoot = document.documentElement;
     const previousAnchoring = documentRoot.style.overflowAnchor;
-    documentRoot.style.overflowAnchor = 'none';
+    if (initial || element.querySelector(selector)) documentRoot.style.overflowAnchor = 'none';
     const header = document.querySelector('.mast');
     const edge = () => Math.max(0, header?.getBoundingClientRect().bottom ?? 0) + 12;
     const landmarks = (): ReadingLandmark[] => [...element.querySelectorAll<HTMLElement>(selector)].flatMap(node => {
@@ -81,6 +81,7 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
     const reconcile = () => {
       frame = 0;
       const items = landmarks();
+      documentRoot.style.overflowAnchor = items.length || pendingRestore ? 'none' : previousAnchoring;
       if (performance.now() < readerUntil) { point = capture(); return; }
       if (point) {
         const region = point.anchor.startsWith('review-') ? 'reviews' : 'delivery';
