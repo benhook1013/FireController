@@ -459,6 +459,13 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	result := fail(value.Error.Code, "The service refused this scoped request.", "Check the selected instance, project, worker and current access.", status)
 	result.RequestID = value.RequestID
 	result.Details = c.safeDetails(value.Error.Details, result.Code)
+	if status == http.StatusConflict {
+		switch result.Code {
+		case "revision_conflict", "checklist_revision_conflict", "job_workstream_revision_conflict", "note_revision_conflict", "primary_job_revision_conflict", "project_presentation_revision_conflict", "publication_revision_conflict", "review_attempt_revision_conflict", "review_round_revision_conflict", "summary_revision_conflict", "worker_pause_revision_conflict":
+			result.Message = "The record changed since the selected revision."
+			result.Action = "Read the current record, preserve concurrent edits, and reapply only the intended change with its current revision and a new idempotency key."
+		}
+	}
 	if result.Code == "reviews_readiness_unavailable" {
 		result.Message = "No completed source refresh with readiness is available for this PR."
 		result.Action = "Read the last source-refresh operation. If held, resolve its reason first; then refresh the current comparison with include_readiness and assess the completed result. Do not change credentials after a successful identity check."

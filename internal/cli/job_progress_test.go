@@ -64,6 +64,18 @@ func TestUnifiedJobCommandsPartialClearReplayAndExplicitArchive(t *testing.T) {
 	if code != cli.ExitConflict || out != "" || !strings.Contains(err, "revision_conflict") {
 		t.Fatal("CAS refused incorrectly")
 	}
+	var conflict struct {
+		Error struct {
+			Action         string `json:"action"`
+			OutcomeUnknown bool   `json:"outcome_unknown"`
+			Details        struct {
+				CurrentRevision int64 `json:"current_revision"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(err), &conflict) != nil || conflict.Error.OutcomeUnknown || conflict.Error.Details.CurrentRevision != 4 || !strings.Contains(conflict.Error.Action, "preserve concurrent edits") || !strings.Contains(conflict.Error.Action, "current revision") || !strings.Contains(conflict.Error.Action, "new idempotency key") || strings.Contains(conflict.Error.Action, "current access") {
+		t.Fatal("guarded conflict lost safe edit recovery")
+	}
 	if f.resolverHit.Load() != 1 {
 		t.Fatal("job operations contacted provider")
 	}
