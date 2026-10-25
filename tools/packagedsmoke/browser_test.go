@@ -242,6 +242,7 @@ func (o *browserOutput) safePhase() string {
 			Phase                    string          `json:"phase"`
 			Checkpoint               string          `json:"checkpoint"`
 			FailureClass             string          `json:"failure_class"`
+			FailureCause             string          `json:"failure_cause"`
 			FailureName              string          `json:"failure_name"`
 			HTTPStatus               int             `json:"http_status"`
 			AllowWrites              bool            `json:"allow_writes"`
@@ -339,6 +340,13 @@ func (o *browserOutput) safePhase() string {
 					if strings.HasPrefix(record.Checkpoint, "fallback-") {
 						g := record.FallbackGeometry
 						return fmt.Sprintf("live-reviews/%s class=%s top=%d mast_bottom=%d scroll=%d target=%d aligned=%t errors=%d external=%d forbidden_writes=%d", record.Checkpoint, class, g.Top, g.MastBottom, g.Scroll, g.Target, g.Aligned, record.Errors, record.External, record.Writes)
+					}
+					if record.Checkpoint == "attempt-reason-detail" {
+						cause := "unknown"
+						if record.FailureCause == "browser_response_body_retired" || record.FailureCause == "archive_response_unavailable" {
+							cause = record.FailureCause
+						}
+						return fmt.Sprintf("live-reviews/%s class=%s cause=%s run_fetches=%d presentation_reads=%d metadata_streams=%d inbox_streams=%d forbidden_writes=%d action_writes=%d errors=%d external=%d", record.Checkpoint, class, cause, record.ReviewRunReads, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Writes, record.ActionWrites, record.Errors, record.External)
 					}
 					return fmt.Sprintf("live-reviews/%s class=%s run_fetches=%d presentation_reads=%d metadata_streams=%d inbox_streams=%d forbidden_writes=%d action_writes=%d errors=%d external=%d", record.Checkpoint, class, record.ReviewRunReads, record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.Writes, record.ActionWrites, record.Errors, record.External)
 				}
@@ -623,6 +631,30 @@ console.log(JSON.stringify({state:passed?'PASS':'FAIL',matcher_assertion:passed,
 	}
 	if err != nil || stderr.len() != 0 || external.Load() != 0 || output.browserPID() < 2 || len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || !result.MatcherAssertion || !result.ClosedPage || !result.ScreenshotFailure || !result.PrivateJSON {
 		t.Fatal("browser diagnostic failure-path proof failed; raw output withheld")
+	}
+}
+
+func TestBrowserReviewArchiveDiagnosticsAllowlist(t *testing.T) {
+	for _, cause := range []string{"browser_response_body_retired", "archive_response_unavailable", "PRIVATE_SENTINEL"} {
+		t.Run(cause, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"state": "FAIL", "phase": "live-reviews", "checkpoint": "attempt-reason-detail", "failure_class": "driver", "failure_cause": cause,
+				"error": "PRIVATE_SENTINEL", "url": "PRIVATE_SENTINEL", "body": "PRIVATE_SENTINEL", "cookie": "PRIVATE_SENTINEL",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			output := &browserOutput{}
+			_, _ = output.Write(body)
+			want := cause
+			if cause == "PRIVATE_SENTINEL" {
+				want = "unknown"
+			}
+			expected := "live-reviews/attempt-reason-detail class=driver cause=" + want + " run_fetches=0 presentation_reads=0 metadata_streams=0 inbox_streams=0 forbidden_writes=0 action_writes=0 errors=0 external=0"
+			if got := output.safePhase(); got != expected || strings.Contains(got, "PRIVATE_SENTINEL") {
+				t.Fatal("review archive diagnostics did not retain only the fixed cause and counters")
+			}
+		})
 	}
 }
 

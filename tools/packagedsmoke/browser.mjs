@@ -14,6 +14,7 @@ let stopProgress = () => {};
 let progressFailed = false;
 let counters = () => ({});
 let failureClass = '';
+let failureCause = 'unknown';
 let repeatedFallbackHash = false;
 let fallbackGeometry = {};
 let workerHistoryBefore = -1, workerHistoryAfter = -1;
@@ -1022,18 +1023,49 @@ try {
   }
   checkpoint = 'attempt-reason-detail';
   const reasonReadBoundary = {pull:reviewPullReads,attempts:reviewAttemptReads,runs:reviewRunReads};
-  const attemptArchiveResponse = page.waitForResponse(response => response.request().method()==='GET' && new URL(response.url()).pathname===prefix+'/reviews/pulls/32/attempts').then(async response => ({status:response.status(),body:await response.json()}));
+  const detailLink=headRow.getByRole('link',{name:'Review details for PR #32',exact:true});
+  const detailSnapshot=new URL(await detailLink.getAttribute('href'),page.url()).searchParams.get('snapshot');
+  need(typeof detailSnapshot==='string' && detailSnapshot.length>0);
+  const attemptPath=prefix+'/reviews/pulls/32/attempts',roundPath=prefix+'/reviews/pulls/32/runs';
+  const archivePattern=url=>url.origin===config.origin && url.searchParams.get('snapshot')===detailSnapshot && !url.searchParams.has('cursor') && (
+    url.pathname===attemptPath && url.searchParams.get('limit')==='20' && !url.searchParams.has('channel') && !url.searchParams.has('view') ||
+    url.pathname===roundPath && url.searchParams.get('limit')==='25' && url.searchParams.get('view')==='timeline' && !url.searchParams.has('channel')
+  );
+  const archiveBodies=new Map();
+  // Own the exact bytes before browser delivery. Chromium can retire a CDP body
+  // handle even while the page successfully consumes the same response.
+  const ownArchiveResponse=async route=>{
+    if(route.request().method()!=='GET'){await route.fallback();return;}
+    try{
+      const response=await route.fetch({timeout:5000,maxRedirects:0,maxRetries:0});
+      const body=await response.body();
+      archiveBodies.set(route.request().url(),{status:response.status(),rawBody:body});
+      await route.fulfill({response,body});
+    }catch{
+      failureCause='archive_response_unavailable';
+      await route.abort();
+    }
+  };
+  await page.route(archivePattern,ownArchiveResponse);
+  const attemptArchiveResponse = page.waitForResponse(response => response.request().method()==='GET' && new URL(response.url()).pathname===attemptPath && archivePattern(new URL(response.url()))).then(response => ({status:response.status(),url:response.url()}));
   // The detail view has its own bounded chronological history page, distinct from
   // the six-round overview. Opening it does not fetch finding bodies.
   const roundArchiveResponse = page.waitForResponse(response => {
     const url=new URL(response.url());
-    return response.request().method()==='GET' && url.pathname===prefix+'/reviews/pulls/32/runs' && url.searchParams.get('view')==='timeline' && !url.searchParams.has('channel') && url.searchParams.get('limit')==='25';
-  }).then(async response => ({status:response.status(),url:new URL(response.url()),body:await response.json()}));
-  await headRow.getByRole('link',{name:'Review details for PR #32',exact:true}).click();
-  const attemptArchive = await attemptArchiveResponse;
-  need(attemptArchive.status === 200);
-  const roundArchive = await roundArchiveResponse;
-  need(roundArchive.status===200 && roundArchive.url.searchParams.get('snapshot')===new URL(page.url()).searchParams.get('snapshot') && !roundArchive.url.searchParams.has('cursor') && roundArchive.body.items.length===1 && roundArchive.body.items[0].source_run_id===run.source_run_id);
+    return response.request().method()==='GET' && url.pathname===roundPath && archivePattern(url);
+  }).then(response => ({status:response.status(),url:new URL(response.url())}));
+  let attemptArchive,roundArchive;
+  try{
+    await detailLink.click();
+    const attemptResponse=await attemptArchiveResponse,roundResponse=await roundArchiveResponse;
+    attemptArchive=archiveBodies.get(attemptResponse.url);
+    roundArchive=archiveBodies.get(roundResponse.url.href);
+    need(archiveBodies.size===2 && attemptArchive.status===attemptResponse.status && roundArchive.status===roundResponse.status);
+    need(attemptArchive.status===200 && roundArchive.status===200);
+    attemptArchive.body=JSON.parse(attemptArchive.rawBody.toString('utf8'));
+    roundArchive.body=JSON.parse(roundArchive.rawBody.toString('utf8'));
+    need(roundResponse.url.searchParams.get('snapshot')===new URL(page.url()).searchParams.get('snapshot') && !roundResponse.url.searchParams.has('cursor') && roundArchive.body.items.length===1 && roundArchive.body.items[0].source_run_id===run.source_run_id);
+  }finally{await page.unroute(archivePattern,ownArchiveResponse);}
   const retainedAttempts = attemptArchive.body;
   need(retainedAttempts.items.length === 1 && retainedAttempts.items[0].source_attempt_id === uncertainAttempt.source_attempt_id && retainedAttempts.items[0].state === 'uncertain' && retainedAttempts.items[0].reason === reasonCode);
   checkpoint = 'attempt-reason-expanded';
@@ -1483,10 +1515,11 @@ try {
   console.log(JSON.stringify({state:'PASS', repeated_fallback_hash:repeatedFallbackHash, fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, session_renewals:sessionRenewals, missing_session_refusals:terminalResponses, progress_access_refusals:progressAccessFailures, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
 } catch (error) {
   failureClass = classifyBrowserFailure(error);
+  if (/Protocol error \(Network\.getResponseBody\): No data found for resource with given identifier/u.test(error?.message || '')) failureCause='browser_response_body_retired';
   const failureName = ['TimeoutError','Error','AssertionError','TypeError','ReferenceError','RangeError'].includes(error?.name) ? error.name : 'Other';
   operation = 'failure-snapshot'; publishProgress();
   const snapshot = await failureSnapshot().catch(()=>({diagnostic_failed:true}));
-  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, failure_name:failureName, http_status:lastHTTPStatus, allow_writes:lastAllowWrites, can_edit_presentation:lastCanEditPresentation, send_status:sendStatus, reply_status:replyStatus, conversation_match:conversationMatch, ...counters(), ...diagnostics(), ...snapshot}));
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_class:failureClass, failure_cause:failureCause, failure_name:failureName, http_status:lastHTTPStatus, allow_writes:lastAllowWrites, can_edit_presentation:lastCanEditPresentation, send_status:sendStatus, reply_status:replyStatus, conversation_match:conversationMatch, ...counters(), ...diagnostics(), ...snapshot}));
   process.exitCode = 1;
 } finally {
   phase = 'cleanup'; operation = 'cleanup';
