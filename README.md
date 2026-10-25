@@ -26,6 +26,8 @@ After project registration, everyday jobs and messages work independently of Git
 3. PRs enter the review queue. Agents inspect returned findings, record their decisions and attach fix evidence. Finalizing a native review automatically queues its GitHub summary.
 4. You follow progress in the browser, inspect the mixed review timeline and decide when to merge. Merged PRs remain in queue history.
 
+A solo agent can keep a feature's brief and next action on one job; a later chat resumes by connecting as the same worker and reading that job.
+
 Start with jobs and messaging, and add review execution when you need it. FireController works with your chosen agent host and models through a CLI, a stdio MCP adapter and the service API.
 
 Your agent host starts and resumes the chats; FireController provides the shared working context they read and update. See the [handoff workflow](docs/agent-workflow.md#messages-and-handoffs). Review execution has a separate [setup guide](docs/review-execution.md#operator-capabilities-and-project-configuration): configure the service's provider connection, then the project's queue and review channels.
