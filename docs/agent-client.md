@@ -73,6 +73,8 @@ A guarded revision conflict reports a changed record and retains its safe curren
 
 Mutation recovery retains the original request, binding and idempotency key, plus an operation ID when one was returned; retrying after a disconnect cannot create a second message or provider request. The API remains the authority for permissions and revisions even when an alias or tool hides context arguments.
 
+Service identity verification precedes the selected operation. If that read fails, the client reports that this attempt did not send the requested operation. A write retry retains its exact request, idempotency key and binding; a failed identity check does not establish the outcome of an earlier ambiguous write. Failures after write dispatch retain the existing unknown-outcome recovery contract.
+
 Fast work returns its useful result directly. Variable-duration commands use a short bounded wait and return an operation receipt only when the work remains pending; explicit wait or immediate-return options let the caller choose. Known long-running work can detach immediately. Durable operation identity remains inside the adapter when possible. Where the host supports asynchronous execution and completion, a native review tool can stay pending and return its useful final result while the model continues independent work. A CLI wait can run through a background-capable shell handle where the installed host supports it; an explicit immediate return exposes the operation receipt. Ordinary reads and quick writes return their result directly. A receipt/poll workflow is a fallback for incapable hosts, not the mandatory agent experience.
 
 ## Actual host CLI wait proof

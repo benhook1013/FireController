@@ -79,6 +79,14 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 	}
 	if err = c.get(ctx, []string{"api", "v1", "instance"}, nil, false, &instance); err != nil {
 		c.Close()
+		// Only the identity read was sent, never the caller's selected write.
+		var failure *Error
+		if errors.As(err, &failure) {
+			copy := *failure
+			copy.Message = "Service identity verification failed; the requested operation was not sent. " + failure.Message
+			copy.Action = "Resolve the identity-check error, then retry the original operation. For writes, retain the exact request, idempotency key and binding. This attempt sent no write; an earlier uncertain attempt may still need same-key recovery."
+			err = &copy
+		}
 		return nil, err
 	}
 	if instance.InstanceID != identity.InstanceID {

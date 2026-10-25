@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/cli"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/inbox"
@@ -294,6 +295,71 @@ func TestUnknownMutationOutcomeSurvivesAdapterAndExplicitRetry(t *testing.T) {
 			}
 			if writes.Load() != 2 || f.providers.Load() != 1 {
 				t.Fatal("retry/provider count changed")
+			}
+		})
+	}
+}
+
+func TestWriteIdentityFailureDistinguishesUnsentFromUnknownAcrossClients(t *testing.T) {
+	for _, transport := range []string{"cli", "mcp"} {
+		t.Run(transport, func(t *testing.T) {
+			f := mutationFixture(t)
+			var phase, writes atomic.Int64
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" && phase.Load() == 0 {
+					http.Error(w, "PRIVATE_PROXY_BODY", http.StatusBadGateway)
+					return
+				}
+				if r.Method == http.MethodPost {
+					writes.Add(1)
+					if r.Header.Get("Idempotency-Key") != "original-send-key" || r.Header.Get("X-FC-Worker") != f.sender {
+						t.Error("original write binding changed")
+					}
+					if phase.Load() == 1 {
+						http.Error(w, "PRIVATE_PROXY_BODY", http.StatusBadGateway)
+						return
+					}
+				}
+				f.handler.ServeHTTP(w, r)
+			}))
+			defer service.Close()
+			c := profile.Context{Profile: "chosen", ServerURL: service.URL, InstanceID: f.store.InstanceID(), ProjectID: f.project, WorkerID: f.sender}
+			file := profiles(t, map[string]profile.Context{"chosen": c}, f.credential)
+			session := connect(t, adapter(t, file, "chosen"), "")
+			invoke := func() ([]byte, bool) {
+				if transport == "mcp" {
+					r := call(t, session, "inbox_send", map[string]any{"recipient_worker_id": f.recipient, "body": "PRIVATE_MESSAGE_BODY", "idempotency_key": "original-send-key"})
+					b, _ := json.Marshal(r.StructuredContent)
+					return b, r.IsError
+				}
+				var out, errout bytes.Buffer
+				code := cli.RunContext(t.Context(), []string{"--profiles-file", file, "--profile", "chosen", "inbox", "send", "--to", f.recipient, "--body", "PRIVATE_MESSAGE_BODY", "--key", "original-send-key"}, nil, &out, &errout)
+				if code != cli.ExitSuccess {
+					return errout.Bytes(), true
+				}
+				return out.Bytes(), false
+			}
+			for n := int64(0); n < 2; n++ {
+				phase.Store(n)
+				raw, failed := invoke()
+				var d struct {
+					Error mcpadapter.Diagnostic `json:"error"`
+				}
+				if !failed || json.Unmarshal(raw, &d) != nil || d.Error.Code != "service_unavailable" || d.Error.OutcomeUnknown != (n == 1) || strings.Contains(string(raw), "PRIVATE_") {
+					t.Fatalf("incorrect safe dispatch classification: %s", raw)
+				}
+				if n == 0 && (!strings.Contains(d.Error.Message, "not sent") || !strings.Contains(d.Error.Action, "idempotency key") || !strings.Contains(d.Error.Action, "earlier uncertain") || writes.Load() != 0) {
+					t.Fatal("identity failure lost known-unsent boundary")
+				}
+				if n == 1 && (!strings.Contains(d.Error.Action, "exact same idempotency key") || writes.Load() != 1) {
+					t.Fatal("actual write failure lost uncertainty or retried")
+				}
+			}
+			phase.Store(2)
+			raw, failed := invoke()
+			var receipt client.MessageReceipt
+			if failed || json.Unmarshal(raw, &receipt) != nil || receipt.Outcome != "sent" || writes.Load() != 2 {
+				t.Fatalf("explicit same-key recovery failed: %s", raw)
 			}
 		})
 	}
