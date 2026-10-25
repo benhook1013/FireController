@@ -60,7 +60,14 @@ func publishSourceRefreshStatus(ctx context.Context, tx *sql.Tx, scope core.Scop
 	if review != nil && review.State == "complete" && validSourceReviewState(*review, sourcePlanObservation(plan)) {
 		mergeability = strings.ToLower(review.Mergeable)
 	}
-	status := reviews.SourceStatus{Pull: sourceDisplayPull(plan), Mergeability: mergeability}
+	mergeState := plan.Pull.MergeStateStatus
+	if review != nil && review.State == "complete" && validSourceReviewState(*review, sourcePlanObservation(plan)) {
+		mergeState = review.MergeStateStatus
+	}
+	if mergeState == "" {
+		mergeState = "UNKNOWN"
+	}
+	status := reviews.SourceStatus{Pull: sourceDisplayPull(plan), Mergeability: mergeability, MergeStateStatus: mergeState}
 	if ci != nil {
 		status.CIState = sourceCIQueueState(ci.State)
 	}

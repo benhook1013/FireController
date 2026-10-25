@@ -52,7 +52,7 @@ describe('merge-head recent review rounds', () => {
     archive.items = Array.from({length: 8}, (_, index) => run(`h${8-index}`, 'hosted'));
     archive.hasMore = true;
     const counts = {hosted: 27, cli: 1, manual: 8, subagent: 2};
-    const pull: ReviewPullSummary = {number: 7, title: '<Literal PR title>', state: 'open', head_sha: 'head', base_ref: 'main', base_sha: 'base', ci_state: 'success', mergeability: 'mergeable', complete: true, run_count: 38, run_counts: counts, attempt_count: 0, latest_attempts: [], recent_runs: [], diff: {files: 3, additions: 20, deletions: 4}};
+    const pull: ReviewPullSummary = {number: 7, title: '<Literal PR title>', state: 'open', head_sha: 'head', base_ref: 'main', base_sha: 'base', ci_state: 'success', mergeability: 'mergeable', complete: true, run_count: 38, run_counts: counts, attempt_count: 0, latest_attempts: [], recent_runs: [], diff: {files: 3, additions: 20, deletions: 4}, merge_status:{state:'ready',reason:'github_and_required_ci_clear'}};
     const queue: ReviewQueue = {project_id: 'project', revision: 1, snapshot_id: 'snapshot', source: 'fixture', observed_at: '', recorded_at: '', configured: true, items: [pull], has_more: false};
     const normal = markup(false, [], false, counts, <ul className="review-queue"><ReviewQueueRow pull={pull} snapshot="snapshot" order={{index: 0, distance: 1}} /></ul>);
     const hero = markup(false, [], false, counts, <MergeHeadContent queue={queue} home="/projects/project" />);

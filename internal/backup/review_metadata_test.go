@@ -18,7 +18,7 @@ func TestReviewMetadataCanonicalBackupRestoreAndCorruption(t *testing.T) {
 	f := historyInventoryAPIFixture(t)
 	draft := false
 	revision := int64(0)
-	pull := reviews.PullInput{Number: 1, Title: "Metadata roundtrip", State: "merged", HeadSHA: strings.Repeat("a", 40), BaseRef: "main", BaseSHA: strings.Repeat("b", 40), CIState: "unknown", Mergeability: "unknown", Diff: &reviews.PullDiff{}, IsDraft: &draft, MergedAt: "2026-01-01T00:00:00.123456789Z"}
+	pull := reviews.PullInput{Number: 1, Title: "Metadata roundtrip", MergeStateStatus: "CLEAN", State: "merged", HeadSHA: strings.Repeat("a", 40), BaseRef: "main", BaseSHA: strings.Repeat("b", 40), CIState: "unknown", Mergeability: "unknown", Diff: &reviews.PullDiff{}, IsDraft: &draft, MergedAt: "2026-01-01T00:00:00.123456789Z"}
 	f.request(t, http.MethodPost, "/api/v1/projects/"+f.project+"/reviews/observations", reviews.ObservationRequest{ExpectedRevision: &revision, RepositoryID: 991, Source: "metadata-import", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Queue: []reviews.PullInput{pull}})
 	before := backupRows(t, f.store.DB())
 	bundle := restoreBundle(t, f)
@@ -47,7 +47,7 @@ func TestReviewMetadataCanonicalBackupRestoreAndCorruption(t *testing.T) {
 	if !reflect.DeepEqual(before, backupRows(t, f.store.DB())) || !reflect.DeepEqual(immutable, restoreTree(t, bundle.Path)) {
 		t.Fatal("backup/inspect changed source")
 	}
-	for _, raw := range []string{`{"diff":{"files":-1,"additions":0,"deletions":0}}`, `{"merged_at":"invalid"}`, `{"unknown":true}`} {
+	for _, raw := range []string{`{"diff":{"files":-1,"additions":0,"deletions":0}}`, `{"merged_at":"invalid"}`, `{"unknown":true}`, `{"merge_state_status":"INVENTED"}`} {
 		if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET metadata_json=?`, raw); err != nil {
 			t.Fatal(err)
 		}

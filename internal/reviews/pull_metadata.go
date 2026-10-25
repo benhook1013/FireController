@@ -37,12 +37,16 @@ func (d *PullDiff) UnmarshalJSON(raw []byte) error {
 
 // PullDisplayMetadata contains provider display facts, never review authority.
 type PullDisplayMetadata struct {
-	Diff     *PullDiff `json:"diff,omitempty"`
-	IsDraft  *bool     `json:"is_draft,omitempty"`
-	MergedAt string    `json:"merged_at,omitempty"`
+	Diff             *PullDiff `json:"diff,omitempty"`
+	IsDraft          *bool     `json:"is_draft,omitempty"`
+	MergedAt         string    `json:"merged_at,omitempty"`
+	MergeStateStatus string    `json:"merge_state_status,omitempty"`
 }
 
 func (m PullDisplayMetadata) Validate(state string) error {
+	if !oneOf(m.MergeStateStatus, "", "BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE") {
+		return validationError("Merge state is unsupported.")
+	}
 	if m.Diff != nil {
 		for _, n := range []int64{m.Diff.Files, m.Diff.Additions, m.Diff.Deletions} {
 			if n < 0 || n > 2147483647 {
@@ -64,7 +68,7 @@ func (m PullDisplayMetadata) Validate(state string) error {
 	return nil
 }
 func pullMetadata(p PullInput) PullDisplayMetadata {
-	return PullDisplayMetadata{p.Diff, p.IsDraft, p.MergedAt}
+	return PullDisplayMetadata{Diff: p.Diff, IsDraft: p.IsDraft, MergedAt: p.MergedAt, MergeStateStatus: p.MergeStateStatus}
 }
 
 // ReadPullMetadata rejects malformed, oversized or noncanonical retained metadata.
@@ -91,6 +95,12 @@ func inheritedPullMetadata(body []any, p PullInput) (string, error) {
 	}
 	if p.Diff != nil {
 		m.Diff = p.Diff
+	}
+	if len(body) < 5 || body[2] != p.HeadSHA || body[3] != p.BaseRef || body[4] != p.BaseSHA {
+		m.MergeStateStatus = ""
+	}
+	if p.MergeStateStatus != "" && (p.MergeStateStatus != "UNKNOWN" || m.MergeStateStatus != "") {
+		m.MergeStateStatus = p.MergeStateStatus
 	}
 	if p.IsDraft != nil {
 		m.IsDraft = p.IsDraft

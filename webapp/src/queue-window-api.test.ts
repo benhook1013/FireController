@@ -11,6 +11,17 @@ async function connected() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe('bounded recent and merged queue reads', () => {
+	 it('refuses a ready merge claim when required CI or conflict facts contradict it', async () => {
+	   const api=await connected();
+	   const eligible={...pull(3,0,'open'),mergeability:'mergeable',merge_status:{state:'ready',reason:'github_and_required_ci_clear'}};
+	   vi.stubGlobal('fetch',vi.fn(async()=>response(page([eligible],0))));
+	   expect((await api.reviewQueue({view:'recent'})).items[0].merge_status?.state).toBe('ready');
+	   for(const change of [{ci_state:'failure'},{ci_state:'unknown'},{ci_state:'pending'},{mergeability:'unknown'},{is_draft:true}]){
+	     vi.stubGlobal('fetch',vi.fn(async()=>response(page([{...eligible,...change}],0))));
+	     await expect(api.reviewQueue({view:'recent'})).rejects.toMatchObject({code:'invalid_response'});
+	   }
+	   api.close();
+	 });
   it('selects local views and preserves original positions and continuation', async () => {
     const api = await connected();
     const recent = page([pull(16, 15), pull(19, 18, 'open')], 18);
@@ -18,7 +29,7 @@ describe('bounded recent and merged queue reads', () => {
     const fetch = vi.fn().mockResolvedValueOnce(response(recent)).mockResolvedValueOnce(response(merged)); vi.stubGlobal('fetch', fetch);
     expect(await api.reviewQueue({ view: 'recent', limit: 2 })).toEqual(recent);
     expect(await api.reviewQueue({ view: 'merged', limit: 2, cursor: 'prior_history_cursor' })).toEqual(merged);
-    expect(fetch.mock.calls.map(call => String(call[0]))).toEqual(['https://service.example/api/v1/projects/project_one/reviews/queue?limit=2&view=recent&include_observation=true', 'https://service.example/api/v1/projects/project_one/reviews/queue?limit=2&cursor=prior_history_cursor&view=merged&include_observation=true']); api.close();
+    expect(fetch.mock.calls.map(call => String(call[0]))).toEqual(['https://service.example/api/v1/projects/project_one/reviews/queue?limit=2&view=recent&include_observation=true&include_merge_status=true', 'https://service.example/api/v1/projects/project_one/reviews/queue?limit=2&cursor=prior_history_cursor&view=merged&include_observation=true&include_merge_status=true']); api.close();
   });
   it.each([
     ['recent', page([pull(2, 2), pull(1, 1)])], ['merged', page([pull(1, 1), pull(2, 2)])],

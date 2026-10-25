@@ -811,6 +811,7 @@ type githubPull struct {
 	Draft        *bool   `json:"draft"`
 	MergedAt     *string `json:"merged_at"`
 	Mergeable    *bool   `json:"mergeable"`
+	MergeState   string  `json:"mergeable_state"`
 }
 
 type githubIssueComment struct {
@@ -1009,7 +1010,13 @@ func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
 			mergeability = "mergeable"
 		}
 	}
-	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, HeadRef: headRef, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles, Additions: raw.Additions, Deletions: raw.Deletions, IsDraft: raw.Draft, MergedAt: mergedAt, Mergeability: mergeability}, nil
+	mergeState := strings.ToUpper(raw.MergeState)
+	switch mergeState {
+	case "BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE":
+	default:
+		mergeState = "UNKNOWN"
+	}
+	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, HeadRef: headRef, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles, Additions: raw.Additions, Deletions: raw.Deletions, IsDraft: raw.Draft, MergedAt: mergedAt, Mergeability: mergeability, MergeStateStatus: mergeState}, nil
 }
 
 func normalizeIssueComment(raw githubIssueComment) (IssueComment, error) {

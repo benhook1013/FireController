@@ -30,13 +30,17 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "view", "include_observation")
+		query, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "view", "include_observation", "include_merge_status")
 		if err != nil {
 			core.WriteError(w, err)
 			return
 		}
 		if selected, ok := query["include_observation"]; ok && (len(selected) != 1 || selected[0] != "true") {
 			core.WriteError(w, validationError("Use include_observation=true for runtime observer health."))
+			return
+		}
+		if selected, ok := query["include_merge_status"]; ok && (len(selected) != 1 || selected[0] != "true") {
+			core.WriteError(w, validationError("Use include_merge_status=true for the browser merge projection."))
 			return
 		}
 		selectedHealth := health
@@ -65,6 +69,9 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			if err != nil {
 				core.WriteError(w, err)
 				return
+			}
+			if query.Get("include_merge_status") == "true" {
+				includeMergeStatus(response.Items)
 			}
 			core.WriteJSON(w, http.StatusOK, response)
 			return
@@ -120,7 +127,7 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 				if err != nil {
 					return err
 				}
-				item.Diff, item.IsDraft, item.MergedAt = m.Diff, m.IsDraft, m.MergedAt
+				item.Diff, item.IsDraft, item.MergedAt, item.mergeStateStatus = m.Diff, m.IsDraft, m.MergedAt, m.MergeStateStatus
 				item.Complete = complete != 0
 				if err := fillChannelRunCounts(ctx, tx, scope.ProjectID, meta, &item); err != nil {
 					return err
@@ -153,6 +160,9 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			core.WriteError(w, err)
 			return
 		}
+		if query.Get("include_merge_status") == "true" {
+			includeMergeStatus(response.Items)
+		}
 		core.WriteJSON(w, http.StatusOK, response)
 	}
 }
@@ -164,9 +174,13 @@ func pull(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "validation_failed", "snapshot")
+		query, err := core.QueryKeys(r, "validation_failed", "snapshot", "include_merge_status")
 		if err != nil {
 			core.WriteError(w, err)
+			return
+		}
+		if selected, ok := query["include_merge_status"]; ok && (len(selected) != 1 || selected[0] != "true") {
+			core.WriteError(w, validationError("Use include_merge_status=true for the browser merge projection."))
 			return
 		}
 		if len(r.URL.RawQuery) > 4096 {
@@ -202,7 +216,7 @@ func pull(store *core.Store) http.HandlerFunc {
 			if err != nil {
 				return err
 			}
-			response.Pull.Diff, response.Pull.IsDraft, response.Pull.MergedAt = m.Diff, m.IsDraft, m.MergedAt
+			response.Pull.Diff, response.Pull.IsDraft, response.Pull.MergedAt, response.Pull.mergeStateStatus = m.Diff, m.IsDraft, m.MergedAt, m.MergeStateStatus
 			response.Pull.Complete = complete != 0
 			if err := fillChannelRunCounts(ctx, tx, scope.ProjectID, meta, &response.Pull); err != nil {
 				return err
@@ -221,6 +235,9 @@ func pull(store *core.Store) http.HandlerFunc {
 		if err != nil {
 			core.WriteError(w, err)
 			return
+		}
+		if query.Get("include_merge_status") == "true" {
+			response.Pull.MergeStatus = mergeStatus(response.Pull)
 		}
 		core.WriteJSON(w, http.StatusOK, response)
 	}

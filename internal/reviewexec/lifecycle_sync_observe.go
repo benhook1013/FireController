@@ -57,6 +57,10 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	if mergeability != "mergeable" && mergeability != "conflicting" {
 		mergeability = "unknown"
 	}
+	mergeState := pull.MergeStateStatus
+	if mergeState == "" {
+		mergeState = "UNKNOWN"
+	}
 	target.due.baseSHA, target.due.baseRef = pull.BaseSHA, pull.BaseRef
 	if target.lane == lifecycleMetadata {
 		err = retrySourceRefreshLocal(ctx, func() error {
@@ -76,7 +80,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 				if err != nil {
 					return err
 				}
-				_, err = reviews.PublishSourceStatus(ctx, tx, core.Scope{ProjectID: target.project, PrincipalID: "service-lifecycle-sync"}, target.repository, pins, []reviews.SourceStatus{{Pull: display, Mergeability: mergeability}})
+				_, err = reviews.PublishSourceStatus(ctx, tx, core.Scope{ProjectID: target.project, PrincipalID: "service-lifecycle-sync"}, target.repository, pins, []reviews.SourceStatus{{Pull: display, Mergeability: mergeability, MergeStateStatus: mergeState}})
 				published = err == nil
 				return err
 			})
@@ -149,7 +153,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			if err != nil || !bound {
 				return err
 			}
-			_, err = reviews.PublishSourceStatus(ctx, tx, core.Scope{ProjectID: target.project, PrincipalID: "service-lifecycle-sync"}, target.repository, target.pins, []reviews.SourceStatus{{Pull: display, CIState: ciState, Mergeability: mergeability}})
+			_, err = reviews.PublishSourceStatus(ctx, tx, core.Scope{ProjectID: target.project, PrincipalID: "service-lifecycle-sync"}, target.repository, target.pins, []reviews.SourceStatus{{Pull: display, CIState: ciState, Mergeability: mergeability, MergeStateStatus: mergeState}})
 			if err != nil {
 				return err
 			}

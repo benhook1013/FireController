@@ -38,21 +38,22 @@ type Repository struct {
 }
 
 type Pull struct {
-	Title        string
-	Number       int64
-	RepositoryID int64
-	State        string
-	Merged       bool
-	HeadSHA      string
-	HeadRef      string `json:",omitempty"`
-	BaseSHA      string
-	BaseRef      string
-	ChangedFiles int64
-	Additions    *int64 `json:",omitempty"`
-	Deletions    *int64 `json:",omitempty"`
-	IsDraft      *bool  `json:",omitempty"`
-	MergedAt     string `json:",omitempty"`
-	Mergeability string `json:",omitempty"`
+	Title            string
+	Number           int64
+	RepositoryID     int64
+	State            string
+	Merged           bool
+	HeadSHA          string
+	HeadRef          string `json:",omitempty"`
+	BaseSHA          string
+	BaseRef          string
+	ChangedFiles     int64
+	Additions        *int64 `json:",omitempty"`
+	Deletions        *int64 `json:",omitempty"`
+	IsDraft          *bool  `json:",omitempty"`
+	MergedAt         string `json:",omitempty"`
+	Mergeability     string `json:",omitempty"`
+	MergeStateStatus string `json:",omitempty"`
 }
 
 type IssueComment struct {

@@ -111,7 +111,7 @@ func validateQueueEdit(req *QueueEditRequest) error {
 			!oneOf(pull.Mergeability, "unknown", "mergeable", "conflicting") {
 			return validationError("A pull request contains invalid identity or summary fields.")
 		}
-		if err := (PullDisplayMetadata{pull.Diff, pull.IsDraft, pull.MergedAt}).Validate(pull.State); err != nil {
+		if err := (PullDisplayMetadata{Diff: pull.Diff, IsDraft: pull.IsDraft, MergedAt: pull.MergedAt}).Validate(pull.State); err != nil {
 			return err
 		}
 		if _, exists := seen[pull.Number]; exists {
@@ -248,7 +248,7 @@ func publishQueueEdit(ctx context.Context, tx *sql.Tx, scope core.Scope, req Que
 				old[7] = int64(0)
 			}
 		}
-		metadataJSON, metadataErr := inheritedPullMetadata(old, PullInput{HeadSHA: selected.HeadSHA, State: selected.State, Diff: selected.Diff, IsDraft: selected.IsDraft, MergedAt: selected.MergedAt})
+		metadataJSON, metadataErr := inheritedPullMetadata(old, PullInput{HeadSHA: selected.HeadSHA, BaseSHA: selected.BaseSHA, BaseRef: selected.BaseRef, State: selected.State, Diff: selected.Diff, IsDraft: selected.IsDraft, MergedAt: selected.MergedAt})
 		if metadataErr != nil {
 			return Receipt{}, metadataErr
 		}

@@ -217,7 +217,7 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 			if err != nil {
 				return err
 			}
-			item.Diff, item.IsDraft, item.MergedAt = metadata.Diff, metadata.IsDraft, metadata.MergedAt
+			item.Diff, item.IsDraft, item.MergedAt, item.mergeStateStatus = metadata.Diff, metadata.IsDraft, metadata.MergedAt, metadata.MergeStateStatus
 			item.QueuePosition, item.Complete = &position, complete != 0
 			if err := fillChannelRunCounts(ctx, tx, scope.ProjectID, meta, &item); err != nil {
 				return err

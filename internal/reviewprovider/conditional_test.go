@@ -142,6 +142,27 @@ func TestPullNullableMergeabilityRemainsExplicit(t *testing.T) {
 	}
 }
 
+func TestPullRetainsDetailedMergeStateFromExistingRequest(t *testing.T) {
+	for _, state := range []string{"clean", "blocked", "behind", "dirty", "draft", "has_hooks", "unstable", "unknown", "future-provider-state"} {
+		t.Run(state, func(t *testing.T) {
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				_, _ = fmt.Fprintf(w, `{"title":"Selected","number":1,"state":"open","merged":false,"mergeable":true,"mergeable_state":%q,"head":{"sha":"%s","repo":null},"base":{"sha":"%s","ref":"main","repo":{"id":1,"full_name":"owner/repo","default_branch":"main"}},"changed_files":0}`, state, strings.Repeat("a", 40), strings.Repeat("b", 40))
+			}))
+			defer server.Close()
+			p, err := testGitHub(server, "secret").Pull(t.Context(), "owner/repo", 1)
+			want := strings.ToUpper(state)
+			if state == "future-provider-state" {
+				want = "UNKNOWN"
+			}
+			if err != nil || p.MergeStateStatus != want || calls.Load() != 1 {
+				t.Fatal(p, err, calls.Load())
+			}
+		})
+	}
+}
+
 func TestConditionalGETByteBudgetAndMutationsAreNotCached(t *testing.T) {
 	g := &GitHub{token: "secret"}
 	body := []byte(`"` + strings.Repeat("x", 5<<20) + `"`)

@@ -13,8 +13,9 @@ type SourceStatus struct {
 	Pull PullInput
 	// Empty CIState means this poll did not collect CI. The publisher retains
 	// it only for an unchanged comparison; explicit unknown clears old credit.
-	CIState      string
-	Mergeability string
+	CIState          string
+	Mergeability     string
+	MergeStateStatus string
 }
 
 // PublishSourceStatus shares source metadata's pre-I/O CAS, evidence retention
@@ -27,7 +28,7 @@ func PublishSourceStatus(ctx context.Context, tx *sql.Tx, scope core.Scope, repo
 	pulls := make([]PullInput, 0, len(observations))
 	statuses := make(map[int64]SourceStatus, len(observations))
 	for _, observation := range observations {
-		if !oneOf(observation.CIState, "", "unknown", "pending", "success", "failure", "not_required") || !oneOf(observation.Mergeability, "unknown", "mergeable", "conflicting") {
+		if !oneOf(observation.CIState, "", "unknown", "pending", "success", "failure", "not_required") || !oneOf(observation.Mergeability, "unknown", "mergeable", "conflicting") || !oneOf(observation.MergeStateStatus, "", "BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE") {
 			return Receipt{}, validationError("Source status contains an unsupported observation.")
 		}
 		pulls = append(pulls, observation.Pull)

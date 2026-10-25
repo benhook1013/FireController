@@ -93,11 +93,12 @@ describe('truthful stored review presentation', () => {
     expect(html).not.toContain('>Up next</span>');
   });
   it.each([
-    ['success', 'mergeable'], ['pending', 'conflicting'], ['failure', 'unknown'], ['unknown', 'unknown'],
-  ] as const)('colors observed CI %s and mergeability %s without changing their labels', (ci_state, mergeability) => {
-    const html = markup(<ReviewPullFacts pull={{ ...pull(2), ci_state, mergeability }} />);
+    ['success', 'ready', 'mergeable', 'Ready'], ['pending', 'pending', 'pending', 'Waiting'], ['failure', 'blocked', 'conflicting', 'Blocked'], ['unknown', 'unknown', 'unknown', 'Unknown'],
+  ] as const)('colors observed CI %s and the actual %s merge eligibility', (ci_state, state, colour, label) => {
+    const html = markup(<ReviewPullFacts pull={{ ...pull(2), ci_state, merge_status:{state,reason:state==='ready'?'github_and_required_ci_clear':state==='blocked'?'required_ci_failed':state==='pending'?'required_ci_pending':'required_ci_unknown'} }} />);
     expect(html).toContain(`review-ci review-fact-${ci_state}`);
-    expect(html).toContain(`review-mergeability review-fact-${mergeability}`);
+    expect(html).toContain(`review-mergeability review-fact-${colour}`);
+    expect(html).toContain(`Merge: ${label}`);
   });
 
   it('renders observed diff size and actual merge time without inventing values for old snapshots', () => {
@@ -112,6 +113,13 @@ describe('truthful stored review presentation', () => {
     expect(markup(<ReviewPullFacts pull={{ ...pull(1), is_draft: true }} />)).toContain('>Draft<');
     expect(markup(<ReviewPullFacts pull={{ ...merged, is_draft: true }} />)).not.toContain('>Draft<');
   });
+	 it.each(['unknown','pending','success','failure','not_required'] as const)('hides current %s CI after merge while retaining lifecycle and diff facts',ci_state=>{
+	   const value={...pull(2,'merged'),ci_state,diff:{files:3,additions:12,deletions:1}};
+	   const html=markup(<ReviewPullFacts pull={value}/>);
+	   expect(html).toContain('Merged');expect(html).toContain('3 files');
+	   expect(html).not.toContain('Required CI:');expect(html).not.toContain('Merge:');
+	   expect(value.ci_state).toBe(ci_state);
+	 });
 
   it('computes signed distance only when the first page establishes the actual head', () => {
     const items = [pull(1, 'merged'), pull(2, 'closed'), pull(3), pull(4)];
@@ -186,9 +194,9 @@ describe('truthful stored review presentation', () => {
     const html = markup(<ReviewPullFacts pull={incomplete} />);
     expect(html).toContain('<summary>Missing PR details</summary>');
     expect(html).toContain('Base commit was not captured.'); expect(html).not.toContain('Head commit was not captured.');
-    expect(html).toContain('Required CI: Unknown'); expect(html).toContain('Mergeability: Mergeable');
+    expect(html).toContain('Required CI: Unknown'); expect(html).toContain('Merge: Unknown');
     expect(html).toContain('class="badge review-fact-pill review-ci review-fact-unknown"');
-    expect(html).toContain('class="badge review-fact-pill review-mergeability review-fact-mergeable"');
+    expect(html).toContain('class="badge review-fact-pill review-mergeability review-fact-unknown"');
     expect(markup(<ReviewPullFacts pull={pull(1, 'merged')} />)).toContain('review-state-merged');
     expect(markup(<ReviewPullFacts pull={pull(1, 'merged')} />)).not.toContain('retained history');
   });
@@ -196,25 +204,25 @@ describe('truthful stored review presentation', () => {
     const merged = { ...pull(1, 'merged'), mergeability };
     const html = markup(<ReviewPullFacts pull={merged} />);
     expect(html).toContain('review-state-merged'); expect(html).toContain('Merged');
-    expect(html).toContain('Required CI: Success'); expect(html).not.toContain('Mergeability:');
+    expect(html).not.toContain('Required CI:'); expect(html).not.toContain('Merge:');
     expect(html).not.toContain('Mergeability is unknown.'); expect(missingPullFacts(merged)).toEqual([]);
     const incomplete = { ...merged, complete: false, base_sha: '', ci_state: 'unknown' as const };
     expect(missingPullFacts(incomplete)).toEqual(['Base commit was not captured.']);
     const incompleteHTML = markup(<ReviewPullFacts pull={incomplete} />);
     expect(incompleteHTML).toContain('Missing PR details'); expect(incompleteHTML).toContain('Base commit was not captured.');
-    expect(incompleteHTML).toContain('Required CI: Unknown'); expect(incompleteHTML).not.toContain('CI status is unknown.'); expect(incompleteHTML).not.toContain('Mergeability');
+    expect(incompleteHTML).not.toContain('Required CI:'); expect(incompleteHTML).not.toContain('CI status is unknown.'); expect(incompleteHTML).not.toContain('Mergeability');
   });
-  it.each(['open', 'closed', 'unknown'] as const)('retains unknown mergeability for %s PRs', state => {
+  it.each(['open', 'unknown'] as const)('retains unknown mergeability for %s PRs', state => {
     const value = { ...pull(1, state), mergeability: 'unknown' as const };
     expect(missingPullFacts(value)).toEqual(state === 'unknown' ? ['Open or closed state is unknown.'] : []);
     const html = markup(<ReviewPullFacts pull={value} />);
-    expect(html).toContain('Mergeability: Unknown'); expect(html).not.toContain('Mergeability is unknown.');
+    expect(html).toContain('Merge: Unknown'); expect(html).not.toContain('Mergeability is unknown.');
   });
   it('does not repeat inline unknown facts as a generic incomplete dropdown', () => {
     const value = { ...pull(1), complete: false, ci_state: 'unknown' as const, mergeability: 'unknown' as const };
     expect(missingPullFacts(value)).toEqual([]);
     const html = markup(<ReviewPullFacts pull={value} />);
-    expect(html).toContain('Required CI: Unknown'); expect(html).toContain('Mergeability: Unknown');
+    expect(html).toContain('Required CI: Unknown'); expect(html).toContain('Merge: Unknown');
     expect(html).not.toContain('Missing PR details');
     const explicit = { ...pull(1), complete: false };
     expect(missingPullFacts(explicit)).toEqual(['The source marked this PR incomplete without identifying another missing field.']);

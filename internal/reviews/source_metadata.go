@@ -86,7 +86,7 @@ func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 		if pull.Number < 1 || pull.Number > 2147483647 || !validSHA(pull.HeadSHA) || !validSHA(pull.BaseSHA) || !oneOf(pull.State, "open", "merged", "closed", "unknown") {
 			return Receipt{}, validationError("Source metadata contains invalid pull identity or state.")
 		}
-		if seen[pull.Number] || len(pull.Runs) != 0 || len(pull.Attempts) != 0 || pull.Complete || pull.CIState != "" || pull.Mergeability != "" {
+		if seen[pull.Number] || len(pull.Runs) != 0 || len(pull.Attempts) != 0 || pull.Complete || pull.CIState != "" || pull.Mergeability != "" || pull.MergeStateStatus != "" {
 			return Receipt{}, validationError("Source metadata contains unsupported evidence or summary fields.")
 		}
 		seen[pull.Number] = true
@@ -136,6 +136,7 @@ func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 		}
 		if status, ok := statuses[pull.Number]; ok {
 			pull.Mergeability = status.Mergeability
+			pull.MergeStateStatus = status.MergeStateStatus
 			if status.CIState != "" {
 				pull.CIState = status.CIState
 			}
