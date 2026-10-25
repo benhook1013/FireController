@@ -303,6 +303,17 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"Reads compact current status, revision, worker and updated_at plus progress_summary (up to 1024 UTF-8 bytes), next and blocker (512 bytes each), explicit truncation flags and evidence_count. No evidence reference strings are included.", "Returns one coherent authorized snapshot without brief, checklist, notes, history, provider work or writes. Previews are status aids; use jobs read JOB_ID for complete working context before resuming."}
 		out.Example = "<bound launcher> jobs status job_0123456789abcdef0123456789abcdef"
 		out.Documentation = "docs/job-state.md"
+	case "inbox ack", "inbox seen":
+		out.Usage = "<bound launcher> " + operation + " MESSAGE_ID --key KEY"
+		out.Required = []string{"MESSAGE_ID (full message ID returned by inbox list or inbox read)", "--key KEY"}
+		out.Semantics = []string{"Only the bound actual recipient can change this message. Reading a message never changes seen or acknowledged state.", recovery}
+		if operation == "inbox ack" {
+			out.Semantics = append(out.Semantics, "Explicitly acknowledges the message and also establishes seen state. Acknowledgement is available through CLI and MCP inbox_ack.")
+		} else {
+			out.Semantics = append(out.Semantics, "Explicitly marks the message seen without acknowledging it. Seen messages remain pending until acknowledged.")
+		}
+		out.Example = "<bound launcher> " + operation + " msg_0123456789abcdef0123456789abcdef --key message-state-1"
+		out.Documentation = "docs/development.md"
 	case "inbox send":
 		out.Usage = "<bound launcher> inbox send --to WORKER_ID (--body TEXT | --body-file PATH) --key KEY [--reply-to MESSAGE_ID]"
 		out.Required = []string{"--to WORKER_ID", "--body TEXT | --body-file PATH", "--key KEY"}
