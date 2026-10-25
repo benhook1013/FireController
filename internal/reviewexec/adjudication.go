@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
 type FindingDecisionRequest struct {
@@ -52,11 +53,12 @@ type FindingDecision struct {
 // ReviewAdjudication contains dispositions and proof references, not finding text.
 // FrozenCounts remain the original finalized source counts after corrections.
 type ReviewAdjudication struct {
-	EvidenceID   string            `json:"evidence_id"`
-	Revision     int64             `json:"revision"`
-	Finalized    bool              `json:"finalized"`
-	FrozenCounts *FindingCounts    `json:"frozen_counts"`
-	Findings     []FindingDecision `json:"findings"`
+	EvidenceID             string                                     `json:"evidence_id"`
+	Revision               int64                                      `json:"revision"`
+	Finalized              bool                                       `json:"finalized"`
+	FrozenCounts           *FindingCounts                             `json:"frozen_counts"`
+	FrozenAcceptedSeverity *reviewprovider.CheckpointAcceptedSeverity `json:"frozen_accepted_severity,omitempty"`
+	Findings               []FindingDecision                          `json:"findings"`
 }
 
 func adjudicationStorageError() error {
@@ -107,6 +109,9 @@ func loadReviewAdjudication(ctx context.Context, tx EvidenceQuery, project, id s
 		} else if finding.RouteID != "" {
 			return evidence, state, adjudicationStorageError()
 		}
+	}
+	if state.FrozenAcceptedSeverity != nil && (state.FrozenCounts == nil || !state.FrozenAcceptedSeverity.Valid(state.FrozenCounts.Accepted)) {
+		return evidence, state, adjudicationStorageError()
 	}
 	if state.FrozenCounts != nil {
 		c := state.FrozenCounts
@@ -255,6 +260,7 @@ func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, k
 			}
 		}
 		state.Finalized, state.FrozenCounts = true, &counts
+		state.FrozenAcceptedSeverity = acceptedSourceSeverity(evidence, state)
 		return e.persistReviewAdjudication(ctx, tx, scope, state, "finalized", -1, request, stamp())
 	})
 }
@@ -330,4 +336,33 @@ func validFindingDecisionAction(request FindingDecisionRequest) bool {
 
 func validFindingFixAction(request FindingFixRequest) bool {
 	return !(request.Finding < 0 || request.Finding >= 100 || request.ExpectedSHA == nil || *request.ExpectedSHA != "" && !sha.MatchString(*request.ExpectedSHA) || !sha.MatchString(request.FixSHA) || !safeText(request.ProofNote, 2048) || strings.TrimSpace(request.ProofNote) == "")
+}
+
+// acceptedSourceSeverity runs once at source finalization. Later corrections and
+// fix records preserve this original partition alongside the frozen totals.
+func acceptedSourceSeverity(evidence ReviewEvidence, state ReviewAdjudication) *reviewprovider.CheckpointAcceptedSeverity {
+	result := &reviewprovider.CheckpointAcceptedSeverity{}
+	for i, decision := range state.Findings {
+		if decision.Disposition != "accepted" {
+			continue
+		}
+		finding := evidence.Capture.Review.Findings[i]
+		severity := finding.Severity
+		if (severity == "" || severity == "unknown") && evidence.Capture.Hosted != nil {
+			severity = reviewprovider.HostedDisplaySeverity(finding.Detail)
+		}
+		switch severity {
+		case "high", "major":
+			result.Major++
+		case "low", "minor":
+			result.Minor++
+		case "info", "trivial":
+			result.Trivial++
+		case "critical":
+			result.Critical++
+		default:
+			result.Unknown++
+		}
+	}
+	return result
 }

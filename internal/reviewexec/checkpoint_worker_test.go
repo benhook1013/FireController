@@ -263,7 +263,7 @@ func TestCheckpointWorkerZeroMatchesAndConflictingCommentsNoPost(t *testing.T) {
 			checkpointStop(t, cancel, done)
 			p.mu.Lock()
 			if conflicting {
-				p.comments[0].Body = strings.Replace(p.comments[0].Body, "Found 0", "Found 1", 1)
+				p.comments[0].Body = strings.Replace(p.comments[0].Body, "0 Found", "1 Found", 1)
 			} else {
 				p.comments = nil
 			}
@@ -318,7 +318,7 @@ func TestCheckpointWorkerRecoveryInventoryClassifiesFailureWithoutReposting(t *t
 					p.comments[i].Body = body
 				}
 			case "conflict":
-				p.comments[0].Body = strings.Replace(original.Body, "Found 0", "Found 1", 1)
+				p.comments[0].Body = strings.Replace(original.Body, "0 Found", "1 Found", 1)
 			case "ambiguous":
 				other := original
 				other.ID++

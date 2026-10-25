@@ -100,7 +100,7 @@ func TestObservationHealthSeparatesCIHostedFailureAndSkippedCollection(t *testin
 	}
 	lifecycleTick(t, f, s, r)
 	first := read()
-	if first.CIError != "provider_invalid_response" || first.HostedError != "" || first.HostedCheckedAt == "" || first.LastSuccessAt == "" || r.archiveCalls != 1 {
+	if first.CIError != "ci_provider_invalid_response" || first.HostedError != "" || first.HostedCheckedAt == "" || first.LastSuccessAt == "" || r.archiveCalls != 1 {
 		t.Fatal("independent successful Hosted inventory was hidden by CI failure", first)
 	}
 	for _, account := range s.accounts {
@@ -112,7 +112,7 @@ func TestObservationHealthSeparatesCIHostedFailureAndSkippedCollection(t *testin
 	ciErr = &reviewprovider.Error{Code: "provider_rate_limited", RetryAfterSeconds: 120}
 	lifecycleTick(t, f, s, r)
 	limited := read()
-	if limited.CIError != "provider_rate_limited" || limited.HostedCheckedAt != first.HostedCheckedAt || limited.HostedError != first.HostedError || r.archiveCalls != 1 {
+	if limited.CIError != "ci_provider_rate_limited" || limited.HostedCheckedAt != first.HostedCheckedAt || limited.HostedError != first.HostedError || r.archiveCalls != 1 {
 		t.Fatal("skipped Hosted read fabricated a new check", first, limited)
 	}
 	clock.Add(5 * time.Minute)

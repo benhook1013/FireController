@@ -53,7 +53,7 @@ func TestComparisonGrowthOlderPendingAndExactReadyCoexist(t *testing.T) {
 				f, a, evidence, current = hostedComparisonFixture(t, true)
 			}
 			coverageFinalize(t, f, a, evidence, 0)
-			// One authentic finalized current capture plus 102 completed older intents
+			// One authentic finalized capture plus 102 completed older intents
 			// exceeds the removed all-head ceiling. Missing older captures still hold.
 			comparisonMissingHistory(t, f, 102, channel, strings.Repeat("9", 40))
 			before := adjudicationState(t, f, a)
@@ -79,8 +79,8 @@ func TestComparisonGrowthOlderPendingAndExactReadyCoexist(t *testing.T) {
 					plan := current
 					change(&plan)
 					got, err := f.e.Comparison(t.Context(), attemptProject, plan, channel)
-					if err != nil || got != (ComparisonState{Pending: true}) {
-						t.Fatal("growth weakened exact ready anchor", got, err)
+					if err != nil || got != (ComparisonState{Covered: true, Pending: true}) {
+						t.Fatal("comparison movement lost earned completion or pending obligations", got, err)
 					}
 				})
 			}

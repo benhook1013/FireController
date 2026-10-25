@@ -6,7 +6,7 @@ The API, CLI, MCP controls, private publication journal, bounded provider worker
 
 ## Source and authority
 
-An explicit publication selects one complete, finalized native evidence record in the bound project. It publishes the original frozen found/accepted/routed counts and original captured head. It does not publish effective finding text, mutable fix proof, receiver state, private project/worker identifiers, credentials or paths. Corrections and independently revised receiving routes do not rewrite these source counts. The visible summary labels them historical source counts rather than current coverage or merge readiness.
+An explicit publication selects one complete, finalized native evidence record in the bound project. It publishes the original frozen found/accepted/routed counts and original captured head. It does not publish effective finding text, mutable fix proof, receiver state, private project/worker identifiers, credentials or paths. Corrections and independently revised receiving routes do not rewrite these source counts. The summary reports the selected review, not current outstanding findings or merge readiness.
 
 Publication is separate from source finalization and never requests a review, queries allowance, runs Git, refreshes source, acknowledges a message or authorizes a merge. A moved or merged PR does not invalidate honest historical counts. The destination remains the source's stable repository ID and PR number. Repository rename resolution uses that stable ID.
 
@@ -24,11 +24,24 @@ Local publication journal transitions use one effective UTC recording time at le
 
 ## Payload and recovery
 
-The deterministic visible summary starts with `CLI` or `Hosted`, original found/accepted/routed counts and captured head. A retained file count or duration may be included only when known. An explicit historical-count sentence keeps source counts separate from current policy/readiness. A hidden version-one FireController marker binds an opaque `review_publication_` identity and semantic SHA-256. The digest binds immutable source evidence/capture/comparison/count identity and optional known display facts; it is not a merge certificate.
+The deterministic visible summary names CodeRabbit and its CLI or Hosted channel, followed by number-first found/accepted/routed counts. For example:
+
+```text
+CodeRabbit CLI — 4 Found, 1/1/0 Accepted (Major/Minor/Trivial), 0 Routed
+84 files · 4m 20s · captured commit
+```
+
+The accepted severity partition is frozen once at source finalization alongside the original totals. Later corrections and fix records do not change it. Critical or unclassified accepted findings are listed explicitly alongside the triplet; they are never silently assigned a different severity. Where original historical membership cannot be proved, retain the accepted total alone. Zero accepted findings always establishes `0/0/0`. Known original file counts are retained and elapsed durations use seconds, minutes and hours. Unknown facts are omitted; an empty Hosted file inventory does not establish zero files. The unquoted original full commit SHA lets GitHub link and abbreviate it. No generic readiness disclaimer or additional editorial sentence is appended. A hidden version-one FireController marker binds an opaque `review_publication_` identity and semantic SHA-256. The digest binds immutable source evidence/capture/comparison/count identity and optional known display facts; it is not a merge certificate.
 
 Recovery uses complete, bounded comment history for the exact repository/PR and the original stable provider actor ID/kind. The checkpoint-specific reader validates strict wire shape, full pagination, raw byte/item bounds, positive unique comment IDs and stable author identities across the entire inventory. It then projects every comment by the original author, validating their body, login and timestamps. Proven foreign prose and cosmetic metadata cannot block this recovery. Shared hosted-evidence and allowance readers retain their own strict inventory contract. Login changes alone do not change identity. The original intent stays immutable across repository renames; a confirmed recovery link uses the freshly resolved stable-ID destination. Provider timestamps are validated independently of the local host clock. Only defined neutral whitespace changes may preserve the payload: all marker tokens and visible semantic content must still match. Conflicting edits hold as `checkpoint_conflict`; multiple attributable matches hold as `checkpoint_ambiguous`. Unreadable, malformed or over-limit comment inventories remain `uncertain/recovery_unavailable`, rather than being reported as a semantic conflict. An unrelated author's copy is not attribution. Zero matches after an uncertain post remain uncertain; observation never blindly reposts.
 
 Explicit recovery requires the current publication revision and a key. By default it schedules observation-only recovery. Optional `retry_unposted: true` may schedule a posting attempt only when the durable record positively proves no provider write occurred, such as interrupted preparation or a known transport refusal. It never resets an uncertain posting intent. An explicit safe retry may select the current configured capability with fresh authorization, retaining immutable earlier intents and the same source semantic publication. No automatic provider retries or replacement keys are generated.
+
+## Existing comment conversion
+
+A renderer change requires coordinated one-off conversion of existing owned comments and their private publication records. Preserve comment IDs, original source evidence, frozen totals, provenance, journal revisions and timestamps. Update canonical payload digests and exact intent bodies together across current records, every historical revision and standalone intents, and validate ordinary recovery with the current renderer before serving. A verified pre-conversion backup retains the original bytes. Legacy imported comments retain their original provenance markers without manufacturing native publications.
+
+Historical accepted membership may be recovered from the original first-finalization audit for this offline conversion. It must not be inferred from present decisions or matching accepted totals. Backfill the optional frozen partition only where that original history proves it. Normal publication reads the frozen fact directly; the running service retains one renderer and no historical-format parser. Restoring an earlier-format backup requires the same offline normalization before current-format publication recovery.
 
 ## Bound controls
 

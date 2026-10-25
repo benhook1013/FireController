@@ -406,8 +406,8 @@ func TestCLIComparisonOlderHeadPendingUntilClosed(t *testing.T) {
 	adjudicationReceipt(t, body, err, id, "finalized", 2)
 	coverageComparison(t, f, a, current, ComparisonState{Pending: true})
 	coverageFix(t, f, id, "fix-old", 2, 0, "")
-	// Closing old obligations does not grant coverage for the new comparison.
-	coverageComparison(t, f, a, current, ComparisonState{})
+	// Closing old obligations preserves earned PR/channel completion after movement.
+	coverageComparison(t, f, a, current, ComparisonState{Covered: true})
 }
 
 func TestCLIComparisonReadyRunCannotMaskPendingRun(t *testing.T) {

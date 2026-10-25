@@ -107,11 +107,11 @@ func TestHostedAdmissionOldHeadPendingAndLateCorrection(t *testing.T) {
 	}
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "hosted-close-old", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(3)})
 	adjudicationReceipt(t, body, err, id, "finalized", 4)
-	hostedAdmissionVerify(t, f, next, "", "")
+	hostedAdmissionVerify(t, f, next, "review_held", "target_already_covered")
 	adjudicationDecide(t, f, id, "hosted-old-correction", 4, 0, "accepted")
 	hostedAdmissionVerify(t, f, next, "review_evidence_pending", "")
 	coverageFix(t, f, id, "hosted-old-fix", 5, 0, "")
-	hostedAdmissionVerify(t, f, next, "", "")
+	hostedAdmissionVerify(t, f, next, "review_held", "target_already_covered")
 	// Missing capture on an older completed intent remains a selected-channel hold.
 	coverageSeedOperations(t, f, prior, 1, "completed")
 	hostedAdmissionVerify(t, f, next, "review_evidence_pending", "")

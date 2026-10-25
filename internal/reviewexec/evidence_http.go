@@ -150,6 +150,8 @@ func (e *Engine) readAdjudicationHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	// Frozen severity is private publication metadata, not another agent text field.
+	value.FrozenAcceptedSeverity = nil
 	core.WriteJSON(w, http.StatusOK, value)
 }
 

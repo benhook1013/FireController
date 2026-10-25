@@ -127,7 +127,7 @@ func checkpointSource(ctx context.Context, tx *sql.Tx, project, id, pubID string
 		return ev, state, reviewprovider.CheckpointPayload{}, checkpointHold("source_not_finalized")
 	}
 	counts := *state.FrozenCounts
-	p := reviewprovider.CheckpointPayload{PublicationID: pubID, EvidenceID: id, RepositoryID: ev.Anchor.RepositoryID, PullNumber: ev.Anchor.PullNumber, Channel: evidenceChannel(ev.Capture), HeadSHA: ev.Anchor.CandidateSHA, BaseSHA: ev.Anchor.BaseSHA, BaseRef: ev.Anchor.BaseRef, ParentSHA: ev.Anchor.ParentSHA, MergeBaseSHA: ev.Anchor.MergeBaseSHA, PatchSHA256: ev.Anchor.PatchSHA256, CaptureSHA256: ev.Capture.CaptureSHA256, ParentPullNumber: ev.Anchor.ParentPullNumber, Found: counts.Found, Accepted: counts.Accepted, Routed: counts.Routed}
+	p := reviewprovider.CheckpointPayload{PublicationID: pubID, EvidenceID: id, RepositoryID: ev.Anchor.RepositoryID, PullNumber: ev.Anchor.PullNumber, Channel: evidenceChannel(ev.Capture), HeadSHA: ev.Anchor.CandidateSHA, BaseSHA: ev.Anchor.BaseSHA, BaseRef: ev.Anchor.BaseRef, ParentSHA: ev.Anchor.ParentSHA, MergeBaseSHA: ev.Anchor.MergeBaseSHA, PatchSHA256: ev.Anchor.PatchSHA256, CaptureSHA256: ev.Capture.CaptureSHA256, ParentPullNumber: ev.Anchor.ParentPullNumber, Found: counts.Found, Accepted: counts.Accepted, Routed: counts.Routed, AcceptedSeverity: state.FrozenAcceptedSeverity}
 	if p.Channel == "cli" {
 		n := int64(len(ev.Capture.Review.ReviewedFiles))
 		p.Files = &n

@@ -670,8 +670,8 @@ func TestSourceRefreshMovedHeadStillReportsOlderPendingNativeEvidence(t *testing
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "older-finalized", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
 	adjudicationReceipt(t, body, err, id, "finalized", 2)
 	value, err = f.e.ReadSourcePolicyAssessment(t.Context(), scope, 2)
-	if err != nil || value.State != "held" || value.Channels[0].Pending || value.Channels[0].Covered {
-		t.Fatal("closed old comparison became current credit", value, err)
+	if err != nil || value.State != "sufficient" || value.Target.HeadSHA != request.HeadSHA || value.Channels[0].Pending || !value.Channels[0].Covered {
+		t.Fatal("new observation lost earned completion after old obligations closed", value, err)
 	}
 }
 func TestSourceRefreshStorageFailureIsVisibleAndStartupFailureReleasesOwnership(t *testing.T) {
