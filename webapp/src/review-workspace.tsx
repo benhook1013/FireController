@@ -205,7 +205,7 @@ function ReviewQueueWindow({ embedded, history }: { embedded: boolean; history: 
   const page = query.data;
   const progress = useReviewProgress(history ? [] : page?.items.map(pull => pull.number) ?? []);
   const fronts = useReviewFronts(!history && !!page?.configured);
-  const currentFronts = !history && page ? currentReviewFronts(page.snapshot_id, page.items, fronts.error ? undefined : fronts.data, progress.data?.items) : undefined;
+  const currentFronts = !history && page ? currentReviewFronts(page.snapshot_id, page.items, fronts.error ? undefined : fronts.data) : undefined;
   const distances = page ? reviewQueueDistances(page.items, paging.number === 1, page.head_position) : [];
   const sections = page ? groupReviewQueue(page.items, groups) : [];
   useEffect(() => {

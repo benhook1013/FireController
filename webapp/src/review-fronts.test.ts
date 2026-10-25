@@ -19,9 +19,8 @@ describe('current review position badges',()=>{
     v.channels=[{...front('hosted',2),state:'held',reason:'source_obligations_pending'}];
     expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)).toMatchObject({text:'Carried work',description:expect.stringContaining('holds new reviews')});
     expect(reviewQueueBadges(pull(2),snapshot,v)).toEqual([]);
-    const stopped={...v,channels:[{channel:'hosted' as const,state:'unknown' as const,reason:'source_frame_unavailable'}]};
-    const progress:ReviewProgressItem[]=[1,2].map(n=>({pull_number:n,channels:[control('hosted',n===1)]}));
-    const local=currentReviewFronts(snapshot,[pull(1),pull(2)],stopped,progress);
+    const stopped={...v,channels:[{...front('hosted',2),state:'held' as const,reason:'local_queue_position',source_observed_at:undefined}]};
+    const local=currentReviewFronts(snapshot,[pull(2)],stopped);
     expect(reviewChannelPosition(pull(2),snapshot,'hosted',local)).toMatchObject({text:'Queue position',description:expect.stringContaining('have not been verified')});
     for (const changed of [{...pull(2),head_sha:'c'.repeat(40)},{...pull(2),base_sha:'c'.repeat(40)},{...pull(2),base_ref:'other'},{...pull(2),state:'merged' as const}]) expect(reviewChannelPosition(changed,snapshot,'hosted',v)).toBeUndefined();
     expect(reviewChannelPosition(pull(2),'other-snapshot','hosted',v)).toBeUndefined();
@@ -56,19 +55,17 @@ describe('current review position badges',()=>{
     progress.channels[0]={...progress.channels[0],tapered:true,minimum:0};
     expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review closed');
   });
-  it('retains independent local fronts and queued labels under an operator dispatch stop',()=>{
-    const v=value();v.channels=v.channels.map(c=>({channel:c.channel,state:'held',reason:'reviews_paused'}));
-    const pulls=[{...pull(1),state:'merged' as const},pull(2),pull(3),pull(4)];
+  it('keeps service-derived local fronts when older merged rows are not loaded',()=>{
+    const v=value();v.channels=[{...front('hosted',3),state:'held',reason:'local_queue_position'},{...front('cli',2),state:'held',reason:'local_queue_position'}];
+    const pulls=[pull(2),pull(3),pull(4)];
     const progress:ReviewProgressItem[]=pulls.map(p=>({pull_number:p.number,channels:[control('hosted',p.number===2),control('cli')]}));
-    const current=currentReviewFronts(snapshot,pulls,v,progress);
-    expect(reviewQueueBadges(pull(2),snapshot,current,progress[1])[0]?.text).toBe('Review front');
-    expect(reviewQueueBadges(pull(3),snapshot,current,progress[2])[0]?.text).toBe('Review front');
-    expect(reviewQueueBadges(pull(4),snapshot,current,progress[3])[0]?.text).toBe('Queued');
-    expect(v.channels.every(c=>c.pull_number===undefined)).toBe(true);
-    const unavailable={...v,channels:v.channels.map(c=>({...c,state:'unknown' as const,reason:'source_frame_unavailable'}))};
-    expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls,unavailable,progress),progress[2])[0]?.text).toBe('Review front');
-    expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls.slice(2),v,progress),progress[2])).toEqual([]);
-    expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls,v),progress[2])).toEqual([]);
+    const current=currentReviewFronts(snapshot,pulls,v);
+    expect(reviewQueueBadges(pull(2),snapshot,current,progress[0])[0]?.text).toBe('Review front');
+    expect(reviewQueueBadges(pull(3),snapshot,current,progress[1])[0]?.text).toBe('Review front');
+    expect(reviewQueueBadges(pull(4),snapshot,current,progress[2])[0]?.text).toBe('Queued');
+    expect(reviewChannelPosition(pull(2),snapshot,'cli',current)?.text).toBe('Queue position');
+    const unavailable={...v,channels:v.channels.map(c=>({channel:c.channel,state:'unknown' as const,reason:'source_frame_unavailable'}))};
+    expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls,unavailable),progress[1])).toEqual([]);
   });
   it('rejects another snapshot, changed source identity, retired lifecycle and unknown positions',()=>{
     expect(reviewQueueBadges(pull(2),'review_snapshot_old',value())).toEqual([]);
@@ -91,6 +88,13 @@ describe('bounded front response admission',()=>{
     expect(await api.reviewFronts()).toEqual(value());expect(read).toHaveBeenCalledTimes(1);
     const [url,init]=read.mock.calls[0] as unknown as [string,RequestInit];
     expect(url).toBe('https://service.example/api/v1/projects/project_one/reviews/fronts');expect(init.method??'GET').toBe('GET');expect(new Headers(init.headers).has('authorization')).toBe(false);expect(new Headers(init.headers).has('x-fc-worker')).toBe(false);api.close();
+  });
+  it('admits a locally checked position without inventing provider observation time',async()=>{
+    const api=await connected();const local=value();local.channels=[{...front('cli',3),state:'held',reason:'local_queue_position',source_observed_at:undefined}];
+    vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify(local),{headers:{'content-type':'application/json'}})));
+    expect(await api.reviewFronts()).toEqual(local);
+    for(const reason of [undefined,'review_evidence_pending']){local.channels=[{...local.channels[0],reason}];await expect(api.reviewFronts()).rejects.toMatchObject({code:'invalid_response'});}
+    api.close();
   });
   it.each([
     (v:Record<string,unknown>)=>({...v,project_id:'another_project'}),

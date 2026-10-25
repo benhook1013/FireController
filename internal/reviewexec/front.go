@@ -75,6 +75,7 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM metadata WHERE (key='restore:provider_state' AND value='held') OR (key='restore:state' AND value='inactive'))`).Scan(&recoveryHeld); err != nil {
 			return err
 		}
+		var localPulls map[int64]localFrontPull
 		for _, channel := range c.Channels {
 			value := FrontChannel{Channel: channel, State: "unknown", Reason: "source_frame_unavailable"}
 			frame, found, err := readFrontFrame(ctx, tx, scope.ProjectID, channel)
@@ -134,6 +135,19 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 					value.BaseSHA = p.BaseSHA
 					value.BaseRef = p.BaseRef
 					value.SourceObservedAt = result.plan.ObservedAt
+				}
+			}
+			if localFrontFallback(value) && out.SnapshotID != "" {
+				if localPulls == nil {
+					localPulls, err = readLocalFrontPulls(ctx, tx, scope.ProjectID, out.SnapshotID, c.Queue)
+					if err != nil {
+						return err
+					}
+				}
+				if local, found, err := localChannelFront(ctx, tx, scope.ProjectID, c.Queue, channel, localPulls); err != nil {
+					return err
+				} else if found {
+					value = local
 				}
 			}
 			out.Channels = append(out.Channels, value)

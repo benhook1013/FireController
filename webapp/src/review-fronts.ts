@@ -39,23 +39,9 @@ export function reviewChannelPosition(pull: ReviewPullSummary, snapshot: string,
 
 // A contradictory loaded blocker invalidates that whole channel's explanation,
 // including later Queued labels. An unloaded predecessor can still be a hold.
-export function currentReviewFronts(snapshot: string, pulls: ReviewPullSummary[], fronts?: ReviewFronts, progress?: ReviewProgressItem[]): ReviewFronts | undefined {
+export function currentReviewFronts(snapshot: string, pulls: ReviewPullSummary[], fronts?: ReviewFronts): ReviewFronts | undefined {
   if (!fronts || fronts.snapshot_id !== snapshot) return undefined;
   return {...fronts,channels:fronts.channels.map(channel=>{
-    // A dispatch stop or absent provider frame does not erase local queue order.
-    // Derive only through known predecessors, never through an unloaded gap.
-    if (progress !== undefined && (channel.state === 'held' && channel.reason === 'reviews_paused' || channel.state === 'unknown' && ['source_frame_unavailable', 'configuration_changed', 'visible_source_changed', 'source_prefix_incomplete'].includes(channel.reason ?? ''))) {
-      for (const number of fronts.queue) {
-        const pull = pulls.find(item => item.number === number);
-        if (!pull || pull.state === 'unknown') break;
-        if (pull.state !== 'open') continue;
-        const round = progress.find(item => item.pull_number === number)?.channels.find(item => item.channel === channel.channel);
-        if (!round) break;
-        if (round.configured && (round.closed || round.tapered || !round.maximum_unbounded && round.used >= round.maximum)) continue;
-        return {...channel,state:'held',reason:'local_queue_position',pull_number:number,head_sha:pull.head_sha,base_sha:pull.base_sha,base_ref:pull.base_ref};
-      }
-      return {...channel,pull_number:undefined,head_sha:undefined,base_sha:undefined,base_ref:undefined};
-    }
     const pull=pulls.find(item=>item.number===channel.pull_number);
     if (!pull || pull.state==='open' && pull.head_sha===channel.head_sha && pull.base_sha===channel.base_sha && pull.base_ref===channel.base_ref) return channel;
     return {channel:channel.channel,state:'unknown',reason:'visible_source_changed'};

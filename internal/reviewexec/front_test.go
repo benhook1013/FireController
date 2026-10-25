@@ -79,8 +79,8 @@ func TestFrontsSelectionPrefixCurrentPolicyAndIndependentChannels(t *testing.T) 
 		t.Fatal(got)
 	}
 	frontClose(t, f, 2, "hosted", "front-close-hosted-two")
-	if got := frontChannel(t, frontRead(t, f), "hosted"); got.State != "unknown" || got.Reason != "source_prefix_incomplete" {
-		t.Fatal("incomplete suffix invented completion", got)
+	if got := frontChannel(t, frontRead(t, f), "hosted"); got.State != "held" || got.Reason != "local_queue_position" || got.PullNumber != 4 || got.SourceObservedAt != "" {
+		t.Fatal("incomplete provider suffix lost honest local queue position", got)
 	}
 	if err := ValidateFrontSnapshot(t.Context(), f.store.DB()); err != nil {
 		t.Fatal("old source frame invalidated by current controls", err)
@@ -165,7 +165,8 @@ func TestFrontsBindingPauseRecoveryAndMetadataFences(t *testing.T) {
 				admissionSQL(t, f, `INSERT INTO metadata(key,value) VALUES('restore:provider_state','held')`)
 			}
 			got := frontChannel(t, frontRead(t, f), "cli")
-			if got.State == "ready" || got.PullNumber != 0 {
+			local := which == "head" || which == "base" || which == "lifecycle" || which == "configuration" || which == "pause"
+			if got.State == "ready" || local && (got.Reason != "local_queue_position" || got.PullNumber == 0 || got.SourceObservedAt != "") || !local && got.PullNumber != 0 {
 				t.Fatal("changed binding reported ready", which, got)
 			}
 			if which == "pause" || which == "recovery" {
@@ -181,7 +182,7 @@ func TestFrontsBindingPauseRecoveryAndMetadataFences(t *testing.T) {
 }
 func TestFrontsReadIsolationAndMissingSource(t *testing.T) {
 	f := frontFixture(t)
-	if got := frontChannel(t, frontRead(t, f), "cli"); got.State != "unknown" || got.Reason != "source_frame_unavailable" {
+	if got := frontChannel(t, frontRead(t, f), "cli"); got.State != "held" || got.Reason != "local_queue_position" || got.PullNumber != 2 || got.SourceObservedAt != "" {
 		t.Fatal(got)
 	}
 	frontSelect(t, f, "front-own", "cli", &refreshTestReader{})
@@ -361,7 +362,16 @@ func TestFrontsRestartAndPrimaryKeyRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after := frontRead(t, f); !reflect.DeepEqual(before, after) {
+	after := frontRead(t, f)
+	for i := range before.Channels {
+		if before.Channels[i].Reason == "local_queue_position" && after.Channels[i].Reason == "local_queue_position" {
+			if !roundTime(after.Channels[i].CheckedAt) {
+				t.Fatal("local check time missing")
+			}
+			after.Channels[i].CheckedAt = before.Channels[i].CheckedAt
+		}
+	}
+	if !reflect.DeepEqual(before, after) {
 		t.Fatal("restart changed as-of facts", before, after)
 	}
 }
@@ -438,7 +448,7 @@ func TestFrontsNewlyVisiblePredecessorMustMatchCachedSource(t *testing.T) {
 			}
 			got := frontChannel(t, frontRead(t, f), "cli")
 			if contradiction {
-				if got.State != "unknown" || got.Reason != "visible_source_changed" {
+				if got.State != "held" || got.Reason != "local_queue_position" || got.PullNumber != 2 || got.SourceObservedAt != "" {
 					t.Fatal(got)
 				}
 			} else if got.State != "ready" || got.PullNumber != 4 {

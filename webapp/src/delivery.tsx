@@ -100,10 +100,10 @@ export function selectMergeHead(queue: ReviewQueue): MergeHead {
   }
   return queue.has_more ? { state: 'unknown', reason: 'next-page' } : { state: 'none' };
 }
-export function MergeHeadContent({ queue, home, progress, fronts, allProgress }: { queue: ReviewQueue; home: string; progress?: ReviewProgressItem; fronts?: ReviewFronts; allProgress?: ReviewProgressItem[] }) {
+export function MergeHeadContent({ queue, home, progress, fronts }: { queue: ReviewQueue; home: string; progress?: ReviewProgressItem; fronts?: ReviewFronts }) {
   const head = selectMergeHead(queue);
   if (head.state === 'none' || head.state === 'unknown' && head.reason === 'unconfigured') return null;
-  const currentFronts = currentReviewFronts(queue.snapshot_id, queue.items, fronts, allProgress ?? (progress ? [progress] : undefined));
+  const currentFronts = currentReviewFronts(queue.snapshot_id, queue.items, fronts);
   const jump = <Link className="review-details-link" to={`${home}#${head.state === 'head' ? `review-pr-${head.pull.number}` : 'review-queue'}`} aria-label="Jump to review queue">Review queue ↗</Link>;
   return <><p className="eyebrow">Merge train</p>{head.state === 'head' ? <ul className="review-queue"><ReviewQueueRow pull={head.pull} snapshot={queue.snapshot_id} progress={progress} fronts={currentFronts} footer={jump} anchor={false} /></ul> : <><h2>Merge head not determined</h2><p>{head.reason === 'preceding' ? 'An earlier queue entry has unknown state.' : 'No open PR is loaded yet; more queue entries remain.'}</p>{jump}</>}</>;
 }
@@ -114,7 +114,7 @@ export function DeliveryHero({ children }: { children: ReactNode }) {
   const fronts = useReviewFronts(!!query.data?.configured);
   const head = query.data && selectMergeHead(query.data);
   const showHead = Boolean(query.isPending || query.error || head?.state === 'head' || head?.state === 'unknown' && head.reason !== 'unconfigured');
-  return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Merge train head">{query.isPending && !query.data && !query.error ? <MergeHeadSkeleton /> : <ReadState error={query.error} loading={false} empty={false} retained={!!query.data}>{query.data && <MergeHeadContent queue={query.data} home={home} allProgress={progress.data?.items} fronts={fronts.error ? undefined : fronts.data} progress={head?.state !== 'head' ? undefined : progress.data?.items.find(item => item.pull_number === head.pull.number)} />}</ReadState>}</section>}</div>;
+  return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Merge train head">{query.isPending && !query.data && !query.error ? <MergeHeadSkeleton /> : <ReadState error={query.error} loading={false} empty={false} retained={!!query.data}>{query.data && <MergeHeadContent queue={query.data} home={home} fronts={fronts.error ? undefined : fronts.data} progress={head?.state !== 'head' ? undefined : progress.data?.items.find(item => item.pull_number === head.pull.number)} />}</ReadState>}</section>}</div>;
 }
 export function DeliveryWork() {
   const { session, key, home } = useWorkspace();

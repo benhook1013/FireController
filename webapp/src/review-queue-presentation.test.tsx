@@ -84,7 +84,7 @@ describe('truthful stored review presentation', () => {
     expect(stale).not.toContain('>Carried work</span>');
   });
   it('labels a locally derived queue position without claiming verified admission', () => {
-    const missing=fronts();missing.channels=[{channel:'hosted',state:'unknown',reason:'source_frame_unavailable'}];
+    const missing=fronts();missing.channels=[{...missing.channels[0],state:'held',reason:'local_queue_position',pull_number:2,head_sha:pull(2).head_sha,base_sha:pull(2).base_sha,base_ref:pull(2).base_ref,source_observed_at:undefined}];
     const progress:ReviewProgressItem={pull_number:2,channels:[{channel:'hosted',configured:true,revision:1,epoch:1,closed:false,minimum:1,maximum:3,taper:2,used:0,dry:0,tapered:false,pending:0}]};
     missing.queue=[2];
     const html=markup(<ReviewQueueView />,queue([pull(2)]),undefined,{fronts:missing,progress:[progress]});
