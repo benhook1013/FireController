@@ -8,10 +8,10 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-// StartCLIRecovery owns local publication/settlement of already retained final
-// CLI evidence. No code path here launches a process or contacts a provider.
+// StartCLIRecovery owns local verification, publication and settlement of
+// retained CLI results. No code path here launches a process or contacts a provider.
 func (d *CLIDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) {
-	if ctx == nil || d == nil || d.engine == nil || !d.recovering.CompareAndSwap(false, true) {
+	if ctx == nil || d == nil || d.engine == nil || d.captures == nil || d.manager == nil || !d.recovering.CompareAndSwap(false, true) {
 		return nil, core.Fail("validation_failed", "Start one retained CLI recovery worker for the configured capability.", 400)
 	}
 	done := make(chan error, 1)
@@ -28,7 +28,11 @@ func (d *CLIDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) 
 				done <- nil
 				return
 			}
-			err := d.engine.RecoverRetainedCLI(ctx, d.capability.ID)
+			rawErr := d.recoverRawCLI(ctx)
+			err := rawErr
+			if err == nil {
+				err = d.engine.RecoverRetainedCLI(ctx, d.capability.ID)
+			}
 			if ctx.Err() != nil {
 				done <- nil
 				return
@@ -36,7 +40,7 @@ func (d *CLIDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) 
 			delay := 15 * time.Second
 			if err != nil {
 				var failure *core.Error
-				if !errors.Is(err, context.DeadlineExceeded) && (!errors.As(err, &failure) || failure.Code != "overloaded" && failure.Code != "review_conflict") {
+				if rawErr == nil && !errors.Is(err, context.DeadlineExceeded) && (!errors.As(err, &failure) || failure.Code != "overloaded" && failure.Code != "review_conflict") {
 					done <- err
 					return
 				}
@@ -59,4 +63,26 @@ func (d *CLIDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) 
 		}
 	}()
 	return done, nil
+}
+
+// A raw capture can be durable even when Git verification/evidence recording
+// exhausted its local budget. Recover that original artifact, never the process.
+func (d *CLIDriver) recoverRawCLI(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	a, err := d.engine.PendingCLICaptureRecovery(ctx, d.capability.ID)
+	if err != nil || a == nil {
+		return err
+	}
+	record, _, err := d.captures.Read(ctx, a.ID)
+	if err != nil {
+		return err
+	}
+	anchor := *a.Anchor
+	w, err := d.manager.Open(ctx, a.ID, anchor.CandidateSHA, anchor.BaseSHA, anchor.MergeBaseSHA, anchor.PatchSHA256, anchor.Repository)
+	if err != nil {
+		return err
+	}
+	_, err = RetainCLI(ctx, d.captures, d.engine, d.manager, *a, w, record.Capture, record.StartedAt, record.FinishedAt)
+	return err
 }

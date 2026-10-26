@@ -207,7 +207,7 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 		possibleStart = true
 	}
 	// Local capture retention remains finite but survives caller cancellation.
-	retentionCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	retentionCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	retained, err := RetainCLI(retentionCtx, d.captures, d.engine, d.manager, attempt, prepared.workspace, capture, started, finished)
 	cancel()
 	failureReason := "capture_retention_failed"
