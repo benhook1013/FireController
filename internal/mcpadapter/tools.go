@@ -141,9 +141,13 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "review_subagent_update":
 				value, err = service.UpdateSubagentReview(ctx, args.id, args.subagentUpdate, args.key)
 			case "review_start":
-				value, err = service.RunReview(ctx, args.key, args.reviewRun, args.reviewSourceWait)
+				var result client.ReviewRunResult
+				result, err = service.RunReview(ctx, args.key, args.reviewRun, args.reviewSourceWait)
+				value = client.AgentReviewRunResult(result)
 			case "review_selection_read":
-				value, err = service.WaitReviewSelection(ctx, args.id, args.reviewSourceWait)
+				var selection client.ReviewRunState
+				selection, err = service.WaitReviewSelection(ctx, args.id, args.reviewSourceWait)
+				value = client.AgentReviewSelection(selection)
 			case "review_rounds_read":
 				value, err = service.ReviewRoundControl(ctx, args.pullNumber, args.roundChannel)
 			case "review_rounds_configure":
@@ -171,7 +175,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "review_operations_list":
 				value, err = service.ReviewOperations(ctx, args.reviewOperations)
 			case "review_request":
-				value, err = service.RequestReview(ctx, args.key, args.reviewRequest, args.reviewSourceWait)
+				var result client.ReviewRequestResult
+				result, err = service.RequestReview(ctx, args.key, args.reviewRequest, args.reviewSourceWait)
+				value = client.AgentReviewRequestResult(result)
 			case "review_checkpoint_publish":
 				value, err = service.RequestReviewCheckpoint(ctx, args.key, args.reviewCheckpoint, args.reviewSourceWait)
 			case "review_checkpoint_read":

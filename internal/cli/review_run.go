@@ -72,13 +72,13 @@ func executeReviewRun(ctx, parent context.Context, c *client.Client, in *reviewR
 		if err != nil {
 			return reportClientError(stderr, err, parent)
 		}
-		return emit(stdout, stderr, value)
+		return emit(stdout, stderr, client.AgentReviewSelection(value))
 	}
 	value, err := c.RunReview(ctx, in.key, in.request, in.waitSeconds)
 	if err != nil {
 		return reportClientError(stderr, err, parent)
 	}
-	raw, err := json.Marshal(value)
+	raw, err := json.Marshal(client.AgentReviewRunResult(value))
 	if err == nil {
 		raw = append(raw, '\n')
 		var n int

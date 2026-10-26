@@ -21,7 +21,10 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if value.Channel == "hosted" && value.State == "uncertain" && value.Stage == "uncertain" && value.Reason == "hosted_observation_pending" && value.AttemptID != "" && value.NextAction == "contact_controller_owner" {
 		value.NextAction = "wait_for_observation"
 	}
-	return ReviewOperationStatusOutput{value, agentReviewOperationDiagnostic(value.State, value.Reason)}
+	if value.Channel == "hosted" && value.State == "held" && value.Reason == "hosted_allowance_cooldown" {
+		value.NextAction = "new_request_after_cooldown"
+	}
+	return ReviewOperationStatusOutput{value, agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)}
 }
 
 type ReviewOperationDiagnostic struct {
@@ -40,18 +43,52 @@ type ReviewOperationOutput struct {
 }
 
 func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
-	return ReviewOperationOutput{value, agentReviewOperationDiagnostic(value.State, value.Reason)}
+	return ReviewOperationOutput{value, agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)}
+}
+
+// Keep receipts flat and invalid unions rejected by their original marshaler.
+func AgentReviewRequestResult(value ReviewRequestResult) any {
+	if value.Operation != nil && value.Receipt == nil {
+		return AgentReviewOperation(*value.Operation)
+	}
+	return value
+}
+
+type ReviewSelectionOutput struct {
+	ReviewRunState
+	Operation *ReviewOperationOutput `json:"operation,omitempty"`
+}
+
+func AgentReviewSelection(value ReviewRunState) ReviewSelectionOutput {
+	out := ReviewSelectionOutput{ReviewRunState: value}
+	if value.Operation != nil {
+		op := AgentReviewOperation(*value.Operation)
+		out.Operation = &op
+	}
+	return out
+}
+
+func AgentReviewRunResult(value ReviewRunResult) any {
+	if value.Result != nil && value.Receipt == nil {
+		return AgentReviewSelection(*value.Result)
+	}
+	return value
 }
 
 // Explain retained admission facts without fetching source or authorizing a retry.
 // Legacy parent_moved does not identify whether the selected or an ancestor edge
 // failed; only the distinct predecessor reason proves the selected check passed.
-func agentReviewOperationDiagnostic(state, reason string) *ReviewOperationDiagnostic {
+func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperationDiagnostic {
 	if state != "held" {
 		return nil
 	}
 	var explanation string
 	switch reason {
+	case "hosted_allowance_cooldown":
+		if channel != "hosted" {
+			return nil
+		}
+		return &ReviewOperationDiagnostic{"The provider reported a cooldown before a review trigger was posted. This held operation is terminal: replaying its key returns the same result, and there is no resume command for this hold.", "Respect the original allowance.retry_not_before; if absent, verify the provider's cooldown reply first. Once eligible and still authorized, submit one new review_request with a fresh idempotency key, current configuration revision and qualified head. Normal admission and provider limits still apply. Preserve this held operation; do not reset controls or use a fresh key for an unknown outcome."}
 	case "hosted_allowance_reply_pending":
 		return &ReviewOperationDiagnostic{"The original non-review rate-limit query was observed, but no attributable provider reply arrived within the bounded preparation window. No review trigger was posted.", "Inspect the original rate-limit query reply on this PR and respect any cooldown before a separately authorized new request. Replaying the original key returns this held operation. Do not repost the old query, reset round limits or assume allowance is available."}
 	case "hosted_allowance_unproven":

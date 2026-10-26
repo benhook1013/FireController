@@ -73,6 +73,13 @@ func TestReviewAllowanceMCPStdioRoundTrip(t *testing.T) {
 				if nested, ok := got["operation"].(map[string]any); ok {
 					got = nested
 				}
+				if channel == "hosted" {
+					diagnostic, ok := got["diagnostic"].(map[string]any)
+					if !ok || !strings.Contains(diagnostic["explanation"].(string), "terminal") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") || !strings.Contains(diagnostic["next_action"].(string), "retry_not_before") {
+						t.Fatal("cooldown retry requires owner clarification", got)
+					}
+					delete(got, "diagnostic")
+				}
 				if !reflect.DeepEqual(got, want) {
 					t.Fatal("MCP allowance changed or zero omitted", got)
 				}
