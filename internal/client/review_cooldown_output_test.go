@@ -79,3 +79,24 @@ func TestAgentReviewResultHintsPreserveReceiptsAndInvalidUnions(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentCLIQuotaHoldDoesNotInventResetOrLocalLimit(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, state := range []string{"held", "uncertain"} {
+			value := ReviewOperationStatus{ID: "original", Channel: channel, State: state, Reason: "allowance_exhausted", NextAction: "read_diagnostics"}
+			out := AgentReviewOperationStatus(value)
+			want := value
+			if channel == "cli" && state == "held" {
+				want.NextAction = "retry_later_with_new_request"
+				if out.Diagnostic == nil || !strings.Contains(out.Diagnostic.Explanation, "provider quota, not this PR's local round limit") || !strings.Contains(out.Diagnostic.NextAction, "No reset timestamp") || !strings.Contains(out.Diagnostic.NextAction, "not the next available slot") {
+					t.Fatal("quota hold unclear or timing invented", out)
+				}
+			} else if out.Diagnostic != nil {
+				t.Fatal("quota retry inferred from another channel or uncertain outcome", out)
+			}
+			if out.ReviewOperationStatus != want {
+				t.Fatal("quota hint changed retained facts", out)
+			}
+		}
+	}
+}

@@ -79,6 +79,12 @@ func TestReviewAllowanceMCPStdioRoundTrip(t *testing.T) {
 						t.Fatal("cooldown retry requires owner clarification", got)
 					}
 					delete(got, "diagnostic")
+				} else {
+					diagnostic, ok := got["diagnostic"].(map[string]any)
+					if !ok || !strings.Contains(diagnostic["explanation"].(string), "provider quota") || !strings.Contains(diagnostic["next_action"].(string), "No reset timestamp") || !strings.Contains(diagnostic["next_action"].(string), "absent timing means unknown") {
+						t.Fatal("CLI quota was confused with local rounds or invented timing", got)
+					}
+					delete(got, "diagnostic")
 				}
 				if !reflect.DeepEqual(got, want) {
 					t.Fatal("MCP allowance changed or zero omitted", got)

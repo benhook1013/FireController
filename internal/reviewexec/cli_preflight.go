@@ -110,7 +110,26 @@ func (e *Engine) recordCLIAllowance(ctx context.Context, project, attemptID stri
 		if operation.AttemptID != attempt.ID || operation.State != "preparing" || operation.Channel != "cli" || !identifier.MatchString(operation.ActorID) || operation.WorkerID != "" && !identifier.MatchString(operation.WorkerID) || input.Anchor.PullNumber != operation.PullNumber || input.Anchor.CandidateSHA != operation.HeadSHA {
 			return conflict()
 		}
-		current, err := e.currentExecutionContext(ctx, tx, operation)
+		checked := operation
+		if input.Remaining == 0 {
+			// A negative observation grants no permit. Neighbor enrollment or
+			// ordering changes must not discard its already observed quota facts.
+			// Keep the record bound to the original operation/configuration, and
+			// still check current target membership, access, policy and controls.
+			configuration, revision, err := readConfiguration(ctx, tx, project)
+			if err != nil {
+				return err
+			}
+			original, err := sourceConfiguration(ctx, tx, project, operation.ConfigurationRevision)
+			if err != nil {
+				return err
+			}
+			if configuration.CapabilityID != original.CapabilityID || configuration.Mode != original.Mode {
+				return conflict()
+			}
+			checked.ConfigurationRevision = revision
+		}
+		current, err := e.currentExecutionContext(ctx, tx, checked)
 		if err != nil {
 			return err
 		}

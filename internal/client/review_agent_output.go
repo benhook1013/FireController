@@ -24,6 +24,9 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if value.Channel == "hosted" && value.State == "held" && value.Reason == "hosted_allowance_cooldown" {
 		value.NextAction = "new_request_after_cooldown"
 	}
+	if value.Channel == "cli" && value.State == "held" && value.Reason == "allowance_exhausted" {
+		value.NextAction = "retry_later_with_new_request"
+	}
 	return ReviewOperationStatusOutput{value, agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)}
 }
 
@@ -84,6 +87,11 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 	}
 	var explanation string
 	switch reason {
+	case "allowance_exhausted":
+		if channel != "cli" {
+			return nil
+		}
+		return &ReviewOperationDiagnostic{"The provider's included CLI allowance was observed at zero before review execution. This is provider quota, not this PR's local round limit; this hold completed no review. The held operation is terminal.", "Continue other work and avoid rapid retries. A later authorized new review_request with a fresh key and current configuration/head rechecks admission and provider allowance; the old key replays this hold. No reset timestamp or earliest retry is established. If retained, full_capacity_in_ms estimates a full allowance pool, not the next available slot; absent timing means unknown. Do not reset PR controls or infer availability from unused local rounds."}
 	case "hosted_allowance_cooldown":
 		if channel != "hosted" {
 			return nil
