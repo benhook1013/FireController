@@ -223,7 +223,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 10, "review_policy": 2, "review_execution": 7, "review_execution_indexes": 1, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 4, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 11, "review_policy": 2, "review_execution": 7, "review_execution_indexes": 1, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 4, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_hosted_discovery_state":     {"reviews", 10, "project_id repository_id pull_number cutoff_at initialized_at"},
 	"job_progress":                      {"jobs", 8, "project_id job_id job_revision summary next blocker evidence_json"},
@@ -670,7 +670,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		if name == "review_attempt_versions" && versions["reviews"] >= 8 {
 			columns += " reason"
 		}
-		if name == "review_pull_versions" && versions["reviews"] >= 7 {
+		if name == "review_pull_versions" && versions["reviews"] >= 11 {
+			columns += " metadata_json delivery_selected"
+		}
+		if name == "review_pull_versions" && versions["reviews"] >= 7 && versions["reviews"] < 11 {
 			columns += " metadata_json"
 		}
 		if name == "review_round_controls" && versions["review_rounds"] >= 2 {
@@ -1214,6 +1217,9 @@ func validateHistoryViews(ctx context.Context, db sqlReader, reviewVersion int) 
 			expected = reviews.HistoryReadViewSQLV7()
 		}
 		if reviewVersion >= 8 {
+			expected = reviews.HistoryReadViewSQLV10()
+		}
+		if reviewVersion >= 11 {
 			expected = reviews.HistoryReadViewSQL()
 		}
 	}
@@ -1252,6 +1258,9 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version in
 		definitions = reviews.HistorySchemaSQLV7()
 	}
 	if version >= 8 {
+		definitions = reviews.HistorySchemaSQLV10()
+	}
+	if version >= 11 {
 		definitions = reviews.HistorySchemaSQL()
 	}
 	expectedTables, expectedObjects := 13, 22

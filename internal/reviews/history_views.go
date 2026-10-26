@@ -10,7 +10,7 @@ var historyPullRecordV4 = historyRecordSpec{
 
 var historyPullRecord = func() historyRecordSpec {
 	spec := historyPullRecordV4
-	spec.body = append(append([]string{}, spec.body...), "metadata_json")
+	spec.body = append(append([]string{}, spec.body...), "metadata_json", "delivery_selected")
 	return spec
 }()
 
@@ -96,7 +96,13 @@ func historyReadView(name string, spec historyRecordSpec, columns []string) stri
 
 // HistoryReadViewSQL returns independent canonical definitions for startup and
 // read-only backup inspection. These are read views, never writable adapters.
-func HistoryReadViewSQL() map[string]string { return historyReadViewSQL(true, true) }
+func HistoryReadViewSQL() map[string]string {
+	result := HistoryReadViewSQLV10()
+	columns := append([]string{"project_id", "snapshot_id", "position", "number"}, historyPullRecord.body...)
+	result["review_pulls"] = historyReadView("review_pulls", historyPullRecord, columns)
+	return result
+}
+func HistoryReadViewSQLV10() map[string]string { return historyReadViewSQL(true, true) }
 
 // HistoryReadViewSQLV6 preserves the exact predecessor backup/startup definition.
 func HistoryReadViewSQLV6() map[string]string { return historyReadViewSQL(false, false) }
@@ -111,7 +117,7 @@ func historyReadViewSQL(metadata, reason bool) map[string]string {
 			"review_findings":      `CREATE VIEW review_findings AS SELECT r.project_id,r.snapshot_id,r.pull_number,r.id AS run_id,f.position,f.source_finding_id,f.title,f.detail,f.severity,f.disposition,f.decision_reason,f.actor,f.decided_at,f.fix_sha,f.proof_note,f.resolved_at,f.route_json FROM review_runs r JOIN review_finding_versions f ON f.project_id=r.project_id AND f.run_id=r.id AND f.run_version_revision=r.version_revision AND f.pull_number=r.pull_number;`,
 		}
 	if metadata {
-		columns := append([]string{"project_id", "snapshot_id", "position", "number"}, historyPullRecord.body...)
+		columns := append([]string{"project_id", "snapshot_id", "position", "number"}, historyPullRecord.body[:13]...)
 		result["review_pulls"] = historyReadView("review_pulls", historyPullRecord, columns)
 	}
 	if reason {

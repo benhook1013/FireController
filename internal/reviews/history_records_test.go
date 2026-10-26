@@ -10,7 +10,7 @@ func TestHistoryRunDetailsVersionTogetherWithoutCopyingUnrelatedRecords(t *testi
 	run := RunInput{SourceRunID: "external-run", Channel: "cli", HeadSHA: "head", Scope: "full", Outcome: "completed", Complete: true, Attributable: true, Found: 1, Findings: []Finding{{SourceFindingID: "finding-1", Title: "Original title", Detail: "Original body", Disposition: "unadjudicated"}}}
 	first := historyWriterSnapshot(t, tx, f.project, 1)
 	one := newHistorySnapshotWrite(f.project, 1)
-	if err := one.pull(t.Context(), tx, 7, 0, []any{"Owning PR", "open", "head", "main", "base", "unknown", "unknown", false, 0, 0, "[]", "[]", "{}"}); err != nil {
+	if err := one.pull(t.Context(), tx, 7, 0, []any{"Owning PR", "open", "head", "main", "base", "unknown", "unknown", false, 0, 0, "[]", "[]", "{}", int64(1)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := one.run(t.Context(), tx, "imported", 7, 0, run); err != nil {
@@ -69,7 +69,7 @@ func TestHistoryRecordIdentitiesSurviveOmissionAndCannotBeRebound(t *testing.T) 
 	attempt := Attempt{SourceAttemptID: "same-id", Channel: "cli", HeadSHA: "old-head", State: "completed", TriggerID: "trigger-1"}
 	first := historyWriterSnapshot(t, tx, f.project, 1)
 	one := newHistorySnapshotWrite(f.project, 1)
-	if err := one.pull(t.Context(), tx, 7, 0, []any{"Owning PR", "open", "head", "main", "base", "unknown", "unknown", false, 0, 0, "[]", "[]", "{}"}); err != nil {
+	if err := one.pull(t.Context(), tx, 7, 0, []any{"Owning PR", "open", "head", "main", "base", "unknown", "unknown", false, 0, 0, "[]", "[]", "{}", int64(1)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := one.run(t.Context(), tx, "first-producer", 7, 0, run); err != nil {

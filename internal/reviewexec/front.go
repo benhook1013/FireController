@@ -182,7 +182,7 @@ func frontVisibleMatches(ctx context.Context, tx *sql.Tx, project, snapshot stri
 			return false, nil, nil
 		}
 		var state, head, base, ref string
-		err := tx.QueryRowContext(ctx, `SELECT state,head_sha,base_sha,base_ref FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=?`, project, snapshot, p.Number).Scan(&state, &head, &base, &ref)
+		err := tx.QueryRowContext(ctx, `SELECT state,head_sha,base_sha,base_ref FROM review_pulls WHERE project_id=? AND snapshot_id=? AND delivery_selected=1 AND number=?`, project, snapshot, p.Number).Scan(&state, &head, &base, &ref)
 		if errors.Is(err, sql.ErrNoRows) {
 			if p.VisibleAtAcquisition {
 				return false, nil, nil

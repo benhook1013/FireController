@@ -5,8 +5,11 @@ import "strings"
 // HistorySchemaSQL returns independent canonical physical definitions for
 // migration and read-only backup inspection.
 func HistorySchemaSQL() []string {
-	return append([]string(nil), historySchemaStatements...)
+	out := HistorySchemaSQLV10()
+	out[0] = strings.Replace(out[0], " metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (length(CAST(metadata_json AS BLOB)) <= 512),", " metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (length(CAST(metadata_json AS BLOB)) <= 512), delivery_selected INTEGER NOT NULL DEFAULT 1 CHECK (delivery_selected IN (0,1)),", 1)
+	return out
 }
+func HistorySchemaSQLV10() []string { return append([]string(nil), historySchemaStatements...) }
 
 // historySchemaStatements defines only the physical retained-history tables.
 // The owning migration installs these statements before backfill and reader /

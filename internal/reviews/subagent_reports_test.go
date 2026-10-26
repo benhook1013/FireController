@@ -18,6 +18,10 @@ func subagentFixture(t *testing.T) (*apiFixture, string, string) {
 	p.Complete = false
 	p.HeadSHA = strings.Repeat("a", 40)
 	f.observe(t, reviewRequest(0, []PullInput{p}), "subagent-seed")
+	return f, subagentWriter(t, f), "/api/v1/projects/" + f.project + "/reviews/subagent-reports"
+}
+func subagentWriter(t *testing.T, f *apiFixture) string {
+	t.Helper()
 	token := "subagent-writer-token-00000000000000000"
 	sum := sha256.Sum256([]byte(token))
 	if _, err := f.store.DB().Exec(`INSERT INTO credentials(id,principal_id,token_sha256,is_admin,revoked) VALUES('subagent-writer','subagent-principal',?,0,0)`, hex.EncodeToString(sum[:])); err != nil {
@@ -26,7 +30,7 @@ func subagentFixture(t *testing.T) (*apiFixture, string, string) {
 	if _, err := f.store.DB().Exec(`INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('subagent-writer',?,1,1)`, f.project); err != nil {
 		t.Fatal(err)
 	}
-	return f, token, "/api/v1/projects/" + f.project + "/reviews/subagent-reports"
+	return token
 }
 func subagentInput() SubagentRecordRequest {
 	return SubagentRecordRequest{PullNumber: 7, HeadSHA: strings.Repeat("b", 40), Reviewer: "Independent agent", Scope: "Database invariants", StartedAt: "2026-01-01T01:00:00Z", FinishedAt: "2026-01-01T01:02:00Z", Findings: []SubagentFindingInput{{Title: "Retain owner identity", Detail: "**Proof** in `source.go:12`.", Severity: "high"}}}

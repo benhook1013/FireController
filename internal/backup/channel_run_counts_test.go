@@ -20,10 +20,10 @@ func TestChannelRunCountsCanonicalSchema(t *testing.T) {
 			t.Fatalf("totals DDL mismatch\nactual %s\nexpected %s", actual, s)
 		}
 	}
-	if err := validateHistoryPhysicalSchema(t.Context(), store.DB(), 10); err != nil {
+	if err := validateHistoryPhysicalSchema(t.Context(), store.DB(), 11); err != nil {
 		t.Fatal("physical", err)
 	}
-	if err := validateHistoryViews(t.Context(), store.DB(), 10); err != nil {
+	if err := validateHistoryViews(t.Context(), store.DB(), 11); err != nil {
 		t.Fatal("views", err)
 	}
 	if _, err := validateSchema(t.Context(), store.DB(), false); err != nil {
@@ -86,14 +86,14 @@ func testAuthenticChannelCountSchemaBackup(t *testing.T, version int) {
 		t.Fatal(err)
 	}
 	statements := []string{`DROP TRIGGER review_runs_snapshot_revision_insert`, `DROP TRIGGER review_runs_snapshot_revision_update`, `DROP TABLE review_findings`, `DROP TABLE review_attempts`, `DROP TABLE review_runs`, `DROP TABLE review_retired_pulls`, `DROP TABLE review_pulls`}
-	statements = append(statements, reviews.HistorySchemaSQL()...)
+	statements = append(statements, reviews.HistorySchemaSQLV10()...)
 	if version == 8 {
 		statements = append(statements, reviews.CurrentSummarySchemaSQLV8()...)
 	} else {
 		statements = append(statements, reviews.CurrentSummarySchemaSQL()...)
 	}
 	statements = append(statements, reviews.CurrentRunOrderSchemaSQL()...)
-	for _, view := range reviews.HistoryReadViewSQL() {
+	for _, view := range reviews.HistoryReadViewSQLV10() {
 		statements = append(statements, view)
 	}
 	migrations := make([][]string, version)
@@ -133,6 +133,18 @@ func testAuthenticChannelCountSchemaBackup(t *testing.T, version int) {
 // derived columns too, not merely lower their version metadata.
 func removeChannelRunCountsForLegacyFixture(t *testing.T, store *core.Store) {
 	t.Helper()
+	var selected int
+	if err := store.DB().QueryRow(`SELECT count(*) FROM pragma_table_info('review_pull_versions') WHERE name='delivery_selected'`).Scan(&selected); err != nil {
+		t.Fatal(err)
+	}
+	if selected != 0 {
+		for _, statement := range []string{`DROP VIEW review_pulls`, `ALTER TABLE review_pull_versions DROP COLUMN delivery_selected`, reviews.HistoryReadViewSQLV10()["review_pulls"]} {
+			if _, err := store.DB().Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
 	if _, err := store.DB().Exec(`DROP INDEX IF EXISTS review_run_versions_external_source; DROP TABLE IF EXISTS review_hosted_discovery_state`); err != nil {
 		t.Fatal(err)
 	}

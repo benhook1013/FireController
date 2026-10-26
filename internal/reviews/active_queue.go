@@ -79,7 +79,7 @@ func activeQueue(store *core.Store) http.HandlerFunc {
 			out.Configured, out.SnapshotID, out.Revision = true, meta.SnapshotID, meta.Revision
 			// Filter before LIMIT, preserving original queue positions and excluding
 			// retired entries without reading run previews, bodies or archives.
-			rows, err := tx.QueryContext(ctx, `SELECT p.number,p.title,p.head_sha,p.base_ref,p.ci_state,p.mergeability,p.position,p.run_count FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.state='open' AND p.position>? AND NOT EXISTS (SELECT 1 FROM review_retired_pulls retired WHERE retired.project_id=p.project_id AND retired.snapshot_id=p.snapshot_id AND retired.number=p.number) ORDER BY p.position LIMIT ?`, scope.ProjectID, meta.SnapshotID, position, limit+1)
+			rows, err := tx.QueryContext(ctx, `SELECT p.number,p.title,p.head_sha,p.base_ref,p.ci_state,p.mergeability,p.position,p.run_count FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.delivery_selected=1 AND p.state='open' AND p.position>? AND NOT EXISTS (SELECT 1 FROM review_retired_pulls retired WHERE retired.project_id=p.project_id AND retired.snapshot_id=p.snapshot_id AND retired.number=p.number) ORDER BY p.position LIMIT ?`, scope.ProjectID, meta.SnapshotID, position, limit+1)
 			if err != nil {
 				return err
 			}

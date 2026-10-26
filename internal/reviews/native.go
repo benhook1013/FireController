@@ -200,7 +200,7 @@ func nativePullBody(ctx context.Context, tx *sql.Tx, project, previous string, p
 		if err = tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(position),-1)+1 FROM review_current_pulls WHERE project_id=?", project).Scan(&position); err != nil {
 			return nil, 0, err
 		}
-		body[8], body[9], body[10], body[11] = int64(0), int64(0), "[]", "[]"
+		body[8], body[9], body[10], body[11], body[13] = int64(0), int64(0), "[]", "[]", int64(1)
 	}
 	body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7] = pull.Title, pull.State, pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, complete
 	return body, position, nil

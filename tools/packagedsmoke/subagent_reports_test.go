@@ -183,6 +183,35 @@ func TestPackagedSubagentReportsSmoke(t *testing.T) {
 	if replay != recorded {
 		t.Fatal("CLI/MCP same-key replay changed")
 	}
+	// An ordinary writer records an unseen side PR directly through MCP;
+	// neither its creation nor a subsequent restart enrolls it in Delivery.
+	sideArgs := make(map[string]any, len(recordArgs))
+	for k, v := range recordArgs {
+		sideArgs[k] = v
+	}
+	sideArgs["pull_number"], sideArgs["idempotency_key"] = 99, "record-side-pr"
+	var side, sideReplay client.SubagentReceipt
+	decode(t, tool("review_subagent_record", sideArgs), &side)
+	decode(t, tool("review_subagent_record", sideArgs), &sideReplay)
+	if side != sideReplay {
+		t.Fatal("side PR recording was not idempotent")
+	}
+	var sideBefore client.SubagentReport
+	decode(t, cli("reviews", "subagent-read", side.ID), &sideBefore)
+	if sideBefore.PullNumber != 99 || sideBefore.Run.HeadSHA != input.HeadSHA {
+		t.Fatal("side review source lost")
+	}
+	checkSideAbsent := func() {
+		t.Helper()
+		var queue client.ReviewQueue
+		decode(t, cli("reviews", "queue", "--limit", "100"), &queue)
+		for _, p := range queue.Items {
+			if p.Number == 99 {
+				t.Fatal("side PR appeared in Delivery")
+			}
+		}
+	}
+	checkSideAbsent()
 	update := map[string]any{"run_id": recorded.ID, "idempotency_key": "decide-subagent", "expected_revision": recorded.Revision, "decisions": []any{map[string]any{"finding": 0, "disposition": "accepted", "reason": "Verified the source invariant"}}, "finalize": true}
 	var decided client.SubagentReceipt
 	decode(t, tool("review_subagent_update", update), &decided)
@@ -217,6 +246,12 @@ func TestPackagedSubagentReportsSmoke(t *testing.T) {
 	if !reflect.DeepEqual(before, report) {
 		t.Fatal("restart changed retained report")
 	}
+	var sideAfter client.SubagentReport
+	decode(t, cli("reviews", "subagent-read", side.ID), &sideAfter)
+	if !reflect.DeepEqual(sideBefore, sideAfter) {
+		t.Fatal("restart changed independent review")
+	}
+	checkSideAbsent()
 	var runs client.ReviewRuns
 	decode(t, cli("reviews", "runs", "42", "--limit", "10"), &runs)
 	counts := map[string]int{}

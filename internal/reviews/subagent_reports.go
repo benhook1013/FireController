@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"regexp"
@@ -161,14 +162,16 @@ func recordSubagentReport(store *core.Store) http.HandlerFunc {
 				return nil, err
 			}
 			if !exists {
-				return nil, notFound("Enroll the PR before recording its subagent review.")
+				meta = snapshotMeta{}
 			}
 			var p PullInput
 			var wasComplete bool
 			p.Number = in.PullNumber
 			err = tx.QueryRowContext(ctx, `SELECT title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=?`, scope.ProjectID, meta.SnapshotID, in.PullNumber).Scan(&p.Title, &p.State, &p.HeadSHA, &p.BaseRef, &p.BaseSHA, &p.CIState, &p.Mergeability, &wasComplete)
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil, notFound("Enroll the PR before recording its subagent review.")
+			reviewOnly := errors.Is(err, sql.ErrNoRows)
+			if reviewOnly {
+				p = PullInput{Number: in.PullNumber, Title: fmt.Sprintf("PR #%d", in.PullNumber), State: "unknown", CIState: "unknown", Mergeability: "unknown"}
+				err = nil
 			}
 			if err != nil {
 				return nil, err
@@ -187,7 +190,11 @@ func recordSubagentReport(store *core.Store) http.HandlerFunc {
 			if err != nil {
 				return nil, err
 			}
-			selected, err := planTransferPull(ctx, tx, scope.ProjectID, meta.SnapshotID, p, 0)
+			var nextPosition int
+			if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position),-1)+1 FROM review_current_pulls WHERE project_id=?`, scope.ProjectID).Scan(&nextPosition); err != nil {
+				return nil, err
+			}
+			selected, err := planTransferPull(ctx, tx, scope.ProjectID, meta.SnapshotID, p, nextPosition)
 			if err != nil {
 				return nil, err
 			}
@@ -203,6 +210,9 @@ func recordSubagentReport(store *core.Store) http.HandlerFunc {
 			// metadata/completeness observation as a historical batch import may.
 			if wasComplete {
 				selected.body[7] = int64(1)
+			}
+			if reviewOnly {
+				selected.body[13] = int64(0)
 			}
 			selected.runs[id] = selected.nextRun
 			plan := transferPlan{revision: meta.Revision, snapshot: meta.SnapshotID, observed: meta.ObservedAt, pulls: map[int64]*transferPullPlan{p.Number: selected}, order: []int64{p.Number}}

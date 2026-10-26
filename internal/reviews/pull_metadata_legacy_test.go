@@ -302,6 +302,7 @@ func metadataPre8Attempts(store *core.Store) http.HandlerFunc {
 
 func removeReasonForPre8Fixture(t *testing.T, store *core.Store) {
 	t.Helper()
+	removeDeliverySelectionForLegacyFixture(t, store)
 	if _, err := store.DB().Exec(`DROP INDEX IF EXISTS review_run_versions_external_source; DROP TABLE IF EXISTS review_hosted_discovery_state`); err != nil {
 		t.Fatal(err)
 	}

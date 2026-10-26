@@ -102,7 +102,7 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			response.Configured = true
 			setMetaQueue(&response, meta)
 			rows, err := tx.QueryContext(ctx, `SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.run_count,p.attempt_count,p.recent_runs_json,p.latest_attempts_json,p.metadata_json,p.position
-				FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.position>? AND NOT EXISTS (
+				FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.delivery_selected=1 AND p.position>? AND NOT EXISTS (
 					SELECT 1 FROM review_retired_pulls retired WHERE retired.project_id=p.project_id AND retired.snapshot_id=p.snapshot_id AND retired.number=p.number
 				) ORDER BY p.position LIMIT ?`,
 				scope.ProjectID, meta.SnapshotID, position, limit+1)

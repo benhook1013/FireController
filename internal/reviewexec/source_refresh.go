@@ -87,7 +87,7 @@ func (e *Engine) EnqueueSourceRefresh(ctx context.Context, scope core.Scope, key
 			return nil, err
 		}
 		if revision != r.ExpectedConfigurationRevision {
-			return nil, conflict()
+			return nil, &core.Error{Code: "review_configuration_revision_conflict", Message: "The review execution configuration revision changed.", Status: 409, Details: map[string]int64{"current_revision": revision}}
 		}
 		if e.validateConfiguration(c) != nil {
 			return nil, core.Fail("capability_unavailable", "The configured source reader is unavailable.", 409)

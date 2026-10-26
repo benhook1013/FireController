@@ -236,7 +236,7 @@ func publishQueueEdit(ctx context.Context, tx *sql.Tx, scope core.Scope, req Que
 	for _, selected := range req.Queue {
 		old, position, err := retainedTransferPullBody(ctx, tx, scope.ProjectID, selected.Number)
 		if errors.Is(err, sql.ErrNoRows) {
-			old = []any{selected.Title, selected.State, selected.HeadSHA, selected.BaseRef, selected.BaseSHA, selected.CIState, selected.Mergeability, int64(0), int64(0), int64(0), "[]", "[]", "{}"}
+			old = []any{selected.Title, selected.State, selected.HeadSHA, selected.BaseRef, selected.BaseSHA, selected.CIState, selected.Mergeability, int64(0), int64(0), int64(0), "[]", "[]", "{}", int64(1)}
 			position = nextPosition
 			nextPosition++
 		} else if err != nil {
@@ -253,6 +253,7 @@ func publishQueueEdit(ctx context.Context, tx *sql.Tx, scope core.Scope, req Que
 			return Receipt{}, metadataErr
 		}
 		old[12] = metadataJSON
+		old[13] = int64(1) // Explicit queue enrollment selects a retained review-only PR.
 		metadata := []any{selected.Title, selected.State, selected.HeadSHA, selected.BaseRef, selected.BaseSHA, selected.CIState, selected.Mergeability}
 		copy(old[:7], metadata)
 		pulls[selected.Number] = selectedPull{old, position}

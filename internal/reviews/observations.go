@@ -418,7 +418,7 @@ func pullNumbersForSnapshot(ctx context.Context, tx *sql.Tx, projectID, snapshot
 	if snapshotID == "" {
 		return []int64{}, nil
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT number FROM review_pulls WHERE project_id=? AND snapshot_id=? ORDER BY position", projectID, snapshotID)
+	rows, err := tx.QueryContext(ctx, "SELECT number FROM review_pulls WHERE project_id=? AND snapshot_id=? AND delivery_selected=1 ORDER BY position", projectID, snapshotID)
 	if err != nil {
 		return nil, err
 	}

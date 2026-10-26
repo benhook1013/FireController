@@ -47,7 +47,7 @@ func queueWindowAfter(view, after string, now time.Time) (queueWindowCursor, err
 }
 
 const compactQueueWindowSQL = `SELECT p.position,p.state,CASE WHEN length(CAST(p.metadata_json AS BLOB))<=512 THEN p.metadata_json ELSE NULL END
-	FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND NOT EXISTS (
+	FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.delivery_selected=1 AND NOT EXISTS (
 	SELECT 1 FROM review_retired_pulls retired WHERE retired.project_id=p.project_id AND retired.snapshot_id=p.snapshot_id AND retired.number=p.number)`
 
 type queueMergedTime struct {
@@ -201,7 +201,7 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 		if view == "merged" {
 			order = "DESC"
 		}
-		rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.run_count,p.attempt_count,p.recent_runs_json,p.latest_attempts_json,p.metadata_json,p.position FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.position IN (%s) ORDER BY p.position %s`, strings.Join(placeholders, ","), order), args...)
+		rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.run_count,p.attempt_count,p.recent_runs_json,p.latest_attempts_json,p.metadata_json,p.position FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.delivery_selected=1 AND p.position IN (%s) ORDER BY p.position %s`, strings.Join(placeholders, ","), order), args...)
 		if err != nil {
 			return err
 		}

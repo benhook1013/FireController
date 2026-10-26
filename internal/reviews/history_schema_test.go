@@ -32,9 +32,9 @@ func historyPhysicalFixture(t *testing.T) *apiFixture {
 		t.Fatal(err)
 	}
 	for _, number := range []int{1, 2} {
-		historyPhysicalExec(t, f, `INSERT INTO review_pull_versions VALUES(?,?,1,'Retained','','','','','','',1,0,0,'[]','[]','{}')`, f.project, number)
+		historyPhysicalExec(t, f, `INSERT INTO review_pull_versions VALUES(?,?,1,'Retained','','','','','','',1,0,0,'[]','[]','{}',1)`, f.project, number)
 	}
-	historyPhysicalExec(t, f, `INSERT INTO review_pull_versions VALUES(?,1,3,'Changed','','','','','','',1,0,0,'[]','[]','{}')`, f.project)
+	historyPhysicalExec(t, f, `INSERT INTO review_pull_versions VALUES(?,1,3,'Changed','','','','','','',1,0,0,'[]','[]','{}',1)`, f.project)
 	for _, run := range []struct {
 		id, source    string
 		version, pull int
@@ -94,7 +94,7 @@ func TestHistoryPhysicalSchemaExactVersionsAndHistoricalMembership(t *testing.T)
 	f := historyPhysicalFixture(t)
 	historyPhysicalMemberships(t, f)
 	var schema string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&schema); err != nil || schema != "10" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&schema); err != nil || schema != "11" {
 		t.Fatal("physical declarations changed legacy schema version", schema, err)
 	}
 	var tables int

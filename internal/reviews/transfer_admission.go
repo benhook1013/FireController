@@ -158,7 +158,7 @@ func planTransferPull(ctx context.Context, tx HistoryQuery, project, snapshot st
 		if retired != 0 {
 			return nil, transferConflict("A retired PR requires explicit queue reactivation before historical transfer.")
 		}
-		body = append(metadata, int64(0), int64(0), int64(0), "[]", "[]", mustJSON(pullMetadata(pull)))
+		body = append(metadata, int64(0), int64(0), int64(0), "[]", "[]", mustJSON(pullMetadata(pull)), int64(1))
 		position = next
 	} else if err != nil {
 		return nil, err

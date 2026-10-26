@@ -45,7 +45,7 @@ func (w *historySnapshotWrite) observation(ctx context.Context, tx *sql.Tx, req 
 		for i := len(pull.Runs) - 1; i >= 0 && len(recent) < 3; i-- {
 			recent = append(recent, summarizeRun(w.project, req.Source, pull.Number, pull.Runs[i]))
 		}
-		body := []any{pull.Title, pull.State, pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, pull.Complete, len(pull.Runs), len(pull.Attempts), mustJSON(recent), mustJSON(latestAttempts(pull.Attempts)), mustJSON(pullMetadata(pull))}
+		body := []any{pull.Title, pull.State, pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, pull.Complete, len(pull.Runs), len(pull.Attempts), mustJSON(recent), mustJSON(latestAttempts(pull.Attempts)), mustJSON(pullMetadata(pull)), int64(1)}
 		if err := w.pull(ctx, tx, pull.Number, position, body); err != nil {
 			return err
 		}
@@ -68,6 +68,9 @@ func (w *historySnapshotWrite) observation(ctx context.Context, tx *sql.Tx, req 
 			return err
 		}
 		keep(historyRetiredRecord, retired.Number)
+	}
+	if err := w.preserveReviewOnly(ctx, tx, req, selected, totals); err != nil {
+		return err
 	}
 	for _, spec := range []historyRecordSpec{historyPullRecord, historyRunRecord, historyAttemptRecord, historyRetiredRecord} {
 		if err := w.closeOmitted(ctx, tx, spec, selected[spec.memberships]); err != nil {

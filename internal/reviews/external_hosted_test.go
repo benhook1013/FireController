@@ -251,6 +251,7 @@ func TestExternalHostedSchemaNineMigrationAndIdentityIndex(t *testing.T) {
 	f := newAPIFixture(t)
 	historyObservationPost(t, f, reviewRequest(0, []PullInput{mixedChannelPull()}), "external-old-nine")
 	before := channelCountsPull(t, f, "")
+	removeDeliverySelectionForLegacyFixture(t, f.store)
 	if _, err := f.store.DB().Exec(`DROP INDEX review_run_versions_external_source; DROP TABLE review_hosted_discovery_state; UPDATE metadata SET value='9' WHERE key='schema:reviews'`); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +262,7 @@ func TestExternalHostedSchemaNineMigrationAndIdentityIndex(t *testing.T) {
 		t.Fatal("v9 migration altered current snapshot")
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "10" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "11" {
 		t.Fatal(version, err)
 	}
 	externalInit(t, f)
