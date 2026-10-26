@@ -78,6 +78,12 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		// Tool selectors and the key sit outside the public PATCH body.
 		bound = client.JobPatchMaxEncodedBytes + 1024
 	}
+	if name == "job_update" {
+		if len(data) > bound {
+			return args, jobUpdateDiagnostic("job_update", "The encoded patch exceeds its 384 KiB body allowance plus selectors. Brief and progress limits count UTF-8 bytes.")
+		}
+		return jobProgressArguments(name, data)
+	}
 	if len(data) > bound || strictjson.Validate(data) != nil {
 		return args, invalidArguments()
 	}

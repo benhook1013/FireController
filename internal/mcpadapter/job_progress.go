@@ -2,6 +2,7 @@ package mcpadapter
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 
 	"github.com/benhook1013/FireController/internal/client"
@@ -21,18 +22,21 @@ func jobProgressArguments(name string, data json.RawMessage) (arguments, error) 
 	switch name {
 	case "job_update":
 		var fields map[string]json.RawMessage
-		if strictjson.Validate(data) != nil || json.Unmarshal(data, &fields) != nil {
-			return args, invalidArguments()
+		if strictjson.Validate(data) != nil || json.Unmarshal(data, &fields) != nil || fields == nil {
+			return args, jobUpdateDiagnostic("job_update", "Use one JSON object with unique declared keys and valid Unicode.")
 		}
-		if json.Unmarshal(fields["job_id"], &args.id) != nil || json.Unmarshal(fields["idempotency_key"], &args.key) != nil || !validID(args.id) || !validKey(args.key) {
-			return args, invalidArguments()
+		if json.Unmarshal(fields["job_id"], &args.id) != nil || !validID(args.id) {
+			return args, jobUpdateDiagnostic("job_id", "Use the complete job ID returned by the service.")
+		}
+		if json.Unmarshal(fields["idempotency_key"], &args.key) != nil || !validKey(args.key) {
+			return args, jobUpdateDiagnostic("idempotency_key", "Use an explicit printable ASCII key of 1–128 bytes without surrounding whitespace.")
 		}
 		delete(fields, "job_id")
 		delete(fields, "idempotency_key")
 		body, _ := json.Marshal(fields)
 		patch, err := client.DecodeJobPatch(body)
 		if err != nil {
-			return args, invalidArguments()
+			return args, invalidJobUpdatePatch(fields)
 		}
 		args.patch = patch
 	case "job_checklist_replace":
@@ -117,7 +121,7 @@ func jobProgressDefinitions() []definition {
 	}
 	item := schema(map[string]any{"id": map[string]any{"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"}, "text": text(1024), "done": map[string]any{"type": "boolean"}}, "id", "text", "done")
 	return []definition{
-		{"job_update", "Update selected job metadata and current progress with one revision guard and explicit key. Empty progress fields clear values; omitted members are preserved. Returns only a receipt, with no automatic retry.", jobUpdateSchema()},
+		{"job_update", "Update a job with required job_id, expected_revision and idempotency_key plus at least one edit. progress is an object with optional summary, next, blocker and evidence; omit unchanged fields, use empty values to clear. Returns a receipt without automatic retry.", jobUpdateSchema()},
 		{"job_progress_history", "Read one explicit current-progress archive page, newest first; no automatic continuation or source-archive fanout.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
 		{"job_checklist_read", "Read the current ordered checklist and current job revision; an empty initial checklist has revision zero.", schema(map[string]any{"job_id": id}, "job_id")},
 		{"job_checklist_replace", "Replace the ordered checklist using explicit job/checklist revision guards and key; stable item IDs preserve identity across completion, reopen and reorder. Does not edit the brief.", schema(map[string]any{"job_id": id, "idempotency_key": key, "expected_job_revision": revision, "expected_revision": map[string]any{"type": "integer", "minimum": 0, "maximum": int64(math.MaxInt64 - 1)}, "items": map[string]any{"type": "array", "maxItems": 100, "items": item}}, "job_id", "idempotency_key", "expected_job_revision", "expected_revision", "items")},
@@ -127,13 +131,14 @@ func jobProgressDefinitions() []definition {
 }
 
 func jobUpdateSchema() map[string]any {
-	text := func(n int) map[string]any { return map[string]any{"type": "string", "maxLength": n} }
+	text := func(n int) map[string]any {
+		return map[string]any{"type": "string", "maxLength": n, "description": fmt.Sprintf("At most %d UTF-8 bytes. Omit to preserve; an empty string clears this field.", n)}
+	}
 	progress := map[string]any{"type": "object", "additionalProperties": false, "minProperties": 1, "properties": map[string]any{"summary": text(8 << 10), "next": text(8 << 10), "blocker": text(4 << 10), "evidence": map[string]any{"type": "array", "maxItems": 10, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 1024}}}}
 	schema := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"job_id", "idempotency_key", "expected_revision"}, "properties": map[string]any{"job_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "idempotency_key": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "expected_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}, "title": map[string]any{"type": "string", "minLength": 1, "maxLength": 240}, "brief": text(32 << 10), "worker_id": text(128), "status": map[string]any{"type": "string", "enum": []string{"active", "parked", "blocked", "completed"}}, "progress": progress}}
-	choices := []any{}
-	for _, name := range []string{"title", "brief", "worker_id", "status", "progress"} {
-		choices = append(choices, map[string]any{"required": []string{name}})
-	}
-	schema["anyOf"] = choices
+	// Keep the root a plain typed object. Some hosts flatten an anyOf of
+	// required-field alternatives into permissive object unions, hiding every
+	// useful field. Runtime admission still requires at least one actual edit.
+	schema["minProperties"] = 4
 	return schema
 }
