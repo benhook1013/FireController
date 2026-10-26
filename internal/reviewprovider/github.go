@@ -32,7 +32,8 @@ const (
 )
 
 // GitHub is a bounded adapter for explicitly selected GitHub resources. It
-// never discovers repositories, retries requests, or chooses review targets.
+// never discovers repositories or chooses review targets. CI inventory movement
+// permits one bounded recollection of the same immutable commit.
 type GitHub struct {
 	token      string
 	baseURL    string

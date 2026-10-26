@@ -41,7 +41,8 @@ type CIObservation struct {
 }
 
 // ObserveRequiredCI performs bounded read-only collection for one exact target.
-// Required context/app identity determines workflow fanout. No provider retry,
+// Required context/app identity determines workflow fanout. Result-count movement
+// permits one same-commit recollection within CIResults' original budgets. No
 // job carry-forward, optional workflow walk or external mutation is performed.
 func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CIObservation, err error) {
 	if ctx == nil || !validRepositorySelector(target.Repository) || target.RepositoryID <= 0 || !validPullNumber(target.PullNumber) || !lowerCISHA(target.HeadSHA) || !lowerCISHA(target.BaseSHA) || !validRequiredBranch(target.BaseRef) {
