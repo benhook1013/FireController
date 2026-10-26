@@ -273,12 +273,12 @@ func TestPackagedSubagentReportsSmoke(t *testing.T) {
 			t.Fatal("subagent record changed original Hosted/CLI history")
 		}
 	}
-	if reportWrites.Load() != 6 || forbiddenWrites.Load() != 0 || external.Load() != 0 || binaryHash(t, profiles) != profileHash {
+	if reportWrites.Load() != 8 || forbiddenWrites.Load() != 0 || external.Load() != 0 || binaryHash(t, profiles) != profileHash {
 		t.Fatal("unexpected write/provider/profile change", reportWrites.Load(), forbiddenWrites.Load(), external.Load())
 	}
 	runSubagentReportBrowser(t, ctx, private, env, gateway.URL, project, credential, recorded.ID, browserDeny.URL)
 	daemon.stop(t)
-	if reportWrites.Load() != 6 || sessionWrites.Load() != 1 || forbiddenWrites.Load() != 0 || external.Load() != 0 {
+	if reportWrites.Load() != 8 || sessionWrites.Load() != 1 || forbiddenWrites.Load() != 0 || external.Load() != 0 {
 		t.Fatal("browser changed review/provider state")
 	}
 	t.Logf("PASS cli_calls=%d mcp_calls=%d report_posts=%d browser_session_posts=%d external=%d browser_engine_denied=%d restart_retained=true binaries_profiles_unchanged=true seconds=%.3f", calls, mcpCalls, reportWrites.Load(), sessionWrites.Load(), external.Load(), engine.Load(), time.Since(started).Seconds())
