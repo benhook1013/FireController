@@ -144,3 +144,18 @@ func TestAgentCompositeCIDiagnosticsPreserveFactsAndFlatReceipts(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentAllowanceDiagnosticsKeepOriginalStatusAndDoNotAuthorizeRetry(t *testing.T) {
+	for _, reason := range []string{"hosted_allowance_reply_pending", "hosted_allowance_unproven"} {
+		v := ReviewOperationStatus{ID: "original", Channel: "hosted", State: "held", Reason: reason, Stage: "held", NextAction: "read_diagnostics", AttemptID: "original_attempt", Revision: 3}
+		out := AgentReviewOperationStatus(v)
+		full := ReviewOperation{ID: v.ID, Channel: v.Channel, State: v.State, Reason: v.Reason, AttemptID: v.AttemptID, Revision: v.Revision}
+		if !reflect.DeepEqual(out.ReviewOperationStatus, v) || out.Diagnostic == nil || !reflect.DeepEqual(out.Diagnostic, AgentReviewOperation(full).Diagnostic) || !strings.Contains(strings.ToLower(out.Diagnostic.NextAction), "do not") {
+			t.Fatal("missing safe guidance or changed original operation", out)
+		}
+		v.State = "active"
+		if AgentReviewOperationStatus(v).Diagnostic != nil {
+			t.Fatal("held diagnosis invented for active work")
+		}
+	}
+}

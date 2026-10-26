@@ -52,6 +52,10 @@ func agentReviewOperationDiagnostic(state, reason string) *ReviewOperationDiagno
 	}
 	var explanation string
 	switch reason {
+	case "hosted_allowance_reply_pending":
+		return &ReviewOperationDiagnostic{"The original non-review rate-limit query was observed, but no attributable provider reply arrived within the bounded preparation window. No review trigger was posted.", "Inspect the original rate-limit query reply on this PR and respect any cooldown before a separately authorized new request. Replaying the original key returns this held operation. Do not repost the old query, reset round limits or assume allowance is available."}
+	case "hosted_allowance_unproven":
+		return &ReviewOperationDiagnostic{"Hosted preparation could not establish included review availability from its retained query evidence. This is not proof of exhausted local review rounds or a started review.", "Inspect the original provider query/reply and report this operation and attempt to the controller maintainer if the cause remains unclear. Preserve the original request and key; do not reset round limits or blindly repost."}
 	case "parent_moved":
 		explanation = "A checked PR's base and its direct parent branch differed. Older operations may report a selected PR or ancestor mismatch with this same reason; it does not identify the affected comparison."
 	case "predecessor_parent_moved":

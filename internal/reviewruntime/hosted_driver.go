@@ -180,7 +180,7 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 		return preparation, reviewHold("provider_actor_unproven")
 	}
 	var observed ObservedHostedAllowance
-	for pass := 0; pass < 8; pass++ {
+	for pass := 0; pass < 16; pass++ {
 		observed, err = ObserveHostedAllowance(ctx, d.provider, d.captures, d.engine, attempt, anchor, plan.Repository, actor, d.providerActor())
 		if err != nil {
 			return preparation, reviewHold("hosted_allowance_unproven")
@@ -194,7 +194,10 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 			}
 			return preparation, reviewHold("hosted_allowance_cooldown")
 		}
-		if observed.Reason != "allowance_not_proven" || pass == 7 {
+		if pass == 15 && observed.Reason == "allowance_not_proven" && observed.Observation.QueryCommentID != 0 {
+			return preparation, reviewHold("hosted_allowance_reply_pending")
+		}
+		if observed.Reason != "allowance_not_proven" || pass == 15 {
 			return preparation, reviewHold("hosted_allowance_unproven")
 		}
 		if err := d.wait(ctx, 2*time.Second); err != nil {

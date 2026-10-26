@@ -6,10 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
@@ -378,7 +380,7 @@ func TestHostedDriverDelayedAndUnavailableAllowanceNeverRepostsQuery(t *testing.
 				f.provider.reply = strings.Replace(runtimeAllowanceAvailable, "Reviews are available now.", "More reviews will be available in 3 minutes.", 1)
 			}
 			if mode == "unknown" {
-				f.provider.delay = 1000 // No attributed reply arrives in these eight passes.
+				f.provider.delay = 1000 // No attributed reply arrives in the bounded preparation window.
 			}
 			if mode == "unsupported" {
 				f.provider.delay = 0
@@ -403,8 +405,14 @@ func TestHostedDriverDelayedAndUnavailableAllowanceNeverRepostsQuery(t *testing.
 			if mode == "delayed" && (f.provider.histories != 2 || waits != 1) {
 				t.Fatal("delayed reply retried query or skipped observation")
 			}
-			if mode == "unknown" && (f.provider.histories != 8 || waits != 7) {
+			if mode == "unknown" && (f.provider.histories != 16 || waits != 15) {
 				t.Fatal("unknown allowance exceeded observation budget")
+			}
+			if mode == "unknown" {
+				var refusal *core.Error
+				if !errors.As(err, &refusal) || refusal.Details.(map[string]string)["reason"] != "hosted_allowance_reply_pending" {
+					t.Fatal("missing specific pending-reply diagnosis", err)
+				}
 			}
 			observations, readErr := f.engine.ReadHostedObservations(t.Context(), f.project, a.ID)
 			expectedObservations := f.provider.histories
@@ -594,6 +602,40 @@ func TestHostedDriverInvalidPostReceiptNeverRecordsTrigger(t *testing.T) {
 			result, err := f.hosted.Dispatch(t.Context(), op, a, func(context.Context, string) error { callbacks++; return nil })
 			if err != nil || result.State != "uncertain" || callbacks != 0 || f.provider.reviews != 1 || hostedDriverJournal(t, f, a.ID) != "posting" || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
 				t.Fatal("invalid returned receipt gained trigger identity", mode, result, err, callbacks)
+			}
+		})
+	}
+}
+
+func TestHostedDriverAllowanceReplyAfterEighthObservation(t *testing.T) {
+	for _, cooldown := range []bool{false, true} {
+		t.Run(strconv.FormatBool(cooldown), func(t *testing.T) {
+			f := newHostedDriverFixture(t)
+			f.provider.delay = 8
+			if cooldown {
+				f.provider.reply = strings.Replace(runtimeAllowanceAvailable, "Reviews are available now.", "More reviews will be available in 3 minutes.", 1)
+			}
+			op, a, c := f.startHosted(t)
+			waits := 0
+			f.hosted.wait = func(ctx context.Context, d time.Duration) error {
+				waits++
+				if d != 2*time.Second {
+					t.Fatal("changed observation spacing")
+				}
+				return ctx.Err()
+			}
+			_, err := f.hosted.Prepare(t.Context(), op, c, a)
+			if (err != nil) != cooldown || f.provider.queries != 1 || f.provider.reviews != 0 || waits != 8 || f.provider.histories != 9 {
+				t.Fatal("late allowance reply lost or query reposted", err, waits, f.provider.histories)
+			}
+			if cooldown {
+				var refusal *core.Error
+				if !errors.As(err, &refusal) || refusal.Details.(map[string]string)["reason"] != "hosted_allowance_cooldown" {
+					t.Fatal("late cooldown not retained", err)
+				}
+			}
+			if hostedDriverJournal(t, f, a.ID) != "preparing" || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+				t.Fatal("allowance observation started or credited a review")
 			}
 		})
 	}
