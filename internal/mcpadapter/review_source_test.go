@@ -174,7 +174,7 @@ func TestReviewSourceMCPDirectTerminalAndAssessmentAreFlat(t *testing.T) {
 	binding := localContext()
 	observation := client.ReviewSourceObservation{RepositoryID: 1, RepositoryName: "owner/repo", PullNumber: 2, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ParentSHA: strings.Repeat("b", 40), ObservedAt: "2026-10-16T00:00:00Z"}
 	operation := client.ReviewSourceOperation{ID: mcpRefreshID, ProjectID: binding.ProjectID, PullNumber: 2, HeadSHA: observation.HeadSHA, ConfigurationRevision: 1, State: "completed", Revision: 3, CreatedAt: observation.ObservedAt, UpdatedAt: observation.ObservedAt, Observation: &observation}
-	assessment := client.ReviewSourcePolicyAssessment{ProjectID: binding.ProjectID, RefreshID: mcpRefreshID, Source: "observed_comparison", ConfigurationRevision: 1, PolicyRevision: 1, SourceObservedAt: observation.ObservedAt, EvaluatedAt: observation.ObservedAt, State: "held", Target: observation, Channels: []client.ReviewPolicyAssessmentChannel{{Channel: "cli"}}}
+	assessment := client.ReviewSourcePolicyAssessment{ProjectID: binding.ProjectID, RefreshID: mcpRefreshID, Source: "observed_comparison", ConfigurationRevision: 1, PolicyRevision: 1, SourceObservedAt: observation.ObservedAt, EvaluatedAt: observation.ObservedAt, State: "held", Target: observation, Channels: []client.ReviewPolicyAssessmentChannel{{Channel: "cli", Covered: true, RoundsConfigured: true}}}
 	var requests atomic.Int64
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -201,9 +201,9 @@ func TestReviewSourceMCPDirectTerminalAndAssessmentAreFlat(t *testing.T) {
 	if got.ID != operation.ID || got.State != "completed" {
 		t.Fatal("direct terminal was wrapped", got)
 	}
-	var current client.ReviewSourcePolicyAssessment
+	var current client.ReviewSourcePolicyAssessmentOutput
 	decodeResult(t, call(t, session, "review_source_policy_assess", map[string]any{"pull_number": 2}), &current)
-	if current.Source != "observed_comparison" || current.ProjectID != binding.ProjectID || requests.Load() != 4 {
+	if current.Source != "observed_comparison" || current.ProjectID != binding.ProjectID || requests.Load() != 4 || len(current.Channels) != 1 || current.Channels[0].RoundsComplete || current.Channels[0].Reason != "review_rounds_incomplete" || current.Channels[0].NextAction != "complete_authorized_review_rounds" {
 		t.Fatal("assessment changed binding or polled", current)
 	}
 }

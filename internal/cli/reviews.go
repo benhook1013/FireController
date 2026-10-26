@@ -165,7 +165,8 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 		value, err := service.ReviewSourceOperation(ctx, call.position[0])
 		return client.AgentReviewSourceOperation(value), err
 	case "source-assess":
-		return service.ReviewSourcePolicyAssessment(ctx, call.pullNumber)
+		value, err := service.ReviewSourcePolicyAssessment(ctx, call.pullNumber)
+		return client.AgentReviewSourcePolicy(value), err
 	case "readiness":
 		value, err := service.ReviewSourceReadiness(ctx, call.pullNumber)
 		return client.AgentReviewReadiness(value), err
@@ -189,7 +190,8 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 	case "adjudication":
 		return service.ReviewAdjudication(ctx, call.position[0])
 	case "assess":
-		return service.ReviewPolicyAssessment(ctx, call.position[0])
+		value, err := service.ReviewPolicyAssessment(ctx, call.position[0])
+		return client.AgentReviewPolicy(value), err
 	default: // parseReview admits only the explicit run-detail command here.
 		return service.ReviewRun(ctx, call.position[0], call.snapshot)
 	}

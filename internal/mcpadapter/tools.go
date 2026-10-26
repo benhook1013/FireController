@@ -187,7 +187,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				operation, err = service.ReviewSourceOperation(ctx, args.id)
 				value = client.AgentReviewSourceOperation(operation)
 			case "review_source_policy_assess":
-				value, err = service.ReviewSourcePolicyAssessment(ctx, args.pullNumber)
+				var assessment client.ReviewSourcePolicyAssessment
+				assessment, err = service.ReviewSourcePolicyAssessment(ctx, args.pullNumber)
+				value = client.AgentReviewSourcePolicy(assessment)
 			case "review_source_readiness":
 				var assessment client.ReviewSourceReadinessAssessment
 				assessment, err = service.ReviewSourceReadiness(ctx, args.pullNumber)
@@ -213,7 +215,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "review_run":
 				value, err = service.ReviewRun(ctx, args.id, args.snapshot)
 			case "review_policy_assess":
-				value, err = service.ReviewPolicyAssessment(ctx, args.id)
+				var assessment client.ReviewPolicyAssessment
+				assessment, err = service.ReviewPolicyAssessment(ctx, args.id)
+				value = client.AgentReviewPolicy(assessment)
 			case "review_evidence_read":
 				value, err = service.ReviewEvidence(ctx, args.id)
 			case "review_adjudication_read":
