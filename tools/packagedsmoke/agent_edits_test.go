@@ -171,6 +171,11 @@ func TestPackagedAgentEditsSmoke(t *testing.T) {
 	if !bytes.Equal(update, call("jobs", "update", jobID, "--expect-revision", "1", "--brief", updatedBrief, "--progress", progress, "--next", next, "--blocker", blocker, "--key", "agent-progress")) {
 		t.Fatal("file/inline progress replay changed")
 	}
+	var original client.JobHistoryEntry
+	decode(t, call("jobs", "revision", jobID, "1"), &original)
+	if original.Revision != 1 || original.State.Brief != brief {
+		t.Fatal("packaged exact revision substituted current brief")
+	}
 	items := []client.ChecklistItem{{ID: "done", Text: "Preserved completed text π", Done: true}, {ID: "next", Text: "Selected remaining item"}, {ID: "later", Text: "Untouched remaining item"}}
 	encoded, _ := json.Marshal(items)
 	call("jobs", "checklist-set", jobID, "--expect-revision", "2", "--expect-checklist-revision", "0", "--items-file", file("checklist.json", string(encoded)), "--key", "agent-plan")
@@ -227,6 +232,16 @@ func TestPackagedAgentEditsSmoke(t *testing.T) {
 		}
 	}
 	t.Cleanup(closeMCP)
+	bounded, stop = context.WithTimeout(ctx, stepTimeout)
+	historical, err := session.CallTool(bounded, &mcp.CallToolParams{Name: "job_revision_read", Arguments: map[string]any{"job_id": jobID, "revision": 1}})
+	stop()
+	if err != nil || historical == nil || historical.IsError {
+		t.Fatal("packaged MCP exact revision failed")
+	}
+	historyBody, err := json.Marshal(historical.StructuredContent)
+	if err != nil || json.Unmarshal(historyBody, &original) != nil || original.State.Brief != brief {
+		t.Fatal("packaged MCP lost historical brief")
+	}
 	bounded, stop = context.WithTimeout(ctx, stepTimeout)
 	result, err := session.CallTool(bounded, &mcp.CallToolParams{Name: "job_checklist_item_update", Arguments: map[string]any{"job_id": jobID, "item_id": "next", "expected_revision": 2, "done": false, "idempotency_key": "agent-mcp-reopen"}})
 	stop()

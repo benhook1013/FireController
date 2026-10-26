@@ -556,7 +556,7 @@ func resolveStandingZero(snapshot HostedPublicationSnapshot, result HostedPublic
 			return result
 		}
 	}
-	if summary == nil || ack == nil || ack.UpdatedAt.Before(summary.Summary.UpdatedAt) {
+	if summary == nil || ack == nil {
 		return result
 	}
 	for _, comment := range snapshot.IssueComments {
@@ -571,6 +571,12 @@ func resolveStandingZero(snapshot HostedPublicationSnapshot, result HostedPublic
 	summary.Acknowledgement = *ack
 	result.StandingZero = summary
 	result.State, result.Reason, result.FinishedAt = "attributed", "standing_zero_inventory_attributed", ack.UpdatedAt
+	// CodeRabbit may finish its command reply before updating the standing
+	// inventory. Both must independently fall inside this trigger's window;
+	// their relative edit order does not invalidate the final exact-run proof.
+	if summary.Summary.UpdatedAt.After(result.FinishedAt) {
+		result.FinishedAt = summary.Summary.UpdatedAt
+	}
 	return result
 }
 
@@ -578,7 +584,7 @@ func validStandingZero(z *HostedStandingZero) bool {
 	if z == nil {
 		return false
 	}
-	if z.Summary.ID <= 0 || z.Acknowledgement.ID <= 0 || z.Summary.ID == z.Acknowledgement.ID || !publicationValidActor(z.Summary.Author) || !publicationValidActor(z.Acknowledgement.Author) || !publicationActor(z.Summary.Author, z.Acknowledgement.Author) || !hostedTriggerTime(z.Summary.CreatedAt) || !hostedTriggerTime(z.Summary.UpdatedAt) || !hostedTriggerTime(z.Acknowledgement.CreatedAt) || !hostedTriggerTime(z.Acknowledgement.UpdatedAt) || z.Summary.UpdatedAt.Before(z.Summary.CreatedAt) || z.Acknowledgement.UpdatedAt.Before(z.Acknowledgement.CreatedAt) || z.Acknowledgement.UpdatedAt.Before(z.Summary.UpdatedAt) {
+	if z.Summary.ID <= 0 || z.Acknowledgement.ID <= 0 || z.Summary.ID == z.Acknowledgement.ID || !publicationValidActor(z.Summary.Author) || !publicationValidActor(z.Acknowledgement.Author) || !publicationActor(z.Summary.Author, z.Acknowledgement.Author) || !hostedTriggerTime(z.Summary.CreatedAt) || !hostedTriggerTime(z.Summary.UpdatedAt) || !hostedTriggerTime(z.Acknowledgement.CreatedAt) || !hostedTriggerTime(z.Acknowledgement.UpdatedAt) || z.Summary.UpdatedAt.Before(z.Summary.CreatedAt) || z.Acknowledgement.UpdatedAt.Before(z.Acknowledgement.CreatedAt) {
 		return false
 	}
 	parsed, ok := parseStandingZero(z.Summary.Body)

@@ -50,6 +50,9 @@ func (c *Client) InboxSnapshot(ctx context.Context, options PageOptions, filter 
 	if err != nil {
 		return InboxSnapshot{}, err
 	}
+	if filter.Newest {
+		q.Set("newest", "true")
+	}
 	if filter.Unread {
 		q.Set("unread", "true")
 	}

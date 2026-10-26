@@ -52,7 +52,7 @@ type PageOptions struct {
 	Cursor string
 }
 type JobFilter struct{ WorkerID, Status string }
-type InboxFilter struct{ Unread, Unacknowledged bool }
+type InboxFilter struct{ Unread, Unacknowledged, Newest bool }
 type Page[T any] struct {
 	Items   []T    `json:"items"`
 	Cursor  string `json:"cursor"`

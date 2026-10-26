@@ -35,7 +35,8 @@ type arguments struct {
 	waitMS                     int
 	messageWaitSeconds         int
 	cursor, worker, status, id string
-	unread, unack              bool
+	jobRevision                int64
+	unread, unack, newest      bool
 	snapshot                   string
 	pullNumber                 int64
 	key                        string
@@ -69,6 +70,7 @@ type definition struct {
 func boundServer(binding profile.Binding) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128})
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
+	definitions = append(definitions, jobRevisionDefinition())
 	definitions = append(definitions, roundControlDefinitions()...)
 	definitions = append(definitions, reviewRunDefinitions()...)
 	definitions = append(definitions, jobProgressDefinitions()...)
@@ -262,6 +264,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = runJobStatus(ctx, service, args)
 			case "job_read":
 				value, err = service.Job(ctx, args.id)
+			case "job_revision_read":
+				value, err = service.JobRevision(ctx, args.id, args.jobRevision)
 			case "job_history":
 				value, err = service.JobHistory(ctx, args.id, options)
 			case "job_update":
@@ -277,9 +281,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "job_checklist_history":
 				value, err = service.JobChecklistHistory(ctx, args.id, options)
 			case "inbox_list":
-				value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack})
+				value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack, Newest: args.newest})
 			case "inbox_snapshot":
-				value, err = service.InboxSnapshot(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack})
+				value, err = service.InboxSnapshot(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack, Newest: args.newest})
 			case "inbox_events":
 				value, err = service.MessageEvents(ctx, args.cursor, args.limit, args.waitMS)
 			case "inbox_thread":

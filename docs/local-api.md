@@ -66,6 +66,7 @@ Routes below are relative to `/api/v1/projects/{project_id}`.
 | `GET /jobs/{job_id}` | Full current brief/progress, remaining checklist/counts and compact pending exact-job notes. |
 | `PATCH /jobs/{job_id}` | Required `expected_revision` plus selected `title`, `brief`, `worker_id`, `status` or partial `progress`; compact receipt. |
 | `GET /jobs/{job_id}/history` | Explicit bounded revision history with retained full job state. |
+| `GET /jobs/{job_id}/history/{revision}` | One exact retained full job state, including its original brief, or not_found. No current context or history paging. |
 | `GET /jobs/{job_id}/progress/history` | Explicit bounded history of progress changes. |
 
 The list-only `status=open` filter selects `active`, `blocked` and `parked` jobs in that priority order, with IDs ordered within each status across pages. It supports the same optional worker filter; cursors remain bound to the selected filters. Omitted or specific-status filters retain ID ordering. `open` is not a stored job status and mutations refuse it. The CLI and `jobs_list`/`jobs_assigned` MCP reads accept the same filter.
@@ -85,7 +86,7 @@ Statuses are `active`, `parked`, `blocked` and `completed`; creation defaults to
 | Endpoint | Request or result |
 | --- | --- |
 | `POST /messages` | `{recipient_worker_id, body, reply_to_message_id?}`; compact `{id, conversation_id, outcome}` receipt. |
-| `GET /inbox/{worker_id}` | Compact previews and seen/ack state; optional `unread=true` and `unacknowledged=true` filters. |
+| `GET /inbox/{worker_id}` | Compact previews and seen/ack state; optional `unread=true` and `unacknowledged=true` filters; `newest=true` selects newest-first insertion order. Preserve filters/order with the cursor. |
 | `GET /conversations/{conversation_id}` | Explicit chronological full-body page with root/reply identities. |
 | `POST /messages/{message_id}/seen` | Strict `{}` body; only the selected actual recipient can mark seen. |
 | `GET /messages/{message_id}` | One full immutable message in the bound project; no older conversation bodies or seen/ack changes. |

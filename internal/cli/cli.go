@@ -51,6 +51,7 @@ type invocation struct {
 	command               string
 	subcommand            string
 	position              []string
+	jobRevision           int64
 	limit                 int
 	waitMS                int
 	cursor                string
@@ -58,6 +59,7 @@ type invocation struct {
 	status                string
 	unread                bool
 	unack                 bool
+	newest                bool
 	snapshot              string
 	pullNumber            int64
 	mutation              *mutationInvocation
@@ -351,6 +353,8 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value, err = runJobStatus(requestCtx, service, call.position[0])
 	case call.command == "jobs" && call.subcommand == "read":
 		value, err = service.Job(requestCtx, call.position[0])
+	case call.command == "jobs" && call.subcommand == "revision":
+		value, err = service.JobRevision(requestCtx, call.position[0], call.jobRevision)
 	case call.command == "jobs" && call.subcommand == "history":
 		value, err = service.JobHistory(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "jobs" && call.subcommand == "progress-history":
@@ -362,9 +366,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	case call.command == "jobs" && call.subcommand == "checklist-history":
 		value, err = service.JobChecklistHistory(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "inbox" && call.subcommand == "list":
-		value, err = service.Inbox(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack})
+		value, err = service.Inbox(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack, Newest: call.newest})
 	case call.command == "inbox" && call.subcommand == "snapshot":
-		value, err = service.InboxSnapshot(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack})
+		value, err = service.InboxSnapshot(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack, Newest: call.newest})
 	case call.command == "inbox" && call.subcommand == "wait":
 		value, err = service.WaitForMessages(requestCtx, call.cursor, call.limit, call.waitSeconds)
 	case call.command == "inbox" && call.subcommand == "events":
@@ -532,6 +536,18 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.notes, ok = parseNotes(call.subcommand, operationArgs)
 		return call, ok
 	}
+	if call.command == "jobs" && call.subcommand == "revision" {
+		if len(operationArgs) != 2 || !validResourceID(operationArgs[0]) {
+			return call, false
+		}
+		revision, err := strconv.ParseInt(operationArgs[1], 10, 64)
+		if err != nil || revision < 1 || strconv.FormatInt(revision, 10) != operationArgs[1] {
+			return call, false
+		}
+		call.position = []string{operationArgs[0]}
+		call.jobRevision = revision
+		return call, true
+	}
 	if isMutation(call.command, call.subcommand) {
 		mutation, valid := parseMutation(call.command, call.subcommand, operationArgs)
 		call.mutation = mutation
@@ -550,10 +566,10 @@ func parseInvocation(args []string) (invocation, bool) {
 		allowed["--limit"], allowed["--cursor"], allowed["--status"], allowed["--all"] = true, true, true, true
 		call.status = "open"
 	case "inbox list":
-		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"], allowed["--all"] = true, true, true, true, true
+		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"], allowed["--all"], allowed["--newest"] = true, true, true, true, true, true
 		call.unack = true
 	case "inbox snapshot":
-		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"], allowed["--all"] = true, true, true, true, true
+		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"], allowed["--all"], allowed["--newest"] = true, true, true, true, true, true
 		call.unack = true
 	case "inbox events":
 		allowed["--cursor"], allowed["--limit"], allowed["--wait-ms"] = true, true, true
@@ -583,6 +599,11 @@ func parseInvocation(args []string) (invocation, bool) {
 			} else {
 				call.unack = false
 			}
+		case "--newest":
+			if assigned {
+				return call, false
+			}
+			call.newest = true
 		case "--unread":
 			if assigned {
 				return call, false

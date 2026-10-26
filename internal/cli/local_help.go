@@ -26,9 +26,9 @@ func localHelp() helpResponse {
 		Binding: "Use this role/project launcher. --profile and --profiles-file select an explicit binding; no mutable active selection.",
 		CommandGroups: []helpGroup{
 			{"local discovery", []helpCommand{
-				{"help | --help | -h", "Local orientation; selected commands accept --help. No profile, credential or network reads."},
+				{"help | --help | -h", "Local orientation; selected commands accept --help. No configuration or network reads."},
 				{"version", "Local version and client source revision/state; no profile, credential or network reads."},
-				{"context", "Read selected identity and running client revision/state without credentials or service I/O."},
+				{"context", "Selected identity and running client revision; no credentials or service I/O."},
 				{"doctor", "Authenticate the bound instance/project/worker; no provider requests."},
 			}},
 			{"resume and jobs", []helpCommand{
@@ -40,10 +40,10 @@ func localHelp() helpResponse {
 			{"notes and messages", []helpCommand{
 				{"notes list", "Pending-note previews; read selected full notes."},
 				{"notes read NOTE_ID", "Full current note body; history requires an explicit notes history read."},
-				{"inbox list", "Pending messages by default, including seen-but-unhandled. --all explicitly includes handled history; reads never mark seen or acknowledged."},
+				{"inbox list", "Pending previews, including seen-but-unhandled; --newest reverses order, --all includes history. No receipt changes."},
 				{"inbox wait --cursor EVENT_CURSOR", "Quiet bounded event wait using inbox snapshot event_cursor; --help is local."},
 				{"inbox thread CONVERSATION_ID", "One conversation page for surrounding context; no receipt-state change."},
-				{"inbox read MESSAGE_ID", "One full selected message; no older bodies or receipt-state change. Use inbox thread for conversation context."},
+				{"inbox read MESSAGE_ID", "One full selected message; no receipt changes. inbox thread adds conversation context."},
 				{"inbox send --to WORKER_ID --body TEXT --key KEY", "Send one message as the bound worker; explicit mutation with a recoverable key."},
 			}},
 			{"guarded changes and archives", []helpCommand{
@@ -51,6 +51,7 @@ func localHelp() helpResponse {
 				{"map update ENTRY_ID --expect-revision N --file CHANGES_JSON --key KEY", "Change only selected Project fields; omitted content stays unchanged."},
 				{"publication prepare --file CHANGES_JSON --output NEW_PRIVATE_FILE", "Administrator preview; saves a private apply file without publishing."},
 				{"jobs progress-history JOB_ID", "One explicit current-progress archive page; no automatic continuation."},
+				{"jobs revision JOB_ID REVISION", "One exact retained state and original brief; no paging."},
 				{"jobs history JOB_ID", "One private job-history page; no automatic pagination."},
 				{"reviews queue [--active]", "Open-only scalar view with --active; default retains history. Stored workspace; requests, refreshes and publication are separate authorized actions."},
 				{"reviews operations", "Pending operations; --all finds lost receipts in history. reviews operation ID reads detail; no provider work."},

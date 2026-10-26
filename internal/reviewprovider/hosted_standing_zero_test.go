@@ -347,6 +347,28 @@ func TestHostedStandingZeroVisibilityCannotBeLaundered(t *testing.T) {
 	}
 }
 
+func TestHostedStandingZeroSummaryMayFinishAfterCommandAcknowledgement(t *testing.T) {
+	s, intent, poster, bot, earliest := standingTestFixture(t)
+	s.IssueComments[1].UpdatedAt = s.IssueComments[2].UpdatedAt.Add(time.Second)
+	s.ObservedAt = s.IssueComments[1].UpdatedAt.Add(time.Second)
+	before := append([]IssueComment(nil), s.IssueComments...)
+	got, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+	if err != nil || !got.Complete || got.Publication.StandingZero == nil || !got.Publication.FinishedAt.Equal(s.IssueComments[1].UpdatedAt) || !reflect.DeepEqual(before, s.IssueComments) {
+		t.Fatal("proven final inventory requires an arbitrary provider edit order", got, err)
+	}
+	// A later trigger still closes attribution even when the delayed summary
+	// proves a clean run on this head. It cannot be borrowed across requests.
+	other := s.IssueComments[0]
+	other.ID += 1000
+	other.CreatedAt, other.UpdatedAt = s.IssueComments[2].UpdatedAt.Add(time.Millisecond), s.IssueComments[2].UpdatedAt.Add(time.Millisecond)
+	other.Body = "@coderabbitai full review"
+	s.IssueComments = append(s.IssueComments, other)
+	got, err = ExtractHostedFindings(s, intent, poster, bot, earliest)
+	if err != nil || got.Complete || got.Publication.StandingZero != nil {
+		t.Fatal("late summary crossed a later request window", got, err)
+	}
+}
+
 func TestHostedStandingZeroWindowOriginAndCompetingInventory(t *testing.T) {
 	changes := map[string]func(*HostedPublicationSnapshot, HostedTriggerIntent){
 		"incomplete": func(s *HostedPublicationSnapshot, _ HostedTriggerIntent) { s.Complete = false },
@@ -355,9 +377,6 @@ func TestHostedStandingZeroWindowOriginAndCompetingInventory(t *testing.T) {
 		},
 		"ack at trigger": func(s *HostedPublicationSnapshot, _ HostedTriggerIntent) {
 			s.IssueComments[2].CreatedAt = s.IssueComments[0].CreatedAt
-		},
-		"summary after ack": func(s *HostedPublicationSnapshot, _ HostedTriggerIntent) {
-			s.IssueComments[1].UpdatedAt = s.IssueComments[2].UpdatedAt.Add(time.Second)
 		},
 		"future edit": func(s *HostedPublicationSnapshot, _ HostedTriggerIntent) {
 			s.IssueComments[1].UpdatedAt = s.ObservedAt.Add(time.Second)

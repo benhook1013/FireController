@@ -124,7 +124,7 @@ func (c *Client) JobHistory(ctx context.Context, id string, options PageOptions)
 		return Page[JobHistoryEntry]{}, invalidResponse()
 	}
 	for _, item := range value.Items {
-		if item.Revision < 1 || item.State.ID != id || item.State.Revision != item.Revision || !c.validJobState(item.State) || !validID(item.ActorID) || !cleanText(item.CreatedAt, 64) {
+		if !c.validJobHistoryEntry(item, id) {
 			return Page[JobHistoryEntry]{}, invalidResponse()
 		}
 	}
@@ -134,6 +134,9 @@ func (c *Client) Inbox(ctx context.Context, options PageOptions, filter InboxFil
 	q, err := pageQuery(options)
 	if err != nil {
 		return Page[InboxItem]{}, err
+	}
+	if filter.Newest {
+		q.Set("newest", "true")
 	}
 	if filter.Unread {
 		q.Set("unread", "true")

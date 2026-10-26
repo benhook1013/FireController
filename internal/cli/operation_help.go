@@ -42,7 +42,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	switch operation {
 	case "jobs help":
 		out.Usage = "<bound launcher> jobs help"
-		out.Optional = []string{"jobs assigned", "jobs read JOB_ID", "jobs status JOB_ID", "jobs history --help", "jobs progress-history --help", "jobs update --help", "jobs checklist-item --help"}
+		out.Optional = []string{"jobs assigned", "jobs read JOB_ID", "jobs status JOB_ID", "jobs revision JOB_ID REVISION", "jobs history --help", "jobs progress-history --help", "jobs update --help", "jobs checklist-item --help"}
 		out.Semantics = []string{"Use jobs read for the full current standing brief and progress; jobs status and assigned are selection aids.", "jobs history contains private state snapshots including historical briefs; progress-history contains only archived progress. Each archive read is one bounded page with explicit continuation."}
 		out.Example = "<bound launcher> jobs history --help"
 		out.Documentation = "docs/development.md"
@@ -52,9 +52,9 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Optional = []string{"--limit N (1-100, default 20)", "--cursor CURSOR"}
 		out.Semantics = []string{"One private archive page. Check has_more and use only the returned cursor for deliberate continuation; byte budgets may shorten the page. No automatic pagination, provider work or writes."}
 		if operation == "jobs history" {
-			out.Semantics = append(out.Semantics, "Oldest revision first. Each item's state includes its historical standing brief and job fields. There is no exact --revision selector or direct job-history revision endpoint; select the requested revision from explicitly read pages. This archive does not recreate unimported source history.", "Save larger pages privately and extract only the needed revision locally rather than passing all historical briefs into model context. Use jobs read JOB_ID for current standing instructions.")
+			out.Semantics = append(out.Semantics, "Oldest revision first. Each item's state includes its historical standing brief and job fields. For a known revision use jobs revision JOB_ID REVISION directly, without paging. This archive does not recreate unimported source history.", "Save larger pages privately and extract only the needed revision locally rather than passing all historical briefs into model context. Use jobs read JOB_ID for current standing instructions.")
 		} else {
-			out.Semantics = append(out.Semantics, "Newest progress sequence first. Contains archived progress, not historical standing briefs; use jobs history JOB_ID when recovering a brief.")
+			out.Semantics = append(out.Semantics, "Newest progress sequence first. Contains archived progress, not historical standing briefs; use jobs revision JOB_ID REVISION for a known brief revision or jobs history JOB_ID for discovery.")
 		}
 		out.Example = "<bound launcher> " + operation + " job_0123456789abcdef0123456789abcdef --limit 20"
 		out.Documentation = "docs/job-state.md"
@@ -297,6 +297,43 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"Brief files contain exact UTF-8 text, at most 32 KiB; empty is allowed. Use a regular file with owner-private POSIX permissions. Inline and file forms are mutually exclusive.", recovery}
 		out.Example = "<bound launcher> jobs create --title 'Implement transport' --brief-file /private/brief.md --key job-create-1"
 		out.Documentation = "docs/job-state.md"
+	case "jobs revision":
+		out.Usage = "<bound launcher> jobs revision JOB_ID REVISION"
+		out.Required = []string{"JOB_ID", "REVISION (positive integer identifying one retained native job state)"}
+		out.Semantics = []string{"Reads exactly one immutable history entry: revision, actor_id, original state including full brief, and created_at. No pagination, current notes/checklist context, provider work or writes.", "A missing retained revision returns not_found. No fallback to today's job, nearest revision or unimported source history. Use jobs read JOB_ID for current standing instructions."}
+		out.Example = "<bound launcher> jobs revision job_0123456789abcdef0123456789abcdef 193"
+		out.Documentation = "docs/job-state.md"
+	case "jobs read":
+		out.Usage = "<bound launcher> jobs read JOB_ID"
+		out.Required = []string{"JOB_ID"}
+		out.Semantics = []string{"Reads the full current brief/progress, remaining checklist and bounded pending job-note previews. Does not read worker inbox or job archives.", "Use jobs revision JOB_ID REVISION for a known historical full state. Use jobs history for one explicit oldest-first archive page; progress-history contains progress only."}
+		out.Example = "<bound launcher> jobs read job_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/job-state.md"
+	case "inbox read":
+		out.Usage = "<bound launcher> inbox read MESSAGE_ID"
+		out.Required = []string{"MESSAGE_ID"}
+		out.Semantics = []string{"Reads one immutable message body and its own metadata under the bound project/worker. No automatic conversation expansion, seen transition or acknowledgement.", "Find full IDs through inbox list; use inbox thread CONVERSATION_ID for deliberate surrounding context. Reads perform no provider work or writes."}
+		out.Example = "<bound launcher> inbox read msg_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/development.md"
+	case "inbox thread":
+		out.Usage = "<bound launcher> inbox thread CONVERSATION_ID [--limit N] [--cursor CURSOR]"
+		out.Required = []string{"CONVERSATION_ID"}
+		out.Optional = []string{"--limit N (1-100, default 20)", "--cursor CURSOR"}
+		out.Semantics = []string{"Reads one explicit conversation page containing full message bodies. Check has_more and use the returned cursor deliberately; no automatic pagination.", "Reading a thread never marks messages seen or acknowledged and performs no provider work or writes."}
+		out.Example = "<bound launcher> inbox thread conv_0123456789abcdef0123456789abcdef --limit 20"
+		out.Documentation = "docs/development.md"
+	case "notes read", "notes revision":
+		out.Usage = "<bound launcher> " + operation + " NOTE_ID"
+		out.Required = []string{"NOTE_ID"}
+		out.Semantics = []string{"Reads the selected full private note body and metadata. Does not consume or dismiss the note, expand histories or perform provider work."}
+		out.Example = "<bound launcher> " + operation + " note_0123456789abcdef0123456789abcdef"
+		if operation == "notes revision" {
+			out.Usage += " REVISION"
+			out.Required = append(out.Required, "REVISION (positive retained note revision)")
+			out.Example += " 1"
+			out.Semantics = append(out.Semantics, "Reads that immutable note revision, including recorded attribution; missing history never falls back to the current note.")
+		}
+		out.Documentation = "docs/notes.md"
 	case "jobs status":
 		out.Usage = "<bound launcher> jobs status JOB_ID"
 		out.Required = []string{"JOB_ID"}
@@ -329,13 +366,13 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Example = "<bound launcher> inbox wait --cursor saved-event-cursor --wait-seconds 25"
 		out.Documentation = "docs/message-wait.md"
 	case "inbox list", "inbox snapshot":
-		out.Usage = "<bound launcher> " + operation + " [--limit N] [--cursor CURSOR] [--unread] [--unacknowledged] | <bound launcher> " + operation + " [--limit N] [--cursor CURSOR] --all"
-		out.Optional = []string{"--limit N (1-100)", "--cursor CURSOR (inbox pagination)", "--unread", "--unacknowledged (default)", "--all (cannot combine with --unread or --unacknowledged)"}
-		out.Semantics = []string{"Reads one compact inbox page for the bound worker. Defaults to pending, unacknowledged messages, including seen-but-unhandled messages; --unread narrows to unseen pending messages, not all pending work. --all includes handled history.", "Pages use durable insertion order, oldest first; no recent-first option exists. Continue has_more with cursor and the same filters. inbox snapshot also returns event_cursor for later arrivals via inbox events or inbox wait; this is not an inbox pagination cursor.", "No provider work, automatic pagination, message seen update or acknowledgment occurs. Read selected full message bodies with inbox read MESSAGE_ID."}
+		out.Usage = "<bound launcher> " + operation + " [--limit N] [--cursor CURSOR] [--unread] [--unacknowledged] [--newest] | <bound launcher> " + operation + " [--limit N] [--cursor CURSOR] [--newest] --all"
+		out.Optional = []string{"--limit N (1-100)", "--cursor CURSOR (inbox pagination)", "--unread", "--unacknowledged (default)", "--newest (latest pending first, including seen-but-unhandled)", "--all (cannot combine with --unread or --unacknowledged)"}
+		out.Semantics = []string{"Reads one compact inbox page for the bound worker. Defaults to pending, unacknowledged messages, including seen-but-unhandled messages; --unread narrows to unseen pending messages, not all pending work. --all includes handled history.", "Pages default to oldest-first insertion order. --newest reads newest first without hiding or acknowledging older work. Continue has_more with cursor and the same filters/order. inbox snapshot also returns event_cursor for later arrivals via inbox events or inbox wait; this is not an inbox pagination cursor.", "No provider work, automatic pagination, message seen update or acknowledgment occurs. Read selected full message bodies with inbox read MESSAGE_ID."}
 		out.Example = "<bound launcher> " + operation + " --unread --limit 20"
 		if operation == "inbox snapshot" {
 			out.Semantics[0] = "Reads one compact inbox page plus event_cursor from the same snapshot. Defaults to pending, unacknowledged messages, including seen-but-unhandled messages; --unread narrows to unseen pending messages, not all pending work. --all includes handled history."
-			out.Semantics[1] = "Pages use durable insertion order, oldest first; no recent-first option exists. Continue inbox.has_more with inbox.cursor and the same filters. event_cursor is a separate watermark for inbox events or inbox wait to discover later arrivals; it is not an inbox pagination cursor."
+			out.Semantics[1] = "Pages default to oldest-first insertion order. --newest reads newest first without hiding or acknowledging older work. Continue inbox.has_more with inbox.cursor and the same filters/order. event_cursor is a separate watermark for inbox events or inbox wait to discover later arrivals; it is not an inbox pagination cursor."
 			out.Example = "<bound launcher> inbox snapshot --unacknowledged --limit 20"
 		}
 		out.Documentation = "docs/message-events.md"

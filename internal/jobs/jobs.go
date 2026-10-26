@@ -63,6 +63,7 @@ func Register(mux *http.ServeMux, store *core.Store, options ...Option) {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/summary/history/{revision}", getSummaryRevision(store))
 	mux.HandleFunc("PATCH /api/v1/projects/{project_id}/jobs/{job_id}", editJob(store, config.publicProjection))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/history", jobHistory(store))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/history/{revision}", getJobRevision(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/progress/history", currentProgressHistory(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/updates", updateHistory(store))
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checklist", getChecklist(store))

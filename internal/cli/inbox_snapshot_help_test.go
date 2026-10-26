@@ -41,7 +41,7 @@ func TestInboxSnapshotHelpOfflineWithoutCredentials(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			code := RunContext(ctx, args, nil, &stdout, &stderr)
 			var help operationHelpResponse
-			if code != ExitSuccess || stderr.Len() != 0 || stdout.Len() > 2048 || json.Unmarshal(stdout.Bytes(), &help) != nil || len(help.Required) != 0 || len(help.Optional) != 5 || help.Documentation != "docs/message-events.md" {
+			if code != ExitSuccess || stderr.Len() != 0 || stdout.Len() > 2048 || json.Unmarshal(stdout.Bytes(), &help) != nil || len(help.Required) != 0 || len(help.Optional) != 6 || help.Documentation != "docs/message-events.md" {
 				t.Fatalf("offline help failed: %v code%d out%s err%s", args, code, &stdout, &stderr)
 			}
 			for _, text := range []string{"pending, unacknowledged", "seen-but-unhandled", "event_cursor", "inbox.cursor", "same filters", "acknowledgment"} {

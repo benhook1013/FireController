@@ -3,10 +3,18 @@ package mcpadapter
 import (
 	"encoding/json"
 	"math"
+	"strings"
 
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
+
+func invalidHeadSHA(value string) error {
+	if len(value) != 40 || strings.Trim(value, "0123456789abcdef") != "" {
+		return diagnostic("invalid_arguments", "head_sha must contain exactly 40 lowercase hexadecimal characters.", "Use the full PR head SHA from Git or the provider; abbreviated SHAs are not accepted. No request was sent.")
+	}
+	return nil
+}
 
 func reviewControlTool(name string) bool {
 	switch name {
@@ -150,6 +158,9 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 			return args, invalidArguments()
 		}
 		args.reviewSource = client.ReviewSourceRequest{ExpectedConfigurationRevision: *in.Revision, PullNumber: *in.Number, HeadSHA: in.Head, IncludeCI: in.IncludeCI != nil && *in.IncludeCI, IncludeReadiness: in.IncludeReadiness != nil && *in.IncludeReadiness}
+		if err := invalidHeadSHA(in.Head); err != nil {
+			return args, err
+		}
 		if client.ValidateReviewSourceRequest(args.reviewSource) != nil {
 			return args, invalidArguments()
 		}
@@ -201,6 +212,9 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 		}
 		args.key = in.Key
 		args.reviewRequest = client.ReviewRequest{ExpectedConfigurationRevision: *in.Revision, PullNumber: *in.Number, Channel: in.Channel, HeadSHA: in.Head, AllowOutOfOrder: in.AllowOutOfOrder != nil && *in.AllowOutOfOrder}
+		if err := invalidHeadSHA(in.Head); err != nil {
+			return args, err
+		}
 		if client.ValidateReviewRequest(args.reviewRequest) != nil {
 			return args, invalidArguments()
 		}

@@ -42,6 +42,7 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `job_read` | Required job_id; complete current brief/progress, remaining checklist/counts and compact pending exact-job notes. |
 | `job_summary_read` | Required job_id; current optional shareable title/body and independent summary revision; remains private. |
 | `job_summary_set` | Required job_id, expected_job_revision, expected_revision, title, body and idempotency_key; guarded summary replacement or explicit clear. |
+| `job_revision_read` | Required job_id and positive revision; one retained full-state snapshot including its original brief, with no paging/current context/provider work. Missing history returns not_found. |
 | `job_history` | Required job_id and optional limit/cursor; explicit full-state history page. |
 | `job_progress_history` | Required job_id and optional limit/cursor; one explicit unified progress archive page. |
 | `job_update` | Required job_id, expected_revision and idempotency_key; selected title/brief/worker_id/status and partial progress fields; one atomic update and compact receipt. |
@@ -64,7 +65,7 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `note_list` | Optional worker_id/all_workers/direct_only/job_id/phase/kind/status/limit/cursor; compact notes for the bound worker and its currently assigned jobs by default. |
 | `note_history` | Required note_id and optional limit/cursor; one compact revision page. |
 | `note_revision_read` | Required note_id/revision; one full immutable note revision. |
-| `inbox_list` | Optional limit/cursor/unread/unacknowledged; pending previews by default, including seen-but-unhandled. Explicit unacknowledged:false includes handled history. No receipt change. |
+| `inbox_list` | Optional limit/cursor/unread/unacknowledged/newest; pending previews by default, including seen-but-unhandled. Explicit unacknowledged:false includes handled history; newest:true reverses insertion order. Preserve selection on continuation. No receipt change. |
 | `inbox_thread` | Required conversation_id and optional limit/cursor; explicit full-body conversation page. |
 | `inbox_message_read` | Required message_id; one full selected immutable message, without older conversation bodies or seen/ack changes. |
 | `inbox_snapshot` | Same pending/history selection as inbox_list, plus an explicit event cursor from the same read transaction; no receipt change. |
