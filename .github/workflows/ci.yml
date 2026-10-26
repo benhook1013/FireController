@@ -131,10 +131,14 @@ jobs:
       - name: Smoke offsite S3 transfer and encrypted recovery
         timeout-minutes: 4
         run: make offsite-smoke RCLONE="$RUNNER_TEMP/rclone"
+      - name: Install browser system dependencies
+        working-directory: webapp
+        timeout-minutes: 10
+        run: npx --no-install playwright install-deps chromium
       - name: Install pinned Chromium
         working-directory: webapp
         timeout-minutes: 5
-        run: npx --no-install playwright install --with-deps chromium
+        run: npx --no-install playwright install chromium
       - name: Smoke embedded browser lifecycle
         timeout-minutes: 2
         run: make browser-smoke
