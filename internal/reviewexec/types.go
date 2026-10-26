@@ -220,6 +220,10 @@ func validChannel(s string) bool { return s == "cli" || s == "hosted" }
 func invalid() error {
 	return core.Fail("validation_failed", "Use valid bounded review execution fields.", http.StatusBadRequest)
 }
+func configurationRevisionConflict(revision int64) error {
+	return &core.Error{Code: "review_configuration_revision_conflict", Message: "The review execution configuration revision changed.", Status: 409, Details: map[string]int64{"current_revision": revision}}
+}
+
 func conflict() error {
 	return core.Fail("review_conflict", "The review state changed; read its current revision before continuing.", http.StatusConflict)
 }

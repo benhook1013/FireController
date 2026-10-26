@@ -119,7 +119,7 @@ func (e *Engine) EnqueueRun(ctx context.Context, scope core.Scope, key string, i
 			return nil, err
 		}
 		if input.ExpectedConfigurationRevision != nil && *input.ExpectedConfigurationRevision != revision {
-			return nil, conflict()
+			return nil, configurationRevisionConflict(revision)
 		}
 		if c.Paused {
 			return nil, core.Fail("reviews_paused", "Review execution is paused for this project.", 409)

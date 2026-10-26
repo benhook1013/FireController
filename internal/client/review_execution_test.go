@@ -212,7 +212,7 @@ func TestReviewExecutionPublicAPIRequestReplayAndLostCommittedResponse(t *testin
 	f.call(t, "POST", "/api/v1/projects/"+f.project+"/reviews/execution/configuration", f.admin, f.sender, map[string]any{"expected_revision": 1, "capability_id": "synthetic-cli", "mode": "independent", "queue": []int64{2}, "channels": []string{"cli"}, "paused": false})
 	before = executionCounts(t, f)
 	_, err = queuedReviewRequest(t, c, t.Context(), "stale-new-key", request)
-	checkError(t, err, "review_conflict")
+	checkError(t, err, "review_configuration_revision_conflict")
 	if replay, err := queuedReviewRequest(t, c, t.Context(), "request-once", request); err != nil || replay != receipt {
 		t.Fatal("later configuration changed original request replay", replay, err)
 	}

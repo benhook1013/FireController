@@ -476,7 +476,7 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	}
 	if result.Code == "review_configuration_revision_conflict" {
 		result.Message = "The review execution configuration changed since the supplied revision."
-		result.Action = "Read review_execution_read (CLI: reviews execution), verify the current configuration, then submit the intended request using its current revision and a new idempotency key. No source work was queued by this refusal; do not change credentials."
+		result.Action = "Read review_execution_read (CLI: reviews execution), verify the current configuration, then submit the intended request using its current revision and a new idempotency key. No work was queued by this refusal; do not change credentials."
 	}
 	if result.Code == "reviews_readiness_unavailable" {
 		result.Message = "No completed source refresh with readiness is available for this PR."

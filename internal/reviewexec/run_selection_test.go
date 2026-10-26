@@ -160,7 +160,7 @@ func TestRunSelectionAuthorityCASAndPendingChannels(t *testing.T) {
 	attemptCode(t, err, "validation_failed")
 	stale := int64(2)
 	_, err = f.e.EnqueueRun(t.Context(), scope, "stale", RunRequest{Channel: "cli", ExpectedConfigurationRevision: &stale})
-	attemptCode(t, err, "review_conflict")
+	attemptCode(t, err, "review_configuration_revision_conflict")
 	_, err = f.e.EnqueueRun(t.Context(), selectionScope(t, f, attemptProject, f.reader, "read"), "read-only", RunRequest{Channel: "cli"})
 	attemptCode(t, err, "forbidden")
 	if selectionCounts(t, f) != before {

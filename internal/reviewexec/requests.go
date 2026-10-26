@@ -151,7 +151,7 @@ func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Sc
 		return Receipt{}, err
 	}
 	if revision != r.ExpectedConfigurationRevision {
-		return Receipt{}, conflict()
+		return Receipt{}, configurationRevisionConflict(revision)
 	}
 	if c.Paused {
 		return Receipt{}, core.Fail("reviews_paused", "Review execution is paused for this project.", 409)
