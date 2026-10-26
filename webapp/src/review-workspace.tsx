@@ -21,6 +21,7 @@ import { useReviewProgress, ReviewProgressView } from './review-progress-view';
 import type { ReviewProgressItem, ReviewRoundProgress } from './review-progress';
 import { currentReviewFronts, reviewQueueBadges, reviewChannelPosition, type ReviewChannelPosition, type ReviewFronts, type ReviewQueueBadge } from './review-fronts';
 import { useReviewFronts } from './review-fronts-view';
+import { useReviewQueueFrame } from './review-frame-view';
 import type { Project, ReviewGroup, ReviewChannel, ReviewRunCounts, ReviewAttemptSummary, ReviewAttemptItem, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
 
 const pageSize = 20;
@@ -209,11 +210,12 @@ function ReviewQueueWindow({ embedded, history }: { embedded: boolean; history: 
   const paging = usePaging();
   const [continuationSnapshot, setContinuationSnapshot] = useState('current');
   const query = useQuery(reviewQueueQuery(session, key, history ? 'merged' : 'recent', paging.cursor, paging.number === 1 ? 'current' : continuationSnapshot));
-  const page = query.data;
+  const fronts = useReviewFronts(!history && !!query.data?.configured);
+  const frame = useReviewQueueFrame(JSON.stringify([...key, 'review-queue', paging.cursor]), query, fronts, !history);
+  const page = history ? query.data : frame?.queue;
   const progress = useReviewProgress(history ? [] : page?.items.map(pull => pull.number) ?? []);
-  const fronts = useReviewFronts(!history && !!page?.configured);
-  const currentFronts = !history && page ? currentReviewFronts(page.snapshot_id, page.items, fronts.error ? undefined : fronts.data) : undefined;
-  const channels = !history && fronts.data?.configured ? fronts.data.channels.map(channel=>channel.channel) : undefined;
+  const currentFronts = !history && page ? currentReviewFronts(page.snapshot_id, page.items, frame?.fronts) : undefined;
+  const channels = !history && frame?.fronts?.configured ? frame.fronts.channels.map(channel=>channel.channel) : undefined;
   const distances = page ? reviewQueueDistances(page.items, paging.number === 1, page.head_position) : [];
   const sections = page ? groupReviewQueue(page.items, groups) : [];
   useEffect(() => {

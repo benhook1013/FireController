@@ -15,6 +15,7 @@ import { useReviewProgress } from './review-progress-view';
 import type { ReviewProgressItem } from './review-progress';
 import { currentReviewFronts, type ReviewFronts } from './review-fronts';
 import { useReviewFronts } from './review-fronts-view';
+import { useReviewQueueFrame } from './review-frame-view';
 import { RestoringReadingPosition, scrollToReadingTarget } from './reading-position';
 
 type DeliveryWorker = DeliverySnapshot['workers']['items'][number];
@@ -110,11 +111,13 @@ export function MergeHeadContent({ queue, home, progress, fronts, channels }:  {
 export function DeliveryHero({ children }: { children: ReactNode }) {
   const { session, key, home } = useWorkspace();
   const query = useQuery(deliveryReviewQuery(session, key));
-  const progress = useReviewProgress(query.data?.items.map(pull => pull.number) ?? []);
   const fronts = useReviewFronts(!!query.data?.configured);
-  const head = query.data && selectMergeHead(query.data);
+  const frame = useReviewQueueFrame(JSON.stringify([...key, 'delivery-head']), query, fronts);
+  const queue = frame?.queue;
+  const progress = useReviewProgress(queue?.items.map(pull => pull.number) ?? []);
+  const head = queue && selectMergeHead(queue);
   const showHead = Boolean(query.isPending || query.error || head?.state === 'head' || head?.state === 'unknown' && head.reason !== 'unconfigured');
-  return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Merge train head">{query.isPending && !query.data && !query.error ? <MergeHeadSkeleton /> : <ReadState error={query.error} loading={false} empty={false} retained={!!query.data}>{query.data && <MergeHeadContent queue={query.data} home={home} fronts={fronts.error ? undefined : fronts.data} channels={fronts.data?.configured ? fronts.data.channels.map(channel=>channel.channel) : undefined} progress={head?.state !== 'head' ? undefined : progress.data?.items.find(item => item.pull_number === head.pull.number)} />}</ReadState>}</section>}</div>;
+  return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Merge train head">{query.isPending && !queue && !query.error ? <MergeHeadSkeleton /> : <ReadState error={query.error} loading={false} empty={false} retained={!!queue}>{queue && <MergeHeadContent queue={queue} home={home} fronts={frame?.fronts} channels={frame?.fronts?.configured ? frame.fronts.channels.map(channel=>channel.channel) : undefined} progress={head?.state !== 'head' ? undefined : progress.data?.items.find(item => item.pull_number === head.pull.number)} />}</ReadState>}</section>}</div>;
 }
 export function DeliveryWork() {
   const { session, key, home } = useWorkspace();

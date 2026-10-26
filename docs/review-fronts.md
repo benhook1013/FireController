@@ -32,6 +32,8 @@ Refuse a provider-ready claim when the current repository or configuration diffe
 
 Return configured channels independently with `ready`, `held`, `complete` or `unknown` state, a bounded reason where needed, the implicated PR number/head/base where established, and source/local check timestamps. Held results identify the actual blocking PR when known. Preserve the existing admission evaluator's behavior for its callers while exposing this richer diagnostic result. Native pause or restore recovery cannot become permission to request a review; display any such hold explicitly.
 
+During browser refresh, retain the last matching queue and front assessment as one display frame until both replacement reads agree on their snapshot. A temporary mismatch is not a transition to Queued. Keep the existing source/lifecycle checks, project/page isolation and independent closure controls; apply a genuine front change when its matching queue arrives. If a write lands between completed reads, perform only a bounded, provider-free reconciliation rather than requiring another user refresh. The hero and queue share this behavior.
+
 ## Storage and recovery
 
 The optional `review_fronts` schema version one owns a project/channel current-frame table, foreign project identity and strict canonical row validation. Ordinary current lookups use its primary key. Older canonical backups without this optional domain remain supported; backups containing it validate its exact schema, bounded canonical data, source identities and prefix invariants. Inactive restore preserves its historical observation facts and the normal recovery fence. Cached source never bypasses the fresh-request or restore-resumption boundary.
