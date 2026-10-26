@@ -134,7 +134,14 @@ jobs:
       - name: Install browser system dependencies
         working-directory: webapp
         timeout-minutes: 10
-        run: npx --no-install playwright install-deps chromium
+        run: |
+          test -f /etc/apt/apt-mirrors.txt
+          printf '%s\tpriority:%s\n' \
+            'https://archive.ubuntu.com/ubuntu/' 1 \
+            'http://azure.archive.ubuntu.com/ubuntu/' 2 \
+            'https://security.ubuntu.com/ubuntu/' 3 \
+            | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+          npx --no-install playwright install-deps chromium
       - name: Install pinned Chromium
         working-directory: webapp
         timeout-minutes: 5
