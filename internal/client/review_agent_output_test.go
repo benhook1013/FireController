@@ -150,7 +150,11 @@ func TestAgentAllowanceDiagnosticsKeepOriginalStatusAndDoNotAuthorizeRetry(t *te
 		v := ReviewOperationStatus{ID: "original", Channel: "hosted", State: "held", Reason: reason, Stage: "held", NextAction: "read_diagnostics", AttemptID: "original_attempt", Revision: 3}
 		out := AgentReviewOperationStatus(v)
 		full := ReviewOperation{ID: v.ID, Channel: v.Channel, State: v.State, Reason: v.Reason, AttemptID: v.AttemptID, Revision: v.Revision}
-		if !reflect.DeepEqual(out.ReviewOperationStatus, v) || out.Diagnostic == nil || !reflect.DeepEqual(out.Diagnostic, AgentReviewOperation(full).Diagnostic) || !strings.Contains(strings.ToLower(out.Diagnostic.NextAction), "do not") {
+		want := v
+		if reason == "hosted_allowance_reply_pending" {
+			want.NextAction = "new_request_to_recheck_allowance"
+		}
+		if !reflect.DeepEqual(out.ReviewOperationStatus, want) || out.Diagnostic == nil || !reflect.DeepEqual(out.Diagnostic, AgentReviewOperation(full).Diagnostic) || !strings.Contains(strings.ToLower(out.Diagnostic.NextAction), "do not") {
 			t.Fatal("missing safe guidance or changed original operation", out)
 		}
 		v.State = "active"
@@ -191,6 +195,39 @@ func TestAgentHostedTriggerDiagnosticsDistinguishDeliveryFromExecution(t *testin
 					}
 				}
 			}
+		}
+	}
+}
+
+func TestAgentLateHostedAllowanceRetryIsOnlyKnownTerminalPreparation(t *testing.T) {
+	base := ReviewOperationStatus{ID: "original", Channel: "hosted", State: "held", Reason: "hosted_allowance_reply_pending", Stage: "held", NextAction: "read_diagnostics", AttemptID: "original_attempt", Revision: 3}
+	for _, change := range []func(*ReviewOperationStatus){nil, func(v *ReviewOperationStatus) { v.Channel = "cli" }, func(v *ReviewOperationStatus) { v.State = "uncertain" }, func(v *ReviewOperationStatus) { v.State = "active" }, func(v *ReviewOperationStatus) { v.Reason = "hosted_allowance_unproven" }, func(v *ReviewOperationStatus) { v.Reason = "trigger_post_unproven" }} {
+		v := base
+		if change != nil {
+			change(&v)
+		}
+		want := v
+		if change == nil {
+			want.NextAction = "new_request_to_recheck_allowance"
+		}
+		out := AgentReviewOperationStatus(v)
+		if out.ReviewOperationStatus != want {
+			t.Fatal("late-query guidance changed facts or unrelated next action", out, want)
+		}
+		if change != nil {
+			continue
+		}
+		if out.Diagnostic == nil || !strings.Contains(out.Diagnostic.Explanation, "hold is terminal") || !strings.Contains(out.Diagnostic.Explanation, "late reply does not resume") {
+			t.Fatal("invented automatic continuation", out)
+		}
+		for _, phrase := range []string{"still-authorized planned review", "fresh idempotency key", "current configuration/head", "fresh allowance", "no manual GitHub repair", "known provider cooldown", "old available reply is not fresh permission", "unknown action outcome must keep its original key"} {
+			if !strings.Contains(out.Diagnostic.NextAction, phrase) {
+				t.Fatal("missing safe continuation distinction", out)
+			}
+		}
+		b, err := json.Marshal(out)
+		if err != nil || len(b) > 2048 {
+			t.Fatal("unbounded late-query diagnostic", err)
 		}
 	}
 }

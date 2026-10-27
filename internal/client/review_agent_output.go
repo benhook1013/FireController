@@ -24,6 +24,9 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if value.Channel == "hosted" && value.State == "held" && value.Reason == "hosted_allowance_cooldown" {
 		value.NextAction = "new_request_after_cooldown"
 	}
+	if value.Channel == "hosted" && value.State == "held" && value.Reason == "hosted_allowance_reply_pending" {
+		value.NextAction = "new_request_to_recheck_allowance"
+	}
 	if value.Channel == "cli" && value.State == "held" && value.Reason == "allowance_exhausted" {
 		value.NextAction = "retry_later_with_new_request"
 	}
@@ -101,7 +104,10 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 		}
 		return &ReviewOperationDiagnostic{"The provider reported a cooldown before a review trigger was posted. This held operation is terminal: replaying its key returns the same result, and there is no resume command for this hold.", "Respect the original allowance.retry_not_before; if absent, verify the provider's cooldown reply first. Once eligible and still authorized, submit one new review_request with a fresh idempotency key, current configuration revision and qualified head. Normal admission and provider limits still apply. Preserve this held operation; do not reset controls or use a fresh key for an unknown outcome."}
 	case "hosted_allowance_reply_pending":
-		return &ReviewOperationDiagnostic{"The original non-review rate-limit query was observed, but no attributable provider reply arrived within the bounded preparation window. No review trigger was posted.", "Inspect the original rate-limit query reply on this PR and respect any cooldown before a separately authorized new request. Replaying the original key returns this held operation. Do not repost the old query, reset round limits or assume allowance is available."}
+		if channel != "hosted" {
+			return nil
+		}
+		return &ReviewOperationDiagnostic{"The original non-review rate-limit query was observed without an attributable reply during bounded preparation. No review trigger was posted. This hold is terminal: a late reply does not resume it.", "For the still-authorized planned review, use one later new review_request with a fresh idempotency key and current configuration/head. Normal preflight obtains fresh allowance and rechecks admission; no manual GitHub repair or extra round grant is required merely because preparation held. Respect any known provider cooldown and avoid rapid retries. An old available reply is not fresh permission. The original key replays this hold; do not repost its query or reset controls. An unknown action outcome must keep its original key instead."}
 	case "hosted_allowance_unproven":
 		return &ReviewOperationDiagnostic{"Hosted preparation could not establish included review availability from its retained query evidence. This is not proof of exhausted local review rounds or a started review.", "Inspect the original provider query/reply and report this operation and attempt to the controller maintainer if the cause remains unclear. Preserve the original request and key; do not reset round limits or blindly repost."}
 	case "parent_moved":
