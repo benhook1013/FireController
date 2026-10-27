@@ -9,7 +9,7 @@ import (
 )
 
 func TestSourceCICandidateDiagnosticRetainedWithoutCreditOrRecollection(t *testing.T) {
-	for _, reason := range []string{"ci_merge_identity_unproven", "ci_merge_pending"} {
+	for _, reason := range []string{"ci_merge_identity_unproven", "ci_merge_base_mismatch", "ci_merge_pending"} {
 		t.Run(reason, func(t *testing.T) {
 			f := newAttemptFixture(t)
 			f.configure(t, attemptProject, "test-capability", 0, false)

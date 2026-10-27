@@ -162,6 +162,8 @@ func AgentReviewCI(value ReviewSourceCIAssessment) ReviewCIOutput {
 		return out
 	}
 	switch value.Reason {
+	case "ci_merge_base_mismatch":
+		out.Diagnostic = &ReviewCIDiagnostic{"GitHub's test merge contains this PR's head, but its other parent differs from the stable live base-branch tip. The PR endpoint's base.sha and merge_commit_sha can agree with each other while lagging a base-branch update. Checks on that merge do not prove the current-base comparison.", "Use the current base-branch comparison through the repository's normal update workflow, then collect its matching CI. Repeatedly reading the old refresh or rerunning checks on its old merge cannot establish that identity. Do not create a no-op commit, bypass CI or reset earned review/taper progress solely for this refusal."}
 	case "ci_merge_identity_unproven":
 		out.Diagnostic = &ReviewCIDiagnostic{"GitHub's test-merge identity could not be verified against this PR's observed head and base. Existing check results are not proof for that comparison.", "Check the current PR head/base and wait for GitHub to publish the matching test merge; then collect CI for that comparison. Do not create a no-op commit or rerun checks solely to bypass this refusal."}
 	case "ci_provider_observation_changed_assessment", "ci_observation_changed":

@@ -28,6 +28,8 @@ Before crediting a passing result, collection rechecks the source candidate, req
 
 GitHub may report a PR mergeable while its test-merge commit still has an earlier base parent after retargeting. The collector keeps CI unproven until the selected merge identity is established; it does not substitute the mergeability flag for that proof. Compact observations preserve the known candidate reason (`ci_merge_identity_unproven`, `ci_merge_pending`, `ci_candidate_changed` or `ci_target_changed`) instead of folding every case into `ci_target_unproven`. This diagnostic does not change selection, grant CI credit or trigger a retry. Previously retained observations remain unchanged.
 
+When the selected merge object has exactly two distinct parents including the expected PR head, but its other parent differs from a stable independently read base-branch tip, fresh collection reports `ci_merge_base_mismatch`. The PR endpoint's `base.sha` and its test-merge parents may match each other while both lag the live branch. Existing successes on that older comparison do not prove CI for the current base. CLI/MCP explains this distinction directly; source alignment follows the repository's normal workflow rather than repeated old-refresh reads, no-op commits, CI bypass or review/taper resets. Moving branches, wrong merge objects and other unproven identities retain their separate refusal paths. Old observations are not reclassified.
+
 ## Current workflow identity
 
 For GitHub Actions, workflow identity and provider run number select the newest run for the selected commit. A newer pending or failed run prevents an older successful run from supplying credit. Event type, timestamps and numerical check-run IDs do not establish currentness by themselves.

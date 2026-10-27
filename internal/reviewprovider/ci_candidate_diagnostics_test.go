@@ -7,7 +7,8 @@ import (
 
 func TestObserveRequiredCIReportsCandidateReasonWithoutResultCredit(t *testing.T) {
 	for _, tc := range []struct{ mode, reason string }{
-		{"stale_merge_parent", "ci_merge_identity_unproven"},
+		{"stale_merge_parent", "ci_merge_base_mismatch"},
+		{"cached_base_parent", "ci_merge_base_mismatch"},
 		{"pending", "ci_merge_pending"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
@@ -17,7 +18,7 @@ func TestObserveRequiredCIReportsCandidateReasonWithoutResultCredit(t *testing.T
 				t.Fatal("candidate diagnostic lost or unsafe result credit", got, err)
 			}
 			paths, counts := f.snapshot()
-			if counts[candidatePullPath] != 2 || tc.mode == "stale_merge_parent" && (counts[candidateCommitPath] != 1 || counts[candidateBranchPath] != 2) || tc.mode == "pending" && counts[candidateCommitPath] != 0 {
+			if counts[candidatePullPath] != 2 || tc.mode != "pending" && (counts[candidateCommitPath] != 1 || counts[candidateBranchPath] != 2) || tc.mode == "pending" && counts[candidateCommitPath] != 0 {
 				t.Fatal("candidate collection scope or bounded reads changed", counts)
 			}
 			for _, path := range paths {

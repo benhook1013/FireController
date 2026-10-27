@@ -147,6 +147,9 @@ func (f *ciObservationFixture) serve(w http.ResponseWriter, r *http.Request) {
 		body = pull
 	case r.URL.Path == candidateBranchPath:
 		body = candidateBranchFixture()
+		if f.mode == "cached_base_parent" {
+			body.(map[string]any)["commit"].(map[string]any)["sha"] = strings.Repeat("d", 40)
+		}
 	case r.URL.Path == candidateCommitPath:
 		body = candidateCommitFixture(candidateBase, candidateHead)
 		if f.mode == "stale_merge_parent" {

@@ -84,7 +84,7 @@ func TestAgentOperationParentDiagnosticsPreserveCompactAndFullFacts(t *testing.T
 	}
 }
 func TestAgentCIDiagnosticPreservesRefusal(t *testing.T) {
-	for _, reason := range []string{"ci_merge_identity_unproven", "ci_merge_pending", "ci_provider_observation_changed_assessment", "ci_observation_changed", "ci_provider_observation_changed_head_results", "ci_provider_observation_changed_merge_results", "ci_provider_observation_changed_results_recheck", "ci_provider_observation_changed_merge_results_recheck", "ci_provider_invalid_response_assessment", "other_reason"} {
+	for _, reason := range []string{"ci_merge_identity_unproven", "ci_merge_base_mismatch", "ci_merge_pending", "ci_provider_observation_changed_assessment", "ci_observation_changed", "ci_provider_observation_changed_head_results", "ci_provider_observation_changed_merge_results", "ci_provider_observation_changed_results_recheck", "ci_provider_observation_changed_merge_results_recheck", "ci_provider_invalid_response_assessment", "other_reason"} {
 		v := ReviewSourceCIAssessment{State: "unproven", Reason: reason}
 		out := AgentReviewCI(v)
 		if !reflect.DeepEqual(out.ReviewSourceCIAssessment, v) || (out.Diagnostic != nil) != (reason != "other_reason") {
@@ -98,7 +98,7 @@ func TestAgentCIDiagnosticPreservesRefusal(t *testing.T) {
 
 func TestAgentCompositeCIDiagnosticsPreserveFactsAndFlatReceipts(t *testing.T) {
 	for _, state := range []string{"unproven", "pending", "satisfied", "held"} {
-		for _, reason := range []string{"ci_provider_observation_changed_assessment", "ci_provider_observation_changed_head_results", "ci_provider_invalid_response_assessment", "unknown"} {
+		for _, reason := range []string{"ci_merge_base_mismatch", "ci_provider_observation_changed_assessment", "ci_provider_observation_changed_head_results", "ci_provider_invalid_response_assessment", "unknown"} {
 			ci := ReviewSourceCISummary{State: state, Reason: reason, Required: 0}
 			readiness := ReviewSourceReadinessAssessment{State: "held", Reasons: []string{"ci_unproven"}, CI: ci}
 			operation := ReviewSourceOperation{ID: "original", Revision: 3, State: "completed", CI: &ci}

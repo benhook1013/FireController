@@ -79,7 +79,7 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 		// mergeable PR can still expose a stale, unverified test merge.
 		if candidate.State == "unproven" {
 			switch candidate.Reason {
-			case "ci_merge_identity_unproven", "ci_merge_pending", "ci_candidate_changed", "ci_target_changed":
+			case "ci_merge_identity_unproven", "ci_merge_base_mismatch", "ci_merge_pending", "ci_candidate_changed", "ci_target_changed":
 				out.Reason = candidate.Reason
 			}
 		}
