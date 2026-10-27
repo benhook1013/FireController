@@ -784,7 +784,7 @@ export class Api {
     if (!coordinationPage(value, defaultLimit(options))) throw new ApiError('invalid_response', 'The service returned an invalid note page.');
     const seen = new Set<string>(); let previous: NoteSummary | undefined;
     for (const item of value.items) {
-      if (!validNoteSummary(item, this.projectId) || seen.has(item.id) || options.job_id !== undefined && item.job_id !== options.job_id || options.phase !== undefined && item.phase !== options.phase || options.kind !== undefined && item.kind !== options.kind || options.status !== 'all' && item.status !== (options.status ?? 'pending') || options.worker_id !== undefined && !options.include_assigned_jobs && item.worker_id !== options.worker_id) throw new ApiError('invalid_response', 'The service returned an invalid note page.');
+      if (!validNoteSummary(item, this.projectId) || seen.has(item.id) || options.job_id !== undefined && item.job_id !== options.job_id || options.phase !== undefined && item.phase !== options.phase || options.kind !== undefined && item.kind !== options.kind || options.status !== 'all' && item.status !== (options.status ?? 'pending') || options.job_id === undefined && options.worker_id !== undefined && !options.include_assigned_jobs && item.worker_id !== options.worker_id) throw new ApiError('invalid_response', 'The service returned an invalid note page.');
       if (previous && (coordinationTimeKey(item.created_at) > coordinationTimeKey(previous.created_at) || coordinationTimeKey(item.created_at) === coordinationTimeKey(previous.created_at) && item.id >= previous.id)) throw new ApiError('invalid_response', 'The service returned an unordered note page.');
       seen.add(item.id); previous = item;
     }

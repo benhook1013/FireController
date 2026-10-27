@@ -33,7 +33,7 @@ func TestMessageEventClientUsesBoundRoutesAndTypedPayloads(t *testing.T) {
 			}
 			write(w, 200, map[string]any{"inbox": client.Page[client.InboxItem]{Items: []client.InboxItem{{ID: "message-one", ConversationID: "conversation-one", SenderWorkerID: "sender-one", RecipientWorkerID: "worker-one", Preview: "preview", CreatedAt: "2026-10-15T12:30:00Z"}}, HasMore: true, Cursor: "inbox-next"}, "event_cursor": "signed-snapshot"})
 		case "/api/v1/projects/project-one/message-events":
-			if r.URL.Query().Get("cursor") != "signed-snapshot" || r.URL.Query().Get("limit") != "1" && r.URL.Query().Get("limit") != "" || r.URL.Query().Get("wait_ms") != "275" && r.URL.Query().Get("wait_ms") != "" {
+			if r.URL.Query().Get("include_assignments") != "true" || r.URL.Query().Get("cursor") != "signed-snapshot" || r.URL.Query().Get("limit") != "1" && r.URL.Query().Get("limit") != "" || r.URL.Query().Get("wait_ms") != "275" && r.URL.Query().Get("wait_ms") != "" {
 				t.Errorf("event query mismatch: %s", r.URL.RawQuery)
 			}
 			w.Header().Set("Content-Type", "application/json")

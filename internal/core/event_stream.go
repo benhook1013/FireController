@@ -9,18 +9,19 @@ import (
 // StreamMessageEvents uses commit notifications as coalesced hints and durable
 // reads as delivery authority. Callbacks run after read transactions finish.
 // Returning from a callback does not acknowledge processing on the client's behalf.
-func (s *Store) StreamMessageEvents(ctx context.Context, scope Scope, cursor string, limit int, deliver func(EventPage) error, heartbeat func() error) error {
-	return s.streamMessageEvents(ctx, scope, cursor, limit, deliver, heartbeat, 15*time.Second)
+// Assignment attention is opt-in and shares the same selected-worker cursor.
+func (s *Store) StreamMessageEvents(ctx context.Context, scope Scope, cursor string, limit int, deliver func(EventPage) error, heartbeat func() error, includeAssignments ...bool) error {
+	return s.streamMessageEvents(ctx, scope, cursor, limit, deliver, heartbeat, 15*time.Second, includeAssignments...)
 }
 
-func (s *Store) streamMessageEvents(ctx context.Context, scope Scope, cursor string, limit int, deliver func(EventPage) error, heartbeat func() error, heartbeatInterval time.Duration) error {
+func (s *Store) streamMessageEvents(ctx context.Context, scope Scope, cursor string, limit int, deliver func(EventPage) error, heartbeat func() error, heartbeatInterval time.Duration, includeAssignments ...bool) error {
 	if scope.WorkerID == "" || cursor == "" || limit < 1 || limit > 100 || deliver == nil || heartbeat == nil {
 		return Fail("validation_failed", "Use a selected worker, snapshot cursor, limit 1-100 and stream callbacks.", 400)
 	}
 	return s.streamEvents(ctx, scope, cursor, messageFeed+scope.WorkerID,
 		messageTopic{project: scope.ProjectID, worker: scope.WorkerID, feed: messageFeed},
 		func(after int64) (streamEventPage, error) {
-			page, err := s.readMessageEvents(ctx, scope, after, limit)
+			page, err := s.readMessageEvents(ctx, scope, after, limit, len(includeAssignments) > 0 && includeAssignments[0])
 			return streamEventPage{page.Cursor, page.HasMore, len(page.Items), func() error { return deliver(page) }}, err
 		}, heartbeat, heartbeatInterval)
 }

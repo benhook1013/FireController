@@ -12,6 +12,7 @@ import (
 
 type noteInvocation struct {
 	operation, id, key     string
+	argumentDiagnostic     *diagnostic
 	revision               int64
 	create                 client.CreateNoteRequest
 	update                 client.UpdateNoteRequest
@@ -207,9 +208,10 @@ func parseNotes(operation string, args []string) (*noteInvocation, bool) {
 		}
 	}
 	if file {
-		value, ok := readNoteBodyFile(values["--body-file"])
+		value, ok, diagnostic := readPrivateTextFileArgument(values["--body-file"], 16<<10, "--body-file")
 		if !ok {
-			return nil, false
+			n.argumentDiagnostic = diagnostic
+			return n, false
 		}
 		if operation == "add" {
 			n.create.Body = value

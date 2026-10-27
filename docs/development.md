@@ -188,6 +188,8 @@ The [project-map agent commands](project-map.md#agent-commands) add explicit com
 
 ## Incoming message replay
 
+`fc inbox sent` rediscovers this bound sender’s outgoing handoffs and recipient handling state; its filters/order match inbox list and its cursors remain distinct. `fc inbox delivery MESSAGE_ID` reads only the selected current recipient receipt. MCP equivalents are `outbox_list` and `inbox_delivery_read`. Both are read-only and never change identity or acknowledge for the recipient.
+
 `fc inbox snapshot` and `fc inbox events` expose the scoped [message-event API](message-events.md). Snapshot includes a compact inbox page and its same-transaction event cursor. Agent `inbox list` and `inbox snapshot` default to unacknowledged messages. `--unacknowledged` remains an explicit spelling of that default; `--all` includes handled history and conflicts with `--unread`/`--unacknowledged`. Preserve the same selection on continuation; history cursors cannot substitute for pending cursors. Raw HTTP and typed-client filter semantics remain explicit and unchanged. Events replays one page or waits up to four seconds for a relevant change, within the normal five-second command budget. Full message bodies and explicit seen/ack actions remain separate calls. The explicit [quiet wait](message-wait.md), `fc inbox wait --cursor CURSOR`, consumes the persistent stream and returns the first new incoming-message event page or a bounded timeout; its default wait is 25 seconds, with no intermediate heartbeat output.
 
 ## Combined client, transport and browser proof

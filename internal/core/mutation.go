@@ -154,7 +154,7 @@ func AppendEvent(ctx context.Context, tx *sql.Tx, scope Scope, eventType, resour
 		if projectEventType(eventType) {
 			changes.topics[messageTopic{project: scope.ProjectID, feed: projectFeed}] = struct{}{}
 		}
-		if eventType == "message.sent" || eventType == "message.seen" || eventType == "message.acknowledged" {
+		if eventType == "message.sent" || eventType == "message.seen" || eventType == "message.acknowledged" || eventType == "job.assigned" || eventType == "job.unassigned" {
 			var recipient struct {
 				Worker string `json:"recipient_worker_id"`
 			}

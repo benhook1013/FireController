@@ -18,9 +18,10 @@ type InboxSnapshot struct {
 }
 
 // MessageEventPayload contains only the compact metadata supported by the
-// incoming-message feed. SenderWorkerID is present only for message.sent.
+// incoming feed. Assignment changes have no conversation and may have an acting
+// sender worker; message.sent always identifies its sender and conversation.
 type MessageEventPayload struct {
-	ConversationID    string  `json:"conversation_id"`
+	ConversationID    string  `json:"conversation_id,omitempty"`
 	RecipientWorkerID string  `json:"recipient_worker_id"`
 	SenderWorkerID    *string `json:"sender_worker_id,omitempty"`
 }
@@ -83,6 +84,7 @@ func (c *Client) MessageEvents(ctx context.Context, cursor string, limit, waitMS
 	}
 	q := make(url.Values)
 	q.Set("cursor", cursor)
+	q.Set("include_assignments", "true")
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))
 	}
@@ -118,14 +120,16 @@ func responsePageLimit(limit int) int {
 }
 
 func (c *Client) validMessageEvent(value MessageEvent) bool {
-	if value.Sequence < 1 || value.ProjectID != c.identity.ProjectID || !validID(value.ResourceID) || value.Revision < 1 || !validID(value.ActorID) || !validTimestamp(value.CreatedAt) || !validID(value.Payload.ConversationID) || value.Payload.RecipientWorkerID != c.identity.WorkerID {
+	if value.Sequence < 1 || value.ProjectID != c.identity.ProjectID || !validID(value.ResourceID) || value.Revision < 1 || !validID(value.ActorID) || !validTimestamp(value.CreatedAt) || value.Payload.RecipientWorkerID != c.identity.WorkerID {
 		return false
 	}
 	switch value.Type {
 	case "message.sent":
-		return value.Payload.SenderWorkerID != nil && validID(*value.Payload.SenderWorkerID)
+		return validID(value.Payload.ConversationID) && value.Payload.SenderWorkerID != nil && validID(*value.Payload.SenderWorkerID)
 	case "message.seen", "message.acknowledged":
-		return value.Payload.SenderWorkerID == nil
+		return validID(value.Payload.ConversationID) && value.Payload.SenderWorkerID == nil
+	case "job.assigned", "job.unassigned":
+		return value.Payload.ConversationID == "" && (value.Payload.SenderWorkerID == nil || validID(*value.Payload.SenderWorkerID) && *value.Payload.SenderWorkerID != c.identity.WorkerID)
 	default:
 		return false
 	}

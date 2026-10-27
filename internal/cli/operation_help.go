@@ -40,9 +40,65 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	evidenceID := "EVIDENCE_ID (review_evidence_ followed by exactly 32 lowercase hexadecimal characters)"
 	out := operationHelpResponse{Required: []string{}, Optional: []string{}}
 	switch operation {
+	case "workers help":
+		out.Usage = "<bound launcher> workers help"
+		out.Optional = []string{"workers list --help", "workers pause-state --help", "workers pause --help", "workers resume --help", "workers pause-history --help"}
+		out.Semantics = []string{"Worker discovery stays in the bound project. Pause reads and changes target the bound worker, independently of job status, primary focus and review execution.", "All help is local; no profile, credential or network reads."}
+		out.Example = "<bound launcher> workers list --help"
+		out.Documentation = "docs/worker-pause.md"
+	case "workers list":
+		out.Usage = "<bound launcher> workers list [--limit N] [--cursor CURSOR]"
+		out.Optional = []string{"--limit N (1-100, default 20)", "--cursor CURSOR"}
+		out.Semantics = []string{"Returns one compact page of worker IDs and names in the bound project. Names do not select an authenticated identity or change the current binding.", "Check has_more and continue with the returned cursor. No automatic pagination, pause/history fanout, provider work or writes."}
+		out.Example = "<bound launcher> workers list --limit 20"
+		out.Documentation = "docs/development.md"
+	case "workers pause-state":
+		out.Usage = "<bound launcher> workers pause-state"
+		out.Semantics = []string{"Reads the bound worker's current worker_id, revision, paused flag and private reason. Initially revision 0, paused false and empty reason.", "Coordination pause does not stop a chat, deny writes or change jobs, primary focus or review execution. No history, provider work or writes."}
+		out.Example = "<bound launcher> workers pause-state"
+		out.Documentation = "docs/worker-pause.md"
+	case "workers pause", "workers resume":
+		out.Usage = "<bound launcher> " + operation + " --expect-revision N --key KEY"
+		out.Required = []string{"--expect-revision N (current worker-pause revision, including 0)", "--key KEY"}
+		out.Semantics = []string{"Read workers pause-state for the current revision. Targets only the bound worker; the pause revision is independent of job and primary-focus revisions.", "Changes coordination state only; does not start/stop a chat, deny mutations, edit jobs or change review execution. Same-state no-op preserves its revision.", recovery}
+		out.Example = "<bound launcher> workers resume --expect-revision 2 --key resume-1"
+		if operation == "workers pause" {
+			out.Usage += " --reason TEXT"
+			out.Required = append(out.Required, "--reason TEXT (explicit, including empty; at most 1024 UTF-8 bytes)")
+			out.Semantics = append(out.Semantics, "The reason stays private; new assignments, progress changes and reconnects preserve the pause. Resume explicitly with workers resume.")
+			out.Example = "<bound launcher> workers pause --expect-revision 0 --key pause-1 --reason 'Awaiting human direction'"
+		} else {
+			out.Semantics = append(out.Semantics, "Explicitly clears both paused and reason. No --reason flag.")
+		}
+		out.Documentation = "docs/worker-pause.md"
+	case "workers pause-history", "jobs primary-history":
+		out.Usage = "<bound launcher> " + operation + " [--limit N] [--cursor CURSOR]"
+		out.Optional = []string{"--limit N (1-100, default 20)", "--cursor CURSOR"}
+		out.Semantics = []string{"Reads one newest-revision-first history page for the bound worker. Check has_more and continue with the returned cursor. No automatic pagination, full job briefs, provider work or writes."}
+		out.Example = "<bound launcher> " + operation + " --limit 20"
+		out.Documentation = "docs/worker-pause.md"
+		if operation == "jobs primary-history" {
+			out.Documentation = "docs/worker-focus.md"
+		}
+	case "jobs primary":
+		out.Usage = "<bound launcher> jobs primary"
+		out.Semantics = []string{"Reads the bound worker's optional resume focus: worker_id, independent focus revision and job_id. No focus initially means revision 0 and an empty job_id.", "Focus does not limit concurrent jobs. Blocked, parked and completed jobs can remain primary; read jobs read JOB_ID for full context, or jobs assigned for other open assignments. No automatic job/history reads, provider work or writes."}
+		out.Example = "<bound launcher> jobs primary"
+		out.Documentation = "docs/worker-focus.md"
+	case "jobs primary-set", "jobs primary-clear":
+		out.Usage = "<bound launcher> " + operation + " --expect-revision N --key KEY"
+		out.Required = []string{"--expect-revision N (current primary-focus revision, including 0)", "--key KEY"}
+		out.Semantics = []string{"Read jobs primary for the focus revision; do not use the job revision. Targets the bound worker and preserves job status, brief, assignment and other active jobs.", "An unchanged selection preserves the focus revision. Reassigning or unassigning a selected job clears its previous worker's focus automatically.", recovery}
+		out.Example = "<bound launcher> jobs primary-clear --expect-revision 2 --key focus-clear-1"
+		if operation == "jobs primary-set" {
+			out.Usage = "<bound launcher> jobs primary-set JOB_ID --expect-revision N --key KEY"
+			out.Required = append([]string{"JOB_ID (currently assigned to the bound worker in this project)"}, out.Required...)
+			out.Example = "<bound launcher> jobs primary-set job_0123456789abcdef0123456789abcdef --expect-revision 0 --key focus-1"
+		}
+		out.Documentation = "docs/worker-focus.md"
 	case "jobs help":
 		out.Usage = "<bound launcher> jobs help"
-		out.Optional = []string{"jobs assigned", "jobs read JOB_ID", "jobs status JOB_ID", "jobs revision JOB_ID REVISION", "jobs history --help", "jobs progress-history --help", "jobs update --help", "jobs checklist-item --help"}
+		out.Optional = []string{"jobs primary --help", "jobs primary-set --help", "jobs primary-clear --help", "jobs primary-history --help", "jobs assigned", "jobs read JOB_ID", "jobs status JOB_ID", "jobs revision JOB_ID REVISION", "jobs history --help", "jobs progress-history --help", "jobs update --help", "jobs checklist-item --help"}
 		out.Semantics = []string{"Use jobs read for the full current standing brief and progress; jobs status and assigned are selection aids.", "jobs history contains private state snapshots including historical briefs; progress-history contains only archived progress. Each archive read is one bounded page with explicit continuation."}
 		out.Example = "<bound launcher> jobs history --help"
 		out.Documentation = "docs/development.md"
@@ -320,6 +376,12 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"Reads the full current brief/progress, remaining checklist and bounded pending job-note previews. Does not read worker inbox or job archives.", "Use jobs revision JOB_ID REVISION for a known historical full state. Use jobs history for one explicit oldest-first archive page; progress-history contains progress only."}
 		out.Example = "<bound launcher> jobs read job_0123456789abcdef0123456789abcdef"
 		out.Documentation = "docs/job-state.md"
+	case "inbox delivery":
+		out.Usage = "<bound launcher> inbox delivery MESSAGE_ID"
+		out.Required = []string{"MESSAGE_ID"}
+		out.Semantics = []string{"Reads one current recipient receipt (seen/acknowledged) under the bound project, without the message body or a different worker’s inbox. No writes or provider work.", "Discover outgoing handoffs with inbox sent; use --all there to include already handled history."}
+		out.Example = "<bound launcher> inbox delivery msg_0123456789abcdef0123456789abcdef"
+		out.Documentation = "docs/message-events.md"
 	case "inbox read":
 		out.Usage = "<bound launcher> inbox read MESSAGE_ID"
 		out.Required = []string{"MESSAGE_ID"}
@@ -373,14 +435,18 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Usage = "<bound launcher> inbox wait --cursor EVENT_CURSOR [--limit N] [--wait-seconds N]"
 		out.Required = []string{"--cursor EVENT_CURSOR (event_cursor from inbox snapshot or cursor from a prior successful wait; not inbox.cursor pagination)"}
 		out.Optional = []string{"--limit N (1-100, default 20)", "--wait-seconds N (1-60, default 25)"}
-		out.Semantics = []string{"One quiet bounded wait returns new incoming-message event metadata, or an empty timed_out result with a continuation cursor. Full message bodies require inbox read MESSAGE_ID; this is not a pending-inbox query.", "No automatic retry, reconnect, pagination or acknowledgment occurs; reads never acknowledge or mark messages seen. On error retain the saved cursor, then retry the wait or read the bound-worker inbox when the service is available."}
+		out.Semantics = []string{"One quiet bounded wait returns new incoming-message or job-assignment event metadata, or an empty timed_out result with a continuation cursor. Full message bodies require inbox read MESSAGE_ID; this is not a pending-inbox query.", "No automatic retry, reconnect, pagination or acknowledgment occurs; reads never acknowledge or mark messages seen. On error retain the saved cursor, then retry the wait or read the bound-worker inbox when the service is available."}
 		out.Example = "<bound launcher> inbox wait --cursor saved-event-cursor --wait-seconds 25"
 		out.Documentation = "docs/message-wait.md"
-	case "inbox list", "inbox snapshot":
+	case "inbox list", "inbox snapshot", "inbox sent":
 		out.Usage = "<bound launcher> " + operation + " [--limit N] [--cursor CURSOR] [--unread] [--unacknowledged] [--newest] | <bound launcher> " + operation + " [--limit N] [--cursor CURSOR] [--newest] --all"
 		out.Optional = []string{"--limit N (1-100)", "--cursor CURSOR (inbox pagination)", "--unread", "--unacknowledged (default)", "--newest (latest pending first, including seen-but-unhandled)", "--all (cannot combine with --unread or --unacknowledged)"}
 		out.Semantics = []string{"Reads one compact inbox page for the bound worker. Defaults to pending, unacknowledged messages, including seen-but-unhandled messages; --unread narrows to unseen pending messages, not all pending work. --all includes handled history.", "Pages default to oldest-first insertion order. --newest reads newest first without hiding or acknowledging older work. Continue has_more with cursor and the same filters/order. inbox snapshot also returns event_cursor for later arrivals via inbox events or inbox wait; this is not an inbox pagination cursor.", "No provider work, automatic pagination, message seen update or acknowledgment occurs. Read selected full message bodies with inbox read MESSAGE_ID."}
 		out.Example = "<bound launcher> " + operation + " --unread --limit 20"
+		if operation == "inbox sent" {
+			out.Semantics[0] = "Reads this bound sender’s outgoing handoffs, including recipient and current seen/acknowledged state. Defaults to pending; --all includes handled history. Read-only and never acknowledges for a recipient."
+			out.Semantics[1] = "Continue with the returned outbox cursor and the same filters/order. Incoming and outgoing cursors are distinct. Use inbox delivery MESSAGE_ID for one exact receipt without reading message bodies."
+		}
 		if operation == "inbox snapshot" {
 			out.Semantics[0] = "Reads one compact inbox page plus event_cursor from the same snapshot. Defaults to pending, unacknowledged messages, including seen-but-unhandled messages; --unread narrows to unseen pending messages, not all pending work. --all includes handled history."
 			out.Semantics[1] = "Pages default to oldest-first insertion order. --newest reads newest first without hiding or acknowledging older work. Continue inbox.has_more with inbox.cursor and the same filters/order. event_cursor is a separate watermark for inbox events or inbox wait to discover later arrivals; it is not an inbox pagination cursor."
@@ -397,8 +463,8 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	case "notes list":
 		out.Usage = "<bound launcher> notes list [scope and filters] [--limit N] [--cursor CURSOR]"
 		out.Optional = []string{"--worker WORKER_ID (select another worker in the bound project)", "--all-workers (project scope; exclusive with --worker and --direct-only)", "--direct-only (only notes naming the selected worker; omit assigned-job notes)", "--job JOB_ID", "--phase TEXT (exact label)", "--kind reminder|source", "--status pending|consumed|dismissed|all (default pending)", "--limit N (1-100, default 20)", "--cursor CURSOR (continue the same filters and scope)"}
-		out.Semantics = []string{"Defaults to pending notes naming the bound worker or a job currently assigned to it. Explicit job, phase, kind and status filters narrow that scope; --job does not select all workers by itself.", "For all pending notes attached to one job, use --all-workers --job JOB_ID. Project scope still belongs to the bound project and never changes the authenticated worker.", "Returns compact body_preview and body_truncated with cursor and has_more; no automatic pagination, full bodies, writes or provider work. Read selected full content with notes read NOTE_ID; listing never consumes notes."}
-		out.Example = "<bound launcher> notes list --all-workers --job JOB_ID --limit 20"
+		out.Semantics = []string{"Defaults to pending notes naming the bound worker or a job currently assigned to it. An explicit --job selects all notes for that exact job, independently of worker defaults or assignment. Phase, kind and status still filter within that job.", "Continue notes from jobs read with --job JOB_ID and its cursor; no --all-workers flag is needed. Plain worker discovery keeps its existing scope.", "Returns compact body_preview and body_truncated with cursor and has_more; no automatic pagination, full bodies, writes or provider work. Read selected full content with notes read NOTE_ID; listing never consumes notes."}
+		out.Example = "<bound launcher> notes list --job JOB_ID --limit 20"
 		out.Documentation = "docs/notes.md"
 	case "notes add", "notes update":
 		out.Optional = []string{"--worker WORKER_ID | --clear-worker", "--job JOB_ID", "--phase TEXT", "--kind reminder|source"}

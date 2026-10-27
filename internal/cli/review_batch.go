@@ -38,9 +38,10 @@ func parseReviewBatch(operation string, args []string) (*mutationInvocation, boo
 	if len(positions) != 1 || client.ValidateReviewEvidenceID(positions[0]) != nil || !validMutationKey(values["--key"]) || values["--file"] == "" {
 		return nil, false
 	}
-	data, ok := readPrivateTextFile(values["--file"], client.ReviewBatchMaxBytes)
+	data, ok, diagnostic := readPrivateTextFileArgument(values["--file"], client.ReviewBatchMaxBytes, "--file")
 	if !ok {
-		return nil, false
+		call.argumentDiagnostic = diagnostic
+		return call, false
 	}
 	call.id, call.key = positions[0], values["--key"]
 	var err error

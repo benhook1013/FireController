@@ -203,6 +203,9 @@ func createJob(store *core.Store) http.HandlerFunc {
 				map[string]string{"status": created.Status, "worker_id": created.WorkerID}); err != nil {
 				return nil, err
 			}
+			if err := appendAssignmentEvents(ctx, tx, scope, "", created); err != nil {
+				return nil, err
+			}
 			return receipt{ID: created.ID, Revision: 1, Outcome: "created"}, nil
 		})
 		if err != nil {
@@ -475,6 +478,9 @@ func editJob(store *core.Store, projection func(context.Context, *sql.Tx, string
 			}
 			if err := core.AppendEvent(ctx, tx, scope, "job.updated", next.ID, next.Revision,
 				map[string]string{"status": next.Status, "worker_id": next.WorkerID}); err != nil {
+				return nil, err
+			}
+			if err := appendAssignmentEvents(ctx, tx, scope, current.WorkerID, next); err != nil {
 				return nil, err
 			}
 			if (current.WorkerID != next.WorkerID || current.Status != next.Status) && projection != nil {

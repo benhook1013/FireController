@@ -190,6 +190,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 				t.Fatal(err)
 			}
 			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_snapshot": true, "inbox_events": true, "inbox_thread": true, "jobs_create": true, "job_update": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
+			expected["outbox_list"], expected["inbox_delivery_read"] = true, true
 			expected["wait_for_messages"] = true
 			expected["job_revision_read"] = true
 			expected["inbox_message_read"], expected["job_checklist_item_update"] = true, true

@@ -102,40 +102,45 @@ func prepareTextFiles(values map[string]string, limits map[string]int) bool {
 	return true
 }
 
+// readPrivateTextFileArgument preserves actionable admission failures without
+// exposing input paths, contents or raw operating-system errors.
+func readPrivateTextFileArgument(path string, limit int, flag string) (string, bool, *diagnostic) {
+	value, failure, size := readPrivateTextFileMeasured(path, limit)
+	switch failure {
+	case textFileTooLarge:
+		return "", false, &diagnostic{
+			Code:    "invalid_arguments",
+			Message: fmt.Sprintf("The file supplied for %s is %d bytes; the limit is %d bytes.", flag, size, limit),
+			Action:  fmt.Sprintf("Reduce the supplied file to at most %d UTF-8 bytes, then retry. No request was sent.", limit),
+		}
+	case textFilePermissions:
+		return "", false, &diagnostic{
+			Code:    "invalid_arguments",
+			Message: "The file supplied for " + flag + " has unsafe permissions; group and other access must be disabled.",
+			Action:  "Set the supplied file's permissions to 0600 (chmod 600), then retry with the same file contents and original --key. No request was sent.",
+		}
+	case textFileMissing:
+		return "", false, &diagnostic{
+			Code:    "invalid_arguments",
+			Message: "The file supplied for " + flag + " does not exist.",
+			Action:  "Create the input file or correct its path, then retry with the original --key. No request was sent.",
+		}
+	case textFileUnreadable:
+		return "", false, &diagnostic{
+			Code:    "invalid_arguments",
+			Message: "The file supplied for " + flag + " could not be read.",
+			Action:  "Check that the input file and its parent directories are accessible, then retry with the same file contents and original --key. No request was sent.",
+		}
+	}
+	return value, failure == textFileOK, nil
+}
+
 func loadTextFiles(values map[string]string, limits map[string]int) (bool, *diagnostic) {
 	for flag, limit := range limits {
 		if path, file := values[flag+"-file"]; file {
-			value, failure, size := readPrivateTextFileMeasured(path, limit)
-			if failure == textFileTooLarge {
-				return false, &diagnostic{
-					Code:    "invalid_arguments",
-					Message: fmt.Sprintf("The file supplied for %s-file is %d bytes; the limit is %d bytes.", flag, size, limit),
-					Action:  fmt.Sprintf("Reduce the supplied file to at most %d UTF-8 bytes, then retry. No request was sent.", limit),
-				}
-			}
-			if failure == textFilePermissions {
-				return false, &diagnostic{
-					Code:    "invalid_arguments",
-					Message: "The file supplied for " + flag + "-file has unsafe permissions; group and other access must be disabled.",
-					Action:  "Set the supplied file's permissions to 0600 (chmod 600), then retry with the same file contents and original --key. No request was sent.",
-				}
-			}
-			if failure == textFileMissing {
-				return false, &diagnostic{
-					Code:    "invalid_arguments",
-					Message: "The file supplied for " + flag + "-file does not exist.",
-					Action:  "Create the input file or correct its path, then retry with the original --key. No request was sent.",
-				}
-			}
-			if failure == textFileUnreadable {
-				return false, &diagnostic{
-					Code:    "invalid_arguments",
-					Message: "The file supplied for " + flag + "-file could not be read.",
-					Action:  "Check that the input file and its parent directories are accessible, then retry with the same file contents and original --key. No request was sent.",
-				}
-			}
-			if failure != textFileOK {
-				return false, nil
+			value, ok, diagnostic := readPrivateTextFileArgument(path, limit, flag+"-file")
+			if !ok {
+				return false, diagnostic
 			}
 			values[flag] = value
 		}

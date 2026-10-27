@@ -277,7 +277,7 @@ func (c *Client) Notes(ctx context.Context, options PageOptions, filter NoteFilt
 	var prev *NoteSummary
 	for i := range out.Items {
 		v := &out.Items[i]
-		if !c.validNoteSummary(*v) || seen[v.ID] || filter.JobID != "" && v.JobID != filter.JobID || filter.Phase != "" && v.Phase != filter.Phase || filter.Kind != "" && v.Kind != filter.Kind || filter.Status != "all" && v.Status != defaultNoteStatus(filter.Status) || filter.WorkerID != "" && !filter.IncludeAssignedJobs && v.WorkerID != filter.WorkerID {
+		if !c.validNoteSummary(*v) || seen[v.ID] || filter.JobID != "" && v.JobID != filter.JobID || filter.Phase != "" && v.Phase != filter.Phase || filter.Kind != "" && v.Kind != filter.Kind || filter.Status != "all" && v.Status != defaultNoteStatus(filter.Status) || filter.JobID == "" && filter.WorkerID != "" && !filter.IncludeAssignedJobs && v.WorkerID != filter.WorkerID {
 			return Page[NoteSummary]{}, invalidResponse()
 		}
 		if prev != nil {

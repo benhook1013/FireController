@@ -41,7 +41,7 @@ func MessageWaitBudget(waitSeconds int) time.Duration {
 var errMessageWaitExpired = errors.New("message wait expired")
 
 // WaitForMessages owns one incoming-message stream until the first page with
-// message.sent events or a quiet timeout. It neither acknowledges messages nor
+// message.sent or assignment events or a quiet timeout. It neither acknowledges messages nor
 // reconnects; the caller retains its cursor if any error occurs. Typed zero
 // limit/waitSeconds select 20 events and 25 seconds respectively.
 func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, waitSeconds int) (MessageEventPage, error) {
@@ -93,7 +93,7 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 	}
 	u.Path, _ = url.PathUnescape(escaped)
 	u.RawPath = escaped
-	u.RawQuery = url.Values{"cursor": {cursor}, "limit": {strconv.Itoa(limit)}}.Encode()
+	u.RawQuery = url.Values{"cursor": {cursor}, "limit": {strconv.Itoa(limit)}, "include_assignments": {"true"}}.Encode()
 	r, err := http.NewRequestWithContext(stream, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return MessageEventPage{}, validation()
@@ -184,7 +184,7 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 				return MessageEventPage{}, invalidResponse()
 			}
 			previous = item.Sequence
-			if item.Type == "message.sent" {
+			if item.Type == "message.sent" || item.Type == "job.assigned" || item.Type == "job.unassigned" {
 				sent = append(sent, item)
 			}
 		}

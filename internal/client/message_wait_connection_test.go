@@ -34,7 +34,7 @@ func TestMessageWaitLostHTTPStreamRetainsCallerCursorAndSafeRecovery(t *testing.
 			const cursor = "caller-saved-cursor"
 			s := waitServer(t, func(w http.ResponseWriter, r *http.Request) {
 				streams.Add(1)
-				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/message-events/stream" || r.URL.Query().Get("cursor") != cursor || r.URL.Query().Get("limit") != "1" || len(r.URL.Query()) != 2 {
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/message-events/stream" || r.URL.Query().Get("cursor") != cursor || r.URL.Query().Get("limit") != "1" || r.URL.Query().Get("include_assignments") != "true" || len(r.URL.Query()) != 3 {
 					t.Error("stream failure triggered a write, reconnect or changed caller cursor")
 				}
 				w.Header().Set("Content-Type", "text/event-stream")

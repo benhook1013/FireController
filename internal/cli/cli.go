@@ -100,6 +100,9 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer) int {
 func RunContext(ctx context.Context, args []string, env map[string]string, stdout, stderr io.Writer) int {
 	call, ok := parseInvocation(args)
 	if !ok {
+		if call.notes != nil && call.notes.argumentDiagnostic != nil {
+			return reportDetails(stderr, ExitUsage, *call.notes.argumentDiagnostic)
+		}
 		if call.mutation != nil && call.mutation.argumentDiagnostic != nil {
 			return reportDetails(stderr, ExitUsage, *call.mutation.argumentDiagnostic)
 		}
@@ -329,14 +332,16 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	switch {
 	case call.command == "doctor":
 		identity := service.Identity()
-		if _, err = service.Worker(requestCtx); err != nil {
+		pause, err := service.WorkerPause(requestCtx)
+		if err != nil {
 			return reportClientError(stderr, err, ctx)
 		}
 		value = struct {
 			profile.Context
 			Verified bool `json:"verified"`
 			buildinfo.Connection
-		}{identity, true, buildinfo.ConnectionInfo(Version)}
+			WorkerPause client.WorkerPause `json:"worker_pause"`
+		}{identity, true, buildinfo.ConnectionInfo(Version), pause}
 	case call.command == "reviews":
 		value, err = executeReview(requestCtx, service, call)
 	case call.command == "workers" && call.subcommand == "pause-state":
@@ -369,6 +374,10 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		value, err = service.JobChecklist(requestCtx, call.position[0])
 	case call.command == "jobs" && call.subcommand == "checklist-history":
 		value, err = service.JobChecklistHistory(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+	case call.command == "inbox" && call.subcommand == "sent":
+		value, err = service.Outbox(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack, Newest: call.newest})
+	case call.command == "inbox" && call.subcommand == "delivery":
+		value, err = service.MessageDelivery(requestCtx, call.position[0])
 	case call.command == "inbox" && call.subcommand == "list":
 		value, err = service.Inbox(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack, Newest: call.newest})
 	case call.command == "inbox" && call.subcommand == "snapshot":
@@ -429,7 +438,7 @@ func parseInvocation(args []string) (invocation, bool) {
 	if call.command == "--help" || call.command == "-h" {
 		call.command = "help"
 	}
-	if len(remaining) == 2 && ((call.command == "reviews" || call.command == "jobs") && (remaining[1] == "help" || remaining[1] == "--help") || remaining[0] == "help" && (remaining[1] == "reviews" || remaining[1] == "jobs")) {
+	if len(remaining) == 2 && ((call.command == "reviews" || call.command == "jobs" || call.command == "workers") && (remaining[1] == "help" || remaining[1] == "--help") || remaining[0] == "help" && (remaining[1] == "reviews" || remaining[1] == "jobs" || remaining[1] == "workers")) {
 		group := call.command
 		if group == "help" {
 			group = remaining[1]
@@ -572,7 +581,7 @@ func parseInvocation(args []string) (invocation, bool) {
 	case "jobs assigned":
 		allowed["--limit"], allowed["--cursor"], allowed["--status"], allowed["--all"] = true, true, true, true
 		call.status = "open"
-	case "inbox list":
+	case "inbox list", "inbox sent":
 		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"], allowed["--all"], allowed["--newest"] = true, true, true, true, true, true
 		call.unack = true
 	case "inbox snapshot":
@@ -580,7 +589,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.unack = true
 	case "inbox events":
 		allowed["--cursor"], allowed["--limit"], allowed["--wait-ms"] = true, true, true
-	case "workers pause-state", "jobs primary", "jobs status", "jobs read", "jobs checklist", "jobs summary", "inbox read":
+	case "workers pause-state", "jobs primary", "jobs status", "jobs read", "jobs checklist", "jobs summary", "inbox read", "inbox delivery":
 	default:
 		return call, false
 	}
@@ -670,7 +679,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		return call, false
 	}
 	expected := 0
-	if call.command == "jobs" && (call.subcommand == "status" || call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "progress-history" || call.subcommand == "checklist" || call.subcommand == "checklist-history" || call.subcommand == "summary") || call.command == "inbox" && (call.subcommand == "thread" || call.subcommand == "read") {
+	if call.command == "jobs" && (call.subcommand == "status" || call.subcommand == "read" || call.subcommand == "history" || call.subcommand == "progress-history" || call.subcommand == "checklist" || call.subcommand == "checklist-history" || call.subcommand == "summary") || call.command == "inbox" && (call.subcommand == "thread" || call.subcommand == "read" || call.subcommand == "delivery") {
 		expected = 1
 	}
 	if len(call.position) != expected {

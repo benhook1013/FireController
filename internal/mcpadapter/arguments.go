@@ -164,7 +164,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		dst = new(jobInput)
 	case "job_history":
 		dst = new(historyInput)
-	case "inbox_list":
+	case "inbox_list", "outbox_list":
 		dst = new(inboxInput)
 	case "inbox_snapshot":
 		dst = new(inboxInput)
@@ -172,7 +172,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		dst = new(inboxEventsInput)
 	case "inbox_thread":
 		dst = new(threadInput)
-	case "inbox_message_read":
+	case "inbox_message_read", "inbox_delivery_read":
 		dst = new(messageInput)
 	default:
 		return args, invalidArguments()
@@ -239,7 +239,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if _, ok := fields["status"]; ok && !client.ValidJobStatusFilter(args.status) && !(name == "jobs_assigned" && args.status == "") {
 		return args, invalidArguments()
 	}
-	if name == "job_read" || name == "job_history" || name == "inbox_thread" || name == "inbox_message_read" {
+	if name == "job_read" || name == "job_history" || name == "inbox_thread" || name == "inbox_message_read" || name == "inbox_delivery_read" {
 		if !validID(args.id) {
 			return args, invalidArguments()
 		}
@@ -367,16 +367,18 @@ func toolDefinitions() []definition {
 	return append([]definition{
 		{"presentation_read", "Read the bound project appearance and metadata watermark explicitly. No ordinary job or inbox call includes settings; no provider work or mutation.", schema(map[string]any{})},
 		{"context", "Inspect the immutable local profile and running client source revision/state; no service verification or credential read.", schema(map[string]any{})},
-		{"doctor", "Verify the configured service instance, project and worker; includes the running client source revision/state, without provider work.", schema(map[string]any{})},
+		{"doctor", "Verify the configured instance/project/worker and return current worker_pause (revision, paused and private reason), plus running client source revision/state. No provider work or pause changes.", schema(map[string]any{})},
 		{"workers_list", "Read one compact worker page in the bound project.", schema(map[string]any{"limit": limit, "cursor": cursor})},
 		{"jobs_list", "Read one compact job page with explicit optional worker/status filters.", schema(map[string]any{"limit": limit, "cursor": cursor, "worker_id": id, "status": statusFilter})},
 		{"jobs_assigned", "Read one compact assigned-job page, default open (active, blocked, parked). Explicit status:all includes completed history; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": map[string]any{"type": "string", "enum": []string{"open", "active", "blocked", "parked", "completed", "all"}, "default": "open", "description": "Defaults to open; all explicitly includes completed jobs."}})},
 		{"job_read", "Read one current job snapshot: full private brief and progress, remaining checklist, and exact-job pending-note previews. No worker inbox. Continue pending job notes with note_list(job_id,all_workers:true,cursor); discover worker reminders separately with note_list().", schema(map[string]any{"job_id": id}, "job_id")},
 		{"job_history", "Read one explicit bounded full-state history page for a job.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
+		{"outbox_list", "Read sent handoffs for the bound sender with recipients and current seen/acknowledged state. Defaults to unacknowledged; explicit unacknowledged:false includes handled history. Read-only, bounded; no recipient impersonation or receipt writes.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "newest": map[string]any{"type": "boolean", "description": "Optional newest-first insertion order; retain on continuation. Does not mark older pending messages handled."}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
 		{"inbox_list", "Read one compact pending-message page for the bound worker (unacknowledged by default, including seen-but-unhandled). Set unacknowledged:false for history. Never marks seen or acknowledged.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "newest": map[string]any{"type": "boolean", "description": "Optional newest-first insertion order; retain on continuation. Does not mark older pending messages handled."}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
 		{"inbox_snapshot", "Read one bounded pending inbox page (unacknowledged by default; explicit false includes history) and its explicit scoped event cursor; no cursor is saved, no messages are marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "newest": map[string]any{"type": "boolean", "description": "Optional newest-first insertion order; retain on continuation. Does not mark older pending messages handled."}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
 		{"inbox_events", "Read one bounded incoming-message event page after an explicit cursor, optionally waiting up to 4000 ms. No cursor is saved, no automatic polling or subscription occurs, messages are never marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Required explicit cursor from a scoped snapshot or replay page."}, "limit": limit, "wait_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 4000, "description": "One bounded wait; omission returns immediately."}}, "cursor")},
 		{"inbox_thread", "Read one explicit conversation page with full immutable bodies; no receipt-state change.", schema(map[string]any{"conversation_id": id, "limit": limit, "cursor": cursor}, "conversation_id")},
+		{"inbox_delivery_read", "Read current recipient seen/acknowledged state for one selected message in the bound project, without its body or another worker inbox. Never changes receipt state.", schema(map[string]any{"message_id": id}, "message_id")},
 		{"inbox_message_read", "Read one selected full immutable message by ID without paging older conversation bodies. Does not mark seen or acknowledged; expand conversation context explicitly when needed.", schema(map[string]any{"message_id": id}, "message_id")},
 		{"jobs_create", "Create a job in the bound project using an explicit key; return a compact receipt, without rereading brief/history.", schema(map[string]any{"idempotency_key": key, "title": title, "brief": brief, "worker_id": workerCreate, "status": status}, "idempotency_key", "title")},
 		{"inbox_send", "Send an immutable message as the bound worker with an explicit key, optionally replying to a message; return a compact receipt.", schema(map[string]any{"idempotency_key": key, "recipient_worker_id": id, "body": map[string]any{"type": "string", "minLength": 1, "maxLength": 16 << 10}, "reply_to_message_id": id}, "idempotency_key", "recipient_worker_id", "body")},

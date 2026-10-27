@@ -775,7 +775,7 @@ func TestReadOnlyServiceCommandsUseBoundProfileAndPublicAPIs(t *testing.T) {
 	}
 
 	doctor := decodeSuccess("doctor")
-	if doctor["verified"] != true || doctor["profile"] != "alpha" || doctor["project_id"] != alphaProject || doctor["worker_id"] != alphaOverseer || len(doctor) != 9 || doctor["client_source_revision"] == nil {
+	if doctor["verified"] != true || doctor["profile"] != "alpha" || doctor["project_id"] != alphaProject || doctor["worker_id"] != alphaOverseer || len(doctor) != 10 || doctor["client_source_revision"] == nil {
 		t.Fatalf("doctor output is not the configured verified identity: %v", doctor)
 	}
 	workers := decodeSuccess("workers", "list", "--limit", "1")

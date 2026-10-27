@@ -164,12 +164,14 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "presentation_read":
 				value, err = service.Presentation(ctx)
 			case "doctor":
-				if _, err = service.Worker(ctx); err == nil {
+				var pause client.WorkerPause
+				if pause, err = service.WorkerPause(ctx); err == nil {
 					value = struct {
 						profile.Context
 						Verified bool `json:"verified"`
 						buildinfo.Connection
-					}{service.Identity(), true, buildinfo.ConnectionInfo(Version)}
+						WorkerPause client.WorkerPause `json:"worker_pause"`
+					}{service.Identity(), true, buildinfo.ConnectionInfo(Version), pause}
 				}
 			case "review_queue_add", "review_queue_move":
 				value, err = service.ChangeReviewQueue(ctx, strings.TrimPrefix(tool.name, "review_queue_"), args.key, args.queueChange)
@@ -295,6 +297,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.UpdateJobChecklistItem(ctx, args.key, args.id, args.itemID, args.checklistItem)
 			case "job_checklist_history":
 				value, err = service.JobChecklistHistory(ctx, args.id, options)
+			case "outbox_list":
+				value, err = service.Outbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack, Newest: args.newest})
+			case "inbox_delivery_read":
+				value, err = service.MessageDelivery(ctx, args.id)
 			case "inbox_list":
 				value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack, Newest: args.newest})
 			case "inbox_snapshot":

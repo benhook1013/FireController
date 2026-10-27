@@ -75,7 +75,7 @@ func TestMessageWaitFiltersHandlingAndReturnsFirstRelevantPage(t *testing.T) {
 			t.Error("quiet stream lost client connection identity")
 		}
 		defer close(closed)
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/message-events/stream" || r.URL.Query().Get("cursor") != "cursor & literal" || r.URL.Query().Get("limit") != "20" || len(r.URL.Query()) != 2 || r.Header.Get("X-FC-Instance") != "instance-one" || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("Accept") != "text/event-stream" {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/message-events/stream" || r.URL.Query().Get("cursor") != "cursor & literal" || r.URL.Query().Get("limit") != "20" || r.URL.Query().Get("include_assignments") != "true" || len(r.URL.Query()) != 3 || r.Header.Get("X-FC-Instance") != "instance-one" || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("Accept") != "text/event-stream" {
 			t.Error("wait request did not preserve explicit scope, defaults and selected route")
 		}
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -208,7 +208,7 @@ func TestMessageWaitNonJSONServerErrorsRetainStatusAndCursorRecovery(t *testing.
 				var calls atomic.Int64
 				s := waitServer(t, func(w http.ResponseWriter, r *http.Request) {
 					calls.Add(1)
-					if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/message-events/stream" || r.URL.RawQuery != "cursor=saved-cursor&limit=5" {
+					if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/message-events/stream" || r.URL.RawQuery != "cursor=saved-cursor&include_assignments=true&limit=5" {
 						t.Error("wait selection changed")
 					}
 					w.Header().Set("Content-Type", media)

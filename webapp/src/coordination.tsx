@@ -102,6 +102,7 @@ function NotesBrowser({ params, change }: { params: URLSearchParams; change: (va
   }
   return <div className="coordination"><div className="page-heading"><p className="eyebrow">Project coordination</p><h2>{label}</h2><p>Project reminders and source notes. Reading leaves their status unchanged.</p></div>
     <form className="coordination-filters" onSubmit={apply} aria-label="Note filters">
+      <p>Job ID selects all notes attached to that job. Worker and assignment filters apply when Job ID is empty.</p>
       <label>Worker ID<input value={values.worker_id} onChange={event => update('worker_id', event.target.value)} /></label>
       <label>Job ID<input value={values.job_id} onChange={event => update('job_id', event.target.value)} /></label>
       <label>Phase<input value={values.phase} onChange={event => update('phase', event.target.value)} /></label>

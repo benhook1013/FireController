@@ -131,3 +131,7 @@ The [prepared coordination import](legacy-adoption.md) owns administrator previe
 ## Default job context
 
 [Job state](job-state.md#default-reads) owns the complete working context returned by the ordinary job-detail route. It includes the current job's brief/progress, unfinished checklist items/counts and one compact pending-note page attached to that job. Required current text is never truncated. Further note pages, full note bodies, worker coordination and inbox reads remain deliberate. There is no separate `/jobs/{job_id}/context` route and no provider work during these reads.
+
+## Sent handoff discovery
+
+`GET /api/v1/projects/{project_id}/outbox/{worker_id}` reads one bounded page of that sender’s messages, including recipient identity and current recipient seen/acknowledged state. It shares inbox status/order selectors and preview bounds, but signed pagination cursors are direction-specific. `GET /api/v1/projects/{project_id}/messages/{message_id}/delivery` reads only `id`, `sender_worker_id`, `recipient_worker_id`, `seen` and `acknowledged`. Both require the existing project read authority and perform no writes or provider work; a missing receipt record is unavailable, never invented as unread. Only the recipient’s existing mutations can mark a message seen or acknowledged. Bound CLI/MCP tools select their own sender for discovery and do not require another worker’s connection.

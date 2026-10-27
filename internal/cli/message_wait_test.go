@@ -215,7 +215,7 @@ func TestMessageWaitCommandStreamResyncIsConflictWithoutEffects(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, "/stream") {
 			streams.Add(1)
 			defer func() { released <- struct{}{} }()
-			if r.URL.Path != "/api/v1/projects/"+project+"/message-events/stream" || r.URL.Query().Get("cursor") != original || r.URL.Query().Get("limit") != "20" || len(r.URL.Query()) != 2 || r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("X-FC-Worker") != recipient || r.Header.Get("Authorization") != "Bearer "+f.admin {
+			if r.URL.Path != "/api/v1/projects/"+project+"/message-events/stream" || r.URL.Query().Get("cursor") != original || r.URL.Query().Get("limit") != "20" || len(r.URL.Query()) != 3 || r.URL.Query().Get("include_assignments") != "true" || r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("X-FC-Worker") != recipient || r.Header.Get("Authorization") != "Bearer "+f.admin {
 				t.Error("stream changed its original cursor or scoped binding")
 			}
 			w.Header().Set("Content-Type", "text/event-stream")
