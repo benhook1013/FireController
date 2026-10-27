@@ -6,8 +6,9 @@ RCLONE ?= rclone
 REVIEW_TRANSFER_BUDGET_TEST := TestReviewTransferMaximumBatchUsesOrdinaryWriteBudget
 ADOPTION_OBLIGATIONS_BUDGET_TEST := TestAdoptionObligationsMaximumBatchUsesOrdinaryWriteBudget
 EXTERNAL_HOSTED_BUDGET_TEST := TestExternalHostedMaximumInventoryUsesOrdinaryWriteBudget
+EXECUTION_QUEUE_BUDGET_TEST := TestExecutionQueueMaximumUsesOrdinaryWriteBudget
 MCP_HISTORY_BUDGET_TEST := TestJobHistoryEncodedPagesAcrossCLIAndSDK
-ORDINARY_BUDGET_TESTS := $(REVIEW_TRANSFER_BUDGET_TEST)|$(ADOPTION_OBLIGATIONS_BUDGET_TEST)|$(EXTERNAL_HOSTED_BUDGET_TEST)|$(MCP_HISTORY_BUDGET_TEST)
+ORDINARY_BUDGET_TESTS := $(REVIEW_TRANSFER_BUDGET_TEST)|$(ADOPTION_OBLIGATIONS_BUDGET_TEST)|$(EXTERNAL_HOSTED_BUDGET_TEST)|$(EXECUTION_QUEUE_BUDGET_TEST)|$(MCP_HISTORY_BUDGET_TEST)
 ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
 .PHONY: check workflow-check ci-selection-check fmt-check test test-race test-budgets vet build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke source-converter-check offsite-smoke
@@ -35,15 +36,17 @@ test-budgets:
 	@packages="$$( $(GO) list $(GO_TEST_PACKAGES) )" || exit $$?; \
 	for package in $$packages; do \
 		case "$$package" in \
-			github.com/benhook1013/FireController/internal/reviews) budget_test='$(REVIEW_TRANSFER_BUDGET_TEST)' ;; \
-			github.com/benhook1013/FireController/internal/adoptionholds) budget_test='$(ADOPTION_OBLIGATIONS_BUDGET_TEST)' ;; \
-			github.com/benhook1013/FireController/internal/reviewexec) budget_test='$(EXTERNAL_HOSTED_BUDGET_TEST)' ;; \
-			github.com/benhook1013/FireController/internal/mcpadapter) budget_test='$(MCP_HISTORY_BUDGET_TEST)' ;; \
+			github.com/benhook1013/FireController/internal/reviews) budget_tests='$(REVIEW_TRANSFER_BUDGET_TEST)' ;; \
+			github.com/benhook1013/FireController/internal/adoptionholds) budget_tests='$(ADOPTION_OBLIGATIONS_BUDGET_TEST)' ;; \
+			github.com/benhook1013/FireController/internal/reviewexec) budget_tests='$(EXTERNAL_HOSTED_BUDGET_TEST) $(EXECUTION_QUEUE_BUDGET_TEST)' ;; \
+			github.com/benhook1013/FireController/internal/mcpadapter) budget_tests='$(MCP_HISTORY_BUDGET_TEST)' ;; \
 			*) continue ;; \
 		esac; \
+		for budget_test in $$budget_tests; do \
 		names="$$( $(GO) test -race=false -list "^$$budget_test$$" "$$package" )" || exit $$?; \
 		printf '%s\n' "$$names" | grep -Fx -- "$$budget_test" >/dev/null || { printf '%s\n' 'Ordinary runtime budget test was not discovered.' >&2; exit 1; }; \
 		$(GO) test -race=false -v -count=1 -timeout=20m -run "^$$budget_test$$" "$$package" || exit $$?; \
+		done; \
 	done
 
 vet:

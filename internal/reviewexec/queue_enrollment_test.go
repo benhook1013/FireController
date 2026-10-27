@@ -237,15 +237,22 @@ func TestExecutionQueuePlaceholderIsObservedWithoutSecondEnrollment(t *testing.T
 	}
 }
 
-func TestExecutionQueueMaximumReorderKeepsRetainedPositions(t *testing.T) {
+// This maximum-size transaction is qualified without race instrumentation,
+// like the other ordinary-runtime deadline gates. Smaller queue contracts and
+// concurrent mutation/rollback paths remain in the race suite.
+func TestExecutionQueueMaximumUsesOrdinaryWriteBudget(t *testing.T) {
 	f := queueEnrollmentFixture(t)
 	numbers := make([]int64, 100)
 	for i := range numbers {
 		numbers[i] = int64(i + 1)
 	}
+	started := time.Now()
 	configureQueue(t, f, 0, numbers...)
+	enrollmentTime := time.Since(started)
 	slices.Reverse(numbers)
+	started = time.Now()
 	configureQueue(t, f, 1, numbers...)
+	t.Logf("100 PRs, 200 default channel controls: enrollment=%s reorder=%s; ordinary mutation deadlines unchanged", enrollmentTime, time.Since(started))
 	q := configuredQueue(t, f)
 	if !reflect.DeepEqual(queueNumbers(q), numbers) || q.HasMore {
 		t.Fatal("bounded maximum queue not published in order", q)
