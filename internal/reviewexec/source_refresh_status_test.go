@@ -171,7 +171,12 @@ func TestSourceRefreshQueueStatusRejectsStalePublication(t *testing.T) {
 			f := sourceRefreshStatusFixture(t, "unknown", "unknown")
 			reader := &sourceCITestReader{refreshTestReader: refreshTestReader{pull: func(context.Context, string, int64) (reviewprovider.Pull, error) {
 				if change == "configuration" {
-					f.configure(t, attemptProject, "other-account", 1, false)
+					// Change only the capability, preserving the selected display order.
+					c := enrollmentConfiguration(1, []int64{4, 2}, []string{"cli", "hosted"})
+					c.CapabilityID = "other-account"
+					if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "status-capability-change", c); err != nil {
+						t.Fatal(err)
+					}
 				} else {
 					err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 						pins, err := reviews.PinSourceMetadata(ctx, tx, attemptProject, []int64{2})

@@ -22,7 +22,11 @@ func TestFrontsLocalPositionsIgnoreHiddenMergedHistory(t *testing.T) {
 	}
 	old.MergedAt = time.Now().UTC().Add(-72 * time.Hour).Format(time.RFC3339Nano)
 	recent.MergedAt, latest.MergedAt = stamp(), stamp()
-	request := reviews.ObservationRequest{ExpectedRevision: &one, RepositoryID: 801, Source: "local-history-window", ObservedAt: stamp(), Queue: []reviews.PullInput{frontMergedPull(), old, projectionPull(4), projectionPull(6), recent, latest}}
+	var workspaceRevision int64
+	if err := f.store.DB().QueryRow(`SELECT revision FROM review_workspace WHERE project_id=?`, attemptProject).Scan(&workspaceRevision); err != nil {
+		t.Fatal(err)
+	}
+	request := reviews.ObservationRequest{ExpectedRevision: &workspaceRevision, RepositoryID: 801, Source: "local-history-window", ObservedAt: stamp(), Queue: []reviews.PullInput{frontMergedPull(), old, projectionPull(4), projectionPull(6), recent, latest}}
 	response := f.request(http.MethodPost, "/api/v1/projects/"+attemptProject+"/reviews/observations", f.admin, "local-history-window", encoded(request))
 	if response.Code != http.StatusCreated {
 		t.Fatal(response.Code, response.Body.String())
