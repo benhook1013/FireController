@@ -205,6 +205,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			expected["review_queue"], expected["review_pull"], expected["review_runs"], expected["review_run"], expected["review_attempts"] = true, true, true, true, true
 			expected["review_evidence_read"], expected["review_adjudication_read"], expected["review_finding_decide"], expected["review_finding_fix"], expected["review_source_finalize"] = true, true, true, true, true
 			expected["review_execution_read"], expected["review_operation_read"], expected["review_request"] = true, true, true
+			expected["review_queue_add"], expected["review_queue_move"] = true, true
 			expected["review_operations_list"] = true
 			expected["job_status_read"], expected["review_findings_decide"], expected["review_findings_fix"] = true, true, true
 			expected["review_finding_route"], expected["review_route_read"], expected["review_routes_list"], expected["review_route_decide"], expected["review_route_fix"] = true, true, true, true, true
@@ -220,6 +221,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			}
 			writes := map[string]bool{"jobs_create": true, "job_update": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
 			writes["job_primary_replace"], writes["job_checklist_item_update"] = true, true
+			writes["review_queue_add"], writes["review_queue_move"] = true, true
 			writes["review_rounds_configure"], writes["review_start"] = true, true
 			writes["map_entry_create"], writes["map_entry_replace"], writes["map_entry_update"], writes["job_workstream_replace"] = true, true, true, true
 			writes["worker_pause_replace"] = true
@@ -238,7 +240,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 				}
 				delete(expected, tool.Name)
 				a := tool.Annotations
-				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "review_subagent_update" || tool.Name == "review_rounds_configure" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "map_entry_update" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_update" || tool.Name == "job_summary_set" || tool.Name == "job_checklist_replace" || tool.Name == "job_checklist_item_update" || tool.Name == "review_findings_decide" || tool.Name == "review_findings_fix" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
+				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "review_queue_move" || tool.Name == "review_subagent_update" || tool.Name == "review_rounds_configure" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "map_entry_update" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_update" || tool.Name == "job_summary_set" || tool.Name == "job_checklist_replace" || tool.Name == "job_checklist_item_update" || tool.Name == "review_findings_decide" || tool.Name == "review_findings_fix" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
 					t.Fatal("untruthful operation annotation")
 				}
 				data, _ := json.Marshal(tool.InputSchema)

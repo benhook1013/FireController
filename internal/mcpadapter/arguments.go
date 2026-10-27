@@ -96,6 +96,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 			return args, invalidArguments()
 		}
 	}
+	if name == "review_queue_add" || name == "review_queue_move" {
+		return queueChangeArguments(name, data)
+	}
 	if name == "review_queue" {
 		options, active, err := reviewActiveQueueArguments(data)
 		args.limit, args.cursor, args.reviewActiveQueue = options.Limit, options.Cursor, active
@@ -251,7 +254,7 @@ func mutationTool(name string) bool {
 	if reviewBatchTool(name) {
 		return true
 	}
-	if name == "review_start" || name == "review_rounds_configure" {
+	if name == "review_queue_add" || name == "review_queue_move" || name == "review_start" || name == "review_rounds_configure" {
 		return true
 	}
 	if name == "job_summary_set" || name == "job_primary_replace" || name == "job_update" || name == "job_checklist_replace" || name == "job_checklist_item_update" {

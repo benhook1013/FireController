@@ -43,6 +43,8 @@ func (e *Engine) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/policy", e.configurePolicyHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/execution/configuration", e.readExecutionConfigurationHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/configuration", e.configureHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/add", e.changeQueueHTTP("add"))
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/move", e.changeQueueHTTP("move"))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/requests", e.enqueueHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/operations", e.readOperationsHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/operations/{operation_id}", e.readOperationHTTP)

@@ -180,6 +180,8 @@ A disconnected, timed-out or canceled write can already have committed. Such dia
 
 This slice does not persist a client retry journal. Callers retain the key, request and originating binding; changing a profile or rebinding to a restored instance is not recovery of that pending action.
 
+Routine queue planning uses `reviews queue-add PR --expect-config N --key KEY` and `reviews queue-move PR --expect-config N --key KEY` with `--before PR`, `--after PR`, `--first` or `--last`; see [queue changes](review-execution.md#routine-queue-changes). These ordinary project-writer calls preserve unrelated configuration and existing controls, updating Delivery in the same transaction without provider work.
+
 Administrator [selected queue edits](review-workspace.md#selected-queue-edits) use `reviews queue-edit --file /private/queue-edit.json --key KEY`. They change only selected PR metadata and visibility, preserving omitted work and review history. They keep the same explicit-key recovery and ordinary command budget; they do not request reviews or provider refreshes.
 
 The [project-map agent commands](project-map.md#agent-commands) add explicit compact map reads, full guarded editorial replacements and independent job/workstream references. Ordinary job/context reads do not expand map content.

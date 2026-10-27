@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"slices"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -80,37 +81,46 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 				return nil, err
 			}
 		}
-		// Enrolling a new PR/channel installs the product plan atomically.
-		// Existing pairs are deliberately untouched by pause/order/capability
-		// edits, including installations upgraded from unconfigured controls.
-		for _, pull := range c.Queue {
-			for _, channel := range c.Channels {
-				if slices.Contains(previous.Queue, pull) && slices.Contains(previous.Channels, channel) {
-					continue
-				}
-				maximum := int64(6)
-				if channel == "hosted" {
-					maximum = 3
-				}
-				if err := initializeRoundControl(ctx, tx, scope, pull, channel, 2, maximum); err != nil {
-					return nil, err
-				}
-			}
-		}
-		if e.publishQueue != nil {
-			if err := e.publishQueue(ctx, tx, scope, previous.Queue, c.Queue); err != nil {
-				return nil, err
-			}
-		}
-		revision++
-		if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,?,?)`, scope.ProjectID, revision, encoded(c)); err != nil {
-			return nil, err
-		}
-		if err := core.AppendEvent(ctx, tx, scope, "reviews.configured", scope.ProjectID, revision, map[string]any{"revision": revision, "paused": c.Paused}); err != nil {
-			return nil, err
-		}
-		return Receipt{ID: scope.ProjectID, State: "configured", Revision: revision}, nil
+		return e.persistConfiguration(ctx, tx, scope, previous, c, revision)
 	})
+}
+
+// persistConfiguration is shared by administrative replacement and narrow
+// ordinary queue edits. Callers establish authority and the exact prior revision.
+func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope core.Scope, previous, c Configuration, revision int64) (Receipt, error) {
+	if revision == math.MaxInt64 {
+		return Receipt{}, core.Fail("revision_exhausted", "The execution configuration revision cannot advance further.", 409)
+	}
+	// Enrolling a new PR/channel installs the product plan atomically.
+	// Existing pairs are deliberately untouched by pause/order/capability
+	// edits, including installations upgraded from unconfigured controls.
+	for _, pull := range c.Queue {
+		for _, channel := range c.Channels {
+			if slices.Contains(previous.Queue, pull) && slices.Contains(previous.Channels, channel) {
+				continue
+			}
+			maximum := int64(6)
+			if channel == "hosted" {
+				maximum = 3
+			}
+			if err := initializeRoundControl(ctx, tx, scope, pull, channel, 2, maximum); err != nil {
+				return Receipt{}, err
+			}
+		}
+	}
+	if e.publishQueue != nil {
+		if err := e.publishQueue(ctx, tx, scope, previous.Queue, c.Queue); err != nil {
+			return Receipt{}, err
+		}
+	}
+	revision++
+	if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,?,?)`, scope.ProjectID, revision, encoded(c)); err != nil {
+		return Receipt{}, err
+	}
+	if err := core.AppendEvent(ctx, tx, scope, "reviews.configured", scope.ProjectID, revision, map[string]any{"revision": revision, "paused": c.Paused}); err != nil {
+		return Receipt{}, err
+	}
+	return Receipt{ID: scope.ProjectID, State: "configured", Revision: revision}, nil
 }
 
 func readConfiguration(ctx context.Context, tx *sql.Tx, project string) (Configuration, int64, error) {

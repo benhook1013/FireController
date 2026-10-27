@@ -11,15 +11,18 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviews"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Actual daemon HTTP configuration is sufficient for visible enrollment/order,
@@ -32,6 +35,9 @@ func TestPackagedExecutionQueueEnrollmentSmoke(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	private := privateFixtureDirectory(t)
+	if err := os.Chmod(private, 0700); err != nil {
+		t.Fatal(err)
+	}
 	bin := os.Getenv("FC_SMOKE_BIN_DIR")
 	if bin == "" {
 		bin, _ = filepath.Abs("../../bin")
@@ -67,7 +73,7 @@ func TestPackagedExecutionQueueEnrollmentSmoke(t *testing.T) {
 	}
 	admin := strings.TrimSpace(string(adminBytes))
 	bootstrap.stop(t)
-	project, worker, _, _ := seedAccess(t, ctx, data, bootstrap.instance, admin, private)
+	project, worker, _, workerFile := seedAccess(t, ctx, data, bootstrap.instance, admin, private)
 	gate := provider.holdNextObserver(t)
 	daemon := startDaemon(t, ctx, daemonBinary, data, env, "--review-catalog", catalog)
 	transport := &http.Transport{Proxy: nil}
@@ -123,14 +129,86 @@ func TestPackagedExecutionQueueEnrollmentSmoke(t *testing.T) {
 		}
 		return q
 	}
-	configure(0, []int64{2})
+	body, receipt := configure(0, []int64{2})
 	readQueue([]int64{2})
 	gate.awaitStarted(t, ctx)
-	configure(1, []int64{2, 3})
+	profiles := filepath.Join(private, "profiles.json")
+	setup := exec.CommandContext(ctx, filepath.Join(bin, "fc"), "--profiles-file", profiles, "--profile", "builder", "profile", "create", "--server", "http://"+daemon.address, "--instance", bootstrap.instance, "--project", project, "--worker", worker, "--credential-file", workerFile)
+	setup.Env = env
+	var setupOut, setupErr bytes.Buffer
+	setup.Stdout = &setupOut
+	setup.Stderr = &setupErr
+	if err := setup.Run(); err != nil || setupErr.Len() != 0 {
+		var d struct {
+			Error struct{ Code, Message string }
+		}
+		_ = json.Unmarshal(setupErr.Bytes(), &d)
+		t.Fatalf("profile setup failed: %v code=%s message=%s", err, d.Error.Code, d.Error.Message)
+	}
+
+	added := runCLI(t, ctx, filepath.Join(bin, "fc"), env, "--profiles-file", profiles, "--profile", "builder", "reviews", "queue-add", "3", "--after", "2", "--expect-config", "1", "--key", "bound-add-three")
+	var addedReceipt struct {
+		ID       string
+		State    string
+		Revision int64
+	}
+	decode(t, added, &addedReceipt)
+	if addedReceipt.ID != project || addedReceipt.Revision != 2 {
+		t.Fatal("bound CLI add did not commit")
+	}
+
 	readQueue([]int64{2, 3})
-	body, receipt := configure(2, []int64{3, 2})
+	command := exec.CommandContext(ctx, filepath.Join(bin, "fcmcp"), "--profiles-file", profiles, "--profile", "builder")
+	command.Env = env
+	stderr := &boundedOutput{}
+	command.Stderr = stderr
+	sdk := mcp.NewClient(&mcp.Implementation{Name: "packaged-queue-changes", Version: "1"}, nil)
+	connectCtx, stopConnect := context.WithTimeout(ctx, stepTimeout)
+	session, err := sdk.Connect(connectCtx, &mcp.CommandTransport{Command: command, TerminateDuration: time.Second}, nil)
+	stopConnect()
+	if err != nil {
+		if command.Process != nil {
+			command.Process.Kill()
+		}
+		t.Fatal("actual bound MCP connection failed")
+	}
+	var closeOnce sync.Once
+	closeMCP := func() {
+		closeOnce.Do(func() {
+			if err := session.Close(); err != nil {
+				t.Error(err)
+			}
+			if command.ProcessState == nil || !command.ProcessState.Success() || stderr.len() != 0 {
+				t.Error("MCP process did not join cleanly")
+			}
+		})
+	}
+	t.Cleanup(closeMCP)
+	moveArgs := map[string]any{"expected_configuration_revision": 2, "pull_number": 3, "position": "first", "idempotency_key": "bound-move-three"}
+	for range 2 {
+		toolCtx, stop := context.WithTimeout(ctx, stepTimeout)
+		result, err := session.CallTool(toolCtx, &mcp.CallToolParams{Name: "review_queue_move", Arguments: moveArgs})
+		stop()
+		if err != nil || result == nil || result.IsError {
+			t.Fatal("bound MCP move/replay failed")
+		}
+		raw, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var moved struct {
+			ID       string
+			State    string
+			Revision int64
+		}
+		decode(t, raw, &moved)
+		if moved.ID != project || moved.Revision != 3 {
+			t.Fatal("MCP receipt changed", moved)
+		}
+	}
+	closeMCP()
 	last := readQueue([]int64{3, 2})
-	if !bytes.Equal(receipt, call("POST", "/execution/configuration", "queue-config-c", body)) || readQueue([]int64{3, 2}).SnapshotID != last.SnapshotID {
+	if !bytes.Equal(receipt, call("POST", "/execution/configuration", "queue-config-a", body)) || readQueue([]int64{3, 2}).SnapshotID != last.SnapshotID {
 		t.Fatal("configuration replay published another snapshot")
 	}
 	daemon.stop(t)

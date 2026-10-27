@@ -53,7 +53,7 @@ func localHelp() helpResponse {
 				{"jobs progress-history JOB_ID", "One explicit current-progress archive page; no automatic continuation."},
 				{"jobs revision JOB_ID REVISION", "One exact retained state and original brief; no paging."},
 				{"jobs history JOB_ID", "One private job-history page; no automatic pagination."},
-				{"reviews queue [--active]", "Open-only scalar view with --active; default retains history. Stored workspace; requests, refreshes and publication are separate authorized actions."},
+				{"reviews queue / queue-add / queue-move", "Read the queue or add/move one PR with a revision and key. No provider work; use operation --help."},
 				{"reviews operations", "Pending operations; --all finds lost receipts in history. reviews operation ID reads detail; no provider work."},
 				{"reviews help", "Local review command discovery; decide, fix, finalize and publish each accept --help with exact fields, guards and side effects."},
 				{"reviews evidence | adjudication | decide | fix | decide-batch | fix-batch | finalize", "Native evidence and guarded decisions/fix proof: docs/review-controls.md. reviews publish --help covers GitHub checkpoints."},

@@ -73,6 +73,7 @@ type invocation struct {
 	reviewOperationStatus *reviewOperationStatusInvocation
 	reviewActiveQueue     bool
 
+	reviewQueueChange   *reviewQueueChangeInvocation
 	reviewQueueEdit     *reviewQueueEditInvocation
 	reviewImport        *reviewImportInvocation
 	subagentReview      *subagentReviewInvocation
@@ -262,6 +263,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.subagentReview != nil {
 		return executeSubagentReview(requestCtx, ctx, service, call.subagentReview, stdout, stderr)
+	}
+	if call.reviewQueueChange != nil {
+		return executeReviewQueueChange(requestCtx, ctx, service, call.reviewQueueChange, stdout, stderr)
 	}
 	if call.reviewQueueEdit != nil {
 		return executeReviewQueueEdit(requestCtx, ctx, service, call.reviewQueueEdit, stdout, stderr)
@@ -513,6 +517,9 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	if call.command == "reviews" && (call.subcommand == "subagent-record" || call.subcommand == "subagent-read" || call.subcommand == "subagent-update") {
 		return parseSubagentReview(call, operationArgs)
+	}
+	if call.command == "reviews" && (call.subcommand == "queue-add" || call.subcommand == "queue-move") {
+		return parseReviewQueueChange(call, operationArgs)
 	}
 	if call.command == "reviews" && call.subcommand == "queue-edit" {
 		return parseReviewQueueEdit(call, operationArgs)

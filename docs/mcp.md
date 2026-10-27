@@ -73,6 +73,8 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `inbox_snapshot` | Same pending/history selection as inbox_list, plus an explicit event cursor from the same read transaction; no receipt change. |
 | `inbox_events` | Required event cursor; optional limit and wait_ms 0–4000; one bounded incoming-event page. |
 | `wait_for_messages` | Required event cursor; optional limit 1–100 and wait_seconds 1–50, default 20/25. One new-message event page or quiet timeout over a call-owned persistent stream. |
+| `review_queue_add` | Project writer; current expected_configuration_revision, pull_number and idempotency_key; optional before, after or position. Adds scheduling and Delivery together, preserving unrelated settings and existing controls. No provider work. |
+| `review_queue_move` | Same bound selectors; one destination is required. Reorders the configured queue and Delivery together. No-op preserves revision; no provider work. |
 | `review_execution_read` | No fields; stored execution configuration and revision, without provider work. |
 | `review_operation_read` | Required operation_id; optional wait_seconds (0–50/default 0) collects compact stage, cause, evidence handle and next action without polling. Optional diagnostics:true returns the original full operation. |
 | `review_operations_list` | Optional pull_number, channel cli/hosted, status pending/all (default pending), limit 1–100 (default 5), cursor; one compact retained operation page, including history with all for lost-receipt recovery. No provider work. See [operation discovery](review-operations.md). |
