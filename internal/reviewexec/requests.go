@@ -97,6 +97,11 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 				}
 			}
 		}
+		if e.publishQueue != nil {
+			if err := e.publishQueue(ctx, tx, scope, previous.Queue, c.Queue); err != nil {
+				return nil, err
+			}
+		}
 		revision++
 		if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,?,?)`, scope.ProjectID, revision, encoded(c)); err != nil {
 			return nil, err

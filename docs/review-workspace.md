@@ -94,9 +94,9 @@ One project-authorized read transaction pins the current snapshot on the first p
 
 ## Selected queue edits
 
-Review retention is independent of Delivery selection. A worker can record an actual Subagent review for an unseen PR in one ordinary call; it remains privately readable without appearing in the queue. Explicit enrollment selects that existing identity and preserves its reviews. No provider allowances or execution configuration are created by recording. See [Subagent reviews](subagent-reviews.md).
+Review retention is independent of Delivery selection. A worker can record an actual Subagent review for an unseen PR in one ordinary call; it remains privately readable without appearing in the queue. [Execution configuration](review-execution.md#operator-configuration-reference) selects and orders the same Delivery entries atomically; agents do not maintain a second visible queue. Explicit enrollment selects an existing review-only identity and preserves its reviews. No provider allowances or execution configuration are created by recording. See [Subagent reviews](subagent-reviews.md).
 
-Administrator queue edits are implemented through the API, typed client and bound CLI. Their focused and packaged proof is recorded below; the earlier complete-observation proofs remain separate.
+Administrator queue edits provide observation-only setup, explicit retirement/reactivation and selected metadata repair; they are not a second routine enrollment step for configured execution. Execution queue changes own ordinary enrollment and order. Administrator queue edits are implemented through the API, typed client and bound CLI. Their focused and packaged proof is recorded below; the earlier complete-observation proofs remain separate.
 
 Complete observations replace a small workspace and retain their per-request bounds. A large workspace uses additive transfer for selected history and `POST /api/v1/projects/{project_id}/reviews/queue/edits` for selected metadata, retirement and reactivation. Neither operation requires a complete project export or a lifetime PR ceiling.
 

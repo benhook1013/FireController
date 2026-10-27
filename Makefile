@@ -92,6 +92,7 @@ smoke:
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedTransferSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedHistoryCollectionSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedRoundControlsSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -tags=packaged_smoke -run '^TestPackagedExecutionQueueEnrollmentSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedRunSelectionSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedExplicitOrderSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedHeldAllowanceSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
