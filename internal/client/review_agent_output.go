@@ -78,10 +78,13 @@ func AgentReviewRunResult(value ReviewRunResult) any {
 	return value
 }
 
-// Explain retained admission facts without fetching source or authorizing a retry.
+// Explain retained operation facts without fetching source or authorizing a retry.
 // Legacy parent_moved does not identify whether the selected or an ancestor edge
 // failed; only the distinct predecessor reason proves the selected check passed.
 func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperationDiagnostic {
+	if channel == "hosted" && state == "active" && (reason == "trigger_recovered" || reason == "trigger_recorded" || reason == "trigger_posted") {
+		return &ReviewOperationDiagnostic{"The original Hosted review trigger was confirmed on GitHub. This proves delivery, not that CodeRabbit started or is still running. updated_at records a local state transition, not provider start or the last observation; pending observations need not change it.", "Keep the existing observer for this operation and use a bounded status wait while continuing other work. The service's driver/recovery path observes the same trigger without reposting. This read exposes no provider-start time, exact next-observation deadline or finish ETA. Follow stage and evidence_id as results arrive; do not request another review, reset controls or infer a stuck provider from this reason's age alone."}
+	}
 	if state != "held" {
 		return nil
 	}

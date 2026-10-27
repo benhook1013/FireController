@@ -159,3 +159,38 @@ func TestAgentAllowanceDiagnosticsKeepOriginalStatusAndDoNotAuthorizeRetry(t *te
 		}
 	}
 }
+
+func TestAgentHostedTriggerDiagnosticsDistinguishDeliveryFromExecution(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, state := range []string{"active", "posting", "uncertain", "completed", "held", "failed"} {
+			for _, reason := range []string{"trigger_recovered", "trigger_recorded", "trigger_posted", "trigger_post_unproven", "hosted_observation_pending", "hosted_finished_inventory_unproven"} {
+				for _, stage := range []string{"provider_wait", "result_captured"} {
+					compact := ReviewOperationStatus{ID: "original", Channel: channel, State: state, Stage: stage, Reason: reason, AttemptID: "original_attempt", EvidenceID: "original_evidence", Revision: 5, UpdatedAt: "original_transition", NextAction: "wait"}
+					full := ReviewOperation{ID: compact.ID, Channel: channel, State: state, Reason: reason, AttemptID: compact.AttemptID, Revision: compact.Revision, UpdatedAt: compact.UpdatedAt}
+					want := channel == "hosted" && state == "active" && (reason == "trigger_recovered" || reason == "trigger_recorded" || reason == "trigger_posted")
+					co, fo := AgentReviewOperationStatus(compact), AgentReviewOperation(full)
+					if co.ReviewOperationStatus != compact || !reflect.DeepEqual(fo.ReviewOperation, full) || (co.Diagnostic != nil) != want || !reflect.DeepEqual(co.Diagnostic, fo.Diagnostic) {
+						t.Fatal("trigger hint changed facts, disagreed across views or misclassified state", co, fo)
+					}
+					if !want {
+						continue
+					}
+					for _, phrase := range []string{"proves delivery", "not that CodeRabbit started", "not provider start or the last observation"} {
+						if !strings.Contains(co.Diagnostic.Explanation, phrase) {
+							t.Fatal("trigger confirmation overstated provider progress", co)
+						}
+					}
+					for _, phrase := range []string{"existing observer", "bounded status wait", "without reposting", "no provider-start time", "exact next-observation deadline", "stage and evidence_id", "do not request another review"} {
+						if !strings.Contains(co.Diagnostic.NextAction, phrase) {
+							t.Fatal("missing safe next action or unknown timing", co)
+						}
+					}
+					b, err := json.Marshal(co)
+					if err != nil || len(b) > 2048 {
+						t.Fatal("unbounded trigger diagnostic", err)
+					}
+				}
+			}
+		}
+	}
+}
