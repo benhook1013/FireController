@@ -264,7 +264,7 @@ func resolveSubmittedReview(snapshot HostedPublicationSnapshot, result HostedPub
 		copy.OriginalStartLine = copyPublicationLine(comment.OriginalStartLine)
 		roots = append(roots, copy)
 	}
-	if len(roots) != count {
+	if !hostedInlineCountMatches(roots, count) {
 		return result, false
 	}
 	sort.Slice(roots, func(i, j int) bool { return roots[i].ID < roots[j].ID })

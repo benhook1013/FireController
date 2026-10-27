@@ -73,3 +73,24 @@ func TestRecoverHostedSubmittedReviewCompletesOriginalUncertainAttempt(t *testin
 		t.Fatal("completed original was observed again", again, err)
 	}
 }
+
+func TestRecoverHostedGroupedInlineCompletesOriginalActiveAttempt(t *testing.T) {
+	f, captures, a, reader := recoveryRuntimeFixture(t, "active")
+	recoveryRuntimeMetadata(t, f, a)
+	reader.record.Snapshot.Reviews[0].Body = strings.Replace(reader.record.Snapshot.Reviews[0].Body, "Actionable comments posted: 1", "Actionable comments posted: 2", 1)
+	reader.record.Snapshot.ReviewComments[0].Body += "\n\n---\n\n" + hostedRetainInline(2, "Preserve the grouped result.")
+	original, _ := json.Marshal(reader.record)
+	final, err := recoverRuntime(t, f, captures, a, reader)
+	if err != nil || final.State != "completed" || final.EvidenceID == "" || final.TriggerCommentID != 100 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 {
+		t.Fatal("grouped original attempt did not settle once", final, err)
+	}
+	after, _ := json.Marshal(reader.record)
+	if string(after) != string(original) {
+		t.Fatal("recovery changed source")
+	}
+	calls := len(reader.calls)
+	replay, err := recoverRuntime(t, f, captures, a, reader)
+	if err != nil || replay.Reason != "already_completed" || replay.EvidenceID != final.EvidenceID || len(reader.calls) != calls {
+		t.Fatal("grouped completion replay collected or credited again", replay, err)
+	}
+}

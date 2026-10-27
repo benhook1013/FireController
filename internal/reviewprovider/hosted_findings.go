@@ -356,6 +356,25 @@ func findingNestedHeader(lines []findingLine, start, end int) string {
 	return nextFindingText(lines, start+1, end)
 }
 
+// The provider may group several separately fingerprinted findings in one
+// GitHub comment. Preserve the ordinary root-count contract; a larger declared
+// count is proven only by the complete existing inline decoder, never by raw
+// marker occurrences, prompt examples or summary findings.
+func hostedInlineCountMatches(roots []ReviewComment, declared int) bool {
+	if len(roots) == declared {
+		return true
+	}
+	if len(roots) == 0 || len(roots) > declared {
+		return false
+	}
+	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
+	decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}
+	for _, root := range roots {
+		decoder.inline(root)
+	}
+	return inventory.Complete && len(inventory.Findings) == declared
+}
+
 func (d *findingDecoder) inline(root ReviewComment) {
 	lines, sound := findingLines(root.Body)
 	if !sound {

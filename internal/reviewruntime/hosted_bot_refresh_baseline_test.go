@@ -11,7 +11,7 @@ import (
 )
 
 func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
-	for _, mode := range []string{"identifiers", "unchanged", "prose", "command", "removed_command", "human", "identity", "after_ack", "positive_five", "missing_baseline"} {
+	for _, mode := range []string{"identifiers", "unchanged", "prose", "command", "removed_command", "human", "identity", "after_ack", "positive_five", "grouped_six", "missing_baseline"} {
 		t.Run(mode, func(t *testing.T) {
 			var old reviewprovider.IssueComment
 			f, record := runtimeStandingFixture(t, func(b *HostedCaptureRecord) {
@@ -55,7 +55,7 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 				current.UpdatedAt = record.Snapshot.ObservedAt
 			}
 			record.Snapshot.IssueComments = append(record.Snapshot.IssueComments, current)
-			if mode == "positive_five" {
+			if mode == "positive_five" || mode == "grouped_six" {
 				trigger := record.Snapshot.IssueComments[0].CreatedAt
 				record.Snapshot.IssueComments = append(record.Snapshot.IssueComments[:1], record.Snapshot.IssueComments[2:]...)
 				record.Snapshot.IssueComments[len(record.Snapshot.IssueComments)-1].UpdatedAt = record.Snapshot.ObservedAt
@@ -65,12 +65,16 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 					record.Snapshot.ReviewComments = append(record.Snapshot.ReviewComments, reviewprovider.ReviewComment{ID: int64(300 + i), ReviewID: 200, Author: record.ProviderActor, Body: hostedRetainInline(i, "Preserve exact evidence."), Path: "source.go", Line: &line, HeadSHA: record.Intent.HeadSHA, OriginalHeadSHA: record.Intent.HeadSHA, CreatedAt: trigger.Add(time.Second), UpdatedAt: trigger.Add(time.Second)})
 				}
 			}
+			if mode == "grouped_six" {
+				record.Snapshot.Reviews[0].Body = strings.Replace(record.Snapshot.Reviews[0].Body, "Actionable comments posted: 5", "Actionable comments posted: 6", 1)
+				record.Snapshot.ReviewComments[0].Body += "\n\n---\n\n" + hostedRetainInline(6, "Retain a second independent finding.")
+			}
 			before := cliAttemptState(t, f.f.store, f.a.ID)
 			result, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := mode == "identifiers" || mode == "unchanged" || mode == "prose" || mode == "after_ack" || mode == "positive_five"
+			want := mode == "identifiers" || mode == "unchanged" || mode == "prose" || mode == "after_ack" || mode == "positive_five" || mode == "grouped_six"
 			if result.Complete != want {
 				t.Fatalf("complete=%v reason=%s want=%v", result.Complete, result.Reason, want)
 			}
@@ -88,9 +92,13 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 			if err != nil || replay != result || cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, f.a.ID) != 1 {
 				t.Fatal("native evidence not once-only", err)
 			}
-			if mode == "positive_five" {
+			if mode == "positive_five" || mode == "grouped_six" {
 				evidence, readErr := f.f.engine.ReadReviewEvidence(t.Context(), f.f.scopeWithAccess(t, f.f.reader, false, "read"), result.Receipt.ID)
-				if readErr != nil || evidence.Capture.Review.ReportedFindings != 5 || len(evidence.Capture.Review.Findings) != 5 || len(evidence.Capture.Hosted.Sources) != 5 {
+				want := 5
+				if mode == "grouped_six" {
+					want = 6
+				}
+				if readErr != nil || evidence.Capture.Review.ReportedFindings != int64(want) || len(evidence.Capture.Review.Findings) != want || len(evidence.Capture.Hosted.Sources) != want {
 					t.Fatal("native positive inventory lost", readErr)
 				}
 				return

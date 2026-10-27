@@ -412,7 +412,7 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 			return result, nil
 		}
 	}
-	if len(result.Roots) != count {
+	if !hostedInlineCountMatches(result.Roots, count) {
 		result.State, result.Reason = "ambiguous", "root_count_mismatch"
 		return result, nil
 	}
