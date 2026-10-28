@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/presentation"
 )
 
 const (
@@ -108,7 +109,7 @@ func delivery(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		workerAfter, err := store.ParseCursor(scope, "delivery-workers:id-asc:v1", query.Get("worker_cursor"))
+		workerAfter, err := store.ParseCursor(scope, presentation.WorkerOrderCursorKind("delivery-workers"), query.Get("worker_cursor"))
 		if err != nil || workerAfter != "" && !validPrimaryID(workerAfter) {
 			core.WriteError(w, core.Fail("invalid_cursor", "Use a valid cursor from this delivery worker page.", http.StatusBadRequest))
 			return
@@ -155,11 +156,14 @@ func parseDeliveryJobCursor(raw string) (string, string, error) {
 }
 
 func readDeliveryWorkers(ctx context.Context, tx *sql.Tx, project, after string, limit int, scope core.Scope, store *core.Store, page *deliveryPage[deliveryWorker]) error {
-	rows, err := tx.QueryContext(ctx, `SELECT w.id,w.project_id,w.name,COALESCE(p.job_id,''),COALESCE(s.paused,0),COALESCE(s.reason,'')
-		FROM workers w
+	order, err := presentation.WorkerOrderJSON(ctx, tx, project)
+	if err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, presentation.WorkerOrderCTE+`SELECT w.id,w.project_id,w.name,COALESCE(p.job_id,''),COALESCE(s.paused,0),COALESCE(s.reason,'')
+		FROM ordered_workers w
 		LEFT JOIN worker_primary_jobs p ON p.project_id=w.project_id AND p.worker_id=w.id
-		LEFT JOIN worker_pause_state s ON s.project_id=w.project_id AND s.worker_id=w.id
-		WHERE w.project_id=? AND w.id>? ORDER BY w.id LIMIT ?`, project, after, limit+1)
+		LEFT JOIN worker_pause_state s ON s.project_id=w.project_id AND s.worker_id=w.id`+presentation.WorkerOrderTail, order, project, after, after, limit+1)
 	if err != nil {
 		return err
 	}
@@ -187,7 +191,7 @@ func readDeliveryWorkers(ctx context.Context, tx *sql.Tx, project, after string,
 		return err
 	}
 	if page.HasMore {
-		page.Cursor = store.Cursor(scope, "delivery-workers:id-asc:v1", page.Items[len(page.Items)-1].ID)
+		page.Cursor = store.Cursor(scope, presentation.WorkerOrderCursorKind("delivery-workers"), page.Items[len(page.Items)-1].ID)
 	}
 	return nil
 }

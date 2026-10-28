@@ -348,7 +348,7 @@ export function Connect({ projectId, busy, notice, onConnect, cancel, inline = f
   const [project, setProject] = useState(projectId);
   const [token, setToken] = useState('');
   function submit(event: FormEvent) { event.preventDefault(); const supplied = token; setToken(''); onConnect(project, supplied); }
-  return <main className={inline ? "project-signin" : "connect-layout"}>{!inline && <section className="connect-intro"><h1>Keep work<br /> moving.</h1><p>A clear view of your AI agents, their jobs, and your review and merge trains.</p><div className="intro-rule" /><p className="quiet-light">Connect to a project on this service to begin.</p></section>}
+  return <main className={inline ? "project-signin" : "connect-layout"}>{!inline && <section className="connect-intro"><h1>Keep work<br /> moving.</h1><p>A clear view of your AI agents, their jobs, and your review queue.</p><div className="intro-rule" /><p className="quiet-light">Connect to a project on this service to begin.</p></section>}
     <section className="connect-card"><h2>{inline ? `Sign in to ${projectId}` : 'Connect to a project'}</h2>
       {notice && <div className="notice" role="alert">{notice}</div>}
       <form onSubmit={submit} autoComplete="off">{!projectId && <><label htmlFor="project-id">Project</label><input id="project-id" name="project-id" value={project} onChange={event => setProject(event.target.value)} required maxLength={128} spellCheck={false} autoCapitalize="none" disabled={busy} /></>}
@@ -446,7 +446,7 @@ function WorkerList({ compact = false }: { compact?: boolean }) {
   const presentation = usePresentation();
   const label = useProjectHeading('workers');
   const { session, key, home, selectWorker } = useWorkspace();
-  const paging = usePaging();
+  const paging = usePaging(JSON.stringify(usePresentation()?.worker_order ?? []));
   const query = useQuery({ queryKey: [...key, 'workers', paging.cursor], queryFn: ({ signal }) => session.api.workers({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
   return <section className={compact ? 'worker-panel' : 'panel'}><div className="section-heading"><div><p className="eyebrow">People & agents</p><h2>{compact ? label : presentation?.headings.workers ?? 'Project workers'}</h2></div>{compact && <span className="small-label">Select worker</span>}</div><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul className="worker-list">{query.data?.items.map(worker => <li key={worker.id}><button type="button" aria-label={compact ? `Select worker ${worker.name}` : `Open ${worker.name} inbox`} aria-pressed={compact ? session.worker?.id === worker.id : undefined} onClick={() => selectWorker(worker)}><span className="worker-avatar" aria-hidden="true">{worker.name.slice(0, 2).toUpperCase()}</span><span><strong>{worker.name}</strong><small>{worker.id}</small></span><span className="worker-arrow" aria-hidden="true">↗</span></button><Link className="worker-detail-link" to={`${home}/workers/${encodeURIComponent(worker.id)}`} aria-label={`Read ${worker.name} details`}>Worker details</Link></li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="workers" busy={query.isFetching} /></section>;
 }
@@ -469,7 +469,7 @@ function JobList({ filters }: { filters: JobFilters }) {
 function JobWorkerFilter({ selected, select }: { selected: string; select(workerID: string): void }) {
   const { session, key } = useWorkspace();
   const client = useQueryClient();
-  const paging = usePaging();
+  const paging = usePaging(JSON.stringify(usePresentation()?.worker_order ?? []));
   const query = useQuery({ queryKey: [...key, 'workers', paging.cursor], queryFn: ({ signal }) => session.api.workers({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
   const workers = query.data?.items ?? [];
   // Reuse already loaded page labels; an off-page URL identity needs no new read.

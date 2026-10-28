@@ -33,6 +33,12 @@ Validate each pair when either of its tokens appears in the override map, even i
 
 The canonical JSON configuration is at most 16 KiB, within the existing API request ceiling. A replacement supplies `expected_revision` and `presentation`; it replaces the complete configuration, so omitted optional overrides clear to defaults. Fast local mutations return compact receipts, with explicit keys and no operation-polling cycle. Current authorization is checked on exact replay. A no-op preserves revision/history/events while recording the receipt for its new key.
 
+## Worker ordering
+
+The optional `worker_order` array pins up to 100 distinct worker IDs from this project in the supplied order. Missing or empty clears the pins. Project settings provide worker names, pin/unpin and up/down controls; IDs remain internal bindings. All unpinned workers follow by name, ignoring ASCII case with ID as the stable tie-breaker. New workers need no configuration. Unassigned work remains the last Delivery lane, and job state does not override explicit worker order.
+
+Worker selectors and Delivery apply ordering before their existing bounded pagination. Cursors anchor the last worker in the selected project/principal/order; they do not freeze a changing collection. A live order edit refreshes worker views and restarts their browser pagination. Ordering changes no identity, assignment, job priority, pause, review rule or worker contact. Worker IDs and private ordering are not copied into public publication manifests. Normal presentation history and verified backups retain the selected order.
+
 ## API and history
 
 Paths are under `/api/v1/projects/{project_id}`. Reads require project read access. Replacement requires existing administrator authority and an explicit worker binding; receiving a message never grants that authority. Browser appearance writes require an administrator session, its login-time permission ceiling and the existing worker binding; messaging follows the session's separate write permission.

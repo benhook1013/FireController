@@ -53,7 +53,7 @@ describe('neutral stable loading', () => {
     expect(hero).not.toMatch(/skeleton-connection|skeleton-row|<a|<button/gu);
     expect(hero.replace(/<[^>]*>/gu, '').trim()).toBe('');
     const pending = renderToStaticMarkup(<MergeHeadSkeleton />);
-    expect(pending).toContain('role="status"><span class="visually-hidden">Loading merge head</span>');
+    expect(pending).toContain('role="status"><span class="visually-hidden">Loading review queue head</span>');
     expect(pending).toContain('aria-hidden="true"');
     expect(pending.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '').trim()).toBe('');
   });

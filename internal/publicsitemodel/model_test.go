@@ -296,3 +296,11 @@ func TestPublicManifestRejectsPrivateReviewGroups(t *testing.T) {
 		t.Fatal("private queue groups entered public manifest")
 	}
 }
+
+func TestPublicManifestRejectsPrivateWorkerOrder(t *testing.T) {
+	m := approvedManifest()
+	m.Presentation.WorkerOrder = []string{"worker_private"}
+	if _, err := NormalizeManifest(m); err == nil {
+		t.Fatal("private worker order accepted for publication")
+	}
+}

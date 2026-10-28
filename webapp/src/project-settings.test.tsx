@@ -24,6 +24,13 @@ describe('browser connection and appearance input', () => {
     expect(Object.hasOwn(decodePresentationDraft(draft), 'review_groups')).toBe(false);
     expect(decodePresentationDraft({ ...draft, headings: '{}', theme: '{}' })).toMatchObject({ headings: {}, theme: {} });
   });
+  it('preserves worker pins through appearance edits and rejects duplicate or malformed orders', () => {
+    const config = {name:'Project',brand_name:'Brand',tagline:'Workspace',headings:{},theme:{},worker_order:['worker_two','worker_one']};
+    const draft=presentationDraft(config);config.worker_order.reverse();
+    expect(decodePresentationDraft({...draft,name:'Renamed'}).worker_order).toEqual(['worker_two','worker_one']);
+    expect(decodePresentationDraft({...draft,worker_order:[]}).worker_order).toEqual([]);
+    for(const order of [['worker_one','worker_one'],['bad/id'],Array(101).fill('worker_one')]) expect(()=>decodePresentationDraft({...draft,worker_order:order})).toThrow();
+  });
   it('retains independently owned review groups through unrelated appearance edits', () => {
     const config = { name: 'Project', brand_name: 'Brand', tagline: 'Workspace', headings: {}, theme: {}, review_groups: [{ title: 'Foundation', pull_numbers: [1, 3] }] };
     const draft = presentationDraft(config);

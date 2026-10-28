@@ -114,3 +114,23 @@ func TestReviewGroupsValidateAndOwnMemberships(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWorkerOrderValidationAndCopies(t *testing.T) {
+	ids := []string{"worker_two", "worker_one"}
+	c, err := Normalize(Config{Name: "one", WorkerOrder: ids})
+	if err != nil || !reflect.DeepEqual(c.WorkerOrder, ids) {
+		t.Fatal(c, err)
+	}
+	ids[0] = "changed"
+	if c.WorkerOrder[0] != "worker_two" {
+		t.Fatal("order aliases caller")
+	}
+	for _, raw := range []string{`{"name":"one","worker_order":null}`, `{"name":"one","worker_order":["worker_one","worker_one"]}`, `{"name":"one","worker_order":["bad/id"]}`} {
+		if _, err := Decode([]byte(raw)); err == nil {
+			t.Fatal("invalid order accepted", raw)
+		}
+	}
+	if _, err := Normalize(Config{Name: "one", WorkerOrder: make([]string, 101)}); err == nil {
+		t.Fatal("unbounded order accepted")
+	}
+}

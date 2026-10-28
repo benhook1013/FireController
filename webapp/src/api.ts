@@ -178,10 +178,10 @@ function validSummary(value: unknown): value is JobSummary {
 }
 function validDelivery(value: unknown, project: string, options: DeliveryOptions): value is DeliverySnapshot {
   if (!record(value) || !keys(value, ['workers', 'jobs']) || !coordinationPage(value.workers, options.worker_limit ?? 20) || !coordinationPage(value.jobs, options.job_limit ?? 50)) return false;
-  let previousWorker = '';
+  const seenWorkers = new Set<string>();
   for (const worker of value.workers.items) {
-    if (!record(worker) || !keys(worker, ['id', 'project_id', 'name', 'primary_job_id', 'paused', 'pause_reason', 'pause_reason_truncated']) || !id(worker.id) || worker.id <= previousWorker || worker.project_id !== project || !displayName(worker.name) || worker.primary_job_id !== '' && !id(worker.primary_job_id) || typeof worker.paused !== 'boolean' || !coordinationText(worker.pause_reason, 240, false, true) || typeof worker.pause_reason_truncated !== 'boolean' || !worker.paused && (worker.pause_reason !== '' || worker.pause_reason_truncated)) return false;
-    previousWorker = worker.id;
+    if (!record(worker) || !keys(worker, ['id', 'project_id', 'name', 'primary_job_id', 'paused', 'pause_reason', 'pause_reason_truncated']) || !id(worker.id) || seenWorkers.has(worker.id) || worker.project_id !== project || !displayName(worker.name) || worker.primary_job_id !== '' && !id(worker.primary_job_id) || typeof worker.paused !== 'boolean' || !coordinationText(worker.pause_reason, 240, false, true) || typeof worker.pause_reason_truncated !== 'boolean' || !worker.paused && (worker.pause_reason !== '' || worker.pause_reason_truncated)) return false;
+    seenWorkers.add(worker.id);
   }
   const ranks: Record<string, number> = { active: 0, blocked: 1, parked: 2 };
   let previousRank = -1, previousJob = '';

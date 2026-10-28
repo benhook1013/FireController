@@ -15,6 +15,13 @@ async function client() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('bounded stored Delivery API', () => {
+  it('accepts configured worker display order independently of opaque ID order', async () => {
+    const api = await client(), value=snapshot();
+    value.workers.items=[{...value.workers.items[0],id:'worker_z',name:'Pinned'},value.workers.items[0]];
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(json(value)));
+    await expect(api.delivery()).resolves.toEqual(value);api.close();
+  });
+
   it('accepts nonempty whitespace-only truncated progress previews', async () => {
     const api = await client();
     for (const prefix of [' '.repeat(240), '\t'.repeat(240), '\u2003'.repeat(80)]) {

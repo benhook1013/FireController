@@ -133,6 +133,7 @@ try {
       return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'reload-failure.json', snapshot:{phase,checkpoint,...renewalProof,layout:reloadLayout}, collect:async snapshot=>{snapshot.current_geometry=await reloadGeometry();} });
     }
     if (phase === 'renewal-missing-cookie') return retainBrowserFailure({directory:config.diagnostic_directory,filename:'failure.json',snapshot:{phase,checkpoint,...counters(),cookie_removed:missingCookieRemoved,statuses:missingCookieStatuses,terminal_all:terminalResponsesAll,auth_timeline:authTimeline,auth_events:authEvents},collect:async snapshot=>{snapshot.binding_present=await page.evaluate(key=>sessionStorage.getItem(key)!==null,bindingKey);}});
+    if (phase === 'explicit-actions-settings') return retainBrowserFailure({directory:config.diagnostic_directory,filename:'failure.json',screenshot,snapshot:{phase,checkpoint},collect:async snapshot=>{snapshot.pins=await page.locator('.worker-order-list strong').count();snapshot.pin_selects=await page.getByLabel('Pin a worker',{exact:true}).count();}});
     if (phase !== 'explicit-actions-uncertain') return {};
     return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'failure.json', screenshot,
       snapshot:{phase,checkpoint,...counters()},
@@ -850,7 +851,7 @@ try {
 
   phase = 'live-reviews';
   checkpoint = 'reviews-open';
-  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Review queue', exact:true}).click();
   checkpoint = 'unconfigured';
   await page.locator('#review-queue').getByRole('heading', {name:'No review queue yet', exact:true}).waitFor();
   const pull = (number, state, title) => ({number, title, state, head_sha:'a'.repeat(40), base_ref:'main', base_sha:'b'.repeat(40), ci_state:'unknown', mergeability:'unknown', complete:true, runs:[], attempts:[]});
@@ -865,8 +866,8 @@ try {
   // head. Use the real observation API, not a fabricated browser response.
   await write('POST', '/reviews/observations', observation(0, [pull(33, 'unknown', 'Unknown preceding smoke PR'), open]), 201);
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
-  const fallbackHero = page.getByRole('region', {name:'Merge train head', exact:true});
-  await fallbackHero.getByRole('heading', {name:'Merge head not determined', exact:true}).waitFor();
+  const fallbackHero = page.getByRole('region', {name:'Review queue head', exact:true});
+  await fallbackHero.getByRole('heading', {name:'Queue head not determined', exact:true}).waitFor();
   const fallbackJump = fallbackHero.getByRole('link', {name:'Jump to review queue', exact:true});
   await expect(fallbackJump).toHaveAttribute('href', `${home}#review-queue`);
   const fallbackPosition = async () => {
@@ -905,7 +906,7 @@ try {
     need(JSON.stringify(await page.evaluate(() => ({origin:performance.timeOrigin, session:sessionStorage.getItem('firecontroller.browser-session.v1')}))) === JSON.stringify(fallbackPage));
   }
   repeatedFallbackHash = true;
-  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Review queue', exact:true}).click();
   checkpoint = 'seed-observation';
   // Complete observations require explicit retirement of an omitted entry.
   await write('POST', '/reviews/observations', {...observation(1, [merged, open]), retired:[{number:33,reason:'defunct'}]}, 201);
@@ -938,21 +939,21 @@ try {
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
   checkpoint = 'queue-heading';
   const deliveryQueue = page.locator('#review-queue');
-  await expect(deliveryQueue.getByRole('heading', {name:'Reviews', exact:true})).toBeVisible();
+  await expect(deliveryQueue.getByRole('heading', {name:'Review queue', exact:true})).toBeVisible();
   await expect(deliveryQueue.getByRole('heading', {name:'Smoke release', exact:true})).toBeVisible();
   need(await deliveryQueue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.querySelector('.review-number').textContent).join('|')) === '#31|#32');
   checkpoint = 'queue-pull';
   await expect(deliveryQueue.getByRole('link', {name:'Live review updated', exact:true})).toBeVisible();
   await expect(deliveryQueue.locator('.review-state-merged').filter({hasText:'Merged'})).toBeVisible();
   checkpoint = 'merge-head';
-  await expect(page.getByRole('region', {name:'Merge train head'}).getByRole('link', {name:'#32', exact:true})).toBeVisible();
-  await expect(page.getByRole('region', {name:'Merge train head'}).getByRole('link', {name:'Live review updated', exact:true})).toBeVisible();
+  await expect(page.getByRole('region', {name:'Review queue head'}).getByRole('link', {name:'#32', exact:true})).toBeVisible();
+  await expect(page.getByRole('region', {name:'Review queue head'}).getByRole('link', {name:'Live review updated', exact:true})).toBeVisible();
   checkpoint = 'hosted-summary';
   const queueHistory = deliveryQueue.getByRole('region', {name:'PR #32 review rounds', exact:true});
   const queueHosted = queueHistory.getByRole('region', {name:'Hosted CodeRabbit', exact:true});
   await expect(queueHosted.getByRole('link', {name:/^Open hosted run live-hosted-round:/})).toBeVisible();
   await expect(queueHosted.locator('.review-lane-heading')).toContainText('1 run');
-  const hero = page.getByRole('region', {name:'Merge train head', exact:true});
+  const hero = page.getByRole('region', {name:'Review queue head', exact:true});
   checkpoint = 'attempt-reason-compact';
   const heroHosted = hero.getByRole('region',{name:'Hosted CodeRabbit',exact:true});
   const reasonPills = [queueHosted.locator('.review-attempt-state'),heroHosted.locator('.review-attempt-state')];
@@ -1098,9 +1099,9 @@ try {
   checkpoint = 'attempt-reason-reads';
   need(reviewPullReads === reasonReadBoundary.pull+1 && reviewAttemptReads === reasonReadBoundary.attempts+1 && reviewRunReads === reasonReadBoundary.runs+1 && reviewOperationReads === 0);
   checkpoint = 'reviews-return';
-  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
+  await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Review queue', exact:true}).click();
   checkpoint = 'reviews-heading';
-  await page.getByRole('heading', {name:'Reviews', exact:true}).waitFor();
+  await page.getByRole('heading', {name:'Review queue', exact:true}).waitFor();
   checkpoint = 'selected-worker';
   need(await selectedWorker() === config.worker);
   checkpoint = 'sanitized-literal';
@@ -1378,6 +1379,13 @@ try {
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).click();
   await page.getByLabel('Project name',{exact:true}).fill('Browser configured project');
   await page.getByLabel('Brand name',{exact:true}).fill('Browser configured brand');
+  checkpoint='pin-inspector';
+  await page.getByLabel('Pin a worker',{exact:true}).selectOption(config.other_worker);
+  checkpoint='pin-builder';
+  await page.getByLabel('Pin a worker',{exact:true}).selectOption(config.worker);
+  checkpoint='move-builder-up';
+  await page.getByRole('button',{name:'Move Builder up',exact:true}).click();
+  checkpoint='save-worker-order';
   const settingsSaved = page.waitForResponse(r=>r.request().method()==='PUT' && new URL(r.url()).pathname===prefix+'/presentation');
   await page.getByRole('button',{name:'Save appearance',exact:true}).click();
   need((await settingsSaved).status()===200);
@@ -1387,6 +1395,8 @@ try {
   need(new URL(page.url()).pathname===home+'/settings');
   await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(3);
   await page.getByLabel('Project name',{exact:true}).waitFor();
+  checkpoint='worker-order-retained';
+  await expect(page.locator('.worker-order-list strong')).toHaveText(['Builder','Inspector']);
   need(await page.locator('literal').count()===0);
   need(!(await page.evaluate(()=>JSON.stringify(sessionStorage))).includes(admin));
   need(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));

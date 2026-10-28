@@ -71,7 +71,7 @@ export interface ReviewPolicyAssessmentChannel {channel: 'cli'|'hosted'; covered
 export interface ReviewPolicyAssessment {source_obligations_pending?:number;incoming_routes_pending?:number;incoming_routes_capacity?:boolean;reason?:string;project_id: string; evidence_id: string; anchor: ReviewAnchor; source: 'captured_comparison'; policy_revision: number; evaluated_at: string; state: 'sufficient'|'held'|'unconfigured'; channels: ReviewPolicyAssessmentChannel[]}
 
 export interface ReviewGroup {title: string; pull_numbers: number[]}
-export interface Presentation {project_id: string; revision: number; name: string; brand_name: string; tagline: string; headings: Partial<Record<import('./presentation').HeadingKey, string>>; theme: Partial<Record<import('./presentation').ThemeToken, string>>; review_groups?: ReviewGroup[]; updated_at: string}
+export interface Presentation {project_id: string; revision: number; name: string; brand_name: string; tagline: string; headings: Partial<Record<import('./presentation').HeadingKey, string>>; theme: Partial<Record<import('./presentation').ThemeToken, string>>; review_groups?: ReviewGroup[]; worker_order?: string[]; updated_at: string}
 export interface PresentationSnapshot {presentation: Presentation; event_cursor: string}
 export interface PresentationRevision {revision: number; actor_id: string; created_at: string; state: Presentation}
 export interface ProjectMetadataEvent {event_type: import('./project-event-types').ProjectEventType; resource_id: string; revision: number; event_cursor: string}

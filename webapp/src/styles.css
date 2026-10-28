@@ -85,3 +85,7 @@
 .tab-heading h2{font-size:2rem;line-height:1.2;margin:0;overflow-wrap:anywhere}
 .tab-heading>p{flex-basis:100%;margin:0;color:var(--fc-canvas_muted,#74717b);font-size:.89rem}
 @media(max-width:650px){.tab-heading h2{font-size:1.8rem}.tab-heading>p{font-size:.83rem}}
+
+.worker-order-editor{padding:14px;border:1px solid var(--fc-surface_border,#d5d0cb);margin:12px 0 18px;min-width:0}
+.worker-order-editor legend{font-weight:700}.worker-order-list{padding-left:24px;list-style:decimal;margin:12px 0}
+.worker-order-list li{padding:5px 0}.worker-order-list li>div{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}.worker-order-list strong{overflow-wrap:anywhere}.worker-order-list span{display:flex;gap:5px}.worker-order-list button{padding:4px 8px;font-size:.8rem}

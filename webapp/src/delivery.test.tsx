@@ -24,6 +24,12 @@ function markup(node: React.ReactNode) {
 }
 
 describe('bounded Delivery board', () => {
+  it('keeps configured workers first, then alphabetical workers, with Unassigned last', () => {
+    const lanes = groupDeliveryLanes(board,['empty_worker','worker_one']);
+    expect(lanes.map(lane=>lane.id)).toEqual(['empty_worker','worker_one','outside_owner','']);
+    expect(groupDeliveryLanes(board,['worker_one']).map(lane=>lane.name)).toEqual(['Builder','Elsewhere','Empty worker','Unassigned']);
+  });
+
   it('provides the same bounded worker board independently of the review queue', () => {
     const api = { delivery: vi.fn(), reviewQueue: vi.fn() };
     const session = { project:{id:'project_one',repository:'example/project'}, controller: new AbortController(), api } as unknown as Session;
@@ -222,7 +228,7 @@ describe('stored merge head and review summaries', () => {
   });
   it('does not claim no head or merge readiness from a partial queue', () => {
     const partial = markup(<MergeHeadContent queue={queue([pull(1, 'merged')], true)} home={home} />);
-    expect(partial).toContain('Merge head not determined');
+    expect(partial).toContain('Queue head not determined');
     expect(partial).toContain('more queue entries remain');
     expect(partial).not.toContain('No open pull requests');
     const head = markup(<MergeHeadContent queue={queue([pull(2, 'open')])} home={home} />);
@@ -262,7 +268,7 @@ describe('stored merge head and review summaries', () => {
   it('uses dedicated neutral merge-head loading rather than generic page rows', () => {
     const html = markup(<DeliveryHero><section className="hero project-identity"><h1>Current verified project</h1></section></DeliveryHero>);
     expect(html).toContain('Current verified project');
-    expect(html).toContain('Loading merge head');
+    expect(html).toContain('Loading review queue head');
     expect(html.match(/class="review-lane skeleton-review-lane"/gu)).toHaveLength(2);
     expect(html).not.toContain('skeleton-row');
     expect(html).not.toContain('Review queue ↗');
@@ -277,7 +283,7 @@ describe('stored merge head and review summaries', () => {
         const html = markup(<QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key, home, selectWorker: () => {}, fail: () => {}, ready: false }}><DeliveryHero><h1>Project name</h1></DeliveryHero></WorkspaceContext.Provider></QueryClientProvider>);
         expect(html).toContain('delivery-hero-identity-only');
         expect(html).toContain('<h1>Project name</h1>');
-        expect(html).not.toContain('Merge train head');
+        expect(html).not.toContain('Review queue head');
         expect(html).not.toContain('No open pull requests');
       } finally { client.clear(); }
     }

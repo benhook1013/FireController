@@ -25,6 +25,7 @@ type Config struct {
 	Headings     map[string]string `json:"headings"`
 	Theme        map[string]string `json:"theme"`
 	ReviewGroups []ReviewGroup     `json:"review_groups,omitempty"`
+	WorkerOrder  []string          `json:"worker_order,omitempty"`
 }
 
 // ReviewGroup labels explicitly selected PRs without changing review order or policy.
@@ -79,6 +80,19 @@ func Normalize(in Config) (Config, error) {
 		}
 	}
 	out := Config{Name: strings.TrimSpace(in.Name), BrandName: strings.TrimSpace(in.BrandName), Tagline: strings.TrimSpace(in.Tagline), Headings: copyMap(in.Headings), Theme: copyMap(in.Theme)}
+	if len(in.WorkerOrder) > 100 {
+		return Config{}, invalid()
+	}
+	seenWorkers := map[string]bool{}
+	for _, id := range in.WorkerOrder {
+		if len(id) == 0 || len(id) > 128 || seenWorkers[id] || strings.IndexFunc(id, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-')
+		}) >= 0 {
+			return Config{}, invalid()
+		}
+		seenWorkers[id] = true
+		out.WorkerOrder = append(out.WorkerOrder, id)
+	}
 	if len(in.ReviewGroups) > 40 {
 		return Config{}, invalid()
 	}
@@ -222,8 +236,10 @@ func Decode(raw []byte) (Config, error) {
 	if _, ok := fields["name"]; !ok {
 		return Config{}, invalid()
 	}
-	if value, ok := fields["review_groups"]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-		return Config{}, invalid()
+	for _, key := range []string{"review_groups", "worker_order"} {
+		if value, ok := fields[key]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return Config{}, invalid()
+		}
 	}
 	for _, key := range []string{"name", "brand_name", "tagline"} {
 		if v, ok := fields[key]; ok {

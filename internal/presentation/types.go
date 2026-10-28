@@ -13,14 +13,15 @@ type State struct {
 	Headings     map[string]string               `json:"headings"`
 	Theme        map[string]string               `json:"theme"`
 	ReviewGroups []presentationmodel.ReviewGroup `json:"review_groups,omitempty"`
+	WorkerOrder  []string                        `json:"worker_order,omitempty"`
 	UpdatedAt    string                          `json:"updated_at"`
 }
 
 func (s State) Config() Config {
-	return Config{Name: s.Name, BrandName: s.BrandName, Tagline: s.Tagline, Headings: s.Headings, Theme: s.Theme, ReviewGroups: s.ReviewGroups}
+	return Config{Name: s.Name, BrandName: s.BrandName, Tagline: s.Tagline, Headings: s.Headings, Theme: s.Theme, ReviewGroups: s.ReviewGroups, WorkerOrder: s.WorkerOrder}
 }
 func state(c Config, project string, rev int64, at string) State {
-	return State{ProjectID: project, Revision: rev, Name: c.Name, BrandName: c.BrandName, Tagline: c.Tagline, Headings: c.Headings, Theme: c.Theme, UpdatedAt: at, ReviewGroups: c.ReviewGroups}
+	return State{ProjectID: project, Revision: rev, Name: c.Name, BrandName: c.BrandName, Tagline: c.Tagline, Headings: c.Headings, Theme: c.Theme, UpdatedAt: at, ReviewGroups: c.ReviewGroups, WorkerOrder: c.WorkerOrder}
 }
 
 type Snapshot struct {

@@ -1,3 +1,4 @@
+import { usePresentation, useProjectHeading } from './presentation-context';
 import { useWorkerPresence, WorkerContactView } from './worker-presence-view';
 import type { WorkerPresence } from './worker-presence';
 import { useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
@@ -23,7 +24,7 @@ type DeliveryJob = DeliverySnapshot['jobs']['items'][number];
 export type DeliveryLane = { id: string; name: string; worker?: DeliveryWorker; jobs: DeliveryJob[] };
 const statusOrder = { active: 0, blocked: 1, parked: 2, completed: 3 };
 
-export function groupDeliveryLanes(value: DeliverySnapshot): DeliveryLane[] {
+export function groupDeliveryLanes(value: DeliverySnapshot, workerOrder: readonly string[] = []): DeliveryLane[] {
   const lanes = new Map<string, DeliveryLane>(value.workers.items.map(worker => [worker.id, { id: worker.id, name: worker.name, worker, jobs: [] }]));
   for (const job of value.jobs.items) {
     if (!lanes.has(job.worker_id)) lanes.set(job.worker_id, { id: job.worker_id, name: job.worker_id ? job.worker_name : 'Unassigned', jobs: [] });
@@ -32,7 +33,11 @@ export function groupDeliveryLanes(value: DeliverySnapshot): DeliveryLane[] {
   if (!lanes.has('')) lanes.set('', { id: '', name: 'Unassigned', jobs: [] });
   return [...lanes.values()].map(lane => ({ ...lane, jobs: [...lane.jobs].sort((a, b) => Number(b.id === lane.worker?.primary_job_id) - Number(a.id === lane.worker?.primary_job_id) || statusOrder[a.status] - statusOrder[b.status]) })).sort((a, b) => {
     if (!a.id) return 1; if (!b.id) return -1;
-    return Math.min(3, ...a.jobs.map(job => statusOrder[job.status])) - Math.min(3, ...b.jobs.map(job => statusOrder[job.status]));
+    const position = (id: string) => { const index = workerOrder.indexOf(id); return index < 0 ? workerOrder.length : index; };
+    const byPin = position(a.id) - position(b.id);
+    if (byPin) return byPin;
+    const left = a.name.toLowerCase(), right = b.name.toLowerCase();
+    return left < right ? -1 : left > right ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
 }
 export function deliveryQuery(session: Session, key: readonly string[], workerCursor = '', jobCursor = '') {
@@ -64,7 +69,8 @@ function LaneInboxLink({ lane, home }: { lane: DeliveryLane; home: string }) {
   }}>Worker inbox</Link>;
 }
 export function DeliveryLanes({ value, home, partialJobs = value.jobs.has_more, presence }: { value: DeliverySnapshot; home: string; partialJobs?: boolean; presence?: WorkerPresence }) {
-  return <div className="delivery-lanes">{groupDeliveryLanes(value).map(lane => <WorkerLaneDisplay key={lane.id} label={lane.name} readingAnchor={`delivery-worker-${lane.id || 'unassigned'}`}
+  const workerOrder = usePresentation()?.worker_order ?? [];
+  return <div className="delivery-lanes">{groupDeliveryLanes(value, workerOrder).map(lane => <WorkerLaneDisplay key={lane.id} label={lane.name} readingAnchor={`delivery-worker-${lane.id || 'unassigned'}`}
     name={lane.id ? <Link to={`${home}/workers/${encodeURIComponent(lane.id)}`}>{lane.name}</Link> : lane.name}
     presence={lane.id && <WorkerContactView value={presence} worker={lane.id}/>}
     links={lane.id && <><LaneInboxLink lane={lane} home={home} /><Link to={`${home}/jobs?${new URLSearchParams({worker_id:lane.id,status:'all'})}`}>Job history</Link></>}
@@ -100,11 +106,12 @@ export function selectMergeHead(queue: ReviewQueue): MergeHead {
   return queue.has_more ? { state: 'unknown', reason: 'next-page' } : { state: 'none' };
 }
 export function MergeHeadContent({ queue, home, progress, fronts, channels }:  { queue: ReviewQueue; home: string; progress?: ReviewProgressItem; fronts?: ReviewFronts; channels?: ('hosted'|'cli')[] }) {
+  const label = useProjectHeading('reviews');
   const head = selectMergeHead(queue);
   if (head.state === 'none' || head.state === 'unknown' && head.reason === 'unconfigured') return null;
   const currentFronts = currentReviewFronts(queue.snapshot_id, queue.items, fronts);
   const jump = <Link className="review-details-link" to={`${home}#${head.state === 'head' ? `review-pr-${head.pull.number}` : 'review-queue'}`} aria-label="Jump to review queue">Review queue ↗</Link>;
-  return <><p className="eyebrow">Merge train</p>{head.state === 'head' ? <ul className="review-queue"><ReviewQueueRow pull={head.pull} snapshot={queue.snapshot_id} progress={progress} fronts={currentFronts} channels={channels ?? (fronts?.configured ? fronts.channels.map(channel=>channel.channel) : undefined)} footer={jump} anchor={false} /></ul> : <><h2>Merge head not determined</h2><p>{head.reason === 'preceding' ? 'An earlier queue entry has unknown state.' : 'No open PR is loaded yet; more queue entries remain.'}</p>{jump}</>}</>;
+  return <><p className="eyebrow">{label}</p>{head.state === 'head' ? <ul className="review-queue"><ReviewQueueRow pull={head.pull} snapshot={queue.snapshot_id} progress={progress} fronts={currentFronts} channels={channels ?? (fronts?.configured ? fronts.channels.map(channel=>channel.channel) : undefined)} footer={jump} anchor={false} /></ul> : <><h2>Queue head not determined</h2><p>{head.reason === 'preceding' ? 'An earlier queue entry has unknown state.' : 'No open PR is loaded yet; more queue entries remain.'}</p>{jump}</>}</>;
 }
 export function DeliveryHero({ children }: { children: ReactNode }) {
   const { session, key, home } = useWorkspace();
@@ -115,7 +122,7 @@ export function DeliveryHero({ children }: { children: ReactNode }) {
   const progress = useReviewProgress(queue?.items.map(pull => pull.number) ?? []);
   const head = queue && selectMergeHead(queue);
   const showHead = Boolean(query.isPending || query.error || head?.state === 'head' || head?.state === 'unknown' && head.reason !== 'unconfigured');
-  return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Merge train head">{query.isPending && !queue && !query.error ? <MergeHeadSkeleton /> : <ReadState error={query.error} loading={false} empty={false} retained={!!queue}>{queue && <MergeHeadContent queue={queue} home={home} fronts={frame?.fronts} channels={frame?.fronts?.configured ? frame.fronts.channels.map(channel=>channel.channel) : undefined} progress={head?.state !== 'head' ? undefined : progress.data?.items.find(item => item.pull_number === head.pull.number)} />}</ReadState>}</section>}</div>;
+  return <div className={`delivery-hero${showHead ? '' : ' delivery-hero-identity-only'}`}>{children}{showHead && <section className="hero delivery-merge-head" aria-label="Review queue head">{query.isPending && !queue && !query.error ? <MergeHeadSkeleton /> : <ReadState error={query.error} loading={false} empty={false} retained={!!queue}>{queue && <MergeHeadContent queue={queue} home={home} fronts={frame?.fronts} channels={frame?.fronts?.configured ? frame.fronts.channels.map(channel=>channel.channel) : undefined} progress={head?.state !== 'head' ? undefined : progress.data?.items.find(item => item.pull_number === head.pull.number)} />}</ReadState>}</section>}</div>;
 }
 export function DeliveryWork() {
   const { session, key, home } = useWorkspace();

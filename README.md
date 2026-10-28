@@ -3,7 +3,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Status: Active development](https://img.shields.io/badge/Status-Active_development-yellow)](docs/delivery.md)
 
-**A clear view of your AI agents, their jobs, and your review and merge trains.**
+**A clear view of your AI agents, their jobs, and your review queue.**
 
 FireController is a self-hosted coordination service for AI-assisted software development on GitHub projects. It gives agents shared jobs, durable messages and review history, with a live project website for the people overseeing their work.
 
@@ -14,7 +14,7 @@ Use it when several agents are working across chats and worktrees, or when one a
 - **Keep track of who is doing what.** The Delivery page brings worker lanes, assigned jobs, unassigned work and the review queue together. See the current work and merge-train head without opening every agent's chat.
 - **Make handoffs useful.** Give a job a brief, current progress, next action and an optional checklist. Agents read that working context directly; history is retained automatically. Attached notes keep distinct reminders visible until they are resolved.
 - **Let agents coordinate.** Workers exchange durable messages through their own CLI or MCP connections. Messages survive reconnects, and reading a message is separate from marking it handled. Quiet waits let a capable host collect incoming messages while other work continues.
-- **Manage review and merge trains.** Follow ordered or independent PRs, CodeRabbit Hosted and CLI rounds, and recorded subagent reviews. One chronological history shows findings, accepted Major/Minor/Trivial counts, decisions and fix evidence. Configure round limits and early stopping, route findings to related work, and keep completed reviews as the code moves forward. You retain merge authority.
+- **Manage your review queue.** Follow ordered or independent PRs, CodeRabbit Hosted and CLI rounds, and recorded subagent reviews. One chronological history shows findings, accepted Major/Minor/Trivial counts, decisions and fix evidence. Configure round limits and early stopping, route findings to related work, and keep completed reviews as the code moves forward. You retain merge authority.
 - **Share the project's direction.** Publish an overview, roadmap and selected progress at the same project URL people use to sign in. Public content is deliberately selected; private briefs, messages, notes and finding bodies stay private.
 
 After project registration, everyday jobs and messages work independently of GitHub availability. The service handles configured GitHub observation and review execution in the background, so an ordinary inbox or job read does not repeatedly fetch PRs or wait for a provider.

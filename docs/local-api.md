@@ -46,7 +46,7 @@ Receipt keys include their originating instance. Startup upgrades base schema ve
 | `GET /api/v1/projects` | Administrator reads a bounded project page. |
 | `GET /api/v1/projects/{project_id}` | Scoped project detail. |
 | `POST /api/v1/projects/{project_id}/workers` | Scoped write sends `{name}`; returns compact worker receipt. |
-| `GET /api/v1/projects/{project_id}/workers` | Scoped bounded worker page. |
+| `GET /api/v1/projects/{project_id}/workers` | Scoped bounded worker page, configured pins first then alphabetical name/ID order; see [worker ordering](project-presentation.md#worker-ordering). |
 | `GET /api/v1/projects/{project_id}/workers/{worker_id}` | Scoped worker detail. |
 | `POST /api/v1/projects/{project_id}/credentials` | Administrator sends `{token_sha256, permissions}`; returns credential/principal IDs and project ID. |
 | `DELETE /api/v1/projects/{project_id}/credentials/{credential_id}` | Administrator revokes access; requires an idempotency key. |

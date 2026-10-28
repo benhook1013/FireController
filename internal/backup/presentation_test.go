@@ -18,8 +18,8 @@ func presentationRestoreFixture(t *testing.T) *restoreFixture {
 	}
 	presentation.Register(f.handler.(*http.ServeMux), f.store)
 	path := "/api/v1/projects/" + f.project + "/presentation"
-	f.request(t, "PUT", path, map[string]any{"expected_revision": 0, "presentation": map[string]any{"name": "First project name", "brand_name": "Private brand", "headings": map[string]string{"map": "Private roadmap"}, "review_groups": []map[string]any{{"title": "Private release", "pull_numbers": []int64{2, 4}}}}})
-	f.request(t, "PUT", path, map[string]any{"expected_revision": 1, "presentation": map[string]any{"name": "Current project name"}})
+	f.request(t, "PUT", path, map[string]any{"expected_revision": 0, "presentation": map[string]any{"name": "First project name", "brand_name": "Private brand", "worker_order": []string{f.worker}, "headings": map[string]string{"map": "Private roadmap"}, "review_groups": []map[string]any{{"title": "Private release", "pull_numbers": []int64{2, 4}}}}})
+	f.request(t, "PUT", path, map[string]any{"expected_revision": 1, "presentation": map[string]any{"name": "Current project name", "worker_order": []string{f.worker}}})
 	return f
 }
 
@@ -47,7 +47,7 @@ func TestPresentationBundlePreservesNameAndFullHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	var current presentation.State
-	if json.Unmarshal([]byte(currentRaw), &current) != nil || name != "Current project name" || current.Name != name || current.Revision != 2 || current.BrandName != "FireController" || len(current.Headings) != 0 {
+	if json.Unmarshal([]byte(currentRaw), &current) != nil || name != "Current project name" || current.Name != name || current.Revision != 2 || !reflect.DeepEqual(current.WorkerOrder, []string{f.worker}) || current.BrandName != "FireController" || len(current.Headings) != 0 {
 		t.Fatal("current settings/name lost", name, current)
 	}
 	var originalRaw, latestRaw string
@@ -58,7 +58,7 @@ func TestPresentationBundlePreservesNameAndFullHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	var original presentation.State
-	if json.Unmarshal([]byte(originalRaw), &original) != nil || original.Name != "First project name" || original.BrandName != "Private brand" || original.Headings["map"] != "Private roadmap" || latestRaw != currentRaw || len(original.ReviewGroups) != 1 || original.ReviewGroups[0].Title != "Private release" || !reflect.DeepEqual(original.ReviewGroups[0].PullNumbers, []int64{2, 4}) {
+	if json.Unmarshal([]byte(originalRaw), &original) != nil || original.Name != "First project name" || !reflect.DeepEqual(original.WorkerOrder, []string{f.worker}) || original.BrandName != "Private brand" || original.Headings["map"] != "Private roadmap" || latestRaw != currentRaw || len(original.ReviewGroups) != 1 || original.ReviewGroups[0].Title != "Private release" || !reflect.DeepEqual(original.ReviewGroups[0].PullNumbers, []int64{2, 4}) {
 		t.Fatal("captured history changed", original)
 	}
 }

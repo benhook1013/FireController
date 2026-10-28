@@ -22,11 +22,12 @@ type Presentation struct {
 	Headings     map[string]string               `json:"headings"`
 	Theme        map[string]string               `json:"theme"`
 	ReviewGroups []presentationmodel.ReviewGroup `json:"review_groups,omitempty"`
+	WorkerOrder  []string                        `json:"worker_order,omitempty"`
 	UpdatedAt    string                          `json:"updated_at"`
 }
 
 func (p Presentation) Config() PresentationConfig {
-	return PresentationConfig{Name: p.Name, BrandName: p.BrandName, Tagline: p.Tagline, Headings: p.Headings, Theme: p.Theme, ReviewGroups: p.ReviewGroups}
+	return PresentationConfig{Name: p.Name, BrandName: p.BrandName, Tagline: p.Tagline, Headings: p.Headings, Theme: p.Theme, ReviewGroups: p.ReviewGroups, WorkerOrder: p.WorkerOrder}
 }
 
 type PresentationSnapshot struct {
@@ -79,7 +80,7 @@ func (c *Client) validPresentation(p Presentation) bool {
 	}
 	if p.Revision == 0 {
 		defaults := presentationmodel.Defaults()
-		if p.BrandName != defaults.BrandName || p.Tagline != defaults.Tagline || len(p.Headings) != 0 || len(p.Theme) != 0 || len(p.ReviewGroups) != 0 {
+		if p.BrandName != defaults.BrandName || p.Tagline != defaults.Tagline || len(p.Headings) != 0 || len(p.Theme) != 0 || len(p.ReviewGroups) != 0 || len(p.WorkerOrder) != 0 {
 			return false
 		}
 		return p.Name != "" && len(p.Name) <= 200 && utf8.ValidString(p.Name)

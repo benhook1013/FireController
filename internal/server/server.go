@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/presentation"
 )
 
 type RepositoryIdentity struct {
@@ -332,28 +333,33 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	filter := "workers"
+	filter := presentation.WorkerOrderCursorKind("workers")
 	after, err := a.store.ParseCursor(scope, filter, query.Get("cursor"))
 	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	rows, err := a.store.DB().QueryContext(r.Context(), "SELECT id,project_id,name FROM workers WHERE project_id=? AND id>? ORDER BY id LIMIT ?", scope.ProjectID, after, limit+1)
-	if err != nil {
-		core.WriteError(w, err)
-		return
-	}
-	defer rows.Close()
 	values := make([]workerValue, 0, limit+1)
-	for rows.Next() {
-		var value workerValue
-		if err = rows.Scan(&value.ID, &value.ProjectID, &value.Name); err != nil {
-			core.WriteError(w, err)
-			return
+	err = a.store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
+		order, err := presentation.WorkerOrderJSON(ctx, tx, scope.ProjectID)
+		if err != nil {
+			return err
 		}
-		values = append(values, value)
-	}
-	if err = rows.Err(); err != nil {
+		rows, err := tx.QueryContext(ctx, presentation.WorkerOrderCTE+`SELECT w.id,w.project_id,w.name FROM ordered_workers w`+presentation.WorkerOrderTail, order, scope.ProjectID, after, after, limit+1)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var value workerValue
+			if err := rows.Scan(&value.ID, &value.ProjectID, &value.Name); err != nil {
+				return err
+			}
+			values = append(values, value)
+		}
+		return rows.Err()
+	})
+	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
