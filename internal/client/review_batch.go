@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/benhook1013/FireController/internal/strictjson"
@@ -52,7 +53,10 @@ func ValidateReviewFixBatchRequest(r ReviewFixBatchRequest) error {
 		return mutationValidation()
 	}
 	seen := map[int64]bool{}
-	for _, item := range r.Items {
+	for i, item := range r.Items {
+		if err := reviewFixSHAValidation(fmt.Sprintf("items[%d].", i), item.ExpectedSHA, item.FixSHA); err != nil {
+			return err
+		}
 		if seen[item.Finding] || ValidateReviewFixRequest(ReviewFixRequest{ExpectedRevision: r.ExpectedRevision, Finding: item.Finding, ExpectedSHA: item.ExpectedSHA, FixSHA: item.FixSHA, ProofNote: item.ProofNote}) != nil {
 			return mutationValidation()
 		}

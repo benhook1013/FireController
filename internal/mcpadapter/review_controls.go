@@ -2,6 +2,7 @@ package mcpadapter
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"strings"
 
@@ -14,6 +15,14 @@ func invalidHeadSHA(value string) error {
 		return diagnostic("invalid_arguments", "head_sha must contain exactly 40 lowercase hexadecimal characters.", "Use the full PR head SHA from Git or the provider; abbreviated SHAs are not accepted. No request was sent.")
 	}
 	return nil
+}
+
+func invalidReviewArguments(err error) error {
+	var field *client.Error
+	if errors.As(err, &field) && field.Code == "validation_failed" && field.Details != nil {
+		return &Diagnostic{Code: "invalid_arguments", Message: field.Message, Action: field.Action, Details: field.Details}
+	}
+	return invalidArguments()
 }
 
 func reviewControlTool(name string) bool {
@@ -113,8 +122,8 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 		}
 		args.id, args.key = in.ID, in.Key
 		args.reviewRouteFix = client.ReviewRouteFixRequest{ExpectedRevision: *in.Revision, ExpectedSHA: *in.ExpectedSHA, FixSHA: in.FixSHA, ProofNote: in.ProofNote}
-		if client.ValidateReviewRouteFixRequest(args.reviewRouteFix) != nil {
-			return args, invalidArguments()
+		if err := client.ValidateReviewRouteFixRequest(args.reviewRouteFix); err != nil {
+			return args, invalidReviewArguments(err)
 		}
 		return args, nil
 	case "review_source_refresh_read":
@@ -263,8 +272,8 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 		}
 		args.id, args.key = in.ID, in.Key
 		args.reviewFix = client.ReviewFixRequest{ExpectedRevision: *in.Revision, Finding: *in.Finding, ExpectedSHA: *in.ExpectedSHA, FixSHA: in.FixSHA, ProofNote: in.ProofNote}
-		if client.ValidateReviewFixRequest(args.reviewFix) != nil {
-			return args, invalidArguments()
+		if err := client.ValidateReviewFixRequest(args.reviewFix); err != nil {
+			return args, invalidReviewArguments(err)
 		}
 	case "review_source_finalize":
 		var in struct {
@@ -304,12 +313,12 @@ func reviewControlDefinitions() []definition {
 		{"review_route_read", "Explicitly read one route, original captured comparison and finding text, including superseded routes. Local provider-free read.", schema(map[string]any{"route_id": routeID}, "route_id")},
 		{"review_routes_list", "Read one compact page of active incoming finding routes for a receiving PR, default five. No finding text, provider refresh or automatic paging.", schema(map[string]any{"pull_number": pull, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "default": 5}, "cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}}, "pull_number")},
 		{"review_route_decide", "Record the receiving decision for one active route using an explicit key/revision. Receiver decision is independent of source counts; no provider work or automatic retry.", schema(map[string]any{"route_id": routeID, "idempotency_key": key, "expected_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}, "disposition": map[string]any{"type": "string", "enum": []string{"accepted", "rejected"}}, "reason": text}, "route_id", "idempotency_key", "expected_revision", "disposition", "reason")},
-		{"review_route_fix", "Record or correct receiving fix proof with an explicit key, revision and expected current SHA. Retains source counts; no provider work or automatic retry.", schema(map[string]any{"route_id": routeID, "idempotency_key": key, "expected_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}, "expected_sha": map[string]any{"type": "string", "maxLength": 40, "pattern": "^(|[a-f0-9]{40})$"}, "fix_sha": map[string]any{"type": "string", "minLength": 40, "maxLength": 40, "pattern": "^[a-f0-9]{40}$"}, "proof_note": text}, "route_id", "idempotency_key", "expected_revision", "expected_sha", "fix_sha", "proof_note")},
+		{"review_route_fix", "Record or correct receiving fix proof with an explicit key, revision and expected current SHA. Retains source counts; no provider work or automatic retry.", schema(map[string]any{"route_id": routeID, "idempotency_key": key, "expected_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}, "expected_sha": map[string]any{"type": "string", "maxLength": 40, "pattern": "^(|[a-f0-9]{40})$"}, "fix_sha": map[string]any{"type": "string", "minLength": 40, "maxLength": 40, "pattern": "^[a-f0-9]{40}$", "description": "Full 40-character lowercase hexadecimal fix commit SHA; abbreviations are rejected."}, "proof_note": text}, "route_id", "idempotency_key", "expected_revision", "expected_sha", "fix_sha", "proof_note")},
 		{"review_policy_assess", "Read current project requirements and completed PR/channel review progress for the PR identified by captured evidence; later Git changes preserve progress. No provider refresh, current-source verification or merge-readiness verdict.", schema(map[string]any{"evidence_id": id}, "evidence_id")},
 		{"review_evidence_read", "Explicitly read full native immutable review evidence and parsed finding text, bounded to 4 MiB. No raw capture, provider refresh or execution.", schema(map[string]any{"evidence_id": id}, "evidence_id")},
 		{"review_adjudication_read", "Explicitly read current native finding decisions and fix proof without finding text, provider refresh or execution.", schema(map[string]any{"evidence_id": id}, "evidence_id")},
 		{"review_finding_decide", "Record or correct a native finding decision using an explicit key, revision and zero-based index; retain audit history and return a compact receipt. No provider work or automatic retry.", schema(map[string]any{"evidence_id": id, "idempotency_key": key, "expected_revision": revision, "finding": finding, "disposition": map[string]any{"type": "string", "enum": []string{"accepted", "rejected"}}, "reason": text, "expected_route_revision": routeRevision}, "evidence_id", "idempotency_key", "expected_revision", "finding", "disposition", "reason")},
-		{"review_finding_fix", "Record or correct accepted-finding fix proof with an explicit key, revision, zero-based index and expected current fix SHA; retain audit history and return a compact receipt. No provider work or automatic retry.", schema(map[string]any{"evidence_id": id, "idempotency_key": key, "expected_revision": revision, "finding": finding, "expected_sha": map[string]any{"type": "string", "maxLength": 40, "pattern": "^(|[a-f0-9]{40})$", "description": "Required even when empty; empty asserts that no fix SHA is currently recorded."}, "fix_sha": map[string]any{"type": "string", "minLength": 40, "maxLength": 40, "pattern": "^[a-f0-9]{40}$"}, "proof_note": text}, "evidence_id", "idempotency_key", "expected_revision", "finding", "expected_sha", "fix_sha", "proof_note")},
+		{"review_finding_fix", "Record or correct accepted-finding fix proof with an explicit key, revision, zero-based index and expected current fix SHA; retain audit history and return a compact receipt. No provider work or automatic retry.", schema(map[string]any{"evidence_id": id, "idempotency_key": key, "expected_revision": revision, "finding": finding, "expected_sha": map[string]any{"type": "string", "maxLength": 40, "pattern": "^(|[a-f0-9]{40})$", "description": "Required even when empty; empty asserts that no fix SHA is currently recorded."}, "fix_sha": map[string]any{"type": "string", "minLength": 40, "maxLength": 40, "pattern": "^[a-f0-9]{40}$", "description": "Full 40-character lowercase hexadecimal fix commit SHA; abbreviations are rejected."}, "proof_note": text}, "evidence_id", "idempotency_key", "expected_revision", "finding", "expected_sha", "fix_sha", "proof_note")},
 		{"review_source_finalize", "Finalize eligible native source counts and atomically queue the GitHub summary; no separate publish call or wait for fixes. Return a compact receipt without waiting for provider I/O or requesting another review.", schema(map[string]any{"evidence_id": id, "idempotency_key": key, "expected_revision": revision}, "evidence_id", "idempotency_key", "expected_revision")},
 	}
 }

@@ -1,10 +1,19 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/client"
 )
+
+func reviewFieldArgumentDiagnostic(err error) *diagnostic {
+	var field *client.Error
+	if errors.As(err, &field) && field.Code == "validation_failed" && field.Details != nil {
+		return &diagnostic{Code: "invalid_arguments", Message: field.Message, Action: field.Action, Details: field.Details}
+	}
+	return nil
+}
 
 // Parsing and private-file admission happen before a selected connection loads.
 func parseReviewBatch(operation string, args []string) (*mutationInvocation, bool) {
@@ -50,5 +59,6 @@ func parseReviewBatch(operation string, args []string) (*mutationInvocation, boo
 	} else {
 		call.reviewFixBatch, err = client.DecodeReviewFixBatchRequest([]byte(data))
 	}
+	call.argumentDiagnostic = reviewFieldArgumentDiagnostic(err)
 	return call, err == nil
 }

@@ -56,7 +56,7 @@ type messageInput struct {
 }
 
 func invalidArguments() *Diagnostic {
-	return diagnostic("invalid_arguments", "Use only the declared tool fields with valid bounded values and required keys or revisions.", "Check this tool's input schema; the startup binding cannot be overridden.")
+	return diagnostic("invalid_arguments", "Use only the declared tool fields with valid bounded values and required keys or revisions.", "Check this tool's input schema and correct the request. No request was sent.")
 }
 
 func parseArguments(name string, data json.RawMessage) (arguments, error) {

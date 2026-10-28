@@ -52,6 +52,24 @@ func TestReviewBatchCLIPrivateStrictFileBeforeConnection(t *testing.T) {
 	}
 }
 
+func TestReviewFixCLIIdentifiesMalformedCommitBeforeConnection(t *testing.T) {
+	body := `{"expected_revision":1,"items":[{"finding":0,"expected_sha":"","fix_sha":"0b368b8bc9","proof_note":"PRIVATE_PROOF"}]}`
+	file := importCLIFile(t, []byte(body))
+	for _, tc := range []struct {
+		args  []string
+		field string
+	}{
+		{[]string{"reviews", "fix-batch", cliEvidenceID, "--file", file, "--key", "explicit"}, "items[0].fix_sha"},
+		{[]string{"reviews", "fix", cliEvidenceID, "--finding", "0", "--expect-revision", "1", "--expect-sha=", "--fix-sha", "0b368b8bc9", "--proof", "PRIVATE_PROOF", "--key", "explicit"}, "fix_sha"},
+		{[]string{"reviews", "route-fix", "review_route_" + strings.Repeat("a", 32), "--expect-revision", "1", "--expect-sha=", "--fix-sha", "0b368b8bc9", "--proof", "PRIVATE_PROOF", "--key", "explicit"}, "fix_sha"},
+	} {
+		code, out, diagnostic := run(append([]string{"--profiles-file", "/missing/config"}, tc.args...), map[string]string{"FC_PROFILE": "missing"})
+		if code != cli.ExitUsage || out != "" || !strings.Contains(diagnostic, tc.field) || !strings.Contains(diagnostic, "40 lowercase hexadecimal") || strings.Contains(diagnostic, "profiles_") || strings.Contains(diagnostic, "PRIVATE_PROOF") || strings.Contains(diagnostic, "0b368b8bc9") {
+			t.Fatal("malformed commit received generic advice or loaded connection", code, diagnostic)
+		}
+	}
+}
+
 func TestReviewBatchCLISendsOneExplicitRequestAndCompactReceipt(t *testing.T) {
 	f := setupServiceFixture(t)
 	project := f.project(t, "batch-cli")

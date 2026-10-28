@@ -33,7 +33,7 @@ func reviewBatchArguments(name string, data json.RawMessage) (arguments, error) 
 		args.reviewFixBatch, err = client.DecodeReviewFixBatchRequest(body)
 	}
 	if err != nil {
-		return arguments{}, invalidArguments()
+		return arguments{}, invalidReviewArguments(err)
 	}
 	args.id, args.key = wire.ID, wire.Key
 	return args, nil
@@ -47,7 +47,7 @@ func reviewBatchDefinitions() []definition {
 	finding := map[string]any{"type": "integer", "minimum": 0, "maximum": 99, "description": "Explicit zero-based finding index; no duplicates within a batch."}
 	text := map[string]any{"type": "string", "minLength": 1, "maxLength": 2048, "description": "Explicit nonblank text, at most 2048 UTF-8 bytes."}
 	decision := object(map[string]any{"finding": finding, "disposition": map[string]any{"type": "string", "enum": []string{"accepted", "rejected"}}, "reason": text, "expected_route_revision": revision}, "finding", "disposition", "reason")
-	fix := object(map[string]any{"finding": finding, "expected_sha": map[string]any{"type": "string", "pattern": "^(|[a-f0-9]{40})$", "maxLength": 40}, "fix_sha": map[string]any{"type": "string", "pattern": "^[a-f0-9]{40}$", "minLength": 40, "maxLength": 40}, "proof_note": text}, "finding", "expected_sha", "fix_sha", "proof_note")
+	fix := object(map[string]any{"finding": finding, "expected_sha": map[string]any{"type": "string", "pattern": "^(|[a-f0-9]{40})$", "maxLength": 40}, "fix_sha": map[string]any{"type": "string", "pattern": "^[a-f0-9]{40}$", "minLength": 40, "maxLength": 40, "description": "Full 40-character lowercase hexadecimal fix commit SHA; abbreviations are rejected."}, "proof_note": text}, "finding", "expected_sha", "fix_sha", "proof_note")
 	fields := func(item map[string]any) map[string]any {
 		return object(map[string]any{"evidence_id": id, "idempotency_key": id, "expected_revision": revision, "items": map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": item}}, "evidence_id", "idempotency_key", "expected_revision", "items")
 	}

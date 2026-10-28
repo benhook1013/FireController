@@ -359,8 +359,9 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		}
 	case "fix":
 		call.reviewFix = client.ReviewFixRequest{ExpectedRevision: revision, Finding: finding, ExpectedSHA: values["--expect-sha"], FixSHA: values["--fix-sha"], ProofNote: values["--proof"]}
-		if client.ValidateReviewFixRequest(call.reviewFix) != nil {
-			return nil, false
+		if err := client.ValidateReviewFixRequest(call.reviewFix); err != nil {
+			call.argumentDiagnostic = reviewFieldArgumentDiagnostic(err)
+			return call, false
 		}
 	case "route-create":
 		target, err := strconv.ParseInt(values["--target-pr"], 10, 64)
@@ -378,8 +379,9 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		}
 	case "route-fix":
 		call.reviewRouteFix = client.ReviewRouteFixRequest{ExpectedRevision: revision, ExpectedSHA: values["--expect-sha"], FixSHA: values["--fix-sha"], ProofNote: values["--proof"]}
-		if client.ValidateReviewRouteFixRequest(call.reviewRouteFix) != nil {
-			return nil, false
+		if err := client.ValidateReviewRouteFixRequest(call.reviewRouteFix); err != nil {
+			call.argumentDiagnostic = reviewFieldArgumentDiagnostic(err)
+			return call, false
 		}
 	case "finalize":
 		call.reviewFinalize = client.ReviewFinalizeRequest{ExpectedRevision: revision}

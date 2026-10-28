@@ -159,7 +159,10 @@ func ValidateReviewDecisionRequest(r ReviewDecisionRequest) error {
 	return nil
 }
 func ValidateReviewFixRequest(r ReviewFixRequest) error {
-	if !validControlRevision(r.ExpectedRevision) || r.Finding < 0 || r.Finding >= 100 || r.ExpectedSHA != "" && !controlHex(r.ExpectedSHA, 40) || !controlHex(r.FixSHA, 40) || !controlText(r.ProofNote, 2048, true) {
+	if err := reviewFixSHAValidation("", r.ExpectedSHA, r.FixSHA); err != nil {
+		return err
+	}
+	if !validControlRevision(r.ExpectedRevision) || r.Finding < 0 || r.Finding >= 100 || !controlText(r.ProofNote, 2048, true) {
 		return mutationValidation()
 	}
 	return nil
