@@ -314,3 +314,14 @@ describe('compact PR sizing display',()=>{
     expect(suggested).toContain('Suggested maximum PR size: 80 files.');expect(suggested).not.toContain('remaining');
   });
 });
+
+
+describe('retained CI explanation',()=>{
+  it('explains stale GitHub test-merge bases without inventing current CI success',()=>{
+    const value:ReviewPullSummary={...pull(7),ci_state:'unknown',merge_status:{state:'unknown',reason:'required_ci_unknown'},observation:{state:'current',ci_checked_at:'2026-10-28T12:12:35Z',ci_error:'ci_merge_base_mismatch'}};
+    const html=markup(<ReviewPullFacts pull={value}/>);
+    expect(html).toContain('Required CI: Unknown');expect(html).toContain('Merge: Unknown');
+    expect(html.match(/earlier results remain saved/gu)).toHaveLength(2);
+    expect(html).not.toContain('Ci merge base mismatch');expect(value.ci_state).toBe('unknown');
+  });
+});

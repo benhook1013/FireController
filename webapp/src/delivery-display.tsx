@@ -20,7 +20,7 @@ export function DeliveryJobCard({ title, status, children, footer, readingAnchor
   readingAnchor?: string;
 }) {
   return <li data-reading-anchor={readingAnchor}>
-    {(title || status) && <div className="delivery-job-heading">{title && <h4>{title}</h4>}{status && <div className="delivery-job-state">{status}</div>}</div>}
+    {(title || status) && <div className="delivery-job-heading">{status && <div className="delivery-job-state">{status}</div>}{title && <h4>{title}</h4>}</div>}
     {children}{footer}
   </li>;
 }
