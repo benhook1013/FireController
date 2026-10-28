@@ -139,7 +139,7 @@ func readRoundRecordVersion(ctx context.Context, q EvidenceQuery, project string
 	if bound.ProjectID != project || bound.PullNumber != pull || bound.Channel != channel || bound.Revision != c.grantRevision || bound.Epoch != c.Epoch {
 		return roundRecord{}, roundUnavailable()
 	}
-	if !validRoundControl(c.RoundControl) || c.grantRevision < 1 || c.grantRevision > c.Revision || version < 4 && (c.cumulative || c.Maximum > 1000) || c.cumulative && c.Tapered != cumulativeTapered(c.RoundControl) || !c.cumulative && !validLegacyRoundControl(c.RoundControl) {
+	if !validRoundControl(c.RoundControl) || c.grantRevision < 1 || c.grantRevision > c.Revision || version < 4 && (c.cumulative || c.Maximum > 1000) || c.Used < bound.Used || c.cumulative && c.Tapered != (cumulativeTapered(c.RoundControl) && (bound.Tapered || c.Used > bound.Used)) || !c.cumulative && !validLegacyRoundControl(c.RoundControl) {
 		return roundRecord{}, roundUnavailable()
 	}
 	return c, nil
@@ -229,7 +229,10 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 			c.Closed = false
 			c.grantRevision = c.Revision
 			c.cumulative = true
-			c.Tapered = cumulativeTapered(c.RoundControl)
+			// An explicit additional grant reopens discovery without erasing its
+			// earned streak or raising the requested minimum. The immutable grant's
+			// Used boundary distinguishes reopening from a newly earned completion.
+			c.Tapered = false
 		} else {
 			if c.grantRevision == 0 {
 				c.grantRevision = c.Revision

@@ -51,7 +51,9 @@ func decodeRoundHistory(body string) (RoundControl, bool, error) {
 		return c, false, nil
 	}
 	var record cumulativeRoundHistory
-	if strictjson.Decode([]byte(body), &record) != nil || record.Format != 2 || encoded(record) != body || !validRoundControl(record.Control) || record.Control.Tapered != cumulativeTapered(record.Control) {
+	// A false taper latch can record an explicit reopening while keeping the
+	// earned streak. Historical grants that kept taper remain unchanged.
+	if strictjson.Decode([]byte(body), &record) != nil || record.Format != 2 || encoded(record) != body || !validRoundControl(record.Control) || record.Control.Tapered && !cumulativeTapered(record.Control) {
 		return RoundControl{}, false, roundUnavailable()
 	}
 	return record.Control, true, nil

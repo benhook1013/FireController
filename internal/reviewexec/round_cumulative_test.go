@@ -38,7 +38,7 @@ func seedLegacyRoundGrant(t *testing.T, f *attemptFixture, pull int64, channel s
 	})
 }
 
-func TestRoundCumulativePreservesStreakMinimumAndMaxOnlyTaper(t *testing.T) {
+func TestRoundCumulativePreservesStreakMinimumAndMaxOnlyReopening(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 8, "first")
 	for i := 0; i < 2; i++ {
@@ -56,8 +56,8 @@ func TestRoundCumulativePreservesStreakMinimumAndMaxOnlyTaper(t *testing.T) {
 		t.Fatal("third dry round lost earned taper", c)
 	}
 	roundGrant(t, f, 2, "cli", 2, 0, 8, "max-only")
-	if c = roundRead(t, f, 2, "cli"); !c.Tapered || c.Used != 3 || c.Dry != 3 || c.Maximum != 11 {
-		t.Fatal("max-only edit reopened earned taper", c)
+	if c = roundRead(t, f, 2, "cli"); c.Tapered || c.Used != 3 || c.Dry != 3 || c.Minimum != 3 || c.Maximum != 11 {
+		t.Fatal("max-only grant failed to reopen with earned streak and requested bounds", c)
 	}
 	roundGrant(t, f, 2, "cli", 3, 2, 4, "extra-minimum")
 	if c = roundRead(t, f, 2, "cli"); c.Tapered || c.Minimum != 5 || c.Dry != 3 {
@@ -230,12 +230,17 @@ func TestRoundCumulativeImportedEarnedProofInvalidatesOnAcceptedCompletion(t *te
 			if !c.InitiallyTapered || c.InitialDry != 0 || c.OriginSource != prepared.Source || c.Used != 1 || c.Tapered {
 				t.Fatal("carried proof or minimum changed", c)
 			}
-			// Lowering the additional minimum to zero may use earned imported proof,
-			// but a newly accepted result has naturally invalidated that proof.
+			// Every explicit grant reopens, preserving the imported proof until a
+			// new completion evaluates it. An accepted result invalidates that proof.
 			roundGrant(t, f, 2, "cli", 2, 0, 2, "minimum-met")
 			c = roundRead(t, f, 2, "cli")
-			if c.Tapered == accepted || c.Dry != map[bool]int64{false: 1, true: 0}[accepted] {
+			if c.Tapered || c.Dry != map[bool]int64{false: 1, true: 0}[accepted] {
 				t.Fatal("accepted result failed to invalidate carried taper proof", c)
+			}
+			a, id = roundCapture(t, f, 1, false)
+			roundFinalize(t, f, a, id, 1, false)
+			if current := roundRead(t, f, 2, "cli"); current.Tapered == accepted || current.Used != 2 {
+				t.Fatal("fresh result failed to evaluate retained imported proof", current)
 			}
 			var after string
 			if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes WHERE revision=1`).Scan(&after); err != nil || after != original {
@@ -310,7 +315,20 @@ func TestRoundCumulativeStoppedSettingsCannotBecomeOriginalDispatchGrant(t *test
 		a, id := roundCapture(t, f, i, false)
 		roundFinalize(t, f, a, id, i, false)
 	}
-	roundGrant(t, f, 2, "cli", 1, 0, 8, "keep-taper")
+	roundGrant(t, f, 2, "cli", 1, 0, 8, "historical-keep-taper")
+	// Preserve a real predecessor-format settings outcome. New grants reopen;
+	// an older retained tapered grant remains stopped and cannot bind dispatch.
+	roundHook(t, f, func(ctx context.Context, tx *sql.Tx) error {
+		c, err := readRoundRecord(ctx, tx, attemptProject, 2, "cli")
+		if err != nil {
+			return err
+		}
+		c.Tapered = true
+		if _, err := tx.ExecContext(ctx, `UPDATE review_round_changes SET body_json=? WHERE project_id=? AND pull_number=2 AND channel='cli' AND revision=2`, encodeRoundHistory(c.RoundControl, true), attemptProject); err != nil {
+			return err
+		}
+		return storeRoundRecord(ctx, tx, c)
+	})
 	if _, err := readRoundGrant(t.Context(), f.store.DB(), attemptProject, 2, "cli", 2, 1); err == nil {
 		t.Fatal("already-tapered settings became an admission grant")
 	}
@@ -346,12 +364,12 @@ func TestRoundCumulativeLegacyFrozenCarryConversion(t *testing.T) {
 			if accepted {
 				wantDry = 0
 			}
-			if after.Used != before.Used || after.Epoch != before.Epoch || after.Dry != wantDry || after.Tapered == accepted || !sameRoundBaseline(before, after) {
+			if after.Used != before.Used || after.Epoch != before.Epoch || after.Dry != wantDry || after.Tapered || !sameRoundBaseline(before, after) {
 				t.Fatal("conversion lost evidence-backed earned carry or retained accepted carry", before, after)
 			}
 			adoptionValid(t, f)
 			roundGrant(t, f, 2, "cli", 2, 0, 3, "later-cumulative-edit")
-			if current := roundRead(t, f, 2, "cli"); current.Used != 2 || current.Dry != wantDry || current.Tapered == accepted {
+			if current := roundRead(t, f, 2, "cli"); current.Used != 2 || current.Dry != wantDry || current.Tapered {
 				t.Fatal("subsequent edit recredited or changed the projected streak", current)
 			}
 			var unchanged string

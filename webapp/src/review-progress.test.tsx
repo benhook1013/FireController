@@ -63,6 +63,19 @@ describe('current round progress', () => {
     vi.stubGlobal('fetch',vi.fn(async()=>json(response)));expect(await api.reviewProgress([31])).toEqual(response);
     expect(roundProgressState({...current,maximum:0,used:0,maximum_unbounded:false})).toBe('No reviews remaining');
   });
+  it('shows a reopened channel as available with its earned streak and unchanged cap', async () => {
+    const reopened = { ...current, used: 7, dry: 1, minimum: 7, maximum: 9, tapered: false, pending: 0 };
+    expect(validRoundProgress(reopened, 'hosted')).toBe(true);
+    expect(roundProgressState(reopened)).toBe('More rounds allowed');
+    const html = renderToStaticMarkup(<ReviewProgressView value={reopened}/>);
+    expect(html).toContain('Up to 2 more reviews');
+    expect(html).toContain('Clean streak target met');
+    expect(html).not.toMatch(/No reviews remaining|At least/);
+    const api = await connected();
+    const response = { ...result, items: [{ pull_number: 31, channels: [reopened, absent] }] };
+    vi.stubGlobal('fetch', vi.fn(async () => json(response)));
+    expect(await api.reviewProgress([31])).toEqual(response);
+  });
   it('does not present an adopted exhausted allowance as zero completed history', () => {
     const tapered = renderToStaticMarkup(<ReviewProgressView value={{...current, maximum:0, used:0, dry:1, taper:1, tapered:true, pending:0}}/>);
     expect(tapered).toContain('No reviews remaining'); expect(tapered).toContain('Taper met'); expect(tapered).not.toMatch(/of 0|Taper 1\/1/u);

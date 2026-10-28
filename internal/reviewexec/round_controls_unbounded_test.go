@@ -48,7 +48,7 @@ func TestRoundUnboundedNativeMinimumTaperAndFiniteReplacement(t *testing.T) {
 	adoptionValid(t, f)
 	roundGrant(t, f, 2, "cli", 2, 0, 7, "finite-replacement")
 	c = roundRead(t, f, 2, "cli")
-	if c.MaximumUnbounded || c.Maximum != 10 || c.Used != 3 || c.OriginSource != p.Source || c.Dry != 3 || !c.Tapered || c.Epoch != 1 {
+	if c.MaximumUnbounded || c.Maximum != 10 || c.Used != 3 || c.Minimum != 3 || c.OriginSource != p.Source || c.Dry != 3 || c.Tapered || c.Epoch != 1 {
 		t.Fatal("finite limits lost cumulative imported progress", c)
 	}
 	adoptionValid(t, f)

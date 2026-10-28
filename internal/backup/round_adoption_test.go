@@ -81,9 +81,13 @@ func roundAdoptionInventoryFixture(t *testing.T, replace bool) *restoreFixture {
 		t.Fatal(err)
 	}
 	if replace {
-		two, min, max := int64(2), int64(1), int64(2)
+		two, min, max := int64(2), int64(0), int64(2)
 		if _, err = e.ConfigureRoundControl(t.Context(), scope, "replace", 4, "cli", reviewexec.RoundControlRequest{ExpectedRevision: &two, Action: "grant", Minimum: &min, Maximum: &max}); err != nil {
 			t.Fatal(err)
+		}
+		c, err = e.ReadRoundControl(t.Context(), scope, 4, "cli")
+		if err != nil || c.Tapered || c.Closed || c.Minimum != 1 || c.Maximum != 3 || c.Used != 1 || c.Dry != 3 {
+			t.Fatal("maximum-only grant did not preserve reopened progress for backup", c, err)
 		}
 	}
 	if err = reviewexec.ValidateRoundSnapshot(t.Context(), f.store.DB()); err != nil {

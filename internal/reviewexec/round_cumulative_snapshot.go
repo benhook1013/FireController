@@ -172,7 +172,7 @@ func validateCumulativeRoundHistory(ctx context.Context, q EvidenceQuery, projec
 						return roundUnavailable()
 					}
 				} else if v.action == "grant" {
-					if !cumulative || c.Closed || c.MaximumUnbounded || c.Minimum < c.Used || c.Maximum <= c.Used || c.Maximum-c.Used > 1000 || c.Minimum-c.Used > 1000 || c.Tapered != cumulativeTapered(c) {
+					if !cumulative || c.Closed || c.MaximumUnbounded || c.Minimum < c.Used || c.Maximum <= c.Used || c.Maximum-c.Used > 1000 || c.Minimum-c.Used > 1000 || c.Tapered && !cumulativeTapered(c) {
 						return roundUnavailable()
 					}
 					record.grantRevision = c.Revision
