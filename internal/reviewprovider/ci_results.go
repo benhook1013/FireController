@@ -220,11 +220,17 @@ func (g *GitHub) ciChecks(ctx context.Context, path, head string, budget *action
 		}
 		changed := total >= 0 && total != envelope.Total
 		total = envelope.Total
+		pageSeen := make(map[int64]bool, len(envelope.Checks))
 		for _, raw := range envelope.Checks {
 			row, ok := normalizeCICheck(raw, head)
-			if !ok || seen[row.ID] {
+			// New checks can shift an earlier page's last rows onto this page.
+			// Only an independently changed count permits discarding that overlap
+			// through the existing bounded recollection. Malformed rows and
+			// repeats within one page are still invalid, even during movement.
+			if !ok || pageSeen[row.ID] || seen[row.ID] && !changed {
 				return nil, invalidResponse(false, http.StatusOK)
 			}
+			pageSeen[row.ID] = true
 			seen[row.ID] = true
 			rows = append(rows, row)
 		}

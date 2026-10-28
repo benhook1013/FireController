@@ -13,7 +13,7 @@ import (
 )
 
 func TestCIResultsRecollectsOnlyCountMovement(t *testing.T) {
-	for _, mode := range []string{"suite-settles", "checks-settle", "checks-keep-moving", "malformed", "malformed-drift", "foreign-drift", "canceled"} {
+	for _, mode := range []string{"suite-settles", "checks-settle", "checks-keep-moving", "overlap-settles", "overlap-keeps-moving", "duplicate-page-drift", "malformed", "malformed-drift", "foreign-drift", "canceled"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -48,12 +48,15 @@ func TestCIResultsRecollectsOnlyCountMovement(t *testing.T) {
 						w.Header().Set("Link", fmt.Sprintf("<%s%s?filter=all&page=2&per_page=100>; rel=next", origin, ciChecksPath))
 					} else {
 						id = 2
-						if starts.Load() == 1 || mode == "checks-keep-moving" {
+						if starts.Load() == 1 || mode == "checks-keep-moving" || mode == "overlap-keeps-moving" {
 							total = 3
 						}
 						if mode == "canceled" {
 							cancel()
 						}
+					}
+					if page == "2" && total == 3 && (mode == "overlap-settles" || mode == "overlap-keeps-moving") {
+						id = 1
 					}
 					row := ciCheckFixture(id)
 					if page == "2" && mode == "malformed-drift" {
@@ -62,7 +65,11 @@ func TestCIResultsRecollectsOnlyCountMovement(t *testing.T) {
 					if page == "2" && mode == "foreign-drift" {
 						w.Header().Set("Link", "<https://foreign.invalid/check-runs?page=3>; rel=next")
 					}
-					_ = json.NewEncoder(w).Encode(ciEnvelope([]map[string]any{row}, total))
+					rows := []map[string]any{row}
+					if page == "2" && mode == "duplicate-page-drift" {
+						rows = append(rows, row)
+					}
+					_ = json.NewEncoder(w).Encode(ciEnvelope(rows, total))
 				case ciStatusesPath:
 					_, _ = w.Write([]byte(`[]`))
 				default:
@@ -78,14 +85,14 @@ func TestCIResultsRecollectsOnlyCountMovement(t *testing.T) {
 				if err != nil || starts.Load() != 2 || suites.Load() != 4 || len(got.Checks) != 1 || got.Checks[0].ID != 2 {
 					t.Fatal("mixed or lost replacement inventory", got, err, starts.Load(), suites.Load())
 				}
-			case "checks-settle":
+			case "checks-settle", "overlap-settles":
 				if err != nil || starts.Load() != 2 || checks.Load() != 4 || len(got.Checks) != 2 || got.HeadSHA != ciHead {
 					t.Fatal("same-head movement did not recover", got, err, starts.Load(), checks.Load())
 				}
 			default:
 				assertNoCIInventory(t, got, err)
 				want := int64(2)
-				if mode == "checks-keep-moving" {
+				if mode == "checks-keep-moving" || mode == "overlap-keeps-moving" {
 					want = 4
 					if !hasCode(err, "provider_observation_changed") {
 						t.Fatal("lost bounded movement diagnostic", err)
@@ -119,7 +126,7 @@ func TestCIObservationRecoversMovingHeadInventory(t *testing.T) {
 		}
 		response.Body.Close()
 		rows := f.checks(candidateHead, 1)
-		rows[0]["id"] = int64(9999 + hits) // Must not participate in final current-attempt proof.
+		rows[0]["id"] = int64(9999) // Cross-page overlap must not participate in final current-attempt proof.
 		total := 2
 		if hits == 1 {
 			link := *r.URL
