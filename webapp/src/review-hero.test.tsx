@@ -56,7 +56,7 @@ describe('merge-head recent review rounds', () => {
     const queue: ReviewQueue = {project_id: 'project', revision: 1, snapshot_id: 'snapshot', source: 'fixture', observed_at: '', recorded_at: '', configured: true, items: [pull], has_more: false};
     const normal = markup(false, [], false, counts, <ul className="review-queue"><ReviewQueueRow pull={pull} snapshot="snapshot" order={{index: 0, distance: 1}} /></ul>);
     const hero = markup(false, [], false, counts, <MergeHeadContent queue={queue} home="/projects/project" />);
-    const body = (value: string) => value.slice(value.indexOf('<div class="review-queue-content">'), value.lastIndexOf('<a class="review-details-link"')).replace(/ data-reading-anchor="[^"]*"/gu, '');
+    const body = (value: string) => value.slice(value.indexOf('<div class="review-pull-facts">'), value.lastIndexOf('</section>')+10).replace(/ data-reading-anchor="[^"]*"/gu, '');
     expect(body(hero)).toBe(body(normal));
     expect(links(hero)).toEqual(['h3','h4','h5','h6','h7','h8']);
     expect(hero).toContain('27 runs</span>'); expect(hero).toContain('Manual reviews'); expect(hero).toContain('8 runs</span>');
@@ -71,7 +71,7 @@ describe('merge-head recent review rounds', () => {
       expect(value).toContain('review-additions">+20'); expect(value).toContain('review-deletions">−4');
     }
     expect(hero).toContain('href="/projects/project#review-pr-7"'); expect(hero).toContain('>Review queue ↗</a>');
-    expect(hero).not.toContain('Review details ↗'); expect(normal).toContain('Review details ↗');
+    expect(hero).not.toContain('Review history ↗'); expect(normal).toContain('Review history ↗');
   });
   it('caps queue previews independently at the newest six without losing producer order or totals', () => {
     archive.items = Array.from({length:8}, (_, index) => 8-index).flatMap(index => [run(`h${index}`, 'hosted'), run(`c${index}`, 'cli')]);

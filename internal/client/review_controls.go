@@ -289,7 +289,7 @@ func validHostedControlCapture(capture ReviewEvidenceCapture, anchor ReviewAncho
 	fingerprints := make(map[string]bool, len(capture.Findings))
 	for _, finding := range capture.Findings {
 		source := finding.Source
-		if source == nil || !controlHex(source.Fingerprint, 24) || fingerprints[source.Fingerprint] || !reviews[source.ReviewID] || !oneReviewOf(source.Kind, "inline", "outside_diff", "duplicate") || !oneReviewOf(source.Side, "", "LEFT", "RIGHT") || finding.Path == "" {
+		if source == nil || !controlHex(source.Fingerprint, 24) || fingerprints[source.Fingerprint] || !reviews[source.ReviewID] || !oneReviewOf(source.Kind, "inline", "outside_diff", "duplicate", "additional") || !oneReviewOf(source.Side, "", "LEFT", "RIGHT") || finding.Path == "" {
 			return false
 		}
 		fingerprints[source.Fingerprint] = true

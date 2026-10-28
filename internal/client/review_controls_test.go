@@ -585,3 +585,29 @@ func TestReviewHostedEvidenceStrictWirePresenceAndShape(t *testing.T) {
 		checkError(t, err, "invalid_response")
 	}
 }
+
+func TestReviewAdditionalEvidenceWireRetainsRealSource(t *testing.T) {
+	value := sampleHostedControlEvidence()
+	s := value.Capture.Findings[2].Source
+	s.Kind = "additional"
+	s.SourceKey = "hosted-review:11:additional:" + s.Fingerprint
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := readControlEvidenceWire(t, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Capture.Findings[2].Source.Kind != "additional" || got.Capture.Findings[2].Source.CommentID != 0 {
+		t.Fatal("additional identity lost")
+	}
+	s.CommentID = 21
+	data, err = json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = readControlEvidenceWire(t, data); err == nil {
+		t.Fatal("invented additional comment accepted")
+	}
+}

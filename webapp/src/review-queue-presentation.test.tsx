@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WorkspaceContext, type Session } from './workspace';
 import { PresentationContext } from './presentation-context';
-import { ReviewFindingView, ReviewPullFacts, ReviewQueueView, ReviewRunsView, formatQueueDistance, groupReviewQueue, missingPullFacts, reviewQueueDistances, reviewQueueHashTarget, reviewQueueQuery } from './review-workspace';
+import { ReviewFindingView, ReviewPullFacts, ReviewQueueRow, ReviewQueueView, ReviewRunsView, formatQueueDistance, groupReviewQueue, missingPullFacts, reviewQueueDistances, reviewQueueHashTarget, reviewQueueQuery } from './review-workspace';
 import type { ReviewFronts } from './review-fronts';
 import type { ReviewProgressItem } from './review-progress';
 import type { Presentation, ReviewAttemptSummary, ReviewFinding, ReviewPullSummary, ReviewQueue } from './types';
@@ -250,7 +250,7 @@ describe('truthful stored review presentation', () => {
     expect(html).toContain('review-row-merged'); expect(html).toContain('Queue distance −01'); expect(html).toContain('Queue distance +01: first open PR');
     expect(html.match(/Foundation &lt;literal&gt;/gu)).toHaveLength(2);
     expect(html).toContain('href="https://github.com/example/project/pull/2"');
-    expect(html).toMatch(/<a\b[^>]*aria-label="Review details for PR #2"[^>]*>Review details ↗<\/a>/u);
+    expect(html).toMatch(/<a\b[^>]*aria-label="Review history for PR #2"[^>]*>Review history ↗<\/a>/u);
     expect(html).not.toContain('review-link-arrow');
     expect(html).toContain('Merged PRs from the last 48 hours and the latest two known merges stay here.');
     expect(html).toContain('Full retained history is in'); expect(html).toContain('href="/projects/project/reviews/history"');
@@ -323,5 +323,18 @@ describe('retained CI explanation',()=>{
     expect(html).toContain('Required CI: Unknown');expect(html).toContain('Merge: Unknown');
     expect(html.match(/earlier results remain saved/gu)).toHaveLength(2);
     expect(html).not.toContain('Ci merge base mismatch');expect(value.ci_state).toBe('unknown');
+  });
+});
+
+
+describe('compact queue heading navigation',()=>{
+  it('puts review history ahead of facts, with draft styling separate from row lifecycle',()=>{
+    const value={...pull(7),is_draft:true};
+    const html=markup(<ReviewQueueRow pull={value} snapshot="retained" order={{index:0}}/>);
+    expect(html).toContain('review-row-draft');expect(html).toContain('review-state-draft');
+    expect(html).toContain('aria-label="Review history for PR #7"');expect(html).toContain('>Review history ↗</a>');
+    expect(html.indexOf('>Review history ↗</a>')).toBeLessThan(html.indexOf('class="review-pull-facts"'));
+    expect(html).toContain('/reviews/pulls/7?snapshot=retained');
+    expect(html).not.toContain('>Review details');
   });
 });

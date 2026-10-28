@@ -1069,7 +1069,7 @@ try {
   }
   checkpoint = 'attempt-reason-detail';
   const reasonReadBoundary = {pull:reviewPullReads,attempts:reviewAttemptReads,runs:reviewRunReads};
-  const detailLink=headRow.getByRole('link',{name:'Review details for PR #32',exact:true});
+  const detailLink=headRow.getByRole('link',{name:'Review history for PR #32',exact:true});
   const detailSnapshot=new URL(await detailLink.getAttribute('href'),page.url()).searchParams.get('snapshot');
   need(typeof detailSnapshot==='string' && detailSnapshot.length>0);
   const attemptPath=prefix+'/reviews/pulls/32/attempts',roundPath=prefix+'/reviews/pulls/32/runs';

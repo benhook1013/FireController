@@ -117,7 +117,7 @@ func validateHostedEvidenceMetadata(h *HostedEvidenceMetadata, anchor Anchor, re
 				return invalid()
 			}
 			key = "hosted-comment:" + strconv.FormatInt(source.CommentID, 10) + ":" + source.Fingerprint
-		case "outside_diff", "duplicate":
+		case "outside_diff", "duplicate", "additional":
 			if source.CommentID != 0 || finding.StartLine <= 0 || finding.EndLine < finding.StartLine {
 				return invalid()
 			}

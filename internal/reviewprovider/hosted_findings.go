@@ -25,6 +25,8 @@ type HostedFinding struct {
 
 var findingMarker = regexp.MustCompile(`^<!-- cr-comment:v1:([a-f0-9]{24}) -->$`)
 var findingOutsideHeader = regexp.MustCompile(`^\*\*⚠️ Outside diff range comments \((0|[1-9][0-9]*)\)\*\*$`)
+var findingAdditionalHeader = regexp.MustCompile(`^<summary>🔇 Additional comments: (0|[1-9][0-9]*)</summary><blockquote>$`)
+var findingAdditionalGroup = regexp.MustCompile(`^<summary>([^<>]+)-([1-9][0-9]*)-([1-9][0-9]*): (0|[1-9][0-9]*)</summary><blockquote>$`)
 var findingDuplicateHeader = regexp.MustCompile(`^<summary>♻️ Duplicate comments \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
 var findingGroupHeader = regexp.MustCompile(`^<summary>([^<>]+) \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
 var findingOutsideSummary = regexp.MustCompile(`^<summary>(?:<em>(?:` + standingPicture + ` )?([^<>]+)</em>|<strong>(?:` + standingPicture + ` )?([^<>]+)</strong>) · .+ · <code>[^<>]+</code></summary><blockquote>$`)
@@ -144,6 +146,14 @@ func (d *findingDecoder) add(body string, start int, line findingLine, f HostedF
 		return
 	}
 	f.Fingerprint = match[1]
+	d.record(body, start, line.end, f)
+}
+
+func (d *findingDecoder) record(body string, start, end int, f HostedFinding) {
+	if start < 0 || end < start || end > len(body) {
+		d.fail("finding_format_unsupported")
+		return
+	}
 	if d.seen[f.Fingerprint] {
 		d.fail("finding_fingerprint_repeated")
 		return
@@ -161,7 +171,7 @@ func (d *findingDecoder) add(body string, start int, line findingLine, f HostedF
 		d.fail("finding_title_limit")
 		return
 	}
-	if line.end-start > 16<<10 {
+	if end-start > 16<<10 {
 		d.fail("finding_detail_limit")
 		return
 	}
@@ -169,7 +179,7 @@ func (d *findingDecoder) add(body string, start int, line findingLine, f HostedF
 		d.fail("finding_inventory_limit")
 		return
 	}
-	f.Detail = body[start:line.end]
+	f.Detail = body[start:end]
 	if f.Severity == "" {
 		f.Severity = "unknown"
 	}
@@ -590,20 +600,37 @@ func (d *findingDecoder) outside(body string, lines []findingLine, header int, r
 	return i - 1
 }
 
-func (d *findingDecoder) duplicateGroup(body string, lines []findingLine, start, end int, reviewID int64) int {
+func (d *findingDecoder) groupedFindings(body string, lines []findingLine, start, end int, reviewID int64, kind string) int {
 	fields := findingFields{}
 	depth, quotes := 0, 0
 	count, expected := 0, -1
 	path := ""
+	var headerStart, headerEnd *int64
 	itemStart := -1
 	knownNested := false
+	finishAdditional := func(before int) {
+		end := before - 1
+		for end >= start && (lines[end].text == "" || lines[end].hidden && (lines[end].text == "</dd>" || lines[end].text == "</dl>")) {
+			end--
+		}
+		if end < start || itemStart < 0 || fields.title == "" || path == "" {
+			d.fail("finding_format_unsupported")
+			itemStart = -1
+			return
+		}
+		f := HostedFinding{Kind: kind, ReviewID: reviewID, Path: path, StartLine: fields.start, EndLine: fields.end}
+		fields.apply(&f)
+		d.additional(body, itemStart, lines[end].end, f)
+		count++
+		itemStart = -1
+	}
 	for i := start; i <= end; i++ {
 		l := lines[i]
 		if l.hidden || l.quote != 0 {
 			continue
 		}
 		if depth == 1 && quotes == 0 {
-			if m := findingGroupHeader.FindStringSubmatch(l.text); m != nil {
+			if m := findingGroupHeader.FindStringSubmatch(l.text); m != nil && kind == "duplicate" {
 				path = m[1]
 				var ok bool
 				expected, ok = findingCount(m[2])
@@ -614,30 +641,55 @@ func (d *findingDecoder) duplicateGroup(body string, lines []findingLine, start,
 					path = ""
 				}
 			}
+			if m := findingAdditionalGroup.FindStringSubmatch(l.text); m != nil && kind == "additional" {
+				path = m[1]
+				var countOK, rangeOK bool
+				expected, countOK = findingCount(m[4])
+				headerStart, headerEnd, rangeOK = findingLocation(m[2], m[3])
+				if !countOK || !rangeOK || !validRepoPath(path) {
+					d.fail("finding_location_invalid")
+				}
+			}
 		}
 		if depth > 1 && strings.HasPrefix(l.text, "<summary>") {
 			knownNested = findingKnownNested(l.text)
 		}
 		if depth == 1 && quotes == 1 {
+			if kind == "additional" && itemStart >= 0 && strings.HasPrefix(l.text, "</blockquote>") {
+				finishAdditional(i)
+			}
 			if m := findingRange.FindStringSubmatch(l.text); m != nil {
 				if itemStart >= 0 {
-					d.fail("finding_marker_missing")
+					if kind == "additional" {
+						finishAdditional(i)
+					} else {
+						d.fail("finding_marker_missing")
+					}
 				}
 				a, b, ok := findingLocation(m[1], m[2])
 				if !ok {
+					d.fail("finding_location_invalid")
+				}
+				if kind == "additional" && (headerStart == nil || headerEnd == nil || a == nil || b == nil || *a < *headerStart || *b > *headerEnd) {
 					d.fail("finding_location_invalid")
 				}
 				fields = findingFields{path: path, start: a, end: b}
 				fields.metadata(m[3])
 				itemStart = l.start
 			} else if strings.Contains(l.text, "cr-comment") {
+				if kind == "additional" {
+					if !findingMarker.MatchString(l.text) || itemStart < 0 {
+						d.fail("finding_fingerprint_invalid")
+					}
+					continue
+				}
 				if itemStart < 0 {
 					d.fail("finding_format_unsupported")
 				} else {
 					if fields.title == "" || path == "" {
 						d.fail("finding_format_unsupported")
 					}
-					f := HostedFinding{Kind: "duplicate", ReviewID: reviewID, Path: path, StartLine: fields.start, EndLine: fields.end}
+					f := HostedFinding{Kind: kind, ReviewID: reviewID, Path: path, StartLine: fields.start, EndLine: fields.end}
 					fields.apply(&f)
 					d.add(body, itemStart, l, f)
 					count++
@@ -671,14 +723,14 @@ func (d *findingDecoder) duplicateGroup(body string, lines []findingLine, start,
 	return count
 }
 
-func (d *findingDecoder) duplicates(body string, lines []findingLine, start, end int, reviewID int64) {
+func (d *findingDecoder) groupedSummary(body string, lines []findingLine, start, end int, reviewID int64, kind string, header *regexp.Regexp) {
 	count, expected := 0, -1
 	for i := start + 1; i < end; i++ {
 		l := lines[i]
 		if l.hidden || l.text == "" {
 			continue
 		}
-		if m := findingDuplicateHeader.FindStringSubmatch(l.text); m != nil && expected < 0 {
+		if m := header.FindStringSubmatch(l.text); m != nil && expected < 0 {
 			var ok bool
 			expected, ok = findingCount(m[1])
 			if !ok {
@@ -692,7 +744,7 @@ func (d *findingDecoder) duplicates(body string, lines []findingLine, start, end
 				d.fail("summary_format_unsupported")
 				return
 			}
-			count += d.duplicateGroup(body, lines, i, groupEnd, reviewID)
+			count += d.groupedFindings(body, lines, i, groupEnd, reviewID, kind)
 			i = groupEnd
 			continue
 		}
@@ -704,7 +756,7 @@ func (d *findingDecoder) duplicates(body string, lines []findingLine, start, end
 }
 
 func (d *findingDecoder) summary(review HostedReview, selected bool) {
-	if !selected && !strings.Contains(review.Body, "cr-comment") && !strings.Contains(review.Body, "Outside diff range comments") && !strings.Contains(review.Body, "Duplicate comments") {
+	if !selected && !strings.Contains(review.Body, "cr-comment") && !strings.Contains(review.Body, "Outside diff range comments") && !strings.Contains(review.Body, "Duplicate comments") && !strings.Contains(review.Body, "Additional comments") {
 		return
 	}
 	lines, sound := findingLines(review.Body)
@@ -728,7 +780,14 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 			}
 			header := nextFindingText(lines, i+1, end)
 			if findingDuplicateHeader.MatchString(header) {
-				d.duplicates(review.Body, lines, i, end, review.ID)
+				d.groupedSummary(review.Body, lines, i, end, review.ID, "duplicate", findingDuplicateHeader)
+			} else if findingAdditionalHeader.MatchString(header) {
+				projected, ok := findingAdditionalLayout(lines, i, end)
+				if !ok {
+					d.fail("summary_format_unsupported")
+				} else {
+					d.groupedSummary(review.Body, projected, i, end, review.ID, "additional", findingAdditionalHeader)
+				}
 			} else {
 				known := header == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header) || header == "<summary>ℹ️ Review info</summary>" || findingReviewInfoIcon.MatchString(header)
 				if !known && selected {
@@ -747,7 +806,7 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 			d.fail("finding_format_unsupported")
 			continue
 		}
-		if strings.Contains(l.text, "Outside diff range comments") || strings.Contains(l.text, "Duplicate comments") {
+		if strings.Contains(l.text, "Outside diff range comments") || strings.Contains(l.text, "Duplicate comments") || strings.Contains(l.text, "Additional comments") {
 			d.fail("summary_format_unsupported")
 			continue
 		}

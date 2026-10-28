@@ -312,7 +312,7 @@ try {
     need(await current.page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth));
     await current.page.screenshot({path:`${config.proof_directory}/merged-queue-${width}.png`,fullPage:true});
   }
-  await queue.locator('#review-pr-201').getByRole('link',{name:'Review details for PR #201',exact:true}).click();
+  await queue.locator('#review-pr-201').getByRole('link',{name:'Review history for PR #201',exact:true}).click();
   const original = current.page.locator('.main-content').getByRole('region',{name:'PR #201 review rounds',exact:true});
   await original.getByRole('button',{name:'Show findings for CodeRabbit CLI #1',exact:true}).click();
   await expect(original.getByRole('heading',{name:'Original merged finding',exact:true})).toBeVisible();

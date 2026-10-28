@@ -21,7 +21,7 @@ describe('allowlisted public reviews through shared normal presentation', () => 
     expect(html).toContain('&lt;literal approved title&gt;'); expect(html).not.toContain('<literal approved title>');
     const destinations = [...html.matchAll(/href="([^"]+)"/gu)].map(match => match[1]);
     expect(destinations.length).toBeGreaterThan(1); expect(new Set(destinations)).toEqual(new Set(['https://github.com/example/project/pull/7']));
-    expect(html).not.toMatch(/CI:|Mergeability:|Current .*round limits|Review front|review-row-front|Review details|\/reviews\/|snapshot_id|project_id|review_evidence_|public_round_/u);
+    expect(html).not.toMatch(/CI:|Mergeability:|Current .*round limits|Review front|review-row-front|Review details|Review history|\/reviews\/|snapshot_id|project_id|review_evidence_|public_round_/u);
   });
   it('caps each channel at six in canonical producer order without sorting wall clocks or mutating inputs', () => {
     const hosted = Array.from({ length: 8 }, (_, index) => round(index + 1, { observed_at: index % 2 ? '' : `2026-10-${String(28 - index).padStart(2, '0')}T12:00:00Z` }));

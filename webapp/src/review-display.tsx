@@ -3,7 +3,7 @@ import './review-queue.css';
 
 // These shells receive presentation only. Reads, authority and navigation belong
 // to the private workspace or the separately approved public projection.
-export function ReviewRowDisplay({ id, lifecycle, position, positionLabel, rail = true, number, title, url, className = '', facts, children, footer }: {
+export function ReviewRowDisplay({ id, lifecycle, position, positionLabel, rail = true, number, title, url, className = '', facts, children, footer, headingAction }: {
   id?: string;
   lifecycle: 'unknown' | 'open' | 'closed' | 'merged';
   position?: string;
@@ -16,15 +16,16 @@ export function ReviewRowDisplay({ id, lifecycle, position, positionLabel, rail 
   facts?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
+  headingAction?: ReactNode;
 }) {
-  return <ReviewRowFrame id={id} lifecycle={lifecycle} position={position} positionLabel={positionLabel} rail={rail} className={className} facts={facts} footer={footer}
+  return <ReviewRowFrame id={id} lifecycle={lifecycle} position={position} positionLabel={positionLabel} rail={rail} className={className} facts={facts} footer={footer} headingAction={headingAction}
     heading={<div className="review-pull-heading"><span className="review-number">{url ? <a href={url} target="_blank" rel="noopener noreferrer">#{number}</a> : <>#{number}</>}</span><h3>{url ? <a href={url} target="_blank" rel="noopener noreferrer">{title}</a> : title}</h3></div>}>
     {children}
   </ReviewRowFrame>;
 }
 
 /** Shared geometry for populated rows and their decorative loading placeholders. */
-export function ReviewRowFrame({ id, lifecycle, position, positionLabel, rail = true, className = '', heading, facts, children, footer }: {
+export function ReviewRowFrame({ id, lifecycle, position, positionLabel, rail = true, className = '', heading, facts, children, footer, headingAction }: {
   id?: string;
   lifecycle: 'unknown' | 'open' | 'closed' | 'merged';
   position?: string;
@@ -35,11 +36,12 @@ export function ReviewRowFrame({ id, lifecycle, position, positionLabel, rail = 
   facts?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
+  headingAction?: ReactNode;
 }) {
   return <li id={id} data-reading-anchor={id} className={`review-queue-row review-row-${lifecycle}${rail ? '' : ' review-row-without-order'} ${className}`}>
     {rail && <span className="review-queue-position" aria-label={positionLabel}>{position}</span>}
     <div className="review-queue-content">
-      {heading}
+      {headingAction ? <div className="review-row-heading">{heading}<div className="review-heading-action">{headingAction}</div></div> : heading}
       {facts}{children}{footer}
     </div>
   </li>;

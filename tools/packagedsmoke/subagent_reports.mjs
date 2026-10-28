@@ -29,7 +29,7 @@ try {
   const lane=row.getByRole('region',{name:'Subagent Reviews',exact:true});
   await expect(lane.locator('.review-lane-heading')).toContainText('1 run');
   await expect(lane.locator('.review-round-pill')).toHaveCount(1);
-  await row.getByRole('link',{name:'Review details for PR #42',exact:true}).click();
+  await row.getByRole('link',{name:'Review history for PR #42',exact:true}).click();
   phase='timeline';
   const rounds=page.getByRole('region',{name:'PR #42 review rounds',exact:true});
   await expect(rounds.locator('.review-history-row')).toHaveCount(3);

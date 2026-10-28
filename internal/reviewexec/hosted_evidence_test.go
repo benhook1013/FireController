@@ -284,3 +284,22 @@ func TestHostedSubmittedReviewMetadataIsDistinctAndPositive(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedAdditionalEvidenceRetainsRealReviewAndCoordinates(t *testing.T) {
+	h, anchor, review := hostedEvidenceMetadataFixture()
+	s := &h.Sources[2]
+	s.Kind = "additional"
+	s.SourceKey = fmt.Sprintf("hosted-review:%d:additional:%s", s.ReviewID, s.Fingerprint)
+	if err := validateHostedEvidenceMetadata(h, anchor, review); err != nil {
+		t.Fatal(err)
+	}
+	s.CommentID = 999
+	if err := validateHostedEvidenceMetadata(h, anchor, review); err == nil {
+		t.Fatal("invented inline comment accepted")
+	}
+	s.CommentID = 0
+	review.Findings[2].StartLine = 0
+	if err := validateHostedEvidenceMetadata(h, anchor, review); err == nil {
+		t.Fatal("unknown additional location accepted")
+	}
+}
