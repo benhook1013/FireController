@@ -515,7 +515,7 @@ function JobChecklistHistory({ jobId, jobRevision, checklistRevision }: { jobId:
   </article>)}</ReadState><Pager paging={paging} page={query.data} label="checklist history" busy={query.isFetching} /></div>;
 }
 export function JobProgressContent({ progress }: { progress: JobProgress }) {
-  return <div className="brief"><div><strong>Summary</strong><EditorialMarkdown>{progress.summary || 'No progress recorded.'}</EditorialMarkdown></div><div><strong>Next</strong><EditorialMarkdown>{progress.next || 'None recorded.'}</EditorialMarkdown></div><div><strong>Blocker</strong><EditorialMarkdown>{progress.blocker || 'None'}</EditorialMarkdown></div><div><strong>Evidence</strong>{progress.evidence.length ? <ul>{progress.evidence.map((item, index) => <li className="full-text" key={`${index}-${item}`}>{item}</li>)}</ul> : <p className="empty">No evidence references.</p>}</div></div>;
+  return <div className="brief"><div className="job-progress-field"><strong>Progress:</strong>{' '}<EditorialMarkdown>{progress.summary || 'No progress recorded.'}</EditorialMarkdown></div><div className="job-progress-field"><strong>Next:</strong>{' '}<EditorialMarkdown>{progress.next || 'None recorded.'}</EditorialMarkdown></div><div className="job-progress-field"><strong>Blocker:</strong>{' '}<EditorialMarkdown>{progress.blocker || 'None'}</EditorialMarkdown></div><div><strong>Evidence</strong>{progress.evidence.length ? <ul>{progress.evidence.map((item, index) => <li className="full-text" key={`${index}-${item}`}>{item}</li>)}</ul> : <p className="empty">No evidence references.</p>}</div></div>;
 }
 function JobProgressPanel({ jobId, jobRevision, progress }: { jobId: string; jobRevision: number; progress: JobProgress }) {
   const [open, setOpen] = useState(false);

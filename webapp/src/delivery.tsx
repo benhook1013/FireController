@@ -51,7 +51,7 @@ function DeliveryProsePreview({ value, truncated, className = '' }: { value: str
   return <div className={`delivery-prose-preview ${className}`.trim()}><EditorialMarkdown compact className="delivery-preview">{value}</EditorialMarkdown>{truncated && <span className="delivery-preview-truncated" aria-label="Preview truncated">…</span>}</div>;
 }
 function ProgressPreview({ job }: { job: DeliveryJob }) {
-  return <div className="delivery-checkpoint">{(['summary', 'next', 'blocker'] as const).map(field => job.progress[field] && <div className={`delivery-checkpoint-field${field === 'blocker' ? ' delivery-blocker' : ''}`} key={field}><strong className="delivery-checkpoint-label">{field === 'summary' ? 'Progress' : field === 'next' ? 'Next' : 'Blocker'}:</strong><DeliveryProsePreview value={job.progress[field]} truncated={job.progress[`${field}_truncated`]} /></div>)}</div>;
+  return <div className="delivery-checkpoint">{(['summary', 'next', 'blocker'] as const).map(field => job.progress[field] && <div className={`delivery-checkpoint-field${field === 'blocker' ? ' delivery-blocker' : ''}`} key={field}><strong className="delivery-checkpoint-label">{field === 'summary' ? 'Progress' : field === 'next' ? 'Next' : 'Blocker'}:</strong>{' '}<DeliveryProsePreview value={job.progress[field]} truncated={job.progress[`${field}_truncated`]} /></div>)}</div>;
 }
 function JobContextPreview({ job }: { job: DeliveryJob }) {
   return <div className="delivery-job-context">

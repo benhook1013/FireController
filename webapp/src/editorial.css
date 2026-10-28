@@ -5,3 +5,8 @@
 @media(max-width:720px){.project-editorial-heading{align-items:flex-start;flex-direction:column}.project-editorial-entry{padding:1.65rem 0}.project-editorial-entry.section{padding:1.8rem 0}.project-editorial-entry.workstream,.project-editorial-entry.return_point{grid-template-columns:minmax(0,1fr);gap:.8rem}.editorial-entry-aside{order:2;padding-top:0}.editorial-entry-detail{grid-template-columns:minmax(0,1fr);gap:1rem}.project-editorial-nav{gap:.55rem 1rem}.editorial-markdown{font-size:.97rem}.editorial-code-block{font-size:.8rem}}
 
 .project-view-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px 16px}.project-view-actions .review-details-link{margin:0}@media(max-width:650px){.project-editorial-heading{align-items:flex-start;flex-wrap:wrap}.project-view-actions{justify-content:flex-start}}
+
+.job-progress-field{max-width:76ch;margin-bottom:1em;overflow-wrap:anywhere}
+.job-progress-field>.editorial-markdown{display:contents}
+.job-progress-field>.editorial-markdown>p:first-child{display:inline}
+.job-progress-field>.editorial-markdown>p:first-child+p{margin-top:1.05em}

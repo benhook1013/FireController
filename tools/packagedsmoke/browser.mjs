@@ -440,8 +440,11 @@ try {
     const row = inspectorLane.locator('.delivery-checkpoint-field').first();
     need(await row.evaluate(element => {
       const label=element.querySelector('.delivery-checkpoint-label').getBoundingClientRect();
-      const body=element.querySelector('.delivery-prose-preview').getBoundingClientRect();
-      return Math.abs(label.top-body.top) <= 1 && body.width > 80;
+      const paragraph=element.querySelector('.delivery-preview>p'),range=document.createRange();
+      range.selectNodeContents(paragraph);
+      const lines=[...range.getClientRects()].filter(rect=>rect.width>0);
+      return lines.length>0 && Math.abs(label.top-lines[0].top)<=3 && lines[0].left>=label.right
+        && (lines.length===1 || Math.abs(lines[1].left-element.getBoundingClientRect().left)<=2);
     }));
     if (config.diagnostic_directory) await page.locator('.delivery-lanes').screenshot({path:config.diagnostic_directory+'/job-cards-'+width+'.png',timeout:2000});
   }

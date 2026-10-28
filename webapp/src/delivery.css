@@ -43,7 +43,10 @@
 .delivery-preview.editorial-markdown pre.editorial-code-block{padding:.45em;font-size:.74rem;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
 .delivery-preview.editorial-markdown blockquote.editorial-quote{padding:.1em 0 .1em .65em}
 .delivery-preview.editorial-markdown hr{margin:.65em 0}
-.delivery-checkpoint-field{display:grid;grid-template-columns:max-content minmax(0,1fr);column-gap:6px;align-items:start;margin-bottom:10px}
+.delivery-checkpoint-field{margin-bottom:10px;overflow-wrap:anywhere}
+.delivery-checkpoint-field>.delivery-prose-preview,.delivery-checkpoint-field>.delivery-prose-preview>.delivery-preview{display:contents}
+.delivery-checkpoint-field>.delivery-prose-preview>.delivery-preview>p:first-child{display:inline}
+.delivery-checkpoint-field>.delivery-prose-preview>.delivery-preview>p:first-child+p{margin-top:.55em}
 
 /* The server's truncation signal remains visible outside the clipped prose. */
 .delivery-preview-truncated{display:block;font-size:inherit;line-height:1.5}
