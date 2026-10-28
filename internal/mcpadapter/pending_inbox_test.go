@@ -93,17 +93,13 @@ func TestPendingInboxDefaultsFindUnhandledBehindHandledHistory(t *testing.T) {
 	}
 	before := readState()
 
-	// Execute the short recommendation actually supplied to an agent. If the skill
-	// changes its recommendation, this test follows that operation's arguments.
-	skill, err := os.ReadFile(filepath.Join("..", "..", "skills", "firecontroller-use", "SKILL.md"))
+	// Execute the recommendation in the focused coordination reference. Follow
+	// its arguments without depending on an entry-skill section heading.
+	skill, err := os.ReadFile(filepath.Join("..", "..", "skills", "firecontroller-use", "references", "coordination.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, messageSection, ok := strings.Cut(string(skill), "## Messages and handoffs")
-	if !ok {
-		t.Fatal("usage skill has no message coordination section")
-	}
-	_, recommendation, ok := strings.Cut(messageSection, "Read `")
+	_, recommendation, ok := strings.Cut(string(skill), "Read `")
 	if !ok {
 		t.Fatal("usage skill has no recommended coordination read")
 	}
