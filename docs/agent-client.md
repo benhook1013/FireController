@@ -41,6 +41,14 @@ Tool schemas and results describe the selected operation with bounded structured
 
 Binding is scoped to the authenticated client session and survives only through a verified reconnect. It must not be a server-global variable. Never infer project from the current working directory, a remembered worker name, or an unverified chat identifier. Where host metadata cannot distinguish callers, retain an explicit selector rather than guess.
 
+## Client releases and additive reads
+
+A running MCP connection keeps the executable and source revision with which it started. Replacing a bound launcher updates future client processes; it does not update another agent's running process. MCP `context` and bound CLI `context` expose `client_source_revision` without contacting the service. An incompatible older connection requires one host reconnect using its same private binding, not a review retry, evidence import or credential change. Invalid-response recovery reports this distinction directly; matching client failures still require investigation of the selected resource.
+
+Compact operation-status readers ignore additional metadata fields and emit only their known typed fields. Required fields, exact casing, duplicate keys, known value types, state/action combinations, identities and response budgets remain validated. An added field cannot replace those existing meanings. Unknown metadata does not acquire authority or enter an agent's result. Tool arguments and mutation responses retain their strict contracts.
+
+Hosted evidence readers retain provenance kinds as bounded labels. Inline-comment identity remains distinct; an extensible non-inline label must retain the existing review-bound source key, real review identity, fingerprint and location shape. Reading a compatible label does not authorize a new provider ingestion format, grant review credit or change finalization. The service's evidence admission remains responsible for its supported source formats.
+
 ## Quiet asynchronous waiting
 
 The adapter exposes `wait_for_messages` for new incoming-message events after a supplied cursor, under the [quiet wait contract](message-wait.md). This notification does not claim that another connection has left those messages unread or unacknowledged. It returns a bounded result when one is available or when the wait expires; subsequent waits are separate calls. The adapter maintains the network subscription; keeping a connection open does not itself produce periodic model output. Whether a pending call permits unrelated model work is a host capability, not a property guaranteed by MCP.

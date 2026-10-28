@@ -12,7 +12,7 @@ The response contains `project_id`, `items`, `has_more` and a `cursor` only when
 
 ## Compact operation status
 
-`GET /api/v1/projects/{project_id}/reviews/operations/{operation_id}/status` reads only `id`, `pull_number`, `channel`, stored `state`, `revision`, `stage`, `reason`, `attempt_id`, optional `evidence_id`, optional `retry_not_before`, `updated_at` and `next_action`. It rechecks current project read permission and performs no provider requests, capture-file reads, source refresh, Git work, execution or accounting changes. The existing full operation GET is unchanged for clients that need diagnostics.
+`GET /api/v1/projects/{project_id}/reviews/operations/{operation_id}/status` reads only `id`, `pull_number`, `channel`, stored `state`, `revision`, `stage`, `reason`, `attempt_id`, optional `evidence_id`, optional `retry_not_before`, `updated_at` and `next_action`. It rechecks current project read permission and performs no provider requests, capture-file reads, source refresh, Git work, execution or accounting changes. Unknown additive metadata is ignored by compact clients and is not forwarded into tool output; required known fields, canonical names and state/action validation remain strict. The existing full operation GET is unchanged for clients that need diagnostics.
 
 `Prefer: wait=N` retains the existing notification-based result collection, from zero through 900 seconds; zero returns immediately. Cancellation detaches collection without cancelling the operation or reposting a review. After the wait, a fresh authorized local read selects the compact status and its exact attempt binding. The response always preserves the stored operation state; a display stage cannot override execution rules.
 

@@ -115,7 +115,7 @@ func fail(code, message, action string, status int) *Error {
 	return &Error{Code: code, Message: message, Action: action, Status: status}
 }
 func invalidResponse() *Error {
-	return fail("invalid_response", "The service returned an invalid or oversized JSON response.", "Check service compatibility and retry the read after correcting the response.", 0)
+	return fail("invalid_response", "The service returned an invalid or oversized JSON response.", "Compare MCP context.client_source_revision with the installed bound CLI context.client_source_revision. Updating a launcher does not replace a running MCP process; reconnect an older session through its host. If revisions match, report the resource ID and this error to the controller owner. Do not request another provider review to repair a read.", 0)
 }
 func validation() *Error {
 	return fail("validation_failed", "The read requires valid bounded identities, filters and pagination options.", "Use explicit resource IDs and a limit from 1 to 100.", 400)

@@ -72,7 +72,11 @@ func TestReviewOperationHeldGuidanceCLICompactAndDiagnostics(t *testing.T) {
 				switch r.URL.Path {
 				case base + "/status":
 					compactReads.Add(1)
-					_ = json.NewEncoder(w).Encode(status)
+					fields := map[string]any{}
+					data, _ := json.Marshal(status)
+					_ = json.Unmarshal(data, &fields)
+					fields["future_metadata"] = map[string]any{"private": "PRIVATE_IGNORED_METADATA"}
+					_ = json.NewEncoder(w).Encode(fields)
 				case base:
 					fullReads.Add(1)
 					_ = json.NewEncoder(w).Encode(full)
@@ -84,6 +88,9 @@ func TestReviewOperationHeldGuidanceCLICompactAndDiagnostics(t *testing.T) {
 			defer service.Close()
 			profiles := mutationProfiles(t, f, service.URL, map[string][2]string{"builder": {project, worker}})
 			code, out, stderr := mutationInvoke(t, profiles, "builder", "reviews", "operation", id)
+			if strings.Contains(out, "PRIVATE_IGNORED_METADATA") {
+				t.Fatal("unknown response metadata escaped CLI output")
+			}
 			var compactOut client.ReviewOperationStatusOutput
 			if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &compactOut) != nil || !reflect.DeepEqual(compactOut.ReviewOperationStatus, wantStatus) || compactOut.Diagnostic == nil {
 				t.Fatal("compact CLI parent guidance missing or changed retained facts", code, out, stderr)

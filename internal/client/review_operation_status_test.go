@@ -15,7 +15,7 @@ func compactStatusFixture() client.ReviewOperationStatus {
 	return client.ReviewOperationStatus{ID: executionOperationID, PullNumber: 2, Channel: "hosted", State: "uncertain", Revision: 4, Stage: "capture_blocked", Reason: "hosted_finished_inventory_unproven", AttemptID: "review_attempt_" + strings.Repeat("b", 32), UpdatedAt: "2026-01-01T00:00:00Z", NextAction: "contact_controller_owner"}
 }
 func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
-	for _, mode := range []string{"valid", "ready", "captured", "unknown", "wrong_id", "missing_reason", "null_attempt", "extra_private", "provider_running", "fake_evidence", "bad_evidence", "wrong_stage", "unsafe_reason", "oversize", "cooldown", "cooldown_unknown", "retry_null", "retry_bad", "retry_nonutc", "retry_foreign_state", "retry_cli"} {
+	for _, mode := range []string{"valid", "ready", "captured", "unknown", "wrong_id", "missing_reason", "null_attempt", "extra_private", "extra_metadata", "known_alias", "duplicate_future", "provider_running", "fake_evidence", "bad_evidence", "wrong_stage", "unsafe_reason", "oversize", "cooldown", "cooldown_unknown", "retry_null", "retry_bad", "retry_nonutc", "retry_foreign_state", "retry_cli"} {
 		t.Run(mode, func(t *testing.T) {
 			v := compactStatusFixture()
 			data, _ := json.Marshal(v)
@@ -59,6 +59,11 @@ func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
 				fields["attempt_id"] = nil
 			case "extra_private":
 				fields["capability_fingerprint"] = "PRIVATE_SENTINEL"
+			case "extra_metadata":
+				fields["future_metadata"] = map[string]any{"label": "PRIVATE_SENTINEL", "nested": []any{true, nil, 1}}
+			case "known_alias":
+				fields["ID"] = executionOperationID
+
 			case "provider_running":
 				fields["stage"] = "provider_running"
 			case "fake_evidence":
@@ -84,14 +89,24 @@ func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
 				if r.Method != "GET" || r.URL.Path != "/api/v1/projects/project-one/reviews/operations/"+executionOperationID+"/status" || r.URL.RawQuery != "" || r.Header.Get("Prefer") != "wait=900" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("Idempotency-Key") != "" {
 					t.Error("compact read changed binding or wait")
 				}
+				if mode == "duplicate_future" {
+					data, _ := json.Marshal(fields)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(strings.TrimSuffix(string(data), "}") + `,"future_metadata":1,"future_metadata":2}`))
+					return
+				}
 				write(w, 200, fields)
 			}))
 			defer s.Close()
 			c := newClient(t, s)
 			got, err := c.WaitReviewOperationStatus(t.Context(), executionOperationID, 900)
-			if mode == "valid" || mode == "ready" || mode == "captured" || mode == "unknown" || mode == "cooldown" || mode == "cooldown_unknown" {
+			if mode == "valid" || mode == "ready" || mode == "captured" || mode == "unknown" || mode == "cooldown" || mode == "cooldown_unknown" || mode == "extra_private" || mode == "extra_metadata" {
 				if err != nil || got.ID != executionOperationID {
 					t.Fatal(got, err)
+				}
+				out, _ := json.Marshal(got)
+				if strings.Contains(string(out), "PRIVATE_SENTINEL") || strings.Contains(string(out), "future_metadata") || strings.Contains(string(out), "capability_fingerprint") {
+					t.Fatal("unknown metadata escaped typed output")
 				}
 				if mode == "cooldown" && got.RetryNotBefore != "2026-01-01T00:10:00Z" {
 					t.Fatal("original deadline changed", got)

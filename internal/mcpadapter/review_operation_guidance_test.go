@@ -70,7 +70,11 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 				switch r.URL.Path {
 				case base + "/status":
 					compactReads.Add(1)
-					_ = json.NewEncoder(w).Encode(status)
+					fields := map[string]any{}
+					data, _ := json.Marshal(status)
+					_ = json.Unmarshal(data, &fields)
+					fields["future_metadata"] = map[string]any{"private": "PRIVATE_IGNORED_METADATA"}
+					_ = json.NewEncoder(w).Encode(fields)
 				case base:
 					fullReads.Add(1)
 					_ = json.NewEncoder(w).Encode(full)
@@ -83,7 +87,12 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 			binding.ServerURL = service.URL
 			session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": binding}, credential(t)), "chosen")
 			var compactOut client.ReviewOperationStatusOutput
-			decodeResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": id}), &compactOut)
+			result := call(t, session, "review_operation_read", map[string]any{"operation_id": id})
+			data, _ := json.Marshal(result)
+			if strings.Contains(string(data), "PRIVATE_IGNORED_METADATA") {
+				t.Fatal("unknown response metadata escaped MCP output")
+			}
+			decodeResult(t, result, &compactOut)
 			if !reflect.DeepEqual(compactOut.ReviewOperationStatus, wantStatus) || compactOut.Diagnostic == nil {
 				t.Fatal("compact MCP parent guidance missing or changed retained facts", compactOut)
 			}

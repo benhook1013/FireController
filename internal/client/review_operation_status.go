@@ -2,7 +2,12 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"reflect"
+	"strings"
+
+	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 // ReviewOperationStatus omits private configuration and capture contents.
@@ -30,7 +35,7 @@ func (c *Client) WaitReviewOperationStatus(ctx context.Context, id string, secon
 	}
 	var value ReviewOperationStatus
 	var status int
-	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeReviewResponse, &sourceWaitOptions{seconds: seconds, status: &status}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: seconds, status: &status}); err != nil {
 		return ReviewOperationStatus{}, err
 	}
 	if value.ID != id || !validCompactOperationStatus(value) {
@@ -38,6 +43,33 @@ func (c *Client) WaitReviewOperationStatus(ctx context.Context, id string, secon
 	}
 	return value, nil
 }
+
+// Compact status metadata can grow without changing its existing state/action
+// contract. Ignore unknown additions rather than forwarding them, while keeping
+// canonical required fields, duplicate-key and known-value validation strict.
+func decodeCompactOperationStatus(data []byte, dst any) error {
+	if err := strictjson.Validate(data); err != nil {
+		return err
+	}
+	if !reviewShape(data, reflect.TypeOf(dst)) {
+		return strictjson.ErrSyntax
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	typ := reflect.TypeOf(ReviewOperationStatus{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]
+		for supplied := range fields {
+			if supplied != name && strings.EqualFold(supplied, name) {
+				return strictjson.ErrSyntax
+			}
+		}
+	}
+	return json.Unmarshal(data, dst)
+}
+
 func validCompactOperationStatus(v ReviewOperationStatus) bool {
 	if ValidateReviewOperationID(v.ID) != nil || !validPullNumber(v.PullNumber) || !oneReviewOf(v.Channel, "cli", "hosted") || v.Revision < 1 || v.Reason != "" && !validExecutionIdentifier(v.Reason) || v.AttemptID != "" && !validReviewOpaqueID(v.AttemptID, "review_attempt_") || v.EvidenceID != "" && (!validReviewOpaqueID(v.EvidenceID, "review_evidence_") || v.AttemptID == "") || !controlTime(v.UpdatedAt) {
 		return false
