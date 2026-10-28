@@ -69,7 +69,7 @@
 .skeleton-fact-state{width:12.25em;font-size:.65rem;line-height:1.35}.skeleton-fact-diff{width:28ch}.skeleton-fact-ci{width:20ch}.skeleton-fact-merge{width:14ch}
 .skeleton-channel-title{width:9em}.skeleton-channel-total{width:4ch}
 .skeleton-channel-policy{width:80%}
-.skeleton-pr-link{display:inline-block;width:9em;vertical-align:top}
+.delivery-head-placeholder .skeleton-pr-link{width:9em}
 .skeleton-identity-title .skeleton-ink{width:72%;height:1.2em}
 .skeleton-identity-repository .skeleton-ink{width:65%;height:1.45em}
 .header-utilities-skeleton .connection-note{width:8ch}
