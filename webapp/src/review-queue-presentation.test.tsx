@@ -327,13 +327,13 @@ describe('retained CI explanation',()=>{
 });
 
 
-describe('compact queue heading navigation',()=>{
-  it('puts review history ahead of facts, with draft styling separate from row lifecycle',()=>{
+describe('compact queue footer navigation',()=>{
+  it('puts review history after the review channels, with draft styling separate from row lifecycle',()=>{
     const value={...pull(7),is_draft:true};
     const html=markup(<ReviewQueueRow pull={value} snapshot="retained" order={{index:0}}/>);
     expect(html).toContain('review-row-draft');expect(html).toContain('review-state-draft');
     expect(html).toContain('aria-label="Review history for PR #7"');expect(html).toContain('>Review history ↗</a>');
-    expect(html.indexOf('>Review history ↗</a>')).toBeLessThan(html.indexOf('class="review-pull-facts"'));
+    expect(html.indexOf('>Review history ↗</a>')).toBeGreaterThan(html.indexOf('class="review-history"'));
     expect(html).toContain('/reviews/pulls/7?snapshot=retained');
     expect(html).not.toContain('>Review details');
   });

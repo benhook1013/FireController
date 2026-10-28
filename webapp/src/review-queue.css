@@ -58,11 +58,6 @@
 
 .review-file-count.review-size-exceeded{color:var(--fc-blocked_text,#8e2634)}
 
-.review-row-heading{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:3px 16px;margin-bottom:4px}
-.review-row-heading>.review-pull-heading{flex:1 1 380px;min-width:0;margin:0}
-.review-row-heading .review-pull-heading h3{min-width:0}
-.review-heading-action{flex:none;margin-left:auto}
-.review-heading-action>.review-details-link{margin:0}
 .review-queue-content .review-number{line-height:1.2}
 .review-queue-content .review-pull-heading h3{line-height:1.35}
 .review-queue-content>.review-pull-facts{row-gap:4px}
