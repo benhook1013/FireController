@@ -65,6 +65,12 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 		if botErr == nil && botOnly.Complete {
 			return botOnly, nil
 		}
+		// Keep an attributable finished reply visible even when its inventory
+		// remains unsupported. A proven unrelated bot edit must not mask that
+		// actionable capture refusal as an ordinary provider wait.
+		if botErr == nil && original.Reason == "attribution_window_closed" && botOnly.Reason == "hosted_finished_inventory_unproven" {
+			original = botOnly
+		}
 	}
 	// Removing an old provider annotation is still permitted only for proven
 	// standing-zero inventory, independently of the bot-only clock projection.

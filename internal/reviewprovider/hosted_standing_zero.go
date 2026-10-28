@@ -393,7 +393,15 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 		return zero, false
 	}
 	p.at++
-	if !p.block("ℹ️ Recent review info") || !p.block("⚙️ Run configuration") {
+	if !p.block("ℹ️ Recent review info") {
+		return zero, false
+	}
+	// Optional provider presentation marker, accepted once at its observed
+	// position only. It supplies no identity, scope or completion evidence.
+	if p.at < len(p.lines) && p.lines[p.at] == "<!-- review_info_content -->" {
+		p.at++
+	}
+	if !p.block("⚙️ Run configuration") {
 		return zero, false
 	}
 	prefixes := []string{"- **Configuration used**: ", "- **Review profile**: ", "- **Plan**: "}

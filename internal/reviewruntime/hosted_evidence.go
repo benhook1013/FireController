@@ -58,7 +58,7 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		}
 		if baselineReason == "" {
 			fallback, err := reviewprovider.ExtractHostedFindingsWithBaseline(retained.Snapshot, baseline.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
-			if err == nil && fallback.Complete {
+			if err == nil && (fallback.Complete || fallback.Reason == "hosted_finished_inventory_unproven") {
 				inventory = fallback
 			}
 		}
