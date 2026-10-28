@@ -21,11 +21,11 @@ function render(path: string, workspace = false) {
 }
 
 describe('one Project view with separate publication authority', () => {
-  it('shows current working entries and the shared workers/reviews by default', () => {
+  it('shows current entries without duplicating Delivery and Reviews', () => {
     const html = render(`${home}/project`);
-    expect(html).toContain('PRIVATE_WORKING_CONTENT'); expect(html).toContain('Working version');
+    expect(html).toContain('PRIVATE_WORKING_CONTENT'); expect(html).toContain('Private version');
     expect(html).toContain('View public version'); expect(html).toContain('href="/projects/example/project?view=public"');
-    expect(html).toContain('data-shared-work'); expect(html).toContain('data-shared-reviews'); expect(html).not.toContain('APPROVED_PUBLIC_CONTENT');
+    expect(html).not.toContain('data-shared-work'); expect(html).not.toContain('data-shared-reviews'); expect(html).not.toContain('APPROVED_PUBLIC_CONTENT');
   });
   it('selects approved content for preview without rendering current private entries or work', () => {
     const html = render(`${home}/project?view=public`, true);

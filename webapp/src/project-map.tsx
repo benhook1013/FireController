@@ -18,7 +18,7 @@ export function ProjectMap({ headerActions }: { headerActions?: ReactNode }) {
   const [archived, setArchived] = useState(false);
   const [catalogueOpen, setCatalogueOpen] = useState(false);
   return <section className="project-editorial">
-    <header className="project-editorial-heading"><h2>{label}</h2>{headerActions}</header>
+    <header className="project-editorial-heading tab-heading"><h2>{label}</h2>{headerActions}</header>
     <div className="panel project-map-body">
     <ProjectEditorial />
     <details className="editorial-catalogue" onToggle={event => setCatalogueOpen(event.currentTarget.open)}>

@@ -30,7 +30,7 @@ export function ProjectSettings() {
   const [reload, setReload] = useState(0);
   const query = useQuery({ queryKey: [...key, 'settings', 'presentation'], queryFn: ({ signal }) => session.api.presentation(signalFor(session, signal)), staleTime: Infinity, enabled: session.api.browserCapabilities.can_edit_presentation });
   if (!session.api.browserCapabilities.can_edit_presentation) return <section className="panel"><h2>Settings unavailable</h2><p>This connection does not permit project appearance changes.</p></section>;
-  return <><div className="page-heading"><p className="eyebrow">Project settings</p><h2>Appearance</h2><p>Complete private-workspace presentation. Public website approvals are separate.</p></div><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <PresentationEditor key={`${session.nonce}:${reload}`} initial={query.data.presentation} reload={async () => { const fresh = await query.refetch(); if (!fresh.error && !session.controller.signal.aborted) setReload(value => value + 1); }} />}</ReadState></>;
+  return <><div className="page-heading tab-heading"><h2>Appearance</h2><p>Complete private-workspace presentation. Public website approvals are separate.</p></div><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <PresentationEditor key={`${session.nonce}:${reload}`} initial={query.data.presentation} reload={async () => { const fresh = await query.refetch(); if (!fresh.error && !session.controller.signal.aborted) setReload(value => value + 1); }} />}</ReadState></>;
 }
 
 function PresentationEditor({ initial, reload }: { initial: Presentation; reload(): Promise<void> }) {

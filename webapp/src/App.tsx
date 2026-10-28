@@ -15,7 +15,7 @@ import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView } from '.
 import { ContextualNotes } from './contextual-notes';
 import { EditorialMarkdown } from './editorial-markdown';
 import { githubRepositoryURL } from './github-links';
-import { Delivery, DeliveryHero, DeliveryWork } from './delivery';
+import { Delivery, DeliveryHero } from './delivery';
 import { jobFilterSearch, readJobFilters, type JobFilters } from './job-navigation';
 import { refreshEventQueries } from './queries';
 import { ReviewQueueView, ReviewPullView, ReviewRunView } from './review-workspace';
@@ -288,8 +288,8 @@ export function ProjectPage() {
   const [search] = useSearchParams();
   const published = search.get('view') === 'public';
   const label = useProjectHeading('map');
-  const actions = <div className="project-view-actions"><span className="badge neutral">{published ? 'Public version' : 'Working version'}</span><Link className="review-details-link" to={`${home}/project${published ? '' : '?view=public'}`}>{published ? 'Back to working version' : 'View public version'} ↗</Link></div>;
-  return published ? <><header className="project-editorial-heading"><h2>{label}</h2>{actions}</header><PublicProjectAddress address={projectAddress(session.project)} embedded theme={false} fallback={<PublishedOverviewUnavailable />} /></> : <><ProjectMap headerActions={actions} /><DeliveryWork /><ReviewQueueView embedded /></>;
+  const actions = <div className="project-view-actions"><span className="badge neutral">{published ? 'Public version' : 'Private version'}</span><Link className="review-details-link" to={`${home}/project${published ? '' : '?view=public'}`}>{published ? 'Back to working version' : 'View public version'} ↗</Link></div>;
+  return published ? <><header className="project-editorial-heading tab-heading"><h2>{label}</h2>{actions}</header><PublicProjectAddress address={projectAddress(session.project)} embedded theme={false} fallback={<PublishedOverviewUnavailable />} /></> : <ProjectMap headerActions={actions} />;
 }
 
 function FormerProjectMap() {
@@ -436,6 +436,7 @@ export function Workspace({ session, metadataStatus, reconnectProjectUpdates, se
     <nav className="navigation" aria-label="Project navigation"><NavLink to={`${home}/project`}>{projectHeading}</NavLink><Link to={home} className={pathname === home && !reviewsSelected ? 'active' : undefined} aria-current={pathname === home && !reviewsSelected ? 'page' : undefined}>Delivery</Link><Link to={`${home}#review-queue`} className={reviewsSelected ? 'active' : undefined} aria-current={reviewsSelected ? 'location' : undefined}>{reviewsHeading}</Link><NavLink to={`${home}/jobs`}>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}</nav>
     <ProjectUpdateNotice status={metadataStatus} reconnect={reconnectProjectUpdates} />
     {unresolved > 0 && <p className="notice" role="status">{unresolved} pending or uncertain action{unresolved === 1 ? '' : 's'} retained in this connection. Return to the original worker and view to retry before reloading or disconnecting.</p>}
+    {matchPath('/projects/:projectId/inbox', pathname) && <InboxHeading />}
     <div className={inboxArea ? 'workspace-grid' : 'project-main'}>{inboxArea && <aside className="sidebar"><WorkerList compact /><section className="feed-card" aria-label="Inbox connection"><span className={`status-dot ${live === 'live' && session.worker ? 'online' : ''}`} /><strong role="status">{liveLabel}</strong><p>{session.worker ? session.worker.name : 'Select a worker to follow incoming messages.'}</p>{Boolean(feedError) && <><p className="error-copy">{errorText(feedError)}</p><button type="button" onClick={() => { setReady(false); setAttempt(value => value + 1); }}>Reconnect inbox</button></>}</section></aside>}
       <div className="main-content"><Routes><Route path="/projects/:projectId" element={<Delivery />} /><Route path="/projects/:projectId/project" element={<ProjectPage />} /><Route path="/projects/:projectId/published/history/:revision" element={<ProjectPublishedHistory />} /><Route path="/projects/:projectId/jobs" element={<Jobs />} /><Route path="/projects/:projectId/settings" element={<ProjectSettings />} /><Route path="/projects/:projectId/workers" element={<Workers />} /><Route path="/projects/:projectId/workers/:workerId" element={<WorkerCoordinationView />} /><Route path="/projects/:projectId/notes" element={<NotesView />} /><Route path="/projects/:projectId/notes/:noteId" element={<NoteView />} /><Route path="/projects/:projectId/notes/:noteId/history/:revision" element={<NoteRevisionView />} /><Route path="/projects/:projectId/jobs/:jobId" element={<JobDetail />} /><Route path="/projects/:projectId/inbox" element={<Inbox />} /><Route path="/projects/:projectId/inbox/:conversationId" element={<Conversation />} /><Route path="/projects/:projectId/reviews" element={<ReviewQueueView />} /><Route path="/projects/:projectId/reviews/history" element={<ReviewQueueView key="history" history />} /><Route path="/projects/:projectId/reviews/pulls/:number" element={<ReviewPullView />} /><Route path="/projects/:projectId/reviews/runs/:runId" element={<ReviewRunView />} /><Route path="/projects/:projectId/map/*" element={<FormerProjectMap />} /><Route path="/projects/:projectId/project/entries/:entryId" element={<ProjectMapEntryView />} /><Route path="/projects/:projectId/project/entries/:entryId/history/:revision" element={<ProjectMapRevisionView />} /><Route path="*" element={<section className="panel"><h2>Page unavailable</h2><Link to={home}>Return to Delivery</Link></section>} /></Routes></div></div>
   </main></RestoringReadingPosition.Provider></WorkspaceContext.Provider>;
@@ -449,13 +450,13 @@ function WorkerList({ compact = false }: { compact?: boolean }) {
   const query = useQuery({ queryKey: [...key, 'workers', paging.cursor], queryFn: ({ signal }) => session.api.workers({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
   return <section className={compact ? 'worker-panel' : 'panel'}><div className="section-heading"><div><p className="eyebrow">People & agents</p><h2>{compact ? label : presentation?.headings.workers ?? 'Project workers'}</h2></div>{compact && <span className="small-label">Select worker</span>}</div><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul className="worker-list">{query.data?.items.map(worker => <li key={worker.id}><button type="button" aria-label={compact ? `Select worker ${worker.name}` : `Open ${worker.name} inbox`} aria-pressed={compact ? session.worker?.id === worker.id : undefined} onClick={() => selectWorker(worker)}><span className="worker-avatar" aria-hidden="true">{worker.name.slice(0, 2).toUpperCase()}</span><span><strong>{worker.name}</strong><small>{worker.id}</small></span><span className="worker-arrow" aria-hidden="true">↗</span></button><Link className="worker-detail-link" to={`${home}/workers/${encodeURIComponent(worker.id)}`} aria-label={`Read ${worker.name} details`}>Worker details</Link></li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="workers" busy={query.isFetching} /></section>;
 }
-function Workers() { const label = useProjectHeading('workers'); return <><div className="page-heading"><h2>{label}</h2><p>View worker details or open an inbox.</p></div><WorkerList /></>; }
+function Workers() { const label = useProjectHeading('workers'); return <><div className="page-heading tab-heading"><h2>{label}</h2><p>View worker details or open an inbox.</p></div><WorkerList /></>; }
 export function Jobs() {
   const label = useProjectHeading('jobs');
   const [search, setSearch] = useSearchParams();
   const filters = readJobFilters(search);
   const select = (next: JobFilters) => setSearch(jobFilterSearch(next));
-  return <><div className="page-heading"><h2>{label}</h2></div><div className="filters"><label>Status<select aria-label="Job status" value={filters.status} onChange={event => select({ ...filters, status: event.target.value as JobFilters['status'] })}><option value="open">Open jobs</option><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label><JobWorkerFilter selected={filters.workerID} select={workerID => select({ ...filters, workerID })} /></div><JobList key={`${filters.status}/${filters.workerID}`} filters={filters} /></>;
+  return <><div className="page-heading tab-heading"><h2>{label}</h2></div><div className="filters"><label>Status<select aria-label="Job status" value={filters.status} onChange={event => select({ ...filters, status: event.target.value as JobFilters['status'] })}><option value="open">Open jobs</option><option value="">All statuses</option><option value="active">Active</option><option value="parked">Parked</option><option value="blocked">Blocked</option><option value="completed">Completed</option></select></label><JobWorkerFilter selected={filters.workerID} select={workerID => select({ ...filters, workerID })} /></div><JobList key={`${filters.status}/${filters.workerID}`} filters={filters} /></>;
 }
 function JobList({ filters }: { filters: JobFilters }) {
   const { session, key, home } = useWorkspace();
@@ -550,11 +551,15 @@ export function Inbox() {
   if (workerId && session.worker?.id!==workerId) return <ReadState error={worker.error} loading={worker.isPending || !!worker.data} empty={false}>{null}</ReadState>;
   return <SelectedInbox />;
 }
-function SelectedInbox() {
+function InboxHeading() {
   const presentation = usePresentation();
   const label = useProjectHeading('inbox');
   const { session } = useWorkspace();
-  return <><div className="page-heading"><p className="eyebrow">Conversations</p><h2>{session.worker ? presentation?.headings.inbox ? `${session.worker.name} · ${label}` : `${session.worker.name} inbox` : label}</h2><p>Read incoming messages without changing their seen or acknowledged state.</p></div>{session.worker ? <><ContextualNotes key={`notes-${session.worker.id}`} workerId={session.worker.id} /><MessageComposer /><InboxPage /></> : <ChooseWorker />}</>;
+  return <div className="page-heading tab-heading"><h2>{session.worker ? presentation?.headings.inbox ? `${session.worker.name} · ${label}` : `${session.worker.name} inbox` : label}</h2><p>Read incoming messages without changing their seen or acknowledged state.</p></div>;
+}
+function SelectedInbox() {
+  const { session } = useWorkspace();
+  return session.worker ? <><ContextualNotes key={`notes-${session.worker.id}`} workerId={session.worker.id} /><MessageComposer /><InboxPage /></> : <ChooseWorker />;
 }
 export function cachedWorkerLabelsQuery(key: readonly string[]) {
   // Observe the sidebar's existing first page without fetching workers here.
