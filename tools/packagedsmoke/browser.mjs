@@ -541,6 +541,7 @@ try {
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Workers',exact:true}).click();
   const builderInbox = page.getByRole('button',{name:'Open Builder inbox',exact:true});
   await builderInbox.waitFor();
+  await expect(page.locator('.page-heading .eyebrow').filter({hasText:'Connected project'})).toHaveCount(0);
   workerHistoryBefore = await page.evaluate(() => history.state.idx);
   checkpoint = 'worker-inbox-open';
   await builderInbox.click();
@@ -1142,6 +1143,11 @@ try {
       await page.getByRole('heading', {name:title, exact:true}).waitFor();
       checkpoint = 'reload-queue-held';
       await expect.poll(() => reloadQueueHeld).toBe(true);
+      const openingHead = page.locator('.delivery-merge-head .delivery-head-placeholder');
+      await expect(openingHead.locator('.review-queue-content')).toHaveCount(1);
+      await expect(openingHead.locator('.review-lane')).toHaveCount(2);
+      await expect(openingHead.locator('.review-round-placeholder')).toHaveCount(12);
+      need(await openingHead.getByRole('link').count() === 0);
       checkpoint = 'reload-hash-retained';
       need(new URL(page.url()).hash === '#review-pr-32');
       checkpoint = 'reload-target-absent';

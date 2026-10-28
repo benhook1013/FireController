@@ -1,4 +1,5 @@
 import './delivery.css';
+import { ReviewLaneDisplay, ReviewRowFrame } from './review-display';
 
 /** Neutral placeholders never reuse labels or content from an unverified session. */
 export function PageSkeleton({ rows = 3, label = 'Loading content' }: { rows?: number; label?: string }) {
@@ -6,8 +7,8 @@ export function PageSkeleton({ rows = 3, label = 'Loading content' }: { rows?: n
 }
 
 /** The same bounded pill geometry as the eventual channel history. */
-export function ReviewRoundsSkeleton({ count }: { count: number }) {
-  return <div role="status"><span className="visually-hidden">Loading retained rounds</span><div className="review-round-pills review-recent-rounds" aria-hidden="true">{Array.from({ length: Math.min(6, Math.max(1, count)) }, (_, index) => <span key={index} className="review-round-pill review-round-placeholder"><strong>&nbsp;</strong><span className="review-pill-age">&nbsp;</span></span>)}</div></div>;
+export function ReviewRoundsSkeleton({ count, decorative = false }: { count: number; decorative?: boolean }) {
+  return <div {...(decorative ? {} : { role: 'status' })}>{!decorative && <span className="visually-hidden">Loading retained rounds</span>}<div className="review-round-pills review-recent-rounds" aria-hidden="true">{Array.from({ length: Math.min(6, Math.max(1, count)) }, (_, index) => <span key={index} className="review-round-pill review-round-placeholder"><strong>&nbsp;</strong><span className="review-pill-age">&nbsp;</span></span>)}</div></div>;
 }
 
 /** Reserve the public page shell without inventing its identity or sections. */
@@ -20,13 +21,28 @@ export function PublicHistorySkeleton() {
   return <div className="public-history-skeleton" role="status"><span className="visually-hidden">Loading published history</span><div aria-hidden="true"><span className="skeleton-line skeleton-medium" /></div></div>;
 }
 
-/** Match the joined hero without guessing a project name or review result. */
+/** Match the populated PR frame, facts, policies and bounded channel rounds. */
 export function MergeHeadSkeleton({ decorative = false }: { decorative?: boolean }) {
-  return <div className="delivery-head-skeleton" {...(decorative ? {} : { role: 'status' })}>{!decorative && <span className="visually-hidden">Loading merge head</span>}<div className="delivery-head-placeholder" aria-hidden="true"><span className="skeleton-line skeleton-eyebrow" /><span className="skeleton-line skeleton-head-title" /><div className="skeleton-head-facts"><span className="skeleton-line" /><span className="skeleton-line" /><span className="skeleton-line" /></div><div className="delivery-head-history"><div className="review-lanes">{['hosted', 'cli'].map(channel => <div className="review-lane skeleton-review-lane" key={channel} data-channel={channel}><div className="review-lane-heading"><span className="skeleton-line" /><span className="skeleton-line" /></div><div className="skeleton-rounds"><span className="skeleton-round" /><span className="skeleton-round" /><span className="skeleton-round" /></div></div>)}</div></div><span className="skeleton-line skeleton-head-link" /></div></div>;
+  const ink = (className: string) => <span className={`skeleton-ink ${className}`}>&nbsp;</span>;
+  const heading = <div className="review-pull-heading"><span className="review-number">{ink('skeleton-pr-number')}</span><h3 className="skeleton-pr-title">{ink('skeleton-title-first')}{ink('skeleton-title-second')}{ink('skeleton-title-third')}{ink('skeleton-title-fourth')}</h3></div>;
+  const facts = <div className="review-pull-facts"><span className="badge skeleton-fact skeleton-fact-state">{ink('')}</span>{['diff','ci','merge'].map(kind => <span key={kind} className={`badge review-fact-pill skeleton-fact skeleton-fact-${kind}`}>{ink('')}</span>)}</div>;
+  return <div className="delivery-head-skeleton" {...(decorative ? {} : { role: 'status' })}>{!decorative && <span className="visually-hidden">Loading merge head</span>}<div className="delivery-head-placeholder" aria-hidden="true">
+    <p className="eyebrow">{ink('skeleton-pr-eyebrow')}</p>
+    <ul className="review-queue"><ReviewRowFrame lifecycle="unknown" rail={false} className="review-row-loading" heading={heading} facts={facts} footer={<span className="review-details-link skeleton-pr-link">{ink('')}</span>}>
+      <section className="review-history"><div className="review-lanes">{(['hosted','cli'] as const).map(channel => <ReviewLaneDisplay key={channel} channel={channel} className="skeleton-review-lane" title={ink('skeleton-channel-title')} metadata={ink('skeleton-channel-total')}>
+        <div className="review-current-progress">{ink('skeleton-channel-policy')}</div><ReviewRoundsSkeleton count={6} decorative />
+      </ReviewLaneDisplay>)}</div></section>
+    </ReviewRowFrame></ul>
+  </div></div>;
 }
 
 export function DeliveryHeroSkeleton() {
-  return <div className="delivery-hero skeleton-hero"><section className="hero project-identity"><div className="hero-project"><span className="skeleton-line skeleton-title" /><span className="skeleton-line skeleton-medium" /></div></section><section className="hero delivery-merge-head"><MergeHeadSkeleton decorative /></section></div>;
+  return <div className="delivery-hero skeleton-hero"><section className="hero project-identity"><div className="hero-project"><h1 className="skeleton-identity-title"><span className="skeleton-ink">&nbsp;</span></h1><p className="repository skeleton-identity-repository"><span className="skeleton-ink">&nbsp;</span></p></div></section><section className="hero delivery-merge-head"><MergeHeadSkeleton decorative /></section></div>;
+}
+
+/** Reserve the actual header controls without claiming connection or showing actions. */
+export function HeaderUtilitiesSkeleton() {
+  return <div className="header-utilities header-utilities-skeleton" aria-hidden="true"><span className="connection-note"><span className="skeleton-ink">&nbsp;</span></span><span className="skeleton-utility-button"><span className="skeleton-ink">&nbsp;</span></span><span className="skeleton-utility-button"><span className="skeleton-ink">&nbsp;</span></span></div>;
 }
 
 export function WorkspaceSkeleton({ sidebar = false }: { sidebar?: boolean }) {

@@ -40,7 +40,7 @@ describe('neutral stable loading', () => {
     expect(html).toContain('aria-hidden="true"');
     expect(html).not.toContain('Loading…');
     expect(html).not.toContain('<button');
-    expect(html.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '')).toBe('');
+    expect(html.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '').trim()).toBe('');
   });
   it('uses the same two-sided Delivery structure and two quiet review cards while opening', () => {
     const hero = renderToStaticMarkup(<DeliveryHeroSkeleton />);
@@ -51,11 +51,11 @@ describe('neutral stable loading', () => {
     expect(hero).toContain('data-channel="hosted"');
     expect(hero).toContain('data-channel="cli"');
     expect(hero).not.toMatch(/skeleton-connection|skeleton-row|<a|<button/gu);
-    expect(hero.replace(/<[^>]*>/gu, '')).toBe('');
+    expect(hero.replace(/<[^>]*>/gu, '').trim()).toBe('');
     const pending = renderToStaticMarkup(<MergeHeadSkeleton />);
     expect(pending).toContain('role="status"><span class="visually-hidden">Loading merge head</span>');
     expect(pending).toContain('aria-hidden="true"');
-    expect(pending.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '')).toBe('');
+    expect(pending.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '').trim()).toBe('');
   });
   it('matches the page layout without exposing a previous project or forcing a sidebar', () => {
     const full = renderToStaticMarkup(<WorkspaceSkeleton />);
@@ -66,7 +66,7 @@ describe('neutral stable loading', () => {
     const inbox = renderToStaticMarkup(<WorkspaceSkeleton sidebar />);
     expect(inbox).toContain('workspace-grid');
     expect(inbox).toContain('<aside');
-    expect(inbox.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '')).toBe('');
+    expect(inbox.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '').trim()).toBe('');
   });
   it('reserves the public hero, navigation and prose without guessing project sections', () => {
     for (const embedded of [false, true]) {
@@ -80,7 +80,7 @@ describe('neutral stable loading', () => {
       expect(html.includes('<main')).toBe(!embedded);
       expect(html.includes('<header')).toBe(!embedded);
       expect(html).not.toMatch(/<h[1-6]|<button|<a\b|<img|<section|<article|spinner|review-lane|delivery-merge-head/gu);
-      expect(html.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '')).toBe('');
+      expect(html.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '').trim()).toBe('');
     }
   });
   it('keeps a requested public revision-list placeholder compact and neutral', () => {
@@ -88,7 +88,7 @@ describe('neutral stable loading', () => {
     expect(html).toContain('class="public-history-skeleton" role="status"');
     expect(html).toContain('<span class="visually-hidden">Loading published history</span>');
     expect(html.match(/class="skeleton-line/gu)).toHaveLength(1);
-    expect(html.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '')).toBe('');
+    expect(html.replace(/<span class="visually-hidden">[^<]*<\/span>/gu, '').replace(/<[^>]*>/gu, '').trim()).toBe('');
     expect(html).not.toMatch(/<h[1-6]|<button|<a\b|<img|page-skeleton|spinner/gu);
   });
 });

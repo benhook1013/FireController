@@ -48,10 +48,11 @@ describe('private connection first paint', () => {
     expect(html).toContain('role="status"><span class="visually-hidden">Opening project</span>');
     expect(html).not.toContain('Opening project…');
     expect(html).not.toContain('Verifying this tab’s saved connection.');
-    expect(html).not.toContain('<h1');
+    expect(html).toContain('class="skeleton-identity-title"');
     expect(html).not.toContain('<button');
     expect(html).not.toContain('opening-project-card');
-    expect(html).not.toContain('class="connection-note"');
+    expect(html).toContain('class="header-utilities header-utilities-skeleton" aria-hidden="true"');
+    expect(html).not.toContain('aria-label="Project utilities"');
     expect(html).toContain('class="mast-label">Project workspace</span>');
     expect(html).not.toContain('Connect to a project');
     expect(html).not.toContain('Project credential');
