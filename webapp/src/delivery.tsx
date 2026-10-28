@@ -46,14 +46,12 @@ function DeliveryProsePreview({ value, truncated, className = '' }: { value: str
   return <div className={`delivery-prose-preview ${className}`.trim()}><EditorialMarkdown compact className="delivery-preview">{value}</EditorialMarkdown>{truncated && <span className="delivery-preview-truncated" aria-label="Preview truncated">…</span>}</div>;
 }
 function ProgressPreview({ job }: { job: DeliveryJob }) {
-  return <div className="delivery-checkpoint">{(['summary', 'next', 'blocker'] as const).map(field => job.progress[field] && <div className={`delivery-checkpoint-field${field === 'blocker' ? ' delivery-blocker' : ''}`} key={field}><strong className="delivery-checkpoint-label">{field === 'summary' ? 'Progress' : field === 'next' ? 'Next' : 'Blocker'}</strong><DeliveryProsePreview value={job.progress[field]} truncated={job.progress[`${field}_truncated`]} /></div>)}</div>;
+  return <div className="delivery-checkpoint">{(['summary', 'next', 'blocker'] as const).map(field => job.progress[field] && <div className={`delivery-checkpoint-field${field === 'blocker' ? ' delivery-blocker' : ''}`} key={field}><strong className="delivery-checkpoint-label">{field === 'summary' ? 'Progress' : field === 'next' ? 'Next' : 'Blocker'}:</strong><DeliveryProsePreview value={job.progress[field]} truncated={job.progress[`${field}_truncated`]} /></div>)}</div>;
 }
 function JobContextPreview({ job }: { job: DeliveryJob }) {
   return <div className="delivery-job-context">
-    {job.summary?.revision ? <div className="delivery-job-summary"><EditorialMarkdown compact>{job.summary.body}</EditorialMarkdown></div> : job.brief_preview && <DeliveryProsePreview className="delivery-brief" value={job.brief_preview} truncated={job.brief_preview_truncated} />}
-    <p className="delivery-context-meta">Edited <RelativeTime value={job.updated_at} /></p>
-    {job.checklist && <div className="delivery-checklist"><p><strong>Checklist {job.checklist.done}/{job.checklist.total} done</strong> · <RelativeTime value={job.checklist.created_at} /></p>{job.checklist.job_revision !== job.revision && <p className="delivery-checkpoint-stale">Checklist from job revision {job.checklist.job_revision}; current revision {job.revision}.</p>}</div>}
     <ProgressPreview job={job} />
+    <p className="delivery-context-meta">Edited <RelativeTime value={job.updated_at} /></p>
   </div>;
 }
 function LaneInboxLink({ lane, home }: { lane: DeliveryLane; home: string }) {
@@ -75,7 +73,7 @@ export function DeliveryLanes({ value, home, partialJobs = value.jobs.has_more, 
       {lane.id && !lane.worker && <p className="delivery-page-note">Owner outside this worker page</p>}
       {lane.worker?.primary_job_id && !lane.jobs.some(job => job.id === lane.worker!.primary_job_id) && <Link className="delivery-primary-link" to={`${home}/jobs/${encodeURIComponent(lane.worker.primary_job_id)}`}>Primary job</Link>}</>}>
     {lane.jobs.length ? <ul className="delivery-job-list">{lane.jobs.map(job => <DeliveryJobCard key={job.id} readingAnchor={`delivery-job-${job.id}`}
-      title={<Link to={`${home}/jobs/${encodeURIComponent(job.id)}`}>{job.summary?.revision && job.summary.title || job.title}</Link>}
+      title={<Link to={`${home}/jobs/${encodeURIComponent(job.id)}`}>{job.title}</Link>}
       status={<><span className={`badge status-${job.status}`}>{job.status[0].toUpperCase()+job.status.slice(1)}</span>{lane.worker?.primary_job_id === job.id && <span className="badge delivery-primary">Primary focus</span>}</>}
       footer={<Link className="delivery-job-link" to={`${home}/jobs/${encodeURIComponent(job.id)}`} aria-label={`Read job ${job.title}`}>Read job →</Link>}>
       <JobContextPreview job={job} />

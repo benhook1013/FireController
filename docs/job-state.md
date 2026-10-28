@@ -48,7 +48,7 @@ Active, blocked and parked jobs receive a deliberate content pass after migratio
 
 ## Agent use
 
-Record a material change with one update, including only changed fields. History is automatic. Routine commands, tests and merges do not each need a progress entry. A job's next action can refer to an existing checklist item instead of repeating the plan. These defaults belong in the usage skill and do not impose an end-of-turn ritual. The service enforces coherent state, bounded output and guarded writes, not how often an agent must narrate its work.
+Record a material change with one update, including only changed fields. History is automatic. Routine commands, tests and merges do not each need a progress entry. A job's next action can refer to an existing checklist item instead of repeating the plan. Keep current progress readable in plain language and retain necessary exact recovery details in the brief or owning evidence. The current record must contain current obligations without requiring an old revision as an instruction lookup. See the [job-writing reference](../skills/firecontroller-use/references/jobs.md) for examples and field ownership. These defaults belong in the usage skill and do not impose an end-of-turn ritual. The service enforces coherent state, bounded output and guarded writes, not how often an agent must narrate its work.
 
 ## Required proof
 

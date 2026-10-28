@@ -429,6 +429,23 @@ try {
   const deliveryBodyText = await page.locator('body').innerText();
   need(![config.project, config.worker, config.other_worker, ...Object.values(deliveryFixture.jobs)].some(id => deliveryBodyText.includes(id)));
   checkpoint = 'private-identifiers-absent';
+  need(await page.locator('.delivery-brief,.delivery-job-summary,.delivery-checklist').count() === 0);
+  need(!deliveryBodyText.includes('Private delivery identifier never rendered.'));
+  checkpoint = 'compact-job-cards';
+  const cardViewport = page.viewportSize();
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({width,height:900});
+    need(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    const row = inspectorLane.locator('.delivery-checkpoint-field').first();
+    need(await row.evaluate(element => {
+      const label=element.querySelector('.delivery-checkpoint-label').getBoundingClientRect();
+      const body=element.querySelector('.delivery-prose-preview').getBoundingClientRect();
+      return Math.abs(label.top-body.top) <= 1 && body.width > 80;
+    }));
+    if (config.diagnostic_directory) await page.locator('.delivery-lanes').screenshot({path:config.diagnostic_directory+'/job-cards-'+width+'.png',timeout:2000});
+  }
+  await page.setViewportSize(cardViewport);
+
   // Actual mounted contact query: one shared read for all loaded lanes, no
   // browser agent attribution, and no fleet/board/history refresh while hidden.
   checkpoint = 'presence-initial';

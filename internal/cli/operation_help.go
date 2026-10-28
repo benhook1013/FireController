@@ -351,6 +351,13 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"Explicitly observe the exact comparison; does not request a review. Routine queue freshness is maintained by the automatic observer, not by this command. --ci and --readiness assess required checks for the selected base branch, not optional workflow health.", "Held default_base_changed means there is no selected unmerged parent but the PR targets a nondefault branch. Check and reconcile the PR base with its intended default branch, then refresh the new comparison. Do not change worker credentials for a comparison hold.", recovery}
 		out.Example = "<bound launcher> reviews source-operation REFRESH_ID"
 		out.Documentation = "docs/review-source.md"
+	case "jobs checklist-set":
+		out.Usage = "<bound launcher> jobs checklist-set JOB_ID --expect-revision N --expect-checklist-revision N --items JSON|--items-file PATH --key KEY"
+		out.Required = []string{"JOB_ID", "--expect-revision N (current job revision)", "--expect-checklist-revision N (0 for absent checklist)", "exactly one of --items JSON or --items-file PATH", "--key KEY"}
+		out.Semantics = []string{"Replace the complete ordered checklist when restructuring; each item has id, text and done. Empty [] clears it. Up to 100 items; existing IDs identify retained steps.", "Both job and checklist guards are required. This does not rewrite brief/progress or advance the job revision. Use checklist-item for one completion/reopen instead.", recovery}
+		out.Example = "<bound launcher> jobs checklist-set JOB_ID --expect-revision 3 --expect-checklist-revision 0 --items-file /private/items.json --key checklist-plan-1"
+		out.FileFields = map[string]string{"--items-file": "The file itself is a JSON array of {id,text,done} items, not an object wrapper."}
+		out.Documentation = "docs/job-progress.md"
 	case "jobs checklist-item":
 		out.Usage = "<bound launcher> jobs checklist-item JOB_ID ITEM_ID --done true|false --expect-checklist-revision N --key KEY"
 		out.Required = []string{"JOB_ID", "ITEM_ID", "--done true|false", "--expect-checklist-revision N", "--key KEY"}
