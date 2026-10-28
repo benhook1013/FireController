@@ -1428,9 +1428,10 @@ try {
   await expect(page.getByLabel('Suggested maximum PR size',{exact:true})).toHaveValue('1');
   checkpoint='size-warning-visible';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Delivery',exact:true}).click();
-  await expect.poll(()=>page.locator('.review-size-warning').count()).toBeGreaterThan(0);
-  await expect(page.locator('.review-size-warning').first()).toContainText('suggested maximum PR size 1');
-  if(config.diagnostic_directory) await page.locator('.review-size-warning').first().screenshot({path:config.diagnostic_directory+'/size-warning-390.png'});
+  await expect.poll(()=>page.locator('.review-file-count.review-size-exceeded').count()).toBeGreaterThan(0);
+  await expect(page.locator('.review-file-count.review-size-exceeded').first()).toHaveAttribute('title','Suggested maximum PR size: 1 file.');
+  await expect(page.locator('.review-size-note,.review-size-warning')).toHaveCount(0);
+  if(config.diagnostic_directory) await page.locator('.review-diff').first().screenshot({path:config.diagnostic_directory+'/size-warning-390.png'});
   need(await page.locator('literal').count()===0);
   need(!(await page.evaluate(()=>JSON.stringify(sessionStorage))).includes(admin));
   need(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));

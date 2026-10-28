@@ -56,7 +56,6 @@ function ProgressPreview({ job }: { job: DeliveryJob }) {
 function JobContextPreview({ job }: { job: DeliveryJob }) {
   return <div className="delivery-job-context">
     <ProgressPreview job={job} />
-    <p className="delivery-context-meta">Edited <RelativeTime value={job.updated_at} /></p>
   </div>;
 }
 function LaneInboxLink({ lane, home }: { lane: DeliveryLane; home: string }) {
@@ -93,7 +92,7 @@ export function DeliveryLanes({ value, home, partialJobs = value.jobs.has_more, 
     {lane.jobs.length ? <ul className="delivery-job-list">{lane.jobs.map(job => <DeliveryJobCard key={job.id} readingAnchor={`delivery-job-${job.id}`}
       title={<Link to={`${home}/jobs/${encodeURIComponent(job.id)}`}>{job.title}</Link>}
       status={<><span className={`badge status-${job.status}`}>{job.status[0].toUpperCase()+job.status.slice(1)}</span>{lane.worker?.primary_job_id === job.id && <span className="badge delivery-primary">Primary focus</span>}</>}
-      footer={<Link className="delivery-job-link" to={`${home}/jobs/${encodeURIComponent(job.id)}`} aria-label={`Read job ${job.title}`}>Read job →</Link>}>
+      footer={<div className="delivery-job-footer"><p className="delivery-context-meta">Edited <RelativeTime value={job.updated_at} /></p><Link className="delivery-job-link review-details-link" to={`${home}/jobs/${encodeURIComponent(job.id)}`} aria-label={`Read job ${job.title}`}>Read job ↗</Link></div>}>
       <JobContextPreview job={job} />
     </DeliveryJobCard>)}</ul> : <p className="delivery-empty">{partialJobs ? 'No jobs in loaded slice.' : 'No open jobs.'}</p>}
   </WorkerLaneDisplay>)}</div>;
@@ -149,7 +148,7 @@ export function DeliveryWork() {
   const value = board.value ?? query.data;
   const contact = useWorkerPresence(value?.workers.items.map(worker => worker.id) ?? []);
   const more = Boolean(value && (value.workers.has_more || value.jobs.has_more));
-  return <section aria-labelledby="delivery-title" data-reading-region="delivery" data-reading-ready={!!value}><div className="delivery-section-heading tab-heading"><h2 id="delivery-title">Delivery</h2><Link to={`${home}/jobs`}>Manage jobs →</Link></div><ReadState error={query.error} loading={query.isPending} empty={false} retained={!!value}>{value && <><DeliveryLanes value={value} home={home} presence={contact.error ? undefined : contact.data} />{board.error && <ReadState error={board.error} loading={false} empty={false}>{null}</ReadState>}{more && <div className="delivery-more"><p className="delivery-page-note">More open work is available. Lanes show the work loaded so far.</p><button type="button" onClick={() => { if (!query.isFetching) void archive.more(); }} disabled={query.isFetching || board.busy}>{board.busy ? 'Loading more work…' : 'Load more work'}</button></div>}</>}</ReadState></section>;
+  return <section aria-labelledby="delivery-title" data-reading-region="delivery" data-reading-ready={!!value}><div className="delivery-section-heading tab-heading"><h2 id="delivery-title">Delivery</h2><Link className="review-details-link" to={`${home}/jobs`}>Manage jobs ↗</Link></div><ReadState error={query.error} loading={query.isPending} empty={false} retained={!!value}>{value && <><DeliveryLanes value={value} home={home} presence={contact.error ? undefined : contact.data} />{board.error && <ReadState error={board.error} loading={false} empty={false}>{null}</ReadState>}{more && <div className="delivery-more"><p className="delivery-page-note">More open work is available. Lanes show the work loaded so far.</p><button type="button" onClick={() => { if (!query.isFetching) void archive.more(); }} disabled={query.isFetching || board.busy}>{board.busy ? 'Loading more work…' : 'Load more work'}</button></div>}</>}</ReadState></section>;
 }
 export function Delivery() {
   return <><DeliveryWork /><ReviewQueueView embedded /></>;

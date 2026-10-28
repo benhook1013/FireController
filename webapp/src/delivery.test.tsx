@@ -140,7 +140,7 @@ describe('bounded Delivery board', () => {
     expect(html).toContain('partial **code\n</code></pre></div><span class="delivery-preview-truncated" aria-label="Preview truncated">…</span>');
     expect(html.match(/class="delivery-preview-truncated"/gu)).toHaveLength(2);
     expect(html).not.toMatch(/<img|<script|href="javascript:|<p[^>]*><div/u);
-    const context = html.slice(html.indexOf('class="delivery-job-context"'), html.indexOf('class="delivery-job-link"'));
+    const context = html.slice(html.indexOf('class="delivery-job-context"'), html.indexOf('class="delivery-job-footer"'));
     expect(context).not.toMatch(/<h[1-4]>/u);
   });
   it('keeps primary focus first without letting a parked primary hide active lane work', () => {

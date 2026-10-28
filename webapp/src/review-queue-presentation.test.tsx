@@ -298,3 +298,19 @@ describe('truthful stored review presentation', () => {
     expect(html).not.toContain('<img'); expect(html).not.toContain('href="javascript:');
   });
 });
+
+
+describe('compact PR sizing display',()=>{
+  it('keeps limits and headroom on the file count without repeating review totals or adding a row',()=>{
+    const value:ReviewPullSummary={...pull(7),diff:{files:99,additions:20,deletions:4},review_size:{pull_number:7,files:99,max_review_files:100,remaining_files:1,completed_reviews:13,retained_reviews:13,message:'99 files; maximum review size 100; 1 files remaining. 13 completed reviews (historical).'}};
+    const html=markup(<ReviewPullFacts pull={value}/>);
+    expect(html).toContain('title="Maximum review size: 100 files. 1 file remaining.">99</span> files');
+    expect(html).not.toMatch(/review-size-note|review-size-warning|review-size-exceeded|completed reviews|historical/u);
+    value.review_size={pull_number:7,files:101,max_review_files:100,excess_files:1,message:'Maximum exceeded.'};value.diff!.files=101;
+    const exceeded=markup(<ReviewPullFacts pull={value}/>);
+    expect(exceeded).toContain('review-file-count review-size-exceeded');expect(exceeded).toContain('Maximum exceeded by 1 file.');
+    value.review_size={pull_number:7,files:96,suggested_max_pr_files:80,above_suggested:true,message:'Suggestion exceeded.'};value.diff!.files=96;
+    const suggested=markup(<ReviewPullFacts pull={value}/>);
+    expect(suggested).toContain('Suggested maximum PR size: 80 files.');expect(suggested).not.toContain('remaining');
+  });
+});
