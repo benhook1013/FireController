@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 func validateConfigurationShape(c Configuration) error {
@@ -204,7 +205,7 @@ func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Sc
 	if err = core.AppendEvent(ctx, tx, scope, "review.requested", id, 1, map[string]any{"pull_number": r.PullNumber, "channel": r.Channel}); err != nil {
 		return Receipt{}, err
 	}
-	return Receipt{ID: id, State: "queued", Revision: 1}, nil
+	return Receipt{ID: id, State: "queued", Revision: 1, ReviewSize: reviews.CurrentReviewSize(ctx, tx, scope.ProjectID, r.PullNumber)}, nil
 }
 
 func readOperation(ctx context.Context, tx EvidenceQuery, project, id string) (Operation, error) {

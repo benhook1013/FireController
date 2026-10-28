@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"net/http"
+
+	"github.com/benhook1013/FireController/internal/reviewsize"
 )
 
 // ActiveQueueResponse contains only open, nonretired stored PR summaries.
@@ -16,14 +18,15 @@ type ActiveQueueResponse struct {
 	HasMore    bool              `json:"has_more"`
 }
 type ActiveQueueItem struct {
-	Number       int64  `json:"number"`
-	Title        string `json:"title"`
-	HeadSHA      string `json:"head_sha"`
-	BaseRef      string `json:"base_ref"`
-	CIState      string `json:"ci_state"`
-	Mergeability string `json:"mergeability"`
-	Position     int    `json:"position"`
-	RunCount     int64  `json:"run_count"`
+	ReviewSize   *reviewsize.Assessment `json:"review_size,omitempty"`
+	Number       int64                  `json:"number"`
+	Title        string                 `json:"title"`
+	HeadSHA      string                 `json:"head_sha"`
+	BaseRef      string                 `json:"base_ref"`
+	CIState      string                 `json:"ci_state"`
+	Mergeability string                 `json:"mergeability"`
+	Position     int                    `json:"position"`
+	RunCount     int64                  `json:"run_count"`
 }
 
 func (c *Client) ReviewActiveQueue(ctx context.Context, options PageOptions) (ActiveQueueResponse, error) {
@@ -53,6 +56,9 @@ func (c *Client) ReviewActiveQueue(ctx context.Context, options PageOptions) (Ac
 	seen := make(map[int64]bool)
 	last := -1
 	for _, item := range out.Items {
+		if item.ReviewSize != nil && !reviewsize.Valid(*item.ReviewSize, item.Number) {
+			return ActiveQueueResponse{}, invalidResponse()
+		}
 		if !validPullNumber(item.Number) || seen[item.Number] || !cleanReviewText(item.Title, 500, true) || !validReviewSHA(item.HeadSHA) || !cleanReviewText(item.BaseRef, 256, false) || !oneReviewOf(item.CIState, "unknown", "pending", "success", "failure", "not_required") || !oneReviewOf(item.Mergeability, "unknown", "mergeable", "conflicting") || item.Position < 0 || item.Position <= last || item.RunCount < 0 {
 			return ActiveQueueResponse{}, invalidResponse()
 		}

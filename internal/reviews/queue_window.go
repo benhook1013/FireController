@@ -236,6 +236,7 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 		if err := rows.Err(); err != nil {
 			return err
 		}
+		attachReviewSizes(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Items)
 		if response.HasMore {
 			cursor.Position = positions[len(positions)-1]
 			payload, _ := json.Marshal(cursor)

@@ -19,13 +19,14 @@ const MaxConfigBytes = 16 << 10
 
 // Config retains explicit overrides only; missing map keys use reference defaults.
 type Config struct {
-	Name         string            `json:"name"`
-	BrandName    string            `json:"brand_name"`
-	Tagline      string            `json:"tagline"`
-	Headings     map[string]string `json:"headings"`
-	Theme        map[string]string `json:"theme"`
-	ReviewGroups []ReviewGroup     `json:"review_groups,omitempty"`
-	WorkerOrder  []string          `json:"worker_order,omitempty"`
+	Name                string            `json:"name"`
+	BrandName           string            `json:"brand_name"`
+	Tagline             string            `json:"tagline"`
+	Headings            map[string]string `json:"headings"`
+	Theme               map[string]string `json:"theme"`
+	ReviewGroups        []ReviewGroup     `json:"review_groups,omitempty"`
+	SuggestedMaxPRFiles int64             `json:"suggested_max_pr_files,omitempty"`
+	WorkerOrder         []string          `json:"worker_order,omitempty"`
 }
 
 // ReviewGroup labels explicitly selected PRs without changing review order or policy.
@@ -80,6 +81,10 @@ func Normalize(in Config) (Config, error) {
 		}
 	}
 	out := Config{Name: strings.TrimSpace(in.Name), BrandName: strings.TrimSpace(in.BrandName), Tagline: strings.TrimSpace(in.Tagline), Headings: copyMap(in.Headings), Theme: copyMap(in.Theme)}
+	if in.SuggestedMaxPRFiles < 0 || in.SuggestedMaxPRFiles > 100000 {
+		return Config{}, invalid()
+	}
+	out.SuggestedMaxPRFiles = in.SuggestedMaxPRFiles
 	if len(in.WorkerOrder) > 100 {
 		return Config{}, invalid()
 	}
@@ -236,7 +241,7 @@ func Decode(raw []byte) (Config, error) {
 	if _, ok := fields["name"]; !ok {
 		return Config{}, invalid()
 	}
-	for _, key := range []string{"review_groups", "worker_order"} {
+	for _, key := range []string{"review_groups", "worker_order", "suggested_max_pr_files"} {
 		if value, ok := fields[key]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 			return Config{}, invalid()
 		}

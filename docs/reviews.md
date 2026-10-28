@@ -76,6 +76,16 @@ The selected [per-PR round controls](review-round-controls.md) retain additional
 
 Provider limits are observed/configured constraints, not hardcoded product truths. Refuse an oversized review before consuming provider work where the limit is known. Unknown CLI ceilings remain unknown.
 
+## PR size settings
+
+**Suggested maximum PR size** is an independently optional project preference, stored as `suggested_max_pr_files` in [project presentation](project-presentation.md). Missing or zero disables it. It has no universal default. It is separate from the existing `max_review_files` admission policy, labelled **Maximum review size**, whose existing zero/unlimited meaning and configured values remain unchanged. Either, both or neither can be enabled. Provider-specific restrictions remain separate.
+
+Enqueue receipts for queue enrollment, explicit review requests and expected-target selection, normal/active queue rows, and stored next-target views can include `review_size`. This provider-free local assessment uses the stored GitHub PR diff count. It reports the PR number, configured suggestion/maximum, known file count, remaining files at or below a configured maximum, or excess above it. A warning appears strictly above the suggestion; equality does not warn. Exactly reaching the maximum leaves zero headroom and does not exceed the ceiling. With no maximum, output makes no headroom claim. Unknown counts remain unknown, with no extra source fetch or Git materialization just to display the information.
+
+Completed-review counts describe attributable, complete retained results with outcome completed, including results awaiting adjudication. Attempts and unfinished/incomplete results do not manufacture completion. Counts remain historical across later edits; they do not establish coverage of the current code or alter earned accounting. New/unobserved PRs can lack both size and completed-review context. Optional sizing read failures report unavailable information without changing queue admission, target selection or review readiness.
+
+The suggestion never creates a hold, refusal, acknowledgement, exception workflow, inbox message, job or note. It does not change grants, taper, scheduling, source validation or provider guards. Changing it advances only the project-preference revision, leaving review-policy revisions and active operation bindings unchanged. Enqueue replay retains its original receipt/context; subsequent queue reads show newer observed facts and current settings. The existing materialized-comparison file count remains authoritative at admission and counts detected renames once. Stored API counts are observations, not a replacement for that last check.
+
 ## Inspection and diagnostics
 
 Every provider-bearing operation reports its selected PR and anchor, refresh scope, provider-call count, time spent selecting versus waiting, and retained operation ID. Expose cache hit/coalescing and completeness diagnostics without credentials or private capture contents in ordinary logs. This evidence makes unexpected whole-queue work detectable.

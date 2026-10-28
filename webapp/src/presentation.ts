@@ -48,7 +48,7 @@ function validContrast(theme: Record<string, unknown>): boolean {
     && pair('accent_background', 'accent_soft_background', 4.5) && pair('focus', 'accent_soft_background', 3);
 }
 
-export type PresentationConfig = Pick<Presentation, 'name' | 'brand_name' | 'tagline' | 'headings' | 'theme' | 'review_groups' | 'worker_order'>;
+export type PresentationConfig = Pick<Presentation, 'name' | 'brand_name' | 'tagline' | 'headings' | 'theme' | 'review_groups' | 'worker_order' | 'suggested_max_pr_files'>;
 export function validPresentationConfig(v: unknown): v is PresentationConfig { return validConfig(v); }
 function validReviewGroups(value: unknown): boolean {
   if (!Array.isArray(value) || value.length > 40) return false;
@@ -65,7 +65,8 @@ function validReviewGroups(value: unknown): boolean {
   return true;
 }
 function validConfig(v: unknown, implicit = false): v is PresentationConfig {
-  if (!object(v) || !exact(v, ['name', 'brand_name', 'tagline', 'headings', 'theme', ...(Object.hasOwn(v, 'review_groups') ? ['review_groups'] : []), ...(Object.hasOwn(v, 'worker_order') ? ['worker_order'] : [])]) || !(implicit ? retainedName(v.name) : name(v.name, 200)) || !name(v.brand_name, 120) || !name(v.tagline, 120) || !object(v.headings) || !object(v.theme)) return false;
+  if (!object(v) || !exact(v, ['name', 'brand_name', 'tagline', 'headings', 'theme', ...(Object.hasOwn(v, 'review_groups') ? ['review_groups'] : []), ...(Object.hasOwn(v, 'worker_order') ? ['worker_order'] : []), ...(Object.hasOwn(v, 'suggested_max_pr_files') ? ['suggested_max_pr_files'] : [])]) || !(implicit ? retainedName(v.name) : name(v.name, 200)) || !name(v.brand_name, 120) || !name(v.tagline, 120) || !object(v.headings) || !object(v.theme)) return false;
+  if (Object.hasOwn(v,'suggested_max_pr_files') && (!Number.isSafeInteger(v.suggested_max_pr_files) || Number(v.suggested_max_pr_files)<0 || Number(v.suggested_max_pr_files)>100000 || implicit && v.suggested_max_pr_files!==0)) return false;
   if (Object.hasOwn(v, 'worker_order') && (!Array.isArray(v.worker_order) || v.worker_order.length > 100 || !v.worker_order.every(identity) || new Set(v.worker_order).size !== v.worker_order.length || implicit && v.worker_order.length > 0)) return false;
   if (Object.hasOwn(v, 'review_groups') && (!validReviewGroups(v.review_groups) || implicit && (v.review_groups as unknown[]).length > 0)) return false;
   for (const [key, value] of Object.entries(v.headings)) if (!Object.hasOwn(defaults.headings, key) || !name(value, 240)) return false;
@@ -74,7 +75,7 @@ function validConfig(v: unknown, implicit = false): v is PresentationConfig {
   return encoder.encode(JSON.stringify(v).replace(/[<>&\u2028\u2029]/gu, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)).length <= 16 << 10;
 }
 export function validPresentation(v: unknown, project: string): v is Presentation {
-  if (!object(v) || !exact(v, ['project_id', 'revision', 'name', 'brand_name', 'tagline', 'headings', 'theme', 'updated_at', ...(Object.hasOwn(v, 'review_groups') ? ['review_groups'] : []), ...(Object.hasOwn(v, 'worker_order') ? ['worker_order'] : [])]) || v.project_id !== project || !identity(v.project_id) || !Number.isSafeInteger(v.revision) || Number(v.revision) < 0 || !validConfig({ name: v.name, brand_name: v.brand_name, tagline: v.tagline, headings: v.headings, theme: v.theme, ...(Object.hasOwn(v, 'review_groups') ? {review_groups:v.review_groups} : {}), ...(Object.hasOwn(v, 'worker_order') ? {worker_order:v.worker_order} : {}) }, v.revision === 0)) return false;
+  if (!object(v) || !exact(v, ['project_id', 'revision', 'name', 'brand_name', 'tagline', 'headings', 'theme', 'updated_at', ...(Object.hasOwn(v, 'review_groups') ? ['review_groups'] : []), ...(Object.hasOwn(v, 'worker_order') ? ['worker_order'] : []), ...(Object.hasOwn(v, 'suggested_max_pr_files') ? ['suggested_max_pr_files'] : [])]) || v.project_id !== project || !identity(v.project_id) || !Number.isSafeInteger(v.revision) || Number(v.revision) < 0 || !validConfig({ name: v.name, brand_name: v.brand_name, tagline: v.tagline, headings: v.headings, theme: v.theme, ...(Object.hasOwn(v, 'review_groups') ? {review_groups:v.review_groups} : {}), ...(Object.hasOwn(v, 'worker_order') ? {worker_order:v.worker_order} : {}), ...(Object.hasOwn(v,'suggested_max_pr_files') ? {suggested_max_pr_files:v.suggested_max_pr_files} : {}) }, v.revision === 0)) return false;
   return v.revision === 0 ? v.updated_at === '' && v.brand_name === 'FireController' && v.tagline === 'Project workspace' && Object.keys(v.headings as object).length === 0 && Object.keys(v.theme as object).length === 0 : stamp(v.updated_at);
 }
 export function validPresentationSnapshot(v: unknown, project: string): v is PresentationSnapshot {

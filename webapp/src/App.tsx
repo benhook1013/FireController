@@ -288,7 +288,7 @@ export function ProjectPage() {
   const [search] = useSearchParams();
   const published = search.get('view') === 'public';
   const label = useProjectHeading('map');
-  const actions = <div className="project-view-actions"><span className="badge neutral">{published ? 'Public version' : 'Private version'}</span><Link className="review-details-link" to={`${home}/project${published ? '' : '?view=public'}`}>{published ? 'Back to working version' : 'View public version'} ↗</Link></div>;
+  const actions = <div className="project-view-actions"><span className="badge neutral">{published ? 'Public version' : 'Private version'}</span><Link className="review-details-link" to={`${home}/project${published ? '' : '?view=public'}`}>{published ? 'Back to private site' : 'View public version'} ↗</Link></div>;
   return published ? <><header className="project-editorial-heading tab-heading"><h2>{label}</h2>{actions}</header><PublicProjectAddress address={projectAddress(session.project)} embedded theme={false} fallback={<PublishedOverviewUnavailable />} /></> : <ProjectMap headerActions={actions} />;
 }
 

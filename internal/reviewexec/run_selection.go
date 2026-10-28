@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"github.com/benhook1013/FireController/internal/core"
 	"math"
 	"slices"
 	"time"
+
+	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 type RunRequest struct {
@@ -163,7 +165,11 @@ func (e *Engine) EnqueueRun(ctx context.Context, scope core.Scope, key string, i
 		if err = core.AppendEvent(ctx, tx, scope, "review.selection_requested", id, 1, map[string]any{"channel": input.Channel}); err != nil {
 			return nil, err
 		}
-		return Receipt{ID: id, State: "queued", Revision: 1}, nil
+		receipt := Receipt{ID: id, State: "queued", Revision: 1}
+		if expected > 0 {
+			receipt.ReviewSize = reviews.CurrentReviewSize(ctx, tx, scope.ProjectID, expected)
+		}
+		return receipt, nil
 	})
 	if err == nil {
 		select {

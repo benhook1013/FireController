@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewsize"
 )
 
 // ActiveQueueResponse is a snapshot-bound status view, not review admission.
@@ -19,14 +20,15 @@ type ActiveQueueResponse struct {
 	HasMore    bool              `json:"has_more"`
 }
 type ActiveQueueItem struct {
-	Number       int64  `json:"number"`
-	Title        string `json:"title"`
-	HeadSHA      string `json:"head_sha"`
-	BaseRef      string `json:"base_ref"`
-	CIState      string `json:"ci_state"`
-	Mergeability string `json:"mergeability"`
-	Position     int    `json:"position"`
-	RunCount     int64  `json:"run_count"`
+	ReviewSize   *reviewsize.Assessment `json:"review_size,omitempty"`
+	Number       int64                  `json:"number"`
+	Title        string                 `json:"title"`
+	HeadSHA      string                 `json:"head_sha"`
+	BaseRef      string                 `json:"base_ref"`
+	CIState      string                 `json:"ci_state"`
+	Mergeability string                 `json:"mergeability"`
+	Position     int                    `json:"position"`
+	RunCount     int64                  `json:"run_count"`
 }
 
 func activeQueue(store *core.Store) http.HandlerFunc {
@@ -102,6 +104,9 @@ func activeQueue(store *core.Store) http.HandlerFunc {
 			}
 			if err := rows.Err(); err != nil {
 				return err
+			}
+			for i := range out.Items {
+				out.Items[i].ReviewSize = reviewSizeAt(ctx, tx, scope.ProjectID, meta.SnapshotID, out.Items[i].Number)
 			}
 			if out.HasMore {
 				out.Cursor = store.Cursor(scope, filter, encodePosition(meta.SnapshotID, last))

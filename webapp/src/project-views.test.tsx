@@ -29,7 +29,7 @@ describe('one Project view with separate publication authority', () => {
   });
   it('selects approved content for preview without rendering current private entries or work', () => {
     const html = render(`${home}/project?view=public`, true);
-    expect(html).toContain('APPROVED_PUBLIC_CONTENT'); expect(html).toContain('Public version'); expect(html).toContain('Back to working version');
+    expect(html).toContain('APPROVED_PUBLIC_CONTENT'); expect(html).toContain('Public version'); expect(html).toContain('Back to private site');
     expect(html).not.toContain('PRIVATE_WORKING_CONTENT'); expect(html).not.toContain('data-private-hero'); expect(html).not.toContain('data-shared-work'); expect(html).not.toContain('data-shared-reviews');
     const navigation = html.match(/<nav class="navigation"[^>]*>(.*?)<\/nav>/u)![1];
     expect(navigation.match(/href="\/projects\/example\/project"/gu)).toHaveLength(1); expect(navigation).not.toContain('/map'); expect(navigation).not.toContain('Project map');

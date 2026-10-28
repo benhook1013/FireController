@@ -2,6 +2,7 @@ import type { ReviewPullSummary } from './types';
 import type { ReviewProgressItem } from './review-progress';
 
 export interface ReviewFrontChannel {
+  review_size?: import('./review-size').ReviewSize;
   channel: 'hosted' | 'cli'; state: 'ready' | 'held' | 'complete' | 'unknown';
   reason?: string; pull_number?: number; head_sha?: string; base_sha?: string; base_ref?: string;
   source_observed_at?: string; checked_at?: string;

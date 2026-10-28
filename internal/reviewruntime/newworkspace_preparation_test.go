@@ -163,13 +163,17 @@ func TestPrepareReviewWorkspaceRenameThresholdHonorsOneHundredFileBudget(t *test
 			gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/file-count")
 			plan.Pull.HeadSHA = gitTestOutput(t, source, "rev-parse", "HEAD")
 			plan.Pull.BaseSHA, plan.ParentSHA = f.headSHA, f.headSHA
+			plan.Pull.ChangedFiles = 100
+			if !tc.admitted {
+				plan.Pull.ChangedFiles = 101
+			}
 			var before, after int
 			if err := f.store.DB().QueryRow("SELECT count(*) FROM events").Scan(&before); err != nil {
 				t.Fatal(err)
 			}
 			w, count, err := prepareReviewWorkspace(t.Context(), f.driver.fetch, f.manager.Verify, f.manager, f.capability.GitHubCredential(), current, plan, a.ID)
 			if tc.admitted {
-				if err != nil || count != 100 || f.manager.Verify(t.Context(), w) != nil {
+				if err != nil || count != plan.Pull.ChangedFiles || count != 100 || f.manager.Verify(t.Context(), w) != nil {
 					t.Fatal("detected rename incorrectly exceeded unchanged 100-file budget", count, err)
 				}
 			} else {

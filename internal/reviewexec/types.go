@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewsize"
 )
 
 // Capability names an operator-owned adapter/account without exposing secrets.
@@ -44,9 +45,10 @@ type Request struct {
 }
 
 type Receipt struct {
-	ID       string `json:"id"`
-	State    string `json:"state"`
-	Revision int64  `json:"revision"`
+	ReviewSize *reviewsize.Assessment `json:"review_size,omitempty"`
+	ID         string                 `json:"id"`
+	State      string                 `json:"state"`
+	Revision   int64                  `json:"revision"`
 }
 
 // Anchor is supplied only by the trusted admission worker after fresh provider

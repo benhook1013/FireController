@@ -21,7 +21,7 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
   }
   for (const { event_type: type, resource_id: id } of items) {
     if (type === 'project.presentation_changed') {
-      add('workers'); add('delivery');
+      add('workers'); add('delivery'); add('reviews','current');
     } else if (type === 'coordination.imported') {
       // One batch notification replaces replay of historical operational events.
       // Refresh active imported domains, leaving unopened bodies unfetched.

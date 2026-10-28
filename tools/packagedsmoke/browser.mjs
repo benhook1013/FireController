@@ -860,6 +860,7 @@ try {
   merged.is_draft = false;
   merged.merged_at = new Date(Date.now() - (2*60+22)*60000).toISOString();
   const open = pull(32, 'open', 'Live review before');
+  open.diff = {files:55, additions:100, deletions:10};
   const observation = (revision, queue) => ({expected_revision:revision, repository_id:991, source:'packaged-browser', observed_at:new Date().toISOString(), queue, retired:[]});
   checkpoint = 'fallback-observation';
   // An unknown predecessor prevents the stored queue from claiming an open
@@ -1379,6 +1380,7 @@ try {
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).click();
   await page.getByLabel('Project name',{exact:true}).fill('Browser configured project');
   await page.getByLabel('Brand name',{exact:true}).fill('Browser configured brand');
+  await page.getByLabel('Suggested maximum PR size',{exact:true}).fill('1');
   checkpoint='pin-inspector';
   await page.getByLabel('Pin a worker',{exact:true}).selectOption(config.other_worker);
   checkpoint='pin-builder';
@@ -1397,6 +1399,12 @@ try {
   await page.getByLabel('Project name',{exact:true}).waitFor();
   checkpoint='worker-order-retained';
   await expect(page.locator('.worker-order-list strong')).toHaveText(['Builder','Inspector']);
+  await expect(page.getByLabel('Suggested maximum PR size',{exact:true})).toHaveValue('1');
+  checkpoint='size-warning-visible';
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Delivery',exact:true}).click();
+  await expect.poll(()=>page.locator('.review-size-warning').count()).toBeGreaterThan(0);
+  await expect(page.locator('.review-size-warning').first()).toContainText('suggested maximum PR size 1');
+  if(config.diagnostic_directory) await page.locator('.review-size-warning').first().screenshot({path:config.diagnostic_directory+'/size-warning-390.png'});
   need(await page.locator('literal').count()===0);
   need(!(await page.evaluate(()=>JSON.stringify(sessionStorage))).includes(admin));
   need(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));

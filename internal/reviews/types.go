@@ -2,6 +2,8 @@
 // administrator-imported review observations.
 package reviews
 
+import "github.com/benhook1013/FireController/internal/reviewsize"
+
 // ObservationRequest replaces the current immutable review observation for a
 // project. ExpectedRevision is a pointer so the required zero initial revision
 // is distinct from an omitted field.
@@ -162,6 +164,7 @@ type RunSummary struct {
 }
 
 type PullSummary struct {
+	ReviewSize       *reviewsize.Assessment `json:"review_size,omitempty"`
 	mergeStateStatus string
 	MergeStatus      *MergeStatus           `json:"merge_status,omitempty"`
 	Observation      *PullObservationHealth `json:"observation,omitempty"`

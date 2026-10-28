@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"time"
+
+	"github.com/benhook1013/FireController/internal/reviewsize"
 )
 
 // ReviewExecutionConfiguration contains stored project settings only. It does
@@ -29,9 +31,10 @@ type ReviewRequest struct {
 }
 
 type ReviewRequestReceipt struct {
-	ID       string `json:"id"`
-	State    string `json:"state"`
-	Revision int64  `json:"revision"`
+	ReviewSize *reviewsize.Assessment `json:"review_size,omitempty"`
+	ID         string                 `json:"id"`
+	State      string                 `json:"state"`
+	Revision   int64                  `json:"revision"`
 }
 
 // ReviewRequestResult contains exactly one flat wire result: the original
@@ -186,7 +189,7 @@ func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRe
 	if operation := result.Operation; operation != nil {
 		valid = c.validReviewOperation(*operation) && operation.WorkerID == c.identity.WorkerID && operation.PullNumber == request.PullNumber && operation.HeadSHA == request.HeadSHA && operation.Channel == request.Channel && operation.AllowOutOfOrder == request.AllowOutOfOrder && operation.ConfigurationRevision == request.ExpectedConfigurationRevision && !oneReviewOf(operation.State, "queued", "preparing", "posting", "active")
 	} else if receipt := result.Receipt; receipt != nil {
-		valid = ValidateReviewOperationID(receipt.ID) == nil && receipt.State == "queued" && receipt.Revision == 1
+		valid = ValidateReviewOperationID(receipt.ID) == nil && receipt.State == "queued" && receipt.Revision == 1 && (receipt.ReviewSize == nil || reviewsize.Valid(*receipt.ReviewSize, request.PullNumber))
 	}
 	if !valid {
 		return ReviewRequestResult{}, unknownMutation("invalid_response", "The service returned invalid review request facts; its outcome is unknown.", status)

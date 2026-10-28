@@ -6,6 +6,8 @@ import (
 	"errors"
 	"math"
 	"net/http"
+
+	"github.com/benhook1013/FireController/internal/reviewsize"
 )
 
 // ReviewRunRequest authorizes one channel-front selection, never a queue drain.
@@ -132,7 +134,7 @@ func (c *Client) RunReview(ctx context.Context, key string, r ReviewRunRequest, 
 			valid = valid && selection.ConfigurationRevision == *r.ExpectedConfigurationRevision
 		}
 	} else if receipt := result.Receipt; receipt != nil {
-		valid = ValidateReviewRunSelectionID(receipt.ID) == nil && receipt.State == "queued" && receipt.Revision == 1
+		valid = ValidateReviewRunSelectionID(receipt.ID) == nil && receipt.State == "queued" && receipt.Revision == 1 && (receipt.ReviewSize == nil || r.ExpectedPullNumber != nil && reviewsize.Valid(*receipt.ReviewSize, *r.ExpectedPullNumber))
 	}
 	if !valid {
 		return ReviewRunResult{}, unknownMutation("invalid_response", "The service returned invalid selection facts; its outcome is unknown.", status)

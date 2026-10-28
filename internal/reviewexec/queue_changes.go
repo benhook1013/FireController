@@ -11,6 +11,7 @@ import (
 	"slices"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 // QueueChange edits only one existing project's scheduling list. No provider,
@@ -118,7 +119,11 @@ func (e *Engine) ChangeQueue(ctx context.Context, scope core.Scope, key, action 
 		if err := validateConfigurationShape(next); err != nil {
 			return nil, err
 		}
-		return e.persistConfiguration(ctx, tx, scope, previous, next, revision)
+		receipt, err := e.persistConfiguration(ctx, tx, scope, previous, next, revision)
+		if err == nil && action == "add" {
+			receipt.ReviewSize = reviews.CurrentReviewSize(ctx, tx, scope.ProjectID, r.PullNumber)
+		}
+		return receipt, err
 	})
 }
 func (e *Engine) changeQueueHTTP(action string) http.HandlerFunc {

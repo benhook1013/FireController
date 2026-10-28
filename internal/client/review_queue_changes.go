@@ -6,6 +6,8 @@ import (
 	"errors"
 	"math"
 	"net/http"
+
+	"github.com/benhook1013/FireController/internal/reviewsize"
 )
 
 type ReviewQueueChange struct {
@@ -58,6 +60,9 @@ func (c *Client) ChangeReviewQueue(ctx context.Context, action, key string, r Re
 	want := r.ExpectedConfigurationRevision + 1
 	if out.State == "unchanged" {
 		want = r.ExpectedConfigurationRevision
+	}
+	if out.ReviewSize != nil && !reviewsize.Valid(*out.ReviewSize, r.PullNumber) {
+		return ReviewRequestReceipt{}, unknownMutation("invalid_response", "The queue sizing information could not be verified; preserve the original action key.", http.StatusCreated)
 	}
 	if out.ID != c.identity.ProjectID || out.Revision != want || !oneReviewOf(out.State, "configured", "unchanged") || action == "add" && out.State == "unchanged" {
 		return ReviewRequestReceipt{}, unknownMutation("invalid_response", "The queue-change receipt was invalid; recover the original action with its same arguments, key and binding.", http.StatusCreated)

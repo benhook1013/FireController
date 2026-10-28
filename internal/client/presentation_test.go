@@ -107,7 +107,7 @@ func TestPresentationClientActualAPIHistoryReplayRestartAndLostReceipt(t *testin
 	presentationClientError(t, err, "forbidden", false)
 	lose.Store(true)
 	attemptsBefore := mutations.Load()
-	req := client.ReplacePresentationRequest{Presentation: client.PresentationConfig{Name: "  Named <literal>  ", Headings: map[string]string{"jobs": "Work"}, WorkerOrder: []string{f.sender}, ReviewGroups: []presentationmodel.ReviewGroup{{Title: "Foundation", PullNumbers: []int64{2, 7}}}}}
+	req := client.ReplacePresentationRequest{Presentation: client.PresentationConfig{Name: "  Named <literal>  ", Headings: map[string]string{"jobs": "Work"}, WorkerOrder: []string{f.sender}, SuggestedMaxPRFiles: 80, ReviewGroups: []presentationmodel.ReviewGroup{{Title: "Foundation", PullNumbers: []int64{2, 7}}}}}
 	_, e = c.ReplacePresentation(t.Context(), "original-key", req)
 	presentationClientError(t, e, "invalid_response", true)
 	if mutations.Load() != attemptsBefore+1 {
@@ -127,7 +127,7 @@ func TestPresentationClientActualAPIHistoryReplayRestartAndLostReceipt(t *testin
 		t.Fatal(replay, e)
 	}
 	old, e := c.PresentationRevision(t.Context(), 1)
-	if e != nil || old.State.Name != "Named <literal>" || !reflect.DeepEqual(old.State.WorkerOrder, []string{f.sender}) || old.State.Headings["jobs"] != "Work" || len(old.State.ReviewGroups) != 1 || !reflect.DeepEqual(old.State.ReviewGroups[0].PullNumbers, []int64{2, 7}) {
+	if e != nil || old.State.Name != "Named <literal>" || old.State.SuggestedMaxPRFiles != 80 || !reflect.DeepEqual(old.State.WorkerOrder, []string{f.sender}) || old.State.Headings["jobs"] != "Work" || len(old.State.ReviewGroups) != 1 || !reflect.DeepEqual(old.State.ReviewGroups[0].PullNumbers, []int64{2, 7}) {
 		t.Fatal(old, e)
 	}
 	page, e := c.PresentationHistory(t.Context(), client.PageOptions{Limit: 1})

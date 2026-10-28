@@ -147,6 +147,7 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			if err := rows.Err(); err != nil {
 				return err
 			}
+			attachReviewSizes(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Items)
 			if response.HasMore && lastPosition >= 0 {
 				response.Cursor = store.Cursor(scope, filter, encodePosition(meta.SnapshotID, lastPosition))
 			}

@@ -304,3 +304,11 @@ func TestPublicManifestRejectsPrivateWorkerOrder(t *testing.T) {
 		t.Fatal("private worker order accepted for publication")
 	}
 }
+
+func TestPublicManifestRejectsPrivateSizingPreference(t *testing.T) {
+	m := approvedManifest()
+	m.Presentation.SuggestedMaxPRFiles = 80
+	if _, err := NormalizeManifest(m); err == nil {
+		t.Fatal("private sizing preference entered public configuration")
+	}
+}

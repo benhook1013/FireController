@@ -6,6 +6,8 @@ import (
 	"errors"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviews"
+	"github.com/benhook1013/FireController/internal/reviewsize"
 )
 
 // FrontSnapshot is an as-of local explanation, never review/CI/merge authority.
@@ -20,15 +22,16 @@ type FrontSnapshot struct {
 	Channels              []FrontChannel `json:"channels"`
 }
 type FrontChannel struct {
-	Channel          string `json:"channel"`
-	State            string `json:"state"`
-	Reason           string `json:"reason,omitempty"`
-	PullNumber       int64  `json:"pull_number,omitempty"`
-	HeadSHA          string `json:"head_sha,omitempty"`
-	BaseSHA          string `json:"base_sha,omitempty"`
-	BaseRef          string `json:"base_ref,omitempty"`
-	SourceObservedAt string `json:"source_observed_at,omitempty"`
-	CheckedAt        string `json:"checked_at,omitempty"`
+	ReviewSize       *reviewsize.Assessment `json:"review_size,omitempty"`
+	Channel          string                 `json:"channel"`
+	State            string                 `json:"state"`
+	Reason           string                 `json:"reason,omitempty"`
+	PullNumber       int64                  `json:"pull_number,omitempty"`
+	HeadSHA          string                 `json:"head_sha,omitempty"`
+	BaseSHA          string                 `json:"base_sha,omitempty"`
+	BaseRef          string                 `json:"base_ref,omitempty"`
+	SourceObservedAt string                 `json:"source_observed_at,omitempty"`
+	CheckedAt        string                 `json:"checked_at,omitempty"`
 }
 
 // ReadFronts reuses the admission evaluator against current local policy and
@@ -149,6 +152,9 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 				} else if found {
 					value = local
 				}
+			}
+			if value.PullNumber > 0 {
+				value.ReviewSize = reviews.CurrentReviewSize(ctx, tx, scope.ProjectID, value.PullNumber)
 			}
 			out.Channels = append(out.Channels, value)
 		}

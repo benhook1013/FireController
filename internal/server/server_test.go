@@ -323,7 +323,9 @@ func TestProjectAndWorkerListsShareExactPaginationContract(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := slices.Clone(tc.ids)
-			if tc.name == "projects" { slices.Sort(want) }
+			if tc.name == "projects" {
+				slices.Sort(want)
+			}
 			cursor := ""
 			for page := range 2 {
 				path := tc.path + "?limit=1"

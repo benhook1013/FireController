@@ -8,20 +8,20 @@ import { ActionNotice, useBrowserAction } from './browser-actions';
 import { validPresentationConfig } from './presentation';
 import type { Presentation, ReviewGroup } from './types';
 
-export type PresentationDraft = { name: string; brand_name: string; tagline: string; headings: string; theme: string; review_groups?: ReviewGroup[]; worker_order?: string[] };
+export type PresentationDraft = { name: string; brand_name: string; tagline: string; headings: string; theme: string; review_groups?: ReviewGroup[]; worker_order?: string[]; suggested_max_pr_files?: number };
 function copyReviewGroups(groups: ReviewGroup[]): ReviewGroup[] {
   return groups.map(group => ({ ...group, pull_numbers: [...group.pull_numbers] }));
 }
 export function presentationDraft(value: BrowserPresentationConfig): PresentationDraft {
-  return { name: value.name, brand_name: value.brand_name, tagline: value.tagline, headings: JSON.stringify(value.headings, null, 2), theme: JSON.stringify(value.theme, null, 2), ...(value.review_groups === undefined ? {} : { review_groups: copyReviewGroups(value.review_groups) }), ...(value.worker_order === undefined ? {} : { worker_order: [...value.worker_order] }) };
+  return { name: value.name, brand_name: value.brand_name, tagline: value.tagline, headings: JSON.stringify(value.headings, null, 2), theme: JSON.stringify(value.theme, null, 2), ...(value.review_groups === undefined ? {} : { review_groups: copyReviewGroups(value.review_groups) }), ...(value.worker_order === undefined ? {} : { worker_order: [...value.worker_order] }), ...(value.suggested_max_pr_files===undefined ? {} : {suggested_max_pr_files:value.suggested_max_pr_files}) };
 }
 export function decodePresentationDraft(draft: PresentationDraft): BrowserPresentationConfig {
   if (draft.headings.length > 16 << 10 || draft.theme.length > 16 << 10) throw new ApiError('invalid_request', 'Appearance overrides exceed their supported size.');
   let headings: unknown, theme: unknown;
   try { headings = JSON.parse(draft.headings); theme = JSON.parse(draft.theme); } catch { throw new ApiError('invalid_request', 'Use JSON objects for heading and theme overrides.'); }
-  const value = { name: draft.name, brand_name: draft.brand_name, tagline: draft.tagline, headings, theme, ...(Object.hasOwn(draft, 'review_groups') ? { review_groups: draft.review_groups } : {}), ...(Object.hasOwn(draft, 'worker_order') ? { worker_order: draft.worker_order } : {}) };
+  const value = { name: draft.name, brand_name: draft.brand_name, tagline: draft.tagline, headings, theme, ...(Object.hasOwn(draft, 'review_groups') ? { review_groups: draft.review_groups } : {}), ...(Object.hasOwn(draft, 'worker_order') ? { worker_order: draft.worker_order } : {}), ...(Object.hasOwn(draft,'suggested_max_pr_files') ? {suggested_max_pr_files:draft.suggested_max_pr_files} : {}) };
   if (!validPresentationConfig(value)) throw new ApiError('invalid_request', 'Use supported headings, colors, contrast and bounded text.');
-  return { ...value, ...(value.review_groups === undefined ? {} : { review_groups: copyReviewGroups(value.review_groups) }), ...(value.worker_order === undefined ? {} : { worker_order: [...value.worker_order] }) };
+  return { ...value, ...(value.review_groups === undefined ? {} : { review_groups: copyReviewGroups(value.review_groups) }), ...(value.worker_order === undefined ? {} : { worker_order: [...value.worker_order] }), ...(value.suggested_max_pr_files===undefined ? {} : {suggested_max_pr_files:value.suggested_max_pr_files}) };
 }
 type PresentationAction = { worker: string; config: BrowserPresentationConfig; revision: number };
 
@@ -30,7 +30,7 @@ export function ProjectSettings() {
   const [reload, setReload] = useState(0);
   const query = useQuery({ queryKey: [...key, 'settings', 'presentation'], queryFn: ({ signal }) => session.api.presentation(signalFor(session, signal)), staleTime: Infinity, enabled: session.api.browserCapabilities.can_edit_presentation });
   if (!session.api.browserCapabilities.can_edit_presentation) return <section className="panel"><h2>Settings unavailable</h2><p>This connection does not permit project appearance changes.</p></section>;
-  return <><div className="page-heading tab-heading"><h2>Appearance</h2><p>Complete private-workspace presentation. Public website approvals are separate.</p></div><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <PresentationEditor key={`${session.nonce}:${reload}`} initial={query.data.presentation} reload={async () => { const fresh = await query.refetch(); if (!fresh.error && !session.controller.signal.aborted) setReload(value => value + 1); }} />}</ReadState></>;
+  return <><div className="page-heading tab-heading"><h2>Settings</h2><p>Project appearance, worker order and review preferences.</p></div><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <PresentationEditor key={`${session.nonce}:${reload}`} initial={query.data.presentation} reload={async () => { const fresh = await query.refetch(); if (!fresh.error && !session.controller.signal.aborted) setReload(value => value + 1); }} />}</ReadState></>;
 }
 
 function WorkerOrderEditor({ value, change, disabled }: { value: string[]; change(value: string[]): void; disabled: boolean }) {
@@ -74,6 +74,8 @@ function PresentationEditor({ initial, reload }: { initial: Presentation; reload
     <label>Tagline<input value={draft.tagline} maxLength={120} required disabled={action.locked} onChange={event => change('tagline', event.target.value)} /></label>
     <label>Headings JSON<textarea value={draft.headings} rows={6} spellCheck={false} disabled={action.locked} onChange={event => change('headings', event.target.value)} /></label>
     <p className="field-note">An empty object keeps the default headings. Values render as literal text.</p>
+    <label>Suggested maximum PR size<input aria-label="Suggested maximum PR size" type="number" min={1} max={100000} step={1} placeholder="Disabled" value={draft.suggested_max_pr_files || ''} disabled={action.locked} onChange={event=>change('suggested_max_pr_files',event.target.value===''?0:Number(event.target.value))} /></label>
+    <p className="field-note">Optional warning in files. Leave blank to disable. This does not change the enforced maximum review size.</p>
     <WorkerOrderEditor value={draft.worker_order ?? []} change={value => change('worker_order', value)} disabled={action.locked} />
     <label>Theme JSON<textarea value={draft.theme} rows={6} spellCheck={false} disabled={action.locked} onChange={event => change('theme', event.target.value)} /></label>
     <p className="field-note">An empty object restores the default fire theme. Supported semantic colors and contrast are validated before saving.</p>

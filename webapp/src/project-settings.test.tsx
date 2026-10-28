@@ -24,6 +24,14 @@ describe('browser connection and appearance input', () => {
     expect(Object.hasOwn(decodePresentationDraft(draft), 'review_groups')).toBe(false);
     expect(decodePresentationDraft({ ...draft, headings: '{}', theme: '{}' })).toMatchObject({ headings: {}, theme: {} });
   });
+  it('preserves optional suggested size without inventing a default', () => {
+    const base={name:'Project',brand_name:'Brand',tagline:'Workspace',headings:{},theme:{}};
+    expect(presentationDraft(base).suggested_max_pr_files).toBeUndefined();
+    const draft=presentationDraft({...base,suggested_max_pr_files:80});
+    expect(decodePresentationDraft({...draft,name:'Changed'}).suggested_max_pr_files).toBe(80);
+    expect(decodePresentationDraft({...draft,suggested_max_pr_files:0}).suggested_max_pr_files).toBe(0);
+    for(const count of [-1,1.5,100001]) expect(()=>decodePresentationDraft({...draft,suggested_max_pr_files:count})).toThrow();
+  });
   it('preserves worker pins through appearance edits and rejects duplicate or malformed orders', () => {
     const config = {name:'Project',brand_name:'Brand',tagline:'Workspace',headings:{},theme:{},worker_order:['worker_two','worker_one']};
     const draft=presentationDraft(config);config.worker_order.reverse();
