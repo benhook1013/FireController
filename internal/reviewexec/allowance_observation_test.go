@@ -95,6 +95,18 @@ func TestHeldAllowanceSQLReadHTTPReplayAndValidation(t *testing.T) {
 					t.Fatal("cooldown returned as positive allowance proof")
 				}
 			}
+			compactHTTP := statusHTTP(t, f, a.OperationID, "", "wait=0")
+			var compact OperationStatus
+			if compactHTTP.Code != 200 || json.Unmarshal(compactHTTP.Body.Bytes(), &compact) != nil || compact.State != "held" || compact.Reason != reason || len(compactHTTP.Body.Bytes()) > 1024 {
+				t.Fatal("compact held status unavailable or expanded", compactHTTP.Code, compactHTTP.Body.String())
+			}
+			wantRetry := ""
+			if channel == "hosted" {
+				wantRetry = op.Allowance.RetryNotBefore
+			}
+			if compact.RetryNotBefore != wantRetry || strings.Contains(compactHTTP.Body.String(), `"allowance"`) || strings.Contains(compactHTTP.Body.String(), `"remaining"`) {
+				t.Fatal("compact cooldown lost deadline or loaded full allowance output", compactHTTP.Body.String())
+			}
 			if err != nil {
 				t.Fatal("immutable held replay", err)
 			}
@@ -124,6 +136,9 @@ func TestHeldAllowanceSQLReadHTTPReplayAndValidation(t *testing.T) {
 			}
 			if _, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), a.OperationID); err == nil {
 				t.Fatal("corrupt optional fact silently accepted")
+			}
+			if channel == "hosted" && statusHTTP(t, f, a.OperationID, "", "").Code != 500 {
+				t.Fatal("compact read exposed an unvalidated deadline")
 			}
 		})
 	}

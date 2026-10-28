@@ -179,3 +179,21 @@ func TestOperationStatusHostedEvidenceAndProjectIsolation(t *testing.T) {
 		t.Fatal("Hosted status changed evidence or accounting")
 	}
 }
+
+func TestOperationStatusMissingCooldownDeadlineStaysUnknown(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "no-cooldown-observation", "hosted", 2, 1))
+	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, 1, "held", "hosted_allowance_cooldown", ""); err != nil {
+		t.Fatal(err)
+	}
+	before := attemptState(t, f, a)
+	w := statusHTTP(t, f, a.OperationID, "", "")
+	var got OperationStatus
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.RetryNotBefore != "" || strings.Contains(w.Body.String(), "retry_not_before") || got.State != "held" {
+		t.Fatal("missing deadline was invented or hold changed", w.Code, w.Body.String())
+	}
+	if attemptState(t, f, a) != before {
+		t.Fatal("read changed retained state")
+	}
+}

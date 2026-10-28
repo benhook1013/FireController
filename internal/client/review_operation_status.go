@@ -7,17 +7,18 @@ import (
 
 // ReviewOperationStatus omits private configuration and capture contents.
 type ReviewOperationStatus struct {
-	ID         string `json:"id"`
-	PullNumber int64  `json:"pull_number"`
-	Channel    string `json:"channel"`
-	State      string `json:"state"`
-	Revision   int64  `json:"revision"`
-	Stage      string `json:"stage"`
-	Reason     string `json:"reason"`
-	AttemptID  string `json:"attempt_id"`
-	EvidenceID string `json:"evidence_id,omitempty"`
-	UpdatedAt  string `json:"updated_at"`
-	NextAction string `json:"next_action"`
+	ID             string `json:"id"`
+	PullNumber     int64  `json:"pull_number"`
+	Channel        string `json:"channel"`
+	State          string `json:"state"`
+	Revision       int64  `json:"revision"`
+	Stage          string `json:"stage"`
+	Reason         string `json:"reason"`
+	AttemptID      string `json:"attempt_id"`
+	EvidenceID     string `json:"evidence_id,omitempty"`
+	RetryNotBefore string `json:"retry_not_before,omitempty"`
+	UpdatedAt      string `json:"updated_at"`
+	NextAction     string `json:"next_action"`
 }
 
 func (c *Client) ReviewOperationStatus(ctx context.Context, id string) (ReviewOperationStatus, error) {
@@ -39,6 +40,9 @@ func (c *Client) WaitReviewOperationStatus(ctx context.Context, id string, secon
 }
 func validCompactOperationStatus(v ReviewOperationStatus) bool {
 	if ValidateReviewOperationID(v.ID) != nil || !validPullNumber(v.PullNumber) || !oneReviewOf(v.Channel, "cli", "hosted") || v.Revision < 1 || v.Reason != "" && !validExecutionIdentifier(v.Reason) || v.AttemptID != "" && !validReviewOpaqueID(v.AttemptID, "review_attempt_") || v.EvidenceID != "" && (!validReviewOpaqueID(v.EvidenceID, "review_evidence_") || v.AttemptID == "") || !controlTime(v.UpdatedAt) {
+		return false
+	}
+	if v.RetryNotBefore != "" && (v.Channel != "hosted" || v.State != "held" || v.Reason != "hosted_allowance_cooldown" || v.AttemptID == "" || !validAllowanceTime(v.RetryNotBefore)) {
 		return false
 	}
 	switch v.State {

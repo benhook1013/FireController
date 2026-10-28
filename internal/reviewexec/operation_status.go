@@ -13,17 +13,18 @@ import (
 
 // OperationStatus is a compact read projection, never execution or coverage authority.
 type OperationStatus struct {
-	ID         string `json:"id"`
-	PullNumber int64  `json:"pull_number"`
-	Channel    string `json:"channel"`
-	State      string `json:"state"`
-	Revision   int64  `json:"revision"`
-	Stage      string `json:"stage"`
-	Reason     string `json:"reason"`
-	AttemptID  string `json:"attempt_id"`
-	EvidenceID string `json:"evidence_id,omitempty"`
-	UpdatedAt  string `json:"updated_at"`
-	NextAction string `json:"next_action"`
+	ID             string `json:"id"`
+	PullNumber     int64  `json:"pull_number"`
+	Channel        string `json:"channel"`
+	State          string `json:"state"`
+	Revision       int64  `json:"revision"`
+	Stage          string `json:"stage"`
+	Reason         string `json:"reason"`
+	AttemptID      string `json:"attempt_id"`
+	EvidenceID     string `json:"evidence_id,omitempty"`
+	RetryNotBefore string `json:"retry_not_before,omitempty"`
+	UpdatedAt      string `json:"updated_at"`
+	NextAction     string `json:"next_action"`
 }
 
 func operationStatusStage(o Operation, evidence string, complete bool) (string, string) {
@@ -61,8 +62,9 @@ func operationStatusStage(o Operation, evidence string, complete bool) (string, 
 }
 
 // ReadOperationStatus selects one operation and at most its unique evidence row.
-// Only bounded identity/anchor/completion scalars are projected from the normalized
-// evidence journal. It never opens capture files or loads findings/provider bodies.
+// Only bounded identity/anchor/completion scalars and the original validated
+// Hosted cooldown deadline are projected from local journals. It never opens
+// capture files, loads findings or fetches provider bodies.
 func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id string) (OperationStatus, error) {
 	if ctx == nil || e == nil || e.store == nil || !hostedObservationID(id, "review_operation_") {
 		return OperationStatus{}, invalid()
@@ -82,6 +84,15 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 		}
 		stage, next := operationStatusStage(o, evidence, complete)
 		result = OperationStatus{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, State: o.State, Revision: o.Revision, Stage: stage, Reason: o.Reason, AttemptID: o.AttemptID, EvidenceID: evidence, UpdatedAt: o.UpdatedAt, NextAction: next}
+		if o.Channel == "hosted" && o.State == "held" && o.Reason == "hosted_allowance_cooldown" {
+			allowance, err := readHeldAllowance(ctx, tx, o)
+			if err != nil {
+				return err
+			}
+			if allowance != nil {
+				result.RetryNotBefore = allowance.RetryNotBefore
+			}
+		}
 		return nil
 	})
 	return result, err

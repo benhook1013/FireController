@@ -42,13 +42,20 @@ func TestReviewOperationStatusMCPWaitsForScheduledObservation(t *testing.T) {
 	}
 }
 
-func TestReviewOperationParentHoldMCPCompactAndDiagnostics(t *testing.T) {
-	for _, reason := range []string{"parent_moved", "predecessor_parent_moved"} {
+func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
+	for _, reason := range []string{"parent_moved", "predecessor_parent_moved", "hosted_allowance_cooldown"} {
 		t.Run(reason, func(t *testing.T) {
 			binding := localContext()
 			id := "review_operation_" + strings.Repeat("a", 32)
 			status := client.ReviewOperationStatus{ID: id, PullNumber: 3300, Channel: "hosted", State: "held", Stage: "held", Reason: reason, AttemptID: "review_attempt_" + strings.Repeat("b", 32), Revision: 5, UpdatedAt: "2026-10-24T00:00:00Z", NextAction: "read_diagnostics"}
 			full := client.ReviewOperation{ID: id, ProjectID: binding.ProjectID, ActorID: "principal_original", WorkerID: binding.WorkerID, ConfigurationRevision: 12, PolicyRevision: 2, CapabilityFingerprint: strings.Repeat("c", 64), PullNumber: 3300, Channel: "hosted", HeadSHA: strings.Repeat("d", 40), State: "held", Revision: 5, Reason: reason, AttemptID: status.AttemptID, CreatedAt: status.UpdatedAt, UpdatedAt: status.UpdatedAt}
+			wantStatus := status
+			if reason == "hosted_allowance_cooldown" {
+				status.RetryNotBefore = "2026-10-24T00:10:00Z"
+				wantStatus = status
+				wantStatus.NextAction = "new_request_after_cooldown"
+				full.Allowance = &client.ReviewAllowanceObservation{Kind: "hosted_cooldown", ObservedAt: status.UpdatedAt, RetryNotBefore: status.RetryNotBefore}
+			}
 			var compactReads, fullReads, unexpected atomic.Int64
 			base := "/api/v1/projects/" + binding.ProjectID + "/reviews/operations/" + id
 			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +84,7 @@ func TestReviewOperationParentHoldMCPCompactAndDiagnostics(t *testing.T) {
 			session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": binding}, credential(t)), "chosen")
 			var compactOut client.ReviewOperationStatusOutput
 			decodeResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": id}), &compactOut)
-			if !reflect.DeepEqual(compactOut.ReviewOperationStatus, status) || compactOut.Diagnostic == nil {
+			if !reflect.DeepEqual(compactOut.ReviewOperationStatus, wantStatus) || compactOut.Diagnostic == nil {
 				t.Fatal("compact MCP parent guidance missing or changed retained facts", compactOut)
 			}
 			var fullOut client.ReviewOperationOutput

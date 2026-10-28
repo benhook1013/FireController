@@ -102,7 +102,7 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 		if channel != "hosted" {
 			return nil
 		}
-		return &ReviewOperationDiagnostic{"The provider reported a cooldown before a review trigger was posted. This held operation is terminal: replaying its key returns the same result, and there is no resume command for this hold.", "Respect the original allowance.retry_not_before; if absent, verify the provider's cooldown reply first. Once eligible and still authorized, submit one new review_request with a fresh idempotency key, current configuration revision and qualified head. Normal admission and provider limits still apply. Preserve this held operation; do not reset controls or use a fresh key for an unknown outcome."}
+		return &ReviewOperationDiagnostic{"The provider reported a cooldown before a review trigger was posted. This held operation is terminal: replaying its key returns the same result, and there is no resume command for this hold.", "Respect the retained retry_not_before deadline; if absent, verify the provider's cooldown reply first. Once eligible and still authorized, submit one new review_request with a fresh idempotency key, current configuration revision and qualified head. Normal admission and provider limits still apply. Preserve this held operation; do not reset controls or use a fresh key for an unknown outcome."}
 	case "hosted_allowance_reply_pending":
 		if channel != "hosted" {
 			return nil

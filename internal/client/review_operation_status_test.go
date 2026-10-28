@@ -15,13 +15,29 @@ func compactStatusFixture() client.ReviewOperationStatus {
 	return client.ReviewOperationStatus{ID: executionOperationID, PullNumber: 2, Channel: "hosted", State: "uncertain", Revision: 4, Stage: "capture_blocked", Reason: "hosted_finished_inventory_unproven", AttemptID: "review_attempt_" + strings.Repeat("b", 32), UpdatedAt: "2026-01-01T00:00:00Z", NextAction: "contact_controller_owner"}
 }
 func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
-	for _, mode := range []string{"valid", "ready", "captured", "unknown", "wrong_id", "missing_reason", "null_attempt", "extra_private", "provider_running", "fake_evidence", "bad_evidence", "wrong_stage", "unsafe_reason", "oversize"} {
+	for _, mode := range []string{"valid", "ready", "captured", "unknown", "wrong_id", "missing_reason", "null_attempt", "extra_private", "provider_running", "fake_evidence", "bad_evidence", "wrong_stage", "unsafe_reason", "oversize", "cooldown", "cooldown_unknown", "retry_null", "retry_bad", "retry_nonutc", "retry_foreign_state", "retry_cli"} {
 		t.Run(mode, func(t *testing.T) {
 			v := compactStatusFixture()
 			data, _ := json.Marshal(v)
 			var fields map[string]any
 			_ = json.Unmarshal(data, &fields)
+			if strings.HasPrefix(mode, "retry_") || strings.HasPrefix(mode, "cooldown") {
+				fields["state"], fields["stage"], fields["reason"], fields["next_action"] = "held", "held", "hosted_allowance_cooldown", "read_diagnostics"
+				if mode != "cooldown_unknown" {
+					fields["retry_not_before"] = "2026-01-01T00:10:00Z"
+				}
+			}
 			switch mode {
+			case "retry_null":
+				fields["retry_not_before"] = nil
+			case "retry_bad":
+				fields["retry_not_before"] = "PRIVATE_SENTINEL"
+			case "retry_nonutc":
+				fields["retry_not_before"] = "2026-01-01T01:10:00+01:00"
+			case "retry_foreign_state":
+				fields["state"], fields["stage"], fields["next_action"] = "active", "provider_wait", "wait"
+			case "retry_cli":
+				fields["channel"] = "cli"
 			case "captured":
 				fields["state"] = "active"
 				fields["stage"] = "result_captured"
@@ -73,9 +89,12 @@ func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
 			defer s.Close()
 			c := newClient(t, s)
 			got, err := c.WaitReviewOperationStatus(t.Context(), executionOperationID, 900)
-			if mode == "valid" || mode == "ready" || mode == "captured" || mode == "unknown" {
+			if mode == "valid" || mode == "ready" || mode == "captured" || mode == "unknown" || mode == "cooldown" || mode == "cooldown_unknown" {
 				if err != nil || got.ID != executionOperationID {
 					t.Fatal(got, err)
+				}
+				if mode == "cooldown" && got.RetryNotBefore != "2026-01-01T00:10:00Z" {
+					t.Fatal("original deadline changed", got)
 				}
 			} else {
 				var failure *client.Error

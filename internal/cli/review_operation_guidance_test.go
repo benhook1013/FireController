@@ -42,8 +42,8 @@ func TestReviewOperationStatusCLIWaitsForScheduledObservation(t *testing.T) {
 	}
 }
 
-func TestReviewOperationParentHoldCLICompactAndDiagnostics(t *testing.T) {
-	for _, reason := range []string{"parent_moved", "predecessor_parent_moved"} {
+func TestReviewOperationHeldGuidanceCLICompactAndDiagnostics(t *testing.T) {
+	for _, reason := range []string{"parent_moved", "predecessor_parent_moved", "hosted_allowance_cooldown"} {
 		t.Run(reason, func(t *testing.T) {
 			f := setupServiceFixture(t)
 			project := f.project(t, "parent-guidance")
@@ -51,6 +51,13 @@ func TestReviewOperationParentHoldCLICompactAndDiagnostics(t *testing.T) {
 			id := "review_operation_" + strings.Repeat("a", 32)
 			status := client.ReviewOperationStatus{ID: id, PullNumber: 3300, Channel: "hosted", State: "held", Stage: "held", Reason: reason, AttemptID: "review_attempt_" + strings.Repeat("b", 32), Revision: 5, UpdatedAt: "2026-10-24T00:00:00Z", NextAction: "read_diagnostics"}
 			full := client.ReviewOperation{ID: id, ProjectID: project, ActorID: "principal_original", WorkerID: worker, ConfigurationRevision: 12, PolicyRevision: 2, CapabilityFingerprint: strings.Repeat("c", 64), PullNumber: 3300, Channel: "hosted", HeadSHA: strings.Repeat("d", 40), State: "held", Revision: 5, Reason: reason, AttemptID: status.AttemptID, CreatedAt: status.UpdatedAt, UpdatedAt: status.UpdatedAt}
+			wantStatus := status
+			if reason == "hosted_allowance_cooldown" {
+				status.RetryNotBefore = "2026-10-24T00:10:00Z"
+				wantStatus = status
+				wantStatus.NextAction = "new_request_after_cooldown"
+				full.Allowance = &client.ReviewAllowanceObservation{Kind: "hosted_cooldown", ObservedAt: status.UpdatedAt, RetryNotBefore: status.RetryNotBefore}
+			}
 			var compactReads, fullReads, unexpected atomic.Int64
 			base := "/api/v1/projects/" + project + "/reviews/operations/" + id
 			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +85,7 @@ func TestReviewOperationParentHoldCLICompactAndDiagnostics(t *testing.T) {
 			profiles := mutationProfiles(t, f, service.URL, map[string][2]string{"builder": {project, worker}})
 			code, out, stderr := mutationInvoke(t, profiles, "builder", "reviews", "operation", id)
 			var compactOut client.ReviewOperationStatusOutput
-			if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &compactOut) != nil || !reflect.DeepEqual(compactOut.ReviewOperationStatus, status) || compactOut.Diagnostic == nil {
+			if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &compactOut) != nil || !reflect.DeepEqual(compactOut.ReviewOperationStatus, wantStatus) || compactOut.Diagnostic == nil {
 				t.Fatal("compact CLI parent guidance missing or changed retained facts", code, out, stderr)
 			}
 			code, out, stderr = mutationInvoke(t, profiles, "builder", "reviews", "operation", id, "--diagnostics")
