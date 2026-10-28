@@ -62,6 +62,7 @@ type arguments struct {
 	reviewRequest              client.ReviewRequest
 	reviewSource               client.ReviewSourceRequest
 	reviewSourceWait           int
+	reviewCIDiagnostics        bool
 	reviewOperations           client.ReviewOperationsOptions
 }
 type definition struct {
@@ -209,7 +210,11 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value = client.AgentReviewReadiness(assessment)
 			case "review_source_ci_assess":
 				var assessment client.ReviewSourceCIAssessment
-				assessment, err = service.ReviewSourceCIAssessment(ctx, args.pullNumber)
+				if args.reviewCIDiagnostics {
+					assessment, err = service.ReviewSourceCIDiagnostics(ctx, args.pullNumber)
+				} else {
+					assessment, err = service.ReviewSourceCIAssessment(ctx, args.pullNumber)
+				}
 				value = client.AgentReviewCI(assessment)
 			case "review_queue":
 				if args.reviewActiveQueue {

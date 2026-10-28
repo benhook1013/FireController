@@ -180,8 +180,13 @@ func (e *Engine) readSourceCIAssessmentHTTP(w http.ResponseWriter, r *http.Reque
 		core.WriteError(w, err)
 		return
 	}
-	if _, err = core.QueryKeys(r, "validation_failed"); err != nil {
+	query, err := core.QueryKeys(r, "validation_failed", "diagnostics")
+	if err != nil {
 		core.WriteError(w, err)
+		return
+	}
+	if v, present := query["diagnostics"]; present && v[0] != "true" && v[0] != "false" {
+		core.WriteError(w, invalid())
 		return
 	}
 	raw := r.PathValue("pull_number")
@@ -190,7 +195,7 @@ func (e *Engine) readSourceCIAssessmentHTTP(w http.ResponseWriter, r *http.Reque
 		core.WriteError(w, invalid())
 		return
 	}
-	value, err := e.ReadSourceCIAssessment(r.Context(), scope, number)
+	value, err := e.readSourceCIAssessment(r.Context(), scope, number, query.Get("diagnostics") == "true")
 	if err != nil {
 		core.WriteError(w, err)
 		return

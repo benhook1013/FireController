@@ -99,7 +99,7 @@ func TestReviewCICLIControlledTerminalAndAssessmentAreCompact(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": f.store.InstanceID()})
 			return
 		}
-		if r.Header.Get("X-FC-Worker") != worker || r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("Authorization") != "Bearer "+f.admin || r.URL.RawQuery != "" {
+		if r.Header.Get("X-FC-Worker") != worker || r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("Authorization") != "Bearer "+f.admin || r.URL.RawQuery != "" && !(strings.HasSuffix(r.URL.Path, "/source/2/ci") && r.URL.RawQuery == "diagnostics=true") {
 			t.Error("controlled CI read lost profile")
 		}
 		base := "/api/v1/projects/" + project + "/reviews/"
@@ -115,6 +115,10 @@ func TestReviewCICLIControlledTerminalAndAssessmentAreCompact(t *testing.T) {
 				t.Error("CI assessment performed mutation")
 			}
 			value := assessment
+			if r.URL.Query().Get("diagnostics") == "true" {
+				checks := []client.ReviewCIContext{{Context: "build", State: "satisfied", CheckRun: &client.ReviewCICheckRun{ID: 300, Status: "completed", Conclusion: "success"}}}
+				value.Checks = &checks
+			}
 			if held.Load() {
 				value.State, value.Reason = "held", "source_configuration_changed"
 			}
@@ -138,7 +142,12 @@ func TestReviewCICLIControlledTerminalAndAssessmentAreCompact(t *testing.T) {
 			t.Fatal("CI local assessment lost as-of identity/compactness", code, out, stderr)
 		}
 	}
-	if requests.Load() != 6 {
+	code, out, stderr = mutationInvoke(t, path, "builder", "reviews", "ci-assess", "--pr", "2", "--diagnostics")
+	var details client.ReviewSourceCIAssessment
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &details) != nil || details.Checks == nil || len(*details.Checks) != 1 || (*details.Checks)[0].CheckRun == nil || details.State != "held" {
+		t.Fatal("CLI diagnostic projection lost context or applicability", code, out, stderr)
+	}
+	if requests.Load() != 8 {
 		t.Fatal("CI adapters polled", requests.Load())
 	}
 }
@@ -149,6 +158,9 @@ func TestReviewCICLIInvalidOptionsBeforeCredentials(t *testing.T) {
 	defer service.Close()
 	path := fixture(t, encode(t, map[string]any{"version": 1, "profiles": map[string]any{"chosen": map[string]any{"server_url": service.URL, "instance_id": "instance-fixture", "project_id": "project-fixture", "worker_id": "worker-fixture", "credential_file": "missing-ci-token"}}}))
 	cases := [][]string{{"reviews", "ci-assess"}, {"reviews", "ci-assess", "--pr", "02"}, {"reviews", "ci-assess", "--pr", "2", "--ci"}, {"reviews", "ci-assess", "--pr", "2", "--refresh"}, {"reviews", "ci-assess", "--pr", "2", "--project", "other"}}
+	for _, suffix := range [][]string{{"--diagnostics", "--diagnostics"}, {"--diagnostics=true"}, {"--diagnostics", "true"}} {
+		cases = append(cases, append([]string{"reviews", "ci-assess", "--pr", "2"}, suffix...))
+	}
 	for _, suffix := range [][]string{{"--ci=true"}, {"--ci=false"}, {"--ci="}, {"--ci", "--ci"}, {"--ci", "true"}} {
 		cases = append(cases, append(sourceCLIArgs(), suffix...))
 	}

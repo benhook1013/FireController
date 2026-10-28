@@ -49,13 +49,14 @@ type SourceCISummary struct {
 }
 
 type SourceCIAssessment struct {
-	ProjectID             string            `json:"project_id"`
-	RefreshID             string            `json:"refresh_id"`
-	Source                string            `json:"source"`
-	ConfigurationRevision int64             `json:"configuration_revision"`
-	SourceObservedAt      string            `json:"source_observed_at"`
-	EvaluatedAt           string            `json:"evaluated_at"`
-	Target                SourceObservation `json:"target"`
+	Checks                *[]SourceCIContext `json:"checks,omitempty"`
+	ProjectID             string             `json:"project_id"`
+	RefreshID             string             `json:"refresh_id"`
+	Source                string             `json:"source"`
+	ConfigurationRevision int64              `json:"configuration_revision"`
+	SourceObservedAt      string             `json:"source_observed_at"`
+	EvaluatedAt           string             `json:"evaluated_at"`
+	Target                SourceObservation  `json:"target"`
 	SourceCISummary
 }
 
@@ -311,6 +312,14 @@ func summarizeSourceCI(o reviewprovider.CIObservation) SourceCISummary {
 // source configuration and the latest completed comparison govern applicability;
 // old CI counts remain informational when either binding has changed.
 func (e *Engine) ReadSourceCIAssessment(ctx context.Context, scope core.Scope, number int64) (SourceCIAssessment, error) {
+	return e.readSourceCIAssessment(ctx, scope, number, false)
+}
+
+func (e *Engine) ReadSourceCIDiagnostics(ctx context.Context, scope core.Scope, number int64) (SourceCIAssessment, error) {
+	return e.readSourceCIAssessment(ctx, scope, number, true)
+}
+
+func (e *Engine) readSourceCIAssessment(ctx context.Context, scope core.Scope, number int64, diagnostics bool) (SourceCIAssessment, error) {
 	if ctx == nil || e == nil || e.store == nil || number < 1 || number > 2147483647 {
 		return SourceCIAssessment{}, invalid()
 	}
@@ -332,6 +341,13 @@ func (e *Engine) ReadSourceCIAssessment(ctx context.Context, scope core.Scope, n
 			return refreshStorageError()
 		}
 		result = SourceCIAssessment{ProjectID: scope.ProjectID, RefreshID: r.ID, Source: "observed_ci", ConfigurationRevision: r.ConfigurationRevision, SourceObservedAt: r.Observation.ObservedAt, EvaluatedAt: stamp(), Target: *r.Observation, SourceCISummary: *r.CI}
+		if diagnostics {
+			checks, err := sourceCIContextDetails(r.ciObservation)
+			if err != nil {
+				return err
+			}
+			result.Checks = &checks
+		}
 		revision, reason, err := e.assessmentSourceBinding(ctx, tx, r)
 		if err != nil {
 			return err

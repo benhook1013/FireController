@@ -226,7 +226,8 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Example = "<bound launcher> reviews source-assess --pr 42"
 		out.Documentation = "docs/review-source.md"
 	case "reviews ci-assess":
-		out.Usage = "<bound launcher> reviews ci-assess --pr NUMBER"
+		out.Usage = "<bound launcher> reviews ci-assess --pr NUMBER [--diagnostics]"
+		out.Optional = []string{"--diagnostics (retained required contexts and selected CheckRun/Commit Status identities; no GitHub calls)"}
 		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)"}
 		out.Semantics = []string{"Assesses retained required CI for the latest stored source comparison and current local repository, configuration and capability binding.", "Reports satisfied, failed, pending, unproven or not required. not_required means the selected base branch has no required checks; optional workflows may still be running or failing and are not assessed here. Review-channel policy, findings and provider thread/merge-state gates remain separate; reviews readiness --pr NUMBER combines the retained assessments.", "Reads stored facts without provider work or writes. Use reviews source-refresh --help for explicit CI or readiness collection."}
 		out.Example = "<bound launcher> reviews ci-assess --pr 42"

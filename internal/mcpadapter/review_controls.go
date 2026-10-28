@@ -137,11 +137,17 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 		return args, nil
 	case "review_source_policy_assess", "review_source_ci_assess", "review_source_readiness":
 		var in struct {
-			Number *int64 `json:"pull_number"`
+			Number      *int64 `json:"pull_number"`
+			Diagnostics *bool  `json:"diagnostics,omitempty"`
 		}
 		if strictjson.Decode(data, &in) != nil || in.Number == nil || *in.Number < 1 || *in.Number > 2147483647 {
 			return args, invalidArguments()
 		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(data, &fields) != nil || fields["diagnostics"] != nil && (name != "review_source_ci_assess" || in.Diagnostics == nil) {
+			return args, invalidArguments()
+		}
+		args.reviewCIDiagnostics = in.Diagnostics != nil && *in.Diagnostics
 		args.pullNumber = *in.Number
 		return args, nil
 	case "review_source_refresh":
@@ -344,7 +350,7 @@ func reviewExecutionDefinitions() []definition {
 		{"review_source_refresh_read", "Read one explicit retained source-refresh operation. Local provider-free read; no automatic polling or source refresh.", schema(map[string]any{"refresh_id": map[string]any{"type": "string", "minLength": 47, "maxLength": 47, "pattern": "^review_refresh_[a-f0-9]{32}$"}}, "refresh_id")},
 		{"review_source_policy_assess", "Read current project review policy as of a retained source observation for one PR. Local provider-free read; no current remote-source verification, CI or merge-readiness verdict.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
 		{"review_source_readiness", "Read one retained as-of readiness assessment using current local policy. Required CI covers the selected base branch, not optional workflow health; GitHub merge-state gates remain separate. Provider-free, compact selected-PR read; no refresh, polling or merge authorization.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
-		{"review_source_ci_assess", "Read retained required-CI assessment for the selected base branch of one PR. not_required means no required checks; optional workflows may still run or fail and are not assessed. Local provider-free read; reports observation age and applicability, never merge readiness.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
+		{"review_source_ci_assess", "Read retained required-CI assessment for the selected base branch of one PR. Optional diagnostics names required contexts and distinguishes selected CheckRuns from same-name Commit Statuses. not_required means no required checks; optional workflows are not assessed. Local provider-free read; reports observation age and applicability, never merge readiness.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}, "diagnostics": map[string]any{"type": "boolean", "default": false, "description": "Include at most 128 retained required-context outcomes and selected check/status identities, without fetching GitHub."}}, "pull_number")},
 		{"review_execution_read", "Read stored project review execution configuration. No provider calls, execution, readiness verdict or automatic polling.", schema(map[string]any{})},
 		operationStatusDefinition(),
 		{"review_request", "Enqueue the selected external provider review, which can consume included allowance asynchronously. Waits briefly for a terminal result; pending work returns a compact queued receipt, which does not mean started or completed. Retain the exact idempotency key and arguments for uncertain-outcome recovery; no automatic retry, generated key or operation polling.", schema(map[string]any{

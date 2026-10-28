@@ -31,6 +31,20 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 		return parseReviewRun(call, args)
 	}
 	if call.subcommand == "source-assess" || call.subcommand == "ci-assess" || call.subcommand == "readiness" {
+		if call.subcommand == "ci-assess" {
+			filtered := make([]string, 0, len(args))
+			for _, arg := range args {
+				if arg == "--diagnostics" {
+					if call.reviewCIDiagnostics {
+						return call, false
+					}
+					call.reviewCIDiagnostics = true
+				} else {
+					filtered = append(filtered, arg)
+				}
+			}
+			args = filtered
+		}
 		values, ok := reviewSourceFlags(args, "--pr")
 		if !ok {
 			return call, false
@@ -171,7 +185,13 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 		value, err := service.ReviewSourceReadiness(ctx, call.pullNumber)
 		return client.AgentReviewReadiness(value), err
 	case "ci-assess":
-		value, err := service.ReviewSourceCIAssessment(ctx, call.pullNumber)
+		var value client.ReviewSourceCIAssessment
+		var err error
+		if call.reviewCIDiagnostics {
+			value, err = service.ReviewSourceCIDiagnostics(ctx, call.pullNumber)
+		} else {
+			value, err = service.ReviewSourceCIAssessment(ctx, call.pullNumber)
+		}
 		return client.AgentReviewCI(value), err
 	case "queue":
 		if call.reviewActiveQueue {

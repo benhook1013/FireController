@@ -72,6 +72,7 @@ type invocation struct {
 	reviewOperations      client.ReviewOperationsOptions
 	reviewOperationStatus *reviewOperationStatusInvocation
 	reviewActiveQueue     bool
+	reviewCIDiagnostics   bool
 
 	reviewQueueChange   *reviewQueueChangeInvocation
 	reviewQueueEdit     *reviewQueueEditInvocation
