@@ -118,6 +118,30 @@ func TestSuggestedPRSizeViewsAndEnqueueNeverAlterReviewControls(t *testing.T) {
 				t.Fatal(string(out))
 			}
 			assertSize(receipt.ReviewSize, 0)
+			// A successful request for a newer head must not reuse this earlier
+			// observation's count or derived headroom as candidate-specific facts.
+			moved := Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("e", 40)}
+			out, err = f.e.Enqueue(ctx, f.scope(t, attemptProject, f.writer, false), "size-new-head", moved)
+			receipt = Receipt{}
+			if err != nil || json.Unmarshal(out, &receipt) != nil || receipt.State != "queued" {
+				t.Fatal("size context blocked a new-head request", err)
+			}
+			if tc.name == "disabled" {
+				if receipt.ReviewSize != nil {
+					t.Fatal("disabled sizing manufactured context")
+				}
+			} else {
+				a := receipt.ReviewSize
+				if a == nil || !reviewsize.Valid(*a, 2) || a.Files != nil || a.RemainingFiles != nil || a.ExcessFiles != nil || a.AboveSuggested || a.CompletedReviews == nil || *a.CompletedReviews != 2 || a.SuggestedMaxPRFiles != tc.suggested || a.MaxReviewFiles != tc.maximum {
+					t.Fatalf("new candidate reused stale count or lost settings/history: %+v", a)
+				}
+			}
+			replayed, err := f.e.Enqueue(ctx, f.scope(t, attemptProject, f.writer, false), "size-new-head", moved)
+			if err != nil || string(out) != string(replayed) {
+				t.Fatal("request replay replaced its original size context", err)
+			}
+			// The queue is still a stored observation with its own observed head.
+			assertSize(configuredQueue(t, f).Items[0].ReviewSize, 2)
 			afterPolicy, err := f.e.ReadPolicy(ctx, admin)
 			if err != nil || !reflect.DeepEqual(beforePolicy, afterPolicy) || !reflect.DeepEqual(beforeRound, roundRead(t, f, 2, "cli")) {
 				t.Fatal("advisory changed policy or earned review controls", err)

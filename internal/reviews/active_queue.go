@@ -106,7 +106,7 @@ func activeQueue(store *core.Store) http.HandlerFunc {
 				return err
 			}
 			for i := range out.Items {
-				out.Items[i].ReviewSize = reviewSizeAt(ctx, tx, scope.ProjectID, meta.SnapshotID, out.Items[i].Number)
+				out.Items[i].ReviewSize = reviewSizeAt(ctx, tx, scope.ProjectID, meta.SnapshotID, out.Items[i].Number, "")
 			}
 			if out.HasMore {
 				out.Cursor = store.Cursor(scope, filter, encodePosition(meta.SnapshotID, last))

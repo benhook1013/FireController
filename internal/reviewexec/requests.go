@@ -205,7 +205,7 @@ func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Sc
 	if err = core.AppendEvent(ctx, tx, scope, "review.requested", id, 1, map[string]any{"pull_number": r.PullNumber, "channel": r.Channel}); err != nil {
 		return Receipt{}, err
 	}
-	return Receipt{ID: id, State: "queued", Revision: 1, ReviewSize: reviews.CurrentReviewSize(ctx, tx, scope.ProjectID, r.PullNumber)}, nil
+	return Receipt{ID: id, State: "queued", Revision: 1, ReviewSize: reviews.ReviewSizeForHead(ctx, tx, scope.ProjectID, r.PullNumber, r.HeadSHA)}, nil
 }
 
 func readOperation(ctx context.Context, tx EvidenceQuery, project, id string) (Operation, error) {

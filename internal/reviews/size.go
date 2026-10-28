@@ -105,10 +105,16 @@ func attachReviewSizes(ctx context.Context, tx *sql.Tx, project, snapshot string
 // CurrentReviewSize is bounded local information for enqueue receipts and next
 // targets. An unavailable optional read cannot refuse a successful action.
 func CurrentReviewSize(ctx context.Context, tx *sql.Tx, project string, number int64) *reviewsize.Assessment {
-	return reviewSizeAt(ctx, tx, project, "", number)
+	return reviewSizeAt(ctx, tx, project, "", number, "")
 }
 
-func reviewSizeAt(ctx context.Context, tx *sql.Tx, project, selectedSnapshot string, number int64) *reviewsize.Assessment {
+// ReviewSizeForHead never presents another candidate's observed file count as
+// sizing for an explicitly requested head. Historical review context remains.
+func ReviewSizeForHead(ctx context.Context, tx *sql.Tx, project string, number int64, head string) *reviewsize.Assessment {
+	return reviewSizeAt(ctx, tx, project, "", number, head)
+}
+
+func reviewSizeAt(ctx context.Context, tx *sql.Tx, project, selectedSnapshot string, number int64, head string) *reviewsize.Assessment {
 	limits, err := readSizeLimits(ctx, tx, project)
 	if err != nil {
 		return reviewsize.Unavailable(number)
@@ -123,12 +129,12 @@ func reviewSizeAt(ctx context.Context, tx *sql.Tx, project, selectedSnapshot str
 	if !installed {
 		return reviewsize.Assess(number, limits, nil, nil, 0)
 	}
-	var snapshot, raw, state string
+	var snapshot, raw, state, observedHead string
 	var retained int64
 	if selectedSnapshot == "" {
-		err = tx.QueryRowContext(ctx, `SELECT w.snapshot_id,p.metadata_json,p.run_count,p.state FROM review_workspace w JOIN review_pulls p ON p.project_id=w.project_id AND p.snapshot_id=w.snapshot_id WHERE w.project_id=? AND p.number=?`, project, number).Scan(&snapshot, &raw, &retained, &state)
+		err = tx.QueryRowContext(ctx, `SELECT w.snapshot_id,p.metadata_json,p.run_count,p.state,p.head_sha FROM review_workspace w JOIN review_pulls p ON p.project_id=w.project_id AND p.snapshot_id=w.snapshot_id WHERE w.project_id=? AND p.number=?`, project, number).Scan(&snapshot, &raw, &retained, &state, &observedHead)
 	} else {
-		err = tx.QueryRowContext(ctx, `SELECT snapshot_id,metadata_json,run_count,state FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=?`, project, selectedSnapshot, number).Scan(&snapshot, &raw, &retained, &state)
+		err = tx.QueryRowContext(ctx, `SELECT snapshot_id,metadata_json,run_count,state,head_sha FROM review_pulls WHERE project_id=? AND snapshot_id=? AND number=?`, project, selectedSnapshot, number).Scan(&snapshot, &raw, &retained, &state, &observedHead)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return reviewsize.Assess(number, limits, nil, nil, 0)
@@ -141,7 +147,7 @@ func reviewSizeAt(ctx context.Context, tx *sql.Tx, project, selectedSnapshot str
 		return reviewsize.Unavailable(number)
 	}
 	var files *int64
-	if metadata.Diff != nil {
+	if metadata.Diff != nil && (head == "" || observedHead == head) {
 		v := metadata.Diff.Files
 		files = &v
 	}
