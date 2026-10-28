@@ -13,7 +13,7 @@ describe('approved public worker lanes', () => {
       const html = renderToStaticMarkup(<PublicWorkerLanes lanes={[supplied]} />);
       expect(html).toContain('class="delivery-lanes"');
       expect(html).toContain('class="panel delivery-lane" aria-label="Builder published work"');
-      expect(html).toContain('<header class="delivery-lane-heading"><h3>Builder</h3></header>');
+      expect(html).toContain('<header class="delivery-lane-heading"><div class="delivery-worker-heading"><h3>Builder</h3></div></header>');
       expect(html).toContain('<ul class="delivery-job-list"><li><div class="delivery-job-heading"><h4>Ship the approved release</h4>');
       expect(html).toContain('class="badge status-active">Active</span>');
       expect(html).toContain('Publish the guide');

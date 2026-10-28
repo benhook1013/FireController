@@ -68,14 +68,26 @@ function LaneInboxLink({ lane, home }: { lane: DeliveryLane; home: string }) {
     }
   }}>Worker inbox</Link>;
 }
+function WorkerPauseBadge({ worker }: { worker: DeliveryWorker }) {
+  if (!worker.pause_reason) return <span className="badge status-parked">Paused</span>;
+  return <details className="delivery-worker-pause"
+    onMouseEnter={event => { if (window.matchMedia('(hover: hover)').matches) event.currentTarget.open = true; }}
+    onMouseLeave={event => { if (!event.currentTarget.contains(document.activeElement)) event.currentTarget.open = false; }}
+    onKeyDown={event => { if (event.key === 'Escape') { event.currentTarget.open = false; event.preventDefault(); } }}>
+    <summary className="badge status-parked" aria-label={`Pause reason for ${worker.name}`}
+      onFocus={event => { if (event.currentTarget.matches(':focus-visible')) (event.currentTarget.parentElement as HTMLDetailsElement).open = true; }}
+      onBlur={event => { (event.currentTarget.parentElement as HTMLDetailsElement).open = false; }}>Paused</summary>
+    <p className="delivery-pause">{preview(worker.pause_reason, worker.pause_reason_truncated)}</p>
+  </details>;
+}
 export function DeliveryLanes({ value, home, partialJobs = value.jobs.has_more, presence }: { value: DeliverySnapshot; home: string; partialJobs?: boolean; presence?: WorkerPresence }) {
   const workerOrder = usePresentation()?.worker_order ?? [];
   return <div className="delivery-lanes">{groupDeliveryLanes(value, workerOrder).map(lane => <WorkerLaneDisplay key={lane.id} label={lane.name} readingAnchor={`delivery-worker-${lane.id || 'unassigned'}`}
     name={lane.id ? <Link to={`${home}/workers/${encodeURIComponent(lane.id)}`}>{lane.name}</Link> : lane.name}
     presence={lane.id && <WorkerContactView value={presence} worker={lane.id}/>}
     links={lane.id && <><LaneInboxLink lane={lane} home={home} /><Link to={`${home}/jobs?${new URLSearchParams({worker_id:lane.id,status:'all'})}`}>Job history</Link></>}
-    status={lane.worker?.paused && <span className="badge status-parked">Paused</span>}
-    details={<>{lane.worker?.paused && lane.worker.pause_reason && <p className="delivery-pause">{preview(lane.worker.pause_reason, lane.worker.pause_reason_truncated)}</p>}
+    status={lane.worker?.paused && <WorkerPauseBadge worker={lane.worker} />}
+    details={<>
       {lane.id && !lane.worker && <p className="delivery-page-note">Owner outside this worker page</p>}
       {lane.worker?.primary_job_id && !lane.jobs.some(job => job.id === lane.worker!.primary_job_id) && <Link className="delivery-primary-link" to={`${home}/jobs/${encodeURIComponent(lane.worker.primary_job_id)}`}>Primary job</Link>}</>}>
     {lane.jobs.length ? <ul className="delivery-job-list">{lane.jobs.map(job => <DeliveryJobCard key={job.id} readingAnchor={`delivery-job-${job.id}`}
