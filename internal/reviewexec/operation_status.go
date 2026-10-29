@@ -179,5 +179,6 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 		core.WriteError(w, err)
 		return
 	}
+	e.deploymentResponseHeader(w)
 	core.WriteJSON(w, http.StatusOK, value)
 }

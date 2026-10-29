@@ -72,3 +72,9 @@ func (e *Engine) deploymentDrainHTTP(action string) http.HandlerFunc {
 		core.WriteJSON(w, http.StatusOK, value)
 	}
 }
+
+func (e *Engine) deploymentResponseHeader(w http.ResponseWriter) {
+	if e.deploymentDrain("status").Draining {
+		w.Header().Set("X-FC-Deployment-Draining", "true")
+	}
+}

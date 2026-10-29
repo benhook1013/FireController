@@ -38,6 +38,10 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 			value.NextAction = "new_request_if_authorized"
 		}
 	}
+	if value.State == "queued" && value.deploymentDraining {
+		hint = deploymentDrainDiagnostic()
+		value.NextAction = "wait_for_deployment"
+	}
 	return ReviewOperationStatusOutput{value, hint}
 }
 
@@ -61,11 +65,24 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 	if value.PendingEvidence != nil {
 		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
 	}
+	if value.State == "queued" && value.deploymentDraining {
+		hint = deploymentDrainDiagnostic()
+	}
 	return ReviewOperationOutput{value, hint}
 }
 
 // Keep receipts flat and invalid unions rejected by their original marshaler.
+func deploymentDrainDiagnostic() *ReviewOperationDiagnostic {
+	return &ReviewOperationDiagnostic{"The controller is draining new dispatch for deployment. Stored request and review state are unchanged.", "Continue other work and collect this same operation later. The replacement resumes queued work under the normal checks; do not submit a duplicate request or change review controls."}
+}
+
 func AgentReviewRequestResult(value ReviewRequestResult) any {
+	if value.Receipt != nil && value.Operation == nil && value.Receipt.deploymentDraining {
+		return struct {
+			*ReviewRequestReceipt
+			Diagnostic *ReviewOperationDiagnostic `json:"diagnostic"`
+		}{value.Receipt, deploymentDrainDiagnostic()}
+	}
 	if value.Operation != nil && value.Receipt == nil {
 		return AgentReviewOperation(*value.Operation)
 	}

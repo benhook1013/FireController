@@ -282,10 +282,11 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 // validates its own limit before transport; ordinary request budgets and shared
 // transport state remain unchanged.
 type sourceWaitOptions struct {
-	reviewBlockers bool
-	seconds        int
-	status         *int
-	budget         time.Duration // Optional domain-owned budget; zero preserves existing waits.
+	deploymentDraining *bool
+	reviewBlockers     bool
+	seconds            int
+	status             *int
+	budget             time.Duration // Optional domain-owned budget; zero preserves existing waits.
 }
 
 func (c *Client) requestBoundedOptions(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions) error {
@@ -374,6 +375,9 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		return fail("connection_failed", "The service connection failed.", "Check the configured service address and transport.", 0)
 	}
 	defer response.Body.Close()
+	if wait != nil && wait.deploymentDraining != nil {
+		*wait.deploymentDraining = response.Header.Get("X-FC-Deployment-Draining") == "true"
+	}
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
 		if mutation {
 			return unknownRequest("redirect_rejected", operation, "request was redirected", response.StatusCode)

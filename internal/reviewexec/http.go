@@ -160,6 +160,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 		operation, terminal, waitErr := e.WaitOperation(r.Context(), scope, queued.ID, wait)
 		if waitErr != nil {
 			if detached, detachErr := e.acceptedWaitDetached(r.Context(), scope, waitErr); detached {
+				e.deploymentResponseHeader(w)
 				core.WriteJSON(w, http.StatusAccepted, receipt)
 				return
 			} else {
@@ -183,10 +184,12 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 				writeOperationWaitError(w, err)
 				return
 			}
+			e.deploymentResponseHeader(w)
 			core.WriteJSON(w, http.StatusOK, operation)
 			return
 		}
 	}
+	e.deploymentResponseHeader(w)
 	core.WriteJSON(w, http.StatusAccepted, receipt)
 }
 
@@ -227,6 +230,7 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	e.deploymentResponseHeader(w)
 	core.WriteJSON(w, http.StatusOK, operation)
 }
 

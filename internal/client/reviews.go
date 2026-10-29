@@ -550,6 +550,9 @@ func reviewShape(data []byte, typ reflect.Type) bool {
 		}
 		for i := 0; i < typ.NumField(); i++ {
 			field := typ.Field(i)
+			if field.PkgPath != "" {
+				continue
+			}
 			parts := strings.Split(field.Tag.Get("json"), ",")
 			name := parts[0]
 			if name == "-" {

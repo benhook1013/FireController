@@ -12,19 +12,20 @@ import (
 
 // ReviewOperationStatus omits private configuration and capture contents.
 type ReviewOperationStatus struct {
-	PendingEvidence *ReviewPendingEvidence `json:"pending_evidence,omitempty"`
-	ID              string                 `json:"id"`
-	PullNumber      int64                  `json:"pull_number"`
-	Channel         string                 `json:"channel"`
-	State           string                 `json:"state"`
-	Revision        int64                  `json:"revision"`
-	Stage           string                 `json:"stage"`
-	Reason          string                 `json:"reason"`
-	AttemptID       string                 `json:"attempt_id"`
-	EvidenceID      string                 `json:"evidence_id,omitempty"`
-	RetryNotBefore  string                 `json:"retry_not_before,omitempty"`
-	UpdatedAt       string                 `json:"updated_at"`
-	NextAction      string                 `json:"next_action"`
+	deploymentDraining bool
+	PendingEvidence    *ReviewPendingEvidence `json:"pending_evidence,omitempty"`
+	ID                 string                 `json:"id"`
+	PullNumber         int64                  `json:"pull_number"`
+	Channel            string                 `json:"channel"`
+	State              string                 `json:"state"`
+	Revision           int64                  `json:"revision"`
+	Stage              string                 `json:"stage"`
+	Reason             string                 `json:"reason"`
+	AttemptID          string                 `json:"attempt_id"`
+	EvidenceID         string                 `json:"evidence_id,omitempty"`
+	RetryNotBefore     string                 `json:"retry_not_before,omitempty"`
+	UpdatedAt          string                 `json:"updated_at"`
+	NextAction         string                 `json:"next_action"`
 }
 
 func (c *Client) ReviewOperationStatus(ctx context.Context, id string) (ReviewOperationStatus, error) {
@@ -36,7 +37,7 @@ func (c *Client) WaitReviewOperationStatus(ctx context.Context, id string, secon
 	}
 	var value ReviewOperationStatus
 	var status int
-	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: seconds, status: &status, reviewBlockers: true}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: seconds, status: &status, reviewBlockers: true, deploymentDraining: &value.deploymentDraining}); err != nil {
 		return ReviewOperationStatus{}, err
 	}
 	if value.ID != id || !validCompactOperationStatus(value) {
@@ -61,6 +62,9 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 	}
 	typ := reflect.TypeOf(ReviewOperationStatus{})
 	for i := 0; i < typ.NumField(); i++ {
+		if typ.Field(i).PkgPath != "" || typ.Field(i).Tag.Get("json") == "-" {
+			continue
+		}
 		name := strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]
 		for supplied := range fields {
 			if supplied != name && strings.EqualFold(supplied, name) {
