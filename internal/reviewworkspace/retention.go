@@ -23,62 +23,69 @@ func (m *Manager) Prune(ctx context.Context, disposable func(context.Context, st
 		return 0, err
 	}
 	defer root.Close()
-	dir, err := root.Open(".")
-	if err != nil {
-		return 0, err
-	}
-	defer dir.Close()
 	removed := 0
-	for {
-		if ctx.Err() != nil {
-			return removed, ctx.Err()
+	// Resume a partially removed tree before admitting more cleanup work.
+	for _, resuming := range []bool{true, false} {
+		dir, err := root.Open(".")
+		if err != nil {
+			return 0, err
 		}
-		entries, readErr := dir.ReadDir(64)
-		for _, entry := range entries {
-			name := entry.Name()
-			id := strings.TrimPrefix(name, ".retired-")
-			if !strings.HasPrefix(id, "review_attempt_") || !lowerHex(strings.TrimPrefix(id, "review_attempt_"), 32) || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
-				continue
+		defer dir.Close()
+		for {
+			if ctx.Err() != nil {
+				return removed, ctx.Err()
 			}
-			allowed, err := disposable(ctx, id)
-			if err != nil {
-				return removed, err
-			}
-			if !allowed {
-				continue
-			}
-			before, err := root.Lstat(name)
-			if err != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
-				return removed, errVerification
-			}
-			retired := ".retired-" + id
-			if name != retired {
-				if _, err := root.Lstat(retired); !errors.Is(err, os.ErrNotExist) {
-					return removed, errConflict
+			entries, readErr := dir.ReadDir(64)
+			for _, entry := range entries {
+				name := entry.Name()
+				if strings.HasPrefix(name, ".retired-") != resuming {
+					continue
 				}
-				if err := root.Rename(name, retired); err != nil {
+				id := strings.TrimPrefix(name, ".retired-")
+				if !strings.HasPrefix(id, "review_attempt_") || !lowerHex(strings.TrimPrefix(id, "review_attempt_"), 32) || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+					continue
+				}
+				allowed, err := disposable(ctx, id)
+				if err != nil {
 					return removed, err
 				}
+				if !allowed {
+					continue
+				}
+				before, err := root.Lstat(name)
+				if err != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
+					return removed, errVerification
+				}
+				retired := ".retired-" + id
+				if name != retired {
+					if _, err := root.Lstat(retired); !errors.Is(err, os.ErrNotExist) {
+						return removed, errConflict
+					}
+					if err := root.Rename(name, retired); err != nil {
+						return removed, err
+					}
+				}
+				after, err := root.Lstat(retired)
+				if err != nil || !os.SameFile(before, after) {
+					return removed, errVerification
+				}
+				if err := removeTree(ctx, root, retired); err != nil {
+					return removed, err
+				}
+				removed++
+				if removed == 16 {
+					return removed, nil
+				}
 			}
-			after, err := root.Lstat(retired)
-			if err != nil || !os.SameFile(before, after) {
-				return removed, errVerification
+			if errors.Is(readErr, io.EOF) {
+				break
 			}
-			if err := removeTree(ctx, root, retired); err != nil {
-				return removed, err
+			if readErr != nil {
+				return removed, readErr
 			}
-			removed++
-			if removed == 16 {
-				return removed, nil
-			}
-		}
-		if errors.Is(readErr, io.EOF) {
-			return removed, nil
-		}
-		if readErr != nil {
-			return removed, readErr
 		}
 	}
+	return removed, nil
 }
 
 func removeTree(ctx context.Context, root *os.Root, path string) error {
@@ -93,28 +100,42 @@ func removeTree(ctx context.Context, root *os.Root, path string) error {
 		return err
 	}
 	if info.IsDir() {
-		dir, err := root.Open(path)
+		child, err := root.OpenRoot(path)
 		if err != nil {
 			return err
 		}
-		defer dir.Close()
-		for {
-			entries, readErr := dir.ReadDir(128)
-			for _, entry := range entries {
-				if err := removeTree(ctx, root, filepath.Join(path, entry.Name())); err != nil {
-					return err
-				}
-			}
-			if errors.Is(readErr, io.EOF) {
-				break
-			}
-			if readErr != nil {
-				return readErr
-			}
+		err = removeChildren(ctx, child)
+		child.Close()
+		if err != nil {
+			return err
 		}
 	}
 	// A symlink is unlinked itself, never traversed.
 	return root.Remove(path)
+}
+
+// Resolve each directory once. Re-resolving the full deep Git path for every
+// file amplifies filesystem calls under container CPU limits.
+func removeChildren(ctx context.Context, root *os.Root) error {
+	dir, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	for {
+		entries, readErr := dir.ReadDir(128)
+		for _, entry := range entries {
+			if err := removeTree(ctx, root, entry.Name()); err != nil {
+				return err
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
 }
 
 // StartPruning owns one maintenance loop independent of review result polling.

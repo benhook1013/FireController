@@ -122,3 +122,22 @@ func TestPruningWorkerIsSingleOwnedAndStopsOnCancellation(t *testing.T) {
 		t.Fatal("protected attempt removed", err)
 	}
 }
+
+func TestPrunePrioritizesInterruptedTreesOverNewCandidates(t *testing.T) {
+	f := newFixture(t)
+	for i := 0; i < 17; i++ {
+		if err := os.Mkdir(filepath.Join(f.root, "workspaces", fmt.Sprintf("review_attempt_%032x", i)), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	retired := filepath.Join(f.root, "workspaces", ".retired-review_attempt_"+strings.Repeat("f", 32))
+	if err := os.Mkdir(retired, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := f.manager.Prune(t.Context(), func(context.Context, string) (bool, error) { return true, nil }); err != nil || n != 16 {
+		t.Fatal(n, err)
+	}
+	if _, err := os.Stat(retired); !os.IsNotExist(err) {
+		t.Fatal("interrupted cleanup was left behind new work", err)
+	}
+}
