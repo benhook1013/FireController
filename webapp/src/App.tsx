@@ -367,9 +367,9 @@ export function ProjectHeaderUtilities({ status, refreshing, refresh, disconnect
   return <div className="header-utilities" role="group" aria-label="Project utilities"><ProjectConnectionStatus status={status} /><button type="button" aria-label="Refresh visible data" aria-busy={refreshing} disabled={refreshing} onClick={refresh}>{refreshing ? 'Refreshing…' : 'Refresh'}</button><button type="button" onClick={disconnect}>Sign out</button></div>;
 }
 
-export function ProjectIdentityHero({ name, repository }: { name: string; repository: string }) {
+export function ProjectIdentityHero({ name, repository, category, introduction, overviewHref }: { name: string; repository: string; category?: string; introduction?: string; overviewHref?: string }) {
   const href = githubRepositoryURL(repository);
-  return <section className="hero project-identity"><div className="hero-project"><h1>{name}</h1><p className="repository">{href ? <a href={href} target="_blank" rel="noreferrer noopener">{repository}</a> : repository}</p></div></section>;
+  return <section className="hero project-identity project-introduction"><div className="hero-project">{category && <p className="project-introduction-category">{category}</p>}<h1>{name}</h1><p className="repository">{href ? <a href={href} target="_blank" rel="noreferrer noopener">{repository}</a> : repository}</p>{introduction && <p className="project-introduction-text">{introduction}</p>}{overviewHref && <Link className="project-introduction-link" to={overviewHref}>Project overview ↗</Link>}</div></section>;
 }
 
 export function ProjectUpdateNotice({ status, reconnect }: { status: LiveStatus; reconnect(): void }) {
@@ -432,7 +432,7 @@ export function Workspace({ session, metadataStatus, reconnectProjectUpdates, se
   const value = useMemo(() => ({ session, key, home, selectWorker, fail: onFailure, ready }), [session, key, home, selectWorker, onFailure, ready]);
   const liveLabel = !session.worker ? 'Choose a worker' : live === 'live' ? 'Live inbox connected' : live === 'reconnecting' ? 'Reconnecting inbox…' : live === 'closed' ? 'Inbox disconnected' : 'Connecting inbox…';
   return <WorkspaceContext.Provider value={value}><RestoringReadingPosition.Provider value={restoringPosition}><main ref={readingRoot} className="workspace">
-    {!publicPreview && <DeliveryHero><ProjectIdentityHero name={presentation?.name ?? session.project.name} repository={session.project.repository} /></DeliveryHero>}
+    {!publicPreview && <DeliveryHero><ProjectIdentityHero name={presentation?.name ?? session.project.name} repository={session.project.repository} category={presentation?.headings.hero_eyebrow} introduction={presentation?.headings.hero_description} overviewHref={`${home}/project`} /></DeliveryHero>}
     <nav className="navigation" aria-label="Project navigation"><NavLink to={`${home}/project`}>{projectHeading}</NavLink><Link to={home} className={pathname === home && !reviewsSelected ? 'active' : undefined} aria-current={pathname === home && !reviewsSelected ? 'page' : undefined}>Delivery</Link><Link to={`${home}#review-queue`} className={reviewsSelected ? 'active' : undefined} aria-current={reviewsSelected ? 'location' : undefined}>{reviewsHeading}</Link><NavLink to={`${home}/jobs`}>{jobsHeading}</NavLink><NavLink to={`${home}/workers`}>{workersHeading}</NavLink><NavLink to={`${home}/inbox`}>{inboxHeading}</NavLink>{session.api.browserCapabilities.can_edit_presentation && <NavLink to={`${home}/settings`}>Settings</NavLink>}</nav>
     <ProjectUpdateNotice status={metadataStatus} reconnect={reconnectProjectUpdates} />
     {unresolved > 0 && <p className="notice" role="status">{unresolved} pending or uncertain action{unresolved === 1 ? '' : 's'} retained in this connection. Return to the original worker and view to retry before reloading or disconnecting.</p>}

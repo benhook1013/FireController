@@ -37,7 +37,7 @@ export function MergeHeadSkeleton({ decorative = false }: { decorative?: boolean
 }
 
 export function DeliveryHeroSkeleton() {
-  return <div className="delivery-hero skeleton-hero"><section className="hero project-identity"><div className="hero-project"><h1 className="skeleton-identity-title"><span className="skeleton-ink">&nbsp;</span></h1><p className="repository skeleton-identity-repository"><span className="skeleton-ink">&nbsp;</span></p></div></section><section className="hero delivery-merge-head"><MergeHeadSkeleton decorative /></section></div>;
+  return <div className="delivery-hero skeleton-hero"><section className="hero project-identity project-introduction"><div className="hero-project"><p className="project-introduction-category"><span className="skeleton-ink">&nbsp;</span></p><h1 className="skeleton-identity-title"><span className="skeleton-ink">&nbsp;</span></h1><p className="repository skeleton-identity-repository"><span className="skeleton-ink">&nbsp;</span></p><p className="project-introduction-text"><span className="skeleton-ink">&nbsp;</span><br /><span className="skeleton-ink">&nbsp;</span></p><span className="project-introduction-link"><span className="skeleton-ink">&nbsp;</span></span></div></section><section className="hero delivery-merge-head"><MergeHeadSkeleton decorative /></section></div>;
 }
 
 /** Reserve the actual header controls without claiming connection or showing actions. */

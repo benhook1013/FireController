@@ -149,3 +149,10 @@ func (d *reviewChannelDriver) StartRecovery(ctx context.Context) (<-chan error, 
 func (d *reviewChannelDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) {
 	return d.cli.StartCLIRecovery(ctx)
 }
+
+func (d *reviewChannelDriver) StartWorkspaceCleanup(ctx context.Context) (<-chan error, error) {
+	if d.cli != nil {
+		return d.cli.StartWorkspaceCleanup(ctx)
+	}
+	return d.hosted.StartWorkspaceCleanup(ctx)
+}

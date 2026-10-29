@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MemoryRouter } from 'react-router';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ProjectHeaderUtilities, ProjectIdentityHero } from './App';
 
@@ -39,4 +40,15 @@ describe('project header utilities', () => {
     expect(html).toContain('href="https://github.com/owner/repository" target="_blank" rel="noreferrer noopener">owner/repository</a>');
     expect(html).not.toMatch(/class="identity"|Project utilities|role="status"|<button|Work, with context|Browse jobs and read worker conversations/u);
   });
+  it('uses explicit project introduction copy and a project-scoped overview link', () => {
+    const html = renderToStaticMarkup(<MemoryRouter><ProjectIdentityHero name="Project" repository="owner/repo" category="Category <literal>" introduction="Project description <literal>" overviewHref="/projects/example/project" /></MemoryRouter>);
+    expect(html).toContain('Category &lt;literal&gt;');
+    expect(html).toContain('Project description &lt;literal&gt;');
+    expect(html).toContain('href="/projects/example/project"');
+    expect(html).toContain('Project overview ↗');
+    const empty = renderToStaticMarkup(<ProjectIdentityHero name="Project" repository="owner/repo" />);
+    expect(empty).not.toContain('project-introduction-category');
+    expect(empty).not.toContain('project-introduction-text');
+  });
+
 });

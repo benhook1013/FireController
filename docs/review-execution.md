@@ -1,5 +1,11 @@
 # Native Review Execution
 
+## Checkout retention
+
+The daemon automatically reclaims native review checkouts after their attempt is terminal (completed, held, failed, cancelled or rate-limited), has no execution reservation and has remained terminal for at least five minutes. Active, preparing, posting, uncertain, reserved, unknown and differently bound attempts remain untouched. The maintenance pass runs once a minute in a separate local maintenance worker, with a twenty-second budget and at most sixteen removals. A cleanup failure retries without blocking reviews. Shared Git caches, durable provider captures, review evidence, findings and journal history are retained separately.
+
+Only exact attempt directories under the capability’s private workspace root are candidates. Terminal attempts cannot restart; authorization comes from their journal, original capability/account and current reservation absence, never PR position or filesystem age alone. A local rename marks deletion in progress; interrupted cleanup resumes that same terminal tree on a later pass. Confined filesystem operations unlink nested symlinks rather than following them. This lifecycle prevents completed checkout accumulation; it is not an aggregate disk quota for active/recovery-held work or shared Git caches.
+
 ## Implementation status
 
 Native execution powers this project’s development coordination and reviews; the former executor is no longer used for new work. Actual CLI and Hosted reviews have completed through retained evidence, explicit adjudication/finalization and independent channel controls, with authenticated browser publication and same-attempt Hosted restart recovery proved below. The [stored workspace and bound read tools](review-workspace.md) remain available independently of provider health. An accepted request or issued trigger alone never establishes completed review coverage. Wider migration and fleet qualification remain separate. The [review contract](reviews.md) owns identity, admission, evidence and policy requirements.

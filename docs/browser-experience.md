@@ -44,6 +44,8 @@ Full job briefs, current and historical progress text, checklist text, conversat
 
 Main tab headings use one shared size, line height and spacing below navigation, with a consistent smaller size on narrow screens. Optional descriptions and actions follow the title without adding a preceding caption. The Inbox title precedes its worker-selector layout at every width. Nested panel headings retain their subordinate hierarchy.
 
+The identity side of the joined hero uses the selected project-introduction layout: category when configured, project name and repository, short introduction when configured, and a bottom-right Project overview link. The [presentation contract](project-presentation.md#project-introduction) owns its per-project text and defaults. The review-head side keeps the shared PR renderer.
+
 ## Editorial Project page
 
 Project is the single overview tab: current working entries when authenticated, approved publication when anonymous. A labelled public preview is available without signing out. The authenticated overview contains editorial project content; operational worker lanes and the review queue belong on Delivery. Public review rows reuse the shared presentation components with only approved public fields. The [shared experience](shared-project-experience.md#one-browser-experience) owns audience selection and publication boundaries.

@@ -95,3 +95,9 @@
 .delivery-job-footer{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:5px 12px;margin-top:8px}
 .delivery-job-footer>.delivery-context-meta{font-size:.69rem;color:var(--fc-surface_muted,#666874);margin:0}
 .delivery-job-footer>.review-details-link{margin:0 0 0 auto;font-size:.69rem}
+
+/* Project introduction uses the same project copy as the published hero. */
+.delivery-hero>.project-introduction .hero-project{padding:32px}.project-introduction-category{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;font-weight:750;color:var(--fc-hero_muted,#f5c8c2);margin:0 0 12px}.project-introduction-text{max-width:37ch;font-size:1.05rem;line-height:1.6;color:var(--fc-hero_muted,#f7d9d5);margin:18px 0 0}.project-identity .project-introduction-link{display:block;width:max-content;max-width:100%;margin:24px 0 0 auto;text-align:right;font-family:ui-sans-serif,system-ui,sans-serif;font-size:.85rem;font-weight:700;color:var(--fc-hero_text,#fff);text-decoration:underline}.project-identity .project-introduction-link:hover{color:var(--fc-hero_text,#fff)}
+@media(max-width:650px){.delivery-hero>.project-introduction .hero-project{padding:24px}.project-introduction-text{font-size:.95rem;max-width:none}}
+
+.skeleton-hero .project-introduction-category .skeleton-ink{width:48%;height:1.6em}.skeleton-hero .project-introduction-text .skeleton-ink{width:95%;height:1.6em}.skeleton-hero .project-introduction-text .skeleton-ink:last-child{width:80%}.skeleton-hero .project-introduction-link .skeleton-ink{width:9em;height:1.6em}

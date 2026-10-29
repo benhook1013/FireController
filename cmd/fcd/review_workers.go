@@ -13,6 +13,10 @@ type reviewRecoveryStarter interface {
 	StartRecovery(context.Context) (<-chan error, error)
 }
 
+type workspaceCleanupStarter interface {
+	StartWorkspaceCleanup(context.Context) (<-chan error, error)
+}
+
 type cliRecoveryStarter interface {
 	StartCLIRecovery(context.Context) (<-chan error, error)
 }
@@ -60,6 +64,18 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 	channels := []worker{{done: supervisor}}
 	var startupErr error
 	for capabilityID, driver := range drivers {
+		if starter, ok := driver.(workspaceCleanupStarter); ok {
+			done, err := starter.StartWorkspaceCleanup(workerCtx)
+			if err != nil || done == nil {
+				startupErr = err
+				if startupErr == nil {
+					startupErr = core.Fail("configuration_invalid", "The checkout maintenance worker could not be started.", 500)
+				}
+				cancel()
+				break
+			}
+			channels = append(channels, worker{done: done})
+		}
 		if starter, ok := driver.(cliRecoveryStarter); ok {
 			done, err := starter.StartCLIRecovery(workerCtx)
 			if err != nil || done == nil {

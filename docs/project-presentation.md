@@ -33,6 +33,10 @@ Validate each pair when either of its tokens appears in the override map, even i
 
 The canonical JSON configuration is at most 16 KiB, within the existing API request ceiling. A replacement supplies `expected_revision` and `presentation`; it replaces the complete configuration, so omitted optional overrides clear to defaults. Fast local mutations return compact receipts, with explicit keys and no operation-polling cycle. Current authorization is checked on exact replay. A no-op preserves revision/history/events while recording the receipt for its new key.
 
+## Project introduction
+
+The private joined hero shows the project name and repository, an optional category (`headings.hero_eyebrow`), an optional short introduction (`headings.hero_description`), and a Project overview link to that project’s overview. These reuse the existing per-project presentation text used by the published hero; there is no second introduction record or extra service read. Only explicit category/introduction values appear in the private hero: missing values omit the text instead of inserting generic interface copy. Values remain bounded literal text and use the project’s hero colours. Appearance edits affect current private views; public appearance still changes only through its existing deliberate publication boundary.
+
 ## Suggested maximum PR size
 
 Optional `suggested_max_pr_files` is a nonnegative integer, capped at 100000 for bounded configuration. Missing or zero disables it; project Settings accepts a positive file count or a blank disabled field. No suggestion is enabled automatically. This advisory preference is independent of worker order, review policy, provider limits and review accounting. The [PR size contract](reviews.md#pr-size-settings) owns output and enforcement distinctions. It is private operational configuration and cannot be included in an approved public presentation manifest. Ordinary unrelated appearance edits preserve the loaded setting; a deliberate complete API replacement that omits it clears it with the other optional overrides.
