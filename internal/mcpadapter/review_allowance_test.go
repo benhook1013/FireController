@@ -16,7 +16,7 @@ import (
 )
 
 func TestReviewAllowanceMCPStdioRoundTrip(t *testing.T) {
-	for _, channel := range []string{"cli", "hosted", "legacy"} {
+	for _, channel := range []string{"cli", "hosted", "legacy", "timeout"} {
 		t.Run(channel, func(t *testing.T) {
 			binding := localContext()
 			op := client.ReviewOperation{ID: "review_operation_" + strings.Repeat("a", 32), ProjectID: binding.ProjectID, ActorID: "principal_one", WorkerID: binding.WorkerID, ConfigurationRevision: 1, PolicyRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40), State: "held", Revision: 3, Reason: "allowance_exhausted", AttemptID: "review_attempt_" + strings.Repeat("b", 32), CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z"}
@@ -30,6 +30,9 @@ func TestReviewAllowanceMCPStdioRoundTrip(t *testing.T) {
 				op.Allowance = &client.ReviewAllowanceObservation{Kind: "hosted_cooldown", ObservedAt: op.UpdatedAt, RetryNotBefore: "2026-01-01T00:10:00Z"}
 			}
 			id := "review_selection_" + strings.Repeat("a", 32)
+			if channel == "timeout" {
+				op.Reason = "allowance_timeout"
+			}
 			selection := client.ReviewRunState{Selection: client.ReviewRunSelection{ID: id, ProjectID: op.ProjectID, ActorID: op.ActorID, WorkerID: op.WorkerID, Channel: op.Channel, ConfigurationRevision: 1, PolicyRevision: 1, ExpectedPullNumber: 2, State: "selected", Revision: 3, OperationID: op.ID, CreatedAt: op.CreatedAt, UpdatedAt: op.UpdatedAt}, Operation: &op}
 			var calls atomic.Int64
 			var invalid atomic.Bool
@@ -73,7 +76,13 @@ func TestReviewAllowanceMCPStdioRoundTrip(t *testing.T) {
 				if nested, ok := got["operation"].(map[string]any); ok {
 					got = nested
 				}
-				if channel == "hosted" {
+				if channel == "timeout" {
+					diagnostic, ok := got["diagnostic"].(map[string]any)
+					if !ok || !strings.Contains(diagnostic["explanation"].(string), "15-second") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") {
+						t.Fatal("timeout omitted actionable recovery", got)
+					}
+					delete(got, "diagnostic")
+				} else if channel == "hosted" {
 					diagnostic, ok := got["diagnostic"].(map[string]any)
 					if !ok || !strings.Contains(diagnostic["explanation"].(string), "terminal") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") || !strings.Contains(diagnostic["next_action"].(string), "retry_not_before") {
 						t.Fatal("cooldown retry requires owner clarification", got)

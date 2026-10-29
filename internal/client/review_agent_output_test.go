@@ -231,3 +231,37 @@ func TestAgentLateHostedAllowanceRetryIsOnlyKnownTerminalPreparation(t *testing.
 		}
 	}
 }
+
+func TestAgentCLIAllowanceTimeoutRecoveryPreservesOriginalHold(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, state := range []string{"held", "active", "uncertain", "completed"} {
+			v := ReviewOperationStatus{ID: "original_operation", Channel: channel, State: state, Reason: "allowance_timeout", Stage: "held", NextAction: "read_diagnostics", AttemptID: "original_attempt", Revision: 3, UpdatedAt: "original_time"}
+			full := ReviewOperation{ID: v.ID, Channel: v.Channel, State: v.State, Reason: v.Reason, AttemptID: v.AttemptID, Revision: v.Revision, UpdatedAt: v.UpdatedAt}
+			got, detail := AgentReviewOperationStatus(v), AgentReviewOperation(full)
+			want := v
+			diagnosed := channel == "cli" && state == "held"
+			if diagnosed {
+				want.NextAction = "retry_later_with_new_request"
+			}
+			if got.ReviewOperationStatus != want || detail.ReviewOperation != full || !reflect.DeepEqual(got.Diagnostic, detail.Diagnostic) || (got.Diagnostic != nil) != diagnosed {
+				t.Fatal("timeout advice altered scope/state/identity", got)
+			}
+			if diagnosed {
+				for _, part := range []string{"15-second", "No review command was started", "terminal", "neither exhausted quota nor a provider outage", "unknown"} {
+					if !strings.Contains(got.Diagnostic.Explanation, part) {
+						t.Fatal("timeout diagnostic lost known/unknown boundary", part)
+					}
+				}
+				for _, part := range []string{"avoid rapid retries", "remains authorized", "fresh idempotency key", "current configuration/head", "original key replays", "Do not reset"} {
+					if !strings.Contains(got.Diagnostic.NextAction, part) {
+						t.Fatal("timeout recovery lost safeguard", part)
+					}
+				}
+				body, _ := json.Marshal(got)
+				if len(body) > 2048 {
+					t.Fatal("timeout diagnostic too large")
+				}
+			}
+		}
+	}
+}

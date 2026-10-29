@@ -27,7 +27,7 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if value.Channel == "hosted" && value.State == "held" && value.Reason == "hosted_allowance_reply_pending" {
 		value.NextAction = "new_request_to_recheck_allowance"
 	}
-	if value.Channel == "cli" && value.State == "held" && value.Reason == "allowance_exhausted" {
+	if value.Channel == "cli" && value.State == "held" && (value.Reason == "allowance_exhausted" || value.Reason == "allowance_timeout") {
 		value.NextAction = "retry_later_with_new_request"
 	}
 	return ReviewOperationStatusOutput{value, agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)}
@@ -95,6 +95,11 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 	switch reason {
 	case "project_file_limit":
 		return &ReviewOperationDiagnostic{"The materialized comparison exceeds the optional project review-file ceiling. This operation is terminal and no review was started.", "Reduce the comparison, or deliberately select override_file_limit:true on a new authorized exact-target review_request (CLI --override-file-limit), with a fresh key and current configuration/head. This overrides only the project ceiling; provider restrictions, findings, allowances and all other admission checks still apply. Do not change project defaults or replay the held key expecting execution."}
+	case "allowance_timeout":
+		if channel != "cli" {
+			return nil
+		}
+		return &ReviewOperationDiagnostic{"The included-allowance command did not complete within its 15-second deadline. No review command was started and no review completed. This held operation is terminal. Missing allowance facts establish neither exhausted quota nor a provider outage; the next available retry time is unknown.", "Continue other work and avoid rapid retries. If the planned review remains authorized, make one later review_request with a fresh idempotency key and current configuration/head to recheck allowance through normal admission. The original key replays this hold; waiting on it will not resume it. Do not reset round controls, infer availability from local rounds or manually rerun the review. Repeated timeouts can be reported with the original operation/attempt IDs."}
 	case "allowance_exhausted":
 		if channel != "cli" {
 			return nil

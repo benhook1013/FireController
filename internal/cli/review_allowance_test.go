@@ -13,7 +13,7 @@ import (
 )
 
 func TestReviewAllowanceCLIRoundTrip(t *testing.T) {
-	for _, channel := range []string{"cli", "hosted", "legacy"} {
+	for _, channel := range []string{"cli", "hosted", "legacy", "timeout"} {
 		t.Run(channel, func(t *testing.T) {
 			f := setupServiceFixture(t)
 			project := f.project(t, "retained-allowance")
@@ -27,6 +27,9 @@ func TestReviewAllowanceCLIRoundTrip(t *testing.T) {
 				op.Channel = channel
 				op.Reason = "hosted_allowance_cooldown"
 				op.Allowance = &client.ReviewAllowanceObservation{Kind: "hosted_cooldown", ObservedAt: op.UpdatedAt, RetryNotBefore: "2026-01-01T00:10:00Z"}
+			}
+			if channel == "timeout" {
+				op.Reason = "allowance_timeout"
 			}
 			selection := client.ReviewRunState{Selection: client.ReviewRunSelection{ID: cliSelectionID, ProjectID: project, ActorID: op.ActorID, WorkerID: worker, Channel: op.Channel, ConfigurationRevision: 1, PolicyRevision: 1, ExpectedPullNumber: 2, State: "selected", Revision: 3, OperationID: op.ID, CreatedAt: op.CreatedAt, UpdatedAt: op.UpdatedAt}, Operation: &op}
 			var calls atomic.Int64
@@ -66,7 +69,13 @@ func TestReviewAllowanceCLIRoundTrip(t *testing.T) {
 				if nested, ok := got["operation"].(map[string]any); ok {
 					got = nested
 				}
-				if channel == "hosted" {
+				if channel == "timeout" {
+					diagnostic, ok := got["diagnostic"].(map[string]any)
+					if !ok || !strings.Contains(diagnostic["explanation"].(string), "15-second") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") {
+						t.Fatal("timeout omitted actionable recovery", got)
+					}
+					delete(got, "diagnostic")
+				} else if channel == "hosted" {
 					diagnostic, ok := got["diagnostic"].(map[string]any)
 					if !ok || !strings.Contains(diagnostic["explanation"].(string), "terminal") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") || !strings.Contains(diagnostic["next_action"].(string), "retry_not_before") {
 						t.Fatal("cooldown retry requires owner clarification", out)
