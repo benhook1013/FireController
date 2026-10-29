@@ -206,7 +206,7 @@ func (e *Engine) DecideReviewFinding(ctx context.Context, scope core.Scope, key,
 			return nil, err
 		}
 		if !adjudicationMatches(state, expected) {
-			return nil, conflict()
+			return nil, adjudicationRevisionConflict(state.Revision)
 		}
 		at, err := e.applyFindingDecision(ctx, tx, scope, evidence, &state, request)
 		if err != nil {
@@ -227,7 +227,10 @@ func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, k
 		if err != nil {
 			return nil, err
 		}
-		if !adjudicationMatches(state, expected) || state.Finalized || !evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed" {
+		if !adjudicationMatches(state, expected) {
+			return nil, adjudicationRevisionConflict(state.Revision)
+		}
+		if state.Finalized || !evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed" {
 			return nil, conflict()
 		}
 		a, err := readAttempt(ctx, tx, scope.ProjectID, evidence.AttemptID)
@@ -290,7 +293,7 @@ func (e *Engine) RecordFindingFix(ctx context.Context, scope core.Scope, key, ev
 			return nil, err
 		}
 		if !adjudicationMatches(state, expected) {
-			return nil, conflict()
+			return nil, adjudicationRevisionConflict(state.Revision)
 		}
 		at, err := applyFindingFix(&state, request)
 		if err != nil {
@@ -335,8 +338,11 @@ func applyFindingFix(state *ReviewAdjudication, request FindingFixRequest) (stri
 		return "", invalid()
 	}
 	f := &state.Findings[request.Finding]
-	if f.Disposition != "accepted" || f.FixSHA != *request.ExpectedSHA {
-		return "", conflict()
+	if f.Disposition != "accepted" {
+		return "", findingFixGuardConflict(state.Revision, *f, "finding_not_accepted")
+	}
+	if f.FixSHA != *request.ExpectedSHA {
+		return "", findingFixGuardConflict(state.Revision, *f, "fix_sha_conflict")
 	}
 	at := stamp()
 	f.FixSHA, f.ProofNote, f.FixedAt = request.FixSHA, request.ProofNote, at

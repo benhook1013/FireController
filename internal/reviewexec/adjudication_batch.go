@@ -74,7 +74,7 @@ func (e *Engine) DecideReviewFindings(ctx context.Context, scope core.Scope, key
 			return nil, err
 		}
 		if !adjudicationMatches(state, expected) {
-			return nil, conflict()
+			return nil, adjudicationRevisionConflict(state.Revision)
 		}
 		var at string
 		for _, item := range request.Items {
@@ -111,7 +111,7 @@ func (e *Engine) RecordFindingFixes(ctx context.Context, scope core.Scope, key, 
 			return nil, err
 		}
 		if !adjudicationMatches(state, expected) {
-			return nil, conflict()
+			return nil, adjudicationRevisionConflict(state.Revision)
 		}
 		var at string
 		for _, item := range request.Items {

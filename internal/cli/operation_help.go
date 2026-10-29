@@ -268,7 +268,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 			out.Semantics = append(out.Semantics, "Each item requires finding, disposition accepted|rejected and its own nonblank reason (at most 2048 UTF-8 bytes). Optional expected_route_revision guards a routed source correction; receiving fix authority remains separate. No accept-all selection or shared default reason.")
 		} else {
 			out.FileExample = map[string]any{"expected_revision": 1, "items": []any{map[string]any{"finding": 0, "expected_sha": "", "fix_sha": "0123456789abcdef0123456789abcdef01234567", "proof_note": "Verified published fix and focused test"}}}
-			out.Semantics = append(out.Semantics, "Each item requires finding, expected_sha (explicit empty string when no fix exists), fix_sha (40 lowercase hexadecimal characters) and its own nonblank proof_note (at most 2048 UTF-8 bytes). Only accepted source findings can receive proof; receiving routed fixes use route controls.")
+			out.Semantics = append(out.Semantics, "Each item requires finding, expected_sha (the currently stored fix_sha, or an explicit empty string for the first fix; not the PR head or original reviewed SHA), fix_sha (40 lowercase hexadecimal characters) and its own nonblank proof_note (at most 2048 UTF-8 bytes). Only accepted source findings can receive proof; receiving routed fixes use route controls.")
 		}
 		out.Example = "<bound launcher> " + operation + " review_evidence_0123456789abcdef0123456789abcdef --file /private/selected-findings.json --key selected-batch-1"
 		out.Documentation = "docs/review-controls.md"
