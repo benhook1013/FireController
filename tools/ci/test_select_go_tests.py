@@ -83,7 +83,15 @@ class SelectionTests(unittest.TestCase):
         needs = re.search(r"^    needs: \[([^\]]+)\]$", gate, re.MULTILINE)
         self.assertIsNotNone(needs)
         required = {name.strip() for name in needs[1].split(",")}
-        self.assertEqual(required, jobs - {"validate"})
+        self.assertEqual(required, jobs - {"validate", "publish"})
+        publish = workflow.split("\n  publish:\n", 1)[1]
+        self.assertIn("needs: [validate]", publish)
+        self.assertIn("github.event_name == 'push'", publish)
+        self.assertIn("refs/heads/develop", publish)
+        self.assertIn("refs/heads/main", publish)
+        self.assertIn("packages: write", publish)
+        self.assertNotIn("docker build", publish)
+        self.assertIn("sha256sum --check", publish)
         for job in required:
             self.assertIn("needs." + job + ".result", gate)
         self.assertIn("if: ${{ always() }}", gate)

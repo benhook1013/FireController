@@ -81,6 +81,8 @@ The build produces `fcd` (the service with its embedded website), `fc` (the CLI)
 
 ## Host it your way
 
+CI publishes tested [container images and native client bundles](docs/releases.md). Use an exact source revision and image digest when installing a development build.
+
 One installation can serve several projects, each with its own workers, jobs, messages, review configuration and appearance. Each project binds one GitHub repository. Run it on a single computer or host it on a network server with HTTPS; local and remote clients use the same API.
 
 The service and clients are written in Go, the embedded browser uses React and TypeScript, and durable state lives in SQLite on local storage. The current deployment model is one active service replica. Multiple active replicas and distributed review executors are future work.

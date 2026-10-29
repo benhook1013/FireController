@@ -30,6 +30,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Managed backups](backups.md): verified local bundles, managed scheduling/retention and inactive restore, with activation limits.
 - [Offsite backups](offsite-backups.md): optional rclone transfer, independent retention, private connection setup and verified recovery.
 - [Provider resumption](provider-resumption.md): explicit operator reconciliation, retained-work abandonment and release after restore; implementation and proof status are recorded at that owner.
+- [Build publication and deployment](releases.md): tested GHCR images, native client bundles and explicit rollout limits.
 - [Container runtime](container-runtime.md): Linux/amd64 image, Git HTTPS dependencies, private volumes and optional operator review capabilities.
 - [Hosting and HTTPS](hosting.md): local/remote deployment, infrastructure-owned certificates, persistence and executed hosted proof.
 - [Quiet agent message wait](message-wait.md): selected bounded CLI/MCP subscription behavior, output and host proof limits.

@@ -2,6 +2,8 @@
 
 ## Supported image
 
+[Build publication](releases.md) provides CI-tested images in GHCR and matching native client bundles. Source builds remain available below.
+
 The root [Dockerfile](../Dockerfile) builds the Linux/amd64 daemon from Go source and committed embedded browser assets. It uses the official Go 1.27.2 Bookworm builder and Debian Bookworm slim runtime, with immutable image-index digests as defaults. The runtime installs Git, its HTTPS transport dependencies and CA certificates through Debian's signed package repositories, retaining package copyright files. It runs as UID/GID 65532 with `/fcd` as its entrypoint. No GitHub credential, operator catalog, provider CLI or CLI authentication context is included.
 
 The source build uses `CGO_ENABLED=0`, `-trimpath` and `-buildvcs=false`. Preserve the selected source commit and resulting image digest as release evidence: embedded VCS metadata does not identify this archive/context build. The build context allowlist includes only Go source, embedded assets, module files and the license; `.git`, `.local`, host profiles, node_modules and private captures are excluded. Do not place secrets in source files or pass them as build arguments.

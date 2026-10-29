@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - develop
 
 permissions:
   contents: read
@@ -158,6 +159,15 @@ jobs:
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fcmcp-windows.exe ./cmd/fcmcp
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fcmcp-macos ./cmd/fcmcp
 
+      - name: Package tested Linux clients
+        run: python3 tools/release/package-clients.py bin linux-amd64 "$RUNNER_TEMP/client-release" "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: clients-linux-amd64-${{ github.sha }}
+          path: ${{ runner.temp }}/client-release/*
+          if-no-files-found: error
+          retention-days: 14
+
   container:
     name: Container runtime
     runs-on: ubuntu-latest
@@ -168,7 +178,11 @@ jobs:
           persist-credentials: false
       - name: Build and check provider container runtime
         run: |
-          docker build --platform linux/amd64 -t firecontroller:ci .
+          docker build --platform linux/amd64 \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.licenses=Apache-2.0" \
+            -t firecontroller:ci .
           docker run --rm --pull=never --network none --read-only \
             --cap-drop ALL --security-opt no-new-privileges \
             --tmpfs /tmp:rw,nosuid,nodev,size=67108864,mode=1777 \
@@ -180,6 +194,23 @@ jobs:
               test -s /etc/ssl/certs/ca-certificates.crt
               git init --bare --template= /tmp/source.git
             '
+      - name: Retain the tested image for publication
+        if: github.event_name == 'push'
+        run: |
+          docker save firecontroller:ci --output "$RUNNER_TEMP/firecontroller-image.tar"
+          cd "$RUNNER_TEMP"
+          sha256sum firecontroller-image.tar > firecontroller-image.tar.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name == 'push'
+        with:
+          name: container-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/firecontroller-image.tar
+            ${{ runner.temp }}/firecontroller-image.tar.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
   native-smoke:
     name: Native smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -212,6 +243,7 @@ jobs:
           go build -trimpath -o "$FC_SMOKE_BIN_DIR/fc$exe" ./cmd/fc
           go build -trimpath -o "$FC_SMOKE_BIN_DIR/fcd$exe" ./cmd/fcd
           go build -trimpath -o "$FC_SMOKE_BIN_DIR/fcmcp$exe" ./cmd/fcmcp
+          printf 'FC_SMOKE_BIN_DIR=%s\n' "$FC_SMOKE_BIN_DIR" >> "$GITHUB_ENV"
       - name: Smoke native coordination binaries
         timeout-minutes: 2
         env:
@@ -222,6 +254,15 @@ jobs:
         env:
           FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
         run: go test -v -tags=packaged_smoke -run '^TestPackagedUpgradeSmoke$' -count=1 -timeout=60s ./tools/packagedsmoke
+
+      - name: Package tested native clients
+        run: python3 tools/release/package-clients.py "$FC_SMOKE_BIN_DIR" "$(go env GOOS)-$(go env GOARCH)" "$RUNNER_TEMP/client-release" "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: clients-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/client-release/*
+          if-no-files-found: error
+          retention-days: 14
 
   validate:
     name: validate
@@ -242,3 +283,52 @@ jobs:
           test "$QUALIFICATION_RESULT" = success
           test "$CONTAINER_RESULT" = success
           test "$NATIVE_RESULT" = success
+
+  publish:
+    name: Publish tested container
+    needs: [validate]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: container-publication-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: container-${{ github.sha }}
+          path: ${{ runner.temp }}/container
+      - name: Load the exact image tested by this run
+        working-directory: ${{ runner.temp }}/container
+        run: |
+          sha256sum --check firecontroller-image.tar.sha256
+          docker load --input firecontroller-image.tar
+          test "$(docker image inspect firecontroller:ci --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
+          test "$(docker image inspect firecontroller:ci --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" = "https://github.com/$GITHUB_REPOSITORY"
+      - name: Publish revision image to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKER_CONFIG: ${{ runner.temp }}/registry-auth
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker tag firecontroller:ci "$image:sha-$GITHUB_SHA"
+          docker push "$image:sha-$GITHUB_SHA"
+          digest="$(docker image inspect "$image:sha-$GITHUB_SHA" --format '{{index .RepoDigests 0}}')"
+          printf '### Published container\n\n`%s`\n\nSource: `%s`\n' "$digest" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$digest" > "$RUNNER_TEMP/image-reference.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-reference-${{ github.sha }}
+          path: ${{ runner.temp }}/image-reference.txt
+          if-no-files-found: error
+          retention-days: 90
+      - name: Remove temporary registry authentication
+        if: always()
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/registry-auth
+        run: docker logout ghcr.io

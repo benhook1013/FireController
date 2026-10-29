@@ -16,7 +16,7 @@ ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 check: workflow-check ci-selection-check browser-check fmt-check test docs-check source-converter-check
 
 workflow-check:
-	$(ACTIONLINT) -shellcheck="" -pyflakes="" .github/workflows/ci.yml
+	$(ACTIONLINT) -shellcheck="" -pyflakes="" .github/workflows/*.yml
 
 ci-selection-check:
 	python3 -m unittest discover -s tools/ci -p 'test_*.py'
