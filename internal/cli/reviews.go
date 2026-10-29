@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"unicode"
@@ -133,7 +134,14 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 		return call, client.ValidateReviewOperationID(call.position[0]) == nil
 	}
 	if call.subcommand == "source-operation" {
-		return call, client.ValidateReviewSourceRefreshID(call.position[0]) == nil
+		if err := client.ValidateReviewSourceRefreshID(call.position[0]); err != nil {
+			var field *client.Error
+			if errors.As(err, &field) {
+				call.argumentDiagnostic = &diagnostic{Code: "invalid_arguments", Message: field.Message, Action: field.Action, Details: field.Details}
+			}
+			return call, false
+		}
+		return call, true
 	}
 	if call.subcommand == "run" {
 		return call, reviewID(call.position[0], "review_run_")

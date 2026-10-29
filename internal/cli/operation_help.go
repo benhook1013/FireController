@@ -306,7 +306,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	case "reviews source-operation":
 		out.Usage = "<bound launcher> reviews source-operation OPERATION_ID"
 		out.Required = []string{"OPERATION_ID"}
-		out.Semantics = []string{"Reads one retained source-refresh operation without starting another GitHub refresh or review.", "Use the original operation ID from reviews source-refresh. Review-execution operations are read with reviews operation instead."}
+		out.Semantics = []string{"Reads one retained source-refresh operation without starting another GitHub refresh or review.", "Use the complete original review_refresh_ ID from reviews source-refresh, including its prefix and 32 lowercase hexadecimal characters. Review-execution operations are read with reviews operation instead."}
 		out.Example = "<bound launcher> reviews source-operation review_refresh_0123456789abcdef0123456789abcdef"
 		out.Documentation = "docs/review-source.md"
 	case "reviews fix":

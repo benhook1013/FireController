@@ -130,8 +130,11 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 		var in struct {
 			ID string `json:"refresh_id"`
 		}
-		if strictjson.Decode(data, &in) != nil || client.ValidateReviewSourceRefreshID(in.ID) != nil {
+		if strictjson.Decode(data, &in) != nil {
 			return args, invalidArguments()
+		}
+		if err := client.ValidateReviewSourceRefreshID(in.ID); err != nil {
+			return args, invalidReviewArguments(err)
 		}
 		args.id = in.ID
 		return args, nil
@@ -348,7 +351,7 @@ func reviewExecutionDefinitions() []definition {
 			"include_ci":                      map[string]any{"type": "boolean", "default": false, "description": "Collect required checks for the selected base branch. not_required means no required checks; optional workflows may still run or fail and are not assessed. Ordinary reads remain provider-free."},
 			"wait_seconds":                    map[string]any{"type": "integer", "minimum": 0, "maximum": maxToolWaitSeconds, "default": 2, "description": "Wait for terminal facts up to this many seconds; zero requests an immediate receipt. Extends this source-refresh call budget only."},
 		}, "idempotency_key", "expected_configuration_revision", "pull_number", "head_sha")},
-		{"review_source_refresh_read", "Read one explicit retained source-refresh operation. Local provider-free read; no automatic polling or source refresh.", schema(map[string]any{"refresh_id": map[string]any{"type": "string", "minLength": 47, "maxLength": 47, "pattern": "^review_refresh_[a-f0-9]{32}$"}}, "refresh_id")},
+		{"review_source_refresh_read", "Read one explicit retained source-refresh operation. Local provider-free read; no automatic polling or source refresh.", schema(map[string]any{"refresh_id": map[string]any{"type": "string", "minLength": 47, "maxLength": 47, "pattern": "^review_refresh_[a-f0-9]{32}$", "description": "Full retained source-refresh ID, including review_refresh_ prefix; copy it unchanged from its receipt or assessment."}}, "refresh_id")},
 		{"review_source_policy_assess", "Read current project review policy as of a retained source observation for one PR. Local provider-free read; no current remote-source verification, CI or merge-readiness verdict.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
 		{"review_source_readiness", "Read one retained as-of readiness assessment using current local policy. Required CI covers the selected base branch, not optional workflow health; GitHub merge-state gates remain separate. Provider-free, compact selected-PR read; no refresh, polling or merge authorization.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}, "pull_number")},
 		{"review_source_ci_assess", "Read retained required-CI assessment for the selected base branch of one PR. Optional diagnostics names required contexts and distinguishes selected CheckRuns from same-name Commit Statuses. not_required means no required checks; optional workflows are not assessed. Local provider-free read; reports observation age and applicability, never merge readiness.", schema(map[string]any{"pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}, "diagnostics": map[string]any{"type": "boolean", "default": false, "description": "Include at most 128 retained required-context outcomes and selected check/status identities, without fetching GitHub."}}, "pull_number")},

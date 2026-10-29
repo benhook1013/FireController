@@ -115,7 +115,9 @@ func ValidateReviewSourceRequest(request ReviewSourceRequest) error {
 
 func ValidateReviewSourceRefreshID(id string) error {
 	if !validReviewOpaqueID(id, "review_refresh_") {
-		return validation()
+		err := fail("validation_failed", "refresh_id must be review_refresh_ followed by exactly 32 lowercase hexadecimal characters.", "Copy the full refresh_id from the original source-refresh receipt or retained assessment, including its prefix. Do not start another refresh to repair this read. No request was sent.", 400)
+		err.Details = map[string]string{"field": "refresh_id", "format": "review_refresh_ followed by 32 lowercase hexadecimal characters"}
+		return err
 	}
 	return nil
 }

@@ -69,6 +69,7 @@ type invocation struct {
 	presentation          *presentationInvocation
 	publication           *publicationInvocation
 	helpOperation         string
+	argumentDiagnostic    *diagnostic
 	reviewOperations      client.ReviewOperationsOptions
 	reviewOperationStatus *reviewOperationStatusInvocation
 	reviewActiveQueue     bool
@@ -101,6 +102,9 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer) int {
 func RunContext(ctx context.Context, args []string, env map[string]string, stdout, stderr io.Writer) int {
 	call, ok := parseInvocation(args)
 	if !ok {
+		if call.argumentDiagnostic != nil {
+			return reportDetails(stderr, ExitUsage, *call.argumentDiagnostic)
+		}
 		if call.notes != nil && call.notes.argumentDiagnostic != nil {
 			return reportDetails(stderr, ExitUsage, *call.notes.argumentDiagnostic)
 		}
