@@ -138,6 +138,7 @@ def main():
         annotations = deployment["spec"]["template"].setdefault("metadata", {}).setdefault("annotations", {})
         annotations["firecontroller.dev/source-commit"] = args.source_revision
         annotations["firecontroller.dev/image-reference"] = args.image
+        annotations["firecontroller.dev/rollout-id"] = uuid.uuid4().hex
         annotations.pop("firecontroller.dev/binary-sha256", None)  # Old locally built binary provenance cannot describe this image.
         replacing = True  # A replace with a lost outcome must not resume old admission.
         result = subprocess.run(k + ["replace", "-f", "-"], input=json.dumps(deployment), text=True, capture_output=True, timeout=30)

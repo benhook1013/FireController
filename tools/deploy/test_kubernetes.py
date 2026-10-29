@@ -85,6 +85,7 @@ class RolloutSequenceTests(unittest.TestCase):
                 self.assertEqual(changed["spec"]["template"]["spec"]["containers"][1], original["spec"]["template"]["spec"]["containers"][1])
                 self.assertEqual(changed["spec"]["template"]["metadata"]["annotations"]["firecontroller.dev/source-commit"], revision)
                 self.assertNotIn("firecontroller.dev/binary-sha256", changed["spec"]["template"]["metadata"]["annotations"])
+                self.assertRegex(changed["spec"]["template"]["metadata"]["annotations"]["firecontroller.dev/rollout-id"], r"^[0-9a-f]{32}$")
                 current = changed
                 state["draining"] = False
                 return subprocess.CompletedProcess(command, int(replace_failure), "")
