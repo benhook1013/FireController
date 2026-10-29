@@ -104,7 +104,7 @@ try {
   const readableMergeHead = async page => {
     const original = page.viewportSize();
     try {
-      const head = page.getByRole('region',{name:'Merge train head',exact:true});
+      const head = page.getByRole('region',{name:'Review queue head',exact:true});
       await head.waitFor();
       const pills = head.locator('.review-round-pill');
       await expect(pills).toHaveCount(6); // Shared queue row shows the latest six from the bounded archive page.
@@ -252,7 +252,7 @@ try {
 
   phase = 'recent-queue';
   const reviewPath = `${current.home}/reviews`;
-  await current.page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Reviews', exact:true}).click();
+  await current.page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Review queue', exact:true}).click();
   await expect.poll(() => {
     const url = new URL(current.page.url());
     return url.pathname + url.hash;
