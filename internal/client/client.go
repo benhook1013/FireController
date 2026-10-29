@@ -77,7 +77,7 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 	var instance struct {
 		InstanceID string `json:"instance_id"`
 	}
-	if err = c.get(ctx, []string{"api", "v1", "instance"}, nil, false, &instance); err != nil {
+	if err = c.verifyInstance(ctx, &instance); err != nil {
 		c.Close()
 		// Only the identity read was sent, never the caller's selected write.
 		var failure *Error
@@ -94,6 +94,31 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 		return nil, fail("instance_mismatch", "The service instance does not match the selected profile.", "Verify the service and explicitly update the private profile if its identity changed.", 409)
 	}
 	return c, nil
+}
+
+// Only this bootstrap GET may be repeated. The selected operation has not been
+// dispatched, and both attempts retain the same credential and instance pin.
+func (c *Client) verifyInstance(ctx context.Context, instance any) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*requestTimeout)
+	defer cancel()
+	for attempt := 0; ; attempt++ {
+		err := c.get(ctx, []string{"api", "v1", "instance"}, nil, false, instance)
+		var failure *Error
+		if err == nil || attempt != 0 || ctx.Err() != nil || !errors.As(err, &failure) {
+			return err
+		}
+		transient := failure.Code == "connection_failed" || failure.Code == "deadline_exceeded" || failure.Status == 502 || failure.Status == 503 || failure.Status == 504
+		if !transient {
+			return err
+		}
+		timer := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return contextError(ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 func newConnectionID() (string, error) {

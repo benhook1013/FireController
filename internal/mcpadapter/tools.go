@@ -128,6 +128,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			if tool.name == "review_start" || tool.name == "review_selection_read" || tool.name == "review_request" || tool.name == "review_operation_read" {
 				timeout = client.ReviewOperationBudget(args.reviewSourceWait)
 			}
+			// Allow bounded identity recovery before a normal five-second
+			// operation; long waits retain their existing 55-second host cap.
+			timeout = max(timeout, 15*time.Second)
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			service, err := transports.newClient(ctx, binding, request.Session)

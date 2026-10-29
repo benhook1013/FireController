@@ -238,6 +238,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if call.reviewRun != nil {
 		timeout = client.ReviewOperationBudget(call.reviewRun.waitSeconds)
 	}
+	// Bootstrap may recover one transient read; ordinary HTTP operations keep
+	// their five-second limit and successful connections add no waiting.
+	timeout = max(timeout, 3*serviceTimeout)
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	service, err := client.New(requestCtx, binding)
