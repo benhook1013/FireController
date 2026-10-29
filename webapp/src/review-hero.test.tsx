@@ -73,6 +73,20 @@ describe('merge-head recent review rounds', () => {
     expect(hero).toContain('href="/projects/project#review-pr-7"'); expect(hero).toContain('>Review queue ↗</a>');
     expect(hero).not.toContain('Review history ↗'); expect(normal).toContain('Review history ↗');
   });
+  it('waits for authoritative adjudication before highlighting a zero-accepted round', () => {
+    const captured = run('adjudicating', 'hosted', { found: 4, accepted: 0, finalized: false });
+    for (const value of [captured, { ...captured, accepted: 2 }, { ...captured, accepted: 2, finalized: true }]) {
+      archive.items = [value]; archive.hasMore = false;
+      expect(markup(false)).not.toContain('review-pill-zero');
+    }
+    // A genuinely finalized clean result remains clean after later Git changes.
+    archive.items = [{ ...captured, accepted: 0, finalized: true, head_sha: 'original-reviewed-head' }];
+    expect(markup(false)).toContain('review-pill-zero');
+    for (const value of [{ ...archive.items[0] as ReviewRunSummary, complete: false }, { ...archive.items[0] as ReviewRunSummary, attributable: false }]) {
+      archive.items = [value];
+      expect(markup(false)).not.toContain('review-pill-zero');
+    }
+  });
   it('caps queue previews independently at the newest six without losing producer order or totals', () => {
     archive.items = Array.from({length:8}, (_, index) => 8-index).flatMap(index => [run(`h${index}`, 'hosted'), run(`c${index}`, 'cli')]);
     archive.hasMore = false;

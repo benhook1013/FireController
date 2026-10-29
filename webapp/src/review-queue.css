@@ -64,3 +64,8 @@
 .review-queue-content>.review-history>.review-lanes>.review-lane{padding:9px 12px}
 .review-queue .review-row-draft .review-queue-position{background:var(--fc-parked_text,#82704c);color:var(--fc-parked_background,#e5e0d4)}
 .review-queue .review-row-draft.review-status-closed .review-queue-position{background-image:repeating-linear-gradient(135deg,var(--fc-canvas_text,#242832) 0 4px,var(--fc-parked_text,#82704c) 4px 10px)}
+
+/* Refresh feedback marks the outline, never the result-colour fill. */
+.review-round-pill.semantic-change-0{animation:review-pill-refresh-even 1.2s ease-out both}.review-round-pill.semantic-change-1{animation:review-pill-refresh-odd 1.2s ease-out both}
+@keyframes review-pill-refresh-even{from{box-shadow:inset 0 0 0 2px var(--fc-surface_muted,#666874)}to{box-shadow:inset 0 0 0 2px transparent}}@keyframes review-pill-refresh-odd{from{box-shadow:inset 0 0 0 2px var(--fc-surface_muted,#666874)}to{box-shadow:inset 0 0 0 2px transparent}}
+@media(prefers-reduced-motion:reduce){.review-round-pill.semantic-change-0,.review-round-pill.semantic-change-1{animation:none}}
