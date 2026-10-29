@@ -106,6 +106,31 @@ func plainFindingsForTest(findings []FindingView) []Finding {
 	return result
 }
 
+func TestTimelineFinalizedInventoryUsesExactSourceIndex(t *testing.T) {
+	f := newAPIFixture(t)
+	rows, err := f.store.DB().QueryContext(t.Context(), "EXPLAIN QUERY PLAN SELECT "+timelineFindingRevisionSQL+" FROM review_run_versions r WHERE r.project_id=? AND r.id=? AND r.version_revision=?", f.project, "review_run_example", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan, " | ")
+	if !strings.Contains(joined, "review_run_versions_source_revision") || strings.Contains(joined, "TEMP B-TREE") || strings.Contains(joined, "SCAN v") {
+		t.Fatal("original-finalization lookup lost its bounded index", joined)
+	}
+}
+
 func TestTimelineAcceptedSeverityAndDetailPresentation(t *testing.T) {
 	f := newAPIFixture(t)
 	p := samplePull(14, "Severity timeline")

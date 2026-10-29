@@ -181,6 +181,17 @@ func addFindingDisplaySeverity(response *RunDetailResponse) {
 	}
 }
 
+// Native finalization freezes accepted counts. Its original retained inventory
+// must supply the matching partition even after a finding is routed or rejected.
+// The source/version index bounds this lookup and the selected run version keeps
+// pinned history from observing a future finalization.
+const timelineFindingRevisionSQL = `CASE WHEN r.source='native-executor' AND r.finalized=1 THEN
+ (SELECT v.version_revision FROM review_run_versions v
+ WHERE v.project_id=r.project_id AND v.source=r.source AND v.source_run_id=r.source_run_id
+ AND v.finalized=1 AND v.version_revision<=r.version_revision
+ ORDER BY v.version_revision ASC LIMIT 1)
+ ELSE r.version_revision END`
+
 // Fetch only this selected page's scalar finding inventory, with a byte-bounded
 // detail prefix exclusively for Hosted findings lacking scalar severity.
 func enrichTimelineSeverity(ctx context.Context, tx *sql.Tx, project, snapshot string, number int64, items []RunSummary) error {
@@ -201,9 +212,12 @@ func enrichTimelineSeverity(ctx context.Context, tx *sql.Tx, project, snapshot s
 	}
 	prefix := `x''`
 	if len(hosted) > 0 {
-		prefix = `CASE WHEN severity IN ('','unknown') AND disposition='accepted' AND run_id IN (` + strings.Join(hosted, ",") + `) THEN substr(CAST(detail AS BLOB),1,4096) ELSE x'' END`
+		prefix = `CASE WHEN f.severity IN ('','unknown') AND f.disposition='accepted' AND f.run_id IN (` + strings.Join(hosted, ",") + `) THEN substr(CAST(f.detail AS BLOB),1,4096) ELSE x'' END`
 	}
-	query := `SELECT run_id,severity,disposition,` + prefix + ` FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id IN (` + strings.Join(ids, ",") + `)`
+	query := `SELECT f.run_id,f.severity,f.disposition,` + prefix + ` FROM review_runs r
+ JOIN review_finding_versions f ON f.project_id=r.project_id AND f.run_id=r.id
+ AND f.pull_number=r.pull_number AND f.run_version_revision=(` + timelineFindingRevisionSQL + `)
+ WHERE r.project_id=? AND r.snapshot_id=? AND r.pull_number=? AND r.id IN (` + strings.Join(ids, ",") + `)`
 	args = append(args, project, snapshot, number)
 	for _, item := range items {
 		args = append(args, item.ID)
