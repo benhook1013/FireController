@@ -197,7 +197,10 @@ func TestReviewExecutionCLIInvalidArgumentsPrecedeCredentialAndHTTP(t *testing.T
 	for _, suffix := range [][]string{{"--out-of-order", "--out-of-order"}, {"--out-of-order=false", "--out-of-order"}, {"--out-of-order="}, {"--out-of-order=1"}, {"--out-of-order=TRUE"}, {"--out-of-order=null"}, {"--out-of-order", "false"}, {"--allow-out-of-order"}} {
 		invalid = append(invalid, append(append([]string{}, base...), suffix...))
 	}
-	for _, flag := range []string{"--out-of-order", "--out-of-order=true", "--out-of-order=false"} {
+	for _, suffix := range [][]string{{"--override-file-limit", "--override-file-limit"}, {"--override-file-limit=null"}, {"--override-file-limit=1"}, {"--override-file-limit", "false"}} {
+		invalid = append(invalid, append(append([]string{}, base...), suffix...))
+	}
+	for _, flag := range []string{"--out-of-order", "--out-of-order=true", "--out-of-order=false", "--override-file-limit", "--override-file-limit=false"} {
 		invalid = append(invalid, []string{"reviews", "start", "--channel", "cli", "--key", "automatic", flag})
 	}
 	for _, args := range invalid {
@@ -305,6 +308,70 @@ func TestReviewExecutionCLIAggregateBudgetAndCancellation(t *testing.T) {
 			}
 			if mode == "cancelled" && elapsed > time.Second {
 				t.Fatal("cancellation did not release request", elapsed)
+			}
+		})
+	}
+}
+
+func TestReviewExecutionCLIFileLimitOverrideWireAndRetainedReplay(t *testing.T) {
+	for name, flags := range map[string][]string{
+		"default": nil,
+		"bare":    {"--override-file-limit"},
+		"true":    {"--override-file-limit=true"},
+		"false":   {"--override-file-limit=false"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, project, worker := reviewExecutionFixture(t)
+			var posts atomic.Int64
+			want := `{"expected_configuration_revision":1,"pull_number":2,"channel":"cli","head_sha":"` + strings.Repeat("a", 40) + `"`
+			allow := name == "bare" || name == "true"
+			if allow {
+				want += `,"override_file_limit":true`
+			}
+			want += `}`
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/reviews/requests") {
+					index := posts.Add(1)
+					expected := want
+					if index == 3 {
+						changed := client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40), OverrideFileLimit: !allow}
+						encoded, _ := json.Marshal(changed)
+						expected = string(encoded)
+					}
+					body, err := io.ReadAll(r.Body)
+					if err != nil || string(body) != expected || r.URL.Path != "/api/v1/projects/"+project+"/reviews/requests" || r.Header.Get("X-FC-Worker") != worker || r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("Authorization") != "Bearer "+f.admin {
+						t.Error("CLI changed exact action or binding", string(body), err)
+					}
+					r.Body = io.NopCloser(strings.NewReader(string(body)))
+				}
+				f.handler.ServeHTTP(w, r)
+			}))
+			defer srv.Close()
+			path := mutationProfiles(t, f, srv.URL, map[string][2]string{"builder": {project, worker}})
+			// Place the bare boolean immediately before --key: it must not eat it.
+			base := reviewRequestArgs()
+			args := append(append(append([]string{}, base[:3]...), flags...), base[3:]...)
+			before := f.resolverHit.Load()
+			first := mutationSuccess(t, path, "builder", args...)
+			if posts.Load() != 1 {
+				t.Fatal("CLI did not submit exactly once")
+			}
+			replay := mutationSuccess(t, path, "builder", args...)
+			if encodeString(first) != encodeString(replay) || posts.Load() != 2 {
+				t.Fatal("explicit replay changed its receipt")
+			}
+			code, out, stderr := mutationInvoke(t, path, "builder", "reviews", "operation", first["id"].(string), "--diagnostics")
+			var operation client.ReviewOperation
+			if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &operation) != nil || operation.OverrideFileLimit != allow {
+				t.Fatal("operation lost requested ordering choice", code, stderr)
+			}
+			changed := append([]string{}, base...)
+			if !allow {
+				changed = append(changed, "--override-file-limit")
+			}
+			code, _, stderr = mutationInvoke(t, path, "builder", changed...)
+			if code == 0 || !strings.Contains(stderr, "idempotency_conflict") || f.resolverHit.Load() != before {
+				t.Fatal("changed intent reused key or contacted provider", code, stderr)
 			}
 		})
 	}

@@ -196,7 +196,7 @@ func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Sc
 		return Receipt{}, core.Fail("overloaded", "Review request capacity is occupied; recover or finish existing operations.", 503)
 	}
 	id, at := core.NewID("review_operation"), stamp()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,allow_out_of_order) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',1,'','',?,?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, revision, policy.Revision, e.capabilities[c.CapabilityID].Fingerprint, r.PullNumber, r.Channel, r.HeadSHA, at, at, r.AllowOutOfOrder); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,allow_out_of_order,override_file_limit) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',1,'','',?,?,?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, revision, policy.Revision, e.capabilities[c.CapabilityID].Fingerprint, r.PullNumber, r.Channel, r.HeadSHA, at, at, r.AllowOutOfOrder, r.OverrideFileLimit); err != nil {
 		return Receipt{}, err
 	}
 	if err = bindRoundControl(ctx, tx, Operation{ID: id, ProjectID: scope.ProjectID, PullNumber: r.PullNumber, Channel: r.Channel, State: "queued"}); err != nil {
@@ -218,31 +218,35 @@ func readOperation(ctx context.Context, tx EvidenceQuery, project, id string) (O
 
 func readOperationBase(ctx context.Context, tx EvidenceQuery, project, id string) (Operation, error) {
 	var o Operation
-	orderColumn, err := operationOrderColumn(ctx, tx)
+	orderColumn, limitColumn, err := operationFlagColumns(ctx, tx)
 	if err != nil {
 		return o, err
 	}
-	err = tx.QueryRowContext(ctx, `SELECT id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,`+orderColumn+` FROM review_operations WHERE project_id=? AND id=?`, project, id).Scan(&o.ID, &o.ProjectID, &o.ActorID, &o.WorkerID, &o.ConfigurationRevision, &o.PolicyRevision, &o.CapabilityFingerprint, &o.PullNumber, &o.Channel, &o.HeadSHA, &o.State, &o.Revision, &o.Reason, &o.AttemptID, &o.CreatedAt, &o.UpdatedAt, &o.AllowOutOfOrder)
+	err = tx.QueryRowContext(ctx, `SELECT id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,`+orderColumn+`,`+limitColumn+` FROM review_operations WHERE project_id=? AND id=?`, project, id).Scan(&o.ID, &o.ProjectID, &o.ActorID, &o.WorkerID, &o.ConfigurationRevision, &o.PolicyRevision, &o.CapabilityFingerprint, &o.PullNumber, &o.Channel, &o.HeadSHA, &o.State, &o.Revision, &o.Reason, &o.AttemptID, &o.CreatedAt, &o.UpdatedAt, &o.AllowOutOfOrder, &o.OverrideFileLimit)
 	if errors.Is(err, sql.ErrNoRows) {
 		return o, core.Fail("not_found", "The review operation is unavailable in this project.", 404)
 	}
 	return o, err
 }
 
-// Older retained snapshots predate the flag. Only their declared schema
-// version supplies the false default; arbitrary missing/malformed SQL fails.
-func operationOrderColumn(ctx context.Context, q EvidenceQuery) (string, error) {
+// Older retained snapshots supply false only for flags introduced after their
+// declared version. Missing or malformed current columns fail the operation read.
+func operationFlagColumns(ctx context.Context, q EvidenceQuery) (string, string, error) {
 	var version string
 	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil {
-		return "", err
+		return "", "", err
 	}
+	const order = `CASE WHEN typeof(allow_out_of_order)='integer' AND allow_out_of_order IN (0,1) THEN allow_out_of_order END`
+	const limit = `CASE WHEN typeof(override_file_limit)='integer' AND override_file_limit IN (0,1) THEN override_file_limit END`
 	switch version {
 	case "1", "2", "3", "4", "5", "6":
-		return "0", nil
+		return "0", "0", nil
 	case "7":
-		return `CASE WHEN typeof(allow_out_of_order)='integer' AND allow_out_of_order IN (0,1) THEN allow_out_of_order END`, nil
+		return order, "0", nil
+	case "8":
+		return order, limit, nil
 	default:
-		return "", adjudicationStorageError()
+		return "", "", adjudicationStorageError()
 	}
 }
 

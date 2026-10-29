@@ -16,7 +16,7 @@ func ValidateSelectionSnapshot(ctx context.Context, q EvidenceQuery) error {
 	if err := validateSelectionPhysical(ctx, q); err != nil {
 		return err
 	}
-	orderColumn, err := operationOrderColumn(ctx, q)
+	orderColumn, limitColumn, err := operationFlagColumns(ctx, q)
 	if err != nil {
 		return err
 	}
@@ -60,6 +60,14 @@ func ValidateSelectionSnapshot(ctx context.Context, q EvidenceQuery) error {
 			}
 			if orderColumn != "0" {
 				if err = q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE id=(SELECT operation_id FROM review_selections WHERE id=?) AND (typeof(allow_out_of_order)!='integer' OR allow_out_of_order!=0))`, k.id).Scan(&invalidChild); err != nil {
+					return err
+				}
+				if invalidChild {
+					return runUnavailable()
+				}
+			}
+			if limitColumn != "0" {
+				if err = q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE id=(SELECT operation_id FROM review_selections WHERE id=?) AND (typeof(override_file_limit)!='integer' OR override_file_limit!=0))`, k.id).Scan(&invalidChild); err != nil {
 					return err
 				}
 				if invalidChild {

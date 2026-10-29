@@ -33,11 +33,11 @@ func reviewHold(reason string) error {
 }
 
 func sameOperation(left, right reviewexec.Operation) bool {
-	return left.ID == right.ID && left.ProjectID == right.ProjectID && left.ActorID == right.ActorID && left.WorkerID == right.WorkerID && left.ConfigurationRevision == right.ConfigurationRevision && left.PolicyRevision == right.PolicyRevision && left.CapabilityFingerprint == right.CapabilityFingerprint && left.PullNumber == right.PullNumber && left.HeadSHA == right.HeadSHA && left.Channel == right.Channel && left.AllowOutOfOrder == right.AllowOutOfOrder
+	return left.ID == right.ID && left.ProjectID == right.ProjectID && left.ActorID == right.ActorID && left.WorkerID == right.WorkerID && left.ConfigurationRevision == right.ConfigurationRevision && left.PolicyRevision == right.PolicyRevision && left.CapabilityFingerprint == right.CapabilityFingerprint && left.PullNumber == right.PullNumber && left.HeadSHA == right.HeadSHA && left.Channel == right.Channel && left.AllowOutOfOrder == right.AllowOutOfOrder && left.OverrideFileLimit == right.OverrideFileLimit
 }
 
 func operationRequest(operation reviewexec.Operation) reviewexec.Request {
-	return reviewexec.Request{ExpectedConfigurationRevision: operation.ConfigurationRevision, PullNumber: operation.PullNumber, HeadSHA: operation.HeadSHA, Channel: operation.Channel, AllowOutOfOrder: operation.AllowOutOfOrder}
+	return reviewexec.Request{ExpectedConfigurationRevision: operation.ConfigurationRevision, PullNumber: operation.PullNumber, HeadSHA: operation.HeadSHA, Channel: operation.Channel, AllowOutOfOrder: operation.AllowOutOfOrder, OverrideFileLimit: operation.OverrideFileLimit}
 }
 
 func samePreparedSource(left, right reviewexec.SourcePlan) bool {
@@ -211,7 +211,7 @@ func prepareReviewWorkspace(ctx context.Context, fetch func(context.Context, int
 	if err != nil || count == 0 {
 		return reviewworkspace.Workspace{}, 0, reviewHold("comparison_unavailable")
 	}
-	if ceiling := current.Policy.Policy.MaxReviewFiles; ceiling > 0 && count > ceiling {
+	if ceiling := current.Policy.Policy.MaxReviewFiles; !current.Operation.OverrideFileLimit && ceiling > 0 && count > ceiling {
 		return reviewworkspace.Workspace{}, 0, reviewHold("project_file_limit")
 	}
 	return workspace, count, nil

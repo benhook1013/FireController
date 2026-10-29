@@ -93,6 +93,8 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 	}
 	var explanation string
 	switch reason {
+	case "project_file_limit":
+		return &ReviewOperationDiagnostic{"The materialized comparison exceeds the optional project review-file ceiling. This operation is terminal and no review was started.", "Reduce the comparison, or deliberately select override_file_limit:true on a new authorized exact-target review_request (CLI --override-file-limit), with a fresh key and current configuration/head. This overrides only the project ceiling; provider restrictions, findings, allowances and all other admission checks still apply. Do not change project defaults or replay the held key expecting execution."}
 	case "allowance_exhausted":
 		if channel != "cli" {
 			return nil

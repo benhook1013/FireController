@@ -203,19 +203,20 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 		return args, nil
 	case "review_request":
 		var in struct {
-			Key             string `json:"idempotency_key"`
-			Revision        *int64 `json:"expected_configuration_revision"`
-			Number          *int64 `json:"pull_number"`
-			Channel         string `json:"channel"`
-			Head            string `json:"head_sha"`
-			Wait            *int   `json:"wait_seconds,omitempty"`
-			AllowOutOfOrder *bool  `json:"allow_out_of_order,omitempty"`
+			Key               string `json:"idempotency_key"`
+			Revision          *int64 `json:"expected_configuration_revision"`
+			Number            *int64 `json:"pull_number"`
+			Channel           string `json:"channel"`
+			Head              string `json:"head_sha"`
+			Wait              *int   `json:"wait_seconds,omitempty"`
+			AllowOutOfOrder   *bool  `json:"allow_out_of_order,omitempty"`
+			OverrideFileLimit *bool  `json:"override_file_limit,omitempty"`
 		}
 		if strictjson.Decode(data, &in) != nil || in.Revision == nil || in.Number == nil || !validKey(in.Key) {
 			return args, invalidArguments()
 		}
 		var fields map[string]json.RawMessage
-		if json.Unmarshal(data, &fields) != nil || fields["allow_out_of_order"] != nil && in.AllowOutOfOrder == nil {
+		if json.Unmarshal(data, &fields) != nil || fields["allow_out_of_order"] != nil && in.AllowOutOfOrder == nil || fields["override_file_limit"] != nil && in.OverrideFileLimit == nil {
 			return args, invalidArguments()
 		}
 		args.reviewSourceWait = 2
@@ -226,7 +227,7 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 			return args, invalidArguments()
 		}
 		args.key = in.Key
-		args.reviewRequest = client.ReviewRequest{ExpectedConfigurationRevision: *in.Revision, PullNumber: *in.Number, Channel: in.Channel, HeadSHA: in.Head, AllowOutOfOrder: in.AllowOutOfOrder != nil && *in.AllowOutOfOrder}
+		args.reviewRequest = client.ReviewRequest{ExpectedConfigurationRevision: *in.Revision, PullNumber: *in.Number, Channel: in.Channel, HeadSHA: in.Head, AllowOutOfOrder: in.AllowOutOfOrder != nil && *in.AllowOutOfOrder, OverrideFileLimit: in.OverrideFileLimit != nil && *in.OverrideFileLimit}
 		if err := invalidHeadSHA(in.Head); err != nil {
 			return args, err
 		}
@@ -359,6 +360,7 @@ func reviewExecutionDefinitions() []definition {
 			"pull_number":                     map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647},
 			"channel":                         map[string]any{"type": "string", "enum": []string{"cli", "hosted"}},
 			"head_sha":                        map[string]any{"type": "string", "pattern": "^[a-f0-9]{40}$"},
+			"override_file_limit":             map[string]any{"type": "boolean", "default": false, "description": "Deliberately exceed only the optional project file ceiling for this exact review. Does not bypass provider restrictions, source validation, queue order, findings or review allowances."},
 			"allow_out_of_order":              map[string]any{"type": "boolean", "default": false, "description": "Explicitly bypass queue order for this exact target only; comparison and all target admission guards still apply."},
 			"wait_seconds":                    map[string]any{"type": "integer", "minimum": 0, "maximum": maxToolWaitSeconds, "default": 2, "description": "Wait quietly for a terminal result; zero detaches immediately. Changing this preference never starts another review."},
 		}, "idempotency_key", "expected_configuration_revision", "pull_number", "channel", "head_sha")},

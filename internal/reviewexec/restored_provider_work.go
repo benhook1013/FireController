@@ -53,7 +53,7 @@ func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID str
 			return result, restoredWorkInvalid()
 		}
 	}
-	execution, err := restoredDomain(ctx, tx, "review_execution", "review_operations", "7")
+	execution, err := restoredDomain(ctx, tx, "review_execution", "review_operations", "8")
 	if err != nil {
 		return result, err
 	}
@@ -74,7 +74,7 @@ func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID str
 		enabled bool
 		query   string
 	}{
-		{execution, `SELECT o.capability_fingerprint,o.policy_revision,o.allow_out_of_order,a.anchor_json,r.action_class,t.external_id,c.body_json,q.body_json FROM review_operations o,review_execution_attempts a,review_execution_reservations r,review_execution_transitions t,review_execution_config c,review_hosted_allowance_queries q LIMIT 0`},
+		{execution, `SELECT o.capability_fingerprint,o.policy_revision,o.allow_out_of_order,o.override_file_limit,a.anchor_json,r.action_class,t.external_id,c.body_json,q.body_json FROM review_operations o,review_execution_attempts a,review_execution_reservations r,review_execution_transitions t,review_execution_config c,review_hosted_allowance_queries q LIMIT 0`},
 		{source, `SELECT ` + refreshMetadataColumns + `,ci_observation_json,review_state_json FROM review_source_refreshes LIMIT 0`},
 		{checkpoint, `SELECT p.body_json,r.body_json,i.body_json FROM review_checkpoint_publications p,review_checkpoint_revisions r,review_checkpoint_intents i LIMIT 0`},
 	}
@@ -94,7 +94,7 @@ func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID str
 		enabled bool
 		query   string
 	}{
-		{execution, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE typeof(allow_out_of_order)!='integer' OR allow_out_of_order NOT IN (0,1))`},
+		{execution, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE typeof(allow_out_of_order)!='integer' OR allow_out_of_order NOT IN (0,1) OR typeof(override_file_limit)!='integer' OR override_file_limit NOT IN (0,1))`},
 		{execution, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE state NOT IN ('queued','preparing','posting','active','uncertain','held','failed','completed','cancelled','rate_limited')) OR EXISTS(SELECT 1 FROM review_execution_attempts WHERE state NOT IN ('preparing','posting','active','uncertain','held','failed','completed','cancelled','rate_limited'))`},
 		{source, `SELECT EXISTS(SELECT 1 FROM review_source_refreshes WHERE state NOT IN ('queued','running','completed','held'))`},
 	}

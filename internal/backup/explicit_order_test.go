@@ -12,10 +12,10 @@ import (
 
 func TestReviewOrderInventoryCurrentSchema(t *testing.T) {
 	f := newRestoreFixture(t)
-	if err := validateReviewOrderPhysicalSchema(t.Context(), f.store.DB()); err != nil {
+	if err := validateReviewOrderPhysicalSchema(t.Context(), f.store.DB(), 8); err != nil {
 		t.Fatal("current review order schema", err)
 	}
-	if err := validateReviewOrderRows(t.Context(), f.store.DB()); err != nil {
+	if err := validateReviewOrderRows(t.Context(), f.store.DB(), 8); err != nil {
 		t.Fatal("current review order rows", err)
 	}
 }
@@ -70,7 +70,7 @@ func TestReviewOrderInventoryRoundTripRetainsExplicitChoice(t *testing.T) {
 
 func TestReviewOrderInventoryAuthenticV6RemainsSupported(t *testing.T) {
 	f := reviewOrderFixture(t, false)
-	if _, err := f.store.DB().Exec(`ALTER TABLE review_operations DROP COLUMN allow_out_of_order; UPDATE metadata SET value='6' WHERE key='schema:review_execution'`); err != nil {
+	if _, err := f.store.DB().Exec(`ALTER TABLE review_operations DROP COLUMN override_file_limit; ALTER TABLE review_operations DROP COLUMN allow_out_of_order; UPDATE metadata SET value='6' WHERE key='schema:review_execution'`); err != nil {
 		t.Fatal(err)
 	}
 	before := backupRows(t, f.store.DB())
@@ -172,4 +172,48 @@ func TestReviewOrderInventoryRejectsResealedNullStorage(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(bundle.Path, "firecontroller.sqlite")); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestReviewFileLimitOverrideBackupRoundTripAndInvalidFlags(t *testing.T) {
+	f := reviewOrderFixture(t, false)
+	e, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "restore-cap", Provider: "coderabbit", Account: "fixture-account", Channels: []string{"hosted"}, Fingerprint: strings.Repeat("f", 64)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.Enqueue(t.Context(), routePolicyInventoryScope(t, f), "override", reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "hosted", HeadSHA: strings.Repeat("a", 40), OverrideFileLimit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := restoreBundle(t, f)
+	destination := filepath.Join(t.TempDir(), "override-restored")
+	if _, err := Restore(t.Context(), bundle.Path, destination); err != nil {
+		t.Fatal("restore", err)
+	}
+	db, err := openSnapshot(t.Context(), filepath.Join(destination, "firecontroller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var flag int
+	if err = db.QueryRow(`SELECT override_file_limit FROM review_operations WHERE override_file_limit=1`).Scan(&flag); err != nil || flag != 1 {
+		t.Fatal("override lost", flag, err)
+	}
+	mutateBundleSQL(t, bundle.Path, `PRAGMA ignore_check_constraints=ON;UPDATE review_operations SET override_file_limit=2 WHERE override_file_limit=1`)
+	assertCurrentSummaryInventoryRefused(t, bundle, true)
+}
+func TestReviewFileLimitOverrideAuthenticV7Backup(t *testing.T) {
+	f := reviewOrderFixture(t, true)
+	if _, err := f.store.DB().Exec(`ALTER TABLE review_operations DROP COLUMN override_file_limit; UPDATE metadata SET value='7' WHERE key='schema:review_execution'`); err != nil {
+		t.Fatal(err)
+	}
+	bundle := restoreBundle(t, f)
+	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
+		t.Fatal("authentic v7 refused", err)
+	}
+}
+func TestReviewFileLimitOverrideRejectsAutomaticSelectionChild(t *testing.T) {
+	f, id := selectionInventoryFixture(t, "selected")
+	bundle := restoreBundle(t, f)
+	mutateBundleSQL(t, bundle.Path, `UPDATE review_operations SET override_file_limit=1 WHERE id=(SELECT operation_id FROM review_selections WHERE id=?)`, id)
+	assertCurrentSummaryInventoryRefused(t, bundle, true)
 }

@@ -221,13 +221,14 @@ func TestComparisonVersionFourUpgradePreservesJournal(t *testing.T) {
 	admissionSQL(t, f, `DROP TABLE review_hosted_allowance_queries`)
 	admissionSQL(t, f, `DROP INDEX review_operations_completed_comparison`)
 	admissionSQL(t, f, `CREATE INDEX review_operations_cli_admission ON review_operations(project_id,pull_number,channel,state,id)`)
+	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
 	admissionSQL(t, f, `UPDATE metadata SET value='4' WHERE key='schema:review_execution'`)
 	if err := EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "7" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "8" {
 		t.Fatal("ordered comparison migration", version, err)
 	}
 	if adjudicationState(t, f, a) != before {

@@ -141,7 +141,7 @@ func (e *Engine) recordCLIAllowance(ctx context.Context, project, attemptID stri
 		if !freshAllowanceObservation(input.ObservedAt, now) || !freshAllowanceObservation(input.Anchor.ObservedAt, now) {
 			return invalid()
 		}
-		if ceiling := current.Policy.Policy.MaxReviewFiles; ceiling > 0 && input.ChangedFiles > ceiling {
+		if ceiling := current.Policy.Policy.MaxReviewFiles; !current.Operation.OverrideFileLimit && ceiling > 0 && input.ChangedFiles > ceiling {
 			return sourceHold("project_file_limit")
 		}
 		record := cliAllowanceRecord{ProjectID: project, AttemptID: attempt.ID, AttemptRevision: expectedRevision, OperationID: operation.ID, ActorID: operation.ActorID, WorkerID: operation.WorkerID, ConfigurationRevision: operation.ConfigurationRevision, PolicyRevision: operation.PolicyRevision, CapabilityFingerprint: operation.CapabilityFingerprint, Provider: attempt.Provider, Account: attempt.Account, Observation: input}

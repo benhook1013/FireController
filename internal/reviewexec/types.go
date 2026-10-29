@@ -42,6 +42,7 @@ type Request struct {
 	Channel                       string `json:"channel"`
 	HeadSHA                       string `json:"head_sha"`
 	AllowOutOfOrder               bool   `json:"allow_out_of_order,omitempty"`
+	OverrideFileLimit             bool   `json:"override_file_limit,omitempty"`
 }
 
 type Receipt struct {
@@ -90,6 +91,7 @@ type Operation struct {
 	Channel               string                `json:"channel"`
 	HeadSHA               string                `json:"head_sha"`
 	AllowOutOfOrder       bool                  `json:"allow_out_of_order,omitempty"`
+	OverrideFileLimit     bool                  `json:"override_file_limit,omitempty"`
 	State                 string                `json:"state"`
 	Revision              int64                 `json:"revision"`
 	Reason                string                `json:"reason"`

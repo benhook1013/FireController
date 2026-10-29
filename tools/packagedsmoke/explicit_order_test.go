@@ -34,6 +34,18 @@ import (
 // operation. Source reads terminate at the existing loopback HTTPS fixture;
 // the trusted Git stub holds both operations before any review executable.
 func TestPackagedExplicitOrderSmoke(t *testing.T) {
+	testPackagedExplicitRequestFlag(t, "--out-of-order", "allow_out_of_order")
+}
+func TestPackagedFileLimitOverrideSmoke(t *testing.T) {
+	testPackagedExplicitRequestFlag(t, "--override-file-limit", "override_file_limit")
+}
+func testPackagedExplicitRequestFlag(t *testing.T, cliFlag, wireFlag string) {
+	flagValue := func(op client.ReviewOperation) bool {
+		if wireFlag == "override_file_limit" {
+			return op.OverrideFileLimit
+		}
+		return op.AllowOutOfOrder
+	}
 	if runtime.GOOS != "linux" {
 		t.Skip("controlled POSIX executable and child CA trust fixture is Linux-only")
 	}
@@ -135,7 +147,7 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 				w.WriteHeader(403)
 				return
 			}
-			if flag, present := fields["allow_out_of_order"]; present && !bytes.Equal(flag, []byte("true")) {
+			if flag, present := fields[wireFlag]; present && !bytes.Equal(flag, []byte("true")) {
 				unexpected.Add(1)
 				w.WriteHeader(403)
 				return
@@ -163,7 +175,7 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 	requestArgs := func(key string, allow bool) []string {
 		args := []string{"reviews", "request", "3", "--key", key, "--expect-config", "1", "--channel", "cli", "--head", strings.Repeat("a", 40), "--wait-seconds", "0"}
 		if allow {
-			args = append(args, "--out-of-order")
+			args = append(args, cliFlag)
 		}
 		return args
 	}
@@ -171,7 +183,7 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 		t.Helper()
 		var op client.ReviewOperation
 		decode(t, call("reviews", "operation", receipt.ID, "--wait-seconds", "2", "--diagnostics"), &op)
-		if op.ID != receipt.ID || op.ProjectID != project || op.WorkerID != worker || op.PullNumber != 3 || op.Channel != "cli" || op.HeadSHA != strings.Repeat("a", 40) || op.AllowOutOfOrder != allow || op.State != "held" || op.Reason != "source_unavailable" {
+		if op.ID != receipt.ID || op.ProjectID != project || op.WorkerID != worker || op.PullNumber != 3 || op.Channel != "cli" || op.HeadSHA != strings.Repeat("a", 40) || flagValue(op) != allow || op.State != "held" || op.Reason != "source_unavailable" {
 			t.Fatal("operation lost retained ordering intent or deliberate hold")
 		}
 		return op
@@ -249,7 +261,7 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 		return body
 	}
 	arguments := func(key string, allow bool) map[string]any {
-		return map[string]any{"idempotency_key": key, "expected_configuration_revision": 1, "pull_number": 3, "channel": "cli", "head_sha": strings.Repeat("a", 40), "wait_seconds": 0, "allow_out_of_order": allow}
+		return map[string]any{"idempotency_key": key, "expected_configuration_revision": 1, "pull_number": 3, "channel": "cli", "head_sha": strings.Repeat("a", 40), "wait_seconds": 0, wireFlag: allow}
 	}
 	var explicitReceipt client.ReviewRequestReceipt
 	explicitBody := tool("review_request", arguments("explicit-order", true), "")
@@ -270,7 +282,7 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 	// Actual CLI parse refusal must happen before reading even a nonexistent profile.
 	beforeHTTP := requests.Load()
 	bounded, stop = context.WithTimeout(ctx, stepTimeout)
-	invalid := exec.CommandContext(bounded, binaries["fc"], "--profiles-file", filepath.Join(private, "missing.json"), "--profile", "absent", "reviews", "start", "--channel", "cli", "--key", "automatic", "--out-of-order")
+	invalid := exec.CommandContext(bounded, binaries["fc"], "--profiles-file", filepath.Join(private, "missing.json"), "--profile", "absent", "reviews", "start", "--channel", "cli", "--key", "automatic", cliFlag)
 	invalid.Env, invalid.WaitDelay = env, time.Second
 	invalidOut, invalidErr := &boundedOutput{}, &boundedOutput{}
 	invalid.Stdout, invalid.Stderr = invalidOut, invalidErr
@@ -282,7 +294,7 @@ func TestPackagedExplicitOrderSmoke(t *testing.T) {
 		t.Fatal("automatic CLI accepted bypass or read credentials")
 	}
 	safe(invalidErr.bytes())
-	tool("review_start", map[string]any{"idempotency_key": "automatic", "channel": "cli", "allow_out_of_order": true}, "invalid_arguments")
+	tool("review_start", map[string]any{"idempotency_key": "automatic", "channel": "cli", wireFlag: true}, "invalid_arguments")
 	if requests.Load() != beforeHTTP {
 		t.Fatal("automatic bypass refusal contacted service")
 	}

@@ -263,3 +263,39 @@ func TestPublishPreparedAttemptPropagatesStorageFailure(t *testing.T) {
 		t.Fatal("storage failure created projection", e)
 	}
 }
+
+func TestPrepareReviewWorkspaceFileLimitOverrideStillVerifiesAndCounts(t *testing.T) {
+	for _, mode := range []string{"ordinary", "override", "dirty", "empty"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCLIDriverFixture(t)
+			current, plan, a := workspacePreparationInputs(t, f)
+			current.Policy.Policy.MaxReviewFiles = 1
+			current.Operation.OverrideFileLimit = mode != "ordinary"
+			if mode == "empty" {
+				plan.Pull.HeadSHA = f.baseSHA
+			}
+			fetch := func(context.Context, int64, string, string, string, string) error { return nil }
+			verify := func(ctx context.Context, w reviewworkspace.Workspace) error {
+				if mode == "dirty" {
+					return os.WriteFile(filepath.Join(w.Directory, "untracked.txt"), []byte("fixture"), 0600)
+				}
+				return f.manager.Verify(ctx, w)
+			}
+			_, count, err := prepareReviewWorkspace(t.Context(), fetch, verify, f.manager, "", current, plan, a.ID)
+			if mode == "override" {
+				if err != nil || count != 2 {
+					t.Fatal("override failed materialized count", count, err)
+				}
+			} else if err == nil {
+				t.Fatal("override skipped validation", mode, count)
+			}
+			if _, err := os.Stat(f.log); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("workspace check invoked review executable", err)
+			}
+		})
+	}
+	op := reviewexec.Operation{OverrideFileLimit: true}
+	if !operationRequest(op).OverrideFileLimit || sameOperation(op, reviewexec.Operation{}) {
+		t.Fatal("source recovery dropped explicit intent")
+	}
+}

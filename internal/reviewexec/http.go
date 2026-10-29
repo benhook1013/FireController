@@ -115,6 +115,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 		Channel                       string          `json:"channel"`
 		HeadSHA                       string          `json:"head_sha"`
 		AllowOutOfOrder               json.RawMessage `json:"allow_out_of_order,omitempty"`
+		OverrideFileLimit             json.RawMessage `json:"override_file_limit,omitempty"`
 	}
 	if err := core.ReadJSON(w, r, &wire); err != nil {
 		core.WriteError(w, err)
@@ -125,7 +126,12 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, invalid())
 		return
 	}
-	request := Request{ExpectedConfigurationRevision: wire.ExpectedConfigurationRevision, PullNumber: wire.PullNumber, Channel: wire.Channel, HeadSHA: wire.HeadSHA, AllowOutOfOrder: bytes.Equal(flag, []byte("true"))}
+	limitFlag := bytes.TrimSpace(wire.OverrideFileLimit)
+	if len(limitFlag) != 0 && !bytes.Equal(limitFlag, []byte("true")) && !bytes.Equal(limitFlag, []byte("false")) {
+		core.WriteError(w, invalid())
+		return
+	}
+	request := Request{ExpectedConfigurationRevision: wire.ExpectedConfigurationRevision, PullNumber: wire.PullNumber, Channel: wire.Channel, HeadSHA: wire.HeadSHA, AllowOutOfOrder: bytes.Equal(flag, []byte("true")), OverrideFileLimit: bytes.Equal(limitFlag, []byte("true"))}
 	key, err := core.IdempotencyKey(r, "idempotency_key_required")
 	if err != nil {
 		core.WriteError(w, err)

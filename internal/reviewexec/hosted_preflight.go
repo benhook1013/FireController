@@ -184,7 +184,7 @@ func (e *Engine) recordHostedAllowance(ctx context.Context, project, attemptID s
 		if !freshAllowanceObservation(owned.ObservedAt, now) || !freshAllowanceObservation(owned.Anchor.ObservedAt, now) || observation.ResponseCreatedAt.Before(now.Add(-time.Minute)) || observation.ResponseCreatedAt.After(now.Add(5*time.Second)) {
 			return invalid()
 		}
-		if ceiling := current.Policy.Policy.MaxReviewFiles; ceiling > 0 && owned.ChangedFiles > ceiling {
+		if ceiling := current.Policy.Policy.MaxReviewFiles; !current.Operation.OverrideFileLimit && ceiling > 0 && owned.ChangedFiles > ceiling {
 			return sourceHold("project_file_limit")
 		}
 		record := hostedAllowanceRecord{ProjectID: project, AttemptID: attempt.ID, OperationID: operation.ID, ActorID: operation.ActorID, WorkerID: operation.WorkerID,
@@ -293,7 +293,7 @@ func (e *Engine) VerifyHostedAction(ctx context.Context, project, attemptID stri
 		if !freshAllowanceObservation(record.Input.ObservedAt, now) || record.Input.Observation.ResponseCreatedAt.Before(now.Add(-time.Minute)) || record.Input.Observation.ResponseCreatedAt.After(now.Add(5*time.Second)) {
 			return sourceHold("allowance_stale")
 		}
-		if ceiling := current.Policy.Policy.MaxReviewFiles; ceiling > 0 && record.Input.ChangedFiles > ceiling {
+		if ceiling := current.Policy.Policy.MaxReviewFiles; !current.Operation.OverrideFileLimit && ceiling > 0 && record.Input.ChangedFiles > ceiling {
 			return sourceHold("project_file_limit")
 		}
 		return nil

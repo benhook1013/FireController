@@ -33,6 +33,8 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		`CREATE TABLE review_hosted_allowance_queries(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),operation_id TEXT NOT NULL REFERENCES review_operations(id),capability_fingerprint TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision IN (1,2)),body_json TEXT NOT NULL)`,
 	}, []string{
 		`ALTER TABLE review_operations ADD COLUMN allow_out_of_order INTEGER NOT NULL DEFAULT 0 CHECK(allow_out_of_order IN (0,1))`,
+	}, []string{
+		`ALTER TABLE review_operations ADD COLUMN override_file_limit INTEGER NOT NULL DEFAULT 0 CHECK(override_file_limit IN (0,1))`,
 	}); err != nil {
 		return err
 	}

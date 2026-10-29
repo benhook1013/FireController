@@ -88,6 +88,9 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 		}
 		data, _ := json.Marshal(tool.InputSchema)
 		properties := count
+		if tool.Name == "review_request" {
+			properties++
+		}
 		if tool.Name == "review_request" || tool.Name == "review_operation_read" {
 			properties++
 		}
@@ -191,6 +194,9 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 	diagnosticResult(t, call(t, session, "review_request", json.RawMessage(`{"idempotency_key":"bad\ud800","expected_configuration_revision":1,"pull_number":2,"channel":"cli","head_sha":"`+strings.Repeat("a", 40)+`"}`)), "invalid_arguments", false)
 	for _, bad := range []any{nil, "true", 1, 0, []any{}, map[string]any{}} {
 		args := executionArguments()
+		args["override_file_limit"] = bad
+		diagnosticResult(t, call(t, session, "review_request", args), "invalid_arguments", false)
+		delete(args, "override_file_limit")
 		args["allow_out_of_order"] = bad
 		diagnosticResult(t, call(t, session, "review_request", args), "invalid_arguments", false)
 	}
@@ -198,7 +204,10 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 	for _, suffix := range []string{`,"allow_out_of_order":true,"allow_out_of_order":false}`, `,"AllowOutOfOrder":true}`} {
 		diagnosticResult(t, call(t, session, "review_request", json.RawMessage(strings.TrimSuffix(string(raw), "}")+suffix)), "invalid_arguments", false)
 	}
-	args := map[string]any{"channel": "cli", "idempotency_key": "automatic", "allow_out_of_order": true}
+	args := map[string]any{"channel": "cli", "idempotency_key": "automatic", "override_file_limit": true}
+	diagnosticResult(t, call(t, session, "review_start", args), "invalid_arguments", false)
+	delete(args, "override_file_limit")
+	args["allow_out_of_order"] = true
 	diagnosticResult(t, call(t, session, "review_start", args), "invalid_arguments", false)
 	if requests.Load() != 0 {
 		t.Fatal("invalid args reached credential/HTTP")
@@ -381,4 +390,44 @@ func TestReviewExecutionStdioCancellationReleasesOwnedHTTP(t *testing.T) {
 	}
 	var receipt client.ReviewRequestReceipt
 	decodeResult(t, call(t, session, "review_request", executionArguments()), &receipt)
+}
+
+func TestReviewExecutionStdioFileLimitOverrideBoundWire(t *testing.T) {
+	for _, choice := range []string{"omitted", "false", "true"} {
+		t.Run(choice, func(t *testing.T) {
+			var posts atomic.Int64
+			want := `{"expected_configuration_revision":1,"pull_number":2,"channel":"cli","head_sha":"` + strings.Repeat("a", 40) + `"`
+			if choice == "true" {
+				want += `,"override_file_limit":true`
+			}
+			want += `}`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/api/v1/instance" {
+					_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": "instance-one"})
+					return
+				}
+				posts.Add(1)
+				body, err := io.ReadAll(r.Body)
+				if err != nil || string(body) != want || r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/requests" || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("X-FC-Instance") != "instance-one" || r.Header.Get("Idempotency-Key") != "explicit-native-review" || r.Header.Get("Prefer") != "wait=0" {
+					t.Error("MCP changed exact body or bound action", string(body), err)
+				}
+				w.WriteHeader(http.StatusAccepted)
+				_ = json.NewEncoder(w).Encode(client.ReviewRequestReceipt{ID: "review_operation_" + strings.Repeat("a", 32), State: "queued", Revision: 1})
+			}))
+			defer server.Close()
+			binding := localContext()
+			binding.ServerURL = server.URL
+			session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"alpha": binding}, credential(t)), "alpha")
+			args := executionArguments()
+			if choice != "omitted" {
+				args["override_file_limit"] = choice == "true"
+			}
+			var receipt client.ReviewRequestReceipt
+			decodeResult(t, call(t, session, "review_request", args), &receipt)
+			if receipt.State != "queued" || posts.Load() != 1 {
+				t.Fatal("MCP request did not return one original receipt")
+			}
+		})
+	}
 }

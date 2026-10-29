@@ -439,7 +439,7 @@ func reviewSourceFlags(args []string, flags ...string) (map[string]string, bool)
 }
 
 func parseReviewRequest(args []string) (*mutationInvocation, bool) {
-	allowed := map[string]bool{"--key": true, "--expect-config": true, "--channel": true, "--head": true, "--wait-seconds": true, "--out-of-order": true}
+	allowed := map[string]bool{"--key": true, "--expect-config": true, "--channel": true, "--head": true, "--wait-seconds": true, "--out-of-order": true, "--override-file-limit": true}
 	values := map[string]string{}
 	var positions []string
 	for i := 0; i < len(args); i++ {
@@ -454,7 +454,7 @@ func parseReviewRequest(args []string) (*mutationInvocation, bool) {
 		if _, duplicate := values[flag]; duplicate {
 			return nil, false
 		}
-		if flag == "--out-of-order" {
+		if flag == "--out-of-order" || flag == "--override-file-limit" {
 			if !assigned {
 				value = "true"
 			}
@@ -473,7 +473,7 @@ func parseReviewRequest(args []string) (*mutationInvocation, bool) {
 		}
 		values[flag] = value
 	}
-	if len(positions) != 1 || len(values) < 4 || len(values) > 6 || !validMutationKey(values["--key"]) {
+	if len(positions) != 1 || len(values) < 4 || len(values) > 7 || !validMutationKey(values["--key"]) {
 		return nil, false
 	}
 	number, err := strconv.ParseInt(positions[0], 10, 64)
@@ -492,7 +492,7 @@ func parseReviewRequest(args []string) (*mutationInvocation, bool) {
 		}
 		seconds = parsed
 	}
-	request := client.ReviewRequest{ExpectedConfigurationRevision: revision, PullNumber: number, Channel: values["--channel"], HeadSHA: values["--head"], AllowOutOfOrder: values["--out-of-order"] == "true"}
+	request := client.ReviewRequest{ExpectedConfigurationRevision: revision, PullNumber: number, Channel: values["--channel"], HeadSHA: values["--head"], AllowOutOfOrder: values["--out-of-order"] == "true", OverrideFileLimit: values["--override-file-limit"] == "true"}
 	if client.ValidateReviewRequest(request) != nil {
 		return nil, false
 	}

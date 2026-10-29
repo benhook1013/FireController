@@ -291,7 +291,12 @@ func TestReviewExecutionStrictOperationWireAndLegacyFacts(t *testing.T) {
 		"bad-time": func(s string) string {
 			return strings.Replace(s, `"updated_at":"2026-01-01T00:00:00Z"`, `"updated_at":"now"`, 1)
 		},
-		"null-reason":  func(s string) string { return strings.Replace(s, `"reason":""`, `"reason":null`, 1) },
+		"null-reason":       func(s string) string { return strings.Replace(s, `"reason":""`, `"reason":null`, 1) },
+		"null-file-limit":   func(s string) string { return strings.TrimSuffix(s, "}") + `,"override_file_limit":null}` },
+		"string-file-limit": func(s string) string { return strings.TrimSuffix(s, "}") + `,"override_file_limit":"true"}` },
+		"duplicate-file-limit": func(s string) string {
+			return strings.TrimSuffix(s, "}") + `,"override_file_limit":true,"override_file_limit":false}`
+		},
 		"null-order":   func(s string) string { return strings.TrimSuffix(s, "}") + `,"allow_out_of_order":null}` },
 		"string-order": func(s string) string { return strings.TrimSuffix(s, "}") + `,"allow_out_of_order":"true"}` },
 		"number-order": func(s string) string { return strings.TrimSuffix(s, "}") + `,"allow_out_of_order":1}` },
@@ -573,5 +578,59 @@ func TestReviewExecutionStoredReadsWorkWithoutProviderCatalog(t *testing.T) {
 	}
 	if executionCounts(t, f) != before || f.providerCalls.Load() != providers {
 		t.Fatal("ordinary reads performed provider work or domain mutation")
+	}
+}
+
+func TestReviewExecutionFileLimitOverrideWireAndTerminalIntent(t *testing.T) {
+	for _, requested := range []bool{false, true} {
+		for _, returned := range []bool{false, true} {
+			for _, channel := range []string{"cli", "hosted"} {
+				name := channel + "/default"
+				if requested {
+					name = channel + "/explicit"
+				}
+				if returned != requested {
+					name += "/mismatch"
+				}
+				t.Run(name, func(t *testing.T) {
+					request := client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: channel, HeadSHA: strings.Repeat("a", 40), OverrideFileLimit: requested}
+					want := `{"expected_configuration_revision":1,"pull_number":2,"channel":"` + channel + `","head_sha":"` + request.HeadSHA + `"`
+					if requested {
+						want += `,"override_file_limit":true`
+					}
+					want += `}`
+					operation := sampleReviewOperation()
+					operation.WorkerID, operation.State, operation.Channel = "worker-one", "held", channel
+					operation.OverrideFileLimit = returned
+					var posts atomic.Int64
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.URL.Path == "/api/v1/instance" {
+							handshake(w)
+							return
+						}
+						posts.Add(1)
+						body, err := io.ReadAll(r.Body)
+						if err != nil || string(body) != want || r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/requests" || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("X-FC-Instance") != "instance-one" || r.Header.Get("Idempotency-Key") != "same-intent" || r.Header.Get("Prefer") != "wait=2" {
+							t.Error("request bytes, binding or retained action changed", err, string(body))
+						}
+						write(w, http.StatusOK, operation)
+					}))
+					defer server.Close()
+					c := newClient(t, server)
+					got, err := c.RequestReview(t.Context(), "same-intent", request, 2)
+					if posts.Load() != 1 {
+						t.Fatal("request was retried")
+					}
+					if requested != returned {
+						var failure *client.Error
+						if !errors.As(err, &failure) || failure.Code != "invalid_response" || !failure.OutcomeUnknown {
+							t.Fatal("different retained bypass intent accepted", got, err)
+						}
+					} else if err != nil || got.Operation == nil || *got.Operation != operation {
+						t.Fatal("matching terminal intent lost", got, err)
+					}
+				})
+			}
+		}
 	}
 }
