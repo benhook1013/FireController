@@ -7,7 +7,7 @@
 .review-history .review-round-pill time,.review-history .review-round-pill .review-pill-age{font-weight:750}.review-details-link{display:block;width:max-content;max-width:100%;margin:12px 0 0 auto;font-family:ui-sans-serif,system-ui,sans-serif;font-size:.89rem;font-weight:700;font-synthesis:weight;white-space:nowrap;text-decoration:underline;color:var(--fc-surface_text,#242832)}.review-details-link:hover{color:var(--fc-surface_text,#242832)}
 @media(max-width:900px){.review-queue-group{grid-template-columns:minmax(0,1fr);gap:7px}.review-queue-group>.review-queue{grid-column:1}.review-queue-group-title{margin:3px 0 3px 42px}}@media(max-width:650px){.review-queue-content{padding:4px 12px}.review-queue>li.review-queue-row{grid-template-columns:35px minmax(0,1fr)}.review-queue-position{font-size:.72rem}.review-queue-group{padding:8px}.review-guide{font-size:.68rem}.review-queue-group-title{margin-left:35px}}
 
-.review-row-merged .review-number,.review-row-merged .review-pull-heading h3 a,.review-row-merged .review-pull-heading h3 a:hover,.review-row-merged .review-pull-facts{color:var(--fc-merged_text,#392451)}
+.review-row-merged .review-pull-heading h3 a,.review-row-merged .review-pull-heading h3 a:hover,.review-row-merged .review-pull-facts{color:var(--fc-merged_text,#392451)}
 .review-row-merged .review-round-pill,.review-row-merged .review-round-pill:hover{background:var(--fc-merged_background,#f2ebf8);border-color:var(--fc-merged_rail,#7042a0);color:var(--fc-merged_text,#392451)}.review-row-merged .review-round-pill time,.review-row-merged .review-pill-age,.review-row-merged .review-pill-state{color:var(--fc-merged_text,#392451)}
 .review-row-merged .review-pill-completed.review-pill-zero,.review-row-merged .review-pill-completed.review-pill-zero:hover{background:var(--fc-merged_rail,#7042a0);border-color:var(--fc-merged_rail,#7042a0);color:var(--fc-merged_rail_text,#fff)}.review-row-merged .review-pill-zero time,.review-row-merged .review-pill-zero .review-pill-age{color:var(--fc-merged_rail_text,#fff)}
 
@@ -33,7 +33,7 @@
 @container(max-width:156px){.review-recent-rounds>.review-round-pill:nth-last-child(n+2){display:none}}
 @media(max-width:650px){.review-recent-rounds{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.review-recent-rounds>.review-round-pill:nth-child(n){display:flex}}
 
-.review-number a{color:inherit}
+
 
 .review-queue-tools{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:10px;margin-left:auto;max-width:100%;min-width:0}
 .review-technical-details{position:relative;flex:none;font-size:.78rem;color:var(--fc-surface_text,#242832)}.review-technical-details>summary{display:grid;place-items:center;list-style:none;cursor:pointer;width:1.7rem;height:1.7rem;font-size:1.1rem;color:var(--fc-canvas_muted,#666874)}.review-technical-details>summary::-webkit-details-marker{display:none}.review-technical-details>summary:focus-visible{outline:2px solid var(--fc-accent_background,#a51f27);outline-offset:2px}
@@ -41,7 +41,7 @@
 
 /* The hero uses the same PR item, without inventing a queue position. */
 .review-queue>li.review-row-without-order{grid-template-columns:minmax(0,1fr)}
-.review-queue .review-pull-heading,.review-queue .review-pull-heading .review-number,.review-queue .review-pull-heading h3 a,.review-queue .review-pull-heading h3 a:hover{color:var(--fc-surface_text,#242832)}
+.review-queue .review-pull-heading,.review-queue .review-pull-heading h3 a,.review-queue .review-pull-heading h3 a:hover{color:var(--fc-surface_text,#242832)}
 .review-pull-facts>.review-fact-pill{background:var(--fc-surface_background,#f7f6f3);color:var(--fc-surface_text,#242832);border:1px solid var(--fc-surface_border,#c8c7c4);border-radius:999px;padding:3px 8px;text-transform:none;font-size:inherit;letter-spacing:normal;font-weight:600}
 
 .review-queue-content>.review-pull-heading{margin-bottom:4px}
@@ -58,7 +58,7 @@
 
 .review-file-count.review-size-exceeded{color:var(--fc-blocked_text,#8e2634)}
 
-.review-queue-content .review-number{line-height:1.2}
+
 .review-queue-content .review-pull-heading h3{line-height:1.35}
 .review-queue-content>.review-pull-facts{row-gap:4px}
 .review-queue-content>.review-history>.review-lanes>.review-lane{padding:9px 12px}

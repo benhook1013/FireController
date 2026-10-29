@@ -293,8 +293,13 @@ export function ReviewPullView() {
   const { session, key, home } = useWorkspace();
   const query = useQuery({ queryKey: [...key, 'reviews', snapshot ?? 'current', 'pull', number], queryFn: ({ signal }) => session.api.reviewPull(number, snapshot, signalFor(session, signal)), staleTime: Infinity });
   const value = query.data;
+  const fronts = useReviewFronts(!!value);
+  const progress = useReviewProgress(value ? [value.pull.number] : []);
+  const currentFronts = value ? currentReviewFronts(value.snapshot_id, [value.pull], fronts.data) : undefined;
+  const channels = fronts.data?.configured ? fronts.data.channels.map(channel => channel.channel) : undefined;
+  const queueLink = <Link className="review-details-link" to={`${home}#review-pr-${number}`}>Review queue ↗</Link>;
   return <article className="review-detail-page"><Link className="back-link" to={`${home}/reviews#review-pr-${number}`}>← Review queue</Link><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <>
-    <header className="review-detail-heading"><div className="review-detail-title"><a className="review-detail-number" href={githubLink(session.project, `pull/${value.pull.number}`)} target="_blank" rel="noopener noreferrer">#{value.pull.number}</a><h2>{value.pull.title}</h2></div><ReviewPullFacts pull={value.pull} /></header>
+    <ul className="review-queue review-detail-overview" aria-label={`PR #${value.pull.number} overview`}><ReviewQueueRow pull={value.pull} snapshot={value.snapshot_id} progress={progress.data?.items.find(item => item.pull_number === value.pull.number)} fronts={currentFronts} channels={channels} footer={queueLink} anchor={false} /></ul>
     <ReviewObligations number={number} />
     <ReviewRoundHistory key={number} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} expected={value.pull.run_count} channelTotals={value.pull.run_counts} />
     <footer className="review-detail-technical"><details className="review-comparison-details"><summary>Comparison and source details</summary><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div><div><dt>Source</dt><dd>{value.source}</dd></div><div><dt>Snapshot origin timestamp</dt><dd>{time(value.observed_at)}</dd></div><div><dt>Recorded</dt><dd>{time(value.recorded_at)}</dd></div><div><dt>Snapshot</dt><dd><code>{value.snapshot_id}</code> · revision {value.revision}</dd></div></dl></details><ReviewAttempts key={`attempts:${number}`} number={number} snapshot={value.snapshot_id} expected={value.pull.attempt_count} /></footer>

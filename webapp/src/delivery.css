@@ -62,7 +62,6 @@
 .skeleton-ink{display:block;background:var(--fc-surface_border,#d8d1ca);border-radius:3px;opacity:.6;color:transparent;user-select:none;pointer-events:none}
 .delivery-head-placeholder>.eyebrow{font-size:.82rem}
 .skeleton-pr-eyebrow{width:7em}
-.skeleton-pr-number{width:5ch}
 .review-pull-heading .skeleton-pr-title{flex-basis:100%;width:100%}
 .skeleton-pr-title .skeleton-ink{height:1.45em;background:linear-gradient(transparent .2em,var(--fc-surface_border,#d8d1ca) .2em,var(--fc-surface_border,#d8d1ca) 1.15em,transparent 1.15em)}
 .skeleton-pr-title .skeleton-title-first{width:96%}

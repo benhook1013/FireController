@@ -18,7 +18,7 @@ export function ReviewRowDisplay({ id, lifecycle, position, positionLabel, rail 
   footer?: ReactNode;
 }) {
   return <ReviewRowFrame id={id} lifecycle={lifecycle} position={position} positionLabel={positionLabel} rail={rail} className={className} facts={facts} footer={footer}
-    heading={<div className="review-pull-heading"><span className="review-number">{url ? <a href={url} target="_blank" rel="noopener noreferrer">#{number}</a> : <>#{number}</>}</span><h3>{url ? <a href={url} target="_blank" rel="noopener noreferrer">{title}</a> : title}</h3></div>}>
+    heading={<div className="review-pull-heading"><h3>{url ? <a href={url} target="_blank" rel="noopener noreferrer">#{number} {title}</a> : <>#{number} {title}</>}</h3></div>}>
     {children}
   </ReviewRowFrame>;
 }

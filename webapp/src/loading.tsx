@@ -24,7 +24,7 @@ export function PublicHistorySkeleton() {
 /** Match the populated PR frame, facts, policies and bounded channel rounds. */
 export function MergeHeadSkeleton({ decorative = false }: { decorative?: boolean }) {
   const ink = (className: string) => <span className={`skeleton-ink ${className}`}>&nbsp;</span>;
-  const heading = <div className="review-pull-heading"><span className="review-number">{ink('skeleton-pr-number')}</span><h3 className="skeleton-pr-title">{ink('skeleton-title-first')}{ink('skeleton-title-second')}{ink('skeleton-title-third')}{ink('skeleton-title-fourth')}</h3></div>;
+  const heading = <div className="review-pull-heading"><h3 className="skeleton-pr-title">{ink('skeleton-title-first')}{ink('skeleton-title-second')}{ink('skeleton-title-third')}{ink('skeleton-title-fourth')}</h3></div>;
   const facts = <div className="review-pull-facts"><span className="badge skeleton-fact skeleton-fact-state">{ink('')}</span>{['diff','ci','merge'].map(kind => <span key={kind} className={`badge review-fact-pill skeleton-fact skeleton-fact-${kind}`}>{ink('')}</span>)}</div>;
   return <div className="delivery-head-skeleton" {...(decorative ? {} : { role: 'status' })}>{!decorative && <span className="visually-hidden">Loading review queue head</span>}<div className="delivery-head-placeholder" aria-hidden="true">
     <p className="eyebrow">{ink('skeleton-pr-eyebrow')}</p>

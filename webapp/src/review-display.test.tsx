@@ -10,7 +10,7 @@ describe('shared review presentation shells', () => {
     expect(html).toContain('class="review-queue-position" aria-label="Published order 02 on this page">02');
     expect(html).toContain('class="review-queue-content"'); expect(html).toContain('class="review-pull-heading"');
     expect(html).toContain('&lt;literal title&gt;'); expect(html).not.toContain('<literal title>');
-    expect(html.match(/href="https:\/\/github.com\/example\/project\/pull\/7"/gu)).toHaveLength(2);
+    expect(html.match(/href="https:\/\/github.com\/example\/project\/pull\/7"/gu)).toHaveLength(1);
     expect(html).toContain('target="_blank" rel="noopener noreferrer"');
     expect(html.indexOf('Supplied facts')).toBeLessThan(html.indexOf('Supplied lanes'));
     expect(html.indexOf('Supplied lanes')).toBeLessThan(html.indexOf('>History</a>'));
@@ -22,7 +22,7 @@ describe('shared review presentation shells', () => {
     expect(html).not.toContain('review-queue-position');
     expect(html).not.toContain('Stored order');
     expect(html).toContain('class="review-pull-heading"');
-    expect(html).toContain('<h3>Shared heading</h3>');
+    expect(html).toContain('<h3>#7 Shared heading</h3>');
   });
   it('keeps caller-supplied lane headers and private link labels/targets intact', () => {
     const html = renderToStaticMarkup(<MemoryRouter><ReviewLaneDisplay title="Hosted CodeRabbit" metadata="8 runs" metadataTitle="Retained review runs in this channel; not current-head coverage"><ReviewRoundPillDisplay found={3} accepted={0} routed={2} className="review-pill-completed semantic-change" zeroAccepted title="Original description" label="Open hosted run original: Original description" wrap={content => <Link {...content} to="/projects/selected/reviews/runs/run-one?snapshot=retained" />}><span className="review-pill-age">Date unknown</span></ReviewRoundPillDisplay></ReviewLaneDisplay></MemoryRouter>);
