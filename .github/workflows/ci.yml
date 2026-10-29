@@ -197,6 +197,7 @@ jobs:
       - name: Retain the tested image for publication
         if: github.event_name == 'push'
         run: |
+          cp tools/release/image-reference.py "$RUNNER_TEMP/image-reference.py"
           docker save firecontroller:ci --output "$RUNNER_TEMP/firecontroller-image.tar"
           cd "$RUNNER_TEMP"
           sha256sum firecontroller-image.tar > firecontroller-image.tar.sha256
@@ -207,6 +208,7 @@ jobs:
           path: |
             ${{ runner.temp }}/firecontroller-image.tar
             ${{ runner.temp }}/firecontroller-image.tar.sha256
+            ${{ runner.temp }}/image-reference.py
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
@@ -318,7 +320,8 @@ jobs:
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           docker tag firecontroller:ci "$image:sha-$GITHUB_SHA"
           docker push "$image:sha-$GITHUB_SHA"
-          digest="$(docker image inspect "$image:sha-$GITHUB_SHA" --format '{{index .RepoDigests 0}}')"
+          docker pull --platform linux/amd64 "$image:sha-$GITHUB_SHA"
+          digest="$(docker image inspect "$image:sha-$GITHUB_SHA" --format '{{json .RepoDigests}}' | python3 "$RUNNER_TEMP/container/image-reference.py" "$image")"
           printf '### Published container\n\n`%s`\n\nSource: `%s`\n' "$digest" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
           printf '%s\n' "$digest" > "$RUNNER_TEMP/image-reference.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
