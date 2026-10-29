@@ -35,11 +35,11 @@ func newCollectionStoreFixture(t *testing.T) *collectionStoreFixture {
 }
 func (f *collectionStoreFixture) open(t *testing.T) {
 	t.Helper()
-	var err error
-	f.store, err = core.Open(context.Background(), f.dir)
+	store, err := core.Open(context.Background(), f.dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.store = store
 	if err = EnsureSchema(context.Background(), f.store); err != nil {
 		t.Fatal(err)
 	}

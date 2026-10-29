@@ -316,6 +316,9 @@ func TestCollectionHTTPLifetimePOSTPreservesReceiptOnlyWithCurrentAuthority(t *t
 			}
 			collectionWaitCount(t, h.e, 0)
 			if kind == "read-failed" {
+				// Receiving a body does not join the handler and its deferred read transaction.
+				// Model restart only after the old HTTP owner has finished shutting down.
+				h.server.Close()
 				h.f.open(t)
 			}
 			if before != collectionStoreRows(t, h.f) || len(h.f.provider.calls) != 0 {
