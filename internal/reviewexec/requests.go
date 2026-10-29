@@ -265,7 +265,9 @@ func (e *Engine) readOperationProjection(ctx context.Context, scope core.Scope, 
 		var err error
 		o, err = readOperation(ctx, tx, scope.ProjectID, id)
 		if err == nil && evidence {
-			o.EvidenceID, _, err = operationStatusEvidence(ctx, tx, o)
+			var facts operationEvidenceFacts
+			facts, err = operationStatusEvidence(ctx, tx, o)
+			o.EvidenceID = facts.ID
 		}
 		return err
 	})

@@ -71,11 +71,12 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
 					// A reason is returned only after the original recovery binding
 					// was read successfully; binding refusals keep ordinary backoff.
 					recoveryFailed = err != nil && observed.Reason != ""
-					// Healthy pending work keeps a short cadence. Identical provider
-					// source reuses its retained capture rather than spending another
-					// journal reference. Ambiguous outcomes/errors still back off.
+					// A complete source read with the original trigger still pending keeps
+					// a short cadence, including ambiguous attribution. This changes no
+					// capture/admission decision. Identical source reuses its retained
+					// capture; provider failures and binding refusals still back off.
 					normal = err == nil && (observed.State == "completed" || observed.State == "rate_limited")
-					if err == nil && observed.State == "active" && (observed.Reason == "publication_not_proven" || observed.Reason == "missing_publication_batches") {
+					if err == nil && observed.State == "active" && (observed.Reason == "publication_not_proven" || observed.Reason == "missing_publication_batches" || observed.Reason == "attribution_window_closed" && observed.TriggerCommentID > 0) {
 						normal = true
 						delay = hostedRecoveryBackoffMinimum
 					}

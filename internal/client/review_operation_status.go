@@ -23,6 +23,8 @@ type ReviewOperationStatus struct {
 	Reason             string                 `json:"reason"`
 	AttemptID          string                 `json:"attempt_id"`
 	EvidenceID         string                 `json:"evidence_id,omitempty"`
+	ReviewFinishedAt   string                 `json:"review_finished_at,omitempty"`
+	EvidenceRecordedAt string                 `json:"evidence_recorded_at,omitempty"`
 	RetryNotBefore     string                 `json:"retry_not_before,omitempty"`
 	UpdatedAt          string                 `json:"updated_at"`
 	NextAction         string                 `json:"next_action"`
@@ -77,6 +79,9 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 
 func validCompactOperationStatus(v ReviewOperationStatus) bool {
 	if !validReviewPendingEvidence(v.PendingEvidence, v.State, v.Reason) || ValidateReviewOperationID(v.ID) != nil || !validPullNumber(v.PullNumber) || !oneReviewOf(v.Channel, "cli", "hosted") || v.Revision < 1 || v.Reason != "" && !validExecutionIdentifier(v.Reason) || v.AttemptID != "" && !validReviewOpaqueID(v.AttemptID, "review_attempt_") || v.EvidenceID != "" && (!validReviewOpaqueID(v.EvidenceID, "review_evidence_") || v.AttemptID == "") || !controlTime(v.UpdatedAt) {
+		return false
+	}
+	if (v.ReviewFinishedAt != "" || v.EvidenceRecordedAt != "") && (v.EvidenceID == "" || !controlTime(v.ReviewFinishedAt) || !controlTime(v.EvidenceRecordedAt)) {
 		return false
 	}
 	if v.RetryNotBefore != "" && (v.Channel != "hosted" || v.State != "held" || v.Reason != "hosted_allowance_cooldown" || v.AttemptID == "" || !validAllowanceTime(v.RetryNotBefore)) {

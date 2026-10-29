@@ -54,7 +54,7 @@ func TestOperationStatusEvidenceIdentityAndCompactHTTP(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(w.Body.Bytes(), &fields) != nil || len(fields) != 11 {
+	if json.Unmarshal(w.Body.Bytes(), &fields) != nil || len(fields) != 13 {
 		t.Fatal("unexpected compact fields", w.Body.String())
 	}
 	for _, secret := range []string{"project_id", "actor_id", "worker_id", "configuration_revision", "capability_fingerprint", "head_sha", "allowance", "Literal", "source text", "private-test-account"} {

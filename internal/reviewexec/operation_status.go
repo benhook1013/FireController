@@ -13,19 +13,21 @@ import (
 
 // OperationStatus is a compact read projection, never execution or coverage authority.
 type OperationStatus struct {
-	PendingEvidence *PendingEvidence `json:"pending_evidence,omitempty"`
-	ID              string           `json:"id"`
-	PullNumber      int64            `json:"pull_number"`
-	Channel         string           `json:"channel"`
-	State           string           `json:"state"`
-	Revision        int64            `json:"revision"`
-	Stage           string           `json:"stage"`
-	Reason          string           `json:"reason"`
-	AttemptID       string           `json:"attempt_id"`
-	EvidenceID      string           `json:"evidence_id,omitempty"`
-	RetryNotBefore  string           `json:"retry_not_before,omitempty"`
-	UpdatedAt       string           `json:"updated_at"`
-	NextAction      string           `json:"next_action"`
+	PendingEvidence    *PendingEvidence `json:"pending_evidence,omitempty"`
+	ID                 string           `json:"id"`
+	PullNumber         int64            `json:"pull_number"`
+	Channel            string           `json:"channel"`
+	State              string           `json:"state"`
+	Revision           int64            `json:"revision"`
+	Stage              string           `json:"stage"`
+	Reason             string           `json:"reason"`
+	AttemptID          string           `json:"attempt_id"`
+	EvidenceID         string           `json:"evidence_id,omitempty"`
+	ReviewFinishedAt   string           `json:"review_finished_at,omitempty"`
+	EvidenceRecordedAt string           `json:"evidence_recorded_at,omitempty"`
+	RetryNotBefore     string           `json:"retry_not_before,omitempty"`
+	UpdatedAt          string           `json:"updated_at"`
+	NextAction         string           `json:"next_action"`
 }
 
 func operationStatusStage(o Operation, evidence string, complete bool) (string, string) {
@@ -79,12 +81,12 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 		if !validOperationSummary(OperationSummary{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, HeadSHA: o.HeadSHA, WorkerID: o.WorkerID, State: o.State, Reason: o.Reason, AttemptID: o.AttemptID, Revision: o.Revision, CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt}) {
 			return adjudicationStorageError()
 		}
-		evidence, complete, err := operationStatusEvidence(ctx, tx, o)
+		facts, err := operationStatusEvidence(ctx, tx, o)
 		if err != nil {
 			return err
 		}
-		stage, next := operationStatusStage(o, evidence, complete)
-		result = OperationStatus{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, State: o.State, Revision: o.Revision, Stage: stage, Reason: o.Reason, AttemptID: o.AttemptID, EvidenceID: evidence, UpdatedAt: o.UpdatedAt, NextAction: next}
+		stage, next := operationStatusStage(o, facts.ID, facts.Complete)
+		result = OperationStatus{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, State: o.State, Revision: o.Revision, Stage: stage, Reason: o.Reason, AttemptID: o.AttemptID, EvidenceID: facts.ID, ReviewFinishedAt: facts.ReviewFinishedAt, EvidenceRecordedAt: facts.EvidenceRecordedAt, UpdatedAt: o.UpdatedAt, NextAction: next}
 		if o.Channel == "hosted" && o.State == "held" && o.Reason == "hosted_allowance_cooldown" {
 			allowance, err := readHeldAllowance(ctx, tx, o)
 			if err != nil {
@@ -99,12 +101,19 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 	return result, err
 }
 
-func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (string, bool, error) {
+type operationEvidenceFacts struct {
+	ID                 string
+	Complete           bool
+	ReviewFinishedAt   string
+	EvidenceRecordedAt string
+}
+
+func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (operationEvidenceFacts, error) {
 	if o.AttemptID == "" {
-		return "", false, nil
+		return operationEvidenceFacts{}, nil
 	}
 	var attemptOperation, attemptProject, attemptAnchor string
-	var id, project, operation, attempt, bodyID, bodyProject, bodyOperation, bodyAttempt, anchor, expected, fingerprint, outcome sql.NullString
+	var id, project, operation, attempt, bodyID, bodyProject, bodyOperation, bodyAttempt, anchor, expected, fingerprint, outcome, finished, recorded sql.NullString
 	var complete, hosted sql.NullInt64
 	err := tx.QueryRowContext(ctx, `SELECT a.operation_id,a.project_id,
  CASE WHEN length(CAST(a.anchor_json AS BLOB))<=2048 THEN a.anchor_json ELSE '' END,
@@ -113,25 +122,33 @@ func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (stri
  CASE WHEN length(CAST(json_extract(e.body_json,'$.anchor') AS BLOB))<=2048 THEN json_extract(e.body_json,'$.anchor') END,
  CASE WHEN length(CAST(json_extract(e.body_json,'$.capture.expected_anchor') AS BLOB))<=2048 THEN json_extract(e.body_json,'$.capture.expected_anchor') END,
  json_extract(e.body_json,'$.capability_fingerprint'),json_extract(e.body_json,'$.capture.review.Outcome'),CASE json_type(e.body_json,'$.capture.review.Complete') WHEN 'true' THEN 1 WHEN 'false' THEN 0 END,
+ CASE WHEN json_type(e.body_json,'$.capture.finished_at')='text' AND length(CAST(json_extract(e.body_json,'$.capture.finished_at') AS BLOB))<=64 THEN json_extract(e.body_json,'$.capture.finished_at') END,
+ CASE WHEN json_type(e.body_json,'$.recorded_at')='text' AND length(CAST(json_extract(e.body_json,'$.recorded_at') AS BLOB))<=64 THEN json_extract(e.body_json,'$.recorded_at') END,
  CASE WHEN e.id IS NULL THEN NULL WHEN json_type(e.body_json,'$.capture.hosted')='object' THEN 1 WHEN json_type(e.body_json,'$.capture.hosted') IS NULL OR json_type(e.body_json,'$.capture.hosted')='null' THEN 0 ELSE -1 END
- FROM review_execution_attempts a LEFT JOIN review_execution_evidence e ON e.attempt_id=a.id WHERE a.project_id=? AND a.id=?`, o.ProjectID, o.AttemptID).Scan(&attemptOperation, &attemptProject, &attemptAnchor, &id, &project, &operation, &attempt, &bodyID, &bodyProject, &bodyOperation, &bodyAttempt, &anchor, &expected, &fingerprint, &outcome, &complete, &hosted)
+ FROM review_execution_attempts a LEFT JOIN review_execution_evidence e ON e.attempt_id=a.id WHERE a.project_id=? AND a.id=?`, o.ProjectID, o.AttemptID).Scan(&attemptOperation, &attemptProject, &attemptAnchor, &id, &project, &operation, &attempt, &bodyID, &bodyProject, &bodyOperation, &bodyAttempt, &anchor, &expected, &fingerprint, &outcome, &complete, &finished, &recorded, &hosted)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, adjudicationStorageError()
+		return operationEvidenceFacts{}, adjudicationStorageError()
 	}
 	if err != nil {
-		return "", false, err
+		return operationEvidenceFacts{}, err
 	}
 	if attemptOperation != o.ID || attemptProject != o.ProjectID {
-		return "", false, adjudicationStorageError()
+		return operationEvidenceFacts{}, adjudicationStorageError()
 	}
 	if !id.Valid {
-		return "", false, nil
+		return operationEvidenceFacts{}, nil
 	}
 	var admitted, captured, want Anchor
 	if !hostedObservationID(id.String, "review_evidence_") || project.String != o.ProjectID || operation.String != o.ID || attempt.String != o.AttemptID || bodyID.String != id.String || bodyProject.String != o.ProjectID || bodyOperation.String != o.ID || bodyAttempt.String != o.AttemptID || !anchor.Valid || !expected.Valid || !fingerprint.Valid || fingerprint.String != o.CapabilityFingerprint || !complete.Valid || complete.Int64 < 0 || complete.Int64 > 1 || !outcome.Valid || !hosted.Valid || hosted.Int64 < 0 || hosted.Int64 > 1 || (hosted.Int64 == 1) != (o.Channel == "hosted") || json.Unmarshal([]byte(attemptAnchor), &admitted) != nil || json.Unmarshal([]byte(anchor.String), &captured) != nil || json.Unmarshal([]byte(expected.String), &want) != nil || !validEvidenceAnchor(admitted) || captured != admitted || want != admitted || admitted.PullNumber != o.PullNumber || admitted.CandidateSHA != o.HeadSHA {
-		return "", false, adjudicationStorageError()
+		return operationEvidenceFacts{}, adjudicationStorageError()
 	}
-	return id.String, complete.Int64 == 1 && outcome.String == "completed", nil
+	facts := operationEvidenceFacts{ID: id.String, Complete: complete.Int64 == 1 && outcome.String == "completed"}
+	_, finishOK := hostedObservationTime(finished.String)
+	_, recordedOK := hostedObservationTime(recorded.String)
+	if finishOK && recordedOK {
+		facts.ReviewFinishedAt, facts.EvidenceRecordedAt = finished.String, recorded.String
+	}
+	return facts, nil
 }
 
 // Waiting owns only result collection; the final compact read reauthorizes and
