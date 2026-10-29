@@ -179,6 +179,13 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if terminal {
+			if r.Header.Get("X-FC-Operation-Evidence") == "true" {
+				operation, err = e.readOperationProjection(r.Context(), scope, operation.ID, true)
+				if err != nil {
+					writeOperationWaitError(w, err)
+					return
+				}
+			}
 			operation.PendingEvidence, err = e.pendingEvidenceForResponse(r, scope, operation.ID, operation.State, operation.Reason)
 			if err != nil {
 				writeOperationWaitError(w, err)
@@ -196,6 +203,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", pendingEvidenceHeader)
+	w.Header().Add("Vary", "X-FC-Operation-Evidence")
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -224,6 +232,13 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		core.WriteError(w, err)
 		return
+	}
+	if r.Header.Get("X-FC-Operation-Evidence") == "true" {
+		operation, err = e.readOperationProjection(r.Context(), scope, operationID, true)
+		if err != nil {
+			core.WriteError(w, err)
+			return
+		}
 	}
 	operation.PendingEvidence, err = e.pendingEvidenceForResponse(r, scope, operation.ID, operation.State, operation.Reason)
 	if err != nil {

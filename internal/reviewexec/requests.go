@@ -251,6 +251,12 @@ func operationFlagColumns(ctx context.Context, q EvidenceQuery) (string, string,
 }
 
 func (e *Engine) ReadOperation(ctx context.Context, scope core.Scope, id string) (Operation, error) {
+	return e.readOperationProjection(ctx, scope, id, false)
+}
+
+// Evidence is optional response metadata, never written into the operation
+// journal. Read both identities under one authorization and database snapshot.
+func (e *Engine) readOperationProjection(ctx context.Context, scope core.Scope, id string, evidence bool) (Operation, error) {
 	if !identifier.MatchString(id) {
 		return Operation{}, invalid()
 	}
@@ -258,6 +264,9 @@ func (e *Engine) ReadOperation(ctx context.Context, scope core.Scope, id string)
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
 		o, err = readOperation(ctx, tx, scope.ProjectID, id)
+		if err == nil && evidence {
+			o.EvidenceID, _, err = operationStatusEvidence(ctx, tx, o)
+		}
 		return err
 	})
 	return o, err

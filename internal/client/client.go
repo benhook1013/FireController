@@ -309,6 +309,7 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 type sourceWaitOptions struct {
 	deploymentDraining *bool
 	reviewBlockers     bool
+	operationEvidence  bool
 	seconds            int
 	status             *int
 	budget             time.Duration // Optional domain-owned budget; zero preserves existing waits.
@@ -356,6 +357,9 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		r.Header.Set("Prefer", "wait="+strconv.Itoa(wait.seconds))
 		if wait.reviewBlockers {
 			r.Header.Set("X-FC-Review-Blockers", "true")
+		}
+		if wait.operationEvidence {
+			r.Header.Set("X-FC-Operation-Evidence", "true")
 		}
 	}
 	if len(body) != 0 {
