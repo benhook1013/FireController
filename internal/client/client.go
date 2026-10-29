@@ -504,6 +504,10 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	result := fail(value.Error.Code, "The service refused this scoped request.", "Check the selected instance, project, worker and current access.", status)
 	result.RequestID = value.RequestID
 	result.Details = c.safeDetails(value.Error.Details, result.Code)
+	if status == http.StatusServiceUnavailable && result.Code == "overloaded" {
+		result.Message = "The controller temporarily could not complete this request."
+		result.Action = "Retry this same read after a short delay, retaining its resource ID. Report persistent failures with request_id."
+	}
 	if status == http.StatusConflict {
 		switch result.Code {
 		case "revision_conflict", "checklist_revision_conflict", "job_workstream_revision_conflict", "note_revision_conflict", "primary_job_revision_conflict", "project_presentation_revision_conflict", "publication_revision_conflict", "review_attempt_revision_conflict", "review_round_revision_conflict", "summary_revision_conflict", "worker_pause_revision_conflict", "review_configuration_revision_conflict":
