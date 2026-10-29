@@ -89,6 +89,7 @@ func (e *Engine) configureHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
+	w.Header().Add("Vary", pendingEvidenceHeader)
 	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
@@ -174,6 +175,11 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if terminal {
+			operation.PendingEvidence, err = e.pendingEvidenceForResponse(r, scope, operation.ID, operation.State, operation.Reason)
+			if err != nil {
+				writeOperationWaitError(w, err)
+				return
+			}
 			core.WriteJSON(w, http.StatusOK, operation)
 			return
 		}
@@ -183,6 +189,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
+	w.Header().Add("Vary", pendingEvidenceHeader)
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -208,6 +215,11 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Preference-Applied", "wait="+strconv.Itoa(wait))
 	operation, _, err := e.WaitOperation(r.Context(), scope, operationID, wait)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	operation.PendingEvidence, err = e.pendingEvidenceForResponse(r, scope, operation.ID, operation.State, operation.Reason)
 	if err != nil {
 		core.WriteError(w, err)
 		return

@@ -30,7 +30,15 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if value.Channel == "cli" && value.State == "held" && (value.Reason == "allowance_exhausted" || value.Reason == "allowance_timeout") {
 		value.NextAction = "retry_later_with_new_request"
 	}
-	return ReviewOperationStatusOutput{value, agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)}
+	hint := agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)
+	if value.PendingEvidence != nil {
+		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
+		value.NextAction = "resolve_pending_evidence"
+		if len(value.PendingEvidence.Items) == 0 {
+			value.NextAction = "new_request_if_authorized"
+		}
+	}
+	return ReviewOperationStatusOutput{value, hint}
 }
 
 type ReviewOperationDiagnostic struct {
@@ -49,7 +57,11 @@ type ReviewOperationOutput struct {
 }
 
 func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
-	return ReviewOperationOutput{value, agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)}
+	hint := agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)
+	if value.PendingEvidence != nil {
+		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
+	}
+	return ReviewOperationOutput{value, hint}
 }
 
 // Keep receipts flat and invalid unions rejected by their original marshaler.
@@ -93,6 +105,8 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 	}
 	var explanation string
 	switch reason {
+	case "review_evidence_pending":
+		return &ReviewOperationDiagnostic{"Earlier native evidence in this PR/channel still needs capture, adjudication, finalization, fix proof or a routed receiving resolution. This held operation is terminal and completed no new review.", "Read this operation with diagnostics to identify the current source operation/evidence, finding and route handles. Resolve the actual retained obligation through its existing controls; an outgoing accepted route without fix proof can hold the source channel. Do not reset rounds, discard evidence or start another review to clear the hold."}
 	case "project_file_limit":
 		return &ReviewOperationDiagnostic{"The materialized comparison exceeds the optional project review-file ceiling. This operation is terminal and no review was started.", "Reduce the comparison, or deliberately select override_file_limit:true on a new authorized exact-target review_request (CLI --override-file-limit), with a fresh key and current configuration/head. This overrides only the project ceiling; provider restrictions, findings, allowances and all other admission checks still apply. Do not change project defaults or replay the held key expecting execution."}
 	case "allowance_timeout":
@@ -194,4 +208,11 @@ func AgentReviewCI(value ReviewSourceCIAssessment) ReviewCIOutput {
 		out.Diagnostic = &ReviewCIDiagnostic{"GitHub has not yet published a verified test-merge candidate for this observed comparison.", "Wait for the candidate to become available, then collect CI for the same comparison. No review reset is needed."}
 	}
 	return out
+}
+
+func pendingEvidenceDiagnostic(v *ReviewPendingEvidence) *ReviewOperationDiagnostic {
+	if len(v.Items) == 0 {
+		return &ReviewOperationDiagnostic{"No current native-evidence blockers remain for this PR/channel. This is a current local assessment; the earlier held operation and its original reason remain unchanged.", "If the planned review remains authorized, use a new request with a fresh key and current configuration/head. All other admission and provider checks still apply; this read grants no review permission."}
+	}
+	return &ReviewOperationDiagnostic{"The pending_evidence items name the current local obligations in this PR/channel, including any unresolved outgoing route and its receiving PR. evaluated_at describes this read, not a captured historical cause of the earlier hold.", "Resolve the listed capture, finding, finalization, fix or receiving-route obligation through its existing controls. Read the referenced evidence/adjudication or route only when more context is needed. has_more means this is a bounded preview. The held operation remains terminal; do not reset controls, discard evidence or request another review to repair missing work."}
 }

@@ -13,18 +13,19 @@ import (
 
 // OperationStatus is a compact read projection, never execution or coverage authority.
 type OperationStatus struct {
-	ID             string `json:"id"`
-	PullNumber     int64  `json:"pull_number"`
-	Channel        string `json:"channel"`
-	State          string `json:"state"`
-	Revision       int64  `json:"revision"`
-	Stage          string `json:"stage"`
-	Reason         string `json:"reason"`
-	AttemptID      string `json:"attempt_id"`
-	EvidenceID     string `json:"evidence_id,omitempty"`
-	RetryNotBefore string `json:"retry_not_before,omitempty"`
-	UpdatedAt      string `json:"updated_at"`
-	NextAction     string `json:"next_action"`
+	PendingEvidence *PendingEvidence `json:"pending_evidence,omitempty"`
+	ID              string           `json:"id"`
+	PullNumber      int64            `json:"pull_number"`
+	Channel         string           `json:"channel"`
+	State           string           `json:"state"`
+	Revision        int64            `json:"revision"`
+	Stage           string           `json:"stage"`
+	Reason          string           `json:"reason"`
+	AttemptID       string           `json:"attempt_id"`
+	EvidenceID      string           `json:"evidence_id,omitempty"`
+	RetryNotBefore  string           `json:"retry_not_before,omitempty"`
+	UpdatedAt       string           `json:"updated_at"`
+	NextAction      string           `json:"next_action"`
 }
 
 func operationStatusStage(o Operation, evidence string, complete bool) (string, string) {
@@ -143,6 +144,7 @@ func (e *Engine) WaitOperationStatus(ctx context.Context, scope core.Scope, id s
 }
 func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
+	w.Header().Add("Vary", pendingEvidenceHeader)
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -168,6 +170,11 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Preference-Applied", "wait="+strconv.Itoa(wait))
 	value, err := e.WaitOperationStatus(r.Context(), scope, id, wait)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	value.PendingEvidence, err = e.pendingEvidenceForResponse(r, scope, value.ID, value.State, value.Reason)
 	if err != nil {
 		core.WriteError(w, err)
 		return

@@ -12,7 +12,7 @@ The response contains `project_id`, `items`, `has_more` and a `cursor` only when
 
 ## Compact operation status
 
-`GET /api/v1/projects/{project_id}/reviews/operations/{operation_id}/status` reads only `id`, `pull_number`, `channel`, stored `state`, `revision`, `stage`, `reason`, `attempt_id`, optional `evidence_id`, optional `retry_not_before`, `updated_at` and `next_action`. It rechecks current project read permission and performs no provider requests, capture-file reads, source refresh, Git work, execution or accounting changes. Unknown additive metadata is ignored by compact clients and is not forwarded into tool output; required known fields, canonical names and state/action validation remain strict. The existing full operation GET is unchanged for clients that need diagnostics.
+`GET /api/v1/projects/{project_id}/reviews/operations/{operation_id}/status` normally reads only `id`, `pull_number`, `channel`, stored `state`, `revision`, `stage`, `reason`, `attempt_id`, optional `evidence_id`, optional `retry_not_before`, `updated_at` and `next_action`. The [pending-evidence expansion](#pending-native-evidence) adds selected blocker references. It rechecks current project read permission and performs no provider requests, capture-file reads, source refresh, Git work, execution or accounting changes. Unknown additive metadata is ignored by compact clients and is not forwarded into tool output; required known fields, canonical names and state/action validation remain strict. The existing full operation GET is unchanged for clients that need diagnostics.
 
 `Prefer: wait=N` retains the existing notification-based result collection, from zero through 900 seconds; zero returns immediately. Cancellation detaches collection without cancelling the operation or reposting a review. After the wait, a fresh authorized local read selects the compact status and its exact attempt binding. The response always preserves the stored operation state; a display stage cannot override execution rules.
 
@@ -22,7 +22,13 @@ A completed operation reports `evidence_ready` and `read_evidence` only when its
 
 For a held Hosted `hosted_allowance_cooldown`, `retry_not_before` is the original validated deadline retained for that exact attempt, included when known. It remains visible after it passes; elapsed time does not grant permission or resume the terminal hold. Other states and channels omit it, and absent timing remains unknown. The compact read validates the same bound local allowance record used by full diagnostics without fetching provider state or opening capture files.
 
-The reader projects bounded identity and completion metadata from that one normalized evidence row; it does not load finding narratives or reparse provider bodies. It cannot invent finer preparation phases or provider progress that the durable journal does not record. Unknown facts remain unknown.
+Without the pending-evidence expansion, the reader projects bounded identity and completion metadata from that one normalized evidence row; it does not load finding narratives or reparse provider bodies. It cannot invent finer preparation phases or provider progress that the durable journal does not record. Unknown facts remain unknown.
+
+## Pending native evidence
+
+Matching CLI/MCP clients request `X-FC-Review-Blockers: true` on operation/status reads and review-request result collection. Only a held `review_evidence_pending` result gains `pending_evidence`: `evaluated_at`, at most five `items`, and `has_more`. Each item identifies its source `operation_id`, optional `evidence_id` and zero-based `finding`, a reason (`capture_missing`, `capture_incomplete`, `finding_undecided`, `finalization_pending`, `fix_pending`, `route_undecided` or `route_fix_pending`), and the `route_id`/`target_pull_number` when a receiving obligation is unresolved. No finding narratives, rationale, proof text or provider data are repeated. Requests without this response-expansion header retain their existing shape.
+
+These are **current local obligations**, not a reconstruction of what was pending when an earlier operation held. The selected expansion reads bounded retained capture/adjudication and route records under current project read authority; it makes no provider request, repairs no index and changes no review state. Other status reads retain their lightweight scalar-only path. An empty current list leaves the original operation terminal and does not establish readiness under other admission rules. CLI/MCP give the corresponding recovery action without requiring an owner investigation. The [route contract](review-routes.md) owns source and receiving requirements; resolving a route never erases original attribution or counts.
 
 ## Bound clients
 

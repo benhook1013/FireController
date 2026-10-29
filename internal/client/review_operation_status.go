@@ -12,18 +12,19 @@ import (
 
 // ReviewOperationStatus omits private configuration and capture contents.
 type ReviewOperationStatus struct {
-	ID             string `json:"id"`
-	PullNumber     int64  `json:"pull_number"`
-	Channel        string `json:"channel"`
-	State          string `json:"state"`
-	Revision       int64  `json:"revision"`
-	Stage          string `json:"stage"`
-	Reason         string `json:"reason"`
-	AttemptID      string `json:"attempt_id"`
-	EvidenceID     string `json:"evidence_id,omitempty"`
-	RetryNotBefore string `json:"retry_not_before,omitempty"`
-	UpdatedAt      string `json:"updated_at"`
-	NextAction     string `json:"next_action"`
+	PendingEvidence *ReviewPendingEvidence `json:"pending_evidence,omitempty"`
+	ID              string                 `json:"id"`
+	PullNumber      int64                  `json:"pull_number"`
+	Channel         string                 `json:"channel"`
+	State           string                 `json:"state"`
+	Revision        int64                  `json:"revision"`
+	Stage           string                 `json:"stage"`
+	Reason          string                 `json:"reason"`
+	AttemptID       string                 `json:"attempt_id"`
+	EvidenceID      string                 `json:"evidence_id,omitempty"`
+	RetryNotBefore  string                 `json:"retry_not_before,omitempty"`
+	UpdatedAt       string                 `json:"updated_at"`
+	NextAction      string                 `json:"next_action"`
 }
 
 func (c *Client) ReviewOperationStatus(ctx context.Context, id string) (ReviewOperationStatus, error) {
@@ -35,7 +36,7 @@ func (c *Client) WaitReviewOperationStatus(ctx context.Context, id string, secon
 	}
 	var value ReviewOperationStatus
 	var status int
-	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: seconds, status: &status}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: seconds, status: &status, reviewBlockers: true}); err != nil {
 		return ReviewOperationStatus{}, err
 	}
 	if value.ID != id || !validCompactOperationStatus(value) {
@@ -71,7 +72,7 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 }
 
 func validCompactOperationStatus(v ReviewOperationStatus) bool {
-	if ValidateReviewOperationID(v.ID) != nil || !validPullNumber(v.PullNumber) || !oneReviewOf(v.Channel, "cli", "hosted") || v.Revision < 1 || v.Reason != "" && !validExecutionIdentifier(v.Reason) || v.AttemptID != "" && !validReviewOpaqueID(v.AttemptID, "review_attempt_") || v.EvidenceID != "" && (!validReviewOpaqueID(v.EvidenceID, "review_evidence_") || v.AttemptID == "") || !controlTime(v.UpdatedAt) {
+	if !validReviewPendingEvidence(v.PendingEvidence, v.State, v.Reason) || ValidateReviewOperationID(v.ID) != nil || !validPullNumber(v.PullNumber) || !oneReviewOf(v.Channel, "cli", "hosted") || v.Revision < 1 || v.Reason != "" && !validExecutionIdentifier(v.Reason) || v.AttemptID != "" && !validReviewOpaqueID(v.AttemptID, "review_attempt_") || v.EvidenceID != "" && (!validReviewOpaqueID(v.EvidenceID, "review_evidence_") || v.AttemptID == "") || !controlTime(v.UpdatedAt) {
 		return false
 	}
 	if v.RetryNotBefore != "" && (v.Channel != "hosted" || v.State != "held" || v.Reason != "hosted_allowance_cooldown" || v.AttemptID == "" || !validAllowanceTime(v.RetryNotBefore)) {
