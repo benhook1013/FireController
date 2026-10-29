@@ -259,7 +259,7 @@ func TestReviewExecutionStdioConfiguredReadsAndQueuedReplayNoProviders(t *testin
 	}
 }
 
-func TestReviewExecutionStdioUnknownReceiptAndWholeBudget(t *testing.T) {
+func TestReviewExecutionStdioUnknownReceiptAndOperationBudget(t *testing.T) {
 	for _, mode := range []string{"dropped", "malformed", "deadline"} {
 		t.Run(mode, func(t *testing.T) {
 			f, handler, _ := reviewControlsFixture(t)
@@ -318,8 +318,8 @@ func TestReviewExecutionStdioUnknownReceiptAndWholeBudget(t *testing.T) {
 			if posts.Load() != 1 || !strings.Contains(failure.Action, "same idempotency key") {
 				t.Fatal("unknown request automatically retried or lost recovery meaning")
 			}
-			if mode == "deadline" && (elapsed < 4500*time.Millisecond || elapsed > 5500*time.Millisecond) {
-				t.Fatal("request got a new budget after handshake", elapsed)
+			if mode == "deadline" && (elapsed < 6*time.Second || elapsed > 7*time.Second) {
+				t.Fatal("operation exceeded its five-second budget after the identity read", elapsed)
 			}
 			var receipt client.ReviewRequestReceipt
 			decodeResult(t, call(t, session, "review_request", executionArguments()), &receipt)

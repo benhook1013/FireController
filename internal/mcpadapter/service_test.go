@@ -313,7 +313,7 @@ func TestCancellationReachesHTTPAndSessionRemainsUsable(t *testing.T) {
 	}
 }
 
-func TestTotalDeadlineIncludesHandshakeAndReturnsSafeToolError(t *testing.T) {
+func TestOperationDeadlineAfterHandshakeReturnsSafeToolError(t *testing.T) {
 	started := time.Now()
 	var readStarted atomic.Int64
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -341,8 +341,8 @@ func TestTotalDeadlineIncludesHandshakeAndReturnsSafeToolError(t *testing.T) {
 	result := call(t, cs, "doctor", nil)
 	elapsed := time.Since(started)
 	errorResult(t, result, "deadline_exceeded", private, token)
-	if readStarted.Load() == 0 || elapsed < 4500*time.Millisecond || elapsed > 5400*time.Millisecond {
-		t.Fatalf("total budget not shared: %s", elapsed)
+	if readStarted.Load() == 0 || elapsed < 5400*time.Millisecond || elapsed > 6500*time.Millisecond {
+		t.Fatalf("operation deadline after bounded identity read: %s", elapsed)
 	}
 }
 

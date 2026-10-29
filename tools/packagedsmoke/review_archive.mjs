@@ -58,11 +58,19 @@ try {
     await page.goto(config.origin+path+(snapshot ? `?snapshot=${snapshot}` : ''));
     // The project-scoped sign-in form already binds this deep link's project.
     await page.getByLabel('Project credential',{exact:true}).fill(token);
-    // Read while this login's response is current, before canonical navigation.
-    const resolved = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === prefix).then(async response => { selectedProjectStatus=response.status(); return {response, identity:await response.json()}; });
+    // Buffer this same project response before delivering it to the browser.
+    // Chromium may retire a response's inspector body during canonical navigation;
+    // that must not turn a successful login into an observer-only smoke failure.
+    let identity, identityStatus;
+    await page.route(config.origin+prefix, async route => {
+      const response = await route.fetch({timeout:5000,maxRedirects:0,maxRetries:0});
+      identityStatus = response.status(); identity = await response.json();
+      await route.fulfill({response});
+    }, {times:1});
     await page.getByRole('button',{name:'Connect to project',exact:true}).click();
-    const {response:identityResponse, identity} = await resolved;
-    need(identityResponse.status() === 200 && identity.id === config.project && typeof identity.handle === 'string' && identity.handle.length > 0);
+    await expect.poll(() => identityStatus).toBe(200);
+    selectedProjectStatus=identityStatus;
+    need(identity.id === config.project && typeof identity.handle === 'string' && identity.handle.length > 0);
     const home = `/projects/${encodeURIComponent(identity.handle)}`, canonicalPath = `${home}/reviews/pulls/${number}`;
     await expect(page).toHaveURL(config.origin+canonicalPath+(snapshot ? `?snapshot=${snapshot}` : ''));
     const rounds = page.locator('.main-content').getByRole('region',{name:`PR #${number} review rounds`,exact:true});

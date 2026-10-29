@@ -70,7 +70,7 @@ func TestReviewPolicyAssessmentCLIBoundReadAndArgumentPrecedence(t *testing.T) {
 	}
 }
 
-func TestReviewPolicyAssessmentCLISharesWholeFiveSecondBudget(t *testing.T) {
+func TestReviewPolicyAssessmentCLIRespectsCallerWholeBudget(t *testing.T) {
 	f := setupServiceFixture(t)
 	project := f.project(t, "assessment-budget")
 	worker := f.worker(t, project, "Builder")
@@ -93,9 +93,11 @@ func TestReviewPolicyAssessmentCLISharesWholeFiveSecondBudget(t *testing.T) {
 	path := mutationProfiles(t, f, srv.URL, map[string][2]string{"builder": {project, worker}})
 	var out, stderr bytes.Buffer
 	start := time.Now()
-	code := cli.RunContext(context.Background(), []string{"--profiles-file", path, "reviews", "assess", cliEvidenceID}, map[string]string{"FC_PROFILE": "builder"}, &out, &stderr)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	code := cli.RunContext(ctx, []string{"--profiles-file", path, "reviews", "assess", cliEvidenceID}, map[string]string{"FC_PROFILE": "builder"}, &out, &stderr)
 	elapsed := time.Since(start)
-	if code != cli.ExitService || out.Len() != 0 || !strings.Contains(stderr.String(), "deadline_exceeded") || elapsed < 4500*time.Millisecond || elapsed > 6*time.Second || calls.Load() != 2 {
+	if code != cli.ExitCancelled || out.Len() != 0 || !strings.Contains(stderr.String(), "deadline_exceeded") || elapsed < 4500*time.Millisecond || elapsed > 6*time.Second || calls.Load() != 2 {
 		t.Fatal("handshake+assessment acquired separate budgets", code, elapsed, stderr.String())
 	}
 }
