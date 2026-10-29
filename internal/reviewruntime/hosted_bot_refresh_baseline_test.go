@@ -11,7 +11,7 @@ import (
 )
 
 func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
-	for _, mode := range []string{"identifiers", "unchanged", "prose", "command", "removed_command", "human", "identity", "after_ack", "positive_five", "grouped_six", "missing_baseline"} {
+	for _, mode := range []string{"identifiers", "unchanged", "prose", "command", "removed_command", "human", "identity", "after_ack", "positive_five", "grouped_six", "new_bot_report", "new_bot_positive", "missing_baseline"} {
 		t.Run(mode, func(t *testing.T) {
 			var old reviewprovider.IssueComment
 			f, record := runtimeStandingFixture(t, func(b *HostedCaptureRecord) {
@@ -22,7 +22,7 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 				if mode == "human" {
 					old.Author.Kind = "User"
 				}
-				if mode != "missing_baseline" {
+				if mode != "missing_baseline" && mode != "new_bot_report" && mode != "new_bot_positive" {
 					b.Snapshot.IssueComments = append(b.Snapshot.IssueComments, old)
 				}
 			}, nil)
@@ -51,11 +51,14 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 				current.Body = "An unrelated current report."
 			case "identity":
 				current.Author.ID++
+			case "new_bot_report", "new_bot_positive":
+				current.CreatedAt = record.Snapshot.IssueComments[0].CreatedAt.Add(time.Millisecond)
+				current.UpdatedAt = record.Snapshot.ObservedAt
 			case "after_ack":
 				current.UpdatedAt = record.Snapshot.ObservedAt
 			}
 			record.Snapshot.IssueComments = append(record.Snapshot.IssueComments, current)
-			if mode == "positive_five" || mode == "grouped_six" {
+			if mode == "positive_five" || mode == "grouped_six" || mode == "new_bot_positive" {
 				trigger := record.Snapshot.IssueComments[0].CreatedAt
 				record.Snapshot.IssueComments = append(record.Snapshot.IssueComments[:1], record.Snapshot.IssueComments[2:]...)
 				record.Snapshot.IssueComments[len(record.Snapshot.IssueComments)-1].UpdatedAt = record.Snapshot.ObservedAt
@@ -74,7 +77,7 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := mode == "identifiers" || mode == "unchanged" || mode == "prose" || mode == "after_ack" || mode == "positive_five" || mode == "grouped_six"
+			want := mode == "identifiers" || mode == "unchanged" || mode == "prose" || mode == "after_ack" || mode == "positive_five" || mode == "grouped_six" || mode == "new_bot_positive" || mode == "new_bot_report"
 			if result.Complete != want {
 				t.Fatalf("complete=%v reason=%s want=%v", result.Complete, result.Reason, want)
 			}
@@ -92,7 +95,7 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 			if err != nil || replay != result || cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, f.a.ID) != 1 {
 				t.Fatal("native evidence not once-only", err)
 			}
-			if mode == "positive_five" || mode == "grouped_six" {
+			if mode == "positive_five" || mode == "grouped_six" || mode == "new_bot_positive" {
 				evidence, readErr := f.f.engine.ReadReviewEvidence(t.Context(), f.f.scopeWithAccess(t, f.f.reader, false, "read"), result.Receipt.ID)
 				want := 5
 				if mode == "grouped_six" {

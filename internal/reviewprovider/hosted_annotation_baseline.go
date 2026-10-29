@@ -11,8 +11,8 @@ var hostedAddressedRangeFooter = regexp.MustCompile(`^\n\n✅ Addressed in commi
 var hostedAddressedFooter = regexp.MustCompile(`^\n\n✅ Addressed in commit ([a-f0-9]{7,40})\n?$`)
 
 // ExtractHostedFindingsWithBaseline preserves strict extraction except for
-// proven preexisting unrelated bot report revisions and, only for standing zero,
-// proven old-root fix annotations.
+// unrelated bot reports qualified by a complete pre-trigger baseline and,
+// only for standing zero, proven old-root fix annotations.
 // The caller must independently bind baseline to its immutable complete
 // pre-POST capture and reject reused provider run UUIDs. Structural/timestamp
 // checks here alone establish neither that journal ownership nor coverage.
@@ -43,8 +43,9 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 
 	// This projection is attribution-only. Raw snapshots and every original
 	// body stay untouched. Unrelated bot reports can be revised without
-	// becoming request authorities; provider finding records remain. Both
-	// retained bodies must lack even a hidden provider command mention.
+	// becoming request authorities; provider finding records remain. Existing
+	// reports require both retained bodies to lack even a hidden provider command
+	// mention; newly created reports must lack a current mention.
 	projected := snapshot
 	trigger := original.Publication.Trigger.CreatedAt
 	oldComments := make(map[int64]IssueComment, len(baseline.IssueComments))
@@ -55,8 +56,17 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 	botProjected := false
 	for position, comment := range snapshot.IssueComments {
 		old, present := oldComments[comment.ID]
-		if present && !publicationActor(comment.Author, providerActor) && !publicationActor(comment.Author, postingActor) && baselineBotReportRefresh(comment, old, baseline.ObservedAt, trigger) {
+		if publicationActor(comment.Author, providerActor) || publicationActor(comment.Author, postingActor) {
+			continue
+		}
+		if present && baselineBotReportRefresh(comment, old, baseline.ObservedAt, trigger) {
 			projected.IssueComments[position].UpdatedAt = old.UpdatedAt
+			botProjected = true
+		} else if !present && baseline.ObservedAt.Before(trigger) && comment.Author.Kind == "Bot" && comment.CreatedAt.After(trigger) && comment.UpdatedAt.After(comment.CreatedAt) && !strings.Contains(strings.ToLower(comment.Body), "coderabbit") {
+			// A complete pre-trigger baseline cannot contain a report created
+			// later. Its unrelated Bot identity supplies the same non-command
+			// report trust as an existing report refresh; retain all raw source.
+			projected.IssueComments[position].UpdatedAt = comment.CreatedAt
 			botProjected = true
 		}
 	}

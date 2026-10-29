@@ -158,3 +158,66 @@ func TestHostedBaselineBotRefreshRefusesUnprovenEdits(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedBaselineNewBotReportPreservesOriginalReview(t *testing.T) {
+	for _, kind := range []string{"standing_zero", "submitted_positive", "batched_five"} {
+		for _, mode := range []string{"report", "before_trigger", "at_trigger", "human", "posting_actor", "provider_actor", "provider_mention", "hidden_command", "late_baseline", "missing_baseline"} {
+			t.Run(kind+"/"+mode, func(t *testing.T) {
+				s, intent, poster, bot, earliest := standingTestFixture(t)
+				if kind != "standing_zero" {
+					f := submittedTestFixture(t)
+					if kind == "batched_five" {
+						f = batchedFiveBotFixture(t)
+					}
+					s, intent, poster, bot, earliest = f.snapshot, f.intent, f.poster, f.bot, f.earliest
+				}
+				want, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+				if err != nil || !want.Complete {
+					t.Fatal("fixture", want.Reason, err)
+				}
+				trigger := s.IssueComments[0].CreatedAt
+				baseline := HostedPublicationSnapshot{Complete: true, ObservedAt: trigger.Add(-time.Second), IssueComments: []IssueComment{}, Reviews: []HostedReview{}, ReviewComments: []ReviewComment{}}
+				report := IssueComment{ID: 901, Author: Author{ID: 902, Login: "synthetic-other-review[bot]", Kind: "Bot"}, CreatedAt: trigger.Add(time.Second), UpdatedAt: s.ObservedAt, Body: "Independent review report. Updated results are ready."}
+				switch mode {
+				case "before_trigger":
+					report.CreatedAt = trigger.Add(-time.Second)
+				case "at_trigger":
+					report.CreatedAt = trigger
+				case "human":
+					report.Author.Kind = "User"
+				case "posting_actor":
+					report.Author = poster
+				case "provider_actor":
+					report.Author = bot
+				case "provider_mention":
+					report.Body += " CoDeRaBbIt"
+				case "hidden_command":
+					report.Body += "\n<!-- @coderabbitai full review -->"
+				case "late_baseline":
+					baseline.ObservedAt = trigger
+				case "missing_baseline":
+					baseline.Complete = false
+				}
+				s.IssueComments = append(s.IssueComments, report)
+				before := append([]IssueComment(nil), s.IssueComments...)
+				got, err := ExtractHostedFindingsWithBaseline(s, baseline, intent, poster, bot, earliest)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "report" {
+					if !got.Complete || !reflect.DeepEqual(got.Findings, want.Findings) || !got.Publication.FinishedAt.Equal(want.Publication.FinishedAt) {
+						t.Fatal("original inventory lost", got.Reason)
+					}
+				} else {
+					strict, strictErr := ExtractHostedFindings(s, intent, poster, bot, earliest)
+					if strictErr != nil || got.Complete != strict.Complete || got.Reason != strict.Reason {
+						t.Fatal("unproven edit changed strict attribution", mode, got.Reason, strict.Reason, strictErr)
+					}
+				}
+				if !reflect.DeepEqual(s.IssueComments, before) {
+					t.Fatal("source mutated")
+				}
+			})
+		}
+	}
+}
