@@ -296,6 +296,9 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 	// through the original trigger and reservation, without another post.
 	observed, err := observeHostedAttempt(ctx, d.provider, d.captures, d.engine, operation.ProjectID, attempt.ID, d.capability.ID, prepared.postingActor, d.providerActor(), false)
 	if err == nil {
+		if observed.State == "rate_limited" {
+			return reviewexec.Result{State: "rate_limited", Reason: observed.Reason, ExternalID: externalID}, nil
+		}
 		if observed.State == "completed" {
 			return reviewexec.Result{State: "completed", Reason: "hosted_evidence_retained", ExternalID: externalID}, nil
 		}

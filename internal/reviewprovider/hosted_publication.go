@@ -318,6 +318,10 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		result.EligibleReviews = append(result.EligibleReviews, review)
 	}
 	sort.Slice(result.EligibleReviews, func(i, j int) bool { return result.EligibleReviews[i].ID < result.EligibleReviews[j].ID })
+	if publicationRateLimited(snapshot, result, providerAuthor, closing) {
+		result.State, result.Reason = "rate_limited", "hosted_review_rate_limited"
+		return result, nil
+	}
 	batches := map[int]HostedReview{}
 	total := 0
 	for _, review := range result.EligibleReviews {

@@ -54,6 +54,10 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		result.Reason = "already_completed"
 		return result, nil
 	}
+	if attempt.State == "rate_limited" {
+		result.Reason = bound.Operation.Reason
+		return result, nil
+	}
 	if !settle && attempt.State != "active" {
 		result.Reason = "trigger_recording_pending"
 		return result, core.Fail("review_conflict", "The live hosted trigger has not been recorded by its supervisor.", 409)
@@ -159,6 +163,13 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	captured, err := RetainHosted(ctx, captures, engine, attempt, retained)
 	if err != nil || !captured.Complete {
 		result.Reason = captured.Reason
+		if err == nil && captured.rateLimited {
+			result.State = "rate_limited"
+			if settle {
+				_, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, result.State, result.Reason, externalID)
+			}
+			return result, err
+		}
 		if err == nil && (captured.Reason == "hosted_finished_inventory_unproven" || captured.publicationFinished) {
 			result.State, result.Reason = "uncertain", "hosted_finished_inventory_unproven"
 			if settle && !finishedUnproven {

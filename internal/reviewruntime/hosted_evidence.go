@@ -22,6 +22,7 @@ type CapturedHosted struct {
 
 	// Internal attribution fact, never final evidence or completion credit.
 	publicationFinished bool
+	rateLimited         bool
 }
 
 // RetainHosted saves a private observation before deriving final evidence. A
@@ -58,12 +59,13 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		}
 		if baselineReason == "" {
 			fallback, err := reviewprovider.ExtractHostedFindingsWithBaseline(retained.Snapshot, baseline.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
-			if err == nil && (fallback.Complete || fallback.Reason == "hosted_finished_inventory_unproven") {
+			if err == nil && (fallback.Complete || fallback.Reason == "hosted_finished_inventory_unproven" || fallback.Publication.State == "rate_limited") {
 				inventory = fallback
 			}
 		}
 	}
 	if !inventory.Complete || inventory.Publication.State != "attributed" {
+		result.rateLimited = inventory.Publication.State == "rate_limited"
 		result.publicationFinished = inventory.Publication.State == "attributed" && !inventory.Publication.FinishedAt.IsZero()
 		result.Reason = inventory.Reason
 		if result.Reason == "" {

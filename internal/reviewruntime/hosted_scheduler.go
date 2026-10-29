@@ -74,7 +74,7 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
 					// Healthy pending work keeps a short cadence. Identical provider
 					// source reuses its retained capture rather than spending another
 					// journal reference. Ambiguous outcomes/errors still back off.
-					normal = err == nil && observed.State == "completed"
+					normal = err == nil && (observed.State == "completed" || observed.State == "rate_limited")
 					if err == nil && observed.State == "active" && (observed.Reason == "publication_not_proven" || observed.Reason == "missing_publication_batches") {
 						normal = true
 						delay = hostedRecoveryBackoffMinimum

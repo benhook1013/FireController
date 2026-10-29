@@ -27,6 +27,9 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if value.Channel == "hosted" && value.State == "held" && value.Reason == "hosted_allowance_reply_pending" {
 		value.NextAction = "new_request_to_recheck_allowance"
 	}
+	if value.Channel == "hosted" && value.State == "rate_limited" && value.Reason == "hosted_review_rate_limited" {
+		value.NextAction = "retry_later_with_new_request"
+	}
 	if value.Channel == "cli" && value.State == "held" && (value.Reason == "allowance_exhausted" || value.Reason == "allowance_timeout") {
 		value.NextAction = "retry_later_with_new_request"
 	}
@@ -114,6 +117,9 @@ func AgentReviewRunResult(value ReviewRunResult) any {
 // Legacy parent_moved does not identify whether the selected or an ancestor edge
 // failed; only the distinct predecessor reason proves the selected check passed.
 func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperationDiagnostic {
+	if channel == "hosted" && state == "rate_limited" && reason == "hosted_review_rate_limited" {
+		return &ReviewOperationDiagnostic{"CodeRabbit rejected the original review trigger because its review rate limit was reached. This operation is terminal; no completed review or clean-round credit was recorded.", "Waiting on this operation will not start a review. Continue other work. If another review remains authorized, use one later fresh request/key with current configuration/head through normal allowance preflight. The rejection alone supplies no exact retry deadline. Do not repost this trigger, reset round controls or treat it as a completed review."}
+	}
 	if channel == "hosted" && state == "active" && (reason == "trigger_recovered" || reason == "trigger_recorded" || reason == "trigger_posted") {
 		return &ReviewOperationDiagnostic{"The original Hosted review trigger was confirmed on GitHub. This proves delivery, not that CodeRabbit started or is still running. updated_at records a local state transition, not provider start or the last observation; pending observations need not change it.", "Keep the existing observer for this operation and use a bounded status wait while continuing other work. The service's driver/recovery path observes the same trigger without reposting. This read exposes no provider-start time, exact next-observation deadline or finish ETA. Follow stage and evidence_id as results arrive; do not request another review, reset controls or infer a stuck provider from this reason's age alone."}
 	}

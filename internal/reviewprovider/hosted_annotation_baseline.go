@@ -72,7 +72,7 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 	}
 	if botProjected {
 		botOnly, botErr := ExtractHostedFindings(projected, intent, postingActor, providerActor, earliestPosting)
-		if botErr == nil && botOnly.Complete {
+		if botErr == nil && (botOnly.Complete || botOnly.Publication.State == "rate_limited") {
 			return botOnly, nil
 		}
 		// Keep an attributable finished reply visible even when its inventory

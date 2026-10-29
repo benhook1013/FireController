@@ -492,6 +492,11 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 }
 
 func standingFinishedAck(body string) bool {
+	return standingCommandReply(body, "✅ Action performed", "Full review finished.")
+}
+
+// Recognize closed provider reply envelopes without stripping arbitrary HTML.
+func standingCommandReply(body, summary, outcome string) bool {
 	if len(body) > githubMaxText {
 		return false
 	}
@@ -508,16 +513,16 @@ func standingFinishedAck(body string) bool {
 		return false
 	}
 	lines = lines[3:]
-	if lines[0] == "<summary>✅ Action performed</summary>" {
+	if lines[0] == "<summary>"+summary+"</summary>" {
 		lines = lines[1:]
-	} else if len(lines) >= 3 && slices.Equal(lines[:3], []string{"<summary>", "✅ Action performed", "</summary>"}) {
+	} else if len(lines) >= 3 && slices.Equal(lines[:3], []string{"<summary>", summary, "</summary>"}) {
 		lines = lines[3:]
 	} else {
 		return false
 	}
 	// Only the two observed closed envelopes are accepted. Generic HTML
 	// removal could turn quoted examples or unknown outcomes into an ACK.
-	return slices.Equal(lines, []string{"Full review finished.", "</details>"}) || slices.Equal(lines, []string{"<dl>", "<dd>", "Full review finished.", "</dd>", "</dl>", "</details>"})
+	return slices.Equal(lines, []string{outcome, "</details>"}) || slices.Equal(lines, []string{"<dl>", "<dd>", outcome, "</dd>", "</dl>", "</details>"})
 }
 
 // This single-snapshot resolver establishes inventory attribution only. Neither
