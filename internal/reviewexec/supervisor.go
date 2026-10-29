@@ -193,6 +193,10 @@ func preparationReason(err error) string {
 }
 
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
+	if !e.beginDispatchWork() {
+		return nil
+	}
+	defer e.endDispatchWork()
 	operations, err := e.pending(ctx)
 	if err != nil {
 		if ctx.Err() != nil {

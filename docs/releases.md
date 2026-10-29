@@ -18,6 +18,25 @@ Download an artifact through its Actions run page or `gh run download RUN_ID --r
 
 Pull the published digest on the target host and use it as the selected image in the existing deployment. For a local Docker installation, use the [container guide](container-runtime.md); an existing Kubernetes installation updates its controller image by digest while preserving its private volumes, runtime bindings and single-writer replacement strategy. The daemon and embedded browser ship together.
 
-The current hosted rollout is operator initiated. It checks the installed revision and data/settings, waits for the configured review activity to become idle, replaces the single writer and verifies recovery. This is a deployment limitation: there is no service-owned admission drain or automatic deployment queue, and continuous work can postpone replacement. An idle check is not an atomic admission barrier. Do not claim that a failed idle check scheduled a future deployment.
+## Bounded Kubernetes rollout
 
-A forced restart can interrupt an executing local CLI review. The existing recovery retains possible execution as uncertain and never blindly repeats a provider review; it cannot guarantee a complete result from a process killed before retention. A bounded rollout needs an explicit drain/recovery policy, separate from image publication. Queued work and remotely running Hosted reviews must not be treated as equivalent to an executing local child process. The [execution owner](review-execution.md) and [provider recovery owner](provider-resumption.md) define the durable recovery boundary.
+The operator [deployment helper](../tools/deploy/kubernetes.py) takes an already published image digest, the existing service origin/instance and a protected global-administrator credential file. It requires a single-replica `Recreate` deployment, checks the instance and drain capability, then pulls and starts the candidate on the current node in a disposable pod with no live data or credential mounts. A pull/startup failure therefore precedes any drain. The pod is removed afterward. Image contents remain the published artifact; there is no binary copying or rebuild on the server.
+
+The service's global-administrator-only `POST /api/v1/operator/deployment-drain` with `{}` stops **new native dispatch**, atomically with entry to the supervised work section. `GET` returns process-local `draining` and `active_dispatches`; `DELETE` explicitly abandons the drain. Repeated begin/cancel calls are idempotent. The state is reset by a new daemon process, not stored as project policy. Queued requests, jobs, messages, grants, taper and remote Hosted observations continue to exist; ordinary API and website use remain available. Workers do not need a new flag or review-control change.
+
+The helper waits up to **600 seconds by default**, proceeding as soon as local preparation/dispatch/retention finishes. `--drain-seconds` allows an explicit zero-through-3600-second override. Queued requests and externally running Hosted reviews do not extend the wait. At the deadline it replaces the controller using normal graceful termination, with a ninety-second Kubernetes termination grace. Native worker shutdown allows forty seconds for the existing bounded capture retention/publication path. A changed deployment resource version refuses the replacement instead of overwriting another operator's edits. An abandoned pre-replacement attempt cancels the drain; once replacement may have been submitted, an unknown outcome requires inspecting that same deployment rather than reopening old admission blindly.
+
+CLI output is buffered while the child runs. On normal cancellation, the bounded capture is saved using a cancellation-independent retention budget; the recovery worker verifies retained files and settles the original attempt without rerunning a provider review. Partial captures cannot become complete or clean reviews. A hard kill before saving can lose buffered output; restart retains possible execution as uncertain. The rollout reports whether it reached its drain deadline. The [execution owner](review-execution.md) and [provider recovery owner](provider-resumption.md) define result recovery. An independent executor that survives container replacement is outside this rollout mechanism.
+
+Run the helper from an operator host with Kubernetes access and the private administrator file, for example:
+
+```sh
+python3 tools/deploy/kubernetes.py \
+  --image ghcr.io/benhook1013/firecontroller@sha256:REPLACE_WITH_PUBLISHED_DIGEST \
+  --source-revision FULL_SOURCE_COMMIT \
+  --url https://controller.example.com \
+  --instance-id INSTANCE_ID \
+  --credential-file /private/controller-admin.token
+```
+
+Installation-specific namespaces, deployment/container names, Kubernetes context and command prefix are optional arguments. The helper does not install credentials or grant access. It refuses servers without the drain endpoint; bootstrap to a drain-capable revision is a one-time operator transition, not a permanent compatibility path. Successful rollout checks the selected image, original instance and reopened admission; retained-data upgrades still require the independent [backup and restore checks](backups.md).

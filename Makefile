@@ -20,6 +20,7 @@ workflow-check:
 
 ci-selection-check:
 	python3 -m unittest discover -s tools/ci -p 'test_*.py'
+	python3 -m unittest discover -s tools/deploy -p 'test_*.py'
 
 fmt-check:
 	@files="$$($(GOFMT) -l cmd internal tools)" || exit $$?; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi

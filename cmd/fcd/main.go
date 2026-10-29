@@ -253,7 +253,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 				diagnosticError(stderr, reviewErr)
 				exitCode = 3
 			}
-		case <-time.After(12 * time.Second):
+		case <-time.After(40 * time.Second):
 			diagnostic(stderr, "shutdown_failed", "Native review workers did not settle within the shutdown budget; inspect retained evidence before restarting.")
 			exitCode = 3
 		}

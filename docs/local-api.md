@@ -22,6 +22,8 @@ Clients send `Authorization: Bearer <credential>` on API requests. Administrativ
 
 The authenticated `GET /api/v1/instance` returns the durable instance ID. Bound clients supply `X-FC-Instance` on every request; a mismatch returns `instance_mismatch` before domain reads, writes or provider work, including replacement after a client handshake. Missing headers remain supported for explicit administrative bootstrap. The local `fc context` command only reports configuration.
 
+The global-administrator-only `/api/v1/operator/deployment-drain` supports GET status, POST `{}` to begin a process-local dispatch drain, and DELETE to abandon it. It is an operator deployment control, separate from project pauses and agent workflows; the [release guide](releases.md#bounded-kubernetes-rollout) owns its lifecycle and bounded rollout behavior.
+
 ### Browser sessions
 
 The embedded browser derives an explicitly attenuated session after its bearer-authenticated instance/project handshake; browser actions derive automatically from the credential and current grants. CLI and MCP clients retain their existing bearer transport. `POST /api/v1/projects/{project_id}/browser-session` requires one bearer credential, the matching `X-FC-Instance` header, no browser-session selector and a strict body containing only `session_id` (32 lowercase hexadecimal characters). It returns `session_id`, `instance_id`, `project_id`, absolute RFC3339 UTC `expires_at`, `allow_writes` and `can_edit_presentation`, plus a renewable 24-hour encrypted and authenticated HttpOnly SameSite=Strict cookie. The cookie contains the originating credential hash rather than the raw credential. Session creation creates no domain receipt or event and calls no provider.

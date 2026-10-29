@@ -115,6 +115,9 @@ type Attempt struct {
 }
 
 type Engine struct {
+	deploymentMu               sync.Mutex
+	deploymentDraining         bool
+	deploymentActive           int
 	runWake                    chan struct{}
 	runRunning                 atomic.Bool
 	operationMu                sync.Mutex
