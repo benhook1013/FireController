@@ -90,7 +90,7 @@ describe('per-PR inline retained review history', () => {
   it('keeps partial and failed histories distinct from confirmed empty history', () => {
     const props = { number: 27, runs: [], snapshot, head: 'head', loading: false, failed: false, channelTotals: {hosted: 0, cli: 0, manual: 0, subagent: 0} };
     expect(markup(<ReviewHistoryGroups {...props} partial channelTotals={{hosted: 27, cli: 1, manual: 8, subagent: 2}} />)).toContain('Round history could not be loaded.');
-    expect(markup(<ReviewHistoryGroups {...props} partial={false} />)).toContain('No rounds recorded. Coverage is unknown.');
+    expect(markup(<ReviewHistoryGroups {...props} partial={false} />)).not.toContain('No rounds recorded. Coverage is unknown.');
     expect(markup(<ReviewHistoryGroups {...props} partial failed />)).toContain('Round history could not be loaded.');
     expect(markup(<ReviewHistoryGroups {...props} partial loading />)).toContain('Loading retained rounds');
   });

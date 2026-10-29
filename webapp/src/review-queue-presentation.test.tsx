@@ -41,9 +41,10 @@ describe('truthful stored review presentation', () => {
     const html = markup(<ReviewPullFacts pull={{ ...pull(2), observation }} />);
     expect(html).toContain('Hosted history: Incomplete'); expect(html).toContain('Some Hosted review history could not yet be imported.');
     expect(html).toContain('Last successful PR check:'); expect(html).not.toContain('GitHub: Retrying');
-    for (const error of ['provider_unavailable', 'provider_rate_limited']) {
+    for (const error of ['provider_unavailable', 'provider_rate_limited', 'ci_refresh_unavailable']) {
       const failed = markup(<ReviewPullFacts pull={{ ...pull(2), observation: { ...observation, error } }} />);
       expect(failed).toContain('GitHub: Retrying'); expect(failed).not.toContain('Hosted history: Incomplete');
+      if (error === 'ci_refresh_unavailable') { expect(failed).toContain('CI refresh unavailable'); expect(failed).not.toContain('Ci refresh'); }
     }
     expect(markup(<ReviewPullFacts pull={{ ...pull(2), observation: { ...observation, state: 'current', error: undefined, hosted_error: undefined } }} />)).not.toContain('GitHub:');
   });

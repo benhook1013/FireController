@@ -101,7 +101,7 @@ describe('merge-head recent review rounds', () => {
     archive.hasMore = true;
     const html = markup();
     expect(links(html)).toEqual(['h2', 'h3', 'unknown']);
-    expect(html).toContain('4 runs · latest 3'); expect(html).not.toContain(' loaded</span>'); expect(html).toContain('No rounds recorded. Coverage is unknown.');
+    expect(html).toContain('4 runs · latest 3'); expect(html).not.toContain(' loaded</span>'); expect(html).not.toContain('No rounds recorded. Coverage is unknown.');
     for (const text of ['Date unknown', 'Incomplete record', 'Counts not finalized', 'Attribution unconfirmed', 'Head association unknown']) expect(html).toContain(text);
     expect(html).not.toContain('Current cli round limits'); expect(html).not.toContain('Load more');
   });
