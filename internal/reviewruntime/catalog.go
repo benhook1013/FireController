@@ -60,16 +60,17 @@ func validHostedSettings(settings *HostedSettings) bool {
 // The credential is accessible only through GitHubCredential; private paths are
 // omitted when this value is logged or marshaled.
 type OperatorCapability struct {
-	ID                        string            `json:"id"`
-	Account                   string            `json:"account"`
-	Organization              string            `json:"organization"`
-	Channels                  []string          `json:"channels"`
-	GitExecutable             string            `json:"-"`
-	CLIExecutable             string            `json:"-"`
-	AuthenticationEnvironment map[string]string `json:"-"`
-	Fingerprint               string            `json:"fingerprint"`
-	Hosted                    *HostedSettings   `json:"-"`
-	githubCredential          string
+	ID                         string            `json:"id"`
+	Account                    string            `json:"account"`
+	Organization               string            `json:"organization"`
+	Channels                   []string          `json:"channels"`
+	GitExecutable              string            `json:"-"`
+	CLIExecutable              string            `json:"-"`
+	CLIAllowanceTimeoutSeconds int               `json:"-"`
+	AuthenticationEnvironment  map[string]string `json:"-"`
+	Fingerprint                string            `json:"fingerprint"`
+	Hosted                     *HostedSettings   `json:"-"`
+	githubCredential           string
 }
 
 func (c OperatorCapability) String() string           { return fmt.Sprintf("OperatorCapability{id:%q}", c.ID) }
@@ -81,15 +82,16 @@ type catalogFile struct {
 	Capabilities []capabilityFile `json:"capabilities"`
 }
 type capabilityFile struct {
-	ID                        string            `json:"id"`
-	Account                   string            `json:"account"`
-	Organization              string            `json:"organization"`
-	Channels                  []string          `json:"channels"`
-	GitHubCredentialFile      string            `json:"github_credential_file"`
-	GitExecutable             string            `json:"git_executable"`
-	CLIExecutable             string            `json:"cli_executable"`
-	AuthenticationEnvironment map[string]string `json:"authentication_environment"`
-	Hosted                    *HostedSettings   `json:"hosted,omitempty"`
+	ID                         string            `json:"id"`
+	Account                    string            `json:"account"`
+	Organization               string            `json:"organization"`
+	Channels                   []string          `json:"channels"`
+	GitHubCredentialFile       string            `json:"github_credential_file"`
+	GitExecutable              string            `json:"git_executable"`
+	CLIExecutable              string            `json:"cli_executable"`
+	CLIAllowanceTimeoutSeconds *int              `json:"cli_allowance_timeout_seconds,omitempty"`
+	AuthenticationEnvironment  map[string]string `json:"authentication_environment"`
+	Hosted                     *HostedSettings   `json:"hosted,omitempty"`
 }
 
 var allowedAuthenticationEnvironment = map[string]bool{
@@ -152,7 +154,7 @@ func validateCapabilityShapes(data []byte, capabilities []capabilityFile) error 
 				return errors.New("shape")
 			}
 		}
-		for _, name := range []string{"github_credential_file", "cli_executable", "authentication_environment", "hosted"} {
+		for _, name := range []string{"github_credential_file", "cli_executable", "authentication_environment", "hosted", "cli_allowance_timeout_seconds"} {
 			if value, ok := fields[name]; ok && isNull(value) {
 				return errors.New("shape")
 			}
@@ -204,6 +206,15 @@ func loadCapability(input capabilityFile, catalogDirectory string) (OperatorCapa
 	if seen["cli"] && !validExecutable(input.CLIExecutable) || !seen["cli"] && input.CLIExecutable != "" && !validExecutable(input.CLIExecutable) {
 		return empty, configurationError()
 	}
+	timeoutSeconds := 0
+	if input.CLIAllowanceTimeoutSeconds != nil {
+		if !seen["cli"] || *input.CLIAllowanceTimeoutSeconds < 1 || *input.CLIAllowanceTimeoutSeconds > 60 {
+			return empty, configurationError()
+		}
+		if *input.CLIAllowanceTimeoutSeconds != 15 {
+			timeoutSeconds = *input.CLIAllowanceTimeoutSeconds
+		}
+	}
 	environment := make(map[string]string, len(input.AuthenticationEnvironment))
 	for key, value := range input.AuthenticationEnvironment {
 		if !allowedAuthenticationEnvironment[key] || !validAbsolutePath(value) {
@@ -229,7 +240,7 @@ func loadCapability(input capabilityFile, catalogDirectory string) (OperatorCapa
 	if len(token) > maxCredentialTokenBytes || containsWhitespaceOrControl(token) {
 		return empty, configurationError()
 	}
-	capability := OperatorCapability{ID: input.ID, Account: input.Account, Organization: input.Organization, Channels: channels, GitExecutable: input.GitExecutable, CLIExecutable: input.CLIExecutable, AuthenticationEnvironment: environment, githubCredential: token}
+	capability := OperatorCapability{ID: input.ID, Account: input.Account, Organization: input.Organization, Channels: channels, GitExecutable: input.GitExecutable, CLIExecutable: input.CLIExecutable, CLIAllowanceTimeoutSeconds: timeoutSeconds, AuthenticationEnvironment: environment, githubCredential: token}
 	if input.Hosted != nil {
 		owned := *input.Hosted
 		capability.Hosted = &owned
@@ -245,16 +256,17 @@ func loadCapability(input capabilityFile, catalogDirectory string) (OperatorCapa
 func capabilityFingerprint(capability OperatorCapability) (string, error) {
 	tokenHash := sha256.Sum256([]byte(capability.githubCredential))
 	canonical := struct {
-		ID                        string            `json:"id"`
-		Account                   string            `json:"account"`
-		Organization              string            `json:"organization"`
-		Channels                  []string          `json:"channels"`
-		GitExecutable             string            `json:"git_executable"`
-		CLIExecutable             string            `json:"cli_executable"`
-		AuthenticationEnvironment map[string]string `json:"authentication_environment"`
-		CredentialSHA256          string            `json:"credential_sha256"`
-		Hosted                    *HostedSettings   `json:"hosted,omitempty"`
-	}{capability.ID, capability.Account, capability.Organization, capability.Channels, capability.GitExecutable, capability.CLIExecutable, capability.AuthenticationEnvironment, hex.EncodeToString(tokenHash[:]), capability.Hosted}
+		ID                         string            `json:"id"`
+		Account                    string            `json:"account"`
+		Organization               string            `json:"organization"`
+		Channels                   []string          `json:"channels"`
+		GitExecutable              string            `json:"git_executable"`
+		CLIExecutable              string            `json:"cli_executable"`
+		AuthenticationEnvironment  map[string]string `json:"authentication_environment"`
+		CredentialSHA256           string            `json:"credential_sha256"`
+		Hosted                     *HostedSettings   `json:"hosted,omitempty"`
+		CLIAllowanceTimeoutSeconds int               `json:"cli_allowance_timeout_seconds,omitempty"`
+	}{capability.ID, capability.Account, capability.Organization, capability.Channels, capability.GitExecutable, capability.CLIExecutable, capability.AuthenticationEnvironment, hex.EncodeToString(tokenHash[:]), capability.Hosted, capability.CLIAllowanceTimeoutSeconds}
 	data, err := json.Marshal(canonical)
 	if err != nil {
 		return "", err

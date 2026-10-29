@@ -71,7 +71,7 @@ func TestReviewAllowanceCLIRoundTrip(t *testing.T) {
 				}
 				if channel == "timeout" {
 					diagnostic, ok := got["diagnostic"].(map[string]any)
-					if !ok || !strings.Contains(diagnostic["explanation"].(string), "15-second") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") {
+					if !ok || !strings.Contains(diagnostic["explanation"].(string), "allowance-check deadline") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") {
 						t.Fatal("timeout omitted actionable recovery", got)
 					}
 					delete(got, "diagnostic")

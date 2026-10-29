@@ -86,6 +86,7 @@ type Runner struct {
 	mu              sync.Mutex
 	permit          *usagePermit
 	usageGeneration uint64
+	usageTimeout    time.Duration
 	now             func() time.Time
 }
 
@@ -98,10 +99,24 @@ type workspaceKey struct {
 	directory, comparison, candidate, base, mergeBase, patch, repositoryCanonical string
 }
 
+// Option configures an operator-owned process runner.
+type Option func(*Runner) error
+
+// WithUsageTimeout selects only the allowance subprocess deadline. It neither
+// extends the caller context nor grants permission to start a review.
+func WithUsageTimeout(timeout time.Duration) Option {
+	return func(r *Runner) error {
+		if timeout < time.Second || timeout > time.Minute {
+			return processError("configuration_invalid", false)
+		}
+		r.usageTimeout = timeout
+		return nil
+	}
+}
+
 // New resolves the executable once and builds a closed child environment.
-// authenticationEnvironment is operator-owned and may contain only private
-// home/config directory paths; it is never taken from a worker request.
-func New(manager *reviewworkspace.Manager, executable string, authenticationEnvironment map[string]string) (*Runner, error) {
+// Authentication options and deadlines are operator-owned, never worker commands.
+func New(manager *reviewworkspace.Manager, executable string, authenticationEnvironment map[string]string, options ...Option) (*Runner, error) {
 	if !processGroupsSupported || manager == nil || executable == "" || strings.IndexByte(executable, 0) >= 0 {
 		return nil, processError("configuration_invalid", false)
 	}
@@ -127,7 +142,16 @@ func New(manager *reviewworkspace.Manager, executable string, authenticationEnvi
 		env = append(env, key+"="+value)
 	}
 	env = append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat", "LANG=C.UTF-8", "NO_COLOR=1")
-	return &Runner{manager: manager, executable: resolved, env: env, now: time.Now}, nil
+	runner := &Runner{manager: manager, executable: resolved, env: env, now: time.Now, usageTimeout: usageTimeout}
+	for _, option := range options {
+		if option == nil {
+			return nil, processError("configuration_invalid", false)
+		}
+		if err := option(runner); err != nil {
+			return nil, err
+		}
+	}
+	return runner, nil
 }
 
 func processError(code string, unknown bool) error {
@@ -152,7 +176,7 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 		}
 		return Usage{}, processError("source_changed", false)
 	}
-	commandCtx, cancel := context.WithTimeout(ctx, usageTimeout)
+	commandCtx, cancel := context.WithTimeout(ctx, r.usageTimeout)
 	defer cancel()
 	if commandCtx.Err() != nil {
 		return Usage{}, processError("usage_unavailable", false)

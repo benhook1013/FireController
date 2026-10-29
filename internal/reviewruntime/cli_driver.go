@@ -155,7 +155,13 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 		}
 		return preparation, reviewHold("allowance_unavailable")
 	}
-	if err := d.engine.RecordCLIAllowance(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}); err != nil {
+	allowanceObservedAt := time.Now().UTC()
+	plan, err = refreshAgedMaterializedSource(ctx, d.reader, current.RepositoryID, current.Configuration, current.Operation, plan, allowanceObservedAt)
+	if err != nil {
+		return preparation, err
+	}
+	anchor.ObservedAt = plan.ObservedAt
+	if err := d.engine.RecordCLIAllowance(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: allowanceObservedAt.Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}); err != nil {
 		return preparation, err
 	}
 	if err := publishPreparedAttempt(ctx, d.engine, operation.ProjectID, attempt.ID, plan); err != nil {

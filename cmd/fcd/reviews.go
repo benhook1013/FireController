@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
@@ -53,7 +54,11 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 					return nil, nil, err
 				}
 			}
-			runner, err := reviewprocess.New(manager, capability.CLIExecutable, capability.AuthenticationEnvironment)
+			var processOptions []reviewprocess.Option
+			if capability.CLIAllowanceTimeoutSeconds != 0 {
+				processOptions = append(processOptions, reviewprocess.WithUsageTimeout(time.Duration(capability.CLIAllowanceTimeoutSeconds)*time.Second))
+			}
+			runner, err := reviewprocess.New(manager, capability.CLIExecutable, capability.AuthenticationEnvironment, processOptions...)
 			if err != nil {
 				return nil, nil, err
 			}

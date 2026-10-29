@@ -777,3 +777,51 @@ func TestZeroUsageVerifiesSourceBeforeExposingFacts(t *testing.T) {
 		t.Fatal("zero observation issued permit")
 	}
 }
+
+func TestUsageTimeoutOverrideIsBoundedAndHonorsCancellation(t *testing.T) {
+	f := newProcessFixture(t)
+	exe := f.executable(t, "exec sleep 60")
+	for _, invalid := range []time.Duration{0, -time.Second, time.Millisecond, 61 * time.Second} {
+		if _, err := New(f.manager, exe, nil, WithUsageTimeout(invalid)); !errorCode(err, "configuration_invalid") {
+			t.Fatal("invalid timeout accepted", invalid, err)
+		}
+	}
+	r, err := New(f.manager, exe, nil, WithUsageTimeout(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err = r.Usage(t.Context(), f.workspace, "owner/repo", "owner")
+	var failure *Error
+	if !errors.As(err, &failure) || failure.FailureStage != FailureStageTimeout || time.Since(started) < time.Second || time.Since(started) > 3*time.Second {
+		t.Fatal("override did not bound command", err, time.Since(started))
+	}
+	r, err = New(f.manager, exe, nil, WithUsageTimeout(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	started = time.Now()
+	_, err = r.Usage(ctx, f.workspace, "owner/repo", "owner")
+	if !errors.As(err, &failure) || failure.FailureStage != "" || time.Since(started) > 2*time.Second {
+		t.Fatal("override ignored shorter caller", err, time.Since(started))
+	}
+	if _, err = r.Review(t.Context(), f.workspace); !errorCode(err, "permit_required") {
+		t.Fatal("failed check granted permission", err)
+	}
+}
+
+func TestUsageTimeoutOverrideAllowsSlowSuccessfulCheck(t *testing.T) {
+	f := newProcessFixture(t)
+	exe := f.executable(t, fmt.Sprintf("sleep 16\nprintf '%%s' %q", usageJSON("owner/repo", "owner", 1, 3, 0, 3600000)))
+	r, err := New(f.manager, exe, nil, WithUsageTimeout(30*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	u, err := r.Usage(t.Context(), f.workspace, "owner/repo", "owner")
+	if err != nil || u.Remaining != 1 || time.Since(started) <= usageTimeout {
+		t.Fatal("valid check beyond default was lost", u, err)
+	}
+}

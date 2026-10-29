@@ -247,7 +247,7 @@ func TestAgentCLIAllowanceTimeoutRecoveryPreservesOriginalHold(t *testing.T) {
 				t.Fatal("timeout advice altered scope/state/identity", got)
 			}
 			if diagnosed {
-				for _, part := range []string{"15-second", "No review command was started", "terminal", "neither exhausted quota nor a provider outage", "unknown"} {
+				for _, part := range []string{"allowance-check deadline", "No review command was started", "terminal", "neither exhausted quota nor a provider outage", "unknown"} {
 					if !strings.Contains(got.Diagnostic.Explanation, part) {
 						t.Fatal("timeout diagnostic lost known/unknown boundary", part)
 					}

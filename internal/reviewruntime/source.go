@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
@@ -55,6 +56,19 @@ func refreshMaterializedSource(ctx context.Context, reader reviewexec.TargetRead
 		return reviewexec.SourcePlan{}, reviewHold("source_changed")
 	}
 	return current, nil
+}
+
+// Slow preparation may age the source beyond the admission window. Fresh
+// comparisons need no extra provider reads; aged ones must be verified again.
+func refreshAgedMaterializedSource(ctx context.Context, reader reviewexec.TargetReader, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation, prepared reviewexec.SourcePlan, now time.Time) (reviewexec.SourcePlan, error) {
+	observed, err := time.Parse(time.RFC3339Nano, prepared.ObservedAt)
+	if err != nil {
+		return reviewexec.SourcePlan{}, reviewHold("source_unavailable")
+	}
+	if !observed.Before(now.Add(-30 * time.Second)) {
+		return prepared, nil
+	}
+	return refreshMaterializedSource(ctx, reader, repositoryID, configuration, operation, prepared)
 }
 
 // Each phase has its own memoizer. Repeated stack-resolution reads within one

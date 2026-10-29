@@ -48,3 +48,32 @@ func TestHostedColdMaterializationRechecksMovedComparisonBeforeQuery(t *testing.
 		t.Fatal("changed source reached allowance/provider execution", f.provider.queries, f.provider.reviews, f.reader.repositoryCalls)
 	}
 }
+
+func TestAgedCLISourceRefreshSkipsFreshAndRejectsMovedComparison(t *testing.T) {
+	f := newHostedDriverFixture(t)
+	op, _, cfg := f.startHosted(t)
+	plan, err := reviewexec.ResolveSource(t.Context(), f.provider, 901, cfg, operationRequest(op))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := f.reader.repositoryCalls
+	fresh, err := refreshAgedMaterializedSource(t.Context(), f.provider, 901, cfg, op, plan, time.Now())
+	if err != nil || fresh.ObservedAt != plan.ObservedAt || f.reader.repositoryCalls != before {
+		t.Fatal("fresh source added reads", err)
+	}
+	plan.ObservedAt = time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339Nano)
+	fresh, err = refreshAgedMaterializedSource(t.Context(), f.provider, 901, cfg, op, plan, time.Now())
+	if err != nil || fresh.ObservedAt == plan.ObservedAt || f.reader.repositoryCalls != before+1 {
+		t.Fatal("aged source was not verified", err)
+	}
+	moved := f.reader.pulls[2]
+	moved.HeadSHA = f.baseSHA
+	f.reader.pulls[2] = moved
+	_, err = refreshAgedMaterializedSource(t.Context(), f.provider, 901, cfg, op, plan, time.Now())
+	if err == nil {
+		t.Fatal("moved source admitted")
+	}
+	if f.provider.queries != 0 || f.provider.reviews != 0 {
+		t.Fatal("source check requested provider work")
+	}
+}
