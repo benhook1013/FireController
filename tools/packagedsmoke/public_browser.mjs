@@ -134,7 +134,7 @@ try {
     need(await page.getByRole('heading', { name: 'Public roadmap', exact: true }).count() === 1);
     need(await page.getByRole('heading', { name: 'Published roadmap card', exact: true }).count() === 1);
     need(await page.getByRole('heading', { name: 'Public builder lane', exact: true }).count() === 1);
-    need(await page.getByRole('link', { name: 'Merged public work', exact: true }).count() === 1);
+    need(await page.getByRole('link', { name: '#31 Merged public work', exact: true }).count() === 1);
     need(await page.locator('.review-state-merged').getByText('Merged', { exact: true }).count() === 1);
     need(await page.getByLabel('Project credential', { exact: true }).count() === 0);
     need(!(await page.content()).includes('PRIVATE_') && !(await page.content()).includes(config.project) && !(await page.content()).includes(config.worker));

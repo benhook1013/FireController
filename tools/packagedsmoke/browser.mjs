@@ -93,7 +93,7 @@ try {
       return retainBrowserFailure({ directory:config.diagnostic_directory, filename:'review-failure.json',
         snapshot:{phase,checkpoint,run_fetches:reviewRunReads,attempt_fetches:reviewAttemptReads,pull_fetches:reviewPullReads,operation_reads:reviewOperationReads,fallback_geometry:fallbackGeometry}, screenshot,
         collect:async snapshot => {
-          snapshot.updated_pull=await page.getByRole('link',{name:'Live review updated',exact:true}).count();
+          snapshot.updated_pull=await page.getByRole('link',{name:'#32 Live review updated',exact:true}).count();
           snapshot.hosted_run_link=await page.getByRole('link',{name:/^Open hosted run live-hosted-round:/}).count();
           snapshot.history_sections=await page.locator('.review-history').count();
           snapshot.hosted_sections=await page.getByRole('region',{name:'Hosted CodeRabbit',exact:true}).count();
@@ -938,9 +938,9 @@ try {
   // Complete observations require explicit retirement of an omitted entry.
   await write('POST', '/reviews/observations', {...observation(1, [merged, open]), retired:[{number:33,reason:'defunct'}]}, 201);
   checkpoint = 'initial-open-pull';
-  await page.locator('#review-pr-32').getByRole('link', {name:'Live review before', exact:true}).waitFor();
+  await page.locator('#review-pr-32').getByRole('link', {name:'#32 Live review before', exact:true}).waitFor();
   checkpoint = 'initial-merged-pull';
-  await page.locator('#review-pr-31').getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
+  await page.locator('#review-pr-31').getByRole('link', {name:'#31 Retained merged smoke PR', exact:true}).waitFor();
   const finished = new Date().toISOString();
   const run = {source_run_id:'live-hosted-round', channel:'hosted', head_sha:open.head_sha, reviewer:'Synthetic reviewer', scope:'Synthetic comparison', outcome:'completed', attributable:true, complete:true, started_at:finished, finished_at:finished, found:0, accepted:0, routed:0, finalized:true, coverage_limits:[], findings:[]};
   const reasonCode = 'hosted_finished_inventory_unproven';
@@ -950,9 +950,9 @@ try {
   checkpoint = 'updated-observation';
   await write('POST', '/reviews/observations', observation(2, [merged, {...open, title:'Live review updated', runs:[run],attempts:[uncertainAttempt]}]), 201);
   checkpoint = 'updated-open-pull';
-  await page.locator('#review-pr-32').getByRole('link', {name:'Live review updated', exact:true}).waitFor();
+  await page.locator('#review-pr-32').getByRole('link', {name:'#32 Live review updated', exact:true}).waitFor();
   checkpoint = 'updated-merged-pull';
-  await page.locator('#review-pr-31').getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
+  await page.locator('#review-pr-31').getByRole('link', {name:'#31 Retained merged smoke PR', exact:true}).waitFor();
   checkpoint = 'hosted-run';
   await page.locator('#review-pr-32').getByRole('region', {name:'Hosted CodeRabbit', exact:true}).getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
   checkpoint = 'current-round-grants';
@@ -968,15 +968,14 @@ try {
   const deliveryQueue = page.locator('#review-queue');
   await expect(deliveryQueue.getByRole('heading', {name:'Review queue', exact:true})).toBeVisible();
   await expect(deliveryQueue.getByRole('heading', {name:'Smoke release', exact:true})).toBeVisible();
-  need(await deliveryQueue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.querySelector('.review-number').textContent).join('|')) === '#31|#32');
+  need(await deliveryQueue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.querySelector('h3').textContent.match(/^#\d+/u)?.[0]).join('|')) === '#31|#32');
   checkpoint = 'queue-pull';
-  await expect(deliveryQueue.getByRole('link', {name:'Live review updated', exact:true})).toBeVisible();
+  await expect(deliveryQueue.getByRole('link', {name:'#32 Live review updated', exact:true})).toBeVisible();
   await expect(deliveryQueue.locator('.review-state-merged').filter({hasText:'Merged'})).toBeVisible();
   checkpoint = 'merge-head';
-  await expect(page.getByRole('region', {name:'Review queue head'}).getByRole('link', {name:'#32', exact:true})).toBeVisible();
-  await expect(page.getByRole('region', {name:'Review queue head'}).getByRole('link', {name:'Live review updated', exact:true})).toBeVisible();
+  await expect(page.getByRole('region', {name:'Review queue head'}).getByRole('link', {name:'#32 Live review updated', exact:true})).toBeVisible();
   checkpoint = 'hosted-summary';
-  const queueHistory = deliveryQueue.getByRole('region', {name:'PR #32 review rounds', exact:true});
+  const queueHistory = deliveryQueue.getByRole('region', {name:'PR #32 recent review rounds', exact:true});
   const queueHosted = queueHistory.getByRole('region', {name:'Hosted CodeRabbit', exact:true});
   await expect(queueHosted.getByRole('link', {name:/^Open hosted run live-hosted-round:/})).toBeVisible();
   await expect(queueHosted.locator('.review-lane-heading')).toContainText('1 run');
