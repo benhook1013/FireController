@@ -77,7 +77,7 @@ func TestReviewAllowanceCLIRoundTrip(t *testing.T) {
 					delete(got, "diagnostic")
 				} else if channel == "hosted" {
 					diagnostic, ok := got["diagnostic"].(map[string]any)
-					if !ok || !strings.Contains(diagnostic["explanation"].(string), "terminal") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") || !strings.Contains(diagnostic["next_action"].(string), "retry_not_before") {
+					if !ok || !strings.Contains(diagnostic["explanation"].(string), "terminal") || !strings.Contains(diagnostic["explanation"].(string), "does not reserve") || !strings.Contains(diagnostic["next_action"].(string), "earliest recheck time") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") || !strings.Contains(diagnostic["next_action"].(string), "retry_not_before") {
 						t.Fatal("cooldown retry requires owner clarification", out)
 					}
 					delete(got, "diagnostic")

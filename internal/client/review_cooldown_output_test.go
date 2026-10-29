@@ -23,7 +23,7 @@ func TestAgentCooldownStatusExplainsOnlyKnownHostedHold(t *testing.T) {
 		want := v
 		if change == nil {
 			want.NextAction = "new_request_after_cooldown"
-			if out.Diagnostic == nil || !strings.Contains(out.Diagnostic.Explanation, "no resume command") || !strings.Contains(out.Diagnostic.NextAction, "Normal admission") || !strings.Contains(out.Diagnostic.NextAction, "unknown outcome") {
+			if out.Diagnostic == nil || !strings.Contains(out.Diagnostic.Explanation, "no resume command") || !strings.Contains(out.Diagnostic.Explanation, "does not reserve") || !strings.Contains(out.Diagnostic.NextAction, "earliest recheck time") || !strings.Contains(out.Diagnostic.NextAction, "Normal admission") || !strings.Contains(out.Diagnostic.NextAction, "unknown outcome") {
 				t.Fatal("missing retry identity or safety distinction", out)
 			}
 		} else if v.State != "held" || v.Channel != "hosted" {

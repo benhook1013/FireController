@@ -90,6 +90,9 @@ func TestAgentCIDiagnosticPreservesRefusal(t *testing.T) {
 		if !reflect.DeepEqual(out.ReviewSourceCIAssessment, v) || (out.Diagnostic != nil) != (reason != "other_reason") {
 			t.Fatal(out)
 		}
+		if reason == "ci_merge_base_mismatch" && (!strings.Contains(out.Diagnostic.Explanation, "Identical old and current base trees") || !strings.Contains(out.Diagnostic.NextAction, "normal authorized merge/rebase") || !strings.Contains(out.Diagnostic.NextAction, "does not regenerate GitHub merge refs")) {
+			t.Fatal("stale-merge recovery still needs owner clarification", out)
+		}
 	}
 	if AgentReviewCI(ReviewSourceCIAssessment{State: "held", Reason: "ci_merge_pending"}).Diagnostic != nil {
 		t.Fatal("misdiagnosed local hold")
