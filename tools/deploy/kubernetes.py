@@ -14,6 +14,10 @@ import urllib.request
 DEFAULT_DRAIN_SECONDS = 600
 
 
+class OperatorUnavailable(RuntimeError):
+    pass
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args):
         return None
@@ -31,6 +35,23 @@ def wait_for_drain(read_status, timeout, sleep=time.sleep, clock=time.monotonic)
         if remaining <= 0:
             return True
         sleep(min(2, remaining))
+
+
+def wait_for_recovery(read_status, expected_instance, timeout=30, sleep=time.sleep, clock=time.monotonic):
+    deadline = clock() + timeout
+    while True:
+        try:
+            instance, drain = read_status()
+            if instance.get("instance_id") != expected_instance:
+                raise ValueError("replacement has an unexpected instance identity")
+            if drain.get("draining") is False:
+                return
+        except OperatorUnavailable:
+            pass
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise RuntimeError("replacement did not recover HTTPS and open admission within the verification window")
+        sleep(min(1, remaining))
 
 
 def main():
@@ -69,9 +90,10 @@ def main():
                     raise ValueError("oversized operator response")
                 return json.loads(body)
         except urllib.error.HTTPError as exc:
-            raise RuntimeError("operator request failed with HTTP " + str(exc.code)) from None
+            failure = OperatorUnavailable if exc.code in (502, 503, 504) else RuntimeError
+            raise failure("operator request failed with HTTP " + str(exc.code)) from None
         except (urllib.error.URLError, TimeoutError):
-            raise RuntimeError("operator connection failed; inspect the same deployment before retrying") from None
+            raise OperatorUnavailable("operator connection failed; inspect the same deployment before retrying") from None
 
     k = args.kubectl + (["--context", args.context] if args.context else []) + ["-n", args.namespace]
 
@@ -148,8 +170,7 @@ def main():
         current = json.loads(command(["get", "deployment", args.deployment, "-o", "json"]))
         if next(c["image"] for c in current["spec"]["template"]["spec"]["containers"] if c["name"] == args.container) != args.image:
             raise RuntimeError("selected image changed during rollout")
-        if api("GET", "/api/v1/instance").get("instance_id") != args.instance_id or api("GET", "/api/v1/operator/deployment-drain").get("draining") is not False:
-            raise RuntimeError("replacement did not recover the expected instance with admission open")
+        wait_for_recovery(lambda: (api("GET", "/api/v1/instance"), api("GET", "/api/v1/operator/deployment-drain")), args.instance_id)
         print(json.dumps({"state": "deployed", "image": args.image, "drain_deadline_reached": forced}))
     finally:
         if began and not replacing:

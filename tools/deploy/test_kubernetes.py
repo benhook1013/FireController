@@ -39,6 +39,28 @@ class DrainDeadlineTests(unittest.TestCase):
                 deployment.wait_for_drain(lambda: state, 0)
 
 
+class RecoveryWindowTests(unittest.TestCase):
+    def test_transient_gateway_failure_is_rechecked_without_another_replace(self):
+        clock = [0]
+        calls = [0]
+        def read():
+            calls[0] += 1
+            if calls[0] < 3:
+                raise deployment.OperatorUnavailable("HTTP 503")
+            return {"instance_id": "original"}, {"draining": False}
+        def sleep(seconds):
+            clock[0] += seconds
+        deployment.wait_for_recovery(read, "original", 3, sleep, lambda: clock[0])
+        self.assertEqual(calls[0], 3)
+        self.assertEqual(clock[0], 2)
+
+    def test_wrong_instance_fails_immediately_and_closed_admission_is_bounded(self):
+        with self.assertRaises(ValueError):
+            deployment.wait_for_recovery(lambda: ({"instance_id": "different"}, {"draining": False}), "original", 0)
+        with self.assertRaises(RuntimeError):
+            deployment.wait_for_recovery(lambda: ({"instance_id": "original"}, {"draining": True}), "original", 0)
+
+
 class RolloutSequenceTests(unittest.TestCase):
     def exercise(self, forced=False, preflight_failure=False, replace_failure=False):
         image = "ghcr.io/example/controller@sha256:" + "a" * 64
