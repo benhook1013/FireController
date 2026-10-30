@@ -25,7 +25,7 @@ type HostedFinding struct {
 
 var findingMarker = regexp.MustCompile(`^<!-- cr-comment:v1:([a-f0-9]{24}) -->$`)
 var findingOutsideHeader = regexp.MustCompile(`^\*\*⚠️ Outside diff range comments \((0|[1-9][0-9]*)\)\*\*$`)
-var findingAdditionalHeader = regexp.MustCompile(`^<summary>🔇 Additional comments: (0|[1-9][0-9]*)</summary><blockquote>$`)
+var findingAdditionalHeader = regexp.MustCompile(`^<summary>(?:🔇|` + standingPicture + `) Additional comments: (0|[1-9][0-9]*)</summary><blockquote>$`)
 var findingAdditionalGroup = regexp.MustCompile(`^<summary>([^<>]+)-([1-9][0-9]*)-([1-9][0-9]*): (0|[1-9][0-9]*)</summary><blockquote>$`)
 var findingDuplicateHeader = regexp.MustCompile(`^<summary>♻️ Duplicate comments \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
 var findingGroupHeader = regexp.MustCompile(`^<summary>([^<>]+) \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
@@ -35,7 +35,7 @@ var findingOutsideSummary = regexp.MustCompile(`^<summary>(?:<em>(?:` + standing
 // closed picture/img envelope and exact label; never fetch the image or treat
 // other labelled blocks as review metadata.
 var findingPromptIcon = regexp.MustCompile(`^<summary>` + standingPicture + ` Prompt to fix review comments</summary>$`)
-var findingReviewInfoIcon = regexp.MustCompile(`^<summary><picture><img src="https://[^"<>\s]+" width="[1-9][0-9]{0,2}" height="[1-9][0-9]{0,2}" align="absmiddle" alt=""></picture> Review info</summary>$`)
+var findingReviewInfoIcon = regexp.MustCompile(`^<summary>` + standingPicture + ` Review info</summary>$`)
 var findingPathLocation = regexp.MustCompile("^`([^`]+):([0-9]+)(?:-([0-9]+))?`$")
 var findingRange = regexp.MustCompile("^`([0-9]+)-([0-9]+)`: (.+)$")
 var findingTitle = regexp.MustCompile(`^\*\*([^*]+)\*\*$`)

@@ -13,6 +13,7 @@ func syntheticReviewInfoIcon() string {
 func TestHostedFindingReviewInfoIconPreservesExactInventory(t *testing.T) {
 	for _, header := range []string{
 		syntheticReviewInfoIcon(),
+		"<summary>" + standingTestPicture(true) + " Review info</summary>",
 		strings.ReplaceAll(syntheticReviewInfoIcon(), `"16"`, `"24"`),
 	} {
 		f := hfNew(t, []string{hfInline(1)}, "<details>\n"+header+"\n<dl><dd>\nSynthetic provider metadata.\n</dd></dl>\n</details>")
