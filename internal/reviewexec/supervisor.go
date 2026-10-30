@@ -251,7 +251,8 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 				state = "cancelled"
 				reason = "supervisor_stopping"
 			}
-			return e.finishPreparation(a, state, reason)
+			_, finishErr := e.persistAdvance(a, state, reason, "", sourceRefusalFromError(err, state, reason, o.PullNumber))
+			return finishErr
 		}
 		admitted, err := e.Admit(ctx, o.ProjectID, a.ID, a.Revision, prepared.Anchor, prepared.Intent)
 		if err != nil {
@@ -349,27 +350,31 @@ func persistenceFailure() error {
 // Retry only the same guarded local journal transition, never provider work.
 // Reconcile an ambiguous successful commit before considering another write.
 // A finite failure stops the supervisor visibly with reservations retained.
-func (e *Engine) persistAdvance(a Attempt, state, reason, externalID string) (Attempt, error) {
+func (e *Engine) persistAdvance(a Attempt, state, reason, externalID string, refusal ...*SourceRefusal) (Attempt, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	var facts *SourceRefusal
+	if len(refusal) > 0 {
+		facts = refusal[0]
+	}
 	for attempt := range 3 {
-		next, err := e.Advance(ctx, a.ProjectID, a.ID, a.Revision, state, reason, externalID)
+		next, err := e.advanceWithSourceRefusal(ctx, a.ProjectID, a.ID, a.Revision, state, reason, externalID, facts)
 		if err == nil {
 			return next, nil
 		}
 		tx, readErr := e.store.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		if readErr == nil {
 			current, lookupErr := readAttempt(ctx, tx, a.ProjectID, a.ID)
-			var recordedReason string
+			var recordedReason, recordedRefusal string
 			if lookupErr == nil {
-				lookupErr = tx.QueryRowContext(ctx, `SELECT reason FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, current.Revision).Scan(&recordedReason)
+				lookupErr = tx.QueryRowContext(ctx, `SELECT reason,source_refusal_json FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, current.Revision).Scan(&recordedReason, &recordedRefusal)
 			}
 			_ = tx.Rollback()
 			wantID := externalID
 			if wantID == "" {
 				wantID = a.ExternalID
 			}
-			if lookupErr == nil && current.Revision == a.Revision+1 && current.State == state && current.ExternalID == wantID && recordedReason == reason {
+			if lookupErr == nil && current.Revision == a.Revision+1 && current.State == state && current.ExternalID == wantID && recordedReason == reason && recordedRefusal == sourceRefusalJSON(facts) {
 				e.notifyOperation(a.OperationID)
 				return current, nil
 			}

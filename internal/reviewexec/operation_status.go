@@ -13,6 +13,7 @@ import (
 
 // OperationStatus is a compact read projection, never execution or coverage authority.
 type OperationStatus struct {
+	SourceRefusal      *SourceRefusal   `json:"source_refusal,omitempty"`
 	PendingEvidence    *PendingEvidence `json:"pending_evidence,omitempty"`
 	ID                 string           `json:"id"`
 	PullNumber         int64            `json:"pull_number"`
@@ -87,6 +88,10 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 		}
 		stage, next := operationStatusStage(o, facts.ID, facts.Complete)
 		result = OperationStatus{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, State: o.State, Revision: o.Revision, Stage: stage, Reason: o.Reason, AttemptID: o.AttemptID, EvidenceID: facts.ID, ReviewFinishedAt: facts.ReviewFinishedAt, EvidenceRecordedAt: facts.EvidenceRecordedAt, UpdatedAt: o.UpdatedAt, NextAction: next}
+		result.SourceRefusal, err = readSourceRefusal(ctx, tx, o)
+		if err != nil {
+			return err
+		}
 		if o.Channel == "hosted" && o.State == "held" && o.Reason == "hosted_allowance_cooldown" {
 			allowance, err := readHeldAllowance(ctx, tx, o)
 			if err != nil {

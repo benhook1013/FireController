@@ -12,6 +12,7 @@ import (
 
 // ReviewOperationStatus omits private configuration and capture contents.
 type ReviewOperationStatus struct {
+	SourceRefusal      *ReviewSourceRefusal `json:"source_refusal,omitempty"`
 	deploymentDraining bool
 	PendingEvidence    *ReviewPendingEvidence `json:"pending_evidence,omitempty"`
 	ID                 string                 `json:"id"`
@@ -78,6 +79,9 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 }
 
 func validCompactOperationStatus(v ReviewOperationStatus) bool {
+	if !validReviewSourceRefusal(v.SourceRefusal, v.State, v.Reason, v.PullNumber) {
+		return false
+	}
 	if !validReviewPendingEvidence(v.PendingEvidence, v.State, v.Reason) || ValidateReviewOperationID(v.ID) != nil || !validPullNumber(v.PullNumber) || !oneReviewOf(v.Channel, "cli", "hosted") || v.Revision < 1 || v.Reason != "" && !validExecutionIdentifier(v.Reason) || v.AttemptID != "" && !validReviewOpaqueID(v.AttemptID, "review_attempt_") || v.EvidenceID != "" && (!validReviewOpaqueID(v.EvidenceID, "review_evidence_") || v.AttemptID == "") || !controlTime(v.UpdatedAt) {
 		return false
 	}

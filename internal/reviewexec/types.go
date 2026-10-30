@@ -79,6 +79,7 @@ type AllowanceObservation struct {
 }
 
 type Operation struct {
+	SourceRefusal         *SourceRefusal        `json:"source_refusal,omitempty"`
 	EvidenceID            string                `json:"evidence_id,omitempty"`
 	PendingEvidence       *PendingEvidence      `json:"pending_evidence,omitempty"`
 	Allowance             *AllowanceObservation `json:"allowance,omitempty"`

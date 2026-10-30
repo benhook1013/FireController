@@ -38,6 +38,9 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	}); err != nil {
 		return err
 	}
+	if err := store.EnsureSchema(ctx, "review_source_refusals", []string{`ALTER TABLE review_execution_transitions ADD COLUMN source_refusal_json TEXT NOT NULL DEFAULT 'null' CHECK(length(CAST(source_refusal_json AS BLOB))<=512)`}); err != nil {
+		return err
+	}
 	// Index maintenance has its own version so newer execution-table
 	// migrations retain their existing positions in deployed databases.
 	if err := store.EnsureSchema(ctx, "review_execution_indexes", []string{`DROP INDEX IF EXISTS review_operations_coverage`}); err != nil {

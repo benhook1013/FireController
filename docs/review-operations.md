@@ -32,6 +32,12 @@ Matching CLI/MCP clients request `X-FC-Review-Blockers: true` on operation/statu
 
 These are **current local obligations**, not a reconstruction of what was pending when an earlier operation held. The selected expansion reads bounded retained capture/adjudication and route records under current project read authority; it makes no provider request, repairs no index and changes no review state. Other status reads retain their lightweight scalar-only path. An empty current list leaves the original operation terminal and does not establish readiness under other admission rules. CLI/MCP give the corresponding recovery action without requiring an owner investigation. The [route contract](review-routes.md) owns source and receiving requirements; resolving a route never erases original attribution or counts.
 
+## Original ancestor comparison refusals
+
+A newly retained `held` / `predecessor_parent_moved` operation includes optional `source_refusal`: the ancestor `pull_number`, its `parent_pull_number`, `observed_base_sha` and `expected_parent_sha`. Preparation records only these bounded original facts with the same guarded journal transition; diagnostic reads perform no provider work. The selected target remains the outer operation PR. This metadata changes no source guard, scheduling, authorization, allowance or review accounting.
+
+Compact status includes the metadata when available; older compact clients ignore unknown additions. Full operation reads and terminal request collection include it only for `X-FC-Source-Refusal: true`, sent by matching clients. Full responses without that header retain their existing shape. Older holds and pre-feature snapshots omit the comparison; it is never reconstructed from current branch state. Backup inspection validates the bounded same-journal facts and restore preserves them.
+
 ## Bound clients
 
 `reviews operations [--pr NUMBER] [--channel cli|hosted] [--all] [--limit N] [--cursor CURSOR]` reads one page. `reviews operations --help` is local and requires no profile, credentials or service connection. Select `reviews operation OPERATION_ID [--wait-seconds N]` after discovery for compact status. Add `--diagnostics` for the full retained operation, including its directly bound `evidence_id` when present. The wait range is 0–900 seconds; listing and status reads do not request replacement work. An `evidence_ready` result supplies the ID for the existing `reviews evidence EVIDENCE_ID` read.

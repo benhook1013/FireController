@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -105,7 +106,7 @@ func resolveSource(ctx context.Context, reader TargetReader, repositoryID int64,
 		return SourcePlan{}, sourceHold("default_base_changed")
 	}
 	if plan.ParentSHA != pull.BaseSHA {
-		return SourcePlan{}, sourceHold("parent_moved")
+		return SourcePlan{}, &core.Error{Code: "review_held", Message: "The selected parent and observed base differ.", Status: 409, Details: map[string]string{"reason": "parent_moved", "pull_number": strconv.FormatInt(pull.Number, 10), "parent_pull_number": strconv.FormatInt(plan.ParentPullNumber, 10), "observed_base_sha": pull.BaseSHA, "expected_parent_sha": plan.ParentSHA}}
 	}
 	if ctx.Err() != nil {
 		return SourcePlan{}, sourceHold("observation_incomplete")

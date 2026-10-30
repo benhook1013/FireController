@@ -289,8 +289,12 @@ func safeText(s string, max int) bool {
 	return true
 }
 
-func (e *Engine) transitionRow(ctx context.Context, tx *sql.Tx, a Attempt, reason, at string) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO review_execution_transitions(attempt_id,revision,state,reason,external_id,created_at) VALUES(?,?,?,?,?,?)`, a.ID, a.Revision, a.State, reason, a.ExternalID, at)
+func (e *Engine) transitionRow(ctx context.Context, tx *sql.Tx, a Attempt, reason, at string, refusal ...*SourceRefusal) error {
+	var facts *SourceRefusal
+	if len(refusal) > 0 {
+		facts = refusal[0]
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO review_execution_transitions(attempt_id,revision,state,reason,external_id,created_at,source_refusal_json) VALUES(?,?,?,?,?,?,?)`, a.ID, a.Revision, a.State, reason, a.ExternalID, at, sourceRefusalJSON(facts))
 	if err == nil && e.publishAttempt != nil {
 		return e.publishAttempt(ctx, tx, a)
 	}
@@ -300,6 +304,10 @@ func (e *Engine) transitionRow(ctx context.Context, tx *sql.Tx, a Attempt, reaso
 // Advance records one guarded transition. Uncertain attempts retain both
 // reservations; no retry, lease expiry or restart silently spends another run.
 func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevision int64, state, reason, externalID string) (Attempt, error) {
+	return e.advanceWithSourceRefusal(ctx, project, id, expectedRevision, state, reason, externalID, nil)
+}
+
+func (e *Engine) advanceWithSourceRefusal(ctx context.Context, project, id string, expectedRevision int64, state, reason, externalID string, refusal *SourceRefusal) (Attempt, error) {
 	if !identifier.MatchString(reason) || externalID != "" && !identifier.MatchString(externalID) {
 		return Attempt{}, invalid()
 	}
@@ -318,6 +326,9 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 		o, err := readOperation(ctx, tx, project, a.OperationID)
 		if err != nil {
 			return err
+		}
+		if !validSourceRefusal(refusal, state, reason, o.PullNumber) {
+			return invalid()
 		}
 		at, err := attemptRecordingStamp(ctx, tx, o, &a, e.sampleAttemptTime())
 		if err != nil {
@@ -342,7 +353,7 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 				return err
 			}
 		}
-		if err = e.transitionRow(ctx, tx, a, reason, at); err != nil {
+		if err = e.transitionRow(ctx, tx, a, reason, at, refusal); err != nil {
 			return err
 		}
 		if state == "completed" {

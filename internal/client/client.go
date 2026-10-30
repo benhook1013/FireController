@@ -360,6 +360,7 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		}
 		if wait.operationEvidence {
 			r.Header.Set("X-FC-Operation-Evidence", "true")
+			r.Header.Set("X-FC-Source-Refusal", "true")
 		}
 	}
 	if len(body) != 0 {

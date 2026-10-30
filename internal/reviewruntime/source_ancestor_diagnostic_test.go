@@ -1,8 +1,12 @@
 package reviewruntime
 
 import (
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/benhook1013/FireController/internal/core"
 )
 
 func TestAncestorParentMovementDoesNotMisidentifySelectedComparison(t *testing.T) {
@@ -23,6 +27,11 @@ func TestAncestorParentMovementDoesNotMisidentifySelectedComparison(t *testing.T
 			before := sourceState(t, f)
 			plan, predecessors, err := resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, config, operation)
 			sourceHoldReason(t, err, "predecessor_parent_moved")
+			var hold *core.Error
+			want := map[string]string{"reason": "predecessor_parent_moved", "pull_number": "2", "parent_pull_number": "3", "observed_base_sha": strings.Repeat("c", 40), "expected_parent_sha": strings.Repeat("d", 40)}
+			if !errors.As(err, &hold) || !reflect.DeepEqual(hold.Details, want) {
+				t.Fatal("original ancestor comparison was not identified", err)
+			}
 			if plan.Pull.Number != 4 || plan.ParentPullNumber != 2 || plan.Pull.BaseSHA != parent.HeadSHA || predecessors != nil {
 				t.Fatal("ancestor refusal lost the verified target comparison")
 			}

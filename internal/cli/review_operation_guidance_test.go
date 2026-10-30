@@ -51,6 +51,10 @@ func TestReviewOperationHeldGuidanceCLICompactAndDiagnostics(t *testing.T) {
 			id := "review_operation_" + strings.Repeat("a", 32)
 			status := client.ReviewOperationStatus{ID: id, PullNumber: 3300, Channel: "hosted", State: "held", Stage: "held", Reason: reason, AttemptID: "review_attempt_" + strings.Repeat("b", 32), Revision: 5, UpdatedAt: "2026-10-24T00:00:00Z", NextAction: "read_diagnostics"}
 			full := client.ReviewOperation{ID: id, ProjectID: project, ActorID: "principal_original", WorkerID: worker, ConfigurationRevision: 12, PolicyRevision: 2, CapabilityFingerprint: strings.Repeat("c", 64), PullNumber: 3300, Channel: "hosted", HeadSHA: strings.Repeat("d", 40), State: "held", Revision: 5, Reason: reason, AttemptID: status.AttemptID, CreatedAt: status.UpdatedAt, UpdatedAt: status.UpdatedAt}
+			if reason == "predecessor_parent_moved" {
+				status.SourceRefusal = &client.ReviewSourceRefusal{PullNumber: 3298, ParentPullNumber: 3297, ObservedBaseSHA: strings.Repeat("e", 40), ExpectedParentSHA: strings.Repeat("f", 40)}
+				full.SourceRefusal = status.SourceRefusal
+			}
 			wantStatus := status
 			if reason == "hosted_allowance_cooldown" {
 				status.RetryNotBefore = "2026-10-24T00:10:00Z"
@@ -78,6 +82,9 @@ func TestReviewOperationHeldGuidanceCLICompactAndDiagnostics(t *testing.T) {
 					fields["future_metadata"] = map[string]any{"private": "PRIVATE_IGNORED_METADATA"}
 					_ = json.NewEncoder(w).Encode(fields)
 				case base:
+					if r.Header.Get("X-FC-Source-Refusal") != "true" {
+						t.Error("source refusal metadata was not requested")
+					}
 					fullReads.Add(1)
 					_ = json.NewEncoder(w).Encode(full)
 				default:

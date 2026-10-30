@@ -223,7 +223,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 11, "review_policy": 2, "review_execution": 8, "review_execution_indexes": 1, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 4, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 11, "review_policy": 2, "review_execution": 8, "review_execution_indexes": 1, "review_source_refusals": 1, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 4, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_hosted_discovery_state":     {"reviews", 10, "project_id repository_id pull_number cutoff_at initialized_at"},
 	"job_progress":                      {"jobs", 8, "project_id job_id job_revision summary next blocker evidence_json"},
@@ -710,6 +710,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		if name == "review_runs" && versions[spec.domain] >= 2 {
 			columns += " snapshot_revision"
 		}
+		if name == "review_execution_transitions" && versions["review_source_refusals"] > 0 {
+			columns += " source_refusal_json"
+		}
 		if name == "review_findings" && versions[spec.domain] >= 3 {
 			columns += " route_json"
 		}
@@ -767,6 +770,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				return nil, invalid()
 			}
 			if name == "review_operations" && (col == "allow_out_of_order" || col == "override_file_limit") && !reviewOrderColumn(kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
+			if name == "review_execution_transitions" && col == "source_refusal_json" && (kind != "TEXT" || notnull != 1 || pk != 0 || defaultValue != "'null'") {
 				columnRows.Close()
 				return nil, invalid()
 			}
@@ -1039,6 +1046,17 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["review_execution"] >= 4 {
 		if err := reviewexec.ValidateAllowanceSnapshot(ctx, tx, versions["review_execution"]); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_source_refusals"] > 0 {
+		if versions["review_execution"] == 0 {
+			return invalid()
+		}
+		if err = reviewexec.ValidateSourceRefusalsSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
 				return unavailable()
 			}

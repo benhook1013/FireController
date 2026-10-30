@@ -256,7 +256,7 @@ func (e *Engine) ReadOperation(ctx context.Context, scope core.Scope, id string)
 
 // Evidence is optional response metadata, never written into the operation
 // journal. Read both identities under one authorization and database snapshot.
-func (e *Engine) readOperationProjection(ctx context.Context, scope core.Scope, id string, evidence bool) (Operation, error) {
+func (e *Engine) readOperationProjection(ctx context.Context, scope core.Scope, id string, evidence bool, sourceDetails ...bool) (Operation, error) {
 	if !identifier.MatchString(id) {
 		return Operation{}, invalid()
 	}
@@ -268,6 +268,9 @@ func (e *Engine) readOperationProjection(ctx context.Context, scope core.Scope, 
 			var facts operationEvidenceFacts
 			facts, err = operationStatusEvidence(ctx, tx, o)
 			o.EvidenceID = facts.ID
+		}
+		if err == nil && len(sourceDetails) > 0 && sourceDetails[0] {
+			o.SourceRefusal, err = readSourceRefusal(ctx, tx, o)
 		}
 		return err
 	})

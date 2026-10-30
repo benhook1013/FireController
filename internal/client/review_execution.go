@@ -57,6 +57,7 @@ func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
 }
 
 type ReviewOperation struct {
+	SourceRefusal         *ReviewSourceRefusal `json:"source_refusal,omitempty"`
 	deploymentDraining    bool
 	EvidenceID            string                      `json:"evidence_id,omitempty"`
 	PendingEvidence       *ReviewPendingEvidence      `json:"pending_evidence,omitempty"`
@@ -230,6 +231,9 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 }
 
 func (c *Client) validReviewOperation(value ReviewOperation) bool {
+	if !validReviewSourceRefusal(value.SourceRefusal, value.State, value.Reason, value.PullNumber) {
+		return false
+	}
 	if value.EvidenceID != "" && (value.AttemptID == "" || !validReviewOpaqueID(value.EvidenceID, "review_evidence_")) {
 		return false
 	}

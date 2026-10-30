@@ -182,7 +182,11 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 			var hold *core.Error
 			if errors.As(err, &hold) && hold.Code == "review_held" {
 				if details, ok := hold.Details.(map[string]string); ok && details["reason"] == "parent_moved" {
-					return plan, nil, reviewHold("predecessor_parent_moved")
+					refusal := map[string]string{"reason": "predecessor_parent_moved"}
+					for _, field := range []string{"pull_number", "parent_pull_number", "observed_base_sha", "expected_parent_sha"} {
+						refusal[field] = details[field]
+					}
+					return plan, nil, &core.Error{Code: "review_held", Message: "An ancestor's selected parent and observed base differ.", Status: 409, Details: refusal}
 				}
 			}
 			return plan, nil, err

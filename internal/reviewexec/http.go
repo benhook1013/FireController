@@ -179,8 +179,8 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if terminal {
-			if r.Header.Get("X-FC-Operation-Evidence") == "true" {
-				operation, err = e.readOperationProjection(r.Context(), scope, operation.ID, true)
+			if r.Header.Get("X-FC-Operation-Evidence") == "true" || r.Header.Get("X-FC-Source-Refusal") == "true" {
+				operation, err = e.readOperationProjection(r.Context(), scope, operation.ID, r.Header.Get("X-FC-Operation-Evidence") == "true", r.Header.Get("X-FC-Source-Refusal") == "true")
 				if err != nil {
 					writeOperationWaitError(w, err)
 					return
@@ -204,6 +204,7 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", pendingEvidenceHeader)
 	w.Header().Add("Vary", "X-FC-Operation-Evidence")
+	w.Header().Add("Vary", "X-FC-Source-Refusal")
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -233,8 +234,8 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if r.Header.Get("X-FC-Operation-Evidence") == "true" {
-		operation, err = e.readOperationProjection(r.Context(), scope, operationID, true)
+	if r.Header.Get("X-FC-Operation-Evidence") == "true" || r.Header.Get("X-FC-Source-Refusal") == "true" {
+		operation, err = e.readOperationProjection(r.Context(), scope, operationID, r.Header.Get("X-FC-Operation-Evidence") == "true", r.Header.Get("X-FC-Source-Refusal") == "true")
 		if err != nil {
 			core.WriteError(w, err)
 			return
