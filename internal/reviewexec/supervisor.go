@@ -187,6 +187,8 @@ func preparationReason(err error) string {
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
 			switch reason := details["reason"]; reason {
+			case "provider_activity_rate_limited", "provider_activity_unauthorized", "provider_activity_not_found", "provider_activity_response_invalid", "provider_activity_unavailable", "provider_activity_ambiguous", "provider_activity_state_unknown", "provider_activity_observation_invalid":
+				return reason
 			case "source_obligations_pending", "repository_changed", "allowance_exhausted", "allowance_unavailable", "allowance_command_not_started", "allowance_timeout", "allowance_command_failed", "allowance_response_unproven", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "predecessor_parent_moved", "execution_binding_changed", "preparation_duplicate", "source_changed", "target_changed", "parent_moved", "parent_unavailable", "parent_identity_changed", "default_base_changed", "source_unavailable", "source_fetch_timeout", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit", "provider_activity_unproven", "provider_review_active", "provider_actor_unproven", "hosted_allowance_unproven", "hosted_allowance_reply_pending", "hosted_allowance_cooldown", "standing_baseline_unproven":
 				return reason
 			}

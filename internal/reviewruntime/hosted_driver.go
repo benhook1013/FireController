@@ -105,18 +105,56 @@ func (d *HostedDriver) HostedObservationReader() reviewexec.ExternalHostedReader
 }
 
 func (d *HostedDriver) checkIdle(ctx context.Context, plan reviewexec.SourcePlan) error {
+	if reason := d.activityRefusal(ctx, plan); reason != "" {
+		return reviewHold(reason)
+	}
+	return nil
+}
+
+// Return only maintained reason codes, never provider messages, URLs or bodies.
+// Each action boundary classifies its own observation without rewriting history.
+func (d *HostedDriver) activityRefusal(ctx context.Context, plan reviewexec.SourcePlan) string {
 	settings := d.capability.Hosted
 	observation, err := d.provider.ObserveHostedActivity(ctx, plan.Repository.FullName, plan.Pull.HeadSHA, reviewprovider.HostedActivitySelector{Mode: settings.ProgressMode, ProviderActorID: settings.ProviderActorID, AppID: settings.ProgressAppID})
 	if err != nil {
-		return reviewHold("provider_activity_unproven")
+		var failure *reviewprovider.Error
+		if errors.As(err, &failure) {
+			switch failure.Code {
+			case "provider_rate_limited":
+				return "provider_activity_rate_limited"
+			case "provider_unauthorized":
+				return "provider_activity_unauthorized"
+			case "provider_not_found":
+				return "provider_activity_not_found"
+			case "provider_invalid_response":
+				return "provider_activity_response_invalid"
+			case "provider_unavailable":
+				return "provider_activity_unavailable"
+			}
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			return "provider_activity_unavailable"
+		}
+		return "provider_activity_unproven"
 	}
 	if observation.State == "active" {
-		return reviewHold("provider_review_active")
+		return "provider_review_active"
 	}
-	if observation.State != "idle" || observation.ObservedAt.IsZero() || observation.ObservedAt.Location() != time.UTC || time.Since(observation.ObservedAt) > time.Minute || observation.ObservedAt.After(time.Now().Add(5*time.Second)) {
-		return reviewHold("provider_activity_unproven")
+	now := time.Now()
+	if observation.ObservedAt.IsZero() || observation.ObservedAt.Location() != time.UTC || now.Sub(observation.ObservedAt) > time.Minute || observation.ObservedAt.After(now.Add(5*time.Second)) {
+		return "provider_activity_observation_invalid"
 	}
-	return nil
+	if observation.State == "idle" {
+		return ""
+	}
+	if observation.State == "unproven" {
+		switch observation.Reason {
+		case "activity_ambiguous":
+			return "provider_activity_ambiguous"
+		case "activity_state_unknown":
+			return "provider_activity_state_unknown"
+		}
+	}
+	return "provider_activity_unproven"
 }
 
 func (d *HostedDriver) purgePrepared() {
@@ -283,8 +321,8 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 	if err != nil || actor.ID != prepared.postingActor.ID || actor.Kind != prepared.postingActor.Kind {
 		return failed("provider_actor_changed")
 	}
-	if err := d.checkIdle(ctx, currentSource); err != nil {
-		return failed("provider_activity_changed")
+	if reason := d.activityRefusal(ctx, currentSource); reason != "" {
+		return failed(reason)
 	}
 	bound, err := d.engine.ReadHostedRecovery(ctx, operation.ProjectID, attempt.ID, d.capability.ID)
 	if err != nil || bound.Attempt.Revision != attempt.Revision || bound.Attempt.Intent != body {

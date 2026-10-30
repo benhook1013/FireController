@@ -36,6 +36,9 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 		value.NextAction = "retry_later_with_new_request"
 	}
 	hint := agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)
+	if hostedActivityDiagnostic(value.Channel, value.State, value.Reason) != nil {
+		value.NextAction = "inspect_provider_activity"
+	}
 	if value.Wait != nil {
 		hint = operationWaitDiagnostic(value.Wait)
 	}
@@ -141,6 +144,9 @@ func AgentReviewRunResult(value ReviewRunResult) any {
 // Legacy parent_moved does not identify whether the selected or an ancestor edge
 // failed; only the distinct predecessor reason proves the selected check passed.
 func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperationDiagnostic {
+	if hint := hostedActivityDiagnostic(channel, state, reason); hint != nil {
+		return hint
+	}
 	if channel == "hosted" && state == "rate_limited" && reason == "hosted_review_rate_limited" {
 		return &ReviewOperationDiagnostic{"CodeRabbit rejected the original review trigger because its review rate limit was reached. This operation is terminal; no completed review or clean-round credit was recorded.", "Waiting on this operation will not start a review. Continue other work. If another review remains authorized, use one later fresh request/key with current configuration/head through normal allowance preflight. The rejection alone supplies no exact retry deadline. Do not repost this trigger, reset round controls or treat it as a completed review."}
 	}
