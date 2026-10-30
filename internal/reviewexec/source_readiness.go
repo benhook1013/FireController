@@ -180,7 +180,11 @@ func (e *Engine) assessmentSourceBinding(ctx context.Context, tx *sql.Tx, r sour
 		return 0, "", err
 	}
 	cap, ok := e.capabilities[c.CapabilityID]
-	if !sameSourceConfiguration(c, retained) || repositoryID != r.repositoryID || !ok || e.validateConfiguration(c) != nil || c.CapabilityID != r.capability || cap.Fingerprint != r.fingerprint || !slices.Contains(c.Queue, r.PullNumber) {
+	parent := int64(0)
+	if r.Observation != nil {
+		parent = r.Observation.ParentPullNumber
+	}
+	if !sameSourceTargetConfiguration(c, retained, r.PullNumber, parent) || repositoryID != r.repositoryID || !ok || e.validateConfiguration(c) != nil || c.CapabilityID != r.capability || cap.Fingerprint != r.fingerprint || !slices.Contains(c.Queue, r.PullNumber) {
 		return revision, "source_configuration_changed", nil
 	}
 	return revision, "", nil
