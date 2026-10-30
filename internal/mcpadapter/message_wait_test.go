@@ -65,6 +65,9 @@ func TestMessageWaitToolsSDKDiscoveryQuietConcurrentDeliveryAndCancel(t *testing
 		if json.Unmarshal(raw, &schema) != nil || len(schema.Properties) != 3 || len(schema.Required) != 1 || schema.Required[0] != "cursor" || schema.Additional || !tool.Annotations.ReadOnlyHint || !tool.Annotations.IdempotentHint || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint {
 			t.Fatal("schema/annotations")
 		}
+		if !strings.Contains(string(raw), "inbox_snapshot.event_cursor") {
+			t.Fatal("cursor discovery omitted its source")
+		}
 	}
 	if !found || reads != 1 || writesCount != 0 {
 		t.Fatal("census", found, reads, writesCount)
@@ -170,6 +173,24 @@ func TestMessageWaitToolsInvalidBeforeCredentialsOrHTTP(t *testing.T) {
 	identity := localContext()
 	identity.ServerURL = service.URL
 	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"alpha": identity}, "missing-credential"), "alpha"), "")
+	missing, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "wait_for_messages"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := diagnosticResult(t, missing, "invalid_arguments", false); !strings.Contains(d.Message, "cursor is required") {
+		t.Fatal("omitted arguments lost the required-field diagnostic", d)
+	}
+	for _, raw := range []string{`{}`, `{"limit":6,"wait_seconds":2}`, `{"cursor":null}`, `{"cursor":""}`, `{"cursor":17}`, `{"cursor":{"private":"NOT_A_CURSOR"}}`} {
+		d := diagnosticResult(t, call(t, session, "wait_for_messages", json.RawMessage(raw)), "invalid_arguments", false)
+		fields, ok := d.Details.(map[string]any)
+		if !ok || fields["field"] != "cursor" || !strings.Contains(d.Message, "cursor is required") || !strings.Contains(d.Action, "inbox_snapshot.event_cursor") || !strings.Contains(d.Action, "No request was sent") || strings.Contains(d.Action, "binding") {
+			t.Fatal("missing cursor received unrelated recovery", d)
+		}
+		body, _ := json.Marshal(d)
+		if strings.Contains(string(body), "NOT_A_CURSOR") {
+			t.Fatal("diagnostic echoed private input")
+		}
+	}
 	for _, raw := range []string{`{}`, `null`, `{"cursor":null}`, `{"cursor":""}`, `{"cursor":" x"}`, `{"cursor":"x\n"}`, `{"cursor":"\ud800"}`, `{"cursor":"x","cursor":"y"}`, `{"Cursor":"x"}`, `{"cursor":"` + strings.Repeat("é", 2048) + `x"}`, `{"cursor":"x","limit":0}`, `{"cursor":"x","limit":101}`, `{"cursor":"x","limit":null}`, `{"cursor":"x","limit":1.0}`, `{"cursor":"x","wait_seconds":0}`, `{"cursor":"x","wait_seconds":51}`, `{"cursor":"x","wait_seconds":60}`, `{"cursor":"x","wait_seconds":61}`, `{"cursor":"x","wait_seconds":null}`, `{"cursor":"x","wait_seconds":"1"}`, `{"cursor":"x","wait_seconds":1e0}`, `{"cursor":"x","wait_seconds":1,"wait_seconds":2}`, `{"cursor":"x","worker_id":"other"}`, `{"cursor":"x","unread":true}`} {
 		diagnosticResult(t, call(t, session, "wait_for_messages", json.RawMessage(raw)), "invalid_arguments", false)
 	}
