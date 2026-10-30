@@ -526,6 +526,9 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	}
 	if status == http.StatusConflict {
 		switch result.Code {
+		case "reviews_source_unavailable":
+			result.Message = "No completed stored source observation is available for this PR."
+			result.Action = "Collect any already-pending original refresh with review_source_refresh_read (CLI: reviews source-operation). Otherwise request review_source_refresh (CLI: reviews source-refresh) using the current configuration/head, then collect its result. Reassess after the refresh completes. Assessment only reads stored data; it does not refresh GitHub or start a review. Do not change credentials or submit duplicate refreshes."
 		case "revision_conflict", "checklist_revision_conflict", "job_workstream_revision_conflict", "note_revision_conflict", "primary_job_revision_conflict", "project_presentation_revision_conflict", "publication_revision_conflict", "review_attempt_revision_conflict", "review_round_revision_conflict", "summary_revision_conflict", "worker_pause_revision_conflict", "review_configuration_revision_conflict":
 			result.Message = "The record changed since the selected revision."
 			result.Action = "Read the current record, preserve concurrent edits, and reapply only the intended change with its current revision and a new idempotency key."
