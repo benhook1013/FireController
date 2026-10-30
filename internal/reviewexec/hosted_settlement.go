@@ -44,13 +44,14 @@ type attemptSettlementAudit struct {
 }
 
 func settlementUnavailable() error {
-	return core.Fail("review_settlement_unavailable", "Only an eligible stopped attempt with its original retained evidence and reservation can be settled.", 409)
+	return core.Fail("review_settlement_unavailable", "Only an eligible issued or uncertain attempt with its original retained evidence and reservation can be settled.", 409)
 }
 func validSettlementText(value string, multiline bool) bool {
 	return utf8.ValidString(value) && len(value) <= 1024 && strings.TrimSpace(value) != "" && strings.IndexFunc(value, func(r rune) bool { return unicode.IsControl(r) && (!multiline || r != '\t' && r != '\n') }) < 0
 }
 
-// This action records an administrator's independently verified external stop.
+// This action records either an administrator's verified external stop or an
+// explicit local abandonment of a confirmed issued Hosted request.
 // It never fetches the reference, cancels a provider or fabricates completion.
 func (e *Engine) settleAttemptHTTP(w http.ResponseWriter, r *http.Request) {
 	scope, err := e.store.AdminScope(r)
@@ -68,7 +69,7 @@ func (e *Engine) settleAttemptHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("attempt_id")
-	if !hostedObservationID(id, "review_attempt_") || request.ExpectedRevision == nil || *request.ExpectedRevision < 1 || *request.ExpectedRevision == math.MaxInt64 || request.ExpectedRepositoryID == nil || *request.ExpectedRepositoryID <= 0 || request.ExpectedHeadSHA == nil || !sha.MatchString(*request.ExpectedHeadSHA) || request.ExpectedExternalID == nil || *request.ExpectedExternalID != "" && !identifier.MatchString(*request.ExpectedExternalID) || request.ExternalActionStopped == nil || !*request.ExternalActionStopped || request.Reason == nil || !validSettlementText(*request.Reason, true) || request.EvidenceReference == nil || !validSettlementText(*request.EvidenceReference, false) {
+	if !hostedObservationID(id, "review_attempt_") || request.ExpectedRevision == nil || *request.ExpectedRevision < 1 || *request.ExpectedRevision == math.MaxInt64 || request.ExpectedRepositoryID == nil || *request.ExpectedRepositoryID <= 0 || request.ExpectedHeadSHA == nil || !sha.MatchString(*request.ExpectedHeadSHA) || request.ExpectedExternalID == nil || *request.ExpectedExternalID != "" && !identifier.MatchString(*request.ExpectedExternalID) || request.ExternalActionStopped == nil || request.Reason == nil || !validSettlementText(*request.Reason, true) || request.EvidenceReference == nil || !validSettlementText(*request.EvidenceReference, false) {
 		core.WriteError(w, invalid())
 		return
 	}
@@ -116,7 +117,7 @@ func (e *Engine) settleAttemptHTTP(w http.ResponseWriter, r *http.Request) {
 		if err := validateSettlementAdmission(ctx, tx, a, o, currentRecordedAt); err != nil {
 			return nil, err
 		}
-		state, reason, event, err := settlementDisposition(ctx, tx, a, o)
+		state, reason, event, err := settlementDisposition(ctx, tx, a, o, *request.ExternalActionStopped)
 		if err != nil {
 			return nil, err
 		}
@@ -132,7 +133,7 @@ func (e *Engine) settleAttemptHTTP(w http.ResponseWriter, r *http.Request) {
 		if provider != a.Provider || account != a.Account || class != o.Channel || repositoryID != a.Anchor.RepositoryID || pullNumber != a.Anchor.PullNumber {
 			return nil, settlementUnavailable()
 		}
-		audit := attemptSettlementAudit{AttemptID: a.ID, OperationID: o.ID, ExpectedRevision: a.Revision, Provider: a.Provider, Account: a.Account, Anchor: *a.Anchor, ExternalID: a.ExternalID, ExternalActionStopped: true, Reason: *request.Reason, EvidenceReference: *request.EvidenceReference}
+		audit := attemptSettlementAudit{AttemptID: a.ID, OperationID: o.ID, ExpectedRevision: a.Revision, Provider: a.Provider, Account: a.Account, Anchor: *a.Anchor, ExternalID: a.ExternalID, ExternalActionStopped: *request.ExternalActionStopped, Reason: *request.Reason, EvidenceReference: *request.EvidenceReference}
 		payload, err := json.Marshal(audit)
 		if err != nil {
 			return nil, invalid()

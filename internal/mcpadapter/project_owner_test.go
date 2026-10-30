@@ -171,12 +171,68 @@ func TestProjectOwnerSDKInvalidBeforeCredentials(t *testing.T) {
 		{"inbox_ack", `{"message_id":"msg-one","worker_id":"other","idempotency_key":"x"}`},
 		{"review_policy_configure", `{"expected_revision":0,"required_channels":["cli"],"idempotency_key":"x"}`},
 		{"review_execution_configure", `{"expected_revision":0,"capability_id":"x","mode":"independent","queue":[],"channels":["cli"],"idempotency_key":"x"}`},
-		{"review_attempt_settle", `{"attempt_id":"review_attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_revision":1,"expected_repository_id":1,"expected_head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_external_id":"","external_action_stopped":false,"reason":"Stopped","evidence_reference":"proof","idempotency_key":"x"}`},
+		{"review_attempt_settle", `{"attempt_id":"review_attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_revision":1,"expected_repository_id":1,"expected_head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_external_id":"","external_action_stopped":null,"reason":"Stopped","evidence_reference":"proof","idempotency_key":"x"}`},
 		{"worker_create", `{"name":" padded ","idempotency_key":"x"}`},
 		{"project_credential_grant", `{"token":"raw secret","permissions":["manage"],"idempotency_key":"x"}`},
 		{"project_credential_update", `{"credential_id":"credential-one","expected_permissions":["read"],"permissions":null,"idempotency_key":"x"}`},
 		{"project_credential_revoke", `{"credential_id":"bad/id","idempotency_key":"x"}`},
 	} {
 		diagnosticResult(t, call(t, session, v.name, json.RawMessage(v.raw)), "invalid_arguments", false)
+	}
+}
+
+func TestProjectOwnerSettlementExplicitAbandonmentArguments(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer server.Close()
+	identity := localContext()
+	identity.ServerURL = server.URL
+	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": identity}, "missing-settlement-token"), "chosen")
+	listed, err := allDiscoveredTools(t, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tool := range listed.Tools {
+		if tool.Name == "review_attempt_settle" {
+			found = true
+			data, _ := json.Marshal(tool.InputSchema)
+			var schema struct {
+				Properties map[string]map[string]any `json:"properties"`
+				Required   []string                  `json:"required"`
+			}
+			if json.Unmarshal(data, &schema) != nil || schema.Properties["external_action_stopped"]["type"] != "boolean" {
+				t.Fatal("boolean schema missing")
+			}
+			if _, exists := schema.Properties["external_action_stopped"]["const"]; exists {
+				t.Fatal("schema still forbids explicit abandonment")
+			}
+			required := false
+			for _, field := range schema.Required {
+				if field == "external_action_stopped" {
+					required = true
+				}
+			}
+			if !required || !strings.Contains(tool.Description, "abandon") || !strings.Contains(tool.Description, "does not stop") {
+				t.Fatal("missing explicit abandonment boundary")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing existing settlement tool")
+	}
+	base := map[string]any{"attempt_id": "review_attempt_" + strings.Repeat("a", 32), "expected_revision": 3, "expected_repository_id": 801, "expected_head_sha": strings.Repeat("b", 40), "expected_external_id": "123456789", "reason": "Explicitly abandon original request", "evidence_reference": "operator-decision", "idempotency_key": "settle"}
+	for _, value := range []bool{true, false} {
+		base["external_action_stopped"] = value
+		diagnosticResult(t, call(t, session, "review_attempt_settle", base), "credential_unreadable", false)
+	}
+	for _, value := range []any{nil, "false", 0} {
+		base["external_action_stopped"] = value
+		diagnosticResult(t, call(t, session, "review_attempt_settle", base), "invalid_arguments", false)
+	}
+	delete(base, "external_action_stopped")
+	diagnosticResult(t, call(t, session, "review_attempt_settle", base), "invalid_arguments", false)
+	if requests.Load() != 0 {
+		t.Fatal("local admission reached HTTP")
 	}
 }

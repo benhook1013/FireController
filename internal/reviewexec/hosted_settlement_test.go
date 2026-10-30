@@ -151,7 +151,7 @@ func TestHostedSettlementStrictInputAndAuditBudgetAreAtomic(t *testing.T) {
 		}
 	}
 	for _, change := range []map[string]any{
-		{"expected_revision": 0}, {"expected_revision": math.MaxInt64}, {"expected_revision": 1.5}, {"expected_repository_id": 0}, {"expected_head_sha": strings.Repeat("A", 40)}, {"expected_external_id": "with whitespace"}, {"external_action_stopped": false}, {"external_action_stopped": "true"}, {"reason": " "}, {"reason": "bad\u0085"}, {"reason": "bad\rtext"}, {"reason": strings.Repeat("x", 1025)}, {"evidence_reference": "bad\nreference"}, {"evidence_reference": "bad\tref"}, {"evidence_reference": strings.Repeat("x", 1025)}, {"unknown": "field"},
+		{"expected_revision": 0}, {"expected_revision": math.MaxInt64}, {"expected_revision": 1.5}, {"expected_repository_id": 0}, {"expected_head_sha": strings.Repeat("A", 40)}, {"expected_external_id": "with whitespace"}, {"external_action_stopped": "true"}, {"reason": " "}, {"reason": "bad\u0085"}, {"reason": "bad\rtext"}, {"reason": strings.Repeat("x", 1025)}, {"evidence_reference": "bad\nreference"}, {"evidence_reference": "bad\tref"}, {"evidence_reference": strings.Repeat("x", 1025)}, {"unknown": "field"},
 	} {
 		body := hostedSettlementBody(a)
 		for key, value := range change {
@@ -160,6 +160,9 @@ func TestHostedSettlementStrictInputAndAuditBudgetAreAtomic(t *testing.T) {
 		settlementError(t, hostedSettlementCall(t, f, a, "invalid", body), 400, "validation_failed")
 	}
 	raw := encoded(hostedSettlementBody(a))
+	localAbandon := hostedSettlementBody(a)
+	localAbandon["external_action_stopped"] = false
+	settlementError(t, hostedSettlementCall(t, f, a, "unconfirmed-cannot-abandon", localAbandon), 409, "review_settlement_unavailable")
 	for _, body := range []string{strings.Replace(raw, `"external_action_stopped":true`, `"external_action_stopped":true,"external_action_stopped":true`, 1), strings.Replace(raw, `"reason":`, `"Reason":`, 1), strings.Replace(raw, `"reason":`, `"reason":"bad\ud800","other":`, 1)} {
 		settlementError(t, f.request("POST", hostedSettlementPath(attemptProject, a), f.admin, "invalid", body), 400, "validation_failed")
 	}

@@ -138,3 +138,45 @@ func TestProjectOwnerCLIHelpAndMalformedBeforeProfiles(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectOwnerSettlementHelpAndExplicitBoolean(t *testing.T) {
+	code, out, stderr := run([]string{"reviews", "attempt-settle", "--help"}, nil)
+	if code != 0 || stderr != "" {
+		t.Fatal(code, stderr)
+	}
+	var help struct {
+		FileExample map[string]any `json:"file_example"`
+		Semantics   []string       `json:"semantics"`
+	}
+	if json.Unmarshal([]byte(out), &help) != nil || help.FileExample["external_action_stopped"] != false {
+		t.Fatal("help does not show honest abandonment")
+	}
+	guidance := strings.Join(help.Semantics, " ")
+	if !strings.Contains(guidance, "false") || !strings.Contains(guidance, "true") || !strings.Contains(guidance, "does not stop") {
+		t.Fatal("help omits assertion distinction")
+	}
+	base := map[string]any{"expected_revision": 3, "expected_repository_id": 801, "expected_head_sha": strings.Repeat("b", 40), "expected_external_id": "123456789", "reason": "Explicitly abandon original request", "evidence_reference": "operator-decision"}
+	file := filepath.Join(t.TempDir(), "settlement.json")
+	for _, value := range []any{true, false, nil, "false"} {
+		base["external_action_stopped"] = value
+		data, _ := json.Marshal(base)
+		if os.WriteFile(file, data, 0600) != nil {
+			t.Fatal("fixture write")
+		}
+		code, out, stderr := run([]string{"--profiles-file", "/missing-settlement-profile", "reviews", "attempt-settle", "review_attempt_" + strings.Repeat("a", 32), "--file", file, "--key", "settle"}, nil)
+		valid := value == true || value == false
+		invalid := strings.Contains(stderr, "invalid_management_input")
+		if code == 0 || out != "" || invalid == valid {
+			t.Fatal("explicit boolean admission changed", value, code, stderr)
+		}
+	}
+	delete(base, "external_action_stopped")
+	data, _ := json.Marshal(base)
+	if os.WriteFile(file, data, 0600) != nil {
+		t.Fatal("fixture write")
+	}
+	_, _, stderr = run([]string{"--profiles-file", "/missing-settlement-profile", "reviews", "attempt-settle", "review_attempt_" + strings.Repeat("a", 32), "--file", file, "--key", "settle"}, nil)
+	if !strings.Contains(stderr, "invalid_management_input") {
+		t.Fatal("missing boolean accepted")
+	}
+}

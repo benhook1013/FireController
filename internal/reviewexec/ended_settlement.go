@@ -15,8 +15,8 @@ import (
 )
 
 // settlementDisposition verifies original retained authority, never current
-// provider state. External termination remains the administrator's assertion.
-func settlementDisposition(ctx context.Context, tx *sql.Tx, a Attempt, o Operation) (state, reason, event string, err error) {
+// provider state. External termination is asserted only by a true stop flag.
+func settlementDisposition(ctx context.Context, tx *sql.Tx, a Attempt, o Operation, externalStopped bool) (state, reason, event string, err error) {
 	switch o.Channel {
 	case "hosted":
 		intent, intentErr := reviewprovider.HostedTriggerBody(reviewprovider.HostedTriggerIntent{OperationID: o.ID, AttemptID: a.ID, HeadSHA: o.HeadSHA})
@@ -29,6 +29,17 @@ func settlementDisposition(ctx context.Context, tx *sql.Tx, a Attempt, o Operati
 		}
 		if evidence != 0 {
 			return "", "", "", settlementUnavailable()
+		}
+		// False is an explicit local abandonment, never an assertion that the
+		// external action stopped. It cannot borrow the older uncertain classes.
+		if !externalStopped {
+			if err := validateConfirmedHostedSettlement(ctx, tx, a, o); err != nil {
+				return "", "", "", err
+			}
+			if err := validateSettlementObservations(ctx, tx, a, o, false); err != nil {
+				return "", "", "", err
+			}
+			return "cancelled", "operator_abandoned_pending", "review.hosted_settled", nil
 		}
 		full := o.Reason != "hosted_finished_inventory_unproven"
 		// Preserve the existing uncertain capacity/finished-inventory classes.
@@ -49,7 +60,7 @@ func settlementDisposition(ctx context.Context, tx *sql.Tx, a Attempt, o Operati
 		}
 		return "cancelled", "operator_verified_external_stop", "review.hosted_settled", nil
 	case "cli":
-		if o.Reason != "coverage_incomplete" || a.Intent != "" {
+		if !externalStopped || o.Reason != "coverage_incomplete" || a.Intent != "" {
 			return "", "", "", settlementUnavailable()
 		}
 		if err := validatePartialSettlementEvidence(ctx, tx, a, o); err != nil {
@@ -94,7 +105,7 @@ func validatePartialSettlementEvidence(ctx context.Context, tx *sql.Tx, a Attemp
 
 // The original confirmed-trigger transition supplies durable issue authority;
 // an allowance query, unknown POST outcome or observer timestamp cannot supply
-// it. Current configuration/catalog changes do not prevent cleanup of stopped
+// it. Current configuration/catalog changes do not prevent cleanup of
 // original work. The retained attempt/account and its exact reservation are
 // separately checked by the enclosing settlement transaction.
 func validateConfirmedHostedSettlement(ctx context.Context, tx *sql.Tx, a Attempt, o Operation) error {

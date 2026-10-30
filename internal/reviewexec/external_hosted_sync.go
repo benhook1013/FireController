@@ -206,6 +206,16 @@ func externalHostedNativeBinding(ctx context.Context, tx *sql.Tx, target lifecyc
 	if a.State == "posting" || a.State == "active" || a.State == "uncertain" {
 		return true, false, nil
 	}
+	// Explicit local abandonment releases execution ownership, not the original
+	// provider's eventual findings. Preserve a later supported publication through
+	// the ordinary external archive without reopening or crediting this attempt.
+	if a.State == "cancelled" && o.State == "cancelled" && o.Reason == "operator_abandoned_pending" {
+		evidenceID, err := readHostedRecoveryEvidence(ctx, tx, a, o)
+		if err != nil || evidenceID != "" {
+			return false, true, nil
+		}
+		return false, false, nil
+	}
 	evidenceID, err := readHostedRecoveryEvidence(ctx, tx, a, o)
 	if err != nil || evidenceID == "" {
 		return false, true, nil

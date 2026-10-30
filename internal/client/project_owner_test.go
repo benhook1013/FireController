@@ -187,29 +187,37 @@ func TestOwnerClientLocalValidation(t *testing.T) {
 }
 
 func TestOwnerSettlementClientPreservesExactOriginalAssertions(t *testing.T) {
-	attempt := "review_attempt_" + strings.Repeat("a", 32)
-	input := client.SettleReviewAttemptRequest{ExpectedRevision: 7, ExpectedRepositoryID: 42, ExpectedHeadSHA: strings.Repeat("b", 40), ExpectedExternalID: "retained-original", ExternalActionStopped: true, Reason: "External action independently stopped.", EvidenceReference: "private-proof-handle"}
-	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/instance" {
-			handshake(w)
-			return
-		}
-		calls++
-		if r.Method != "POST" || !strings.HasSuffix(r.URL.Path, "/attempts/"+attempt+"/settlement") || r.Header.Get("Idempotency-Key") != "settle-original" {
-			t.Error("unexpected settlement transport")
-		}
-		var got client.SettleReviewAttemptRequest
-		if json.NewDecoder(r.Body).Decode(&got) != nil || got != input {
-			t.Error("original guard changed", got)
-		}
-		write(w, 200, client.ReviewAttemptSettlementReceipt{AttemptID: attempt, OperationID: executionOperationID, Revision: 8, State: "failed", Outcome: "settled"})
-	}))
-	defer server.Close()
-	c := newClient(t, server)
-	receipt, err := c.SettleReviewAttempt(t.Context(), "settle-original", attempt, input)
-	if err != nil || receipt.Revision != 8 || calls != 1 {
-		t.Fatal(receipt, err, calls)
+	for _, stopped := range []bool{true, false} {
+		t.Run(map[bool]string{true: "verified_stop", false: "operator_abandonment"}[stopped], func(t *testing.T) {
+			attempt := "review_attempt_" + strings.Repeat("a", 32)
+			input := client.SettleReviewAttemptRequest{ExpectedRevision: 7, ExpectedRepositoryID: 42, ExpectedHeadSHA: strings.Repeat("b", 40), ExpectedExternalID: "retained-original", ExternalActionStopped: stopped, Reason: "External action independently stopped.", EvidenceReference: "private-proof-handle"}
+			if !stopped {
+				input.Reason = "Explicitly abandon original pending request without claiming it stopped."
+			}
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				calls++
+				if r.Method != "POST" || !strings.HasSuffix(r.URL.Path, "/attempts/"+attempt+"/settlement") || r.Header.Get("Idempotency-Key") != "settle-original" {
+					t.Error("unexpected settlement transport")
+				}
+				var got client.SettleReviewAttemptRequest
+				if json.NewDecoder(r.Body).Decode(&got) != nil || got != input {
+					t.Error("original guard changed", got)
+				}
+				write(w, 200, client.ReviewAttemptSettlementReceipt{AttemptID: attempt, OperationID: executionOperationID, Revision: 8, State: "failed", Outcome: "settled"})
+			}))
+			defer server.Close()
+			c := newClient(t, server)
+			receipt, err := c.SettleReviewAttempt(t.Context(), "settle-original", attempt, input)
+			if err != nil || receipt.Revision != 8 || calls != 1 {
+				t.Fatal(receipt, err, calls)
+			}
+
+		})
 	}
 }
 

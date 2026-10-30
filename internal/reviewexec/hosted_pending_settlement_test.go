@@ -135,7 +135,7 @@ func TestHostedPendingSettlementRejectsUnprovenBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, token := range []string{f.writer, f.reader} {
-		settlementError(t, f.request("POST", hostedSettlementPath(attemptProject, a), token, "deny-nonadmin", encoded(hostedSettlementBody(a))), 403, "forbidden")
+		settlementError(t, f.request("POST", hostedSettlementPath(attemptProject, a), token, "deny-nonadmin", encoded(hostedAbandonmentBody(a))), 403, "forbidden")
 	}
 	// Each independent change is rolled back through exact fixture values so the
 	// matrix reuses one database without rebuilding unrelated schema per guard.
@@ -154,7 +154,7 @@ func TestHostedPendingSettlementRejectsUnprovenBinding(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			admissionSQL(t, f, tc.mutate, tc.args...)
 			before := hostedObservationState(t, f, a)
-			settlementError(t, hostedSettlementCall(t, f, a, "deny-"+tc.name, hostedSettlementBody(a)), 409, "review_settlement_unavailable")
+			settlementError(t, hostedSettlementCall(t, f, a, "deny-"+tc.name, hostedAbandonmentBody(a)), 409, "review_settlement_unavailable")
 			if hostedObservationState(t, f, a) != before {
 				t.Fatal("refusal wrote state")
 			}
@@ -167,21 +167,18 @@ func TestHostedPendingSettlementRejectsUnprovenBinding(t *testing.T) {
 			admissionSQL(t, f, `UPDATE review_execution_transitions SET external_id=? WHERE attempt_id=? AND state='active'`, external, a.ID)
 			copy := a
 			copy.ExternalID = external
-			settlementError(t, hostedSettlementCall(t, f, copy, "deny-external-"+strings.ReplaceAll(external, "-", "minus"), hostedSettlementBody(copy)), 409, "review_settlement_unavailable")
+			settlementError(t, hostedSettlementCall(t, f, copy, "deny-external-"+strings.ReplaceAll(external, "-", "minus"), hostedAbandonmentBody(copy)), 409, "review_settlement_unavailable")
 			admissionSQL(t, f, `UPDATE review_execution_attempts SET external_id='101' WHERE id=?`, a.ID)
 			admissionSQL(t, f, `UPDATE review_execution_transitions SET external_id='101' WHERE attempt_id=? AND state='active'`, a.ID)
 		})
 	}
-	// The administrator assertion and original exact target remain mandatory.
-	for _, change := range []map[string]any{{"external_action_stopped": false}, {"expected_head_sha": strings.Repeat("f", 40)}, {"expected_repository_id": 802}, {"expected_external_id": "102"}} {
-		body := hostedSettlementBody(a)
+	// The original exact target remains mandatory.
+	for _, change := range []map[string]any{{"expected_head_sha": strings.Repeat("f", 40)}, {"expected_repository_id": 802}, {"expected_external_id": "102"}} {
+		body := hostedAbandonmentBody(a)
 		for k, v := range change {
 			body[k] = v
 		}
 		code, status := "review_settlement_unavailable", 409
-		if body["external_action_stopped"] == false {
-			code, status = "validation_failed", 400
-		}
 		settlementError(t, hostedSettlementCall(t, f, a, "deny-request", body), status, code)
 	}
 	// Missing observations and a prior allowance query cannot substitute for an
@@ -195,16 +192,16 @@ func TestHostedPendingSettlementRejectsUnprovenBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	admissionSQL(t, f, `DELETE FROM review_hosted_observations WHERE attempt_id=?`, a.ID)
-	settlementError(t, hostedSettlementCall(t, f, a, "deny-no-observation", hostedSettlementBody(a)), 409, "review_settlement_unavailable")
+	settlementError(t, hostedSettlementCall(t, f, a, "deny-no-observation", hostedAbandonmentBody(a)), 409, "review_settlement_unavailable")
 	admissionSQL(t, f, `INSERT INTO review_hosted_observations(id,project_id,attempt_id,operation_id,position,capture_sha256,capture_bytes,body_json) VALUES(?,?,?,?,?,?,?,?)`, stored.ID, stored.ProjectID, stored.AttemptID, stored.OperationID, stored.Position, stored.Input.CaptureSHA256, stored.Input.CaptureBytes, observationBody)
 	admissionSQL(t, f, `UPDATE review_hosted_observations SET body_json=json_set(body_json,'$.input.kind','allowance_query') WHERE attempt_id=?`, a.ID)
-	settlementError(t, hostedSettlementCall(t, f, a, "deny-query-only", hostedSettlementBody(a)), 409, "review_settlement_unavailable")
+	settlementError(t, hostedSettlementCall(t, f, a, "deny-query-only", hostedAbandonmentBody(a)), 409, "review_settlement_unavailable")
 	admissionSQL(t, f, `UPDATE review_hosted_observations SET body_json=? WHERE attempt_id=?`, observationBody, a.ID)
 	// Final evidence belongs to normal settlement and cannot be abandoned here.
 	if _, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, hostedSettlementFinalInput(a, input)); err != nil {
 		t.Fatal(err)
 	}
-	settlementError(t, hostedSettlementCall(t, f, a, "deny-final-evidence", hostedSettlementBody(a)), 409, "review_settlement_unavailable")
+	settlementError(t, hostedSettlementCall(t, f, a, "deny-final-evidence", hostedAbandonmentBody(a)), 409, "review_settlement_unavailable")
 }
 
 func TestHostedPendingSettlementConcurrentCompletionAndAdmin(t *testing.T) {
@@ -219,7 +216,7 @@ func TestHostedPendingSettlementConcurrentCompletionAndAdmin(t *testing.T) {
 	}()
 	go func() {
 		<-start
-		settled <- hostedSettlementCall(t, f, a, "pending-completion-race", hostedSettlementBody(a))
+		settled <- hostedSettlementCall(t, f, a, "pending-completion-race", hostedAbandonmentBody(a))
 	}()
 	close(start)
 	err, r := <-captured, <-settled
@@ -239,5 +236,83 @@ func TestHostedPendingSettlementConcurrentCompletionAndAdmin(t *testing.T) {
 	}
 	// A current admin is required even for exact receipt replay.
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE is_admin=1`)
-	settlementError(t, hostedSettlementCall(t, f, a, "pending-completion-race", hostedSettlementBody(a)), 401, "unauthorized")
+	settlementError(t, hostedSettlementCall(t, f, a, "pending-completion-race", hostedAbandonmentBody(a)), 401, "unauthorized")
+}
+
+func hostedAbandonmentBody(a Attempt) map[string]any {
+	body := hostedSettlementBody(a)
+	body["external_action_stopped"] = false
+	body["reason"] = "Operator explicitly abandons local pending work; external termination is unknown."
+	body["evidence_reference"] = "operator-record:manual-abandon"
+	return body
+}
+
+func TestHostedPendingSettlementExplicitAbandonActiveAndRestart(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprint("restart=", restart), func(t *testing.T) {
+			f, a, _ := pendingHostedSettlementFixture(t)
+			if restart {
+				if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				a.State = "uncertain"
+				a.Revision++
+			}
+			sourceBefore, err := f.e.ReadHostedObservations(t.Context(), attemptProject, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authorityBefore := transferAuthorityRows(t, f, true)
+			attempts := attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`)
+			operations := attemptCount(t, f.store, `SELECT count(*) FROM review_operations`)
+			body := hostedAbandonmentBody(a)
+			stale := hostedAbandonmentBody(a)
+			stale["expected_revision"] = a.Revision - 1
+			settlementError(t, hostedSettlementCall(t, f, a, "stale-local-abandon", stale), 409, "review_attempt_revision_conflict")
+			r := hostedSettlementCall(t, f, a, "local-abandon", body)
+			if r.Code != 200 {
+				t.Fatal(r.Code, r.Body.String())
+			}
+			var receipt attemptSettlementReceipt
+			if json.Unmarshal(r.Body.Bytes(), &receipt) != nil || receipt.State != "cancelled" || receipt.AttemptID != a.ID || receipt.OperationID != a.OperationID || receipt.Revision != a.Revision+1 {
+				t.Fatal(r.Body.String())
+			}
+			var state, reason, auditBody string
+			if err = f.store.DB().QueryRow(`SELECT state,reason FROM review_operations WHERE id=?`, a.OperationID).Scan(&state, &reason); err != nil || state != "cancelled" || reason != "operator_abandoned_pending" {
+				t.Fatal(state, reason, err)
+			}
+			if err = f.store.DB().QueryRow(`SELECT payload_json FROM events WHERE resource_id=? AND event_type='review.hosted_settled'`, a.ID).Scan(&auditBody); err != nil {
+				t.Fatal(err)
+			}
+			var audit attemptSettlementAudit
+			if json.Unmarshal([]byte(auditBody), &audit) != nil || audit.ExternalActionStopped || !strings.Contains(auditBody, `"external_action_stopped":false`) || audit.ExternalID != a.ExternalID || audit.Anchor != *a.Anchor || audit.ExpectedRevision != a.Revision || audit.Reason != body["reason"] || audit.EvidenceReference != body["evidence_reference"] || encoded(audit) != auditBody {
+				t.Fatal("untruthful or noncanonical abandonment audit", auditBody)
+			}
+			after := transferAuthorityRows(t, f, true)
+			for _, table := range []string{"review_execution_evidence", "review_hosted_observations", "review_execution_config", "review_round_controls", "review_round_changes", "review_round_completions"} {
+				if !reflect.DeepEqual(authorityBefore[table], after[table]) {
+					t.Fatal("local abandon changed source or credit", table)
+				}
+			}
+			retained, err := f.e.ReadHostedObservations(t.Context(), attemptProject, a.ID)
+			if err != nil || !reflect.DeepEqual(sourceBefore, retained) {
+				t.Fatal("original source changed", err)
+			}
+			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != attempts || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != operations || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+				t.Fatal("local abandon started replacement work or supplied review credit")
+			}
+			// A later explicitly requested local reservation is independent. Replaying
+			// abandonment must never release that new reservation or create another.
+			next := f.start(t, attemptProject, f.enqueue(t, attemptProject, "later-explicit-local-intent", "hosted", 2, 1))
+			nextBefore := attemptState(t, f, next)
+			replay := hostedSettlementCall(t, f, a, "local-abandon", body)
+			if replay.Code != 200 || replay.Body.String() != r.Body.String() || attemptState(t, f, next) != nextBefore || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.hosted_settled' AND resource_id=?`, a.ID) != 1 {
+				t.Fatal("replay altered newer work or repeated audit", replay.Body.String())
+			}
+			verified := hostedSettlementBody(a)
+			settlementError(t, hostedSettlementCall(t, f, a, "local-abandon", verified), 409, "idempotency_conflict")
+			admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE is_admin=1`)
+			settlementError(t, hostedSettlementCall(t, f, a, "local-abandon", body), 401, "unauthorized")
+		})
+	}
 }

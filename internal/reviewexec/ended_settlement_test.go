@@ -198,6 +198,9 @@ func TestEndedSettlementPublicRouteRetainsOriginalSource(t *testing.T) {
 		t.Run(channel, func(t *testing.T) {
 			f, a := endedSettlementFixture(t, channel)
 			before := transferAuthorityRows(t, f, true)
+			// CLI partial and unconfirmed Hosted finished inventory cannot borrow
+			// explicit abandonment without the confirmed issued Hosted authority.
+			settlementError(t, hostedSettlementCall(t, f, a, "unconfirmed-local-abandon", hostedAbandonmentBody(a)), 409, "review_settlement_unavailable")
 			r := hostedSettlementCall(t, f, a, "ended-action", hostedSettlementBody(a))
 			if r.Code != 200 {
 				t.Fatalf("ended %s settlement: status=%d body=%s", channel, r.Code, r.Body.String())

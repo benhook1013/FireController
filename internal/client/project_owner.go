@@ -124,7 +124,7 @@ func settlementText(s string, multiline bool) bool {
 	return true
 }
 func ValidateSettleReviewAttempt(id string, r SettleReviewAttemptRequest) error {
-	if !validReviewOpaqueID(id, "review_attempt_") || r.ExpectedRevision < 1 || r.ExpectedRevision == math.MaxInt64 || r.ExpectedRepositoryID < 1 || len(r.ExpectedHeadSHA) != 40 || !validReviewSHA(r.ExpectedHeadSHA) || r.ExpectedExternalID != "" && !validExecutionIdentifier(r.ExpectedExternalID) || !r.ExternalActionStopped || !settlementText(r.Reason, true) || !settlementText(r.EvidenceReference, false) {
+	if !validReviewOpaqueID(id, "review_attempt_") || r.ExpectedRevision < 1 || r.ExpectedRevision == math.MaxInt64 || r.ExpectedRepositoryID < 1 || len(r.ExpectedHeadSHA) != 40 || !validReviewSHA(r.ExpectedHeadSHA) || r.ExpectedExternalID != "" && !validExecutionIdentifier(r.ExpectedExternalID) || !settlementText(r.Reason, true) || !settlementText(r.EvidenceReference, false) {
 		return mutationValidation()
 	}
 	return nil
