@@ -3,6 +3,7 @@ package mcpadapter
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -34,7 +35,7 @@ func operationStatusArguments(raw json.RawMessage) (*operationStatusInput, error
 		out.Diagnostics = *in.Diagnostics
 	}
 	if client.ValidateReviewOperationWait(out.WaitSeconds) != nil || out.WaitSeconds > maxToolWaitSeconds {
-		return nil, invalidArguments()
+		return nil, &Diagnostic{Code: "invalid_arguments", Message: fmt.Sprintf("wait_seconds must be from 0 to %d seconds for MCP review_operation_read; the CLI operation wait limit is 900 seconds.", maxToolWaitSeconds), Action: fmt.Sprintf("Use wait_seconds from 0 to %d (default 0). No operation request was sent.", maxToolWaitSeconds), Details: map[string]any{"field": "wait_seconds", "minimum": 0, "maximum": maxToolWaitSeconds}}
 	}
 	return out, nil
 }
@@ -47,6 +48,6 @@ func executeOperationStatus(ctx context.Context, service *client.Client, in *ope
 	return client.AgentReviewOperationStatus(status), err
 }
 func operationStatusDefinition() definition {
-	return definition{"review_operation_read", "Read compact retained operation state, cause and next action; optionally wait without provider polling. With evidence, review_finished_at dates review finish and evidence_recorded_at dates controller retention; updated_at remains the operation transition. wait_for_observation means the issued Hosted trigger remains with scheduled observation: do other work and check later, without reposting or immediate polling. Uncertain states end the bounded result wait. A posted trigger is not proof of provider execution or completion. Pending Hosted observer metadata reports actual process-local checks and the next scheduled check; it does not prove provider activity. Unknown after restart carries no check claim. Queued wait metadata retains the same request: retry_not_before is the earliest automatic recheck, not a promised start; paused requires explicit review_operation_control resume. Do not submit a replacement for a queued wait. Set diagnostics=true for the full retained operation, preserving its directly bound evidence handle when present.", map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+	return definition{"review_operation_read", fmt.Sprintf("Read compact retained operation state, cause and next action; optionally wait without provider polling. MCP wait_seconds accepts 0-%d seconds (default 0); the CLI supports up to 900 seconds. With evidence, review_finished_at dates review finish and evidence_recorded_at dates controller retention; updated_at remains the operation transition. wait_for_observation means the issued Hosted trigger remains with scheduled observation: do other work and check later, without reposting or immediate polling. Uncertain states end the bounded result wait. A posted trigger is not proof of provider execution or completion. Pending Hosted observer metadata reports actual process-local checks and the next scheduled check; it does not prove provider activity. Unknown after restart carries no check claim. Queued wait metadata retains the same request: retry_not_before is the earliest automatic recheck, not a promised start; paused requires explicit review_operation_control resume. Do not submit a replacement for a queued wait. Set diagnostics=true for the full retained operation, preserving its directly bound evidence handle when present.", maxToolWaitSeconds), map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 		"operation_id": map[string]any{"type": "string", "pattern": "^review_operation_[a-f0-9]{32}$"}, "wait_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": maxToolWaitSeconds, "default": 0}, "diagnostics": map[string]any{"type": "boolean", "default": false}}, "required": []string{"operation_id"}}}
 }

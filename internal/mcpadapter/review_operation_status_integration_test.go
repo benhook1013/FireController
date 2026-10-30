@@ -2,6 +2,7 @@ package mcpadapter_test
 
 import (
 	"github.com/benhook1013/FireController/internal/client"
+	"github.com/benhook1013/FireController/internal/profile"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -42,5 +43,32 @@ func TestOperationStatusStdioCompactDiagnosticsAndNoProviders(t *testing.T) {
 	}
 	for _, args := range []map[string]any{{"operation_id": receipt.ID, "wait_seconds": 51}, {"operation_id": receipt.ID, "diagnostics": nil}} {
 		diagnosticResult(t, call(t, session, "review_operation_read", args), "invalid_arguments", false)
+	}
+}
+
+func TestOperationStatusWaitDiagnosticBeforeCredentialsOrNetwork(t *testing.T) {
+	var requests atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer service.Close()
+	bound := localContext()
+	bound.ServerURL = service.URL
+	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"chosen": bound}, "missing-private-credential"), "chosen"), "")
+	id := "review_operation_" + strings.Repeat("a", 32)
+	d := diagnosticResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": id, "wait_seconds": 60}), "invalid_arguments", false)
+	for _, phrase := range []string{"wait_seconds", "MCP", "0 to 50", "CLI", "900"} {
+		if !strings.Contains(d.Message, phrase) {
+			t.Fatal("missing field-specific MCP/CLI bound", d)
+		}
+	}
+	if !strings.Contains(d.Action, "No operation request was sent") || strings.Contains(strings.ToLower(d.Action), "maintainer") || requests.Load() != 0 {
+		t.Fatal("invalid wait reached credentials/network or required escalation", d, requests.Load())
+	}
+	// Valid bounds pass argument admission and reach the existing credential
+	// refusal; they neither start a wait nor contact the synthetic service here.
+	for _, args := range []map[string]any{{"operation_id": id}, {"operation_id": id, "wait_seconds": 0}, {"operation_id": id, "wait_seconds": 50}} {
+		diagnosticResult(t, call(t, session, "review_operation_read", args), "credential_unreadable", false)
+	}
+	if requests.Load() != 0 {
+		t.Fatal("credential-less tool contacted the service")
 	}
 }
