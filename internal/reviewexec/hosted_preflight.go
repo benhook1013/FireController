@@ -136,6 +136,10 @@ func (e *Engine) recordHostedAllowance(ctx context.Context, project, attemptID s
 			if err != nil {
 				return err
 			}
+			operation, err = historicalCooldownOperation(ctx, tx, operation, attempt)
+			if err != nil {
+				return err
+			}
 			query, err := readHostedQuery(ctx, tx, attempt, operation)
 			if err != nil {
 				return err
@@ -218,6 +222,10 @@ func readHostedAllowance(ctx context.Context, tx *sql.Tx, project, attemptID str
 		return record, attempt, Operation{}, err
 	}
 	operation, err := readOperation(ctx, tx, project, attempt.OperationID)
+	if err != nil {
+		return record, attempt, operation, err
+	}
+	operation, err = historicalCooldownOperation(ctx, tx, operation, attempt)
 	if err != nil {
 		return record, attempt, operation, err
 	}

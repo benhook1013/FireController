@@ -308,11 +308,11 @@ func TestRoundProgressQueuedHoldDropsPendingAtomicallyWithEvent(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := roundFixture(t)
 			roundGrant(t, f, 2, "cli", 0, 0, 3, "grant")
-			receipt := f.enqueue(t, attemptProject, "queued-before-pause", "cli", 2, 1)
+			receipt := f.enqueue(t, attemptProject, "queued-before-change", "cli", 2, 1)
 			if c := readProgress(t, f, 2).Items[0].Channels[1]; c.Pending != 1 || c.Used != 0 {
 				t.Fatal("queued operation was not included", c)
 			}
-			f.configure(t, attemptProject, "test-capability", 1, true)
+			f.configure(t, attemptProject, "other-account", 1, false)
 			if failEvent {
 				admissionSQL(t, f, `CREATE TRIGGER progress_hold_event_failure BEFORE INSERT ON events WHEN NEW.event_type='review.operation_updated' BEGIN SELECT RAISE(ABORT,'fixture event failure'); END`)
 				before := roundTables(t, f) + policyState(t, f)

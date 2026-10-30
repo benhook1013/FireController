@@ -53,6 +53,9 @@ func TestReviewAllowanceHTTPAllResultSurfaces(t *testing.T) {
 						return
 					}
 					calls.Add(1)
+					if r.Header.Get("X-FC-Operation-Wait") != "1" {
+						t.Error("result surface did not negotiate current wait metadata")
+					}
 					if r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("X-FC-Instance") != "instance-one" || r.URL.RawQuery != "" {
 						t.Error("result lost bound scope")
 					}

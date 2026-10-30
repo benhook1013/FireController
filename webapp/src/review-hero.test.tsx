@@ -160,3 +160,20 @@ describe('retained attempt diagnostics', () => {
     }
   });
 });
+
+it('shows the same-operation timer instead of a historical Held attempt or pending execution label', () => {
+  archive.items = [run('h1', 'hosted')]; archive.hasMore = false;
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-30T12:00:00Z');
+  try {
+    const attempts: ReviewAttemptSummary[] = [{channel:'hosted',head_sha:'head',state:'held',reason:'hosted_allowance_cooldown',source_attempt_id:'old',source_run_id:'',trigger_id:'',provider_review_id:'',duration_seconds:null,finished_at:'2026-10-30T11:59:00Z',started_at:'2026-10-30T11:58:00Z'}];
+    const pending: ReviewRoundProgress={...progress,tapered:false,pending:1,pending_execution:1,pending_adjudication:0,wait:{baseline_attempt_id:`review_attempt_${'a'.repeat(32)}`,retry_not_before:'2026-10-30T12:30:00Z',paused:false}};
+    const render=(value:ReviewRoundProgress)=>markup(false,attempts,false,undefined,<ReviewRunsView number={7} snapshot="snapshot" head="head" attempts={attempts} expected={1} channelTotals={{hosted:1,cli:0,manual:0,subagent:0}} progress={{pull_number:7,channels:[value]}} positions={{hosted:{text:'Up next'}}}/>);
+    const future=render(pending);
+    expect(future).toContain('Cooldown · 30m');expect(future).toContain('1 run</span>');
+    expect(future).not.toMatch(/>Held<|>Pending<|>Reviewing<|>Up next<|awaiting review result/u);
+    expect(render({...pending,wait:{...pending.wait!,paused:true}})).toContain('>Paused<');
+    vi.setSystemTime('2026-10-30T12:30:01Z');expect(render(pending)).toContain('>Waiting<');
+    const active=markup(false,[{...attempts[0],state:'active',finished_at:'',reason:undefined}],false,undefined,<ReviewRunsView number={7} snapshot="snapshot" head="head" attempts={[{...attempts[0],state:'active',finished_at:'',reason:undefined}]} expected={1} channelTotals={{hosted:1,cli:0,manual:0,subagent:0}} progress={{pull_number:7,channels:[{...pending,wait:undefined}]}}/>);
+    expect(active).toContain('>Reviewing<');expect(active).not.toContain('Cooldown ·');
+  } finally {vi.useRealTimers();}
+});

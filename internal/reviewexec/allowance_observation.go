@@ -40,6 +40,13 @@ func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a
 }
 
 func readHostedAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a Attempt) (hostedAllowanceRecord, error) {
+	if o.AttemptID != a.ID {
+		var err error
+		o, err = historicalCooldownOperation(ctx, q, o, a)
+		if err != nil {
+			return hostedAllowanceRecord{}, err
+		}
+	}
 	if !validAllowanceOwners(o, a) {
 		return hostedAllowanceRecord{}, allowanceUnavailable()
 	}

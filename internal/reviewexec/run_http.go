@@ -137,6 +137,9 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if terminal {
+			if state.Operation != nil && r.Header.Get(operationWaitHeader) != "1" {
+				state.Operation.Wait = nil
+			}
 			core.WriteJSON(w, http.StatusOK, state)
 			return
 		}
@@ -173,6 +176,9 @@ func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		core.WriteError(w, err)
 		return
+	}
+	if state.Operation != nil && r.Header.Get(operationWaitHeader) != "1" {
+		state.Operation.Wait = nil
 	}
 	core.WriteJSON(w, http.StatusOK, state)
 }

@@ -588,6 +588,7 @@ var managementDiscoveryContract = map[string]struct{ write, destructive, externa
 	"project_credential_grant":          {true, false, false},
 	"project_credential_revoke":         {true, true, false},
 	"project_credential_update":         {true, true, false},
+	"review_operation_control":          {true, true, false},
 	"publication_apply":                 {true, true, false},
 	"publication_configuration_read":    {false, false, false},
 	"publication_prepare":               {false, false, false},

@@ -153,6 +153,7 @@ func TestExplicitOrderLegacyFingerprintMigrationAndRestart(t *testing.T) {
 	// Model a genuine schema6 snapshot: the new column is absent, not malformed.
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
+	restorePreCooldownAttemptSchema(t, f)
 	admissionSQL(t, f, `UPDATE metadata SET value='6' WHERE key='schema:review_execution'`)
 	if read, err := readOperation(t.Context(), f.store.DB(), attemptProject, receipt.ID); err != nil || read.AllowOutOfOrder || !reflect.DeepEqual(old, read) {
 		t.Fatal("old snapshot read did not retain false", read, err)
@@ -334,6 +335,7 @@ func TestExplicitOrderAutomaticChildRemainsFalseIncludingOldSnapshot(t *testing.
 	admissionSQL(t, f, `UPDATE review_operations SET allow_out_of_order=0 WHERE id=?`, op.ID)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
+	restorePreCooldownAttemptSchema(t, f)
 	admissionSQL(t, f, `UPDATE metadata SET value='6' WHERE key='schema:review_execution'`)
 	if err = ValidateSelectionSnapshot(t.Context(), f.store.DB()); err != nil {
 		t.Fatal("genuine schema6 automatic child refused", err)
@@ -355,7 +357,7 @@ func TestExplicitOrderMalformedStoredFlagOrVersionNeverDefaults(t *testing.T) {
 			case "missing-current-column":
 				admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
 			case "unknown-version":
-				admissionSQL(t, f, `UPDATE metadata SET value='9' WHERE key='schema:review_execution'`)
+				admissionSQL(t, f, `UPDATE metadata SET value='10' WHERE key='schema:review_execution'`)
 			case "noncanonical-version":
 				admissionSQL(t, f, `UPDATE metadata SET value='07' WHERE key='schema:review_execution'`)
 			}
@@ -373,6 +375,7 @@ func TestExplicitOrderRestoredProviderReleaseRequiresMigratedSeven(t *testing.T)
 	restoredHeld(t, f)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
+	restorePreCooldownAttemptSchema(t, f)
 	admissionSQL(t, f, `UPDATE metadata SET value='6' WHERE key='schema:review_execution'`)
 	before := policyState(t, f)
 	_, err := restoredCall(t, f, time.Now())

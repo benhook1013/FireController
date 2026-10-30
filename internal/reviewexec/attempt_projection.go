@@ -65,6 +65,20 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 	if err != nil {
 		return reviews.Receipt{}, err
 	}
+	if operation.AttemptID != attempt.ID {
+		// Publication may repair an unused cooldown's ledger-only history after
+		// its operation detached it for a timer. This attribution is local only;
+		// action/admission guards still require the actual current attempt.
+		original, err := historicalCooldownOperation(ctx, tx, operation, attempt)
+		if err != nil {
+			return reviews.Receipt{}, publicationConflict()
+		}
+		record, err := readHostedAllowanceRecord(ctx, tx, original, attempt)
+		if err != nil || record.Input.Observation.State != "cooldown_observed" {
+			return reviews.Receipt{}, publicationConflict()
+		}
+		operation = original
+	}
 	if operation.AttemptID != attempt.ID || operation.State != attempt.State || !validChannel(operation.Channel) || !sha.MatchString(operation.HeadSHA) {
 		return reviews.Receipt{}, publicationConflict()
 	}

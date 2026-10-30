@@ -52,6 +52,7 @@ func (e *Engine) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/requests", e.enqueueHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/operations", e.readOperationsHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/operations/{operation_id}", e.readOperationHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/operations/{operation_id}/control", e.controlOperationHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/operations/{operation_id}/status", e.readOperationStatusHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}", e.readEvidenceHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/adjudication", e.readAdjudicationHTTP)
@@ -193,6 +194,9 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			e.deploymentResponseHeader(w)
+			if r.Header.Get(operationWaitHeader) != "1" {
+				operation.Wait = nil
+			}
 			core.WriteJSON(w, http.StatusOK, operation)
 			return
 		}
@@ -202,6 +206,8 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", hostedQueryDiagnosticHeader)
+	w.Header().Add("Vary", operationWaitHeader)
 	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", pendingEvidenceHeader)
 	w.Header().Add("Vary", "X-FC-Operation-Evidence")
@@ -235,8 +241,8 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if r.Header.Get("X-FC-Operation-Evidence") == "true" || sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")) {
-		operation, err = e.readOperationProjection(r.Context(), scope, operationID, r.Header.Get("X-FC-Operation-Evidence") == "true", sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")), r.Header.Get("X-FC-Source-Refusal") == "v2")
+	if r.Header.Get("X-FC-Operation-Evidence") == "true" || sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")) || r.Header.Get(hostedQueryDiagnosticHeader) == "1" {
+		operation, err = e.readOperationProjection(r.Context(), scope, operationID, r.Header.Get("X-FC-Operation-Evidence") == "true", sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")), r.Header.Get("X-FC-Source-Refusal") == "v2", r.Header.Get(hostedQueryDiagnosticHeader) == "1")
 		if err != nil {
 			core.WriteError(w, err)
 			return
@@ -248,6 +254,9 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.deploymentResponseHeader(w)
+	if r.Header.Get(operationWaitHeader) != "1" {
+		operation.Wait = nil
+	}
 	core.WriteJSON(w, http.StatusOK, operation)
 }
 

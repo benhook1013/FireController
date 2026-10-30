@@ -310,6 +310,8 @@ type sourceWaitOptions struct {
 	deploymentDraining *bool
 	reviewBlockers     bool
 	operationEvidence  bool
+	operationWait      bool
+	hostedQuery        bool
 	sourceRefusalV2    bool
 	seconds            int
 	status             *int
@@ -361,6 +363,12 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		}
 		if wait.sourceRefusalV2 {
 			r.Header.Set("X-FC-Source-Refusal", "v2")
+		}
+		if wait.operationWait {
+			r.Header.Set("X-FC-Operation-Wait", "1")
+		}
+		if wait.hostedQuery {
+			r.Header.Set("X-FC-Hosted-Query", "1")
 		}
 		if wait.operationEvidence {
 			r.Header.Set("X-FC-Operation-Evidence", "true")

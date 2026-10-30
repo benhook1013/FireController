@@ -141,6 +141,10 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	if !sameOperation(operation, current.Operation) || !reflect.DeepEqual(configuration, current.Configuration) || configuration.CapabilityID != d.capability.ID || operation.Channel != "hosted" || attempt.Provider != "coderabbit" || attempt.Account != d.capability.Account || attempt.ProjectID != operation.ProjectID || attempt.OperationID != operation.ID || attempt.ID != current.Operation.AttemptID || attempt.State != "preparing" || attempt.Revision != 1 {
 		return preparation, reviewHold("execution_binding_changed")
 	}
+	baseline, err := d.engine.RetryBaseline(ctx, operation.ProjectID, operation.ID)
+	if err != nil {
+		return preparation, err
+	}
 	d.mu.Lock()
 	d.purgePrepared()
 	_, exists := d.prepared[attempt.ID]
@@ -161,6 +165,10 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	reads := newSourceReads(d.provider)
 	plan, _, err := resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
 	if err != nil {
+		var refusal *core.Error
+		if baseline != nil && ctx.Err() == nil && !errors.As(err, &refusal) {
+			return preparation, reviewHold("source_unavailable")
+		}
 		return preparation, err
 	}
 	if err := d.checkIdle(ctx, plan); err != nil {
@@ -175,6 +183,9 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 		return preparation, err
 	}
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
+	if baseline != nil && !sameHostedRetryComparison(*baseline, anchor) {
+		return preparation, reviewHold("source_changed")
+	}
 	actor, err := d.provider.CurrentActor(ctx)
 	if err != nil {
 		return preparation, reviewHold("provider_actor_unproven")
@@ -221,6 +232,16 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	d.prepared[attempt.ID] = &hostedPrepared{operation: current.Operation, configuration: current.Configuration, plan: plan, workspace: workspace, anchor: anchor, postingActor: actor, expires: time.Now().Add(time.Minute)}
 	d.mu.Unlock()
 	return reviewexec.Preparation{Anchor: anchor, Intent: intent}, nil
+}
+
+// A timer retries the original comparison rather than authorizing new source.
+// Observation time and repository spelling may change; stable source must not.
+func sameHostedRetryComparison(baseline, current reviewexec.Anchor) bool {
+	baseline.ObservedAt = ""
+	current.ObservedAt = ""
+	baseline.Repository = ""
+	current.Repository = ""
+	return baseline == current
 }
 
 func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operation, attempt reviewexec.Attempt, recordTrigger func(context.Context, string) error) (reviewexec.Result, error) {

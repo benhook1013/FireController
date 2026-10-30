@@ -12,6 +12,7 @@ import (
 
 // ReviewOperationStatus omits private configuration and capture contents.
 type ReviewOperationStatus struct {
+	Wait               *ReviewOperationWait `json:"wait,omitempty"`
 	SourceRefusal      *ReviewSourceRefusal `json:"source_refusal,omitempty"`
 	deploymentDraining bool
 	PendingEvidence    *ReviewPendingEvidence `json:"pending_evidence,omitempty"`
@@ -40,7 +41,7 @@ func (c *Client) WaitReviewOperationStatus(ctx context.Context, id string, secon
 	}
 	var value ReviewOperationStatus
 	var status int
-	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: seconds, status: &status, reviewBlockers: true, sourceRefusalV2: true, deploymentDraining: &value.deploymentDraining}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: seconds, status: &status, reviewBlockers: true, sourceRefusalV2: true, operationWait: true, deploymentDraining: &value.deploymentDraining}); err != nil {
 		return ReviewOperationStatus{}, err
 	}
 	if value.ID != id || !validCompactOperationStatus(value) {
@@ -63,6 +64,12 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
+	if raw, present := fields["wait"]; present {
+		var wait ReviewOperationWait
+		if strictjson.Decode(raw, &wait) != nil {
+			return strictjson.ErrSyntax
+		}
+	}
 	typ := reflect.TypeOf(ReviewOperationStatus{})
 	for i := 0; i < typ.NumField(); i++ {
 		if typ.Field(i).PkgPath != "" || typ.Field(i).Tag.Get("json") == "-" {
@@ -79,7 +86,7 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 }
 
 func validCompactOperationStatus(v ReviewOperationStatus) bool {
-	if !validReviewSourceRefusal(v.SourceRefusal, v.State, v.Reason, v.PullNumber) {
+	if !validReviewOperationWait(v.Wait, v.Channel, v.State, v.AttemptID) || !validReviewSourceRefusal(v.SourceRefusal, v.State, v.Reason, v.PullNumber) {
 		return false
 	}
 	if !validReviewPendingEvidence(v.PendingEvidence, v.State, v.Reason) || ValidateReviewOperationID(v.ID) != nil || !validPullNumber(v.PullNumber) || !oneReviewOf(v.Channel, "cli", "hosted") || v.Revision < 1 || v.Reason != "" && !validExecutionIdentifier(v.Reason) || v.AttemptID != "" && !validReviewOpaqueID(v.AttemptID, "review_attempt_") || v.EvidenceID != "" && (!validReviewOpaqueID(v.EvidenceID, "review_evidence_") || v.AttemptID == "") || !controlTime(v.UpdatedAt) {

@@ -8,8 +8,9 @@ import (
 )
 
 // A waiting operation keeps its original plan. Changes strictly after its
-// target cannot affect its parent/front selection, but a pause, reconfiguration
-// or any change through the target still requires a deliberate new request.
+// target cannot affect its parent/front selection. A pause-only revision defers
+// dispatch without withdrawing intent; other changes through the target still
+// require a deliberate new request.
 // Every intervening revision is checked so a meaningful change cannot be hidden
 // by changing the configuration back before admission.
 func compatibleQueuedConfiguration(ctx context.Context, tx *sql.Tx, o Operation, current Configuration, revision int64) (bool, error) {
@@ -39,13 +40,23 @@ func compatibleQueuedConfiguration(ctx context.Context, tx *sql.Tx, o Operation,
 		}
 		expected++
 		index := slices.Index(c.Queue, o.PullNumber)
-		if index < 0 || c.Paused {
+		if index < 0 {
 			return false, nil
 		}
 		if n == o.ConfigurationRevision {
+			if c.Paused {
+				return false, nil
+			}
 			original = c
 			previous = c
 			prefix = slices.Clone(c.Queue[:index+1])
+			continue
+		}
+		if c.Paused != previous.Paused {
+			if !sameSourceConfiguration(c, previous) {
+				return false, nil
+			}
+			previous = c
 			continue
 		}
 		if c.CapabilityID != original.CapabilityID || c.Mode != original.Mode || !slices.Equal(c.Channels, original.Channels) || !slices.Equal(c.Queue[:index+1], prefix) || slices.Equal(c.Queue, previous.Queue) {

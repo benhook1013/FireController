@@ -3,6 +3,12 @@ package cli
 func ownerManagementHelp(operation string) (operationHelpResponse, bool) {
 	out := operationHelpResponse{Usage: "<bound launcher> " + operation, Required: []string{}, Optional: []string{}, Semantics: []string{"Uses only the selected project and acting worker. Management capability never grants permission to merge or request unauthorized provider work.", "For mutations, retain the exact request, binding and explicit key after an unknown outcome; no automatic retry."}, Documentation: "docs/review-execution.md"}
 	switch operation {
+	case "reviews operation-control":
+		out.Usage += " OPERATION_ID --action pause|resume|cancel --expect-revision N --key KEY"
+		out.Required = []string{"OPERATION_ID", "--action pause|resume|cancel", "--expect-revision N", "--key KEY"}
+		out.Example = "<bound launcher> reviews operation-control review_operation_0123456789abcdef0123456789abcdef --action pause --expect-revision 3 --key pause-request"
+		out.Semantics = []string{"Project writer: control only a queued, undispatched operation. Read reviews operation for current revision and wait metadata. Pause retains the automatic retry deadline; resume allows the same operation to retry when due. Cancel withdraws only this undispatched intent, never a provider request.", "No change to grants, taper, findings or project pause. Preserve exact request and key after unknown outcome. Posting, active or uncertain provider work cannot be controlled here."}
+
 	case "credentials help":
 		out.Optional = []string{"credentials grant --help", "credentials update --help", "credentials revoke --help"}
 		out.Semantics = []string{"Project-manager access changes use this bound project. Grant accepts only a digest or local private credential-file reference; update preserves an existing binding under an exact permission-set guard. No raw token arguments or instance administration."}

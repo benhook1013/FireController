@@ -81,6 +81,9 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if o.State != "queued" {
 			return conflict()
 		}
+		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && e.sampleExecutionTime().Before(mustWaitTime(o.Wait.RetryNotBefore))) {
+			return nil
+		}
 		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleAttemptTime())
 		if err != nil {
 			return err
@@ -88,6 +91,9 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		c, revision, err := readConfiguration(ctx, tx, project)
 		if err != nil {
 			return err
+		}
+		if c.Paused {
+			return nil
 		}
 		compatible, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision)
 		if err != nil {
@@ -437,6 +443,23 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			o, err := readOperation(ctx, tx, x.project, a.OperationID)
 			if err != nil {
 				return err
+			}
+			if a.State == "preparing" && o.Channel == "hosted" {
+				record, readErr := readHostedAllowanceRecord(ctx, tx, o, a)
+				if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+					return readErr
+				}
+				if readErr == nil && record.Input.Observation.State == "cooldown_observed" && record.Input.Observation.RetryNotBefore.After(e.sampleExecutionTime()) {
+					_, scheduleErr := e.scheduleHostedCooldown(ctx, tx, x.project, x.id, a.Revision)
+					if scheduleErr == nil {
+						changed = append(changed, a.OperationID)
+						continue
+					}
+					var refusal *core.Error
+					if !errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed" {
+						return scheduleErr
+					}
+				}
 			}
 			at, err := attemptRecordingStamp(ctx, tx, o, &a, now)
 			if err != nil {

@@ -36,6 +36,9 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 		value.NextAction = "retry_later_with_new_request"
 	}
 	hint := agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)
+	if value.Wait != nil {
+		hint = operationWaitDiagnostic(value.Wait)
+	}
 	if value.State == "held" && value.Reason == "parent_unavailable" {
 		hint = parentUnavailableDiagnostic(value.SourceRefusal)
 	}
@@ -70,6 +73,19 @@ type ReviewOperationOutput struct {
 
 func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 	hint := agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)
+	if hint != nil && value.Channel == "hosted" && value.State == "held" && value.Reason == "hosted_allowance_unproven" {
+		const laterRequest = "No review trigger was authorized by this terminal hold. If the planned review remains authorized, one later fresh request/key rechecks current source, configuration, rounds and provider allowance. Do not directly repost the old query, reset limits or assume permission."
+		if value.HostedQuery == nil {
+			hint = &ReviewOperationDiagnostic{hint.Explanation, "No original query handle is available in this response. " + laterRequest}
+		} else if value.HostedQuery.QueryURL != "" {
+			hint = &ReviewOperationDiagnostic{hint.Explanation, "Open hosted_query.query_url to inspect this operation's original non-review query and adjacent provider reply. hosted_query records original retained handles, not current availability. Preserve the original request/key; do not reset limits or repost the query."}
+		} else {
+			hint = &ReviewOperationDiagnostic{hint.Explanation, "The original non-review query intent is retained but its posting was not confirmed. " + laterRequest}
+		}
+	}
+	if value.Wait != nil {
+		hint = operationWaitDiagnostic(value.Wait)
+	}
 	if value.State == "held" && value.Reason == "parent_unavailable" {
 		hint = parentUnavailableDiagnostic(value.SourceRefusal)
 	}
@@ -161,7 +177,7 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 		}
 		return &ReviewOperationDiagnostic{"The original non-review rate-limit query was observed without an attributable reply during bounded preparation. No review trigger was posted. This hold is terminal: a late reply does not resume it.", "For the still-authorized planned review, use one later new review_request with a fresh idempotency key and current configuration/head. Normal preflight obtains fresh allowance and rechecks admission; no manual GitHub repair or extra round grant is required merely because preparation held. Respect any known provider cooldown and avoid rapid retries. An old available reply is not fresh permission. The original key replays this hold; do not repost its query or reset controls. An unknown action outcome must keep its original key instead."}
 	case "hosted_allowance_unproven":
-		return &ReviewOperationDiagnostic{"Hosted preparation could not establish included review availability from its retained query evidence. This is not proof of exhausted local review rounds or a started review.", "Inspect the original provider query/reply and report this operation and attempt to the controller maintainer if the cause remains unclear. Preserve the original request and key; do not reset round limits or blindly repost."}
+		return &ReviewOperationDiagnostic{"Hosted preparation could not establish included review availability from its retained query evidence. This is not proof of exhausted local review rounds or a started review.", "Read this same operation with diagnostics:true (CLI --diagnostics) for its original hosted_query link and retained source handles when available. Preserve the original request/key; do not reset limits or blindly repost."}
 	case "parent_moved":
 		explanation = "A checked PR's base and its direct parent branch differed. Older operations may report a selected PR or ancestor mismatch with this same reason; it does not identify the affected comparison."
 	case "predecessor_parent_moved":
@@ -254,4 +270,14 @@ func parentUnavailableDiagnostic(refusal *ReviewSourceRefusal) *ReviewOperationD
 		explanation = fmt.Sprintf("Preparation could not establish an open parent for PR #%d's base branch %q. These are the original lookup facts, not a current source observation.", refusal.PullNumber, refusal.BaseRef)
 	}
 	return &ReviewOperationDiagnostic{explanation, "Inspect that base branch in its owning workflow; align or retarget it if its former parent merged. After the source is qualified, use a fresh key and current guards for the still-authorized review. No round reset or extra grant is required. Out-of-order requests still check the target's own parent."}
+}
+
+func operationWaitDiagnostic(w *ReviewOperationWait) *ReviewOperationDiagnostic {
+	if w.Paused {
+		return &ReviewOperationDiagnostic{"This same operation is paused before provider dispatch. Its retry deadline and review intent are retained; no review is running.", "Continue other work, or explicitly resume/cancel this operation with its current revision and an idempotency key. This does not change project pause, allowances or taper."}
+	}
+	if w.RetryNotBefore != "" {
+		return &ReviewOperationDiagnostic{"The provider reported a cooldown. This same operation automatically rechecks admission and allowance at or after retry_not_before; the deadline is not a reserved start time or review completion.", "Continue other work and read this operation later. Do not submit a replacement request. Pause or cancel only this undispatched intent using review_operation_control (CLI reviews operation-control) if desired."}
+	}
+	return nil
 }

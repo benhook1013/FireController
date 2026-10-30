@@ -310,6 +310,7 @@ func TestPolicyAdmissionVersionTwoMigrationRetainsUnboundJournal(t *testing.T) {
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN policy_revision`)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
+	restorePreCooldownAttemptSchema(t, f)
 	admissionSQL(t, f, `UPDATE metadata SET value='2' WHERE key='schema:review_execution'`)
 	var sequence int
 	var name, path string

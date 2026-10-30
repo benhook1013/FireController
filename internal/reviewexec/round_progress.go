@@ -10,21 +10,22 @@ import (
 // RoundProgressChannel contains current native allowance facts only. Pending
 // counts operations bound to this epoch, not coverage or permission to dispatch.
 type RoundProgressChannel struct {
-	Channel             string `json:"channel"`
-	Configured          bool   `json:"configured"`
-	Revision            int64  `json:"revision"`
-	Epoch               int64  `json:"epoch"`
-	Closed              bool   `json:"closed"`
-	Minimum             int64  `json:"minimum"`
-	Maximum             int64  `json:"maximum"`
-	MaximumUnbounded    bool   `json:"maximum_unbounded,omitempty"`
-	Taper               int64  `json:"taper"`
-	Used                int64  `json:"used"`
-	Dry                 int64  `json:"dry"`
-	Tapered             bool   `json:"tapered"`
-	Pending             int64  `json:"pending"`
-	PendingExecution    *int64 `json:"pending_execution,omitempty"`
-	PendingAdjudication *int64 `json:"pending_adjudication,omitempty"`
+	Wait                *OperationWait `json:"wait,omitempty"`
+	Channel             string         `json:"channel"`
+	Configured          bool           `json:"configured"`
+	Revision            int64          `json:"revision"`
+	Epoch               int64          `json:"epoch"`
+	Closed              bool           `json:"closed"`
+	Minimum             int64          `json:"minimum"`
+	Maximum             int64          `json:"maximum"`
+	MaximumUnbounded    bool           `json:"maximum_unbounded,omitempty"`
+	Taper               int64          `json:"taper"`
+	Used                int64          `json:"used"`
+	Dry                 int64          `json:"dry"`
+	Tapered             bool           `json:"tapered"`
+	Pending             int64          `json:"pending"`
+	PendingExecution    *int64         `json:"pending_execution,omitempty"`
+	PendingAdjudication *int64         `json:"pending_adjudication,omitempty"`
 }
 
 type RoundProgressItem struct {
@@ -93,6 +94,10 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 				}
 				if stages {
 					progress.PendingExecution, progress.PendingAdjudication = &execution, &adjudication
+					progress.Wait, err = readChannelWait(ctx, tx, scope.ProjectID, number, channel)
+					if err != nil {
+						return err
+					}
 				}
 				item.Channels = append(item.Channels, progress)
 			}
@@ -105,4 +110,21 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 		return RoundProgress{}, err
 	}
 	return out, nil
+}
+
+// Project only a current queued intent, never infer a timer from a held run.
+func readChannelWait(ctx context.Context, tx *sql.Tx, project string, number int64, channel string) (*OperationWait, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, `SELECT o.id FROM review_operations o JOIN review_operation_waits w ON w.operation_id=o.id WHERE o.project_id=? AND o.pull_number=? AND o.channel=? AND o.state='queued' AND o.attempt_id='' ORDER BY o.created_at,o.id LIMIT 1`, project, number, channel).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	o, err := readOperationBase(ctx, tx, project, id)
+	if err != nil {
+		return nil, err
+	}
+	return currentOperationWait(o), nil
 }

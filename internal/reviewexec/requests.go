@@ -231,6 +231,9 @@ func readOperationBase(ctx context.Context, tx EvidenceQuery, project, id string
 	if errors.Is(err, sql.ErrNoRows) {
 		return o, core.Fail("not_found", "The review operation is unavailable in this project.", 404)
 	}
+	if err == nil {
+		o.Wait, err = readOperationWait(ctx, tx, o)
+	}
 	return o, err
 }
 
@@ -248,7 +251,7 @@ func operationFlagColumns(ctx context.Context, q EvidenceQuery) (string, string,
 		return "0", "0", nil
 	case "7":
 		return order, "0", nil
-	case "8":
+	case "8", "9":
 		return order, limit, nil
 	default:
 		return "", "", adjudicationStorageError()
@@ -280,7 +283,11 @@ func (e *Engine) readOperationProjection(ctx context.Context, scope core.Scope, 
 				o.SourceRefusal = nil
 			}
 		}
+		if err == nil && len(sourceDetails) > 2 && sourceDetails[2] {
+			o.HostedQuery, err = readHostedQueryDiagnostic(ctx, tx, o)
+		}
 		return err
 	})
+	o.Wait = currentOperationWait(o)
 	return o, err
 }

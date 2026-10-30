@@ -79,28 +79,30 @@ type AllowanceObservation struct {
 }
 
 type Operation struct {
-	SourceRefusal         *SourceRefusal        `json:"source_refusal,omitempty"`
-	EvidenceID            string                `json:"evidence_id,omitempty"`
-	PendingEvidence       *PendingEvidence      `json:"pending_evidence,omitempty"`
-	Allowance             *AllowanceObservation `json:"allowance,omitempty"`
-	ID                    string                `json:"id"`
-	ProjectID             string                `json:"project_id"`
-	ActorID               string                `json:"actor_id"`
-	WorkerID              string                `json:"worker_id"`
-	ConfigurationRevision int64                 `json:"configuration_revision"`
-	PolicyRevision        int64                 `json:"policy_revision"`
-	CapabilityFingerprint string                `json:"capability_fingerprint"`
-	PullNumber            int64                 `json:"pull_number"`
-	Channel               string                `json:"channel"`
-	HeadSHA               string                `json:"head_sha"`
-	AllowOutOfOrder       bool                  `json:"allow_out_of_order,omitempty"`
-	OverrideFileLimit     bool                  `json:"override_file_limit,omitempty"`
-	State                 string                `json:"state"`
-	Revision              int64                 `json:"revision"`
-	Reason                string                `json:"reason"`
-	AttemptID             string                `json:"attempt_id"`
-	CreatedAt             string                `json:"created_at"`
-	UpdatedAt             string                `json:"updated_at"`
+	HostedQuery           *HostedQueryDiagnostic `json:"hosted_query,omitempty"`
+	Wait                  *OperationWait         `json:"wait,omitempty"`
+	SourceRefusal         *SourceRefusal         `json:"source_refusal,omitempty"`
+	EvidenceID            string                 `json:"evidence_id,omitempty"`
+	PendingEvidence       *PendingEvidence       `json:"pending_evidence,omitempty"`
+	Allowance             *AllowanceObservation  `json:"allowance,omitempty"`
+	ID                    string                 `json:"id"`
+	ProjectID             string                 `json:"project_id"`
+	ActorID               string                 `json:"actor_id"`
+	WorkerID              string                 `json:"worker_id"`
+	ConfigurationRevision int64                  `json:"configuration_revision"`
+	PolicyRevision        int64                  `json:"policy_revision"`
+	CapabilityFingerprint string                 `json:"capability_fingerprint"`
+	PullNumber            int64                  `json:"pull_number"`
+	Channel               string                 `json:"channel"`
+	HeadSHA               string                 `json:"head_sha"`
+	AllowOutOfOrder       bool                   `json:"allow_out_of_order,omitempty"`
+	OverrideFileLimit     bool                   `json:"override_file_limit,omitempty"`
+	State                 string                 `json:"state"`
+	Revision              int64                  `json:"revision"`
+	Reason                string                 `json:"reason"`
+	AttemptID             string                 `json:"attempt_id"`
+	CreatedAt             string                 `json:"created_at"`
+	UpdatedAt             string                 `json:"updated_at"`
 }
 
 type Attempt struct {
@@ -117,6 +119,7 @@ type Attempt struct {
 }
 
 type Engine struct {
+	schedulingNow              func() time.Time
 	deploymentMu               sync.Mutex
 	deploymentDraining         bool
 	deploymentActive           int
@@ -157,6 +160,12 @@ type Engine struct {
 // EngineOption composes trusted application integrations before an engine is
 // exposed to handlers or supervised workers.
 type EngineOption func(*Engine)
+
+// WithExecutionClock selects the trusted scheduling clock. Journal/provider
+// timestamps and observation freshness retain their independent clocks.
+func WithExecutionClock(now func() time.Time) EngineOption {
+	return func(e *Engine) { e.schedulingNow = now }
+}
 
 // WithResultWaitLifetime binds only HTTP result waits to an application
 // lifecycle. It never cancels an accepted operation or its provider work.

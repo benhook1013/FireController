@@ -1,10 +1,12 @@
 import { sessionExpiry } from './browser-session';
+import { validOperationWait, type ReviewOperationWait } from './review-operation-wait';
 
 export interface ReviewRoundProgress {
   channel: 'hosted' | 'cli'; configured: boolean; revision: number; epoch: number;
   closed: boolean; minimum: number; maximum: number; maximum_unbounded?: boolean; taper: number;
   used: number; dry: number; tapered: boolean; pending: number;
   pending_execution?: number; pending_adjudication?: number;
+  wait?: ReviewOperationWait;
 }
 export interface ReviewProgressItem { pull_number: number; channels: ReviewRoundProgress[] }
 export interface ReviewProgress { project_id: string; evaluated_at: string; items: ReviewProgressItem[] }
@@ -17,7 +19,8 @@ function object(value: unknown): value is Record<string, unknown> { return !!val
 function fields(value: Record<string, unknown>, keys: string[]) { return Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key)); }
 function natural(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 0; }
 export function validRoundProgress(value: unknown, channel: string): value is ReviewRoundProgress {
-  if (!object(value) || !fields(value, ['channel','configured','revision','epoch','closed','minimum','maximum','taper','used','dry','tapered','pending', ...(Object.hasOwn(value, 'maximum_unbounded') ? ['maximum_unbounded'] : []), ...(Object.hasOwn(value, 'pending_execution') || Object.hasOwn(value, 'pending_adjudication') ? ['pending_execution', 'pending_adjudication'] : [])]) || (Object.hasOwn(value, 'maximum_unbounded') && typeof value.maximum_unbounded !== 'boolean') || value.channel !== channel || typeof value.configured !== 'boolean' || typeof value.closed !== 'boolean' || typeof value.tapered !== 'boolean') return false;
+  if (!object(value) || !fields(value, ['channel','configured','revision','epoch','closed','minimum','maximum','taper','used','dry','tapered','pending', ...(Object.hasOwn(value, 'maximum_unbounded') ? ['maximum_unbounded'] : []), ...(Object.hasOwn(value, 'pending_execution') || Object.hasOwn(value, 'pending_adjudication') ? ['pending_execution', 'pending_adjudication'] : []), ...(Object.hasOwn(value, 'wait') ? ['wait'] : [])]) || (Object.hasOwn(value, 'maximum_unbounded') && typeof value.maximum_unbounded !== 'boolean') || value.channel !== channel || typeof value.configured !== 'boolean' || typeof value.closed !== 'boolean' || typeof value.tapered !== 'boolean') return false;
+  if (Object.hasOwn(value, 'wait') && !validOperationWait(value.wait, channel)) return false;
   const numbers = ['revision','epoch','minimum','maximum','taper','used','dry','pending'] as const;
   if (!numbers.every(key => natural(value[key]))) return false;
   if (Object.hasOwn(value, 'pending_execution') && (!natural(value.pending_execution) || !natural(value.pending_adjudication) || value.pending_execution > Number(value.pending) || value.pending_adjudication > Number(value.pending) || value.pending_execution + value.pending_adjudication !== value.pending)) return false;

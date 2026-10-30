@@ -66,6 +66,7 @@ func TestFileLimitOverrideReplayRestartAndPredecessorUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
+	restorePreCooldownAttemptSchema(t, f)
 	admissionSQL(t, f, `UPDATE metadata SET value='7' WHERE key='schema:review_execution'`)
 	old, err := readOperation(t.Context(), f.store.DB(), attemptProject, r.ID)
 	if err != nil || old.OverrideFileLimit {

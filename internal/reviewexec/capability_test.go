@@ -231,6 +231,7 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 	if _, err := f.store.DB().Exec(`ALTER TABLE review_operations DROP COLUMN capability_fingerprint`); err != nil {
 		t.Fatal(err)
 	}
+	restorePreCooldownAttemptSchema(t, f)
 	if _, err := f.store.DB().Exec(`UPDATE metadata SET value='1' WHERE key='schema:review_execution'`); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +260,7 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 	}
 	bindEngine(t, f, bindingCapability())
 	var version, title, brief, worker string
-	if err := reopened.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "8" {
+	if err := reopened.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "9" {
 		t.Fatal("migration did not advance only the domain version", err)
 	}
 	if err := reopened.DB().QueryRow(`SELECT title,brief,worker_id FROM jobs WHERE id='retained-job'`).Scan(&title, &brief, &worker); err != nil || title != "Retained title" || brief != "Retained exact brief" || worker != "retained-worker" {

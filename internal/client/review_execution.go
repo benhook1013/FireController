@@ -57,7 +57,9 @@ func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
 }
 
 type ReviewOperation struct {
-	SourceRefusal         *ReviewSourceRefusal `json:"source_refusal,omitempty"`
+	HostedQuery           *ReviewHostedQueryDiagnostic `json:"hosted_query,omitempty"`
+	Wait                  *ReviewOperationWait         `json:"wait,omitempty"`
+	SourceRefusal         *ReviewSourceRefusal         `json:"source_refusal,omitempty"`
 	deploymentDraining    bool
 	EvidenceID            string                      `json:"evidence_id,omitempty"`
 	PendingEvidence       *ReviewPendingEvidence      `json:"pending_evidence,omitempty"`
@@ -190,7 +192,7 @@ func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRe
 		result.Receipt = &ReviewRequestReceipt{}
 		return decodeReviewResponse(data, result.Receipt)
 	}
-	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "requests"), nil, true, key, body, http.StatusAccepted, true, &result, 4<<20, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, deploymentDraining: &draining}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "requests"), nil, true, key, body, http.StatusAccepted, true, &result, 4<<20, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, deploymentDraining: &draining}); err != nil {
 		return ReviewRequestResult{}, err
 	}
 	valid := false
@@ -221,7 +223,7 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 	}
 	var value ReviewOperation
 	var status int
-	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, deploymentDraining: &value.deploymentDraining}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, hostedQuery: true, deploymentDraining: &value.deploymentDraining}); err != nil {
 		return ReviewOperation{}, err
 	}
 	if value.ID != id || !c.validReviewOperation(value) {
@@ -231,11 +233,14 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 }
 
 func (c *Client) validReviewOperation(value ReviewOperation) bool {
+	if !validReviewHostedQuery(value.HostedQuery, value) {
+		return false
+	}
 	if !validReviewSourceRefusal(value.SourceRefusal, value.State, value.Reason, value.PullNumber) {
 		return false
 	}
 	if value.EvidenceID != "" && (value.AttemptID == "" || !validReviewOpaqueID(value.EvidenceID, "review_evidence_")) {
 		return false
 	}
-	return ValidateReviewOperationID(value.ID) == nil && value.ProjectID == c.identity.ProjectID && validExecutionIdentifier(value.ProjectID) && validExecutionIdentifier(value.ActorID) && (value.WorkerID == "" || validExecutionIdentifier(value.WorkerID)) && value.ConfigurationRevision >= 1 && value.PolicyRevision >= 0 && (value.CapabilityFingerprint == "" || controlHex(value.CapabilityFingerprint, 64)) && validPullNumber(value.PullNumber) && oneReviewOf(value.Channel, "cli", "hosted") && controlHex(value.HeadSHA, 40) && oneReviewOf(value.State, "queued", "preparing", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "held") && value.Revision >= 1 && (value.Reason == "" || validExecutionIdentifier(value.Reason)) && (value.AttemptID == "" || validReviewOpaqueID(value.AttemptID, "review_attempt_")) && controlTime(value.CreatedAt) && controlTime(value.UpdatedAt) && validReviewAllowance(value) && validReviewPendingEvidence(value.PendingEvidence, value.State, value.Reason)
+	return ValidateReviewOperationID(value.ID) == nil && value.ProjectID == c.identity.ProjectID && validExecutionIdentifier(value.ProjectID) && validExecutionIdentifier(value.ActorID) && (value.WorkerID == "" || validExecutionIdentifier(value.WorkerID)) && value.ConfigurationRevision >= 1 && value.PolicyRevision >= 0 && (value.CapabilityFingerprint == "" || controlHex(value.CapabilityFingerprint, 64)) && validPullNumber(value.PullNumber) && oneReviewOf(value.Channel, "cli", "hosted") && controlHex(value.HeadSHA, 40) && oneReviewOf(value.State, "queued", "preparing", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "held") && value.Revision >= 1 && (value.Reason == "" || validExecutionIdentifier(value.Reason)) && (value.AttemptID == "" || validReviewOpaqueID(value.AttemptID, "review_attempt_")) && controlTime(value.CreatedAt) && controlTime(value.UpdatedAt) && validReviewOperationWait(value.Wait, value.Channel, value.State, value.AttemptID) && validReviewAllowance(value) && validReviewPendingEvidence(value.PendingEvidence, value.State, value.Reason)
 }

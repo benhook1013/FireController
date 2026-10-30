@@ -131,6 +131,7 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	for _, capability := range e.capabilities {
 		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint)
 	}
+	args = append(args, e.sampleExecutionTime().UTC().Format(time.RFC3339Nano))
 	// Only matching retained bindings can be skipped as busy. Missing/changed
 	// capabilities remain candidates for StartAttempt's normal hold handling.
 	query := `WITH installed(id,provider,account,fingerprint) AS (VALUES (NULL,NULL,NULL,NULL)` + strings.Repeat(`,(?,?,?,?)`, len(e.capabilities)) + `)
@@ -139,6 +140,8 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	JOIN projects p ON p.id=o.project_id
 	LEFT JOIN installed i ON i.id=CASE WHEN json_valid(c.body_json) THEN json_extract(c.body_json,'$.capability_id') END AND i.fingerprint=o.capability_fingerprint
 	WHERE o.state='queued'
+AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND (w.paused=1 OR (w.retry_not_before<>'' AND julianday(w.retry_not_before)>julianday(?))))
+AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel)
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)
 	ORDER BY o.created_at,o.id LIMIT 256`
@@ -247,6 +250,16 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if err != nil {
 			state := "held"
 			reason := preparationReason(err)
+			if ctx.Err() == nil && o.Channel == "hosted" && reason == "hosted_allowance_cooldown" {
+				_, scheduleErr := e.ScheduleHostedCooldown(ctx, a.ProjectID, a.ID, a.Revision)
+				if scheduleErr == nil {
+					return nil
+				}
+				var refusal *core.Error
+				if !errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed" {
+					return persistenceFailure()
+				}
+			}
 			if ctx.Err() != nil {
 				state = "cancelled"
 				reason = "supervisor_stopping"

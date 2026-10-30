@@ -43,6 +43,7 @@ func roundProgressNumbers(r *http.Request) ([]int64, error) {
 }
 
 func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", operationWaitHeader)
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -57,6 +58,13 @@ func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		core.WriteError(w, err)
 		return
+	}
+	if r.Header.Get(operationWaitHeader) != "1" {
+		for i := range progress.Items {
+			for j := range progress.Items[i].Channels {
+				progress.Items[i].Channels[j].Wait = nil
+			}
+		}
 	}
 	core.WriteJSON(w, http.StatusOK, progress)
 }

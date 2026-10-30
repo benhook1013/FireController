@@ -25,6 +25,7 @@ describe('current round progress', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(String(fetch.mock.calls[0][0])).toContain('/reviews/rounds/progress?pull_numbers=31');
     expect(fetch.mock.calls[0][1]?.method ?? 'GET').toBe('GET');
+    expect(new Headers(fetch.mock.calls[0][1]?.headers).get('X-FC-Operation-Wait')).toBe('1');
   });
   it('refuses invalid selectors before any network request', async () => {
     const api = await connected(); const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);

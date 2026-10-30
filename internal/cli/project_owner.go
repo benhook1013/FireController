@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/client"
@@ -21,17 +22,21 @@ type ownerManagementInvocation struct {
 	worker                                   client.CreateWorkerRequest
 	grant                                    client.GrantProjectCredentialRequest
 	update                                   client.UpdateProjectCredentialRequest
+	control                                  client.ReviewOperationControl
 }
 
 func ownerManagementOperation(operation string) bool {
 	switch operation {
-	case "reviews policy", "reviews policy-configure", "reviews execution-configure", "reviews attempt-settle", "workers create", "credentials grant", "credentials revoke", "credentials update":
+	case "reviews operation-control", "reviews policy", "reviews policy-configure", "reviews execution-configure", "reviews attempt-settle", "workers create", "credentials grant", "credentials revoke", "credentials update":
 		return true
 	}
 	return false
 }
 func parseOwnerManagement(operation string, args []string) (*ownerManagementInvocation, bool) {
 	in := &ownerManagementInvocation{operation: operation}
+	if operation == "reviews operation-control" {
+		return parseOperationControl(in, args)
+	}
 	if operation == "reviews policy" {
 		return in, len(args) == 0
 	}
@@ -187,6 +192,8 @@ func executeOwnerManagement(ctx, parent context.Context, c *client.Client, in *o
 	var v any
 	var err error
 	switch in.operation {
+	case "reviews operation-control":
+		v, err = c.ControlReviewOperation(ctx, in.key, in.id, in.control)
 	case "reviews policy":
 		v, err = c.ReviewPolicy(ctx)
 	case "reviews policy-configure":
@@ -223,4 +230,20 @@ func executeOwnerManagement(ctx, parent context.Context, c *client.Client, in *o
 		return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The management receipt could not be written.", Action: "Retain the original exact arguments, selected project and idempotency key for recovery.", OutcomeUnknown: true})
 	}
 	return ExitSuccess
+}
+
+func parseOperationControl(in *ownerManagementInvocation, args []string) (*ownerManagementInvocation, bool) {
+	if len(args) < 1 {
+		return nil, false
+	}
+	in.id = args[0]
+	values, ok := reviewSourceFlags(args[1:], "--action", "--expect-revision", "--key")
+	if !ok {
+		return nil, false
+	}
+	in.key = values["--key"]
+	in.control.Action = values["--action"]
+	n, err := strconv.ParseInt(values["--expect-revision"], 10, 64)
+	in.control.ExpectedRevision = n
+	return in, err == nil && strconv.FormatInt(n, 10) == values["--expect-revision"] && validMutationKey(in.key) && client.ValidateReviewOperationControl(in.id, in.control) == nil
 }

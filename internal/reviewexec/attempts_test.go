@@ -290,7 +290,11 @@ func TestAttemptStartHoldsChangedConfigurationOrAuthorization(t *testing.T) {
 			}
 			var state, reason string
 			var revision int
-			if err := f.store.DB().QueryRow(`SELECT state,reason,revision FROM review_operations WHERE id=?`, receipt.ID).Scan(&state, &reason, &revision); err != nil || state != "held" || reason != wantReason || revision != 2 {
+			wantState, wantRevision := "held", 2
+			if change == "paused" {
+				wantState, wantReason, wantRevision = "queued", "", 1
+			}
+			if err := f.store.DB().QueryRow(`SELECT state,reason,revision FROM review_operations WHERE id=?`, receipt.ID).Scan(&state, &reason, &revision); err != nil || state != wantState || reason != wantReason || revision != wantRevision {
 				t.Fatalf("held projection %s %s %d: %v", state, reason, revision, err)
 			}
 			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`)+attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
