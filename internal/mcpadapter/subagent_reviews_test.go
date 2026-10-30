@@ -57,6 +57,26 @@ func TestSubagentMCPDiscoveryAndInvalidBeforeCredentials(t *testing.T) {
 		if !strings.Contains(string(data), `"additionalProperties":false`) {
 			t.Fatal("open schema", tool.Name)
 		}
+		if tool.Name == "review_subagent_record" {
+			var schema struct {
+				Properties map[string]struct {
+					MaxLength   int    `json:"maxLength"`
+					Description string `json:"description"`
+				} `json:"properties"`
+			}
+			if json.Unmarshal(data, &schema) != nil {
+				t.Fatal("invalid record schema")
+			}
+			for _, field := range []string{"reviewer", "scope"} {
+				v := schema.Properties[field]
+				if v.MaxLength != 128 || !strings.Contains(v.Description, "128 UTF-8 bytes") {
+					t.Fatal("record discovery omitted label byte bound", field, v)
+				}
+			}
+			if !strings.Contains(schema.Properties["scope"].Description, "coverage_limits") || !strings.Contains(tool.Description, "128 UTF-8 bytes") {
+				t.Fatal("record discovery omitted short-scope guidance")
+			}
+		}
 	}
 	if found != 3 {
 		t.Fatal("subagent discovery incomplete", found)
@@ -194,5 +214,49 @@ func TestSubagentMCPActualWorkerRecordReplayDecisionsAndFix(t *testing.T) {
 	}
 	if f.providers.Load() != 1 || writes.Load() != 8 {
 		t.Fatal("unexpected provider work or automatic HTTP retry", f.providers.Load(), writes.Load())
+	}
+}
+
+func TestSubagentMCPLabelByteBoundsAndDiagnostics(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer server.Close()
+	identity := localContext()
+	identity.ServerURL = server.URL
+	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"subagent": identity}, "missing-private-token"), "subagent")
+	for _, field := range []string{"reviewer", "scope"} {
+		for _, tc := range []struct {
+			name, value string
+			valid       bool
+		}{
+			{"ASCII boundary", strings.Repeat("x", 128), true},
+			{"UTF8 boundary", strings.Repeat("é", 64), true},
+			{"mixed UTF8 boundary", strings.Repeat("雪", 42) + "é", true},
+			{"ASCII over", strings.Repeat("x", 129), false},
+			{"UTF8 over", strings.Repeat("雪", 43), false},
+			{"mixed UTF8 over", strings.Repeat("é", 64) + "x", false},
+		} {
+			t.Run(field+"/"+tc.name, func(t *testing.T) {
+				args := subagentMCPRecord()
+				args[field] = tc.value
+				result := call(t, session, "review_subagent_record", args)
+				if tc.valid {
+					// Reaching credential admission proves the exact 128-byte label
+					// passed parsing; no service or retained write is needed.
+					diagnosticResult(t, result, "credential_unreadable", false)
+					return
+				}
+				d := diagnosticResult(t, result, "invalid_arguments", false)
+				if !strings.Contains(d.Message, field) || !strings.Contains(d.Action, "128") || !strings.Contains(d.Action, "bytes") || !strings.Contains(d.Action, "No request was sent") || strings.Contains(d.Message, tc.value) || strings.Contains(d.Action, tc.value) || strings.Contains(d.Action, "binding") {
+					t.Fatal("label validation lost its safe field-specific byte diagnostic", d)
+				}
+				if field == "scope" && !strings.Contains(d.Action, "coverage_limits") {
+					t.Fatal("scope diagnostic omitted the supported longer-text field", d)
+				}
+			})
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatal("label validation contacted HTTP", requests.Load())
 	}
 }

@@ -122,3 +122,60 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestRetainHostedBotRefreshPendingThenOriginalCompletesOnce(t *testing.T) {
+	var old reviewprovider.IssueComment
+	f, complete := runtimeStandingFixture(t, func(b *HostedCaptureRecord) {
+		old = reviewprovider.IssueComment{ID: 9001, Author: reviewprovider.Author{ID: 9002, Login: "synthetic-status[bot]", Kind: "Bot"}, CreatedAt: b.StartedAt.Add(-time.Hour), UpdatedAt: b.StartedAt.Add(-time.Minute), Body: "Build pending."}
+		b.Snapshot.IssueComments = append(b.Snapshot.IssueComments, old)
+	}, nil)
+	for i := range complete.Snapshot.IssueComments {
+		c := &complete.Snapshot.IssueComments[i]
+		c.UpdatedAt = c.UpdatedAt.Add(2 * time.Second)
+		if i != 1 {
+			c.CreatedAt = c.CreatedAt.Add(2 * time.Second)
+		}
+	}
+	complete.Snapshot.ObservedAt = complete.Snapshot.ObservedAt.Add(2 * time.Second)
+	complete.FinishedAt = complete.Snapshot.ObservedAt
+	current := old
+	current.Body = "Build passed."
+	current.UpdatedAt = complete.Snapshot.IssueComments[0].CreatedAt.Add(time.Second)
+	complete.Snapshot.IssueComments = append(complete.Snapshot.IssueComments, current)
+	pending := complete
+	pending.Snapshot.IssueComments = []reviewprovider.IssueComment{complete.Snapshot.IssueComments[0], current}
+	pending.Snapshot.ObservedAt = complete.Snapshot.ObservedAt.Add(-time.Second)
+	pending.FinishedAt = pending.Snapshot.ObservedAt
+	before := cliAttemptState(t, f.f.store, f.a.ID)
+	first, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, pending)
+	if err != nil || first.Complete || first.Reason != "publication_not_proven" || cliAttemptState(t, f.f.store, f.a.ID) != before || cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, f.a.ID) != 0 {
+		t.Fatal("qualified pending report looked permanently closed or gained credit", first, err)
+	}
+	journal, _ := f.f.engine.ReadHostedObservations(t.Context(), f.f.project, f.a.ID)
+	again, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, pending)
+	after, readErr := f.f.engine.ReadHostedObservations(t.Context(), f.f.project, f.a.ID)
+	if err != nil || readErr != nil || again != first || !reflect.DeepEqual(journal, after) {
+		t.Fatal("pending replay changed original observation", err, readErr)
+	}
+	result, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, complete)
+	if err != nil || !result.Complete {
+		t.Fatal("later original result did not complete", result, err)
+	}
+	replay, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, complete)
+	if err != nil || result != replay || cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, f.a.ID) != 1 {
+		t.Fatal("original result counted more than once", err)
+	}
+	f.a, err = f.f.engine.Advance(t.Context(), f.f.project, f.a.ID, f.a.Revision, "completed", "synthetic_complete", f.a.ExternalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := int64(0)
+	receipt, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-pending-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-pending-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
+	if err != nil || !reflect.DeepEqual(receipt, repeated) {
+		t.Fatal("finalization counted twice", err)
+	}
+}

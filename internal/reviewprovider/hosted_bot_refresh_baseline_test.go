@@ -221,3 +221,45 @@ func TestHostedBaselineNewBotReportPreservesOriginalReview(t *testing.T) {
 		}
 	}
 }
+
+func TestHostedBaselineBotRefreshPreservesPendingAttribution(t *testing.T) {
+	for _, mode := range []string{"pending", "missing_batch", "missing_baseline", "human", "changed_identity", "hidden_command", "later_command"} {
+		t.Run(mode, func(t *testing.T) {
+			f := batchedFiveBotFixture(t)
+			if mode == "missing_batch" {
+				f.snapshot.Reviews = f.snapshot.Reviews[:1]
+				f.snapshot.ReviewComments = f.snapshot.ReviewComments[:3]
+			} else {
+				f.snapshot.Reviews = []HostedReview{}
+				f.snapshot.ReviewComments = []ReviewComment{}
+			}
+			s, baseline := botRefreshFixture(f.snapshot)
+			switch mode {
+			case "missing_baseline":
+				baseline.IssueComments = []IssueComment{}
+			case "human":
+				s.IssueComments[len(s.IssueComments)-1].Author.Kind = "User"
+				baseline.IssueComments[0].Author.Kind = "User"
+			case "changed_identity":
+				s.IssueComments[len(s.IssueComments)-1].Author.ID++
+			case "hidden_command":
+				s.IssueComments[len(s.IssueComments)-1].Body += "<!-- coderabbit -->"
+			case "later_command":
+				at := s.IssueComments[0].CreatedAt.Add(time.Millisecond)
+				s.IssueComments = append(s.IssueComments, IssueComment{ID: 991, Author: f.poster, CreatedAt: at, UpdatedAt: at, Body: "@coderabbitai full review"})
+			}
+			before := append([]IssueComment(nil), s.IssueComments...)
+			got, err := ExtractHostedFindingsWithBaseline(s, baseline, f.intent, f.poster, f.bot, f.earliest)
+			want := "attribution_window_closed"
+			if mode == "pending" {
+				want = "publication_not_proven"
+			}
+			if mode == "missing_batch" {
+				want = "missing_publication_batches"
+			}
+			if err != nil || got.Complete || got.Reason != want || !reflect.DeepEqual(before, s.IssueComments) {
+				t.Fatal("pending attribution changed authority or raw source", got.Reason, got.Complete, err)
+			}
+		})
+	}
+}

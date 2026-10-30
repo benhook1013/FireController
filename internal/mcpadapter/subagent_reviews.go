@@ -3,6 +3,7 @@ package mcpadapter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math"
 
 	"github.com/benhook1013/FireController/internal/client"
@@ -57,6 +58,12 @@ func subagentArguments(name string, data json.RawMessage) (arguments, error) {
 		args.subagentUpdate, err = client.DecodeSubagentUpdateDocument(document)
 	}
 	if err != nil {
+		var field *client.Error
+		if name == "review_subagent_record" && errors.As(err, &field) && field.Code == "validation_failed" {
+			// The canonical document validator owns these field names and
+			// requirements; it never includes private request values.
+			return arguments{}, diagnostic("invalid_arguments", field.Message, field.Action+" No request was sent.")
+		}
 		return arguments{}, invalidArguments()
 	}
 	return args, nil
@@ -82,8 +89,12 @@ func subagentDefinitions() []definition {
 		return map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": item}
 	}
 	stamp := map[string]any{"type": "string", "format": "date-time", "maxLength": 128}
+	reviewer := text(128)
+	reviewer["description"] = "Nonblank reviewer label, at most 128 UTF-8 bytes, not characters."
+	scope := text(128)
+	scope["description"] = "Short nonblank comparison label, at most 128 UTF-8 bytes, not characters. Put longer descriptions and limitations in coverage_limits."
 	return []definition{
-		{"review_subagent_record", "Record one actual completed subagent review under this worker's project, retaining reviewed head, scope, times and finding text. Counts/identities are derived. Optional finalized requires explicit decisions; zero findings is valid. Ordinary writer access, one compact receipt, no provider work or CodeRabbit round credit.", object(map[string]any{"idempotency_key": key, "pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}, "head_sha": sha, "reviewer": text(128), "scope": text(128), "started_at": stamp, "finished_at": stamp, "coverage_limits": map[string]any{"type": "array", "maxItems": 16, "items": text(1024)}, "findings": map[string]any{"type": "array", "maxItems": 100, "items": finding}, "finalized": map[string]any{"type": "boolean"}}, "idempotency_key", "pull_number", "head_sha", "reviewer", "scope", "started_at", "finished_at", "findings")},
+		{"review_subagent_record", "Record one actual completed subagent review under this worker's project, retaining reviewed head, scope, times and finding text. Reviewer and scope are nonblank labels of at most 128 UTF-8 bytes each; longer limitations belong in coverage_limits. Counts/identities are derived. Optional finalized requires explicit decisions; zero findings is valid. Ordinary writer access, one compact receipt, no provider work or CodeRabbit round credit.", object(map[string]any{"idempotency_key": key, "pull_number": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}, "head_sha": sha, "reviewer": reviewer, "scope": scope, "started_at": stamp, "finished_at": stamp, "coverage_limits": map[string]any{"type": "array", "maxItems": 16, "items": text(1024)}, "findings": map[string]any{"type": "array", "maxItems": 100, "items": finding}, "finalized": map[string]any{"type": "boolean"}}, "idempotency_key", "pull_number", "head_sha", "reviewer", "scope", "started_at", "finished_at", "findings")},
 		{"review_subagent_read", "Read one recorded subagent review, its stable run revision, zero-based finding indexes, current decisions and fix proof. Explicit detail read up to 4 MiB; no provider work or state change.", object(map[string]any{"run_id": id}, "run_id")},
 		{"review_subagent_update", "Atomically update explicitly selected subagent finding decisions/fixes and optionally finalize with the current stable run revision and one key. Each reason/proof is explicit; omitted findings stay unchanged and finalized source counts remain frozen. No provider work, extra review, allowance change or automatic retry.", object(map[string]any{"run_id": id, "idempotency_key": key, "expected_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}, "decisions": array(decisions), "fixes": array(fixes), "finalize": map[string]any{"type": "boolean"}}, "run_id", "idempotency_key", "expected_revision")},
 	}

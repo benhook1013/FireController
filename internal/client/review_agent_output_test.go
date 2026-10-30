@@ -210,7 +210,7 @@ func TestAgentHostedTriggerDiagnosticsDistinguishDeliveryFromExecution(t *testin
 							t.Fatal("trigger confirmation overstated provider progress", co)
 						}
 					}
-					for _, phrase := range []string{"existing observer", "bounded status wait", "without reposting", "no provider-start time", "exact next-observation deadline", "stage and evidence_id", "do not request another review"} {
+					for _, phrase := range []string{"existing observer", "bounded status wait", "without reposting", "observer.last_check_at", "observer.last_source_at", "observer.next_check_at", "not an exact deadline", "stage and evidence_id", "do not request another review"} {
 						if !strings.Contains(co.Diagnostic.NextAction, phrase) {
 							t.Fatal("missing safe next action or unknown timing", co)
 						}

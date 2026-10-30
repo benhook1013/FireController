@@ -75,6 +75,11 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 		if botErr == nil && (botOnly.Complete || botOnly.Publication.State == "rate_limited") {
 			return botOnly, nil
 		}
+		// A qualified report refresh must not falsely close a still-pending
+		// trigger. This changes diagnostics only; no inventory is credited.
+		if botErr == nil && original.Reason == "attribution_window_closed" && botOnly.Publication.State == "active" && (botOnly.Reason == "publication_not_proven" || botOnly.Reason == "missing_publication_batches") {
+			return botOnly, nil
+		}
 		// Keep an attributable finished reply visible even when its inventory
 		// remains unsupported. A proven unrelated bot edit must not mask that
 		// actionable capture refusal as an ordinary provider wait.
