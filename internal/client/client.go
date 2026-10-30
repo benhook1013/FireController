@@ -85,6 +85,10 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 			copy := *failure
 			copy.Message = "Service identity verification failed; the requested operation was not sent. " + failure.Message
 			copy.Action = "Resolve the identity-check error, then retry the original operation. For writes, retain the exact request, idempotency key and binding. This attempt sent no write; an earlier uncertain attempt may still need same-key recovery."
+			if transientIdentityFailure(failure) {
+				copy.Message = "The service is temporarily unavailable; this attempt did not send the selected operation."
+				copy.Action = "Retry the selected operation when the service is available, retaining its original request, idempotency key and binding. For any earlier uncertain write, recover that write using its exact same request body, idempotency key and binding; this failed read does not establish its outcome."
+			}
 			err = &copy
 		}
 		return nil, err
@@ -97,27 +101,48 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 }
 
 // Only this bootstrap GET may be repeated. The selected operation has not been
-// dispatched, and both attempts retain the same credential and instance pin.
+// dispatched; every attempt retains the same credential and instance pin.
 func (c *Client) verifyInstance(ctx context.Context, instance any) error {
+	return c.verifyInstanceWithWait(ctx, instance, waitIdentityRetry)
+}
+
+// The private wait seam keeps bounded retry/cancellation tests deterministic.
+func (c *Client) verifyInstanceWithWait(ctx context.Context, instance any, wait func(context.Context, time.Duration) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*requestTimeout)
 	defer cancel()
+	delay := 250 * time.Millisecond
 	for attempt := 0; ; attempt++ {
 		err := c.get(ctx, []string{"api", "v1", "instance"}, nil, false, instance)
 		var failure *Error
-		if err == nil || attempt != 0 || ctx.Err() != nil || !errors.As(err, &failure) {
+		if err == nil || attempt >= 6 || ctx.Err() != nil || !errors.As(err, &failure) || !transientIdentityFailure(failure) {
 			return err
 		}
-		transient := failure.Code == "connection_failed" || failure.Code == "deadline_exceeded" || failure.Status == 502 || failure.Status == 503 || failure.Status == 504
-		if !transient {
-			return err
+		if err := wait(ctx, delay); err != nil {
+			return contextError(err)
 		}
-		timer := time.NewTimer(250 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return contextError(ctx.Err())
-		case <-timer.C:
-		}
+		delay = min(delay*2, 2*time.Second)
+	}
+}
+
+func transientIdentityFailure(failure *Error) bool {
+	if failure.Status == 401 || failure.Status == 403 || failure.Status == 404 {
+		return false
+	}
+	switch failure.Code {
+	case "unauthorized", "forbidden", "not_found", "instance_mismatch", "invalid_response", "redirect_rejected":
+		return false
+	}
+	return failure.Code == "connection_failed" || failure.Code == "deadline_exceeded" || failure.Status == 502 || failure.Status == 503 || failure.Status == 504
+}
+
+func waitIdentityRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
