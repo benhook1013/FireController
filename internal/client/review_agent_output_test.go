@@ -165,12 +165,27 @@ func TestAgentAllowanceDiagnosticsKeepOriginalStatusAndDoNotAuthorizeRetry(t *te
 		if reason == "hosted_allowance_reply_pending" {
 			want.NextAction = "new_request_to_recheck_allowance"
 		}
-		if !reflect.DeepEqual(out.ReviewOperationStatus, want) || out.Diagnostic == nil || !reflect.DeepEqual(out.Diagnostic, AgentReviewOperation(full).Diagnostic) || !strings.Contains(strings.ToLower(out.Diagnostic.NextAction), "do not") {
+		fullOut := AgentReviewOperation(full)
+		if !reflect.DeepEqual(out.ReviewOperationStatus, want) || !reflect.DeepEqual(fullOut.ReviewOperation, full) || out.Diagnostic == nil || fullOut.Diagnostic == nil || !strings.Contains(strings.ToLower(out.Diagnostic.NextAction), "do not") || !strings.Contains(strings.ToLower(fullOut.Diagnostic.NextAction), "do not") {
 			t.Fatal("missing safe guidance or changed original operation", out)
 		}
-		v.State = "active"
-		if AgentReviewOperationStatus(v).Diagnostic != nil {
-			t.Fatal("held diagnosis invented for active work")
+		if reason == "hosted_allowance_reply_pending" && !reflect.DeepEqual(out.Diagnostic, fullOut.Diagnostic) {
+			t.Fatal("pending-reply guidance disagreed across views")
+		}
+		if reason == "hosted_allowance_unproven" {
+			if !strings.Contains(out.Diagnostic.NextAction, "diagnostics:true") || !strings.Contains(fullOut.Diagnostic.NextAction, "one later fresh request/key") || !strings.Contains(fullOut.Diagnostic.NextAction, "remains authorized") || !strings.Contains(fullOut.Diagnostic.NextAction, "rechecks current source, configuration, rounds and provider allowance") || strings.Contains(fullOut.Diagnostic.NextAction, "maintainer") {
+				t.Fatal("full terminal diagnostic omitted bounded recovery or compact discovery", out, fullOut)
+			}
+		}
+		for _, state := range []string{"queued", "preparing", "posting", "active", "uncertain"} {
+			v.State = state
+			for _, query := range []*ReviewHostedQueryDiagnostic{nil, {QueryID: "original_query"}, {QueryID: "original_query", QueryURL: "https://github.com/owner/repo/pull/2#issuecomment-123"}} {
+				full.State, full.HostedQuery = state, query
+				compact, diagnostic := AgentReviewOperationStatus(v), AgentReviewOperation(full)
+				if compact.Diagnostic != nil || diagnostic.Diagnostic != nil || !reflect.DeepEqual(compact.ReviewOperationStatus, v) || !reflect.DeepEqual(diagnostic.ReviewOperation, full) {
+					t.Fatal("running or unknown outcome gained terminal fresh-request guidance or changed original facts", state, compact, diagnostic)
+				}
+			}
 		}
 	}
 }

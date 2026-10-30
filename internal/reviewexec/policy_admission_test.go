@@ -114,8 +114,12 @@ func TestPolicyAdmissionStartHoldsWithoutPreparingOrDispatch(t *testing.T) {
 				t.Fatal(err)
 			}
 			operation, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), receipt.ID)
-			if err != nil || operation.State != "held" || operation.Reason != reason || operation.AttemptID != "" {
-				t.Fatal("policy did not durably hold request", operation, err)
+			wantState := "held"
+			if state == "paused" {
+				wantState, reason = "queued", ""
+			}
+			if err != nil || operation.State != wantState || operation.Reason != reason || operation.AttemptID != "" {
+				t.Fatal("admission did not preserve the expected request state", operation, err)
 			}
 			if driver.prepares.Load() != 0 || driver.calls.Load() != 0 {
 				t.Fatal("held request reached driver")
@@ -123,6 +127,19 @@ func TestPolicyAdmissionStartHoldsWithoutPreparingOrDispatch(t *testing.T) {
 			for _, table := range []string{"review_execution_attempts", "review_execution_reservations", "review_execution_transitions"} {
 				if attemptCount(t, f.store, "SELECT count(*) FROM "+table) != 0 {
 					t.Fatal("held request created attempt state", table)
+				}
+			}
+			if state == "paused" {
+				if operation.Revision != 1 {
+					t.Fatal("pause revised original intent", operation)
+				}
+				f.configure(t, attemptProject, "test-capability", 2, false)
+				if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
+					t.Fatal(err)
+				}
+				resumed, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), receipt.ID)
+				if err != nil || resumed.State != "completed" || resumed.ID != receipt.ID || resumed.ConfigurationRevision != 1 || driver.prepares.Load() != 1 || driver.calls.Load() != 1 {
+					t.Fatal("resume failed to dispatch original intent", resumed, err)
 				}
 			}
 		})

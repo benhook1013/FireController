@@ -270,7 +270,9 @@ func TestHostedDriverFinalGuardsPreventReviewPOST(t *testing.T) {
 				p.BaseSHA = strings.Repeat("9", 40)
 				f.provider.pulls[2] = p
 			case "configuration":
-				f.configure(t, "independent", []int64{2, 4})
+				// Suffix cleanup preserves the admitted target's configuration;
+				// changing dependency mode must still refuse final dispatch.
+				f.configure(t, "stacked", []int64{2, 4})
 			case "policy":
 				one := int64(1)
 				_, err := f.engine.ConfigurePolicy(t.Context(), f.scope(t, f.admin, true), "pause-hosted", reviewexec.PolicyConfiguration{ExpectedRevision: &one, RequiredChannels: []string{"hosted"}, MaxReviewFiles: 1})
