@@ -182,7 +182,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if terminal {
 			if r.Header.Get("X-FC-Operation-Evidence") == "true" || sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")) {
-				operation, err = e.readOperationProjection(r.Context(), scope, operation.ID, r.Header.Get("X-FC-Operation-Evidence") == "true", sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")), r.Header.Get("X-FC-Source-Refusal") == "v2")
+				operation, err = e.readOperationProjection(r.Context(), scope, operation.ID, r.Header.Get("X-FC-Operation-Evidence") == "true", sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")), r.Header.Get("X-FC-Source-Refusal") == "v2" || r.Header.Get("X-FC-Source-Refusal") == "v3")
 				if err != nil {
 					writeOperationWaitError(w, err)
 					return
@@ -197,6 +197,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get(operationWaitHeader) != "1" {
 				operation.Wait = nil
 			}
+			operation.SourceRefusal = sourceRefusalForResponse(operation.SourceRefusal, r.Header.Get("X-FC-Source-Refusal"))
 			core.WriteJSON(w, http.StatusOK, operation)
 			return
 		}
@@ -243,7 +244,7 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Header.Get("X-FC-Operation-Evidence") == "true" || sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")) || r.Header.Get(hostedQueryDiagnosticHeader) == "1" {
-		operation, err = e.readOperationProjection(r.Context(), scope, operationID, r.Header.Get("X-FC-Operation-Evidence") == "true", sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")), r.Header.Get("X-FC-Source-Refusal") == "v2", r.Header.Get(hostedQueryDiagnosticHeader) == "1")
+		operation, err = e.readOperationProjection(r.Context(), scope, operationID, r.Header.Get("X-FC-Operation-Evidence") == "true", sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")), r.Header.Get("X-FC-Source-Refusal") == "v2" || r.Header.Get("X-FC-Source-Refusal") == "v3", r.Header.Get(hostedQueryDiagnosticHeader) == "1")
 		if err != nil {
 			core.WriteError(w, err)
 			return
@@ -261,6 +262,7 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get(operationWaitHeader) != "1" {
 		operation.Wait = nil
 	}
+	operation.SourceRefusal = sourceRefusalForResponse(operation.SourceRefusal, r.Header.Get("X-FC-Source-Refusal"))
 	core.WriteJSON(w, http.StatusOK, operation)
 }
 

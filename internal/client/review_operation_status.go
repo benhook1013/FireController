@@ -43,7 +43,7 @@ func (c *Client) WaitReviewOperationStatus(ctx context.Context, id string, secon
 	}
 	var value ReviewOperationStatus
 	var status int
-	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: seconds, status: &status, reviewBlockers: true, sourceRefusalV2: true, operationWait: true, hostedObserver: true, deploymentDraining: &value.deploymentDraining}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: seconds, status: &status, reviewBlockers: true, sourceRefusalV3: true, operationWait: true, hostedObserver: true, deploymentDraining: &value.deploymentDraining}); err != nil {
 		return ReviewOperationStatus{}, err
 	}
 	if value.ID != id || !validCompactOperationStatus(value) {
@@ -75,6 +75,12 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 	if raw, present := fields["observer"]; present {
 		var observer ReviewHostedObserverStatus
 		if strictjson.Decode(raw, &observer) != nil {
+			return strictjson.ErrSyntax
+		}
+	}
+	if raw, present := fields["source_refusal"]; present {
+		var refusal ReviewSourceRefusal
+		if strictjson.Decode(raw, &refusal) != nil {
 			return strictjson.ErrSyntax
 		}
 	}

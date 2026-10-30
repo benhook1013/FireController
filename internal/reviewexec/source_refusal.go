@@ -23,6 +23,7 @@ type SourceRefusal struct {
 	ObservedBaseSHA   string `json:"observed_base_sha,omitempty"`
 	ExpectedParentSHA string `json:"expected_parent_sha,omitempty"`
 	BaseRef           string `json:"base_ref,omitempty"`
+	Cause             string `json:"cause,omitempty"`
 }
 
 func validSourceRefusal(v *SourceRefusal, state, reason string, selected int64) bool {
@@ -34,9 +35,11 @@ func validSourceRefusal(v *SourceRefusal, state, reason string, selected int64) 
 	}
 	switch reason {
 	case "predecessor_parent_moved":
-		return v.BaseRef == "" && v.PullNumber != selected && v.ParentPullNumber > 0 && v.ParentPullNumber <= math.MaxInt32 && v.ParentPullNumber != v.PullNumber && sha.MatchString(v.ObservedBaseSHA) && sha.MatchString(v.ExpectedParentSHA) && v.ObservedBaseSHA != v.ExpectedParentSHA
+		return v.Cause == "" && v.BaseRef == "" && v.PullNumber != selected && v.ParentPullNumber > 0 && v.ParentPullNumber <= math.MaxInt32 && v.ParentPullNumber != v.PullNumber && sha.MatchString(v.ObservedBaseSHA) && sha.MatchString(v.ExpectedParentSHA) && v.ObservedBaseSHA != v.ExpectedParentSHA
 	case "parent_unavailable":
-		return v.ParentPullNumber == 0 && v.ObservedBaseSHA == "" && v.ExpectedParentSHA == "" && validRefusalBranch(v.BaseRef) && len(sourceRefusalJSON(v)) <= 512
+		return v.Cause == "" && v.ParentPullNumber == 0 && v.ObservedBaseSHA == "" && v.ExpectedParentSHA == "" && validRefusalBranch(v.BaseRef) && len(sourceRefusalJSON(v)) <= 512
+	case "predecessor_unfinished":
+		return v.PullNumber != selected && v.ParentPullNumber == 0 && v.ObservedBaseSHA == "" && v.ExpectedParentSHA == "" && v.BaseRef == "" && (v.Cause == "not_in_queue" || v.Cause == "discovery_incomplete" || v.Cause == "incoming_route_pending")
 	}
 	return false
 }
@@ -44,7 +47,7 @@ func validRefusalBranch(value string) bool {
 	return value != "" && len(value) <= 4096 && utf8.ValidString(value) && strings.IndexFunc(value, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) < 0
 }
 func sourceRefusalReason(reason string) bool {
-	return reason == "predecessor_parent_moved" || reason == "parent_unavailable"
+	return reason == "predecessor_parent_moved" || reason == "parent_unavailable" || reason == "predecessor_unfinished"
 }
 
 func sourceRefusalFromError(err error, state, reason string, selected int64) *SourceRefusal {
@@ -62,7 +65,14 @@ func sourceRefusalFromError(err error, state, reason string, selected int64) *So
 	pull, e1 := strconv.ParseInt(d["pull_number"], 10, 64)
 	v := &SourceRefusal{PullNumber: pull}
 	var e2 error
-	if reason == "predecessor_parent_moved" {
+	if reason == "predecessor_unfinished" {
+		v.Cause = d["cause"]
+		if d["parent_pull_number"] != "" || d["observed_base_sha"] != "" || d["expected_parent_sha"] != "" || d["base_ref"] != "" || strconv.FormatInt(pull, 10) != d["pull_number"] {
+			return nil
+		}
+	} else if d["cause"] != "" {
+		return nil
+	} else if reason == "predecessor_parent_moved" {
 		if d["base_ref"] != "" {
 			return nil
 		}
@@ -88,7 +98,7 @@ func readSourceRefusal(ctx context.Context, tx *sql.Tx, o Operation) (*SourceRef
 	var version string
 	if err := tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_source_refusals'`).Scan(&version); errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
-	} else if err != nil || version != "1" && version != "2" {
+	} else if err != nil || version != "1" && version != "2" && version != "3" {
 		return nil, adjudicationStorageError()
 	}
 	var body string
@@ -100,7 +110,7 @@ func readSourceRefusal(ctx context.Context, tx *sql.Tx, o Operation) (*SourceRef
 		return nil, nil
 	}
 	var v *SourceRefusal
-	if len(body) > 512 || strictjson.Decode([]byte(body), &v) != nil || !validSourceRefusal(v, o.State, o.Reason, o.PullNumber) || version == "1" && v != nil && v.BaseRef != "" {
+	if len(body) > 512 || strictjson.Decode([]byte(body), &v) != nil || !validSourceRefusal(v, o.State, o.Reason, o.PullNumber) || v != nil && (version == "1" && v.BaseRef != "" || version != "3" && v.Cause != "") {
 		return nil, adjudicationStorageError()
 	}
 	return v, nil
@@ -117,7 +127,7 @@ func ValidateSourceRefusalsSnapshot(ctx context.Context, tx *sql.Tx) error {
 	if err := tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_source_refusals'`).Scan(&version); err != nil {
 		return err
 	}
-	if version != "1" && version != "2" {
+	if version != "1" && version != "2" && version != "3" {
 		return adjudicationStorageError()
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT t.source_refusal_json,t.state,t.reason,o.pull_number FROM review_execution_transitions t JOIN review_execution_attempts a ON a.id=t.attempt_id JOIN review_operations o ON o.id=a.operation_id AND o.project_id=a.project_id WHERE t.source_refusal_json<>'null'`)
@@ -132,11 +142,21 @@ func ValidateSourceRefusalsSnapshot(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 		var v *SourceRefusal
-		if len(body) > 512 || strictjson.Decode([]byte(body), &v) != nil || v == nil || !validSourceRefusal(v, state, reason, selected) || version == "1" && v.BaseRef != "" {
+		if len(body) > 512 || strictjson.Decode([]byte(body), &v) != nil || v == nil || !validSourceRefusal(v, state, reason, selected) || version == "1" && v.BaseRef != "" || version != "3" && v.Cause != "" {
 			return adjudicationStorageError()
 		}
 	}
 	return rows.Err()
 }
 
-func sourceRefusalRequested(value string) bool { return value == "true" || value == "v2" }
+func sourceRefusalRequested(value string) bool {
+	return value == "true" || value == "v2" || value == "v3"
+}
+
+// New variants are negotiated independently of the retained original facts.
+func sourceRefusalForResponse(v *SourceRefusal, header string) *SourceRefusal {
+	if v != nil && (v.Cause != "" && header != "v3" || v.BaseRef != "" && header != "v2" && header != "v3") {
+		return nil
+	}
+	return v
+}

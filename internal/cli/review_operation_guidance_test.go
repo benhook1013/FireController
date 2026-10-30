@@ -79,8 +79,8 @@ func TestReviewOperationHeldGuidanceCLICompactAndDiagnostics(t *testing.T) {
 				}
 				switch r.URL.Path {
 				case base + "/status":
-					if r.Header.Get("X-FC-Source-Refusal") != "v2" {
-						t.Error("compact read did not negotiate source-refusal v2")
+					if r.Header.Get("X-FC-Source-Refusal") != "v3" {
+						t.Error("compact read did not negotiate source-refusal v3")
 					}
 					compactReads.Add(1)
 					fields := map[string]any{}
@@ -89,8 +89,8 @@ func TestReviewOperationHeldGuidanceCLICompactAndDiagnostics(t *testing.T) {
 					fields["future_metadata"] = map[string]any{"private": "PRIVATE_IGNORED_METADATA"}
 					_ = json.NewEncoder(w).Encode(fields)
 				case base:
-					if r.Header.Get("X-FC-Source-Refusal") != "v2" || r.Header.Get("X-FC-Operation-Evidence") != "true" {
-						t.Error("full read lost source-refusal v2 negotiation or original evidence opt-in")
+					if r.Header.Get("X-FC-Source-Refusal") != "v3" || r.Header.Get("X-FC-Operation-Evidence") != "true" {
+						t.Error("full read lost source-refusal v3 negotiation or original evidence opt-in")
 					}
 					fullReads.Add(1)
 					_ = json.NewEncoder(w).Encode(full)

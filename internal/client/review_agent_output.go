@@ -42,6 +42,9 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if value.Wait != nil {
 		hint = operationWaitDiagnostic(value.Wait)
 	}
+	if value.State == "held" && value.Reason == "predecessor_unfinished" {
+		hint = predecessorUnfinishedDiagnostic(value.SourceRefusal, value.Channel)
+	}
 	if value.State == "held" && value.Reason == "parent_unavailable" {
 		hint = parentUnavailableDiagnostic(value.SourceRefusal)
 	}
@@ -88,6 +91,9 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 	}
 	if value.Wait != nil {
 		hint = operationWaitDiagnostic(value.Wait)
+	}
+	if value.State == "held" && value.Reason == "predecessor_unfinished" {
+		hint = predecessorUnfinishedDiagnostic(value.SourceRefusal, value.Channel)
 	}
 	if value.State == "held" && value.Reason == "parent_unavailable" {
 		hint = parentUnavailableDiagnostic(value.SourceRefusal)
@@ -286,4 +292,21 @@ func operationWaitDiagnostic(w *ReviewOperationWait) *ReviewOperationDiagnostic 
 		return &ReviewOperationDiagnostic{"The provider reported a cooldown. This same operation automatically rechecks admission and allowance at or after retry_not_before; the deadline is not a reserved start time or review completion.", "Continue other work and read this operation later. Do not submit a replacement request. Pause or cancel only this undispatched intent using review_operation_control (CLI reviews operation-control) if desired."}
 	}
 	return nil
+}
+
+func predecessorUnfinishedDiagnostic(refusal *ReviewSourceRefusal, channel string) *ReviewOperationDiagnostic {
+	explanation := "The selected review was held before provider dispatch by an ancestor dependency. The original blocking PR and specific cause were not retained; this does not identify unfinished findings on the selected PR."
+	action := "Inspect the current scoped reviews queue and its ancestor chain. Current facts do not reconstruct the original hold."
+	if refusal != nil {
+		cause := "its native channel discovery was incomplete (pending evidence, incomplete configured rounds or missing coverage; not necessarily findings)"
+		switch refusal.Cause {
+		case "not_in_queue":
+			cause = "it was absent from the configured execution queue"
+		case "incoming_route_pending":
+			cause = "it had an unresolved incoming receiving route"
+		}
+		explanation = fmt.Sprintf("The selected review was held before provider dispatch by predecessor PR #%d because %s. These are original retained guard facts, not a current observation or a finding on the selected PR.", refusal.PullNumber, cause)
+		action = fmt.Sprintf("Read reviews pull %d and reviews rounds read --pr %d --channel %s for current scoped PR and channel progress; follow their retained evidence, finding and route handles when needed. For not_in_queue, also read reviews execution and inspect its configured queue. These reads perform no provider refresh.", refusal.PullNumber, refusal.PullNumber, channel)
+	}
+	return &ReviewOperationDiagnostic{explanation, action + " This held operation is terminal. Any still-authorized new request needs a fresh key/current guards. Explicit out-of-order selection only bypasses predecessor progression; the selected target's own source, evidence, policy and provider guards still apply. Do not automatically retry, reset rounds or invent historical facts."}
 }

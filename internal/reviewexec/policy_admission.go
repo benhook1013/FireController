@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -230,14 +231,14 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 			return err
 		}
 		if routes > 0 {
-			return sourceHold("predecessor_unfinished")
+			return predecessorUnfinishedHold(number, "incoming_route_pending")
 		}
 		state, err := channelProgress(ctx, tx, project, current.RepositoryID, number, current.Operation.Channel)
 		if err != nil {
 			return err
 		}
 		if state.Pending || state.RoundsConfigured && !state.RoundsComplete || !state.RoundsConfigured && !state.Covered {
-			return sourceHold("predecessor_unfinished")
+			return predecessorUnfinishedHold(number, "discovery_incomplete")
 		}
 		number, head = plan.ParentPullNumber, plan.ParentSHA
 	}
@@ -245,4 +246,8 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 		return invalid()
 	}
 	return nil
+}
+
+func predecessorUnfinishedHold(number int64, cause string) error {
+	return &core.Error{Code: "review_held", Message: "An ancestor has not completed discovery in the selected channel.", Status: 409, Details: map[string]string{"reason": "predecessor_unfinished", "pull_number": strconv.FormatInt(number, 10), "cause": cause}}
 }

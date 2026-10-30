@@ -16,6 +16,7 @@ func TestSourceRefusalBackupPreservesOriginalComparison(t *testing.T) {
 	}{
 		{"predecessor_parent_moved", reviewexec.SourceRefusal{PullNumber: 4, ParentPullNumber: 6, ObservedBaseSHA: strings.Repeat("a", 40), ExpectedParentSHA: strings.Repeat("b", 40)}},
 		{"parent_unavailable", reviewexec.SourceRefusal{PullNumber: 2, BaseRef: "codex/former-parent"}},
+		{"predecessor_unfinished", reviewexec.SourceRefusal{PullNumber: 4, Cause: "discovery_incomplete"}},
 	} {
 		t.Run(variant.reason, func(t *testing.T) { sourceRefusalBackup(t, variant.reason, variant.value) })
 	}
@@ -26,6 +27,13 @@ func sourceRefusalBackup(t *testing.T, reason string, value reviewexec.SourceRef
 	e, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "restore-cap", Provider: "coderabbit", Account: "fixture-account", Channels: []string{"hosted"}, Fingerprint: strings.Repeat("f", 64)}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	wantVersion := "3"
+	if reason == "predecessor_parent_moved" {
+		wantVersion = "1"
+		if _, err := f.store.DB().Exec(`UPDATE metadata SET value='1' WHERE key='schema:review_source_refusals'`); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var attempt string
 	if err := f.store.DB().QueryRow(`SELECT id FROM review_execution_attempts WHERE state='preparing'`).Scan(&attempt); err != nil {
@@ -38,8 +46,13 @@ func sourceRefusalBackup(t *testing.T, reason string, value reviewexec.SourceRef
 	if _, err := f.store.DB().Exec(`UPDATE review_execution_transitions SET source_refusal_json=? WHERE attempt_id=? AND state='held'`, string(body), attempt); err != nil {
 		t.Fatal(err)
 	}
-	if reason == "parent_unavailable" {
-		if _, err := f.store.DB().Exec(`UPDATE metadata SET value='1' WHERE key='schema:review_source_refusals'`); err != nil {
+	if reason == "parent_unavailable" || reason == "predecessor_unfinished" {
+		oldVersion := "1"
+		wantVersion = "2"
+		if reason == "predecessor_unfinished" {
+			oldVersion, wantVersion = "2", "3"
+		}
+		if _, err := f.store.DB().Exec(`UPDATE metadata SET value=? WHERE key='schema:review_source_refusals'`, oldVersion); err != nil {
 			t.Fatal(err)
 		}
 		tx, err := f.store.DB().BeginTx(t.Context(), nil)
@@ -51,7 +64,7 @@ func sourceRefusalBackup(t *testing.T, reason string, value reviewexec.SourceRef
 		if refused == nil {
 			t.Fatal("new refusal accepted under old format metadata")
 		}
-		if _, err := f.store.DB().Exec(`UPDATE metadata SET value='2' WHERE key='schema:review_source_refusals'`); err != nil {
+		if _, err := f.store.DB().Exec(`UPDATE metadata SET value=? WHERE key='schema:review_source_refusals'`, wantVersion); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -69,7 +82,7 @@ func sourceRefusalBackup(t *testing.T, reason string, value reviewexec.SourceRef
 	}
 	defer db.Close()
 	var version string
-	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_source_refusals'`).Scan(&version); err != nil || version != "2" {
+	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_source_refusals'`).Scan(&version); err != nil || version != wantVersion {
 		t.Fatal("format gate was lost", version, err)
 	}
 	var restored string

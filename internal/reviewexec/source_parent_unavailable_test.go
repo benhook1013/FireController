@@ -48,7 +48,7 @@ func TestParentUnavailableOriginalFactsSurviveSupervisorAndNegotiatedReads(t *te
 			a := Attempt{ID: status.AttemptID, ProjectID: attemptProject, OperationID: queued.ID}
 			before := attemptState(t, f, a)
 			for _, compact := range []bool{false, true} {
-				for _, header := range []string{"", "true", "v2", "unknown"} {
+				for _, header := range []string{"", "true", "v2", "v3", "unknown"} {
 					r := httptest.NewRequest("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+queued.ID, nil)
 					r.SetPathValue("project_id", attemptProject)
 					r.SetPathValue("operation_id", queued.ID)
@@ -66,7 +66,7 @@ func TestParentUnavailableOriginalFactsSurviveSupervisorAndNegotiatedReads(t *te
 					if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil {
 						t.Fatal(w.Code, w.Body.String())
 					}
-					if header == "v2" && !reflect.DeepEqual(body.SourceRefusal, want) || header != "v2" && body.SourceRefusal != nil {
+					if (header == "v2" || header == "v3") && !reflect.DeepEqual(body.SourceRefusal, want) || header != "v2" && header != "v3" && body.SourceRefusal != nil {
 						t.Fatal("negotiation changed original facts or broke an older client", header, w.Body.String())
 					}
 				}

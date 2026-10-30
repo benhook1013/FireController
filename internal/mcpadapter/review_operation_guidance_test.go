@@ -77,8 +77,8 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 				}
 				switch r.URL.Path {
 				case base + "/status":
-					if r.Header.Get("X-FC-Source-Refusal") != "v2" {
-						t.Error("compact source refusal metadata was not requested with v2 negotiation")
+					if r.Header.Get("X-FC-Source-Refusal") != "v3" {
+						t.Error("compact source refusal metadata was not requested with v3 negotiation")
 					}
 					compactReads.Add(1)
 					fields := map[string]any{}
@@ -87,8 +87,8 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 					fields["future_metadata"] = map[string]any{"private": "PRIVATE_IGNORED_METADATA"}
 					_ = json.NewEncoder(w).Encode(fields)
 				case base:
-					if r.Header.Get("X-FC-Source-Refusal") != "v2" || r.Header.Get("X-FC-Operation-Evidence") != "true" {
-						t.Error("full source refusal v2 metadata or original operation evidence was not requested")
+					if r.Header.Get("X-FC-Source-Refusal") != "v3" || r.Header.Get("X-FC-Operation-Evidence") != "true" {
+						t.Error("full source refusal v3 metadata or original operation evidence was not requested")
 					}
 					fullReads.Add(1)
 					_ = json.NewEncoder(w).Encode(full)

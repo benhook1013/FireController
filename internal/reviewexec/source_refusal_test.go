@@ -16,7 +16,7 @@ func TestSourceRefusalSupervisorRetainsOriginalComparisonAndReadCompatibility(t 
 		t.Run(channel, func(t *testing.T) {
 			f := supervisorFixture(t)
 			queued := f.enqueue(t, attemptProject, "ancestor-refusal", channel, 2, 1)
-			want := &SourceRefusal{4, 6, strings.Repeat("c", 40), strings.Repeat("d", 40), ""}
+			want := &SourceRefusal{4, 6, strings.Repeat("c", 40), strings.Repeat("d", 40), "", ""}
 			driver := &controlledDriver{prepare: func(context.Context, Operation, Configuration, Attempt) (Preparation, error) {
 				return Preparation{}, &core.Error{Code: "review_held", Details: map[string]string{"reason": "predecessor_parent_moved", "pull_number": "4", "parent_pull_number": "6", "observed_base_sha": want.ObservedBaseSHA, "expected_parent_sha": want.ExpectedParentSHA, "private": "PRIVATE_NOT_RETAINED"}}
 			}}
@@ -89,7 +89,7 @@ func TestSourceRefusalMetadataFailureRollsBackTheHeldTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := attemptState(t, f, a)
-	want := &SourceRefusal{4, 6, strings.Repeat("a", 40), strings.Repeat("b", 40), ""}
+	want := &SourceRefusal{4, 6, strings.Repeat("a", 40), strings.Repeat("b", 40), "", ""}
 	if _, err := f.e.advanceWithSourceRefusal(t.Context(), attemptProject, a.ID, a.Revision, "held", "predecessor_parent_moved", "", want); err == nil {
 		t.Fatal("storage failure was ignored")
 	}

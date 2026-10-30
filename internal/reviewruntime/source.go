@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -163,7 +164,7 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 		}
 		seen[number] = true
 		if !slices.Contains(configuration.Queue, number) {
-			return plan, nil, reviewHold("predecessor_unfinished")
+			return plan, nil, reviewPredecessorHold(number, "not_in_queue")
 		}
 		pull, err := reads.Pull(ctx, plan.Repository.FullName, number)
 		if err != nil {
@@ -196,7 +197,7 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 			return plan, nil, err
 		}
 		if !covered {
-			return plan, nil, reviewHold("predecessor_unfinished")
+			return plan, nil, reviewPredecessorHold(number, "discovery_incomplete")
 		}
 		predecessors = append(predecessors, preceding)
 		number = preceding.ParentPullNumber
@@ -249,4 +250,8 @@ func publishPreparedAttempt(ctx context.Context, engine *reviewexec.Engine, proj
 	metadata := reviews.PullInput{Number: plan.Pull.Number, Title: pullDisplayTitle(plan.Pull.Title), State: plan.Pull.State, HeadSHA: plan.Pull.HeadSHA, BaseRef: plan.Pull.BaseRef, BaseSHA: plan.Pull.BaseSHA, CIState: "unknown", Mergeability: "unknown", Complete: false}
 	_, err = engine.PublishAttempt(ctx, project, attemptID, &metadata)
 	return err
+}
+
+func reviewPredecessorHold(number int64, cause string) error {
+	return &core.Error{Code: "review_held", Message: "An ancestor has not completed discovery in the selected channel.", Status: 409, Details: map[string]string{"reason": "predecessor_unfinished", "pull_number": strconv.FormatInt(number, 10), "cause": cause}}
 }
