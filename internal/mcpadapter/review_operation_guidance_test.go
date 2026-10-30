@@ -43,7 +43,7 @@ func TestReviewOperationStatusMCPWaitsForScheduledObservation(t *testing.T) {
 }
 
 func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
-	for _, reason := range []string{"parent_moved", "predecessor_parent_moved", "hosted_allowance_cooldown"} {
+	for _, reason := range []string{"parent_moved", "predecessor_parent_moved", "parent_unavailable", "hosted_allowance_cooldown"} {
 		t.Run(reason, func(t *testing.T) {
 			binding := localContext()
 			id := "review_operation_" + strings.Repeat("a", 32)
@@ -51,6 +51,10 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 			full := client.ReviewOperation{ID: id, ProjectID: binding.ProjectID, ActorID: "principal_original", WorkerID: binding.WorkerID, ConfigurationRevision: 12, PolicyRevision: 2, CapabilityFingerprint: strings.Repeat("c", 64), PullNumber: 3300, Channel: "hosted", HeadSHA: strings.Repeat("d", 40), State: "held", Revision: 5, Reason: reason, AttemptID: status.AttemptID, CreatedAt: status.UpdatedAt, UpdatedAt: status.UpdatedAt}
 			if reason == "predecessor_parent_moved" {
 				status.SourceRefusal = &client.ReviewSourceRefusal{PullNumber: 3298, ParentPullNumber: 3297, ObservedBaseSHA: strings.Repeat("e", 40), ExpectedParentSHA: strings.Repeat("f", 40)}
+				full.SourceRefusal = status.SourceRefusal
+			}
+			if reason == "parent_unavailable" {
+				status.SourceRefusal = &client.ReviewSourceRefusal{PullNumber: 3298, BaseRef: "codex/former-parent"}
 				full.SourceRefusal = status.SourceRefusal
 			}
 			wantStatus := status
@@ -73,6 +77,9 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 				}
 				switch r.URL.Path {
 				case base + "/status":
+					if r.Header.Get("X-FC-Source-Refusal") != "v2" {
+						t.Error("compact source refusal metadata was not requested with v2 negotiation")
+					}
 					compactReads.Add(1)
 					fields := map[string]any{}
 					data, _ := json.Marshal(status)
@@ -80,8 +87,8 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 					fields["future_metadata"] = map[string]any{"private": "PRIVATE_IGNORED_METADATA"}
 					_ = json.NewEncoder(w).Encode(fields)
 				case base:
-					if r.Header.Get("X-FC-Source-Refusal") != "true" {
-						t.Error("source refusal metadata was not requested")
+					if r.Header.Get("X-FC-Source-Refusal") != "v2" || r.Header.Get("X-FC-Operation-Evidence") != "true" {
+						t.Error("full source refusal v2 metadata or original operation evidence was not requested")
 					}
 					fullReads.Add(1)
 					_ = json.NewEncoder(w).Encode(full)

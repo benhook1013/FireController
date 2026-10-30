@@ -63,9 +63,6 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM review_execution_config WHERE project_id=?`, scope.ProjectID).Scan(&revision); err != nil {
 			return nil, err
 		}
-		if revision != *c.ExpectedRevision {
-			return nil, conflict()
-		}
 		var previous Configuration
 		if revision > 0 {
 			var err error
@@ -83,6 +80,12 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 		}
 		if err := e.validateConfiguration(c); err != nil {
 			return nil, err
+		}
+		// Check current installation support before revision conflicts for new
+		// writes. Authorized exact receipt replay has already returned from
+		// Mutate, so removing a capability never invalidates historical recovery.
+		if revision != *c.ExpectedRevision {
+			return nil, conflict()
 		}
 		return e.persistConfiguration(ctx, tx, scope, previous, c, revision)
 	})
