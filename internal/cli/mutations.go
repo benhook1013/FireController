@@ -9,6 +9,7 @@ import (
 )
 
 type mutationInvocation struct {
+	targetWorker             string
 	argumentDiagnostic       *diagnostic
 	summary                  client.SetJobSummaryRequest
 	reviewCheckpoint         client.ReviewCheckpointRequest
@@ -195,9 +196,9 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 	case "jobs summary-set":
 		return service.SetJobSummary(ctx, call.key, call.id, call.summary)
 	case "workers pause", "workers resume":
-		return service.ReplaceWorkerPause(ctx, call.key, call.pause)
+		return service.ReplaceWorkerPause(ctx, call.key, call.pause, call.targetWorker)
 	case "jobs primary-set", "jobs primary-clear":
-		return service.ReplacePrimaryJob(ctx, call.key, call.primary)
+		return service.ReplacePrimaryJob(ctx, call.key, call.primary, call.targetWorker)
 	case "jobs create":
 		return service.CreateJob(ctx, call.key, call.create)
 	case "jobs update":

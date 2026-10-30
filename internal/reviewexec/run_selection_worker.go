@@ -146,6 +146,9 @@ func runReason(err error) string {
 }
 
 func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader) (runChoice, error) {
+	if len(c.Queue) == 0 {
+		return runChoice{state: "empty", reason: "queue_complete"}, nil
+	}
 	reads := &runReads{reader: reader, repos: map[int64]reviewprovider.Repository{}, pulls: map[string]map[int64]reviewprovider.Pull{}}
 	source := runSourceBudget{remaining: 15 * time.Second}
 	var repository reviewprovider.Repository

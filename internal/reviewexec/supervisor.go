@@ -226,7 +226,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 			continue
 		}
 		// The operation retained its exact configuration revision; StartAttempt
-		// has already checked that this is still the current configuration.
+		// has checked that any intervening queue changes are strictly after this target.
 		c, err := e.configurationRevision(ctx, o.ProjectID, o.ConfigurationRevision)
 		if err != nil {
 			if ctx.Err() != nil {

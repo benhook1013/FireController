@@ -133,7 +133,7 @@ func TestRunsChannelStrictQueryCursorScopeAndCurrentAuthority(t *testing.T) {
 	requireImportResponse(t, f.call("GET", base+"/pulls/2967/runs?channel=hosted&cursor="+url.QueryEscape(selected.Cursor), f.admin, "", nil), 400, "validation_failed")
 	requireImportResponse(t, f.call("GET", base+"/pulls/2967/runs?channel=hosted", "", "", nil), 401, "unauthorized")
 	requireImportResponse(t, f.call("GET", base+"/pulls/999/runs?channel=hosted&snapshot="+snapshot, f.readToken, "", nil), 404, "not_found")
-	if _, err := f.store.DB().Exec(`INSERT INTO projects VALUES('foreign-project','Foreign',702,'owner/foreign'); INSERT INTO grants VALUES('review-read-credential','foreign-project',1,0)`); err != nil {
+	if _, err := f.store.DB().Exec(`INSERT INTO projects VALUES('foreign-project','Foreign',702,'owner/foreign'); INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('review-read-credential','foreign-project',1,0)`); err != nil {
 		t.Fatal(err)
 	}
 	requireImportResponse(t, f.call("GET", "/api/v1/projects/foreign-project/reviews/pulls/2967/runs?channel=hosted&cursor="+url.QueryEscape(selected.Cursor), f.readToken, "", nil), 400, "validation_failed")

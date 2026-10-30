@@ -38,7 +38,7 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	}); err != nil {
 		return err
 	}
-	if err := store.EnsureSchema(ctx, "review_source_refusals", []string{`ALTER TABLE review_execution_transitions ADD COLUMN source_refusal_json TEXT NOT NULL DEFAULT 'null' CHECK(length(CAST(source_refusal_json AS BLOB))<=512)`}); err != nil {
+	if err := store.EnsureSchema(ctx, "review_source_refusals", []string{`ALTER TABLE review_execution_transitions ADD COLUMN source_refusal_json TEXT NOT NULL DEFAULT 'null' CHECK(length(CAST(source_refusal_json AS BLOB))<=512)`}, []string{`SELECT 1 /* source-refusal format: unavailable parent facts */`}); err != nil {
 		return err
 	}
 	// Index maintenance has its own version so newer execution-table

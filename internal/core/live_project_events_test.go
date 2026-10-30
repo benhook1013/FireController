@@ -36,7 +36,7 @@ func TestLiveProjectReplayVisibleStateOnly(t *testing.T) {
 	} {
 		commitProjectEvent(t, s, scope, kind, fmt.Sprintf("excluded-%d", i))
 	}
-	if _, err := s.DB().Exec(`INSERT INTO projects VALUES('foreign','Foreign',2,'synthetic/foreign'); INSERT INTO workers VALUES('foreign','worker','Worker'); INSERT INTO grants VALUES('credential','foreign',1,1)`); err != nil {
+	if _, err := s.DB().Exec(`INSERT INTO projects VALUES('foreign','Foreign',2,'synthetic/foreign'); INSERT INTO workers VALUES('foreign','worker','Worker'); INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('credential','foreign',1,1)`); err != nil {
 		t.Fatal(err)
 	}
 	foreign := scope

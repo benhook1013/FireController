@@ -13,7 +13,7 @@ import (
 )
 
 func validateConfigurationShape(c Configuration) error {
-	if !identifier.MatchString(c.CapabilityID) || c.ExpectedRevision == nil || *c.ExpectedRevision < 0 || c.Mode != "independent" && c.Mode != "stacked" || len(c.Queue) == 0 || len(c.Queue) > 100 || len(c.Channels) == 0 || len(c.Channels) > 2 {
+	if !identifier.MatchString(c.CapabilityID) || c.ExpectedRevision == nil || *c.ExpectedRevision < 0 || c.Mode != "independent" && c.Mode != "stacked" || c.Queue == nil || len(c.Queue) > 100 || len(c.Channels) == 0 || len(c.Channels) > 2 {
 		return invalid()
 	}
 	numbers := map[int64]bool{}
@@ -52,21 +52,13 @@ func (e *Engine) validateConfiguration(c Configuration) error {
 // Configure retains every configuration revision. An update never silently
 // rebinds an already queued request to another provider or source policy.
 func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c Configuration) (json.RawMessage, error) {
+	scope = scope.RequireAdministration()
 	if err := validateConfigurationShape(c); err != nil {
 		return nil, err
 	}
 	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.configure", Target: "configuration", Key: key, Request: c}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		// Recheck admin at the transaction boundary even for direct Go callers.
-		var admin int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM credentials WHERE principal_id=? AND is_admin=1 AND revoked=0`, scope.PrincipalID).Scan(&admin); err != nil {
-			return nil, err
-		}
-		if admin != 1 {
-			return nil, core.Fail("forbidden", "Administrative permission is required.", 403)
-		}
-		if err := e.validateConfiguration(c); err != nil {
-			return nil, err
-		}
+		// The administrative requirement is rechecked by Mutate before both
+		// new writes and receipt replay, including direct Go callers.
 		var revision int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM review_execution_config WHERE project_id=?`, scope.ProjectID).Scan(&revision); err != nil {
 			return nil, err
@@ -81,6 +73,16 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 			if err != nil {
 				return nil, err
 			}
+		}
+		operator, err := core.IsInstanceAdministrator(ctx, tx, scope.PrincipalID)
+		if err != nil {
+			return nil, err
+		}
+		if !operator && (revision == 0 || c.CapabilityID != previous.CapabilityID) {
+			return nil, core.Fail("operator_capability_binding_required", "A service operator must establish or change this project's provider capability; preserve its current capability_id for project management.", 403)
+		}
+		if err := e.validateConfiguration(c); err != nil {
+			return nil, err
 		}
 		return e.persistConfiguration(ctx, tx, scope, previous, c, revision)
 	})
@@ -271,6 +273,9 @@ func (e *Engine) readOperationProjection(ctx context.Context, scope core.Scope, 
 		}
 		if err == nil && len(sourceDetails) > 0 && sourceDetails[0] {
 			o.SourceRefusal, err = readSourceRefusal(ctx, tx, o)
+			if o.SourceRefusal != nil && o.SourceRefusal.BaseRef != "" && (len(sourceDetails) < 2 || !sourceDetails[1]) {
+				o.SourceRefusal = nil
+			}
 		}
 		return err
 	})

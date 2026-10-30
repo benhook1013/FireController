@@ -18,7 +18,7 @@ func TestOrdinaryWriterResolvesButCannotImportAndRevokedReplayRefuses(t *testing
 	token := "ordinary-adoption-writer"
 	sum := sha256.Sum256([]byte(token))
 	f.exec(`INSERT INTO credentials VALUES('ordinary_writer','ordinary_principal',?,0,0)`, hex.EncodeToString(sum[:]))
-	f.exec(`INSERT INTO grants VALUES('ordinary_writer','project_one',1,1)`)
+	f.exec(`INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('ordinary_writer','project_one',1,1)`)
 	request := httptest.NewRequest("POST", base, nil)
 	request.SetPathValue("project_id", "project_one")
 	request.Header.Set("Authorization", "Bearer "+token)
@@ -38,7 +38,7 @@ func TestOrdinaryWriterResolvesButCannotImportAndRevokedReplayRefuses(t *testing
 	foreignToken := "foreign-adoption-writer"
 	foreignSum := sha256.Sum256([]byte(foreignToken))
 	f.exec(`INSERT INTO credentials VALUES('foreign_writer','foreign_principal',?,0,0)`, hex.EncodeToString(foreignSum[:]))
-	f.exec(`INSERT INTO grants VALUES('foreign_writer','project_two',1,1)`)
+	f.exec(`INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('foreign_writer','project_two',1,1)`)
 	decode[map[string]any](t, f.call("POST", path, foreignToken, "worker_one", "foreign-project", resolution), 403)
 	first := f.call("POST", path, token, "worker_one", "resolve", resolution)
 	decode[map[string]any](t, first, 200)

@@ -38,6 +38,7 @@ type PageList struct {
 // Pages pins its first upper sequence in the signed continuation. New captures
 // do not move that archive selection or trigger automatic page expansion.
 func (e *Engine) Pages(ctx context.Context, scope core.Scope, id string, limit int, cursor string) (PageList, error) {
+	scope = scope.RequireAdministration()
 	out := PageList{Items: []PageSummary{}}
 	if !operationPattern.MatchString(id) || limit < 1 || limit > 100 {
 		return out, invalid()
@@ -95,6 +96,7 @@ func (e *Engine) Pages(ctx context.Context, scope core.Scope, id string, limit i
 // Capture reads one deliberately selected bounded source body. The default
 // operation/page list never includes provider text.
 func (e *Engine) Capture(ctx context.Context, scope core.Scope, id, pageID string) (Capture, error) {
+	scope = scope.RequireAdministration()
 	var out Capture
 	if !operationPattern.MatchString(id) || !pagePattern.MatchString(pageID) {
 		return out, invalid()

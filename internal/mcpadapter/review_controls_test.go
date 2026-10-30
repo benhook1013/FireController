@@ -19,6 +19,7 @@ import (
 	"github.com/benhook1013/FireController/internal/profile"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -58,7 +59,7 @@ func reviewControlsStdio(t *testing.T, path, name string) *mcp.ClientSession {
 	return session
 }
 
-func reviewControlsFixture(t *testing.T) (*mutationAPI, http.Handler, string) {
+func reviewControlsFixture(t *testing.T, native ...bool) (*mutationAPI, http.Handler, string) {
 	t.Helper()
 	f := mutationFixture(t)
 	ctx := context.Background()
@@ -67,7 +68,14 @@ func reviewControlsFixture(t *testing.T) (*mutationAPI, http.Handler, string) {
 			t.Fatal(err)
 		}
 	}
-	engine, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "fixture", Provider: "synthetic", Account: "fixture", Channels: []string{"cli"}}})
+	var options []reviewexec.EngineOption
+	if len(native) > 0 && native[0] {
+		if err := reviews.EnsureSchema(t.Context(), f.store); err != nil {
+			t.Fatal(err)
+		}
+		options = append(options, reviewexec.WithNativeProjection())
+	}
+	engine, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "fixture", Provider: "synthetic", Account: "fixture", Channels: []string{"cli"}}}, options...)
 	if err != nil {
 		t.Fatal(err)
 	}

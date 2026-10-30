@@ -15,18 +15,19 @@ import (
 	"github.com/benhook1013/FireController/internal/cli"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-func reviewExecutionFixture(t *testing.T) (*serviceFixture, string, string) {
+func reviewExecutionFixture(t *testing.T, native ...bool) (*serviceFixture, string, string) {
 	t.Helper()
-	f, project, worker, enroll := reviewExecutionBeforeEnrollmentFixture(t)
+	f, project, worker, enroll := reviewExecutionBeforeEnrollmentFixture(t, native...)
 	enroll()
 	return f, project, worker
 }
 
 // Adoption is naturally applied before queue enrollment. Keep the public
 // handlers available at that boundary without deleting product-created defaults.
-func reviewExecutionBeforeEnrollmentFixture(t *testing.T) (*serviceFixture, string, string, func()) {
+func reviewExecutionBeforeEnrollmentFixture(t *testing.T, native ...bool) (*serviceFixture, string, string, func()) {
 	t.Helper()
 	f := setupServiceFixture(t)
 	project := f.project(t, "execution-fixture")
@@ -34,7 +35,14 @@ func reviewExecutionBeforeEnrollmentFixture(t *testing.T) (*serviceFixture, stri
 	if err := reviewexec.EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}
-	engine, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "fixture", Provider: "synthetic", Account: "fixture", Channels: []string{"cli", "hosted"}}})
+	var options []reviewexec.EngineOption
+	if len(native) > 0 && native[0] {
+		if err := reviews.EnsureSchema(t.Context(), f.store); err != nil {
+			t.Fatal(err)
+		}
+		options = append(options, reviewexec.WithNativeProjection())
+	}
+	engine, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "fixture", Provider: "synthetic", Account: "fixture", Channels: []string{"cli", "hosted"}}}, options...)
 	if err != nil {
 		t.Fatal(err)
 	}

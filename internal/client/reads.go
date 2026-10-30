@@ -130,7 +130,11 @@ func (c *Client) JobHistory(ctx context.Context, id string, options PageOptions)
 	}
 	return value, nil
 }
-func (c *Client) Inbox(ctx context.Context, options PageOptions, filter InboxFilter) (Page[InboxItem], error) {
+func (c *Client) Inbox(ctx context.Context, options PageOptions, filter InboxFilter, selectedWorker ...string) (Page[InboxItem], error) {
+	worker, err := c.selectedWorker(selectedWorker)
+	if err != nil {
+		return Page[InboxItem]{}, err
+	}
 	q, err := pageQuery(options)
 	if err != nil {
 		return Page[InboxItem]{}, err
@@ -145,22 +149,26 @@ func (c *Client) Inbox(ctx context.Context, options PageOptions, filter InboxFil
 		q.Set("unacknowledged", "true")
 	}
 	var value Page[InboxItem]
-	if err = c.get(ctx, c.projectPath("inbox", c.identity.WorkerID), q, true, &value); err != nil {
+	if err = c.get(ctx, c.projectPath("inbox", worker), q, true, &value); err != nil {
 		return Page[InboxItem]{}, err
 	}
 	if !validPage(value, options) {
 		return Page[InboxItem]{}, invalidResponse()
 	}
 	for _, item := range value.Items {
-		if !c.validInboxItem(item, filter) {
+		if !c.validInboxItem(item, filter, worker) {
 			return Page[InboxItem]{}, invalidResponse()
 		}
 	}
 	return value, nil
 }
 
-func (c *Client) validInboxItem(item InboxItem, filter InboxFilter) bool {
-	return validID(item.ID) && validID(item.ConversationID) && validID(item.SenderWorkerID) && item.RecipientWorkerID == c.identity.WorkerID && utf8.RuneCountInString(item.Preview) <= 160 && !(item.Acknowledged && !item.Seen) && cleanText(item.CreatedAt, 64) && (!filter.Unread || !item.Seen) && (!filter.Unacknowledged || !item.Acknowledged)
+func (c *Client) validInboxItem(item InboxItem, filter InboxFilter, selectedWorker ...string) bool {
+	worker := c.identity.WorkerID
+	if len(selectedWorker) > 0 {
+		worker = selectedWorker[0]
+	}
+	return validID(item.ID) && validID(item.ConversationID) && validID(item.SenderWorkerID) && item.RecipientWorkerID == worker && utf8.RuneCountInString(item.Preview) <= 160 && !(item.Acknowledged && !item.Seen) && cleanText(item.CreatedAt, 64) && (!filter.Unread || !item.Seen) && (!filter.Unacknowledged || !item.Acknowledged)
 }
 func (c *Client) Conversation(ctx context.Context, id string, options PageOptions) (ConversationPage, error) {
 	q, err := pageQuery(options)

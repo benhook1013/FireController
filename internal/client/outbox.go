@@ -17,7 +17,11 @@ type MessageDelivery struct {
 
 // Outbox discovers messages sent by the bound worker. Filters concern their
 // actual recipients' receipt state; incoming inbox selection remains separate.
-func (c *Client) Outbox(ctx context.Context, options PageOptions, filter InboxFilter) (Page[InboxItem], error) {
+func (c *Client) Outbox(ctx context.Context, options PageOptions, filter InboxFilter, selectedWorker ...string) (Page[InboxItem], error) {
+	worker, err := c.selectedWorker(selectedWorker)
+	if err != nil {
+		return Page[InboxItem]{}, err
+	}
 	q, err := pageQuery(options)
 	if err != nil {
 		return Page[InboxItem]{}, err
@@ -32,14 +36,14 @@ func (c *Client) Outbox(ctx context.Context, options PageOptions, filter InboxFi
 		q.Set("unacknowledged", "true")
 	}
 	var value Page[InboxItem]
-	if err = c.get(ctx, c.projectPath("outbox", c.identity.WorkerID), q, true, &value); err != nil {
+	if err = c.get(ctx, c.projectPath("outbox", worker), q, true, &value); err != nil {
 		return Page[InboxItem]{}, err
 	}
 	if !validPage(value, options) {
 		return Page[InboxItem]{}, invalidResponse()
 	}
 	for _, item := range value.Items {
-		if !validID(item.ID) || !validID(item.ConversationID) || item.SenderWorkerID != c.identity.WorkerID || !validID(item.RecipientWorkerID) || !utf8.ValidString(item.Preview) || utf8.RuneCountInString(item.Preview) > 160 || item.PreviewTruncated && utf8.RuneCountInString(item.Preview) != 160 || item.Acknowledged && !item.Seen || !validTimestamp(item.CreatedAt) || filter.Unread && item.Seen || filter.Unacknowledged && item.Acknowledged {
+		if !validID(item.ID) || !validID(item.ConversationID) || item.SenderWorkerID != worker || !validID(item.RecipientWorkerID) || !utf8.ValidString(item.Preview) || utf8.RuneCountInString(item.Preview) > 160 || item.PreviewTruncated && utf8.RuneCountInString(item.Preview) != 160 || item.Acknowledged && !item.Seen || !validTimestamp(item.CreatedAt) || filter.Unread && item.Seen || filter.Unacknowledged && item.Acknowledged {
 			return Page[InboxItem]{}, invalidResponse()
 		}
 	}

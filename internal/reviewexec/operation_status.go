@@ -167,6 +167,7 @@ func (e *Engine) WaitOperationStatus(ctx context.Context, scope core.Scope, id s
 func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", pendingEvidenceHeader)
+	w.Header().Add("Vary", "X-FC-Source-Refusal")
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -200,6 +201,9 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		core.WriteError(w, err)
 		return
+	}
+	if value.SourceRefusal != nil && value.SourceRefusal.BaseRef != "" && r.Header.Get("X-FC-Source-Refusal") != "v2" {
+		value.SourceRefusal = nil
 	}
 	e.deploymentResponseHeader(w)
 	core.WriteJSON(w, http.StatusOK, value)

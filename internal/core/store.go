@@ -98,6 +98,10 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		_ = s.Close()
 		return nil, err
 	}
+	if err = s.ensureProjectManagement(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
 	return s, nil
 }
 

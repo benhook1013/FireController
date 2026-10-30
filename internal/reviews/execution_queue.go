@@ -16,8 +16,11 @@ import (
 // transaction. Metadata remains unknown until the normal observer verifies it.
 // Retained review-only entries keep their identity, metadata and evidence.
 func PublishExecutionQueue(ctx context.Context, tx *sql.Tx, scope core.Scope, previous, queue []int64) error {
-	if len(queue) == 0 || len(queue) > maxQueuePulls || len(previous) > maxQueuePulls {
+	if queue == nil || len(queue) > maxQueuePulls || len(previous) > maxQueuePulls {
 		return validationError("Select a bounded execution queue.")
+	}
+	if len(queue) == 0 {
+		return nil
 	}
 	var repository, revision int64
 	if err := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, scope.ProjectID).Scan(&repository); err != nil {

@@ -22,14 +22,24 @@ type QueueChange struct {
 	Before                        *int64 `json:"before,omitempty"`
 	After                         *int64 `json:"after,omitempty"`
 	Position                      string `json:"position,omitempty"`
+	Reason                        string `json:"reason,omitempty"`
 }
 
 func validateQueueChange(action string, r QueueChange) error {
-	if action != "add" && action != "move" {
+	if action != "add" && action != "move" && action != "remove" {
 		return invalid()
 	}
 	if r.ExpectedConfigurationRevision < 1 || r.ExpectedConfigurationRevision == math.MaxInt64 || r.PullNumber < 1 || r.PullNumber > 2147483647 {
 		return core.Fail("validation_failed", "Provide a positive expected_configuration_revision and a positive 32-bit pull_number.", 400)
+	}
+	if action == "remove" {
+		if r.Before != nil || r.After != nil || r.Position != "" || r.Reason != "superseded" && r.Reason != "defunct" {
+			return core.Fail("validation_failed", "Removal requires reason superseded or defunct and accepts no ordering destination.", 400)
+		}
+		return nil
+	}
+	if r.Reason != "" {
+		return invalid()
 	}
 	positions := 0
 	for _, anchor := range []*int64{r.Before, r.After} {
@@ -56,7 +66,7 @@ func changedQueue(queue []int64, action string, r QueueChange) ([]int64, error) 
 	if action == "add" && index >= 0 {
 		return nil, core.Fail("review_queue_duplicate", "This PR is already enrolled; use queue move to change its position.", 409)
 	}
-	if action == "move" && index < 0 {
+	if (action == "move" || action == "remove") && index < 0 {
 		return nil, core.Fail("review_not_configured", "This PR is not enrolled; use queue add first.", 409)
 	}
 	if action == "add" && len(queue) >= 100 {
@@ -65,6 +75,9 @@ func changedQueue(queue []int64, action string, r QueueChange) ([]int64, error) 
 	out := slices.Clone(queue)
 	if index >= 0 {
 		out = slices.Delete(out, index, index+1)
+	}
+	if action == "remove" {
+		return out, nil
 	}
 	destination := len(out)
 	if r.Position == "first" {
@@ -105,6 +118,16 @@ func (e *Engine) ChangeQueue(ctx context.Context, scope core.Scope, key, action 
 		if revision != r.ExpectedConfigurationRevision {
 			return nil, configurationRevisionConflict(revision)
 		}
+		if action == "remove" {
+			var operation string
+			err := tx.QueryRowContext(ctx, `SELECT id FROM review_operations WHERE project_id=? AND pull_number=? AND state NOT IN ('completed','held','failed','cancelled','rate_limited') ORDER BY created_at,id LIMIT 1`, scope.ProjectID, r.PullNumber).Scan(&operation)
+			if err == nil {
+				return nil, &core.Error{Code: "review_queue_operation_pending", Message: "This PR has a pending review operation; removal does not cancel it.", Status: 409, Details: map[string]string{"operation_id": operation}}
+			}
+			if err != sql.ErrNoRows {
+				return nil, err
+			}
+		}
 		queue, err := changedQueue(previous.Queue, action, r)
 		if err != nil {
 			return nil, err
@@ -120,6 +143,9 @@ func (e *Engine) ChangeQueue(ctx context.Context, scope core.Scope, key, action 
 			return nil, err
 		}
 		receipt, err := e.persistConfiguration(ctx, tx, scope, previous, next, revision)
+		if err == nil && action == "remove" {
+			err = reviews.RetireExecutionPull(ctx, tx, scope, r.PullNumber, r.Reason)
+		}
 		if err == nil && action == "add" {
 			receipt.ReviewSize = reviews.CurrentReviewSize(ctx, tx, scope.ProjectID, r.PullNumber)
 		}

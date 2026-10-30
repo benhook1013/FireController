@@ -16,9 +16,45 @@ type querier interface {
 }
 
 // Administrative reports whether this scope was obtained through AdminScope.
+// A project-bound scope may use an explicit management grant; this never grants
+// instance administration or access to another project.
 // It is a requirement pin, not cached permission: Store reads, mutations and
 // receipt replay still reauthorize the current credential at their boundary.
 func (scope Scope) Administrative() bool { return scope.admin }
+
+// RequireAdministration pins the stronger authorization requirement for a
+// trusted service entry point. It grants no authority: reads, mutations and
+// receipt replay still authenticate this scope's current credential and grant.
+func (scope Scope) RequireAdministration() Scope {
+	scope.admin = true
+	return scope
+}
+
+// CheckProjectAdministrator rechecks a retained background actor before work.
+// Background records retain principal/project identity rather than a secret.
+// Foreground operations must additionally use authenticated scoped Store calls.
+func CheckProjectAdministrator(ctx context.Context, tx *sql.Tx, project, principal string) error {
+	if project == "" || principal == "" {
+		return Fail("forbidden", "Project management permission is required.", 403)
+	}
+	var allowed bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM credentials c WHERE c.principal_id=? AND c.revoked=0 AND (c.is_admin=1 OR EXISTS(SELECT 1 FROM grants g WHERE g.credential_id=c.id AND g.project_id=? AND g.can_read=1 AND g.can_write=1 AND g.can_manage=1)))`, principal, project).Scan(&allowed)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return Fail("forbidden", "Project management permission is required.", 403)
+	}
+	return nil
+}
+
+// IsInstanceAdministrator distinguishes operator-owned configuration inside an
+// already authenticated transaction. It does not grant or replace a Scope.
+func IsInstanceAdministrator(ctx context.Context, tx *sql.Tx, principal string) (bool, error) {
+	var allowed bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM credentials WHERE principal_id=? AND revoked=0 AND is_admin=1)`, principal).Scan(&allowed)
+	return allowed, err
+}
 
 // Authenticate validates a current credential for instance identity inspection.
 // Project data still requires Scope and administrative actions AdminScope.
@@ -143,7 +179,7 @@ func (s *Store) authorize(ctx context.Context, q querier, scope Scope, permissio
 	if err != nil {
 		return storageError(err)
 	}
-	if permission == "admin" && admin != 1 {
+	if permission == "admin" && admin != 1 && scope.ProjectID == "" {
 		return Fail("forbidden", "Administrative permission is required.", 403)
 	}
 	if scope.ProjectID != "" {
@@ -154,9 +190,9 @@ func (s *Store) authorize(ctx context.Context, q querier, scope Scope, permissio
 			return storageError(err)
 		}
 		if admin != 1 {
-			var read, write int
-			err = q.QueryRowContext(ctx, "SELECT can_read,can_write FROM grants WHERE credential_id=? AND project_id=?", credential, scope.ProjectID).Scan(&read, &write)
-			if errors.Is(err, sql.ErrNoRows) || (err == nil && (read != 1 || permission == "write" && write != 1)) {
+			var read, write, manage int
+			err = q.QueryRowContext(ctx, "SELECT can_read,can_write,can_manage FROM grants WHERE credential_id=? AND project_id=?", credential, scope.ProjectID).Scan(&read, &write, &manage)
+			if errors.Is(err, sql.ErrNoRows) || (err == nil && (read != 1 || permission == "write" && write != 1 || permission == "admin" && (manage != 1 || write != 1))) {
 				return Fail("forbidden", "The credential does not grant this project operation.", 403)
 			}
 			if err != nil {

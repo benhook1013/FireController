@@ -21,6 +21,8 @@ import (
 const maxToolWaitSeconds = 50
 
 type arguments struct {
+	ownerManagement            *ownerManagementInvocation
+	existingManagement         *existingManagementArgs
 	subagentRecord             client.SubagentRecordRequest
 	subagentUpdate             client.SubagentUpdateRequest
 	queueChange                client.ReviewQueueChange
@@ -88,13 +90,15 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, reviewBatchDefinitions()...)
 	definitions = append(definitions, subagentDefinitions()...)
 	definitions = append(definitions, queueChangeDefinitions()...)
+	definitions = append(definitions, ownerManagementDefinitions()...)
+	definitions = append(definitions, existingManagementDefinitions()...)
 	known := make(map[string]bool)
 	transports := sessionTransports{pools: make(map[*mcp.ServerSession]*client.TransportPool)}
 	for _, tool := range definitions {
 		known[tool.name] = true
 		write := projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		openWorld := checkpointWrite(tool.name) || tool.name == "review_start" || tool.name == "review_request" || tool.name == "review_source_refresh"
-		destructive := tool.name == "review_queue_move" || tool.name == "review_subagent_update" || tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "map_entry_update" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_update" || tool.name == "job_summary_set" || tool.name == "job_checklist_replace" || tool.name == "job_checklist_item_update" || reviewBatchTool(tool.name) || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
+		openWorld := existingManagementExternal(tool.name) || checkpointWrite(tool.name) || tool.name == "review_start" || tool.name == "review_request" || tool.name == "review_source_refresh"
+		destructive := existingManagementDestructive(tool.name) || ownerManagementDestructive(tool.name) || tool.name == "review_queue_move" || tool.name == "review_queue_remove" || tool.name == "review_subagent_update" || tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "map_entry_update" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_update" || tool.name == "job_summary_set" || tool.name == "job_checklist_replace" || tool.name == "job_checklist_item_update" || reviewBatchTool(tool.name) || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
 			var err error
@@ -130,7 +134,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			}
 			// Allow bounded identity recovery before a normal five-second
 			// operation; long waits retain their existing 55-second host cap.
-			timeout = max(timeout, 15*time.Second)
+			timeout = max(timeout, 15*time.Second, existingManagementBudget(args.existingManagement))
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			service, err := transports.newClient(ctx, binding, request.Session)
@@ -140,193 +144,199 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			defer service.Close()
 			options := client.PageOptions{Limit: args.limit, Cursor: args.cursor}
 			var value any
-			switch tool.name {
-			case "review_subagent_record":
-				value, err = service.RecordSubagentReview(ctx, args.subagentRecord, args.key)
-			case "review_subagent_read":
-				value, err = service.ReadSubagentReview(ctx, args.id)
-			case "review_subagent_update":
-				value, err = service.UpdateSubagentReview(ctx, args.id, args.subagentUpdate, args.key)
-			case "review_start":
-				var result client.ReviewRunResult
-				result, err = service.RunReview(ctx, args.key, args.reviewRun, args.reviewSourceWait)
-				value = client.AgentReviewRunResult(result)
-			case "review_selection_read":
-				var selection client.ReviewRunState
-				selection, err = service.WaitReviewSelection(ctx, args.id, args.reviewSourceWait)
-				value = client.AgentReviewSelection(selection)
-			case "review_rounds_read":
-				value, err = service.ReviewRoundControl(ctx, args.pullNumber, args.roundChannel)
-			case "review_rounds_configure":
-				value, err = service.ConfigureReviewRoundControl(ctx, args.pullNumber, args.roundChannel, args.key, args.roundControl)
-			case "map_entry_create", "map_entry_replace", "map_entry_update", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history":
-				value, err = executeProjectMapTool(ctx, service, args.projectMap)
-			case "wait_for_messages":
-				value, err = service.WaitForMessages(ctx, args.cursor, args.limit, args.messageWaitSeconds)
-			case "note_create", "note_update", "note_read", "note_list", "note_history", "note_revision_read":
-				value, err = executeNoteTool(ctx, service, args.notes)
-			case "presentation_read":
-				value, err = service.Presentation(ctx)
-			case "doctor":
-				var pause client.WorkerPause
-				if pause, err = service.WorkerPause(ctx); err == nil {
-					value = struct {
-						profile.Context
-						Verified bool `json:"verified"`
-						buildinfo.Connection
-						WorkerPause client.WorkerPause `json:"worker_pause"`
-					}{service.Identity(), true, buildinfo.ConnectionInfo(Version), pause}
+			if existingManagementTool(tool.name) {
+				value, err = executeExistingManagement(ctx, service, args.existingManagement)
+			} else {
+				switch tool.name {
+				case "review_subagent_record":
+					value, err = service.RecordSubagentReview(ctx, args.subagentRecord, args.key)
+				case "review_subagent_read":
+					value, err = service.ReadSubagentReview(ctx, args.id)
+				case "review_subagent_update":
+					value, err = service.UpdateSubagentReview(ctx, args.id, args.subagentUpdate, args.key)
+				case "review_start":
+					var result client.ReviewRunResult
+					result, err = service.RunReview(ctx, args.key, args.reviewRun, args.reviewSourceWait)
+					value = client.AgentReviewRunResult(result)
+				case "review_selection_read":
+					var selection client.ReviewRunState
+					selection, err = service.WaitReviewSelection(ctx, args.id, args.reviewSourceWait)
+					value = client.AgentReviewSelection(selection)
+				case "review_rounds_read":
+					value, err = service.ReviewRoundControl(ctx, args.pullNumber, args.roundChannel)
+				case "review_rounds_configure":
+					value, err = service.ConfigureReviewRoundControl(ctx, args.pullNumber, args.roundChannel, args.key, args.roundControl)
+				case "map_entry_create", "map_entry_replace", "map_entry_update", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history":
+					value, err = executeProjectMapTool(ctx, service, args.projectMap)
+				case "wait_for_messages":
+					value, err = service.WaitForMessages(ctx, args.cursor, args.limit, args.messageWaitSeconds)
+				case "note_create", "note_update", "note_read", "note_list", "note_history", "note_revision_read":
+					value, err = executeNoteTool(ctx, service, args.notes)
+				case "presentation_read":
+					value, err = service.Presentation(ctx)
+				case "doctor":
+					var pause client.WorkerPause
+					if pause, err = service.WorkerPause(ctx); err == nil {
+						value = struct {
+							profile.Context
+							Verified bool `json:"verified"`
+							buildinfo.Connection
+							WorkerPause client.WorkerPause `json:"worker_pause"`
+						}{service.Identity(), true, buildinfo.ConnectionInfo(Version), pause}
+					}
+				case "review_queue_add", "review_queue_move", "review_queue_remove":
+					value, err = service.ChangeReviewQueue(ctx, strings.TrimPrefix(tool.name, "review_queue_"), args.key, args.queueChange)
+				case "review_policy_read", "review_policy_configure", "review_execution_configure", "review_attempt_settle", "worker_create", "project_credential_grant", "project_credential_revoke", "project_credential_update":
+					value, err = executeOwnerManagement(ctx, service, args.ownerManagement)
+				case "review_execution_read":
+					value, err = service.ReviewExecution(ctx)
+				case "review_operation_read":
+					value, err = executeOperationStatus(ctx, service, args.operationStatus)
+				case "review_operations_list":
+					value, err = service.ReviewOperations(ctx, args.reviewOperations)
+				case "review_request":
+					var result client.ReviewRequestResult
+					result, err = service.RequestReview(ctx, args.key, args.reviewRequest, args.reviewSourceWait)
+					value = client.AgentReviewRequestResult(result)
+				case "review_checkpoint_publish":
+					value, err = service.RequestReviewCheckpoint(ctx, args.key, args.reviewCheckpoint, args.reviewSourceWait)
+				case "review_checkpoint_read":
+					value, err = service.ReviewCheckpointPublication(ctx, args.id)
+				case "review_checkpoint_recover":
+					value, err = service.RecoverReviewCheckpoint(ctx, args.key, args.id, args.reviewCheckpointRecovery, args.reviewSourceWait)
+				case "review_source_refresh":
+					var result client.ReviewSourceResult
+					result, err = service.RefreshReviewSource(ctx, args.key, args.reviewSource, args.reviewSourceWait)
+					value = client.AgentReviewSourceResult(result)
+				case "review_source_refresh_read":
+					var operation client.ReviewSourceOperation
+					operation, err = service.ReviewSourceOperation(ctx, args.id)
+					value = client.AgentReviewSourceOperation(operation)
+				case "review_source_policy_assess":
+					var assessment client.ReviewSourcePolicyAssessment
+					assessment, err = service.ReviewSourcePolicyAssessment(ctx, args.pullNumber)
+					value = client.AgentReviewSourcePolicy(assessment)
+				case "review_source_readiness":
+					var assessment client.ReviewSourceReadinessAssessment
+					assessment, err = service.ReviewSourceReadiness(ctx, args.pullNumber)
+					value = client.AgentReviewReadiness(assessment)
+				case "review_source_ci_assess":
+					var assessment client.ReviewSourceCIAssessment
+					if args.reviewCIDiagnostics {
+						assessment, err = service.ReviewSourceCIDiagnostics(ctx, args.pullNumber)
+					} else {
+						assessment, err = service.ReviewSourceCIAssessment(ctx, args.pullNumber)
+					}
+					value = client.AgentReviewCI(assessment)
+				case "review_queue":
+					if args.reviewActiveQueue {
+						value, err = runReviewActiveQueue(ctx, service, options)
+					} else {
+						value, err = service.ReviewQueue(ctx, options)
+					}
+				case "review_pull":
+					value, err = service.ReviewPull(ctx, args.pullNumber, args.snapshot)
+				case "review_attempts":
+					value, err = service.ReviewAttempts(ctx, args.pullNumber, client.ReviewAttemptOptions{PageOptions: options, Snapshot: args.snapshot})
+				case "review_runs":
+					var runs client.ReviewRuns
+					runs, err = service.ReviewRuns(ctx, args.pullNumber, client.ReviewRunOptions{PageOptions: options, Snapshot: args.snapshot})
+					value = client.AgentReviewRuns(runs)
+				case "review_run":
+					value, err = service.ReviewRun(ctx, args.id, args.snapshot)
+				case "review_policy_assess":
+					var assessment client.ReviewPolicyAssessment
+					assessment, err = service.ReviewPolicyAssessment(ctx, args.id)
+					value = client.AgentReviewPolicy(assessment)
+				case "review_evidence_read":
+					value, err = service.ReviewEvidence(ctx, args.id)
+				case "review_adjudication_read":
+					value, err = service.ReviewAdjudication(ctx, args.id)
+				case "review_finding_route":
+					value, err = service.CreateReviewFindingRoute(ctx, args.key, args.id, args.reviewRoute)
+				case "review_route_read":
+					value, err = service.ReviewFindingRoute(ctx, args.id)
+				case "review_routes_list":
+					value, err = service.ReviewFindingRoutes(ctx, args.pullNumber, options)
+				case "review_route_decide":
+					value, err = service.DecideReviewFindingRoute(ctx, args.key, args.id, args.reviewRouteDecision)
+				case "review_route_fix":
+					value, err = service.FixReviewFindingRoute(ctx, args.key, args.id, args.reviewRouteFix)
+				case "review_findings_decide":
+					value, err = service.DecideReviewFindings(ctx, args.key, args.id, args.reviewDecisionBatch)
+				case "review_findings_fix":
+					value, err = service.RecordReviewFixes(ctx, args.key, args.id, args.reviewFixBatch)
+				case "review_finding_decide":
+					value, err = service.DecideReviewFinding(ctx, args.key, args.id, args.reviewDecision)
+				case "review_finding_fix":
+					value, err = service.RecordReviewFix(ctx, args.key, args.id, args.reviewFix)
+				case "review_source_finalize":
+					value, err = service.FinalizeReviewSource(ctx, args.key, args.id, args.reviewFinalize)
+				case "worker_pause_read":
+					value, err = service.WorkerPause(ctx, args.worker)
+				case "worker_pause_replace":
+					value, err = service.ReplaceWorkerPause(ctx, args.key, args.pause, args.worker)
+				case "worker_pause_history":
+					value, err = service.WorkerPauseHistory(ctx, options, args.worker)
+				case "workers_list":
+					value, err = service.Workers(ctx, options)
+				case "jobs_list":
+					value, err = service.Jobs(ctx, options, client.JobFilter{WorkerID: args.worker, Status: args.status})
+				case "jobs_assigned":
+					value, err = service.Jobs(ctx, options, client.JobFilter{WorkerID: binding.Context.WorkerID, Status: args.status})
+				case "job_primary_read":
+					value, err = service.PrimaryJob(ctx, args.worker)
+				case "job_primary_history":
+					value, err = service.PrimaryJobHistory(ctx, options, args.worker)
+				case "job_primary_replace":
+					value, err = service.ReplacePrimaryJob(ctx, args.key, args.primary, args.worker)
+				case "job_summary_read":
+					value, err = service.JobSummary(ctx, args.id)
+				case "job_summary_set":
+					value, err = service.SetJobSummary(ctx, args.key, args.id, args.summary)
+				case "job_status_read":
+					value, err = runJobStatus(ctx, service, args)
+				case "job_read":
+					value, err = service.Job(ctx, args.id)
+				case "job_revision_read":
+					value, err = service.JobRevision(ctx, args.id, args.jobRevision)
+				case "job_history":
+					value, err = service.JobHistory(ctx, args.id, options)
+				case "job_update":
+					value, err = service.UpdateJob(ctx, args.key, args.id, args.patch)
+				case "job_progress_history":
+					value, err = service.JobProgressHistory(ctx, args.id, options)
+				case "job_checklist_read":
+					value, err = service.JobChecklist(ctx, args.id)
+				case "job_checklist_replace":
+					value, err = service.ReplaceJobChecklist(ctx, args.key, args.id, args.checklist)
+				case "job_checklist_item_update":
+					value, err = service.UpdateJobChecklistItem(ctx, args.key, args.id, args.itemID, args.checklistItem)
+				case "job_checklist_history":
+					value, err = service.JobChecklistHistory(ctx, args.id, options)
+				case "outbox_list":
+					value, err = service.Outbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack, Newest: args.newest}, args.worker)
+				case "inbox_delivery_read":
+					value, err = service.MessageDelivery(ctx, args.id)
+				case "inbox_list":
+					value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack, Newest: args.newest}, args.worker)
+				case "inbox_snapshot":
+					value, err = service.InboxSnapshot(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack, Newest: args.newest})
+				case "inbox_events":
+					value, err = service.MessageEvents(ctx, args.cursor, args.limit, args.waitMS)
+				case "inbox_thread":
+					value, err = service.Conversation(ctx, args.id, options)
+				case "inbox_message_read":
+					value, err = service.Message(ctx, args.id)
+				case "jobs_create":
+					value, err = service.CreateJob(ctx, args.key, args.create)
+				case "inbox_send":
+					value, err = service.SendMessage(ctx, args.key, args.send)
+				case "inbox_seen":
+					value, err = service.MarkSeen(ctx, args.key, args.id)
+				case "inbox_ack":
+					value, err = service.Acknowledge(ctx, args.key, args.id)
 				}
-			case "review_queue_add", "review_queue_move":
-				value, err = service.ChangeReviewQueue(ctx, strings.TrimPrefix(tool.name, "review_queue_"), args.key, args.queueChange)
-			case "review_execution_read":
-				value, err = service.ReviewExecution(ctx)
-			case "review_operation_read":
-				value, err = executeOperationStatus(ctx, service, args.operationStatus)
-			case "review_operations_list":
-				value, err = service.ReviewOperations(ctx, args.reviewOperations)
-			case "review_request":
-				var result client.ReviewRequestResult
-				result, err = service.RequestReview(ctx, args.key, args.reviewRequest, args.reviewSourceWait)
-				value = client.AgentReviewRequestResult(result)
-			case "review_checkpoint_publish":
-				value, err = service.RequestReviewCheckpoint(ctx, args.key, args.reviewCheckpoint, args.reviewSourceWait)
-			case "review_checkpoint_read":
-				value, err = service.ReviewCheckpointPublication(ctx, args.id)
-			case "review_checkpoint_recover":
-				value, err = service.RecoverReviewCheckpoint(ctx, args.key, args.id, args.reviewCheckpointRecovery, args.reviewSourceWait)
-			case "review_source_refresh":
-				var result client.ReviewSourceResult
-				result, err = service.RefreshReviewSource(ctx, args.key, args.reviewSource, args.reviewSourceWait)
-				value = client.AgentReviewSourceResult(result)
-			case "review_source_refresh_read":
-				var operation client.ReviewSourceOperation
-				operation, err = service.ReviewSourceOperation(ctx, args.id)
-				value = client.AgentReviewSourceOperation(operation)
-			case "review_source_policy_assess":
-				var assessment client.ReviewSourcePolicyAssessment
-				assessment, err = service.ReviewSourcePolicyAssessment(ctx, args.pullNumber)
-				value = client.AgentReviewSourcePolicy(assessment)
-			case "review_source_readiness":
-				var assessment client.ReviewSourceReadinessAssessment
-				assessment, err = service.ReviewSourceReadiness(ctx, args.pullNumber)
-				value = client.AgentReviewReadiness(assessment)
-			case "review_source_ci_assess":
-				var assessment client.ReviewSourceCIAssessment
-				if args.reviewCIDiagnostics {
-					assessment, err = service.ReviewSourceCIDiagnostics(ctx, args.pullNumber)
-				} else {
-					assessment, err = service.ReviewSourceCIAssessment(ctx, args.pullNumber)
-				}
-				value = client.AgentReviewCI(assessment)
-			case "review_queue":
-				if args.reviewActiveQueue {
-					value, err = runReviewActiveQueue(ctx, service, options)
-				} else {
-					value, err = service.ReviewQueue(ctx, options)
-				}
-			case "review_pull":
-				value, err = service.ReviewPull(ctx, args.pullNumber, args.snapshot)
-			case "review_attempts":
-				value, err = service.ReviewAttempts(ctx, args.pullNumber, client.ReviewAttemptOptions{PageOptions: options, Snapshot: args.snapshot})
-			case "review_runs":
-				var runs client.ReviewRuns
-				runs, err = service.ReviewRuns(ctx, args.pullNumber, client.ReviewRunOptions{PageOptions: options, Snapshot: args.snapshot})
-				value = client.AgentReviewRuns(runs)
-			case "review_run":
-				value, err = service.ReviewRun(ctx, args.id, args.snapshot)
-			case "review_policy_assess":
-				var assessment client.ReviewPolicyAssessment
-				assessment, err = service.ReviewPolicyAssessment(ctx, args.id)
-				value = client.AgentReviewPolicy(assessment)
-			case "review_evidence_read":
-				value, err = service.ReviewEvidence(ctx, args.id)
-			case "review_adjudication_read":
-				value, err = service.ReviewAdjudication(ctx, args.id)
-			case "review_finding_route":
-				value, err = service.CreateReviewFindingRoute(ctx, args.key, args.id, args.reviewRoute)
-			case "review_route_read":
-				value, err = service.ReviewFindingRoute(ctx, args.id)
-			case "review_routes_list":
-				value, err = service.ReviewFindingRoutes(ctx, args.pullNumber, options)
-			case "review_route_decide":
-				value, err = service.DecideReviewFindingRoute(ctx, args.key, args.id, args.reviewRouteDecision)
-			case "review_route_fix":
-				value, err = service.FixReviewFindingRoute(ctx, args.key, args.id, args.reviewRouteFix)
-			case "review_findings_decide":
-				value, err = service.DecideReviewFindings(ctx, args.key, args.id, args.reviewDecisionBatch)
-			case "review_findings_fix":
-				value, err = service.RecordReviewFixes(ctx, args.key, args.id, args.reviewFixBatch)
-			case "review_finding_decide":
-				value, err = service.DecideReviewFinding(ctx, args.key, args.id, args.reviewDecision)
-			case "review_finding_fix":
-				value, err = service.RecordReviewFix(ctx, args.key, args.id, args.reviewFix)
-			case "review_source_finalize":
-				value, err = service.FinalizeReviewSource(ctx, args.key, args.id, args.reviewFinalize)
-			case "worker_pause_read":
-				value, err = service.WorkerPause(ctx)
-			case "worker_pause_replace":
-				value, err = service.ReplaceWorkerPause(ctx, args.key, args.pause)
-			case "worker_pause_history":
-				value, err = service.WorkerPauseHistory(ctx, options)
-			case "workers_list":
-				value, err = service.Workers(ctx, options)
-			case "jobs_list":
-				value, err = service.Jobs(ctx, options, client.JobFilter{WorkerID: args.worker, Status: args.status})
-			case "jobs_assigned":
-				value, err = service.Jobs(ctx, options, client.JobFilter{WorkerID: binding.Context.WorkerID, Status: args.status})
-			case "job_primary_read":
-				value, err = service.PrimaryJob(ctx)
-			case "job_primary_history":
-				value, err = service.PrimaryJobHistory(ctx, options)
-			case "job_primary_replace":
-				value, err = service.ReplacePrimaryJob(ctx, args.key, args.primary)
-			case "job_summary_read":
-				value, err = service.JobSummary(ctx, args.id)
-			case "job_summary_set":
-				value, err = service.SetJobSummary(ctx, args.key, args.id, args.summary)
-			case "job_status_read":
-				value, err = runJobStatus(ctx, service, args)
-			case "job_read":
-				value, err = service.Job(ctx, args.id)
-			case "job_revision_read":
-				value, err = service.JobRevision(ctx, args.id, args.jobRevision)
-			case "job_history":
-				value, err = service.JobHistory(ctx, args.id, options)
-			case "job_update":
-				value, err = service.UpdateJob(ctx, args.key, args.id, args.patch)
-			case "job_progress_history":
-				value, err = service.JobProgressHistory(ctx, args.id, options)
-			case "job_checklist_read":
-				value, err = service.JobChecklist(ctx, args.id)
-			case "job_checklist_replace":
-				value, err = service.ReplaceJobChecklist(ctx, args.key, args.id, args.checklist)
-			case "job_checklist_item_update":
-				value, err = service.UpdateJobChecklistItem(ctx, args.key, args.id, args.itemID, args.checklistItem)
-			case "job_checklist_history":
-				value, err = service.JobChecklistHistory(ctx, args.id, options)
-			case "outbox_list":
-				value, err = service.Outbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack, Newest: args.newest})
-			case "inbox_delivery_read":
-				value, err = service.MessageDelivery(ctx, args.id)
-			case "inbox_list":
-				value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack, Newest: args.newest})
-			case "inbox_snapshot":
-				value, err = service.InboxSnapshot(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack, Newest: args.newest})
-			case "inbox_events":
-				value, err = service.MessageEvents(ctx, args.cursor, args.limit, args.waitMS)
-			case "inbox_thread":
-				value, err = service.Conversation(ctx, args.id, options)
-			case "inbox_message_read":
-				value, err = service.Message(ctx, args.id)
-			case "jobs_create":
-				value, err = service.CreateJob(ctx, args.key, args.create)
-			case "inbox_send":
-				value, err = service.SendMessage(ctx, args.key, args.send)
-			case "inbox_seen":
-				value, err = service.MarkSeen(ctx, args.key, args.id)
-			case "inbox_ack":
-				value, err = service.Acknowledge(ctx, args.key, args.id)
 			}
 			if err != nil {
 				return resultFailure(err), nil

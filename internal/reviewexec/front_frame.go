@@ -47,7 +47,7 @@ func validFrontFrame(f frontFrame, c Configuration, channel string) bool {
 	if f.repository < 1 || f.configuration < 1 || !roundTime(f.checkedAt) || validateConfigurationShape(c) != nil || c.Paused || !slices.Contains(c.Channels, channel) || *c.ExpectedRevision != f.configuration-1 || len(f.prefix) > len(c.Queue) || len(f.prefix) > 100 || f.prefix == nil || (f.sourceReason != "" && (!identifier.MatchString(f.sourceReason) || len(f.sourceReason) > 128)) {
 		return false
 	}
-	if f.complete != (len(f.prefix) == len(c.Queue) && f.sourceReason == "") || len(f.prefix) == 0 && f.sourceReason == "" {
+	if f.complete != (len(f.prefix) == len(c.Queue) && f.sourceReason == "") || len(f.prefix) == 0 && f.sourceReason == "" && len(c.Queue) > 0 {
 		return false
 	}
 	observed := ""

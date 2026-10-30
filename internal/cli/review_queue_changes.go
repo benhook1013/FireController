@@ -42,7 +42,7 @@ func parseReviewQueueChange(call invocation, args []string) (invocation, bool) {
 			in.input.Position = strings.TrimPrefix(flag, "--")
 			continue
 		}
-		if flag != "--before" && flag != "--after" && flag != "--expect-config" && flag != "--key" {
+		if flag != "--before" && flag != "--after" && flag != "--expect-config" && flag != "--key" && flag != "--reason" {
 			return call, false
 		}
 		if !assigned {
@@ -51,6 +51,10 @@ func parseReviewQueueChange(call invocation, args []string) (invocation, bool) {
 				return call, false
 			}
 			value = args[i]
+		}
+		if flag == "--reason" {
+			in.input.Reason = value
+			continue
 		}
 		if flag == "--key" {
 			in.key = value

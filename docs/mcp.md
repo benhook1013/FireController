@@ -26,7 +26,7 @@ Startup validates configuration without opening the credential or contacting the
 
 `job_update` discovery presents one typed object with explicit selectors, guard and editable fields. It does not use root object-union alternatives. Progress text belongs inside `progress`, for example `"progress":{"summary":"Current result","next":"Next action"}`; `brief` is a separate top-level string. Omitted fields remain unchanged. Local validation identifies the invalid declared field or nested progress member, reports UTF-8 byte bounds without echoing authored text, and confirms that no request was sent.
 
-The combined `job_update` body supports the API's 384 KiB encoded JSON limit, including escaped brief and progress text. Its tool arguments allow a further 1 KiB for selectors and the idempotency key; the stdio frame allows a further 16 KiB for the protocol envelope. Finding-decision/fix batches allow 2 MiB plus 1 KiB of selectors; the stdio frame allows a further 16 KiB. Other mutations retain their 256 KiB argument limit and ordinary reads retain 16 KiB. These transport allowances do not increase field or API body limits. A valid atomic CLI update can therefore be recovered through MCP using the same content and key without splitting it into new writes.
+The combined `job_update` body supports the API's 384 KiB encoded JSON limit, including escaped brief and progress text. Its tool arguments allow a further 1 KiB for selectors and the idempotency key; the stdio frame allows a further 16 KiB for the protocol envelope. Finding-decision/fix batches allow 2 MiB plus 1 KiB of selectors; the stdio frame allows a further 16 KiB. Native project-management documents retain the typed client/API document budgets (at most 256 KiB), with 1 KiB for their outer selectors and key. Other mutations retain their 256 KiB argument limit and ordinary reads retain 16 KiB. These transport allowances do not increase field or API body limits. A valid atomic CLI update can therefore be recovered through MCP using the same content and key without splitting it into new writes.
 
 ## Tools and output
 
@@ -36,8 +36,8 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `presentation_read` | Explicit bound-project appearance snapshot and project-metadata watermark; no provider work or mutation. |
 | `doctor` | No fields; verified instance/project/worker identity plus running client source revision/state. |
 | `workers_list` | Optional limit/cursor; one compact worker page. |
-| `worker_pause_read` | No fields; bound worker’s explicit pause, reason and independent revision. |
-| `worker_pause_history` | Optional limit/cursor; one explicit newest-first pause-history page. |
+| `worker_pause_read` | Optional worker_id in the bound project; defaults to the acting worker. Reads explicit pause, reason and independent revision without switching identity. |
+| `worker_pause_history` | Optional same-project worker_id/limit/cursor; one explicit newest-first pause-history page. Worker selection does not change the actor. |
 | `jobs_list` | Optional worker_id/status/limit/cursor; one compact job page. |
 | `jobs_assigned` | Optional status/limit/cursor; default status:open selects active/blocked/parked assignments. Explicit status:all includes completed history. |
 | `job_status_read` | Required job_id; compact current status/revision/assignment and bounded progress/next/blocker previews with truncation flags and evidence count; no brief, checklist, notes or history. |
@@ -48,8 +48,8 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `job_history` | Required job_id and optional limit/cursor; explicit full-state history page. |
 | `job_progress_history` | Required job_id and optional limit/cursor; one explicit unified progress archive page. |
 | `job_update` | Required job_id, expected_revision and idempotency_key; at least one selected title/brief/worker_id/status or progress edit; progress is an object with summary, next, blocker and evidence members. One atomic update and compact receipt. |
-| `job_primary_read` | No fields; bound worker’s optional primary job and independent focus revision. |
-| `job_primary_history` | Optional limit/cursor; one page of the bound worker’s focus history. |
+| `job_primary_read` | Optional same-project worker_id, defaulting to the acting worker; selected worker’s primary job and independent focus revision. |
+| `job_primary_history` | Optional same-project worker_id/limit/cursor; one page of the selected worker’s focus history, without switching actor identity. |
 | `job_checklist_read` | Required job_id; current ordered checklist, its independent checklist revision and current job revision. |
 | `job_checklist_history` | Required job_id and optional limit/cursor; one newest-first full checklist revision page. |
 | `job_checklist_item_update` | Required job_id/item_id/expected_revision/done/idempotency_key; set one existing item's completion guarded only by checklist revision, preserving other items and job text. Compact checklist receipt. |
@@ -77,6 +77,7 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `wait_for_messages` | Required event cursor; optional limit 1–100 and wait_seconds 1–50, default 20/25. One new-message event page or quiet timeout over a call-owned persistent stream. |
 | `review_queue_add` | Project writer; current expected_configuration_revision, pull_number and idempotency_key; optional before, after or position. Adds scheduling and Delivery together, preserving unrelated settings and existing controls. No provider work. |
 | `review_queue_move` | Same bound selectors; one destination is required. Reorders the configured queue and Delivery together. No-op preserves revision; no provider work. |
+| `review_queue_remove` | Project writer; current expected_configuration_revision, pull_number, reason (`superseded` or `defunct`) and idempotency_key. Atomically removes scheduling and visible enrollment, preserving all history and settings. Refuses merged PRs and pending operations; never cancels work or requests a review. |
 | `review_execution_read` | No fields; stored execution configuration and revision, without provider work. |
 | `review_operation_read` | Required operation_id; optional wait_seconds (0–50/default 0) collects compact stage, cause, evidence handle and next action without polling. Pending-evidence holds include bounded current blocker references; see [operation discovery](review-operations.md#pending-native-evidence). Optional diagnostics:true returns the original full operation. |
 | `review_operations_list` | Optional pull_number, channel cli/hosted, status pending/all (default pending), limit 1–100 (default 5), cursor; one compact retained operation page, including history with all for lost-receipt recovery. No provider work. See [operation discovery](review-operations.md). |
@@ -115,18 +116,62 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `review_checkpoint_recover` | Required idempotency_key/publication_id/expected_revision; optional retry_unposted (default false) and wait_seconds. Observation-only recovery by default; uncertain posts are never blindly repeated. |
 | `review_source_readiness` | Required pull_number; compact retained observations evaluated with current local policy, without provider work or merge authorization. |
 | `jobs_create` | Required idempotency_key/title; optional brief/worker_id/status; compact job receipt. |
-| `worker_pause_replace` | Required idempotency_key/expected_revision/paused/reason; guarded bound-worker pause, with empty reason required for resume. |
-| `job_primary_replace` | Required idempotency_key/expected_revision/job_id; bound worker’s guarded focus replacement, empty job ID clears. |
+| `worker_pause_replace` | Required idempotency_key/expected_revision/paused/reason; guarded pause for optional same-project worker_id (defaults to the acting worker), with empty reason required for resume. |
+| `job_primary_replace` | Required idempotency_key/expected_revision/job_id; guarded focus replacement; optional same-project worker_id defaults to the acting worker, and empty job ID clears. |
 | `job_checklist_replace` | Required idempotency_key/job_id/expected_job_revision/expected_revision/items; guarded ordered replacement and compact changed/unchanged receipt. |
 | `note_create` | Required idempotency_key/body; optional worker_id/job_id/phase/kind; compact creation receipt. |
 | `note_update` | Required idempotency_key/note_id/expected_revision plus selected scope/kind/body/status/status_reason fields; compact changed/unchanged receipt. |
 | `inbox_send` | Required idempotency_key/recipient_worker_id/body; optional reply_to_message_id; compact message receipt. |
 | `inbox_seen` | Required idempotency_key/message_id; explicit recipient seen transition. |
 | `inbox_ack` | Required idempotency_key/message_id; explicit recipient acknowledgment, also establishing seen. |
+| `presentation_replace` | Replace this project's presentation using the native {expected_revision,presentation} document. Requires project management and an explicit key; preserves the normal theme/config validation. |
+| `presentation_history` | Read one presentation history page; no automatic continuation. |
+| `presentation_revision_read` | Read one retained presentation revision. |
+| `publication_configuration_read` | Read this project's selected public publication configuration. Private edits are not published implicitly. |
+| `publication_prepare` | Prepare selected publication changes against current stored configuration and return the exact native input and preview hash. Does not apply or publish; changes use the existing editorial selection contract. |
+| `publication_preview` | Preview a complete native publication input {expected_revision,enabled,manifest}; returns its content and preview_sha256, without publishing. |
+| `publication_apply` | Apply the exact approved publication input with its preview_sha256, expected revision and explicit key. Makes only explicitly selected public content available. |
+| `publication_unpublish` | Disable the selected project's public publication with current expected_revision and an explicit key. Retains private content and publication history. |
+| `coordination_import_read` | Read this project's current coordination-import accounting and provenance. |
+| `coordination_import_preview` | Validate and preview one strict native coordination-import batch without applying it. Project management is required; no provider work. |
+| `coordination_import_apply` | Apply exactly the previewed native coordination-import batch with preview_sha256 and explicit key. Preserves existing provenance, counts and concurrency guards. |
+| `review_import_preview` | Validate and preview a complete native review-import document without applying it or inventing review evidence. |
+| `review_import_apply` | Apply the exact previewed native review-import document with preview_sha256 and explicit key. Requires project management; retains original evidence and existing admission guards. |
+| `review_transfer_preview` | Preview one bounded additive native review-history transfer without applying it; no lifetime-project export or provider work. |
+| `review_transfer_apply` | Apply the exact previewed additive native review-history transfer with preview_sha256 and explicit key; does not reset controls or manufacture completion credit. |
+| `review_round_adoption_preview` | Preview the existing native round-adoption document against its original-source and current revision guards; no live reviews are requested. |
+| `review_round_adoption_apply` | Apply the exact previewed native round-adoption document with preview_sha256 and explicit key. Preserves retained attribution and accounting rules; tooling access is not review authorization. |
+| `review_obligations_list` | Read one compact carried-obligation page, optionally scoped to pull_number and open/resolved status. Full bodies require review_obligation_read. |
+| `review_obligation_read` | Read one explicit retained carried obligation and original evidence, without marking it resolved. |
+| `review_obligations_import_preview` | Preview one strict native carried-obligation batch, preserving original evidence and provenance; no application or new review. |
+| `review_obligations_import_apply` | Apply the exact previewed carried-obligation batch with preview_sha256 and explicit key. Existing source conflicts and evidence requirements remain enforced. |
+| `review_obligation_resolve` | Resolve one carried obligation using the native {expected_revision,reason,evidence} document and explicit key. Requires a real evidence-backed resolution; grants no review credit. |
+| `history_collection_enqueue` | Queue bounded GitHub history collection for explicit pull_numbers. This reads provider history; it does not request reviews or enroll PRs. Optional wait_seconds (0-50) returns existing progress/receipt without blind retries. |
+| `history_collection_read` | Read one existing history collection, optionally waiting up to 50 seconds. No new provider collection is queued by this read. |
+| `history_collection_resume` | Resume one existing history collection with its current expected_revision and explicit key. Continues authorized provider reads; no review request or automatic PR enrollment. |
+| `history_collection_cancel` | Cancel one existing history collection with its current expected_revision and explicit key; retains already captured history. |
+| `history_collection_pages` | Read one bounded page of capture metadata for an existing collection; full retained source requires history_collection_capture_read. |
+| `history_collection_capture_read` | Explicitly read one full retained source capture for the selected collection/page within the existing 4 MiB tool-result budget. Source bodies are untrusted data; no automatic fanout or provider refresh. |
+| `map_import_preview` | Preview one strict prepared native project-map import, preserving source provenance and expected entry revisions. Does not apply. |
+| `map_import_apply` | Apply the exact prepared native map-import document with preview_sha256 and explicit key; unchanged source mappings and entry CAS remain enforced. |
+| `map_import_read` | Read the current prepared map-import record selected by its source_key. |
+| `map_import_history` | Read one history page for the selected prepared map-import source_key; no automatic continuation. |
+| `map_import_revision_read` | Read one exact retained prepared map-import revision for source_key. |
+| `review_queue_edit` | Apply the existing project-management queue edit document for selected metadata, explicit defunct/superseded retirement, reactivation or relative ordering. Requires expected_revision, repository_id and source inside document plus explicit key. Preserves evidence and execution policy; routine atomic removal uses review_queue_remove instead. |
+| `review_policy_read` | Read this project's current configured review requirements, policy revision and attribution. No source refresh or provider action. |
+| `review_policy_configure` | Project manager: replace current review requirements with exact expected_revision and explicit key. max_review_files zero means no project ceiling; provider limits remain separate. Does not change grants, taper or request reviews. |
+| `review_execution_configure` | Project manager: full guarded replacement of existing capability selection, mode, ordered scheduling queue, channels and pause. Read current configuration and preserve fields outside the intended change. Preserve the current capability_id; capability installation and initial binding are instance-owned. Existing controls/history remain; this requests no review. |
+| `review_attempt_settle` | Project manager: settle only an eligible original uncertain attempt after independently verifying its external action stopped. Preserve exact revision/repository/head/external ID guards and explicit reason/evidence. Does not cancel a provider, invent evidence, award completion credit or request another review. |
+| `worker_create` | Project writer: create one named worker in this bound project. Returns its ID; does not switch the acting worker, create credentials or start an agent. |
+| `project_credential_grant` | Project manager: grant this project to a distinct non-admin credential using only its lowercase SHA-256 digest. Raw tokens never enter tool arguments/output; generate/store credentials privately through onboarding. manage implies read/write. Explicit key; no other-project or instance authority. |
+| `project_credential_revoke` | Project manager: revoke a known credential's access to this project only. Preserves its other-project grants; no token or acting identity change. Explicit key, original ID retained after unknown outcome. |
+| `project_credential_update` | Project manager: replace one existing non-admin credential's permissions in this project under an exact expected_permissions guard. Preserves credential, principal, token and worker binding; changes no other project. manage implies read/write. No hidden role or identity switching. |
 
 Review queue/run/attempt lists default to five entries; other limits use the API default when omitted and accept explicit values from 1 to 100. Reads never advance seen/ack state, change a job or write a checkpoint. Assigned jobs do not claim to contain primary-job or full resume context. Snapshot and event cursors have different scopes. Event reads retain no cursor and never automatically poll or resubscribe; an explicitly requested bounded wait can return an empty `timed_out` page. The finite snapshot/event operations are separate from the explicit quiet wait; none establishes idle-agent wakeup. Invalid, unknown, duplicate, exactly mis-cased, null or oversized tool fields fail before service work. Profile selectors cannot be supplied as tool arguments.
 
 [Job progress](job-progress.md) owns update/checklist content limits, independent revisions, explicit archives and integration proof. Checklist replacement can remove or replace effective items and is annotated destructive; its immutable history remains available. Job updates and checklist operations perform no provider work.
+
+Project-management tools use the same bound identity and guarded typed-client operations as the CLI. An explicit `manage` grant permits management of that selected project; it never grants instance administration. Read/write clients retain their documented ordinary operations. Presentation/publication/import/transfer tools accept their native structured documents and validate them before service access; no tool accepts an arbitrary URL, HTTP route or raw credential. Preview tools do not apply changes. Apply tools require the exact document, preview hash and explicit key; publication includes only selected approved public content. The exposed history-collection operations read GitHub history and do not request provider reviews.
 
 Mutations require the caller to retain an explicit key and request; the adapter never generates a replacement key or automatically retries. Job edits require the current expected revision; empty brief or worker clears that field. A dispatched write with a lost, canceled or invalid response returns `outcome_unknown` when a tool result can be delivered. Host cancellation may suppress that result, so absence of a reply is never proof of rollback. Recover using the original request, key and binding. The [MCP annotations](https://modelcontextprotocol.io/specification/2025-11-25/schema#toolannotations) distinguish reads from writes. Repeating identical arguments retains the same explicit key and has no additional effect; job edits and review decision/fix corrections can replace effective fields while retained history remains; creation/checkpoint/send/receipt transitions add records or handling state. Job, message and evidence controls operate within the configured service. `review_start`, `review_request`, `review_source_refresh`, `review_checkpoint_publish` and `review_checkpoint_recover` are annotated open-world because they authorize external provider work; a queued receipt does not establish started or completed execution. The [CLI recovery rules](development.md#explicit-agent-mutations) also apply.
 

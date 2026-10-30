@@ -35,6 +35,9 @@ func argumentHelpAction(call invocation) string {
 // This selected local reference supplements the real parsers. Only the exact
 // operation-help grammar reaches it, before any profile, file or service work.
 func operationHelp(operation string) (operationHelpResponse, bool) {
+	if help, ok := ownerManagementHelp(operation); ok {
+		return help, true
+	}
 	guard := "Use the current resource --expect-revision. Omitted fields stay unchanged; at least one edit is required."
 	recovery := "Use an explicit --key (1-128 printable ASCII bytes without surrounding whitespace). After uncertain output retry the same key, exact request and binding; never invent a replacement key."
 	evidenceID := "EVIDENCE_ID (review_evidence_ followed by exactly 32 lowercase hexadecimal characters)"
@@ -42,7 +45,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	switch operation {
 	case "workers help":
 		out.Usage = "<bound launcher> workers help"
-		out.Optional = []string{"workers list --help", "workers pause-state --help", "workers pause --help", "workers resume --help", "workers pause-history --help"}
+		out.Optional = []string{"workers create --help", "workers list --help", "workers pause-state --help", "workers pause --help", "workers resume --help", "workers pause-history --help"}
 		out.Semantics = []string{"Worker discovery stays in the bound project. Pause reads and changes target the bound worker, independently of job status, primary focus and review execution.", "All help is local; no profile, credential or network reads."}
 		out.Example = "<bound launcher> workers list --help"
 		out.Documentation = "docs/worker-pause.md"
@@ -116,7 +119,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Documentation = "docs/job-state.md"
 	case "reviews help":
 		out.Usage = "<bound launcher> reviews help"
-		out.Optional = []string{"reviews queue-add --help", "reviews queue-move --help", "reviews execution --help", "reviews subagent-record --help", "reviews subagent-read --help", "reviews subagent-update --help", "reviews queue --help", "reviews rounds --help", "reviews evidence --help", "reviews adjudication --help", "reviews route-create --help", "reviews route --help", "reviews routes --help", "reviews route-decide --help", "reviews route-fix --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
+		out.Optional = []string{"reviews policy --help", "reviews policy-configure --help", "reviews execution-configure --help", "reviews attempt-settle --help", "reviews queue-add --help", "reviews queue-move --help", "reviews queue-remove --help", "reviews execution --help", "reviews subagent-record --help", "reviews subagent-read --help", "reviews subagent-update --help", "reviews queue --help", "reviews rounds --help", "reviews evidence --help", "reviews adjudication --help", "reviews route-create --help", "reviews route --help", "reviews routes --help", "reviews route-decide --help", "reviews route-fix --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews readiness --help", "reviews operations --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
 		out.Semantics = []string{"queue, rounds read and assessments read retained state. Read findings with reviews evidence EVIDENCE_ID and decisions/revision with reviews adjudication EVIDENCE_ID.", "source-refresh explicitly reads GitHub; request submits review work. finalize records adjudication and automatically queues its GitHub summary; publish repairs historical delivery. decide/fix and their batches change local evidence. Round grants/closure only change local settings.", "All help is local and reads no profile, credential or service. Documentation paths refer to the same installed release."}
 		out.Example = "<bound launcher> reviews decide --help"
 		out.Documentation = "docs/review-controls.md"
@@ -298,6 +301,12 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Optional = []string{"--before PR | --after PR | --first | --last"}
 		out.Semantics = []string{"Project write access; changes one queue entry without replacing provider, mode, channels or pause settings. Adding without a destination appends; moving requires one destination.", "Updates website enrollment/order in the same transaction. Existing allowances/taper/history stay unchanged; new PR/channel pairs receive product defaults. No provider call or review request. A no-op move retains its configuration revision. Enqueue may include review_size with stored file count, independently configured sizing settings, headroom and historical completed-review context. A suggested-size warning never refuses enrollment or needs acknowledgement.", recovery}
 		out.Example = "<bound launcher> reviews queue-add 42 --after 41 --expect-config 3 --key queue-add-42"
+		out.Documentation = "docs/review-execution.md"
+	case "reviews queue-remove":
+		out.Usage = "<bound launcher> reviews queue-remove PR --reason superseded|defunct --expect-config N --key KEY"
+		out.Required = []string{"PR", "--reason superseded|defunct", "--expect-config N (read reviews execution)", "--key KEY"}
+		out.Semantics = []string{"Project write access; atomically removes one enrolled defunct or superseded PR from scheduling and the visible queue. All retained history, allowances, taper and unrelated configuration stay unchanged. The final scheduling item may be removed; the project remains configured with an empty queue.", "Merged PRs remain completed history. A pending operation refuses removal with operation_id; this command never cancels it. No provider work, review request or permission change. Accepts no ordering destination.", recovery}
+		out.Example = "<bound launcher> reviews queue-remove 42 --reason superseded --expect-config 3 --key remove-42"
 		out.Documentation = "docs/review-execution.md"
 	case "reviews execution":
 		out.Usage = "<bound launcher> reviews execution"
@@ -509,6 +518,11 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Documentation = "docs/public-site.md"
 	default:
 		return operationHelpResponse{}, false
+	}
+	switch operation {
+	case "inbox list", "inbox sent", "workers pause-state", "workers pause-history", "workers pause", "workers resume", "jobs primary", "jobs primary-history", "jobs primary-set", "jobs primary-clear":
+		out.Optional = append(out.Optional, "--worker WORKER_ID (same-project target; omitted uses bound worker)")
+		out.Semantics = append(out.Semantics, "The target worker is a resource selector. The selected profile's acting worker and project remain unchanged.")
 	}
 	return out, true
 }

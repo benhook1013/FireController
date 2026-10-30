@@ -115,12 +115,8 @@ func checkActor(ctx context.Context, tx *sql.Tx, scope core.Scope) error {
 	if scope.ProjectID == "" || scope.WorkerID == "" {
 		return core.Fail("worker_required", "Select the collection project and worker.", 400)
 	}
-	var allowed bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM credentials WHERE principal_id=? AND is_admin=1 AND revoked=0)`, scope.PrincipalID).Scan(&allowed); err != nil {
+	if err := core.CheckProjectAdministrator(ctx, tx, scope.ProjectID, scope.PrincipalID); err != nil {
 		return err
-	}
-	if !allowed {
-		return core.Fail("forbidden", "Administrative permission is required.", 403)
 	}
 	return core.CheckWorker(ctx, tx, scope.ProjectID, scope.WorkerID)
 }
@@ -139,6 +135,7 @@ func checkCapacity(ctx context.Context, tx *sql.Tx, projectID string) error {
 // Enqueue performs only local storage work. Result waiting and provider work are
 // separate; exact original-key replay remains useful with a disabled reader.
 func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, selection Selection) (json.RawMessage, error) {
+	scope = scope.RequireAdministration()
 	s, err := Normalize(selection)
 	if err != nil {
 		return nil, err
@@ -203,6 +200,7 @@ func readOperation(ctx context.Context, tx *sql.Tx, project, id string) (retaine
 }
 
 func (e *Engine) Read(ctx context.Context, scope core.Scope, id string) (Operation, error) {
+	scope = scope.RequireAdministration()
 	var result Operation
 	if !operationPattern.MatchString(id) {
 		return result, invalid()
@@ -221,6 +219,7 @@ func (e *Engine) Read(ctx context.Context, scope core.Scope, id string) (Operati
 // Change is a guarded explicit local action. Resume starts a new retained pass
 // at page one of the unfinished resource; cancellation never erases captures.
 func (e *Engine) Change(ctx context.Context, scope core.Scope, id, key, action string, expected int64) (json.RawMessage, error) {
+	scope = scope.RequireAdministration()
 	if !operationPattern.MatchString(id) || expected < 1 || action != "resume" && action != "cancel" {
 		return nil, invalid()
 	}

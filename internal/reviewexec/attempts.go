@@ -89,7 +89,11 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if err != nil {
 			return err
 		}
-		if c.Paused || revision != o.ConfigurationRevision {
+		compatible, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision)
+		if err != nil {
+			return err
+		}
+		if !compatible {
 			return holdOperation(ctx, tx, o, "configuration_changed", at)
 		}
 		capability, ok := e.capabilities[c.CapabilityID]
@@ -220,7 +224,11 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if err != nil {
 			return err
 		}
-		if !allowed || c.Paused || revision != o.ConfigurationRevision {
+		compatible, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision)
+		if err != nil {
+			return err
+		}
+		if !allowed || !compatible {
 			return conflict()
 		}
 		capability, ok := e.capabilities[c.CapabilityID]

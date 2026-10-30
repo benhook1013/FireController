@@ -296,7 +296,7 @@ func TestResultHoldRemainsIndependentOfFindingResolutionWithoutNativeCredit(t *t
 	readerToken := "result-reader"
 	sum := sha256.Sum256([]byte(readerToken))
 	f.exec(`INSERT INTO credentials VALUES('cred_result_reader','principal_result_reader',?,0,0)`, hex.EncodeToString(sum[:]))
-	f.exec(`INSERT INTO grants VALUES('cred_result_reader','project_one',1,0)`)
+	f.exec(`INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('cred_result_reader','project_one',1,0)`)
 	decode[map[string]any](t, f.call("POST", base+"/"+ids["result"]+"/resolve", readerToken, "worker_one", "not-admin", resolution), 403)
 	resolved := f.call("POST", base+"/"+ids["result"]+"/resolve", f.token, "worker_one", "result-resolved", resolution)
 	decode[map[string]any](t, resolved, 200)
@@ -365,7 +365,7 @@ func TestStrictBoundsScopePaginationAndAuth(t *testing.T) {
 	token := "readonly"
 	sum := sha256.Sum256([]byte(token))
 	f.exec(`INSERT INTO credentials VALUES('cred_reader','principal_reader',?,0,0)`, hex.EncodeToString(sum[:]))
-	f.exec(`INSERT INTO grants VALUES('cred_reader','project_one',1,0)`)
+	f.exec(`INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('cred_reader','project_one',1,0)`)
 	decode[m.Page](t, f.call("GET", base, token, "", "", nil), 200)
 	decode[map[string]any](t, f.call("POST", base+"/preview", token, "worker_one", "", b), 403)
 	p := f.preview(func() m.Batch { v := batch(); one := int64(1); v.ExpectedRevision = &one; return v }())

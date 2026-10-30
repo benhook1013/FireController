@@ -66,7 +66,7 @@ func TestWorkerPauseCommandsBoundStateAndOriginalReplay(t *testing.T) {
 
 func TestWorkerPauseCommandsStrictBeforeProfileIO(t *testing.T) {
 	for _, args := range [][]string{
-		{"workers", "pause-state", "--worker", "other"}, {"workers", "pause-history", "--limit", "0"}, {"workers", "pause-history", "--cursor", " bad"}, {"workers", "pause-history", "--cursor", ""},
+		{"workers", "pause-state", "--worker", "bad/worker"}, {"workers", "pause-history", "--limit", "0"}, {"workers", "pause-history", "--cursor", " bad"}, {"workers", "pause-history", "--cursor", ""},
 		{"workers", "pause", "--expect-revision", "0", "--key", "k"}, {"workers", "pause", "--reason", "r", "--key", "k"}, {"workers", "pause", "--reason", "r", "--expect-revision", "0"}, {"workers", "pause", "--reason", "\r", "--expect-revision", "0", "--key", "k"}, {"workers", "pause", "--reason", "\u0085", "--expect-revision", "0", "--key", "k"}, {"workers", "pause", "--reason", strings.Repeat("界", 342), "--expect-revision", "0", "--key", "k"},
 		{"workers", "resume", "--reason", "", "--expect-revision", "0", "--key", "k"}, {"workers", "resume", "worker-other", "--expect-revision", "0", "--key", "k"}, {"workers", "resume", "--expect-revision", "9223372036854775807", "--key", "k"}, {"workers", "resume", "--expect-revision", "0", "--key", "a", "--key", "b"},
 	} {

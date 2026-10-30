@@ -47,6 +47,7 @@ func (e *Engine) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/execution/configuration", e.readExecutionConfigurationHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/configuration", e.configureHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/add", e.changeQueueHTTP("add"))
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/remove", e.changeQueueHTTP("remove"))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/move", e.changeQueueHTTP("move"))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/requests", e.enqueueHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/operations", e.readOperationsHTTP)
@@ -179,8 +180,8 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if terminal {
-			if r.Header.Get("X-FC-Operation-Evidence") == "true" || r.Header.Get("X-FC-Source-Refusal") == "true" {
-				operation, err = e.readOperationProjection(r.Context(), scope, operation.ID, r.Header.Get("X-FC-Operation-Evidence") == "true", r.Header.Get("X-FC-Source-Refusal") == "true")
+			if r.Header.Get("X-FC-Operation-Evidence") == "true" || sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")) {
+				operation, err = e.readOperationProjection(r.Context(), scope, operation.ID, r.Header.Get("X-FC-Operation-Evidence") == "true", sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")), r.Header.Get("X-FC-Source-Refusal") == "v2")
 				if err != nil {
 					writeOperationWaitError(w, err)
 					return
@@ -234,8 +235,8 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if r.Header.Get("X-FC-Operation-Evidence") == "true" || r.Header.Get("X-FC-Source-Refusal") == "true" {
-		operation, err = e.readOperationProjection(r.Context(), scope, operationID, r.Header.Get("X-FC-Operation-Evidence") == "true", r.Header.Get("X-FC-Source-Refusal") == "true")
+	if r.Header.Get("X-FC-Operation-Evidence") == "true" || sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")) {
+		operation, err = e.readOperationProjection(r.Context(), scope, operationID, r.Header.Get("X-FC-Operation-Evidence") == "true", sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")), r.Header.Get("X-FC-Source-Refusal") == "v2")
 		if err != nil {
 			core.WriteError(w, err)
 			return

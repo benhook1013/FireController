@@ -75,6 +75,7 @@ func New(store *core.Store, options ...Option) *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/presence", a.workerPresence)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/message-events", a.messageEvents)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/credentials", a.grant)
+	mux.HandleFunc("PUT /api/v1/projects/{project_id}/credentials/{credential_id}", a.replaceGrant)
 	mux.HandleFunc("DELETE /api/v1/projects/{project_id}/credentials/{credential_id}", a.revoke)
 	if a.browser != nil {
 		mux.Handle("/", a.browser)

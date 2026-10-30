@@ -1,5 +1,7 @@
 package client
 
+import "fmt"
+
 // ReviewRunsOutput omits workspace-origin metadata that does not date a run.
 // Every original item, its own timestamps, and the pinned continuation survive.
 type ReviewRunsOutput struct {
@@ -34,6 +36,9 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 		value.NextAction = "retry_later_with_new_request"
 	}
 	hint := agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)
+	if value.State == "held" && value.Reason == "parent_unavailable" {
+		hint = parentUnavailableDiagnostic(value.SourceRefusal)
+	}
 	if value.PendingEvidence != nil {
 		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
 		value.NextAction = "resolve_pending_evidence"
@@ -65,6 +70,9 @@ type ReviewOperationOutput struct {
 
 func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 	hint := agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)
+	if value.State == "held" && value.Reason == "parent_unavailable" {
+		hint = parentUnavailableDiagnostic(value.SourceRefusal)
+	}
 	if value.PendingEvidence != nil {
 		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
 	}
@@ -238,4 +246,12 @@ func pendingEvidenceDiagnostic(v *ReviewPendingEvidence) *ReviewOperationDiagnos
 		return &ReviewOperationDiagnostic{"No current native-evidence blockers remain for this PR/channel. This is a current local assessment; the earlier held operation and its original reason remain unchanged.", "If the planned review remains authorized, use a new request with a fresh key and current configuration/head. All other admission and provider checks still apply; this read grants no review permission."}
 	}
 	return &ReviewOperationDiagnostic{"The pending_evidence items name the current local obligations in this PR/channel, including any unresolved outgoing route and its receiving PR. evaluated_at describes this read, not a captured historical cause of the earlier hold.", "Resolve the listed capture, finding, finalization, fix or receiving-route obligation through its existing controls. Read the referenced evidence/adjudication or route only when more context is needed. has_more means this is a bounded preview. The held operation remains terminal; do not reset controls, discard evidence or request another review to repair missing work."}
+}
+
+func parentUnavailableDiagnostic(refusal *ReviewSourceRefusal) *ReviewOperationDiagnostic {
+	explanation := "Preparation could not establish an open parent for a checked PR's base branch. This hold did not retain which comparison failed."
+	if refusal != nil {
+		explanation = fmt.Sprintf("Preparation could not establish an open parent for PR #%d's base branch %q. These are the original lookup facts, not a current source observation.", refusal.PullNumber, refusal.BaseRef)
+	}
+	return &ReviewOperationDiagnostic{explanation, "Inspect that base branch in its owning workflow; align or retarget it if its former parent merged. After the source is qualified, use a fresh key and current guards for the still-authorized review. No round reset or extra grant is required. Out-of-order requests still check the target's own parent."}
 }

@@ -18,7 +18,7 @@ func parsePrimaryJob(operation string, args []string) (*mutationInvocation, bool
 			continue
 		}
 		flag, value, assigned := strings.Cut(argument, "=")
-		if flag != "--key" && flag != "--expect-revision" {
+		if flag != "--key" && flag != "--worker" && flag != "--expect-revision" {
 			return nil, false
 		}
 		if _, duplicate := values[flag]; duplicate {
@@ -50,6 +50,12 @@ func parsePrimaryJob(operation string, args []string) (*mutationInvocation, bool
 		if !validResourceID(call.primary.JobID) {
 			return nil, false
 		}
+	}
+	if worker, ok := values["--worker"]; ok {
+		if !validResourceID(worker) {
+			return nil, false
+		}
+		call.targetWorker = worker
 	}
 	call.key = values["--key"]
 	return call, client.ValidatePrimaryJobRequest(call.primary) == nil

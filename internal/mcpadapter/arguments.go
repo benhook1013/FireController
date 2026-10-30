@@ -60,9 +60,25 @@ func invalidArguments() *Diagnostic {
 }
 
 func parseArguments(name string, data json.RawMessage) (arguments, error) {
+	if existingManagementTool(name) {
+		var a arguments
+		var err error
+		a.existingManagement, err = parseExistingManagementArguments(name, data)
+		return a, err
+	}
+	if ownerManagementTool(name) {
+		return ownerManagementArguments(name, data)
+	}
 	var args arguments
 	if len(data) == 0 {
 		data = []byte("{}")
+	}
+	if name == "inbox_list" || name == "outbox_list" {
+		cleaned, worker, ok := selectedWorkerArguments(data)
+		if !ok {
+			return args, invalidArguments()
+		}
+		data, args.worker = cleaned, worker
 	}
 	if reviewBatchTool(name) {
 		return reviewBatchArguments(name, data)
@@ -96,7 +112,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 			return args, invalidArguments()
 		}
 	}
-	if name == "review_queue_add" || name == "review_queue_move" {
+	if name == "review_queue_add" || name == "review_queue_move" || name == "review_queue_remove" {
 		return queueChangeArguments(name, data)
 	}
 	if name == "review_queue" {
@@ -248,13 +264,19 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 }
 
 func mutationTool(name string) bool {
+	if existingManagementWrite(name) {
+		return true
+	}
+	if ownerManagementWrite(name) {
+		return true
+	}
 	if subagentWrite(name) {
 		return true
 	}
 	if reviewBatchTool(name) {
 		return true
 	}
-	if name == "review_queue_add" || name == "review_queue_move" || name == "review_start" || name == "review_rounds_configure" {
+	if name == "review_queue_add" || name == "review_queue_move" || name == "review_queue_remove" || name == "review_start" || name == "review_rounds_configure" {
 		return true
 	}
 	if name == "job_summary_set" || name == "job_primary_replace" || name == "job_update" || name == "job_checklist_replace" || name == "job_checklist_item_update" {
@@ -373,8 +395,8 @@ func toolDefinitions() []definition {
 		{"jobs_assigned", "Read one compact assigned-job page, default open (active, blocked, parked). Explicit status:all includes completed history; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": map[string]any{"type": "string", "enum": []string{"open", "active", "blocked", "parked", "completed", "all"}, "default": "open", "description": "Defaults to open; all explicitly includes completed jobs."}})},
 		{"job_read", "Read one current job snapshot: full private brief and progress, remaining checklist, and exact-job pending-note previews. No worker inbox. Continue pending job notes with note_list(job_id,all_workers:true,cursor); discover worker reminders separately with note_list().", schema(map[string]any{"job_id": id}, "job_id")},
 		{"job_history", "Read one explicit bounded full-state history page for a job.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
-		{"outbox_list", "Read sent handoffs for the bound sender with recipients and current seen/acknowledged state. Defaults to unacknowledged; explicit unacknowledged:false includes handled history. Read-only, bounded; no recipient impersonation or receipt writes.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "newest": map[string]any{"type": "boolean", "description": "Optional newest-first insertion order; retain on continuation. Does not mark older pending messages handled."}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
-		{"inbox_list", "Read one compact pending-message page for the bound worker (unacknowledged by default, including seen-but-unhandled). Set unacknowledged:false for history. Never marks seen or acknowledged.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "newest": map[string]any{"type": "boolean", "description": "Optional newest-first insertion order; retain on continuation. Does not mark older pending messages handled."}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
+		{"outbox_list", "Read sent handoffs for the bound sender with recipients and current seen/acknowledged state. Defaults to unacknowledged; explicit unacknowledged:false includes handled history. Read-only, bounded; no recipient impersonation or receipt writes.", schema(map[string]any{"worker_id": id, "limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "newest": map[string]any{"type": "boolean", "description": "Optional newest-first insertion order; retain on continuation. Does not mark older pending messages handled."}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
+		{"inbox_list", "Read one compact pending-message page for the selected worker (defaults to the bound worker) (unacknowledged by default, including seen-but-unhandled). Set unacknowledged:false for history. Never marks seen or acknowledged.", schema(map[string]any{"worker_id": id, "limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "newest": map[string]any{"type": "boolean", "description": "Optional newest-first insertion order; retain on continuation. Does not mark older pending messages handled."}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
 		{"inbox_snapshot", "Read one bounded pending inbox page (unacknowledged by default; explicit false includes history) and its explicit scoped event cursor; no cursor is saved, no messages are marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "newest": map[string]any{"type": "boolean", "description": "Optional newest-first insertion order; retain on continuation. Does not mark older pending messages handled."}, "unacknowledged": map[string]any{"type": "boolean", "default": true, "description": "Defaults to true: pending messages, including seen-but-unhandled. Explicit false includes acknowledged history."}})},
 		{"inbox_events", "Read one bounded incoming-message event page after an explicit cursor, optionally waiting up to 4000 ms. No cursor is saved, no automatic polling or subscription occurs, messages are never marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Required explicit cursor from a scoped snapshot or replay page."}, "limit": limit, "wait_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 4000, "description": "One bounded wait; omission returns immediately."}}, "cursor")},
 		{"inbox_thread", "Read one explicit conversation page with full immutable bodies; no receipt-state change.", schema(map[string]any{"conversation_id": id, "limit": limit, "cursor": cursor}, "conversation_id")},

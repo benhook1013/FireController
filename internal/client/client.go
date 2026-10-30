@@ -310,6 +310,7 @@ type sourceWaitOptions struct {
 	deploymentDraining *bool
 	reviewBlockers     bool
 	operationEvidence  bool
+	sourceRefusalV2    bool
 	seconds            int
 	status             *int
 	budget             time.Duration // Optional domain-owned budget; zero preserves existing waits.
@@ -358,9 +359,12 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		if wait.reviewBlockers {
 			r.Header.Set("X-FC-Review-Blockers", "true")
 		}
+		if wait.sourceRefusalV2 {
+			r.Header.Set("X-FC-Source-Refusal", "v2")
+		}
 		if wait.operationEvidence {
 			r.Header.Set("X-FC-Operation-Evidence", "true")
-			r.Header.Set("X-FC-Source-Refusal", "true")
+			r.Header.Set("X-FC-Source-Refusal", "v2")
 		}
 	}
 	if len(body) != 0 {
@@ -559,6 +563,11 @@ func (c *Client) safeDetails(value any, code string) any {
 		return nil
 	}
 	result := make(map[string]any)
+	if code == "credential_permissions_changed" {
+		for key, item := range safeCredentialPermissionDetails(object) {
+			result[key] = item
+		}
+	}
 	if code == "review_conflict" {
 		for key, item := range safeReviewConflictDetails(object) {
 			result[key] = item
@@ -566,6 +575,10 @@ func (c *Client) safeDetails(value any, code string) any {
 	}
 	for key, item := range object {
 		switch key {
+		case "operation_id":
+			if id, ok := item.(string); ok && code == "review_queue_operation_pending" && ValidateReviewOperationID(id) == nil && !c.sensitive(id) {
+				result[key] = id
+			}
 		case "current_revision":
 			if n, ok := item.(float64); ok && (n >= 1 || n == 0 && (code == "primary_job_revision_conflict" || code == "checklist_revision_conflict" || code == "worker_pause_revision_conflict" || code == "job_workstream_revision_conflict" || code == "project_presentation_revision_conflict")) && n == float64(int64(n)) && n < 1<<53 {
 				result[key] = int64(n)

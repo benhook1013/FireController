@@ -11,7 +11,7 @@ import (
 )
 
 func TestQueueChangeMCPOrdinaryWriterAndLostResponse(t *testing.T) {
-	f, handler, _ := reviewControlsFixture(t)
+	f, handler, _ := reviewControlsFixture(t, true)
 	var drop atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" && drop.Swap(false) {
@@ -53,6 +53,21 @@ func TestQueueChangeMCPOrdinaryWriterAndLostResponse(t *testing.T) {
 	if len(config.Queue) != 2 || config.Queue[0] != 2 || config.Queue[1] != 3 {
 		t.Fatal(config)
 	}
+	remove := map[string]any{"expected_configuration_revision": 3, "pull_number": 3, "reason": "superseded", "idempotency_key": "mcp-remove"}
+	drop.Store(true)
+	diagnosticResult(t, call(t, session, "review_queue_remove", remove), "connection_failed", true)
+	var removed client.ReviewRequestReceipt
+	decodeResult(t, call(t, session, "review_queue_remove", remove), &removed)
+	if removed.Revision != 4 {
+		t.Fatal(removed)
+	}
+	var final client.ReviewRequestReceipt
+	decodeResult(t, call(t, session, "review_queue_remove", map[string]any{"expected_configuration_revision": 4, "pull_number": 2, "reason": "defunct", "idempotency_key": "mcp-remove-final"}), &final)
+	decodeResult(t, call(t, session, "review_execution_read", nil), &config)
+	if final.Revision != 5 || config.Queue == nil || len(config.Queue) != 0 {
+		t.Fatal(final, config)
+	}
+
 }
 func TestQueueChangeMCPInvalidArgumentsBeforeCredentials(t *testing.T) {
 	var requests atomic.Int64
@@ -62,6 +77,9 @@ func TestQueueChangeMCPInvalidArgumentsBeforeCredentials(t *testing.T) {
 	binding.ServerURL = server.URL
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": binding}, "missing-queue-token"), "chosen")
 	for _, test := range []struct{ name, raw string }{
+		{"review_queue_remove", `{"expected_configuration_revision":1,"pull_number":3,"idempotency_key":"k"}`},
+		{"review_queue_remove", `{"expected_configuration_revision":1,"pull_number":3,"reason":"defunct","before":2,"idempotency_key":"k"}`},
+		{"review_queue_remove", `{"expected_configuration_revision":1,"pull_number":3,"reason":null,"idempotency_key":"k"}`},
 		{"review_queue_add", `{}`},
 		{"review_queue_add", `{"expected_configuration_revision":1,"pull_number":3,"before":null,"idempotency_key":"k"}`},
 		{"review_queue_add", `{"expected_configuration_revision":1,"pull_number":3,"paused":true,"idempotency_key":"k"}`},

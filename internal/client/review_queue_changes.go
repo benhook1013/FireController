@@ -16,10 +16,20 @@ type ReviewQueueChange struct {
 	Before                        *int64 `json:"before,omitempty"`
 	After                         *int64 `json:"after,omitempty"`
 	Position                      string `json:"position,omitempty"`
+	Reason                        string `json:"reason,omitempty"`
 }
 
 func ValidateReviewQueueChange(action string, r ReviewQueueChange) error {
-	if !oneReviewOf(action, "add", "move") || r.ExpectedConfigurationRevision < 1 || r.ExpectedConfigurationRevision == math.MaxInt64 || !validPullNumber(r.PullNumber) {
+	if !oneReviewOf(action, "add", "move", "remove") || r.ExpectedConfigurationRevision < 1 || r.ExpectedConfigurationRevision == math.MaxInt64 || !validPullNumber(r.PullNumber) {
+		return mutationValidation()
+	}
+	if action == "remove" {
+		if !oneReviewOf(r.Reason, "superseded", "defunct") || r.Before != nil || r.After != nil || r.Position != "" {
+			return mutationValidation()
+		}
+		return nil
+	}
+	if r.Reason != "" {
 		return mutationValidation()
 	}
 	n := 0
@@ -86,7 +96,16 @@ func queueChangeError(err error) error {
 		e.Action = "Read reviews execution (MCP review_execution_read), then select an existing before/after anchor or first/last with its current revision. No queue change was made."
 	case "review_queue_full":
 		e.Message = "The configured scheduling queue already contains 100 PRs."
-		e.Action = "Deliberately update scheduling with the project operator before adding another PR; retain completed review history. This refusal did not change the queue or require new credentials."
+		e.Action = "Deliberately remove a defunct or superseded PR with reviews queue-remove (MCP review_queue_remove) before adding another; retain completed review history. No queue change was made."
+	case "review_queue_operation_pending":
+		e.Message = "This PR has a pending review operation; queue removal does not cancel it."
+		e.Action = "Read the retained operation identified by operation_id and let it finish or use its supported deliberate recovery. Then retry removal with the current configuration revision and a new key. No queue change was made."
+	case "review_queue_merged":
+		e.Message = "Merged PRs stay in completed queue history."
+		e.Action = "Do not remove a merged PR as routine supersession cleanup. Its history is retained; no queue change was made."
+	case "review_queue_target_missing":
+		e.Message = "The selected PR has no visible queue entry to retire."
+		e.Action = "Read the current configured queue and retained history before selecting a removal target. No queue change was made."
 	case "review_target_retired":
 		e.Message = "This PR was explicitly retired."
 		e.Action = "Confirm deliberate reactivation with the project operator before enrolling it again. Retained review history is preserved; no queue change was made."

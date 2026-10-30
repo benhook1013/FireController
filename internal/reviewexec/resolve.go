@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strconv"
 	"time"
@@ -88,14 +89,20 @@ func resolveSource(ctx context.Context, reader TargetReader, repositoryID int64,
 	if c.Mode == "stacked" && pull.BaseRef != repo.DefaultBranch {
 		parents, ok := reader.(ParentReader)
 		if !ok {
-			return SourcePlan{}, sourceHold("parent_unavailable")
+			return SourcePlan{}, unavailableParentHold(pull)
 		}
 		parent, err := parents.ParentPull(ctx, repo.FullName, pull.BaseRef)
 		if err != nil {
+			var hold *core.Error
+			if errors.As(err, &hold) && hold.Code == "review_held" {
+				if details, ok := hold.Details.(map[string]string); ok && details["reason"] == "parent_unavailable" {
+					return SourcePlan{}, unavailableParentHold(pull)
+				}
+			}
 			return SourcePlan{}, err
 		}
 		if parent.Number <= 0 || parent.State != "open" || parent.Merged {
-			return SourcePlan{}, sourceHold("parent_unavailable")
+			return SourcePlan{}, unavailableParentHold(pull)
 		}
 		if !sameTarget(parent, repositoryID, parent.Number) || parent.Number == pull.Number || parent.HeadRef != pull.BaseRef {
 			return SourcePlan{}, sourceHold("parent_identity_changed")
@@ -133,4 +140,10 @@ func RecheckSource(ctx context.Context, reader TargetReader, repositoryID int64,
 		return sourceHold("comparison_changed")
 	}
 	return nil
+}
+
+// The failed lookup may have no parent identity. Retain only facts established
+// by the checked child; later provider observations cannot fill this history in.
+func unavailableParentHold(pull reviewprovider.Pull) error {
+	return &core.Error{Code: "review_held", Message: "The checked PR base branch has no available open parent.", Status: 409, Details: map[string]string{"reason": "parent_unavailable", "pull_number": strconv.FormatInt(pull.Number, 10), "base_ref": pull.BaseRef}}
 }

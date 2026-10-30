@@ -38,7 +38,7 @@ func workerPresenceFixture(t *testing.T) (*Store, Scope) {
 		{"INSERT INTO workers VALUES('project',?,'second')", []any{presenceID(2)}},
 		{"INSERT INTO projects VALUES('other','other',2,'synthetic/other')", nil},
 		{"INSERT INTO workers VALUES('other',?,'other')", []any{presenceID(1)}},
-		{"INSERT INTO grants VALUES('credential','other',1,1)", nil},
+		{"INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('credential','other',1,1)", nil},
 	} {
 		if _, err := s.DB().Exec(statement.query, statement.args...); err != nil {
 			t.Fatal(err)
@@ -564,7 +564,7 @@ func TestWorkerPresenceAuthenticatedPrincipalAndProjectKeys(t *testing.T) {
 	if _, err := s.DB().Exec("INSERT INTO credentials VALUES('credential2','principal2',?,0,0)", tokenHash(secondToken)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB().Exec("INSERT INTO grants VALUES('credential2','project',1,0)"); err != nil {
+	if _, err := s.DB().Exec("INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('credential2','project',1,0)"); err != nil {
 		t.Fatal(err)
 	}
 	before := presenceDurableHash(t, s)

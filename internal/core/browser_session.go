@@ -184,11 +184,17 @@ func (s *Store) browserCapabilities(ctx context.Context, q querier, scope Scope,
 		}
 		return false, false, err
 	}
-	var admin int
-	if err := q.QueryRowContext(ctx, `SELECT is_admin FROM credentials WHERE token_sha256=? AND revoked=0`, scope.tokenHash).Scan(&admin); err != nil {
-		return false, false, storageError(err)
+	if !allowPresentation {
+		return true, false, nil
 	}
-	return true, allowPresentation && admin == 1, nil
+	if err := s.authorize(ctx, q, scope, "admin"); err != nil {
+		var e *Error
+		if errors.As(err, &e) && e.Code == "forbidden" {
+			return true, false, nil
+		}
+		return false, false, err
+	}
+	return true, true, nil
 }
 
 // ExpireBrowserSession clears only the explicitly selected tab's cookie. It
