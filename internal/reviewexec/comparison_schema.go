@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -66,7 +67,39 @@ func ensureComparisonSchema(ctx context.Context, store *core.Store) error {
 	if err := store.EnsureSchemaWithBackfill(ctx, "review_comparison", [][]string{ComparisonSchemaSQL()}, backfillComparisonProofs); err != nil {
 		return err
 	}
+	if err := ensureComparisonAttemptTriggers(ctx, store); err != nil {
+		return err
+	}
 	return store.EnsureSchema(ctx, "review_applicability", ApplicabilitySchemaSQL())
+}
+
+// Rebuilding the attempts parent removes its attached SQLite triggers. Restore
+// only these canonical invalidators after the table exists, including startup
+// after a previously committed rebuild. Existing differing definitions fail.
+func ensureComparisonAttemptTriggers(ctx context.Context, store *core.Store) error {
+	return store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		for _, statement := range ComparisonSchemaSQL() {
+			if !strings.HasPrefix(statement, "CREATE TRIGGER review_comparison_dirty_review_execution_attempts_") {
+				continue
+			}
+			name := strings.Fields(statement)[2]
+			var kind, table, definition string
+			err := tx.QueryRowContext(ctx, `SELECT type,tbl_name,sql FROM sqlite_schema WHERE name=?`, name).Scan(&kind, &table, &definition)
+			if errors.Is(err, sql.ErrNoRows) {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return err
+				}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if kind != "trigger" || table != "review_execution_attempts" || strings.TrimSuffix(strings.TrimSpace(definition), ";") != strings.TrimSuffix(strings.TrimSpace(statement), ";") {
+				return core.Fail("schema_invalid", "Native comparison attempt invalidation is inconsistent.", 500)
+			}
+		}
+		return nil
+	})
 }
 
 func backfillComparisonProofs(ctx context.Context, conn *sql.Conn) error {

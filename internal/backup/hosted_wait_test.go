@@ -104,3 +104,42 @@ func TestHostedWaitCanonicalBackupRestore(t *testing.T) {
 		t.Fatal("timer proof altered source or bundle")
 	}
 }
+
+// Daemon startup validates the source after schema initialization. Rebuilding
+// a parent table removes its attached triggers even when every row survives.
+func TestHostedWaitSchemaRepairPassesDaemonBackupStartup(t *testing.T) {
+	f := newRestoreFixture(t)
+	if err := ValidateSource(t.Context(), f.dir); err != nil {
+		t.Fatal("canonical source", err)
+	}
+	var names []string
+	rows, err := f.store.DB().Query(`SELECT name FROM sqlite_schema WHERE type='trigger' AND tbl_name='review_execution_attempts' ORDER BY name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	rows.Close()
+	if len(names) != 3 {
+		t.Fatal("canonical attempt triggers", names)
+	}
+	for _, name := range names {
+		if _, err := f.store.DB().Exec(`DROP TRIGGER ` + name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ValidateSource(t.Context(), f.dir); err == nil {
+		t.Fatal("startup accepted incomplete schema")
+	}
+	if err := reviewexec.EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal("canonical schema repair", err)
+	}
+	if err := ValidateSource(t.Context(), f.dir); err != nil {
+		t.Fatal("repaired source cannot start daemon", err)
+	}
+}
