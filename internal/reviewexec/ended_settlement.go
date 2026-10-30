@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
+	"strconv"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/strictjson"
@@ -29,6 +31,19 @@ func settlementDisposition(ctx context.Context, tx *sql.Tx, a Attempt, o Operati
 			return "", "", "", settlementUnavailable()
 		}
 		full := o.Reason != "hosted_finished_inventory_unproven"
+		// Preserve the existing uncertain capacity/finished-inventory classes.
+		// Other issued work needs a retained confirmed trigger, independently of
+		// any process-local observer reason or the time spent waiting.
+		var observations int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_hosted_observations WHERE attempt_id=?`, a.ID).Scan(&observations); err != nil {
+			return "", "", "", err
+		}
+		if a.State == "active" || full && observations != hostedObservationLimit {
+			if err := validateConfirmedHostedSettlement(ctx, tx, a, o); err != nil {
+				return "", "", "", err
+			}
+			full = false
+		}
 		if err := validateSettlementObservations(ctx, tx, a, o, full); err != nil {
 			return "", "", "", err
 		}
@@ -72,6 +87,51 @@ func validatePartialSettlementEvidence(ctx context.Context, tx *sql.Tx, a Attemp
 	}
 	digest := sha256.Sum256(capture)
 	if !hash.MatchString(fingerprint) || hex.EncodeToString(digest[:]) != fingerprint {
+		return settlementUnavailable()
+	}
+	return nil
+}
+
+// The original confirmed-trigger transition supplies durable issue authority;
+// an allowance query, unknown POST outcome or observer timestamp cannot supply
+// it. Current configuration/catalog changes do not prevent cleanup of stopped
+// original work. The retained attempt/account and its exact reservation are
+// separately checked by the enclosing settlement transaction.
+func validateConfirmedHostedSettlement(ctx context.Context, tx *sql.Tx, a Attempt, o Operation) error {
+	external, err := strconv.ParseInt(a.ExternalID, 10, 64)
+	if err != nil || external <= 0 || strconv.FormatInt(external, 10) != a.ExternalID {
+		return settlementUnavailable()
+	}
+	var body string
+	if err := tx.QueryRowContext(ctx, `SELECT body_json FROM review_execution_config WHERE project_id=? AND revision=?`, o.ProjectID, o.ConfigurationRevision).Scan(&body); errors.Is(err, sql.ErrNoRows) {
+		return settlementUnavailable()
+	} else if err != nil {
+		return err
+	}
+	var original Configuration
+	if len(body) > 32<<10 || json.Unmarshal([]byte(body), &original) != nil || validateConfigurationShape(original) != nil || encoded(original) != body || *original.ExpectedRevision != o.ConfigurationRevision-1 || original.Paused || !slices.Contains(original.Channels, "hosted") || !slices.Contains(original.Queue, o.PullNumber) {
+		return settlementUnavailable()
+	}
+	var revision int64
+	var reason, confirmedExternal, recorded, admittedAt string
+	// The first active transition must confirm this exact trigger; a later
+	// arbitrary active transition cannot repair an earlier unconfirmed action.
+	err = tx.QueryRowContext(ctx, `SELECT revision,reason,external_id,created_at,(SELECT created_at FROM review_execution_transitions WHERE attempt_id=? AND revision=2) FROM review_execution_transitions WHERE attempt_id=? AND state='active' ORDER BY revision LIMIT 1`, a.ID, a.ID).Scan(&revision, &reason, &confirmedExternal, &recorded, &admittedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return settlementUnavailable()
+	} else if err != nil {
+		return err
+	}
+	if revision < 3 || revision > a.Revision || reason != "trigger_recorded" && reason != "trigger_posted" && reason != "trigger_recovered" {
+		return settlementUnavailable()
+	}
+	if confirmedExternal != a.ExternalID {
+		return settlementUnavailable()
+	}
+	at, valid := attemptRecordedTime(recorded)
+	created, createdOK := attemptRecordedTime(admittedAt)
+	current, currentOK := attemptRecordedTime(o.UpdatedAt)
+	if !valid || !createdOK || !currentOK || at.Before(created) || at.After(current) {
 		return settlementUnavailable()
 	}
 	return nil

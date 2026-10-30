@@ -12,6 +12,7 @@ import (
 
 // ReviewOperationStatus omits private configuration and capture contents.
 type ReviewOperationStatus struct {
+	SettlementTarget   *ReviewSettlementTarget     `json:"settlement_target,omitempty"`
 	Observer           *ReviewHostedObserverStatus `json:"observer,omitempty"`
 	Wait               *ReviewOperationWait        `json:"wait,omitempty"`
 	SourceRefusal      *ReviewSourceRefusal        `json:"source_refusal,omitempty"`
@@ -77,6 +78,12 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 			return strictjson.ErrSyntax
 		}
 	}
+	if raw, present := fields["settlement_target"]; present {
+		var target ReviewSettlementTarget
+		if strictjson.Decode(raw, &target) != nil {
+			return strictjson.ErrSyntax
+		}
+	}
 	typ := reflect.TypeOf(ReviewOperationStatus{})
 	for i := 0; i < typ.NumField(); i++ {
 		if typ.Field(i).PkgPath != "" || typ.Field(i).Tag.Get("json") == "-" {
@@ -93,6 +100,9 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 }
 
 func validCompactOperationStatus(v ReviewOperationStatus) bool {
+	if !validReviewSettlementTarget(v.SettlementTarget, v.AttemptID) {
+		return false
+	}
 	if !validReviewHostedObserver(v.Observer, v.Channel, v.State, v.AttemptID) {
 		return false
 	}

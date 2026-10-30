@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -13,6 +14,7 @@ import (
 
 // OperationStatus is a compact read projection, never execution or coverage authority.
 type OperationStatus struct {
+	SettlementTarget   *SettlementTarget     `json:"settlement_target,omitempty"`
 	Observer           *HostedObserverStatus `json:"observer,omitempty"`
 	Wait               *OperationWait        `json:"wait,omitempty"`
 	SourceRefusal      *SourceRefusal        `json:"source_refusal,omitempty"`
@@ -31,6 +33,15 @@ type OperationStatus struct {
 	RetryNotBefore     string                `json:"retry_not_before,omitempty"`
 	UpdatedAt          string                `json:"updated_at"`
 	NextAction         string                `json:"next_action"`
+}
+
+// SettlementTarget contains original-attempt guards, not settlement eligibility
+// or proof that external work has stopped.
+type SettlementTarget struct {
+	AttemptRevision int64  `json:"attempt_revision"`
+	RepositoryID    int64  `json:"repository_id"`
+	HeadSHA         string `json:"head_sha"`
+	ExternalID      string `json:"external_id"`
 }
 
 func operationStatusStage(o Operation, evidence string, complete bool) (string, string) {
@@ -90,6 +101,7 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 		}
 		stage, next := operationStatusStage(o, facts.ID, facts.Complete)
 		result = OperationStatus{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, State: o.State, Revision: o.Revision, Stage: stage, Reason: o.Reason, AttemptID: o.AttemptID, EvidenceID: facts.ID, ReviewFinishedAt: facts.ReviewFinishedAt, EvidenceRecordedAt: facts.EvidenceRecordedAt, UpdatedAt: o.UpdatedAt, NextAction: next}
+		result.SettlementTarget = facts.SettlementTarget
 		result.Wait = currentOperationWait(o)
 		result.Observer = e.observerStatus(o)
 		result.SourceRefusal, err = readSourceRefusal(ctx, tx, o)
@@ -111,6 +123,7 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 }
 
 type operationEvidenceFacts struct {
+	SettlementTarget   *SettlementTarget
 	ID                 string
 	Complete           bool
 	ReviewFinishedAt   string
@@ -122,9 +135,12 @@ func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (oper
 		return operationEvidenceFacts{}, nil
 	}
 	var attemptOperation, attemptProject, attemptAnchor string
+	var attemptRevision int64
+	var externalID sql.NullString
 	var id, project, operation, attempt, bodyID, bodyProject, bodyOperation, bodyAttempt, anchor, expected, fingerprint, outcome, finished, recorded sql.NullString
 	var complete, hosted sql.NullInt64
-	err := tx.QueryRowContext(ctx, `SELECT a.operation_id,a.project_id,
+	err := tx.QueryRowContext(ctx, `SELECT a.operation_id,a.project_id,a.revision,
+ CASE WHEN length(CAST(a.external_id AS BLOB))<=128 THEN a.external_id END,
  CASE WHEN length(CAST(a.anchor_json AS BLOB))<=2048 THEN a.anchor_json ELSE '' END,
  e.id,e.project_id,e.operation_id,e.attempt_id,
  json_extract(e.body_json,'$.id'),json_extract(e.body_json,'$.project_id'),json_extract(e.body_json,'$.operation_id'),json_extract(e.body_json,'$.attempt_id'),
@@ -134,7 +150,7 @@ func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (oper
  CASE WHEN json_type(e.body_json,'$.capture.finished_at')='text' AND length(CAST(json_extract(e.body_json,'$.capture.finished_at') AS BLOB))<=64 THEN json_extract(e.body_json,'$.capture.finished_at') END,
  CASE WHEN json_type(e.body_json,'$.recorded_at')='text' AND length(CAST(json_extract(e.body_json,'$.recorded_at') AS BLOB))<=64 THEN json_extract(e.body_json,'$.recorded_at') END,
  CASE WHEN e.id IS NULL THEN NULL WHEN json_type(e.body_json,'$.capture.hosted')='object' THEN 1 WHEN json_type(e.body_json,'$.capture.hosted') IS NULL OR json_type(e.body_json,'$.capture.hosted')='null' THEN 0 ELSE -1 END
- FROM review_execution_attempts a LEFT JOIN review_execution_evidence e ON e.attempt_id=a.id WHERE a.project_id=? AND a.id=?`, o.ProjectID, o.AttemptID).Scan(&attemptOperation, &attemptProject, &attemptAnchor, &id, &project, &operation, &attempt, &bodyID, &bodyProject, &bodyOperation, &bodyAttempt, &anchor, &expected, &fingerprint, &outcome, &complete, &finished, &recorded, &hosted)
+ FROM review_execution_attempts a LEFT JOIN review_execution_evidence e ON e.attempt_id=a.id WHERE a.project_id=? AND a.id=?`, o.ProjectID, o.AttemptID).Scan(&attemptOperation, &attemptProject, &attemptRevision, &externalID, &attemptAnchor, &id, &project, &operation, &attempt, &bodyID, &bodyProject, &bodyOperation, &bodyAttempt, &anchor, &expected, &fingerprint, &outcome, &complete, &finished, &recorded, &hosted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return operationEvidenceFacts{}, adjudicationStorageError()
 	}
@@ -144,14 +160,23 @@ func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (oper
 	if attemptOperation != o.ID || attemptProject != o.ProjectID {
 		return operationEvidenceFacts{}, adjudicationStorageError()
 	}
-	if !id.Valid {
-		return operationEvidenceFacts{}, nil
-	}
+	var facts operationEvidenceFacts
 	var admitted, captured, want Anchor
-	if !hostedObservationID(id.String, "review_evidence_") || project.String != o.ProjectID || operation.String != o.ID || attempt.String != o.AttemptID || bodyID.String != id.String || bodyProject.String != o.ProjectID || bodyOperation.String != o.ID || bodyAttempt.String != o.AttemptID || !anchor.Valid || !expected.Valid || !fingerprint.Valid || fingerprint.String != o.CapabilityFingerprint || !complete.Valid || complete.Int64 < 0 || complete.Int64 > 1 || !outcome.Valid || !hosted.Valid || hosted.Int64 < 0 || hosted.Int64 > 1 || (hosted.Int64 == 1) != (o.Channel == "hosted") || json.Unmarshal([]byte(attemptAnchor), &admitted) != nil || json.Unmarshal([]byte(anchor.String), &captured) != nil || json.Unmarshal([]byte(expected.String), &want) != nil || !validEvidenceAnchor(admitted) || captured != admitted || want != admitted || admitted.PullNumber != o.PullNumber || admitted.CandidateSHA != o.HeadSHA {
+	// Preparing attempts have no admission yet. Do not invent a settlement target
+	// from current PR metadata, and do not require evidence to expose an admission.
+	if attemptAnchor != "null" {
+		if json.Unmarshal([]byte(attemptAnchor), &admitted) != nil || encoded(admitted) != attemptAnchor || !validEvidenceAnchor(admitted) || admitted.PullNumber != o.PullNumber || admitted.CandidateSHA != o.HeadSHA || attemptRevision < 1 || attemptRevision == math.MaxInt64 || !externalID.Valid || externalID.String != "" && !identifier.MatchString(externalID.String) {
+			return operationEvidenceFacts{}, adjudicationStorageError()
+		}
+		facts.SettlementTarget = &SettlementTarget{AttemptRevision: attemptRevision, RepositoryID: admitted.RepositoryID, HeadSHA: admitted.CandidateSHA, ExternalID: externalID.String}
+	}
+	if !id.Valid {
+		return facts, nil
+	}
+	if !hostedObservationID(id.String, "review_evidence_") || project.String != o.ProjectID || operation.String != o.ID || attempt.String != o.AttemptID || bodyID.String != id.String || bodyProject.String != o.ProjectID || bodyOperation.String != o.ID || bodyAttempt.String != o.AttemptID || !anchor.Valid || !expected.Valid || !fingerprint.Valid || fingerprint.String != o.CapabilityFingerprint || !complete.Valid || complete.Int64 < 0 || complete.Int64 > 1 || !outcome.Valid || !hosted.Valid || hosted.Int64 < 0 || hosted.Int64 > 1 || (hosted.Int64 == 1) != (o.Channel == "hosted") || facts.SettlementTarget == nil || json.Unmarshal([]byte(anchor.String), &captured) != nil || json.Unmarshal([]byte(expected.String), &want) != nil || captured != admitted || want != admitted {
 		return operationEvidenceFacts{}, adjudicationStorageError()
 	}
-	facts := operationEvidenceFacts{ID: id.String, Complete: complete.Int64 == 1 && outcome.String == "completed"}
+	facts.ID, facts.Complete = id.String, complete.Int64 == 1 && outcome.String == "completed"
 	_, finishOK := hostedObservationTime(finished.String)
 	_, recordedOK := hostedObservationTime(recorded.String)
 	if finishOK && recordedOK {

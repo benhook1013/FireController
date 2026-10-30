@@ -30,8 +30,8 @@ func ownerManagementHelp(operation string) (operationHelpResponse, bool) {
 	case "reviews attempt-settle":
 		out.Usage += " ATTEMPT_ID --file SETTLEMENT_JSON --key KEY"
 		out.Required = []string{"ATTEMPT_ID", "--file (owner-private absolute JSON path)", "--key KEY"}
-		out.FileExample = map[string]any{"expected_revision": 4, "expected_repository_id": 123, "expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expected_external_id": "retained-external-id", "external_action_stopped": true, "reason": "External action independently verified stopped.", "evidence_reference": "private-evidence-reference"}
-		out.Semantics = append(out.Semantics, "Project manager; only eligible original uncertain attempts. Independently verify external termination before asserting external_action_stopped. Exact revision/repository/head/external ID guards remain. This does not cancel a provider, fabricate review evidence or award completion credit.")
+		out.FileExample = map[string]any{"expected_revision": 4, "expected_repository_id": 123, "expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expected_external_id": "123456789", "external_action_stopped": true, "reason": "External action independently verified stopped.", "evidence_reference": "private-evidence-reference"}
+		out.Semantics = append(out.Semantics, "Project manager; eligible issued Hosted attempts and retained partial CLI results only. Read reviews operation OPERATION_ID for attempt_id and settlement_target; use its attempt_revision, not the operation revision, for expected_revision. Those guard facts do not prove eligibility or termination. Independently verify external termination before asserting external_action_stopped. This does not cancel a provider, fabricate review evidence or award completion credit.")
 		out.Documentation = "docs/hosted-settlement.md"
 	case "workers create":
 		out.Usage += " --name TEXT --key KEY"

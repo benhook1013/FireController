@@ -44,7 +44,7 @@ type attemptSettlementAudit struct {
 }
 
 func settlementUnavailable() error {
-	return core.Fail("review_settlement_unavailable", "Only an eligible uncertain attempt with its original retained evidence and reservation can be settled.", 409)
+	return core.Fail("review_settlement_unavailable", "Only an eligible stopped attempt with its original retained evidence and reservation can be settled.", 409)
 }
 func validSettlementText(value string, multiline bool) bool {
 	return utf8.ValidString(value) && len(value) <= 1024 && strings.TrimSpace(value) != "" && strings.IndexFunc(value, func(r rune) bool { return unicode.IsControl(r) && (!multiline || r != '\t' && r != '\n') }) < 0
@@ -91,7 +91,7 @@ func (e *Engine) settleAttemptHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		if a.ID != id || a.ProjectID != scope.ProjectID || o.ProjectID != scope.ProjectID || o.ID != a.OperationID || o.AttemptID != a.ID || a.State != "uncertain" || o.State != a.State || !validChannel(o.Channel) || a.Revision < 3 || o.Revision < 1 || o.Revision == math.MaxInt64 || !identifier.MatchString(a.Provider) || !identifier.MatchString(a.Account) || !hostedObservationID(o.ID, "review_operation_") || !hash.MatchString(o.CapabilityFingerprint) || a.Anchor == nil || !validEvidenceAnchor(*a.Anchor) || a.Anchor.RepositoryID != *request.ExpectedRepositoryID || a.Anchor.CandidateSHA != *request.ExpectedHeadSHA || a.ExternalID != *request.ExpectedExternalID || a.Anchor.PullNumber != o.PullNumber || a.Anchor.CandidateSHA != o.HeadSHA {
+		if a.ID != id || a.ProjectID != scope.ProjectID || o.ProjectID != scope.ProjectID || o.ID != a.OperationID || o.AttemptID != a.ID || (a.State != "uncertain" && (a.State != "active" || o.Channel != "hosted")) || o.State != a.State || !validChannel(o.Channel) || a.Revision < 3 || o.Revision < 1 || o.Revision == math.MaxInt64 || !identifier.MatchString(a.Provider) || !identifier.MatchString(a.Account) || !hostedObservationID(o.ID, "review_operation_") || !hash.MatchString(o.CapabilityFingerprint) || a.Anchor == nil || !validEvidenceAnchor(*a.Anchor) || a.Anchor.RepositoryID != *request.ExpectedRepositoryID || a.Anchor.CandidateSHA != *request.ExpectedHeadSHA || a.ExternalID != *request.ExpectedExternalID || a.Anchor.PullNumber != o.PullNumber || a.Anchor.CandidateSHA != o.HeadSHA {
 			return nil, settlementUnavailable()
 		}
 		var originalAnchor, currentExternal, currentRecordedAt, currentReason string
@@ -140,7 +140,7 @@ func (e *Engine) settleAttemptHTTP(w http.ResponseWriter, r *http.Request) {
 		if len(payload) > 4096 {
 			return nil, core.Fail("settlement_audit_too_large", "Shorten the operator reason or evidence reference to fit the settlement audit limit.", 400)
 		}
-		updated, err := tx.ExecContext(ctx, `UPDATE review_execution_attempts SET state=?,revision=revision+1 WHERE id=? AND project_id=? AND state='uncertain' AND revision=?`, state, a.ID, scope.ProjectID, a.Revision)
+		updated, err := tx.ExecContext(ctx, `UPDATE review_execution_attempts SET state=?,revision=revision+1 WHERE id=? AND project_id=? AND state=? AND revision=?`, state, a.ID, scope.ProjectID, a.State, a.Revision)
 		if err != nil {
 			return nil, err
 		}
@@ -149,7 +149,7 @@ func (e *Engine) settleAttemptHTTP(w http.ResponseWriter, r *http.Request) {
 		} else if count != 1 {
 			return nil, settlementUnavailable()
 		}
-		updated, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,updated_at=? WHERE id=? AND project_id=? AND state='uncertain' AND revision=? AND attempt_id=?`, state, reason, at, o.ID, scope.ProjectID, o.Revision, a.ID)
+		updated, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,updated_at=? WHERE id=? AND project_id=? AND state=? AND revision=? AND attempt_id=?`, state, reason, at, o.ID, scope.ProjectID, o.State, o.Revision, a.ID)
 		if err != nil {
 			return nil, err
 		}

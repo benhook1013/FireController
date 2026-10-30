@@ -54,10 +54,13 @@ func TestOperationStatusEvidenceIdentityAndCompactHTTP(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(w.Body.Bytes(), &fields) != nil || len(fields) != 13 {
+	if json.Unmarshal(w.Body.Bytes(), &fields) != nil || len(fields) != 14 {
 		t.Fatal("unexpected compact fields", w.Body.String())
 	}
-	for _, secret := range []string{"project_id", "actor_id", "worker_id", "configuration_revision", "capability_fingerprint", "head_sha", "allowance", "Literal", "source text", "private-test-account"} {
+	if _, present := fields["head_sha"]; present {
+		t.Fatal("head escaped its bounded settlement target")
+	}
+	for _, secret := range []string{"project_id", "actor_id", "worker_id", "configuration_revision", "capability_fingerprint", "allowance", "Literal", "source text", "private-test-account"} {
 		if strings.Contains(w.Body.String(), secret) {
 			t.Fatal("private/full diagnostics escaped", secret)
 		}
