@@ -171,7 +171,9 @@ func (m *Manager) verifyOwnedBundle(ctx context.Context, b ownedBundle) (Manifes
 	if err != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
 		return zero, nil, invalid()
 	}
-	manifest, err := inspectManifest(ctx, path)
+	// The registered manifest binds bytes fully validated by createManaged.
+	// Rehash every file, but do not repeat domain scans for unchanged snapshots.
+	manifest, err := inspectBundleIntegrity(ctx, path)
 	if err != nil {
 		// Inspection cannot unlink. Cancellation can obscure a validation
 		// failure inside hashing; defer that judgment, never deletion checks.
