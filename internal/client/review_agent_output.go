@@ -285,11 +285,16 @@ func parentUnavailableDiagnostic(refusal *ReviewSourceRefusal) *ReviewOperationD
 }
 
 func operationWaitDiagnostic(w *ReviewOperationWait) *ReviewOperationDiagnostic {
+	scope, candidates := "", ""
+	if w.RetryNotBefore != "" {
+		scope = " This deadline schedules this request only; the provider limit’s scope across other PRs, repositories or accounts is unknown."
+		candidates = " Other authorized candidates still need their own admission and fresh provider checks."
+	}
 	if w.Paused {
-		return &ReviewOperationDiagnostic{"This same operation is paused before provider dispatch. Its retry deadline and review intent are retained; no review is running.", "Continue other work, or explicitly resume/cancel this operation with its current revision and an idempotency key. This does not change project pause, allowances or taper."}
+		return &ReviewOperationDiagnostic{"This same operation is paused before provider dispatch. Its retry deadline and review intent are retained; no review is running." + scope, "Continue other work, or explicitly resume/cancel this operation with its current revision and an idempotency key. This does not change project pause, allowances or taper." + candidates}
 	}
 	if w.RetryNotBefore != "" {
-		return &ReviewOperationDiagnostic{"The provider reported a cooldown. This same operation automatically rechecks admission and allowance at or after retry_not_before; the deadline is not a reserved start time or review completion.", "Continue other work and read this operation later. Do not submit a replacement request. Pause or cancel only this undispatched intent using review_operation_control (CLI reviews operation-control) if desired."}
+		return &ReviewOperationDiagnostic{"The provider reported a cooldown. This same operation automatically rechecks admission and allowance at or after retry_not_before; the deadline is not a reserved start time or review completion." + scope, "Continue other work and read this operation later. Do not submit a replacement request. Pause or cancel only this undispatched intent using review_operation_control (CLI reviews operation-control) if desired." + candidates}
 	}
 	return nil
 }
