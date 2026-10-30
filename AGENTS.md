@@ -18,6 +18,7 @@
 - During an active hosted review, prepare fixes locally and publish them only after the review completes. Read all paginated current and outdated unresolved threads and the latest completed summary before evaluating CI.
 - Verify summary-only and outside-diff findings. Fix valid findings before resolving their threads. Request another full CodeRabbit review only at a meaningful checkpoint with current findings handled and no active review or rate limit.
 - Use proportionate validation. Report what ran and what remains unproven. New behavior needs focused contract and failure-mode proof, rather than tests that only mirror implementation.
+- Use the [fast pre-v1 development path](docs/releases.md#fast-pre-v1-development) for authorized local-build deployments; keep full CI/publication running in the background and investigate its failures. Pending CI artifacts are not a development deployment gate.
 
 ## Delegation
 

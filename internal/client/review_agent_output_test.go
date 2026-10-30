@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -49,7 +50,7 @@ func TestAgentOperationParentDiagnosticsPreserveCompactAndFullFacts(t *testing.T
 			compact := ReviewOperationStatus{ID: "original_operation", PullNumber: 3300, Channel: "hosted", State: state, Revision: 5, Stage: "held", Reason: reason, AttemptID: "original_attempt", EvidenceID: "original_evidence", UpdatedAt: "original_time", NextAction: "read_diagnostics"}
 			full := ReviewOperation{ID: compact.ID, ProjectID: "original_project", ActorID: "original_actor", WorkerID: "original_worker", ConfigurationRevision: 12, PolicyRevision: 2, CapabilityFingerprint: "original_binding", PullNumber: compact.PullNumber, Channel: compact.Channel, HeadSHA: "original_head", AllowOutOfOrder: true, State: state, Revision: compact.Revision, Reason: reason, AttemptID: compact.AttemptID, CreatedAt: "original_creation", UpdatedAt: compact.UpdatedAt}
 			compactOut, fullOut := AgentReviewOperationStatus(compact), AgentReviewOperation(full)
-			wantHint := state == "held" && (reason == "parent_moved" || reason == "predecessor_parent_moved")
+			wantHint := state == "held" && (reason == "parent_moved" || reason == "predecessor_parent_moved" || reason == "parent_unavailable")
 			if !reflect.DeepEqual(compactOut.ReviewOperationStatus, compact) || !reflect.DeepEqual(fullOut.ReviewOperation, full) || !reflect.DeepEqual(compactOut.Diagnostic, fullOut.Diagnostic) || (compactOut.Diagnostic != nil) != wantHint {
 				t.Fatal("parent diagnostic changed facts, disagreed across views or invented a hold", state, reason)
 			}
@@ -58,7 +59,14 @@ func TestAgentOperationParentDiagnosticsPreserveCompactAndFullFacts(t *testing.T
 				if reason == "parent_moved" && (!strings.Contains(hint.Explanation, "Older operations") || !strings.Contains(hint.Explanation, "does not identify")) || reason == "predecessor_parent_moved" && (!strings.Contains(hint.Explanation, "selected PR's source check passed") || !strings.Contains(hint.Explanation, "ancestor")) {
 					t.Fatal("parent diagnosis invented an edge or lost the proved boundary", hint)
 				}
-				for _, required := range []string{"owning workflow", "stable selected comparison", "current review authorization", "do not automatically retry", "reset review progress", "no-op commit"} {
+				requiredPhrases := []string{"owning workflow", "stable selected comparison", "current review authorization", "do not automatically retry", "reset review progress", "no-op commit"}
+				if reason == "parent_unavailable" {
+					if !strings.Contains(hint.Explanation, "did not retain which comparison failed") || strings.Contains(hint.Explanation, "PR #") {
+						t.Fatal("absent source metadata became an identified parent", hint)
+					}
+					requiredPhrases = []string{"owning workflow", "After the source is qualified", "still-authorized review", "No round reset or extra grant", "Out-of-order requests still check the target's own parent"}
+				}
+				for _, required := range requiredPhrases {
 					if !strings.Contains(hint.NextAction, required) {
 						t.Fatal("unsafe or incomplete parent repair guidance", hint)
 					}
@@ -265,6 +273,24 @@ func TestAgentCLIAllowanceTimeoutRecoveryPreservesOriginalHold(t *testing.T) {
 					t.Fatal("timeout diagnostic too large")
 				}
 			}
+		}
+	}
+}
+
+func TestAgentMissingParentDiagnosticsNameOnlyOriginalRetainedFacts(t *testing.T) {
+	for _, checked := range []int64{3300, 3298} {
+		facts := &ReviewSourceRefusal{PullNumber: checked, BaseRef: "codex/former-parent"}
+		compact := ReviewOperationStatus{ID: "original_operation", PullNumber: 3300, Channel: "cli", State: "held", Reason: "parent_unavailable", SourceRefusal: facts, NextAction: "read_diagnostics"}
+		full := ReviewOperation{ID: compact.ID, PullNumber: compact.PullNumber, Channel: compact.Channel, State: compact.State, Reason: compact.Reason, SourceRefusal: facts}
+		c, f := AgentReviewOperationStatus(compact), AgentReviewOperation(full)
+		if !reflect.DeepEqual(c.ReviewOperationStatus, compact) || !reflect.DeepEqual(f.ReviewOperation, full) || !reflect.DeepEqual(c.Diagnostic, f.Diagnostic) {
+			t.Fatal("missing-parent hint changed retained facts or diverged", c, f)
+		}
+		if c.Diagnostic == nil || !strings.Contains(c.Diagnostic.Explanation, fmt.Sprintf("PR #%d", checked)) || !strings.Contains(c.Diagnostic.Explanation, facts.BaseRef) || !strings.Contains(c.Diagnostic.Explanation, "original lookup facts, not a current source observation") {
+			t.Fatal("hint lost original bounded identity", c)
+		}
+		if facts.ParentPullNumber != 0 || facts.ObservedBaseSHA != "" || facts.ExpectedParentSHA != "" {
+			t.Fatal("hint invented unavailable parent or SHA", facts)
 		}
 	}
 }

@@ -17,10 +17,10 @@ func TestInboxListHelpIsOfflineAndExplainsPendingDiscovery(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		code := RunContext(ctx, args, nil, &stdout, &stderr)
 		var help operationHelpResponse
-		if code != ExitSuccess || stderr.Len() != 0 || stdout.Len() > 2048 || json.Unmarshal(stdout.Bytes(), &help) != nil || len(help.Required) != 0 || len(help.Optional) != 6 {
+		if code != ExitSuccess || stderr.Len() != 0 || stdout.Len() > 2048 || json.Unmarshal(stdout.Bytes(), &help) != nil || len(help.Required) != 0 || len(help.Optional) != 7 {
 			t.Fatalf("offline list help: code=%d stdout=%s stderr=%s", code, &stdout, &stderr)
 		}
-		for _, text := range []string{"oldest-first", "insertion order", "--newest", "seen-but-unhandled", "--unread", "same filters", "inbox snapshot", "event_cursor", "acknowledgment"} {
+		for _, text := range []string{"oldest-first", "insertion order", "--newest", "seen-but-unhandled", "--unread", "same filters", "inbox snapshot", "event_cursor", "acknowledgment", "--worker", "same-project", "same worker"} {
 			if !strings.Contains(stdout.String(), text) {
 				t.Fatalf("list help omits %q", text)
 			}

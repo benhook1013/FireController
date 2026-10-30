@@ -1,5 +1,20 @@
 # Build Publication and Deployment
 
+## Fast pre-v1 development
+
+This project's authorized pre-v1 iterations use locally built binaries copied to the serving node for quick development deployment. Full CI and container publication continue in the background; pending workflow artifacts are not a deployment gate. Investigate and report CI failures, and repair relevant regressions. Formal published releases follow the artifact path below.
+
+Use proportionate focused checks and independent proof of the affected behavior before deploying. Record the exact clean source revision and hashes of the locally built `fc`, `fcd` and `fcmcp`; keep their matching guidance with the binaries. A launcher update preserves its original profile and worker binding and affects future processes, without restarting another agent's MCP session.
+
+1. Copy the verified binaries and their manifest to the existing serving node. Assemble and retain an immutable local OCI image bound to that source revision and those hashes; do not select a mutable development tag or relabel a local digest as a registry digest.
+2. Reuse an unchanged qualified runtime base only while the Dockerfile and runtime dependency contract remain unchanged. A change to either requires building and qualifying that runtime again, including its actual container behavior.
+3. Before a schema-bearing server update, upgrade the separately installed offsite and backup-health helpers to schema-qualified binaries and verify their hashes, as required by [offsite backups](offsite-backups.md). Preserve private configuration, destinations and retention.
+4. Preflight the local image without live data or credential mounts. Apply the existing deployment drain, single-writer replacement, health, original-instance and exact-source checks to the node-local image. Preserve the existing PVC, runtime bindings and project authority; deployment does not authorize live review requests.
+5. Proceed immediately when active dispatches reach zero. There is no additional quiet or cooldown period. Keep the existing maximum drain at **600 seconds (ten minutes)**, with the same deadline handling, termination grace and retained-result recovery described below.
+6. Verify health, exact source/image identity and reopened admission after replacement. Record the local image identity and checks so the deployed build remains inspectable while CI finishes.
+
+The registry rollout helper below retains its published-image contract. The local development handoff uses the same bounded safety checks with the node-local image; it does not require a registry pull or introduce another deployment framework. Neither path promises a fixed deployment duration. The protected-main publication and security review reminder remains required before official releases.
+
 ## Published artifacts
 
 The [CI workflow](../.github/workflows/ci.yml) runs on pull requests and pushes to `develop` and `main`. Its container job builds the Linux/amd64 image once and checks that actual image. After the required check families succeed, a separate job publishes that same saved image to `ghcr.io/benhook1013/firecontroller:sha-COMMIT`, where `COMMIT` is the full source revision. It does not rebuild after testing. Publication pulls the pushed tag back and selects its registry-qualified digest; a local Docker alias cannot become a deployment reference. Repository/source labels and the workflow's image-reference artifact bind the source commit to the registry digest. `develop` images are temporary development candidates; publishing from `main` does not create a versioned stable release.
@@ -18,7 +33,7 @@ Download an artifact through its Actions run page or `gh run download RUN_ID --r
 
 ## Deployment boundary
 
-Pull the published digest on the target host and use it as the selected image in the existing deployment. For a local Docker installation, use the [container guide](container-runtime.md); an existing Kubernetes installation updates its controller image by digest while preserving its private volumes, runtime bindings and single-writer replacement strategy. The daemon and embedded browser ship together.
+For the published-artifact path, pull the published digest on the target host and select it in the existing deployment. For a local Docker installation, use the [container guide](container-runtime.md); an existing Kubernetes installation updates its controller image by digest while preserving its private volumes, runtime bindings and single-writer replacement strategy. The daemon and embedded browser ship together.
 
 ## Bounded Kubernetes rollout
 

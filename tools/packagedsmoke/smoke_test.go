@@ -308,40 +308,50 @@ func TestPackagedSmoke(t *testing.T) {
 	defer cancelTools()
 	needed := map[string]bool{"job_read": false, "inbox_snapshot": false, "wait_for_messages": false, "workers_list": false, "worker_pause_read": false, "worker_pause_history": false, "worker_pause_replace": false}
 	params, seen := &mcp.ListToolsParams{}, map[string]bool{}
-	for {
+	seenNames := map[string]bool{}
+	discoveryComplete := false
+	for page := 0; page < 8; page++ {
 		tools, err := session.ListTools(toolCtx, params)
 		if err != nil {
 			t.Fatal("actual fcmcp tool discovery failed")
 		}
-		if params.Cursor == "" {
-			if tools.NextCursor != "" {
-				t.Fatal("actual fcmcp current inventory must fit the first discovery page")
+		for _, tool := range tools.Tools {
+			if tool.Name == "" || seenNames[tool.Name] {
+				t.Fatal("actual fcmcp discovery returned an empty or duplicate tool name")
 			}
-			firstNames := map[string]bool{}
-			for _, tool := range tools.Tools {
-				firstNames[tool.Name] = true
+			seenNames[tool.Name] = true
+			schema, err := json.Marshal(tool.InputSchema)
+			var input struct {
+				Type       string                     `json:"type"`
+				Properties map[string]json.RawMessage `json:"properties"`
 			}
-			for name := range needed {
-				if !firstNames[name] {
-					t.Fatalf("critical packaged tool %s absent from first discovery page", name)
+			if err != nil || json.Unmarshal(schema, &input) != nil || input.Type != "object" {
+				t.Fatalf("actual fcmcp tool %s has an invalid object input schema", tool.Name)
+			}
+			for _, selector := range []string{"profile", "project_id"} {
+				if _, exists := input.Properties[selector]; exists {
+					t.Fatalf("actual fcmcp tool %s advertises a per-call binding selector", tool.Name)
 				}
 			}
-		}
-		for _, tool := range tools.Tools {
 			if _, exists := needed[tool.Name]; exists {
 				needed[tool.Name] = true
 			}
 		}
 		if tools.NextCursor == "" {
+			discoveryComplete = true
+			t.Logf("actual fcmcp discovery: %d tools across %d pages", len(seenNames), page+1)
 			break
 		}
-		if seen[tools.NextCursor] {
-			t.Fatal("actual fcmcp discovery repeated a page cursor")
+		if len(tools.Tools) == 0 || seen[tools.NextCursor] || tools.NextCursor == params.Cursor {
+			t.Fatal("actual fcmcp discovery cursor did not progress")
 		}
 		seen[tools.NextCursor] = true
 		params.Cursor = tools.NextCursor
 	}
 	cancelTools()
+	if !discoveryComplete {
+		t.Fatal("actual fcmcp discovery exceeded bounded pages")
+	}
 	for name, found := range needed {
 		if !found {
 			t.Fatalf("needed packaged tool %s is missing", name)
