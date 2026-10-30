@@ -58,11 +58,7 @@ func validHostedAllowanceObservation(in HostedAllowanceInput) bool {
 }
 
 func validHostedAllowanceOutcome(o reviewprovider.HostedAllowanceObservation) bool {
-	if o.State == "available_observed" {
-		return o.Reason == "provider_available_observed" && o.RetryNotBefore.IsZero()
-	}
-	d := o.RetryNotBefore.Sub(o.ResponseCreatedAt)
-	return o.State == "cooldown_observed" && o.Reason == "provider_cooldown_observed" && o.RetryNotBefore.Location() == time.UTC && o.RetryNotBefore.Year() >= 1 && o.RetryNotBefore.Year() <= 9999 && d >= 2*time.Minute && d <= 24*time.Hour && d%time.Minute == 0
+	return reviewprovider.ValidHostedAllowanceOutcome(o)
 }
 
 func hostedAllowanceUnavailable() error {

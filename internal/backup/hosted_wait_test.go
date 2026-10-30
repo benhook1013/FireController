@@ -12,6 +12,12 @@ import (
 )
 
 func TestHostedWaitCanonicalBackupRestore(t *testing.T) {
+	for _, duration := range []string{"2 minutes", "28 seconds"} {
+		t.Run(duration, func(t *testing.T) { testHostedWaitCanonicalBackupRestore(t, duration) })
+	}
+}
+
+func testHostedWaitCanonicalBackupRestore(t *testing.T, duration string) {
 	f := newRestoreFixture(t)
 	e, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "restore-cap", Provider: "coderabbit", Account: "fixture-account", Channels: []string{"hosted"}, Fingerprint: strings.Repeat("f", 64)}})
 	if err != nil {
@@ -34,7 +40,7 @@ func TestHostedWaitCanonicalBackupRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reply := reviewprovider.IssueComment{ID: 72, Author: q.ProviderActor, CreatedAt: at, UpdatedAt: at, Body: "<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). More reviews will be available in 2 minutes."}
+	reply := reviewprovider.IssueComment{ID: 72, Author: q.ProviderActor, CreatedAt: at, UpdatedAt: at, Body: "<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). More reviews will be available in " + duration + "."}
 	now := time.Now().UTC()
 	intent := reviewprovider.HostedTriggerIntent{OperationID: q.OperationID, AttemptID: q.AttemptID, HeadSHA: q.Anchor.CandidateSHA}
 	snapshot := reviewprovider.HostedPublicationSnapshot{Complete: true, ObservedAt: now, IssueComments: []reviewprovider.IssueComment{queryComment, reply}, Reviews: []reviewprovider.HostedReview{}, ReviewComments: []reviewprovider.ReviewComment{}}
