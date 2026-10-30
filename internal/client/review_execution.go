@@ -57,6 +57,7 @@ func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
 }
 
 type ReviewOperation struct {
+	Observer              *ReviewHostedObserverStatus  `json:"observer,omitempty"`
 	HostedQuery           *ReviewHostedQueryDiagnostic `json:"hosted_query,omitempty"`
 	Wait                  *ReviewOperationWait         `json:"wait,omitempty"`
 	SourceRefusal         *ReviewSourceRefusal         `json:"source_refusal,omitempty"`
@@ -223,7 +224,7 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 	}
 	var value ReviewOperation
 	var status int
-	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, hostedQuery: true, deploymentDraining: &value.deploymentDraining}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, hostedQuery: true, hostedObserver: true, deploymentDraining: &value.deploymentDraining}); err != nil {
 		return ReviewOperation{}, err
 	}
 	if value.ID != id || !c.validReviewOperation(value) {
@@ -233,6 +234,9 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 }
 
 func (c *Client) validReviewOperation(value ReviewOperation) bool {
+	if !validReviewHostedObserver(value.Observer, value.Channel, value.State, value.AttemptID) {
+		return false
+	}
 	if !validReviewHostedQuery(value.HostedQuery, value) {
 		return false
 	}

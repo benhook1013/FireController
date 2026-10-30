@@ -312,6 +312,7 @@ type sourceWaitOptions struct {
 	operationEvidence  bool
 	operationWait      bool
 	hostedQuery        bool
+	hostedObserver     bool
 	sourceRefusalV2    bool
 	seconds            int
 	status             *int
@@ -369,6 +370,9 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		}
 		if wait.hostedQuery {
 			r.Header.Set("X-FC-Hosted-Query", "1")
+		}
+		if wait.hostedObserver && method == http.MethodGet {
+			r.Header.Set("X-FC-Hosted-Observer", "1")
 		}
 		if wait.operationEvidence {
 			r.Header.Set("X-FC-Operation-Evidence", "true")

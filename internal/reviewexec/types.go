@@ -79,6 +79,7 @@ type AllowanceObservation struct {
 }
 
 type Operation struct {
+	Observer              *HostedObserverStatus  `json:"observer,omitempty"`
 	HostedQuery           *HostedQueryDiagnostic `json:"hosted_query,omitempty"`
 	Wait                  *OperationWait         `json:"wait,omitempty"`
 	SourceRefusal         *SourceRefusal         `json:"source_refusal,omitempty"`
@@ -119,6 +120,8 @@ type Attempt struct {
 }
 
 type Engine struct {
+	hostedObserverMu           sync.Mutex
+	hostedObservers            map[string]*hostedObserverEntry
 	schedulingNow              func() time.Time
 	deploymentMu               sync.Mutex
 	deploymentDraining         bool

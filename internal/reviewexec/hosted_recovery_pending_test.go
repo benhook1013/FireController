@@ -87,7 +87,7 @@ func TestPendingHostedRecoveryRetainsOriginalConfigAfterPauseRevocationAndRestar
 	}
 	before := hostedObservationState(t, f, a)
 	got, err := f.e.PendingHostedRecovery(t.Context(), "test-capability")
-	if err != nil || !reflect.DeepEqual(got, &HostedRecoveryCandidate{ProjectID: attemptProject, AttemptID: a.ID}) {
+	if err != nil || !reflect.DeepEqual(got, &HostedRecoveryCandidate{ProjectID: attemptProject, OperationID: a.OperationID, AttemptID: a.ID}) {
 		t.Fatal("latest admission settings erased issued observation", got, err)
 	}
 	other, err := f.e.PendingHostedRecovery(t.Context(), "other-account")
@@ -123,8 +123,8 @@ func TestPendingHostedRecoverySeparatesProjectAccountChannelAndFingerprint(t *te
 	}
 	other = pendingRecoveryAdvance(t, f, other, "uncertain", "interrupted", "")
 	for capability, expected := range map[string]*HostedRecoveryCandidate{
-		"test-capability": {ProjectID: attemptProject, AttemptID: a.ID},
-		"other-account":   {ProjectID: otherAttemptProject, AttemptID: other.ID},
+		"test-capability": {ProjectID: attemptProject, OperationID: a.OperationID, AttemptID: a.ID},
+		"other-account":   {ProjectID: otherAttemptProject, OperationID: other.OperationID, AttemptID: other.ID},
 	} {
 		selected, err := f.e.PendingHostedRecovery(t.Context(), capability)
 		if err != nil || !reflect.DeepEqual(selected, expected) {

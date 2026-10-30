@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
@@ -32,7 +33,9 @@ func (d *HostedDriver) StartRecovery(ctx context.Context) (<-chan error, error) 
 	return done, nil
 }
 
-func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
+func (d *HostedDriver) recoveryLoop(ctx context.Context) (failure error) {
+	var lastCheck *reviewexec.HostedObserverCheck
+	defer func() { d.engine.StopHostedObserver(lastCheck, failure) }()
 	wait := d.wait
 	if wait == nil {
 		wait = waitHosted
@@ -57,6 +60,8 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
 		normal := candidate == nil && err == nil
 		recoveryFailed := false
 		if candidate != nil {
+			lastCheck = d.engine.BeginHostedObserver(d.capability.ID, candidate.ProjectID, candidate.OperationID, candidate.AttemptID)
+			reason := "observation_unavailable"
 			query, queryErr := d.engine.ReadHostedAllowanceQuery(ctx, candidate.ProjectID, candidate.AttemptID)
 			err = queryErr
 			if queryErr == nil {
@@ -70,6 +75,7 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
 					observed, err = RecoverHosted(ctx, d.provider, d.captures, d.engine, candidate.ProjectID, candidate.AttemptID, d.capability.ID, query.PostingActor, actor)
 					// A reason is returned only after the original recovery binding
 					// was read successfully; binding refusals keep ordinary backoff.
+					reason = observed.Reason
 					recoveryFailed = err != nil && observed.Reason != ""
 					// A complete source read with the original trigger still pending keeps
 					// a short cadence, including ambiguous attribution. This changes no
@@ -82,6 +88,7 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
 					}
 				}
 			}
+			d.engine.FinishHostedObserver(lastCheck, time.Now().UTC(), time.Time{}, reason, hostedObserverFailure(reason, err))
 		}
 		if ctx.Err() != nil {
 			return nil
@@ -108,6 +115,9 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
 				retry := time.Duration(min(providerError.RetryAfterSeconds, int64(hostedRecoveryRetryMaximum/time.Second))) * time.Second
 				delay = max(delay, retry)
 			}
+		}
+		if candidate != nil {
+			d.engine.ScheduleHostedObserver(lastCheck, time.Now().UTC().Add(delay))
 		}
 		if err := wait(ctx, delay); err != nil {
 			if ctx.Err() != nil {

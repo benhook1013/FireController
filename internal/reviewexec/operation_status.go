@@ -13,23 +13,24 @@ import (
 
 // OperationStatus is a compact read projection, never execution or coverage authority.
 type OperationStatus struct {
-	Wait               *OperationWait   `json:"wait,omitempty"`
-	SourceRefusal      *SourceRefusal   `json:"source_refusal,omitempty"`
-	PendingEvidence    *PendingEvidence `json:"pending_evidence,omitempty"`
-	ID                 string           `json:"id"`
-	PullNumber         int64            `json:"pull_number"`
-	Channel            string           `json:"channel"`
-	State              string           `json:"state"`
-	Revision           int64            `json:"revision"`
-	Stage              string           `json:"stage"`
-	Reason             string           `json:"reason"`
-	AttemptID          string           `json:"attempt_id"`
-	EvidenceID         string           `json:"evidence_id,omitempty"`
-	ReviewFinishedAt   string           `json:"review_finished_at,omitempty"`
-	EvidenceRecordedAt string           `json:"evidence_recorded_at,omitempty"`
-	RetryNotBefore     string           `json:"retry_not_before,omitempty"`
-	UpdatedAt          string           `json:"updated_at"`
-	NextAction         string           `json:"next_action"`
+	Observer           *HostedObserverStatus `json:"observer,omitempty"`
+	Wait               *OperationWait        `json:"wait,omitempty"`
+	SourceRefusal      *SourceRefusal        `json:"source_refusal,omitempty"`
+	PendingEvidence    *PendingEvidence      `json:"pending_evidence,omitempty"`
+	ID                 string                `json:"id"`
+	PullNumber         int64                 `json:"pull_number"`
+	Channel            string                `json:"channel"`
+	State              string                `json:"state"`
+	Revision           int64                 `json:"revision"`
+	Stage              string                `json:"stage"`
+	Reason             string                `json:"reason"`
+	AttemptID          string                `json:"attempt_id"`
+	EvidenceID         string                `json:"evidence_id,omitempty"`
+	ReviewFinishedAt   string                `json:"review_finished_at,omitempty"`
+	EvidenceRecordedAt string                `json:"evidence_recorded_at,omitempty"`
+	RetryNotBefore     string                `json:"retry_not_before,omitempty"`
+	UpdatedAt          string                `json:"updated_at"`
+	NextAction         string                `json:"next_action"`
 }
 
 func operationStatusStage(o Operation, evidence string, complete bool) (string, string) {
@@ -90,6 +91,7 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 		stage, next := operationStatusStage(o, facts.ID, facts.Complete)
 		result = OperationStatus{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, State: o.State, Revision: o.Revision, Stage: stage, Reason: o.Reason, AttemptID: o.AttemptID, EvidenceID: facts.ID, ReviewFinishedAt: facts.ReviewFinishedAt, EvidenceRecordedAt: facts.EvidenceRecordedAt, UpdatedAt: o.UpdatedAt, NextAction: next}
 		result.Wait = currentOperationWait(o)
+		result.Observer = e.observerStatus(o)
 		result.SourceRefusal, err = readSourceRefusal(ctx, tx, o)
 		if err != nil {
 			return err
@@ -167,6 +169,7 @@ func (e *Engine) WaitOperationStatus(ctx context.Context, scope core.Scope, id s
 	return e.ReadOperationStatus(ctx, scope, id)
 }
 func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", "X-FC-Hosted-Observer")
 	w.Header().Add("Vary", operationWaitHeader)
 	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", pendingEvidenceHeader)
@@ -209,6 +212,9 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 		value.SourceRefusal = nil
 	}
 	e.deploymentResponseHeader(w)
+	if r.Header.Get("X-FC-Hosted-Observer") != "1" {
+		value.Observer = nil
+	}
 	if r.Header.Get(operationWaitHeader) != "1" {
 		value.Wait = nil
 	}

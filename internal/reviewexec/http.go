@@ -206,6 +206,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", "X-FC-Hosted-Observer")
 	w.Header().Add("Vary", hostedQueryDiagnosticHeader)
 	w.Header().Add("Vary", operationWaitHeader)
 	w.Header().Add("Vary", "Prefer")
@@ -254,6 +255,9 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.deploymentResponseHeader(w)
+	if r.Header.Get("X-FC-Hosted-Observer") == "1" {
+		operation.Observer = e.observerStatus(operation)
+	}
 	if r.Header.Get(operationWaitHeader) != "1" {
 		operation.Wait = nil
 	}

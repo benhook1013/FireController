@@ -12,8 +12,9 @@ import (
 
 // ReviewOperationStatus omits private configuration and capture contents.
 type ReviewOperationStatus struct {
-	Wait               *ReviewOperationWait `json:"wait,omitempty"`
-	SourceRefusal      *ReviewSourceRefusal `json:"source_refusal,omitempty"`
+	Observer           *ReviewHostedObserverStatus `json:"observer,omitempty"`
+	Wait               *ReviewOperationWait        `json:"wait,omitempty"`
+	SourceRefusal      *ReviewSourceRefusal        `json:"source_refusal,omitempty"`
 	deploymentDraining bool
 	PendingEvidence    *ReviewPendingEvidence `json:"pending_evidence,omitempty"`
 	ID                 string                 `json:"id"`
@@ -41,7 +42,7 @@ func (c *Client) WaitReviewOperationStatus(ctx context.Context, id string, secon
 	}
 	var value ReviewOperationStatus
 	var status int
-	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: seconds, status: &status, reviewBlockers: true, sourceRefusalV2: true, operationWait: true, deploymentDraining: &value.deploymentDraining}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: seconds, status: &status, reviewBlockers: true, sourceRefusalV2: true, operationWait: true, hostedObserver: true, deploymentDraining: &value.deploymentDraining}); err != nil {
 		return ReviewOperationStatus{}, err
 	}
 	if value.ID != id || !validCompactOperationStatus(value) {
@@ -70,6 +71,12 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 			return strictjson.ErrSyntax
 		}
 	}
+	if raw, present := fields["observer"]; present {
+		var observer ReviewHostedObserverStatus
+		if strictjson.Decode(raw, &observer) != nil {
+			return strictjson.ErrSyntax
+		}
+	}
 	typ := reflect.TypeOf(ReviewOperationStatus{})
 	for i := 0; i < typ.NumField(); i++ {
 		if typ.Field(i).PkgPath != "" || typ.Field(i).Tag.Get("json") == "-" {
@@ -86,6 +93,9 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 }
 
 func validCompactOperationStatus(v ReviewOperationStatus) bool {
+	if !validReviewHostedObserver(v.Observer, v.Channel, v.State, v.AttemptID) {
+		return false
+	}
 	if !validReviewOperationWait(v.Wait, v.Channel, v.State, v.AttemptID) || !validReviewSourceRefusal(v.SourceRefusal, v.State, v.Reason, v.PullNumber) {
 		return false
 	}
