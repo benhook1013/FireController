@@ -29,3 +29,12 @@ func (r *hostedArchiveSource) ObserveRequiredCI(ctx context.Context, target revi
 	}
 	return reviewprovider.CIObservation{}, &reviewprovider.Error{Code: "provider_unavailable", Message: "Required CI observation is unavailable for this source adapter."}
 }
+
+func (r *hostedArchiveSource) ObserveCIGate(ctx context.Context, target reviewprovider.CITarget, gateRef string) (reviewprovider.CIObservation, error) {
+	if reader, ok := r.provider.(interface {
+		ObserveCIGate(context.Context, reviewprovider.CITarget, string) (reviewprovider.CIObservation, error)
+	}); ok {
+		return reader.ObserveCIGate(ctx, target, gateRef)
+	}
+	return reviewprovider.CIObservation{}, &reviewprovider.Error{Code: "provider_unavailable", Message: "CI gate observation is unavailable for this source adapter."}
+}

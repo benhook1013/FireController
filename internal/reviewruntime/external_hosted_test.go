@@ -67,3 +67,39 @@ func TestExternalHostedReaderPreservesOptionalCIObserver(t *testing.T) {
 	}
 	var _ reviewexec.ExternalHostedReader = (*hostedArchiveSource)(nil)
 }
+
+type externalGateProvider struct {
+	*driverHostedProvider
+	target reviewprovider.CITarget
+	gate   string
+}
+
+func (p *externalGateProvider) ObserveCIGate(ctx context.Context, target reviewprovider.CITarget, gate string) (reviewprovider.CIObservation, error) {
+	p.target, p.gate = target, gate
+	return reviewprovider.CIObservation{Target: target, State: "unproven"}, ctx.Err()
+}
+
+func TestExternalHostedReaderPreservesDistinctCIGate(t *testing.T) {
+	f := newHostedDriverFixture(t)
+	p := &externalGateProvider{driverHostedProvider: f.provider}
+	f.hosted.provider = p
+	reader := f.hosted.HostedObservationReader().(interface {
+		ObserveCIGate(context.Context, reviewprovider.CITarget, string) (reviewprovider.CIObservation, error)
+	})
+	target := reviewprovider.CITarget{BaseRef: "stack/parent"}
+	got, err := reader.ObserveCIGate(t.Context(), target, "develop")
+	if err != nil || p.gate != "develop" || p.target != target || got.Target != target {
+		t.Fatal("gate adapter changed actual target or gate", got, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err = reader.ObserveCIGate(ctx, target, "develop"); err == nil {
+		t.Fatal("gate adapter lost cancellation")
+	}
+	f.hosted.provider = f.provider
+	if _, err = f.hosted.HostedObservationReader().(interface {
+		ObserveCIGate(context.Context, reviewprovider.CITarget, string) (reviewprovider.CIObservation, error)
+	}).ObserveCIGate(t.Context(), target, "develop"); err == nil {
+		t.Fatal("unsupported provider invented CI gate results")
+	}
+}

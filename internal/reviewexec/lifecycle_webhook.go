@@ -27,6 +27,12 @@ func (e *Engine) HintGitHub(ctx context.Context, hint githubhook.Hint) error {
 	if hint.RepositoryID <= 0 || !hint.Metadata && !hint.CI || len(hint.PullNumbers) > 100 || hint.HeadSHA != "" && !sha.MatchString(hint.HeadSHA) {
 		return nil
 	}
+	e.lifecycleMu.RLock()
+	watchSchedule := e.lifecycleSchedule
+	e.lifecycleMu.RUnlock()
+	if watchSchedule != nil && e.lifecycleRunning.Load() {
+		watchSchedule.hintCIWatches(hint)
+	}
 	type match struct {
 		key          lifecycleKey
 		metadata, ci bool
@@ -71,14 +77,14 @@ func (e *Engine) HintGitHub(ctx context.Context, hint githubhook.Hint) error {
 				slots[i] = "?"
 				args = append(args, number)
 			}
-			rows, err := tx.QueryContext(ctx, `SELECT p.number,v.head_sha,v.base_ref FROM review_current_pulls p JOIN review_pull_memberships m ON m.project_id=p.project_id AND m.number=p.number AND m.start_revision=p.start_revision JOIN review_pull_versions v ON v.project_id=m.project_id AND v.number=m.number AND v.version_revision=m.version_revision WHERE p.project_id=? AND p.number IN (`+strings.Join(slots, ",")+`) AND NOT EXISTS(SELECT 1 FROM review_current_retired r WHERE r.project_id=p.project_id AND r.number=p.number) ORDER BY p.position LIMIT 100`, args...)
+			rows, err := tx.QueryContext(ctx, `SELECT p.number,v.head_sha,v.base_sha,v.base_ref FROM review_current_pulls p JOIN review_pull_memberships m ON m.project_id=p.project_id AND m.number=p.number AND m.start_revision=p.start_revision JOIN review_pull_versions v ON v.project_id=m.project_id AND v.number=m.number AND v.version_revision=m.version_revision WHERE p.project_id=? AND p.number IN (`+strings.Join(slots, ",")+`) AND NOT EXISTS(SELECT 1 FROM review_current_retired r WHERE r.project_id=p.project_id AND r.number=p.number) ORDER BY p.position LIMIT 100`, args...)
 			if err != nil {
 				return err
 			}
 			for rows.Next() {
 				var number int64
-				var head, base string
-				if err = rows.Scan(&number, &head, &base); err != nil {
+				var head, baseSHA, base string
+				if err = rows.Scan(&number, &head, &baseSHA, &base); err != nil {
 					rows.Close()
 					return err
 				}
@@ -86,11 +92,18 @@ func (e *Engine) HintGitHub(ctx context.Context, hint githubhook.Hint) error {
 					continue
 				}
 				sameHead := hint.HeadSHA != "" && hint.HeadSHA == head
+				knownCI := false
+				if watchSchedule != nil && hint.HeadSHA != "" {
+					watchSchedule.mu.Lock()
+					due := watchSchedule.due[lifecycleKey{p.id, number}]
+					knownCI = due.ciHead == head && due.ciBaseSHA == baseSHA && due.ciBaseRef == base && due.ciCommit == hint.HeadSHA
+					watchSchedule.mu.Unlock()
+				}
 				basePush := hint.BranchRef != "" && hint.BranchRef == base
 				metadata := hint.Metadata && (slices.Contains(hint.PullNumbers, number) || sameHead || basePush)
 				// A CI-only event cannot use its explicit PR number to refresh
 				// a different head. A base push concerns that PR's current merge.
-				ci := hint.CI && (sameHead || basePush)
+				ci := hint.CI && (sameHead || knownCI || basePush)
 				if metadata || ci {
 					matches = append(matches, match{lifecycleKey{p.id, number}, metadata, ci, head})
 				}

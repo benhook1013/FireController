@@ -16,6 +16,7 @@ import (
 // Register exposes project-scoped execution controls and retained evidence.
 // Provider work always runs outside these request handlers.
 func (e *Engine) Register(mux *http.ServeMux) {
+	e.registerCIWatchHTTP(mux)
 	mux.HandleFunc("DELETE /api/v1/operator/deployment-drain", e.deploymentDrainHTTP("cancel"))
 	mux.HandleFunc("GET /api/v1/operator/deployment-drain", e.deploymentDrainHTTP("status"))
 	mux.HandleFunc("POST /api/v1/operator/deployment-drain", e.deploymentDrainHTTP("begin"))

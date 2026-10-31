@@ -44,6 +44,72 @@ func TestAgentOperationStatusOnlySoftensKnownScheduledObservation(t *testing.T) 
 	}
 }
 
+func TestAgentHostedAttributionWindowDiagnosticsPreserveOriginalPendingFacts(t *testing.T) {
+	for _, state := range []string{"active", "uncertain", "posting", "queued", "held", "failed", "completed", "cancelled", "rate_limited"} {
+		for _, channel := range []string{"hosted", "cli"} {
+			for _, observerReason := range []string{"attribution_window_closed", "publication_not_proven", ""} {
+				observer := &ReviewHostedObserverStatus{State: "waiting", Reason: observerReason, LastCheckAt: "original_check"}
+				compact := ReviewOperationStatus{ID: "original_operation", AttemptID: "original_attempt", Channel: channel, State: state, Stage: "provider_wait", Reason: "trigger_recovered", NextAction: "wait", Revision: 7, UpdatedAt: "original_transition", Observer: observer}
+				full := ReviewOperation{ID: compact.ID, AttemptID: compact.AttemptID, Channel: channel, State: state, Reason: compact.Reason, Revision: compact.Revision, UpdatedAt: compact.UpdatedAt, Observer: observer}
+				co, fo := AgentReviewOperationStatus(compact), AgentReviewOperation(full)
+				want := channel == "hosted" && (state == "active" || state == "uncertain") && observerReason == "attribution_window_closed"
+				original := compact
+				if want {
+					original.NextAction = "read_diagnostics"
+				}
+				if !reflect.DeepEqual(co.ReviewOperationStatus, original) || !reflect.DeepEqual(fo.ReviewOperation, full) || !reflect.DeepEqual(co.Diagnostic, fo.Diagnostic) {
+					t.Fatal("diagnostic changed original facts or disagreed across compact/full", state, channel)
+				}
+				if !want {
+					if !reflect.DeepEqual(co.Diagnostic, agentReviewOperationDiagnostic(channel, state, compact.Reason)) {
+						t.Fatal("unrelated channel/state/reason gained attribution hint")
+					}
+					continue
+				}
+				for _, phrase := range []string{"prior observation", "original Hosted result", "edited or later comment", "does not prove the provider is still running"} {
+					if !strings.Contains(co.Diagnostic.Explanation, phrase) {
+						t.Fatal("missing attribution/progress distinction", co)
+					}
+				}
+				for _, phrase := range []string{"original operation/request key", "existing trigger", "retained capture diagnostics", "continue other work", "Do not submit a new request, repost or reset"} {
+					if !strings.Contains(co.Diagnostic.NextAction, phrase) {
+						t.Fatal("missing supported safe next action", co)
+					}
+				}
+				if strings.Contains(co.Diagnostic.NextAction, "maintainer") || strings.Contains(co.Diagnostic.NextAction, "contact_controller_owner") {
+					t.Fatal("hint required escalation to product worker")
+				}
+			}
+		}
+	}
+	for _, evidence := range []string{"", "original_evidence"} {
+		v := ReviewOperationStatus{ID: "original", Channel: "hosted", State: "uncertain", Stage: "uncertain", Reason: "hosted_observation_pending", AttemptID: "original_attempt", EvidenceID: evidence, Observer: &ReviewHostedObserverStatus{State: "waiting", Reason: "attribution_window_closed"}, NextAction: "contact_controller_owner"}
+		out := AgentReviewOperationStatus(v)
+		want := "wait_for_observation"
+		if evidence == "" {
+			want = "read_diagnostics"
+		}
+		if out.NextAction != want {
+			t.Fatal("captured evidence or uncertain pending action was misclassified", out)
+		}
+	}
+}
+
+func TestAgentHostedAttributionHintKeepsHigherPriorityDiagnostics(t *testing.T) {
+	compact := ReviewOperationStatus{Channel: "hosted", State: "active", Reason: "trigger_recovered", AttemptID: "original_attempt", NextAction: "wait", Observer: &ReviewHostedObserverStatus{State: "waiting", Reason: "attribution_window_closed"}}
+	full := ReviewOperation{Channel: compact.Channel, State: compact.State, Reason: compact.Reason, AttemptID: compact.AttemptID, Observer: compact.Observer}
+	wait := &ReviewOperationWait{Paused: true}
+	compact.Wait, full.Wait = wait, wait
+	if !reflect.DeepEqual(AgentReviewOperationStatus(compact).Diagnostic, operationWaitDiagnostic(wait)) || !reflect.DeepEqual(AgentReviewOperation(full).Diagnostic, operationWaitDiagnostic(wait)) || AgentReviewOperationStatus(compact).NextAction != "wait" {
+		t.Fatal("attribution hint replaced existing operation wait")
+	}
+	pending := &ReviewPendingEvidence{Items: []ReviewPendingEvidenceItem{}}
+	compact.PendingEvidence, full.PendingEvidence = pending, pending
+	if !reflect.DeepEqual(AgentReviewOperationStatus(compact).Diagnostic, pendingEvidenceDiagnostic(pending)) || !reflect.DeepEqual(AgentReviewOperation(full).Diagnostic, pendingEvidenceDiagnostic(pending)) || AgentReviewOperationStatus(compact).NextAction != "new_request_if_authorized" {
+		t.Fatal("attribution hint replaced pending evidence")
+	}
+}
+
 func TestAgentOperationParentDiagnosticsPreserveCompactAndFullFacts(t *testing.T) {
 	for _, state := range []string{"held", "queued", "preparing", "active", "completed", "failed", "uncertain", "rate_limited", "cancelled"} {
 		for _, reason := range []string{"parent_moved", "predecessor_parent_moved", "parent_unavailable", "other_reason"} {

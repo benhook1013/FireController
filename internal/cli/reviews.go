@@ -12,6 +12,11 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
+	if call.subcommand == "ci-wait" {
+		var ok bool
+		call.ciWatch, ok = parseCIWatch(args)
+		return call, ok
+	}
 	if call.subcommand == "queue" && hasActiveQueueFlag(args) {
 		options, ok := parseReviewActiveQueue(args)
 		call.reviewActiveQueue, call.limit, call.cursor = true, options.Limit, options.Cursor
@@ -173,6 +178,8 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 	switch call.subcommand {
 	case "operations":
 		return service.ReviewOperations(ctx, call.reviewOperations)
+	case "ci-wait":
+		return service.WatchCI(ctx, call.ciWatch.targets, call.ciWatch.seconds)
 	case "publication":
 		return service.ReviewCheckpointPublication(ctx, call.position[0])
 	case "route":

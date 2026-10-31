@@ -58,7 +58,11 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 			return result, baselineErr
 		}
 		if baselineReason == "" {
-			fallback, err := reviewprovider.ExtractHostedFindingsWithBaseline(retained.Snapshot, baseline.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
+			projected, err := engine.ProjectHostedCheckpointFileEdits(ctx, attempt.ProjectID, attempt.ID, baseline.Snapshot, retained.Snapshot)
+			if err != nil {
+				return result, err
+			}
+			fallback, err := reviewprovider.ExtractHostedFindingsWithBaseline(projected, baseline.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
 			if err == nil && (fallback.Complete || fallback.Reason == "hosted_finished_inventory_unproven" || fallback.Publication.State == "rate_limited" || fallback.Publication.State == "ambiguous" || fallback.Publication.State == "active" && (fallback.Reason == "publication_not_proven" || fallback.Reason == "missing_publication_batches")) {
 				inventory = fallback
 			}

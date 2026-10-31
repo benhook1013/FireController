@@ -9,7 +9,7 @@ import (
 // so leave the existing five-second response budget after authentication.
 func fitReviewWait(ctx context.Context, name string, args arguments) arguments {
 	switch name {
-	case "review_start", "review_selection_read", "review_request", "review_operation_read", "review_source_refresh", "review_checkpoint_publish", "review_checkpoint_recover":
+	case "review_start", "review_selection_read", "review_request", "review_operation_read", "review_source_refresh", "review_checkpoint_publish", "review_checkpoint_recover", "wait_for_ci":
 	default:
 		return args
 	}

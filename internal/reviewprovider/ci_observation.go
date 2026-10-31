@@ -44,8 +44,19 @@ type CIObservation struct {
 // Required context/app identity determines workflow fanout. Result-count movement
 // permits one same-commit recollection within CIResults' original budgets. No
 // job carry-forward, optional workflow walk or external mutation is performed.
-func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CIObservation, err error) {
-	if ctx == nil || !validRepositorySelector(target.Repository) || target.RepositoryID <= 0 || !validPullNumber(target.PullNumber) || !lowerCISHA(target.HeadSHA) || !lowerCISHA(target.BaseSHA) || !validRequiredBranch(target.BaseRef) {
+func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (CIObservation, error) {
+	return g.observeCI(ctx, target, target.BaseRef)
+}
+
+// ObserveCIGate assesses an explicitly selected branch's required checks against
+// this PR's actual source candidate. The caller selects the gate; it never
+// substitutes for the target's base branch, commit or test-merge verification.
+func (g *GitHub) ObserveCIGate(ctx context.Context, target CITarget, gateRef string) (CIObservation, error) {
+	return g.observeCI(ctx, target, gateRef)
+}
+
+func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string) (out CIObservation, err error) {
+	if ctx == nil || !validRepositorySelector(target.Repository) || target.RepositoryID <= 0 || !validPullNumber(target.PullNumber) || !lowerCISHA(target.HeadSHA) || !lowerCISHA(target.BaseSHA) || !validRequiredBranch(target.BaseRef) || !validRequiredBranch(gateRef) {
 		return CIObservation{}, invalidSelector()
 	}
 	out = CIObservation{Target: target, State: "unproven", Reason: "ci_authority_unproven", StartedAt: time.Now().UTC()}
@@ -58,7 +69,7 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 	}()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out.Authority, err = g.RequiredCheckAuthority(ctx, target.Repository, target.BaseRef)
+	out.Authority, err = g.RequiredCheckAuthority(ctx, target.Repository, gateRef)
 	if err != nil || out.Authority.State != "complete" || out.Authority.Checks == nil {
 		return out, err
 	}
@@ -161,7 +172,7 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 	// still agree. Status order is semantic: the provider's first context wins.
 	out.State, out.Reason = "unproven", "ci_observation_changed"
 	stage = "authority_recheck"
-	authority, err := g.RequiredCheckAuthority(ctx, target.Repository, target.BaseRef)
+	authority, err := g.RequiredCheckAuthority(ctx, target.Repository, gateRef)
 	if err != nil || !sameCIAuthority(out.Authority, authority) {
 		return out, err
 	}

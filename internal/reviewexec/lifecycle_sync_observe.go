@@ -13,6 +13,9 @@ import (
 )
 
 func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s *lifecycleSchedule) error {
+	if target.watch != nil {
+		return e.observeCIWatch(ctx, target, s)
+	}
 	state, head := "", ""
 	var providerErr error
 	ciCollected := false
@@ -108,6 +111,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	// is not refreshed by a cheap poll; a new head always requires fresh evidence.
 	collectCI := state == "open" && (target.forceCI || target.due.ciHead != head || target.due.ciBaseSHA != pull.BaseSHA || target.due.ciBaseRef != pull.BaseRef || !s.options.Now().Before(target.due.ci))
 	if collectCI {
+		target.due.ciCommit = ""
 		ciCollected = true
 		ciState = "unknown"
 		ciReason = "ci_reader_unavailable"
@@ -120,6 +124,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 				// ordinary provider failure would look like caller cancellation.
 				ciReason = sourceCIErrorReason(ciCtx, readErr)
 			} else if validSourceCI(observation, sourcePlanObservation(plan)) && !observation.StartedAt.Before(mustLifecycleTime(plan.ObservedAt)) && !observation.ObservedAt.Before(observation.StartedAt) && !observation.ObservedAt.After(time.Now().Add(5*time.Second)) {
+				target.due.ciCommit = observation.SelectedCommitSHA
 				ciReason = observation.Reason
 				if ciReason == "" && observation.State == "unproven" {
 					ciReason = "ci_unproven"

@@ -6,6 +6,8 @@ The provider collector, pure assessment, durable service storage and bound API/C
 
 ## Explicit collection
 
+For a quiet wait across several current PRs, use [CI waiting](ci-wait.md). It selects the final merge branch's gate explicitly and shares service observation without requiring queue enrollment. The retained assessments below keep their existing selected-base meaning.
+
 Source refresh accepts optional `include_ci: true`; the bound CLI exposes `--ci` and MCP exposes `include_ci`. Readiness collection also requests CI; omitting both options keeps source-only collection. CI collection uses the same durable operation, two-second default result wait and optional longer wait described in [source refresh](review-source.md). Adding CI changes the action identity: source-only work cannot silently fulfill a CI request. Ordinary operation and assessment reads never contact GitHub.
 
 Source-only collection retains its fifteen-second provider budget. A refresh including CI has one thirty-second aggregate budget, with at most fifteen seconds for its initial source phase. Provider work runs outside database transactions. Cancellation of the caller's result wait does not cancel the accepted operation. Restart may repeat interrupted provider reads, using the same operation identity; collection never posts a review or reserves provider review allowance.

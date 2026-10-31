@@ -142,6 +142,31 @@ func TestLifecycleWebhookCoalescesScopedHintsAndForcesFreshCI(t *testing.T) {
 	if s.due[key].hints[lifecycleMetadata].wanted != 22 || s.due[key].hints[lifecycleEnrichment].wanted != 21 || lifecycleRead(t, f).HeadSHA != pull.HeadSHA {
 		t.Fatal("base push lost scope or supplied provider truth")
 	}
+	// A known test-merge result names a different immutable commit from the PR
+	// head, but is useful only while its observed source comparison still binds.
+	alias := s.due[key]
+	alias.ciCommit = strings.Repeat("f", 40)
+	s.due[key] = alias
+	hintLifecycle(t, f, githubhook.Hint{RepositoryID: 801, HeadSHA: alias.ciCommit, CI: true})
+	if s.due[key].hints[lifecycleEnrichment].wanted != 22 {
+		t.Fatal("known current test-merge event failed to wake CI")
+	}
+	hintLifecycle(t, f, githubhook.Hint{RepositoryID: 801, PullNumbers: []int64{2}, HeadSHA: strings.Repeat("c", 40), CI: true})
+	if s.due[key].hints[lifecycleEnrichment].wanted != 22 {
+		t.Fatal("unrelated old-head event bypassed source guard")
+	}
+	pull.HeadSHA = strings.Repeat("c", 40)
+	target, err = f.e.claimLifecycle(t.Context(), readers, s)
+	if err != nil || target == nil {
+		t.Fatal(target, err)
+	}
+	if err = f.e.observeLifecycle(t.Context(), *target, s); err != nil || s.due[key].ciCommit != "" {
+		t.Fatal("moved comparison retained old test-merge alias", err)
+	}
+	hintLifecycle(t, f, githubhook.Hint{RepositoryID: 801, HeadSHA: alias.ciCommit, CI: true})
+	if s.due[key].hints[lifecycleEnrichment].wanted != 22 {
+		t.Fatal("old test-merge event refreshed a later comparison")
+	}
 	for _, table := range []string{"review_operations", "review_execution_attempts", "review_hosted_allowance_queries", "review_round_completions"} {
 		if attemptCount(t, f.store, "SELECT count(*) FROM "+table) != 0 {
 			t.Fatal("hints or observation created review authority", table)

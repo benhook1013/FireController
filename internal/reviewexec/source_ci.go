@@ -180,6 +180,10 @@ func validSourceCI(o reviewprovider.CIObservation, source SourceObservation) boo
 }
 
 func validSourceCIWithRetainedAssessment(o reviewprovider.CIObservation, source SourceObservation, allowLegacyOriginHold bool) bool {
+	return validCIWithAuthorityBranch(o, source, source.BaseRef, allowLegacyOriginHold)
+}
+
+func validCIWithAuthorityBranch(o reviewprovider.CIObservation, source SourceObservation, gateRef string, allowLegacyOriginHold bool) bool {
 	if !refreshTime(source.ObservedAt) || o.Target != sourceCITarget(source) || o.StartedAt.IsZero() || o.ObservedAt.IsZero() || o.Reason != "" && !identifier.MatchString(o.Reason) {
 		return false
 	}
@@ -215,7 +219,7 @@ func validSourceCIWithRetainedAssessment(o reviewprovider.CIObservation, source 
 	if len(o.Authority.Checks) > 128 || len(o.Attempts) > 16 {
 		return false
 	}
-	if o.Authority.State == "complete" && (!strings.EqualFold(o.Authority.Repository, source.RepositoryName) || o.Authority.Branch != source.BaseRef || o.Authority.ObservedAt.IsZero() || o.Authority.Checks == nil) {
+	if o.Authority.State == "complete" && (!strings.EqualFold(o.Authority.Repository, source.RepositoryName) || o.Authority.Branch != gateRef || o.Authority.ObservedAt.IsZero() || o.Authority.Checks == nil) {
 		return false
 	}
 	if o.State != "unproven" {

@@ -60,6 +60,9 @@ func invalidArguments() *Diagnostic {
 }
 
 func parseArguments(name string, data json.RawMessage) (arguments, error) {
+	if name == "wait_for_ci" {
+		return ciWatchArguments(data)
+	}
 	if existingManagementTool(name) {
 		var a arguments
 		var err error

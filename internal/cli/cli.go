@@ -75,6 +75,7 @@ type invocation struct {
 	reviewOperationStatus *reviewOperationStatusInvocation
 	reviewActiveQueue     bool
 	reviewCIDiagnostics   bool
+	ciWatch               *ciWatchInvocation
 
 	reviewQueueChange   *reviewQueueChangeInvocation
 	reviewQueueEdit     *reviewQueueEditInvocation
@@ -240,6 +241,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.command == "reviews" && call.subcommand == "operation" {
 		timeout = client.ReviewOperationBudget(call.waitSeconds)
+	}
+	if call.ciWatch != nil {
+		timeout = client.ReviewOperationBudget(call.ciWatch.seconds)
 	}
 	if call.reviewRun != nil {
 		timeout = client.ReviewOperationBudget(call.reviewRun.waitSeconds)

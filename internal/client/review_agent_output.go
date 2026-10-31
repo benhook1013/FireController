@@ -36,6 +36,12 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 		value.NextAction = "retry_later_with_new_request"
 	}
 	hint := agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)
+	if attribution := hostedAttributionWindowDiagnostic(value.Channel, value.State, value.AttemptID, value.EvidenceID, value.Observer); attribution != nil {
+		hint = attribution
+		if value.Wait == nil && value.PendingEvidence == nil && (value.NextAction == "wait" || value.NextAction == "wait_for_observation") {
+			value.NextAction = "read_diagnostics"
+		}
+	}
 	if hostedActivityDiagnostic(value.Channel, value.State, value.Reason) != nil {
 		value.NextAction = "inspect_provider_activity"
 	}
@@ -85,6 +91,9 @@ type ReviewOperationOutput struct {
 
 func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 	hint := agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)
+	if attribution := hostedAttributionWindowDiagnostic(value.Channel, value.State, value.AttemptID, value.EvidenceID, value.Observer); attribution != nil {
+		hint = attribution
+	}
 	if hint != nil && value.Channel == "hosted" && value.State == "held" && value.Reason == "hosted_allowance_unproven" {
 		const laterRequest = "No review trigger was authorized by this terminal hold. If the planned review remains authorized, one later fresh request/key rechecks current source, configuration, rounds and provider allowance. Do not directly repost the old query, reset limits or assume permission."
 		if value.HostedQuery == nil {
@@ -117,6 +126,13 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 		hint = deploymentDrainDiagnostic()
 	}
 	return ReviewOperationOutput{value, hint}
+}
+
+func hostedAttributionWindowDiagnostic(channel, state, attempt, evidence string, observer *ReviewHostedObserverStatus) *ReviewOperationDiagnostic {
+	if channel != "hosted" || state != "active" && state != "uncertain" || attempt == "" || evidence != "" || observer == nil || observer.Reason != "attribution_window_closed" {
+		return nil
+	}
+	return &ReviewOperationDiagnostic{"A prior observation could not attribute the original Hosted result because an edited or later comment closed its attribution window. This does not prove the provider is still running.", "Preserve the original operation/request key. Inspect its existing trigger and retained capture diagnostics (diagnostics:true; CLI --diagnostics), then continue other work. Do not submit a new request, repost or reset review controls; this observation establishes neither completion nor permission to retry."}
 }
 
 // Keep receipts flat and invalid unions rejected by their original marshaler.
