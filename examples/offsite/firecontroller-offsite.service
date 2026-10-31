@@ -1,0 +1,23 @@
+[Unit]
+Description=Transfer verified FireController backups to configured offsite storage
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Select the same OS account that owns the private managed backup bundles.
+User=firecontroller
+Group=firecontroller
+UMask=0077
+ExecStart=/usr/local/lib/firecontroller/fcd backup-push --config /etc/firecontroller/offsite.json
+TimeoutStartSec=16m
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadOnlyPaths=/var/lib/firecontroller/managed-backups
+ReadWritePaths=/var/lib/firecontroller-offsite
