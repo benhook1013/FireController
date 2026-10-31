@@ -37,5 +37,5 @@ func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagno
 	case item.ObservedAt != "" && item.Unproven > 0:
 		phase, explanation = "checks_unproven", "The latest observation is missing required-check evidence or could not verify it as of observed_at. Inspect the listed check contexts and reasons; this is not a CI pass."
 	}
-	return phase, &ReviewOperationDiagnostic{explanation, "This response ends this watch. Continue other work, then start another bounded CI wait for the remaining targets when needed. No automatic next check is promised, and no Delivery enrollment or review request is needed."}
+	return phase, &ReviewOperationDiagnostic{explanation, "Start another bounded CI wait for the remaining targets when you need a newer result."}
 }

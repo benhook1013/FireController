@@ -43,7 +43,7 @@ func TestAgentCIWatchExplainsControllerAndGitHubPendingWithoutChangingFacts(t *t
 			if !reflect.DeepEqual(out.CIWatchResult, original) || len(out.Targets) != 1 || !reflect.DeepEqual(out.Targets[0].CIWatchTargetResult, item) || out.Targets[0].Phase != test.phase || out.Targets[0].Diagnostic == nil || !strings.Contains(out.Targets[0].Diagnostic.Explanation, test.explanation) {
 				t.Fatal("wrong controller/GitHub distinction or changed raw result", out)
 			}
-			if !strings.Contains(out.Targets[0].Diagnostic.NextAction, "response ends this watch") || !strings.Contains(out.Targets[0].Diagnostic.NextAction, "another bounded CI wait") || !strings.Contains(out.Targets[0].Diagnostic.NextAction, "No automatic next check is promised") {
+			if !strings.Contains(out.Targets[0].Diagnostic.NextAction, "another bounded CI wait") {
 				t.Fatal("invented surviving watcher or missing supported followup", out)
 			}
 			encoded, _ := json.Marshal(out)
