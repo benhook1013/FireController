@@ -162,7 +162,7 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 					if strings.Contains(hint.NextAction, "fresh key") || strings.Contains(hint.Explanation, "held operation is terminal") {
 						t.Fatal("queued timer was misreported as terminal hold", hint)
 					}
-					if fixture == "queued_hosted_cooldown" && (!strings.Contains(hint.Explanation, "automatically rechecks") || !strings.Contains(hint.NextAction, "Do not submit a replacement")) {
+					if fixture == "queued_hosted_cooldown" && (!strings.Contains(hint.Explanation, "automatically rechecks") || !strings.Contains(hint.NextAction, "Keep this request for automatic retry") || !strings.Contains(hint.NextAction, "timer is not transferred")) {
 						t.Fatal("automatic same-operation retry missing", hint)
 					}
 					if fixture == "queued_hosted_cooldown_hint" && (!strings.Contains(hint.Explanation, "cooldown deadline is still in the future") || !strings.Contains(hint.NextAction, "Keep the original request")) {

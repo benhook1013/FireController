@@ -25,5 +25,5 @@ func queuedOperationDiagnostic(cause string) *ReviewOperationDiagnostic {
 	default:
 		return nil
 	}
-	return &ReviewOperationDiagnostic{explanation + " Current local facts, not the original refusal or provider state.", "Keep the original request; do not submit a replacement. A due timer is eligibility, not a start ETA. Normal admission and provider checks still apply."}
+	return &ReviewOperationDiagnostic{explanation + " Current local facts, not the original refusal or provider state.", "Keep the original request for unchanged intent. For an authorized change, see queued-only review_operation_control cancellation; respect any known cooldown because a replacement does not inherit its timer. A due timer is eligibility, not a start ETA. Normal admission and provider checks still apply."}
 }

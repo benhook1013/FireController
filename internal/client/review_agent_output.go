@@ -404,10 +404,10 @@ func operationWaitDiagnostic(w *ReviewOperationWait) *ReviewOperationDiagnostic 
 		candidates = " Other authorized candidates still need their own admission and fresh provider checks."
 	}
 	if w.Paused {
-		return &ReviewOperationDiagnostic{"This same operation is paused before provider dispatch. Its retry deadline and review intent are retained; no review is running." + scope, "Continue other work, or explicitly resume/cancel this operation with its current revision and an idempotency key. This does not change project pause, allowances or taper." + candidates}
+		return &ReviewOperationDiagnostic{"This same operation is paused before provider dispatch. Its retry deadline and review intent are retained; no review is running." + scope, "Resume/cancel only this undispatched operation with current revision/key. Pause/resume cannot edit head or out-of-order intent. For an authorized replacement, follow review_operation_control guidance and respect any known cooldown; its timer is not transferred." + candidates}
 	}
 	if w.RetryNotBefore != "" {
-		return &ReviewOperationDiagnostic{"The provider reported a cooldown. This same operation automatically rechecks admission and allowance at or after retry_not_before; the deadline is not a reserved start time or review completion." + scope, "Continue other work and read this operation later. Do not submit a replacement request. Pause or cancel only this undispatched intent using review_operation_control (CLI reviews operation-control) if desired." + candidates}
+		return &ReviewOperationDiagnostic{"The provider reported a cooldown. This same operation automatically rechecks admission and allowance at or after retry_not_before; the deadline is not a reserved start time or review completion." + scope, "Keep this request for automatic retry. For an authorized intent change, see queued-only review_operation_control cancellation (CLI reviews operation-control); respect the known cooldown because its timer is not transferred. Pause/resume cannot edit head or out-of-order intent." + candidates}
 	}
 	return nil
 }
