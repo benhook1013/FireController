@@ -171,6 +171,22 @@ AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.projec
 			return nil, err
 		}
 		if o.State == "queued" {
+			if o.Channel == "hosted" {
+				// Native admission caps all pending work at 256 (32 per
+				// project), so this within-project filter sees the entire
+				// eligible candidate set under the SQL limit above.
+				c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
+				if err != nil {
+					return nil, err
+				}
+				earlier, err := e.earlierQueuedHostedIntent(ctx, tx, o, c, revision)
+				if err != nil {
+					return nil, err
+				}
+				if earlier != nil {
+					continue
+				}
+			}
 			out = append(out, o)
 		}
 	}

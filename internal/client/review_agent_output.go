@@ -58,6 +58,9 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 			value.NextAction = "new_request_if_authorized"
 		}
 	}
+	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) {
+		hint = queuedOperationDiagnostic(value.queuedCause)
+	}
 	if value.State == "queued" && value.deploymentDraining {
 		hint = deploymentDrainDiagnostic()
 		value.NextAction = "wait_for_deployment"
@@ -107,6 +110,9 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 	if value.PendingEvidence != nil {
 		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
 	}
+	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) {
+		hint = queuedOperationDiagnostic(value.queuedCause)
+	}
 	if value.State == "queued" && value.deploymentDraining {
 		hint = deploymentDrainDiagnostic()
 	}
@@ -124,6 +130,12 @@ func AgentReviewRequestResult(value ReviewRequestResult) any {
 			*ReviewRequestReceipt
 			Diagnostic *ReviewOperationDiagnostic `json:"diagnostic"`
 		}{value.Receipt, deploymentDrainDiagnostic()}
+	}
+	if value.Receipt != nil && value.Operation == nil && value.Receipt.State == "queued" && value.queuedCause != "" {
+		return struct {
+			*ReviewRequestReceipt
+			Diagnostic *ReviewOperationDiagnostic `json:"diagnostic"`
+		}{value.Receipt, queuedOperationDiagnostic(value.queuedCause)}
 	}
 	if value.Operation != nil && value.Receipt == nil {
 		return AgentReviewOperation(*value.Operation)

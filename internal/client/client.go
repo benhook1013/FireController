@@ -333,6 +333,7 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 // transport state remain unchanged.
 type sourceWaitOptions struct {
 	deploymentDraining *bool
+	queuedCause        *string
 	reviewBlockers     bool
 	operationEvidence  bool
 	operationWait      bool
@@ -446,6 +447,9 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		return fail("connection_failed", "The service connection failed.", "Check the configured service address and transport.", 0)
 	}
 	defer response.Body.Close()
+	if wait != nil && wait.queuedCause != nil {
+		*wait.queuedCause = recognizedQueuedCause(response.Header.Get("X-FC-Review-Queued"))
+	}
 	if wait != nil && wait.deploymentDraining != nil {
 		*wait.deploymentDraining = response.Header.Get("X-FC-Deployment-Draining") == "true"
 	}

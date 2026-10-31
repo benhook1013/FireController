@@ -299,3 +299,30 @@ func TestNotesClientRequiresExplicitCompleteResponseFields(t *testing.T) {
 	_, err := c.Notes(t.Context(), client.PageOptions{}, client.NoteFilter{})
 	checkError(t, err, "invalid_response")
 }
+
+func TestNoteBodyValidationUsesDecodedUTF8Bytes(t *testing.T) {
+	good := strings.Repeat("雪", client.MaxNoteBodyBytes/3) + "x"
+	if len(good) != client.MaxNoteBodyBytes {
+		t.Fatal("invalid exact-byte fixture")
+	}
+	if err := client.ValidateCreateNoteRequest(client.CreateNoteRequest{WorkerID: "worker-one", Kind: "reminder", Body: good}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ValidateUpdateNoteRequest(client.UpdateNoteRequest{ExpectedRevision: 1, Body: &good}); err != nil {
+		t.Fatal(err)
+	}
+	bad := "PRIVATE_NOTE_BODY" + strings.Repeat("雪", client.MaxNoteBodyBytes/3+1)
+	for _, err := range []error{
+		client.ValidateCreateNoteRequest(client.CreateNoteRequest{WorkerID: "worker-one", Kind: "reminder", Body: bad}),
+		client.ValidateUpdateNoteRequest(client.UpdateNoteRequest{ExpectedRevision: 1, Body: &bad}),
+	} {
+		var failure *client.Error
+		if !errors.As(err, &failure) || failure.Code != "validation_failed" || failure.OutcomeUnknown || !strings.Contains(failure.Message, "body exceeds 16384 decoded UTF-8 bytes") || !strings.Contains(failure.Action, "omit body when unchanged") {
+			t.Fatal("missing body byte diagnostic", err)
+		}
+		raw, _ := json.Marshal(failure)
+		if strings.Contains(string(raw), "PRIVATE_NOTE_BODY") || !strings.Contains(string(raw), `"field":"body"`) {
+			t.Fatal("body leaked or field omitted", string(raw))
+		}
+	}
+}

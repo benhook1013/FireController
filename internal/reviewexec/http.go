@@ -202,6 +202,10 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var original Receipt
+	if json.Unmarshal(receipt, &original) == nil {
+		e.queuedResponseHeader(w, r, scope, original.ID, original.State, original.Revision)
+	}
 	e.deploymentResponseHeader(w)
 	core.WriteJSON(w, http.StatusAccepted, receipt)
 }
@@ -255,6 +259,7 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	e.queuedResponseHeader(w, r, scope, operation.ID, operation.State, operation.Revision)
 	e.deploymentResponseHeader(w)
 	if r.Header.Get("X-FC-Hosted-Observer") == "1" {
 		operation.Observer = e.observerStatus(operation)

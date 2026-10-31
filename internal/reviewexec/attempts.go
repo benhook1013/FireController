@@ -131,6 +131,11 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 			return err
 		}
 		var repositoryID int64
+		if earlier, err := e.earlierQueuedHostedIntent(ctx, tx, o, c, revision); err != nil {
+			return err
+		} else if earlier != nil {
+			return nil
+		}
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
 		}

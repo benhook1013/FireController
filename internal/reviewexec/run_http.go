@@ -145,6 +145,7 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 			if state.Operation != nil && r.Header.Get(operationWaitHeader) != "1" {
 				state.Operation.Wait = nil
 			}
+			e.queuedRunResponseHeader(w, r, scope, state)
 			core.WriteJSON(w, http.StatusOK, state)
 			return
 		}
@@ -190,6 +191,7 @@ func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
 	if state.Operation != nil && r.Header.Get(operationWaitHeader) != "1" {
 		state.Operation.Wait = nil
 	}
+	e.queuedRunResponseHeader(w, r, scope, state)
 	core.WriteJSON(w, http.StatusOK, state)
 }
 

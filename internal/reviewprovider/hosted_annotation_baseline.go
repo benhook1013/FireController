@@ -12,7 +12,7 @@ var hostedAddressedFooter = regexp.MustCompile(`^\n\n✅ Addressed in commit ([a
 
 // ExtractHostedFindingsWithBaseline preserves strict extraction except for
 // unrelated bot reports qualified by a complete pre-trigger baseline and,
-// only for standing zero, proven old-root fix annotations.
+// for standing zero or complete outside-only results, proven old-root fix annotations.
 // The caller must independently bind baseline to its immutable complete
 // pre-POST capture and reject reused provider run UUIDs. Structural/timestamp
 // checks here alone establish neither that journal ownership nor coverage.
@@ -86,9 +86,14 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 		if botErr == nil && original.Reason == "attribution_window_closed" && botOnly.Reason == "hosted_finished_inventory_unproven" {
 			original = botOnly
 		}
+		// Preserve a real inventory refusal after the qualified reports cease
+		// closing attribution. It supplies no findings or completion credit.
+		if botErr == nil && original.Reason == "attribution_window_closed" && botOnly.Publication.State == "ambiguous" {
+			original = botOnly
+		}
 	}
-	// Removing an old provider annotation is still permitted only for proven
-	// standing-zero inventory, independently of the bot-only clock projection.
+	// Old annotations may not masquerade as new orphan roots. Omission still
+	// requires an independently complete standing-zero or outside-only result.
 	projected.ReviewComments = make([]ReviewComment, 0, len(snapshot.ReviewComments))
 	var lastOmitted time.Time
 	for _, root := range snapshot.ReviewComments {
@@ -112,10 +117,14 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 		return original, nil
 	}
 	fallback, fallbackErr := ExtractHostedFindings(projected, intent, postingActor, providerActor, earliestPosting)
+	outsideOnly := len(fallback.Findings) > 0 && len(fallback.Publication.Roots) == 0 && len(fallback.Publication.Batches) == 1
+	for _, finding := range fallback.Findings {
+		outsideOnly = outsideOnly && finding.Kind == "outside_diff"
+	}
 	// The strict resolver owns later-command attribution. Requiring every
 	// omitted edit no later than its finished acknowledgment keeps annotations
 	// inside that proven window without duplicating the closing-window logic.
-	if fallbackErr == nil && fallback.Complete && fallback.Publication.StandingZero != nil &&
+	if fallbackErr == nil && fallback.Complete && (fallback.Publication.StandingZero != nil || outsideOnly) &&
 		!lastOmitted.After(fallback.Publication.FinishedAt) {
 		return fallback, nil
 	}

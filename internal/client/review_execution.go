@@ -42,8 +42,9 @@ type ReviewRequestReceipt struct {
 // ReviewRequestResult contains exactly one flat wire result: the original
 // durable receipt, or the authorized terminal operation collected by a wait.
 type ReviewRequestResult struct {
-	Receipt   *ReviewRequestReceipt
-	Operation *ReviewOperation
+	queuedCause string
+	Receipt     *ReviewRequestReceipt
+	Operation   *ReviewOperation
 }
 
 func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
@@ -57,6 +58,7 @@ func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
 }
 
 type ReviewOperation struct {
+	queuedCause           string
 	Observer              *ReviewHostedObserverStatus  `json:"observer,omitempty"`
 	HostedQuery           *ReviewHostedQueryDiagnostic `json:"hosted_query,omitempty"`
 	Wait                  *ReviewOperationWait         `json:"wait,omitempty"`
@@ -185,6 +187,7 @@ func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRe
 	var result ReviewRequestResult
 	var status int
 	var draining bool
+	var queuedCause string
 	decode := func(data []byte, _ any) error {
 		if status == http.StatusOK {
 			result.Operation = &ReviewOperation{}
@@ -193,15 +196,17 @@ func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRe
 		result.Receipt = &ReviewRequestReceipt{}
 		return decodeReviewResponse(data, result.Receipt)
 	}
-	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "requests"), nil, true, key, body, http.StatusAccepted, true, &result, 4<<20, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, deploymentDraining: &draining}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "requests"), nil, true, key, body, http.StatusAccepted, true, &result, 4<<20, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, queuedCause: &queuedCause, deploymentDraining: &draining}); err != nil {
 		return ReviewRequestResult{}, err
 	}
 	valid := false
 	if operation := result.Operation; operation != nil {
 		operation.deploymentDraining = draining
+		operation.queuedCause = queuedCause
 		valid = c.validReviewOperation(*operation) && operation.WorkerID == c.identity.WorkerID && operation.PullNumber == request.PullNumber && operation.HeadSHA == request.HeadSHA && operation.Channel == request.Channel && operation.AllowOutOfOrder == request.AllowOutOfOrder && operation.OverrideFileLimit == request.OverrideFileLimit && operation.ConfigurationRevision == request.ExpectedConfigurationRevision && !oneReviewOf(operation.State, "queued", "preparing", "posting", "active")
 	} else if receipt := result.Receipt; receipt != nil {
 		receipt.deploymentDraining = draining
+		result.queuedCause = queuedCause
 		valid = ValidateReviewOperationID(receipt.ID) == nil && receipt.State == "queued" && receipt.Revision == 1 && (receipt.ReviewSize == nil || reviewsize.Valid(*receipt.ReviewSize, request.PullNumber))
 	}
 	if !valid {
@@ -224,7 +229,7 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 	}
 	var value ReviewOperation
 	var status int
-	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, hostedQuery: true, hostedObserver: true, deploymentDraining: &value.deploymentDraining}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, hostedQuery: true, hostedObserver: true, queuedCause: &value.queuedCause, deploymentDraining: &value.deploymentDraining}); err != nil {
 		return ReviewOperation{}, err
 	}
 	if value.ID != id || !c.validReviewOperation(value) {

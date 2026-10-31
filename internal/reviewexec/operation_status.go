@@ -234,6 +234,7 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	value.SourceRefusal = sourceRefusalForResponse(value.SourceRefusal, r.Header.Get("X-FC-Source-Refusal"), value.Reason)
+	e.queuedResponseHeader(w, r, scope, value.ID, value.State, value.Revision)
 	e.deploymentResponseHeader(w)
 	if r.Header.Get("X-FC-Hosted-Observer") != "1" {
 		value.Observer = nil

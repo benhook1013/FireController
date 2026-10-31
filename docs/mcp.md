@@ -190,6 +190,8 @@ Seven packaged message-event groups passed with all sixteen tools discovered. Tw
 
 The 62-file Go/module manifest was unchanged before/after that run: SHA-256 `442352ccfee0a73fca72fd4677bb90205519f3e817b3532b6d58e29335d45fbf`. Actual `fcd` and `fcmcp` binaries and their private copies also remained unchanged. The run used local stdio protocol 2025-11-25; setup used read-only public GitHub repository verification and all disposable state/processes were removed.
 
+A focused [same-session SSE concurrency test](../internal/mcpadapter/concurrent_message_wait_test.go) also keeps an actual incoming-message server subscription pending while unrelated message and job writes and explicit same-key replays finish, with one message effect, two deliberate job revisions and joined cancellation. This is separate from installed-host result delivery; see the [agent concurrency guidance](agent-client.md).
+
 These checks establish the SDK/protocol and service boundary, not compatibility with every installed agent host. Whether a pending tool permits other model work, delivers completion across turns, or wakes an idle chat remains separate host proof. Native Windows initialization/list/local-context and safe missing-credential behavior passed. Native Windows service-backed MCP read and job-create/replay checks also passed against actual `fcd`; all five mutation tools have Linux packaged proof. The [packaged smoke guide](../tools/packagedsmoke/README.md#native-platform-gate) records newer native Windows/macOS SDK execution, quiet-wait cancellation, concurrent reads and session reuse. Installed-agent-host delivery across turns remains unproven.
 
 ## Native review evidence
