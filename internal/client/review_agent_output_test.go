@@ -350,3 +350,41 @@ func TestAgentMissingParentDiagnosticsNameOnlyOriginalRetainedFacts(t *testing.T
 		}
 	}
 }
+
+func TestAgentCLIAllowanceUnprovenResponsePreservesOriginalHold(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, state := range []string{"held", "queued", "preparing", "active", "uncertain", "completed"} {
+			status := ReviewOperationStatus{ID: "original_operation", Channel: channel, State: state, Reason: "allowance_response_unproven", Stage: "held", NextAction: "read_diagnostics", AttemptID: "original_attempt", Revision: 3, UpdatedAt: "original_time"}
+			full := ReviewOperation{ID: status.ID, Channel: channel, State: state, Reason: status.Reason, AttemptID: status.AttemptID, Revision: status.Revision, UpdatedAt: status.UpdatedAt}
+			compact, detail := AgentReviewOperationStatus(status), AgentReviewOperation(full)
+			want := status
+			diagnosed := channel == "cli" && state == "held"
+			if diagnosed {
+				want.NextAction = "retry_later_with_new_request"
+			}
+			if compact.ReviewOperationStatus != want || detail.ReviewOperation != full || !reflect.DeepEqual(compact.Diagnostic, detail.Diagnostic) || (compact.Diagnostic != nil) != diagnosed {
+				t.Fatal("diagnostic changed retained identities/state or applied outside CLI preflight hold", compact, detail)
+			}
+			if !diagnosed {
+				continue
+			}
+			for _, part := range []string{"completed successfully", "response could not be validated", "No review command started", "terminal hold", "does not establish", "remaining balance", "exhausted quota", "retry time"} {
+				if !strings.Contains(compact.Diagnostic.Explanation, part) {
+					t.Fatal("diagnostic confused unknown response with quota", part)
+				}
+			}
+			for _, part := range []string{"remains authorized", "fresh idempotency key", "current configuration/head", "original key replays", "avoid rapid retries", "Do not reset"} {
+				if !strings.Contains(compact.Diagnostic.NextAction, part) {
+					t.Fatal("diagnostic omitted bounded recovery", part)
+				}
+			}
+			if detail.Allowance != nil {
+				t.Fatal("diagnostic invented an allowance observation")
+			}
+			body, err := json.Marshal(compact)
+			if err != nil || len(body) > 2048 {
+				t.Fatal("unbounded diagnostic", err)
+			}
+		}
+	}
+}

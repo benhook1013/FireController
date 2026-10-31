@@ -16,7 +16,7 @@ import (
 )
 
 func TestReviewAllowanceMCPStdioRoundTrip(t *testing.T) {
-	for _, channel := range []string{"cli", "hosted", "legacy", "timeout"} {
+	for _, channel := range []string{"cli", "hosted", "legacy", "timeout", "response-unproven"} {
 		t.Run(channel, func(t *testing.T) {
 			binding := localContext()
 			op := client.ReviewOperation{ID: "review_operation_" + strings.Repeat("a", 32), ProjectID: binding.ProjectID, ActorID: "principal_one", WorkerID: binding.WorkerID, ConfigurationRevision: 1, PolicyRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40), State: "held", Revision: 3, Reason: "allowance_exhausted", AttemptID: "review_attempt_" + strings.Repeat("b", 32), CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z"}
@@ -32,6 +32,9 @@ func TestReviewAllowanceMCPStdioRoundTrip(t *testing.T) {
 			id := "review_selection_" + strings.Repeat("a", 32)
 			if channel == "timeout" {
 				op.Reason = "allowance_timeout"
+			}
+			if channel == "response-unproven" {
+				op.Reason = "allowance_response_unproven"
 			}
 			selection := client.ReviewRunState{Selection: client.ReviewRunSelection{ID: id, ProjectID: op.ProjectID, ActorID: op.ActorID, WorkerID: op.WorkerID, Channel: op.Channel, ConfigurationRevision: 1, PolicyRevision: 1, ExpectedPullNumber: 2, State: "selected", Revision: 3, OperationID: op.ID, CreatedAt: op.CreatedAt, UpdatedAt: op.UpdatedAt}, Operation: &op}
 			var calls atomic.Int64
@@ -76,7 +79,13 @@ func TestReviewAllowanceMCPStdioRoundTrip(t *testing.T) {
 				if nested, ok := got["operation"].(map[string]any); ok {
 					got = nested
 				}
-				if channel == "timeout" {
+				if channel == "response-unproven" {
+					diagnostic, ok := got["diagnostic"].(map[string]any)
+					if !ok || !strings.Contains(diagnostic["explanation"].(string), "response could not be validated") || !strings.Contains(diagnostic["explanation"].(string), "does not establish") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") {
+						t.Fatal("unproven allowance response lacked truthful recovery", got)
+					}
+					delete(got, "diagnostic")
+				} else if channel == "timeout" {
 					diagnostic, ok := got["diagnostic"].(map[string]any)
 					if !ok || !strings.Contains(diagnostic["explanation"].(string), "allowance-check deadline") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") {
 						t.Fatal("timeout omitted actionable recovery", got)

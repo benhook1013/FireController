@@ -32,7 +32,7 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if value.Channel == "hosted" && value.State == "rate_limited" && value.Reason == "hosted_review_rate_limited" {
 		value.NextAction = "retry_later_with_new_request"
 	}
-	if value.Channel == "cli" && value.State == "held" && (value.Reason == "allowance_exhausted" || value.Reason == "allowance_timeout") {
+	if value.Channel == "cli" && value.State == "held" && (value.Reason == "allowance_exhausted" || value.Reason == "allowance_timeout" || value.Reason == "allowance_response_unproven") {
 		value.NextAction = "retry_later_with_new_request"
 	}
 	hint := agentReviewOperationDiagnostic(value.Channel, value.State, value.Reason)
@@ -191,6 +191,11 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 			return nil
 		}
 		return &ReviewOperationDiagnostic{"The included-allowance command did not complete within its configured allowance-check deadline (15 seconds by default). No review command was started and no review completed. This held operation is terminal. Missing allowance facts establish neither exhausted quota nor a provider outage; the next available retry time is unknown.", "Continue other work and avoid rapid retries. If the planned review remains authorized, make one later review_request with a fresh idempotency key and current configuration/head to recheck allowance through normal admission. The original key replays this hold; waiting on it will not resume it. Do not reset round controls, infer availability from local rounds or manually rerun the review. Repeated timeouts can be reported with the original operation/attempt IDs."}
+	case "allowance_response_unproven":
+		if channel != "cli" {
+			return nil
+		}
+		return &ReviewOperationDiagnostic{"The CLI allowance command completed successfully, but its response could not be validated. No review command started during this preparation. This terminal hold does not establish a remaining balance, exhausted quota or a retry time.", "Continue other work and avoid rapid retries. If the planned review remains authorized, use one later review_request with a fresh idempotency key and current configuration/head for normal allowance checks. The original key replays this hold; waiting will not resume it. Do not reset controls or manually run the review. Report repeated failures with the original operation/attempt IDs."}
 	case "allowance_exhausted":
 		if channel != "cli" {
 			return nil

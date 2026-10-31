@@ -126,11 +126,44 @@ func checkpointSource(ctx context.Context, tx *sql.Tx, project, id, pubID string
 	if a.State != "completed" || o.State != "completed" || !ev.Capture.Review.Complete || ev.Capture.Review.Outcome != "completed" || !state.Finalized || state.FrozenCounts == nil || state.FrozenCounts.Found != int64(len(ev.Capture.Review.Findings)) {
 		return ev, state, reviewprovider.CheckpointPayload{}, checkpointHold("source_not_finalized")
 	}
+	// Once accepted, an optional display fact stays exactly as retained. The
+	// worker and recovery paths share this source check, so deriving a newly
+	// available fact must not replace their original payload or posting intent.
+	var accepted bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_checkpoint_publications WHERE project_id=? AND id=?)`, project, pubID).Scan(&accepted); err != nil {
+		return ev, state, reviewprovider.CheckpointPayload{}, err
+	}
+	deriveHostedFiles := true
+	if accepted {
+		original, err := readCheckpoint(ctx, tx, project, pubID)
+		if err != nil {
+			return ev, state, reviewprovider.CheckpointPayload{}, err
+		}
+		deriveHostedFiles = original.Payload.Files != nil
+	}
 	counts := *state.FrozenCounts
 	p := reviewprovider.CheckpointPayload{PublicationID: pubID, EvidenceID: id, RepositoryID: ev.Anchor.RepositoryID, PullNumber: ev.Anchor.PullNumber, Channel: evidenceChannel(ev.Capture), HeadSHA: ev.Anchor.CandidateSHA, BaseSHA: ev.Anchor.BaseSHA, BaseRef: ev.Anchor.BaseRef, ParentSHA: ev.Anchor.ParentSHA, MergeBaseSHA: ev.Anchor.MergeBaseSHA, PatchSHA256: ev.Anchor.PatchSHA256, CaptureSHA256: ev.Capture.CaptureSHA256, ParentPullNumber: ev.Anchor.ParentPullNumber, Found: counts.Found, Accepted: counts.Accepted, Routed: counts.Routed, AcceptedSeverity: state.FrozenAcceptedSeverity}
 	if p.Channel == "cli" {
 		n := int64(len(ev.Capture.Review.ReviewedFiles))
 		p.Files = &n
+	} else if deriveHostedFiles {
+		// This is the original materialized comparison count, not the PR's
+		// current diff size or a claim about provider-reviewed files.
+		retained, attempt, operation, readErr := readHostedAllowance(ctx, tx, project, ev.AttemptID)
+		if readErr != nil {
+			var failure *core.Error
+			// Older evidence can lack a retained preflight. A present record
+			// with broken source/query binding must not become "unknown".
+			if retained.Input.QueryID != "" || !errors.As(readErr, &failure) || failure.Code != "not_found" {
+				return ev, state, p, checkpointStorage()
+			}
+		} else {
+			if !validHostedAllowanceInput(retained.Input) || attempt.ID != ev.AttemptID || operation.ID != ev.OperationID || !hostedAllowanceSameSource(retained.Input.Anchor, ev.Anchor) {
+				return ev, state, p, checkpointStorage()
+			}
+			n := retained.Input.ChangedFiles
+			p.Files = &n
+		}
 	}
 	start, se := time.Parse(time.RFC3339Nano, ev.Capture.StartedAt)
 	end, ee := time.Parse(time.RFC3339Nano, ev.Capture.FinishedAt)

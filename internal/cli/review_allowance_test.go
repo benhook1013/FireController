@@ -13,7 +13,7 @@ import (
 )
 
 func TestReviewAllowanceCLIRoundTrip(t *testing.T) {
-	for _, channel := range []string{"cli", "hosted", "legacy", "timeout"} {
+	for _, channel := range []string{"cli", "hosted", "legacy", "timeout", "response-unproven"} {
 		t.Run(channel, func(t *testing.T) {
 			f := setupServiceFixture(t)
 			project := f.project(t, "retained-allowance")
@@ -30,6 +30,9 @@ func TestReviewAllowanceCLIRoundTrip(t *testing.T) {
 			}
 			if channel == "timeout" {
 				op.Reason = "allowance_timeout"
+			}
+			if channel == "response-unproven" {
+				op.Reason = "allowance_response_unproven"
 			}
 			selection := client.ReviewRunState{Selection: client.ReviewRunSelection{ID: cliSelectionID, ProjectID: project, ActorID: op.ActorID, WorkerID: worker, Channel: op.Channel, ConfigurationRevision: 1, PolicyRevision: 1, ExpectedPullNumber: 2, State: "selected", Revision: 3, OperationID: op.ID, CreatedAt: op.CreatedAt, UpdatedAt: op.UpdatedAt}, Operation: &op}
 			var calls atomic.Int64
@@ -69,7 +72,13 @@ func TestReviewAllowanceCLIRoundTrip(t *testing.T) {
 				if nested, ok := got["operation"].(map[string]any); ok {
 					got = nested
 				}
-				if channel == "timeout" {
+				if channel == "response-unproven" {
+					diagnostic, ok := got["diagnostic"].(map[string]any)
+					if !ok || !strings.Contains(diagnostic["explanation"].(string), "response could not be validated") || !strings.Contains(diagnostic["explanation"].(string), "does not establish") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") {
+						t.Fatal("unproven allowance response lacked truthful recovery", got)
+					}
+					delete(got, "diagnostic")
+				} else if channel == "timeout" {
 					diagnostic, ok := got["diagnostic"].(map[string]any)
 					if !ok || !strings.Contains(diagnostic["explanation"].(string), "allowance-check deadline") || !strings.Contains(diagnostic["next_action"].(string), "fresh idempotency key") {
 						t.Fatal("timeout omitted actionable recovery", got)
