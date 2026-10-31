@@ -274,8 +274,9 @@ func TestHostedSettlementGuardTargetAndRetainedBindingFailures(t *testing.T) {
 		t.Fatal("noncanonical journal was rewritten or released")
 	}
 	admissionSQL(t, f, `UPDATE review_hosted_observations SET body_json=? WHERE attempt_id=? AND position=100`, originalBody, a.ID)
-	// A contiguous199-reference journal remains unavailable, rather than extending or
-	// rewriting the bounded raw-reference journal during settlement.
+	// Without a confirmed issued trigger, this class requires all 200 references;
+	// a valid 199-reference tail cannot borrow the confirmed-issued fallback.
+	f, a, _ = hostedSettlementFixture(t, false)
 	admissionSQL(t, f, `DELETE FROM review_hosted_observations WHERE attempt_id=? AND position=200`, a.ID)
 	before = hostedObservationState(t, f, a)
 	settlementError(t, hostedSettlementCall(t, f, a, "journal-hole", hostedSettlementBody(a)), 409, "review_settlement_unavailable")

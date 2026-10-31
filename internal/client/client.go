@@ -556,6 +556,10 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	if status == http.StatusServiceUnavailable && result.Code == "overloaded" {
 		result.Message = "The controller temporarily could not complete this request."
 		result.Action = "Retry this same read after a short delay, retaining its resource ID. Report persistent failures with request_id."
+		if details, ok := result.Details.(map[string]any); ok && details["reason"] == "result_wait_lifetime" {
+			result.Message = "The controller ended this temporary wait during shutdown."
+			result.Action = "When the controller is available, reattach the same wait with the original operation ID or CI PR/head/base pins. Interrupted waiting does not mean CI failed. Preserve the original request and any key."
+		}
 	}
 	if status == http.StatusConflict {
 		switch result.Code {
@@ -619,6 +623,10 @@ func (c *Client) safeDetails(value any, code string) any {
 	}
 	for key, item := range object {
 		switch key {
+		case "reason":
+			if reason, ok := item.(string); ok && code == "overloaded" && reason == "result_wait_lifetime" {
+				result[key] = reason
+			}
 		case "operation_id":
 			if id, ok := item.(string); ok && code == "review_queue_operation_pending" && ValidateReviewOperationID(id) == nil && !c.sensitive(id) {
 				result[key] = id

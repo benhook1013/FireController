@@ -60,7 +60,7 @@ func settlementDisposition(ctx context.Context, tx *sql.Tx, a Attempt, o Operati
 		}
 		return "cancelled", "operator_verified_external_stop", "review.hosted_settled", nil
 	case "cli":
-		if !externalStopped || o.Reason != "coverage_incomplete" || a.Intent != "" {
+		if !externalStopped || (o.Reason != "coverage_incomplete" && o.Reason != "execution_interrupted") || a.Intent != "" {
 			return "", "", "", settlementUnavailable()
 		}
 		if err := validatePartialSettlementEvidence(ctx, tx, a, o); err != nil {

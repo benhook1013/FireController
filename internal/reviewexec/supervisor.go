@@ -223,7 +223,14 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if ctx.Err() != nil {
 			return nil
 		}
-		return persistenceFailure()
+		// Candidate selection is read-only. A bounded pool/SQLite contention
+		// failure has no action or journal outcome to reconcile; the existing
+		// worker timer may try this local read again.
+		var failure *core.Error
+		if errors.As(core.NormalizeStorageError(err), &failure) && failure.Code == "overloaded" {
+			return nil
+		}
+		return persistenceFailureAt("pending_read", err, "", "")
 	}
 	for _, o := range operations {
 		if ctx.Err() != nil {
@@ -241,7 +248,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 					continue
 				}
 			}
-			return persistenceFailure()
+			return persistenceFailureAt("attempt_start", err, o.ID, "")
 		}
 		if a.ID == "" {
 			continue
@@ -253,7 +260,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 			if ctx.Err() != nil {
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
 			}
-			return persistenceFailure()
+			return persistenceFailureAt("configuration_read", err, o.ID, a.ID)
 		}
 		driver := drivers[c.CapabilityID]
 		if driver == nil {
@@ -269,13 +276,13 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 			state := "held"
 			reason := preparationReason(err)
 			if ctx.Err() == nil && o.Channel == "hosted" && reason == "hosted_allowance_cooldown" {
-				_, scheduleErr := e.ScheduleHostedCooldown(ctx, a.ProjectID, a.ID, a.Revision)
+				_, scheduleErr := e.persistHostedCooldown(ctx, o, a)
 				if scheduleErr == nil {
 					return nil
 				}
 				var refusal *core.Error
 				if !errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed" {
-					return persistenceFailure()
+					return scheduleErr
 				}
 			}
 			if ctx.Err() != nil {
@@ -300,7 +307,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 			if errors.As(err, &refusal) && (refusal.Code == "review_conflict" || refusal.Code == "validation_failed" || roundControlRefusal(refusal.Code)) {
 				return e.finishPreparation(a, "held", "admission_changed")
 			}
-			return persistenceFailure()
+			return persistenceFailureAt("admission", err, o.ID, a.ID)
 		}
 		a = admitted
 		var progressMu sync.Mutex
@@ -375,7 +382,115 @@ func (e *Engine) finishPreparation(a Attempt, state, reason string) error {
 }
 
 func persistenceFailure() error {
-	return core.Fail("review_persistence_failed", "Review execution stopped because an attempt outcome could not be recorded; inspect retained evidence before restarting.", 503)
+	return core.Fail("review_persistence_failed", "Review execution stopped because required local state could not be read or recorded; inspect the retained operation before restarting.", 503)
+}
+
+// Keep only bounded, stable classifications at the daemon failure boundary.
+// The original driver/SQL error is deliberately neither wrapped nor serialized.
+func persistenceFailureAt(stage string, cause error, operationID, attemptID string) error {
+	failure := persistenceFailure().(*core.Error)
+	details := map[string]string{"stage": stage, "cause": "other"}
+	var normalized *core.Error
+	if errors.As(core.NormalizeStorageError(cause), &normalized) {
+		switch normalized.Code {
+		case "overloaded", "storage_unavailable", "review_conflict", "validation_failed", "not_found", "review_held", "review_projection_missing":
+			details["cause"] = normalized.Code
+		}
+	}
+	if hostedObservationID(operationID, "review_operation_") {
+		details["operation_id"] = operationID
+	}
+	if hostedObservationID(attemptID, "review_attempt_") {
+		details["attempt_id"] = attemptID
+	}
+	failure.Details = details
+	return failure
+}
+
+// A proven unused cooldown is already retained before this call. Retry only
+// refused local writer admission, never an entered or ambiguous transaction.
+func (e *Engine) persistHostedCooldown(ctx context.Context, original Operation, a Attempt) (Attempt, error) {
+	local, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var result Attempt
+	err := retryRunSelectionLocal(local, func() error {
+		entered := false
+		writeErr := e.store.BackgroundWrite(local, func(ctx context.Context, tx *sql.Tx) error {
+			entered = true
+			var err error
+			result, err = e.scheduleHostedCooldown(ctx, tx, a.ProjectID, a.ID, a.Revision)
+			return err
+		})
+		if writeErr == nil {
+			e.notifyOperation(a.OperationID)
+			return nil
+		}
+		var failure *core.Error
+		if !entered && errors.As(writeErr, &failure) && failure.Code == "overloaded" {
+			return writeErr
+		}
+		// A failed commit may already be present. Only the exact original timer
+		// and guarded attempt transition reconcile that ambiguity without a write.
+		if recovered, ok := e.recordedHostedCooldown(local, original, a); ok {
+			result = recovered
+			e.notifyOperation(a.OperationID)
+			return nil
+		}
+		if errors.As(writeErr, &failure) && failure.Code == "review_cooldown_elapsed" {
+			return writeErr
+		}
+		return persistenceFailureAt("cooldown_schedule", writeErr, a.OperationID, a.ID)
+	})
+	if err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && (failure.Code == "review_persistence_failed" || failure.Code == "review_cooldown_elapsed") {
+			return Attempt{}, err
+		}
+		return Attempt{}, persistenceFailureAt("cooldown_schedule", err, a.OperationID, a.ID)
+	}
+	return result, nil
+}
+
+func (e *Engine) recordedHostedCooldown(ctx context.Context, original Operation, a Attempt) (Attempt, bool) {
+	var result Attempt
+	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		current, err := readAttempt(ctx, tx, a.ProjectID, a.ID)
+		if err != nil {
+			return err
+		}
+		o, err := readOperation(ctx, tx, a.ProjectID, a.OperationID)
+		if err != nil {
+			return err
+		}
+		baseline := a.ID
+		if original.Wait != nil && original.Wait.BaselineAttemptID != "" {
+			baseline = original.Wait.BaselineAttemptID
+		}
+		if current.OperationID != a.OperationID || current.ProjectID != a.ProjectID || current.Provider != a.Provider || current.Account != a.Account || current.Revision != a.Revision+1 || current.State != "held" || current.Anchor != nil || current.Intent != "" || current.ExternalID != "" || o.ID != original.ID || o.ProjectID != original.ProjectID || o.PullNumber != original.PullNumber || o.Channel != original.Channel || o.ActorID != original.ActorID || o.WorkerID != original.WorkerID || o.PolicyRevision != original.PolicyRevision || o.Revision != original.Revision+2 || o.State != "queued" || o.AttemptID != "" || o.Reason != "" || o.HeadSHA != original.HeadSHA || o.ConfigurationRevision != original.ConfigurationRevision || o.CapabilityFingerprint != original.CapabilityFingerprint || o.Wait == nil || o.Wait.BaselineAttemptID != baseline {
+			return conflict()
+		}
+		historical, err := historicalCooldownOperation(ctx, tx, o, current)
+		if err != nil {
+			return err
+		}
+		record, err := readHostedAllowanceRecord(ctx, tx, historical, current)
+		if err != nil {
+			return err
+		}
+		if record.Input.Observation.State != "cooldown_observed" || o.Wait.RetryNotBefore != record.Input.Observation.RetryNotBefore.UTC().Format(time.RFC3339Nano) {
+			return conflict()
+		}
+		var reserved bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_execution_reservations WHERE attempt_id=?)`, a.ID).Scan(&reserved); err != nil {
+			return err
+		}
+		if reserved {
+			return conflict()
+		}
+		result = current
+		return nil
+	})
+	return result, err == nil
 }
 
 // Retry only the same guarded local journal transition, never provider work.
@@ -412,15 +527,15 @@ func (e *Engine) persistAdvance(a Attempt, state, reason, externalID string, ref
 		}
 		var failure *core.Error
 		if ctx.Err() != nil || !errors.As(err, &failure) || failure.Code != "overloaded" || attempt == 2 {
-			return Attempt{}, persistenceFailure()
+			return Attempt{}, persistenceFailureAt("outcome_write", err, a.OperationID, a.ID)
 		}
 		timer := time.NewTimer(time.Duration(attempt+1) * 50 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return Attempt{}, persistenceFailure()
+			return Attempt{}, persistenceFailureAt("outcome_write", err, a.OperationID, a.ID)
 		case <-timer.C:
 		}
 	}
-	return Attempt{}, persistenceFailure()
+	return Attempt{}, persistenceFailureAt("outcome_write", nil, a.OperationID, a.ID)
 }

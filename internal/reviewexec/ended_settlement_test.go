@@ -41,7 +41,11 @@ func endedSettlementFixture(t *testing.T, channel string) (*attemptFixture, Atte
 		if _, err = f.e.PublishEvidence(t.Context(), attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
 			t.Fatal(err)
 		}
-		a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "uncertain", "coverage_incomplete", "")
+		reason := "coverage_incomplete"
+		if channel == "cli-interrupted" {
+			reason = "execution_interrupted"
+		}
+		a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "uncertain", reason, "")
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +58,7 @@ func endedSettlementFixture(t *testing.T, channel string) (*attemptFixture, Atte
 }
 
 func TestEndedSettlementRejectsMissingAndChangedOriginalAuthority(t *testing.T) {
-	for _, channel := range []string{"hosted", "cli"} {
+	for _, channel := range []string{"hosted", "cli", "cli-interrupted"} {
 		for _, mutation := range []struct{ name, sql string }{
 			{"different-reason", `UPDATE review_operations SET reason='different_uncertainty' WHERE id=?;`},
 			{"reservation-account", `UPDATE review_execution_reservations SET account='different_account' WHERE attempt_id=?`},
@@ -151,7 +155,7 @@ func TestEndedSettlementRejectsMissingAndChangedOriginalAuthority(t *testing.T) 
 			}
 		})
 	}
-	for _, channel := range []string{"hosted", "cli"} {
+	for _, channel := range []string{"hosted", "cli", "cli-interrupted"} {
 		t.Run(channel+"/active-is-not-ended", func(t *testing.T) {
 			f, a := endedSettlementFixture(t, channel)
 			var err error
@@ -169,7 +173,7 @@ func TestEndedSettlementRejectsMissingAndChangedOriginalAuthority(t *testing.T) 
 }
 
 func TestEndedSettlementAdminGuardAuditFailureAndExactRetry(t *testing.T) {
-	for _, channel := range []string{"hosted", "cli"} {
+	for _, channel := range []string{"hosted", "cli", "cli-interrupted"} {
 		t.Run(channel, func(t *testing.T) {
 			f, a := endedSettlementFixture(t, channel)
 			before := transferAuthorityRows(t, f, true)
@@ -194,9 +198,12 @@ func TestEndedSettlementAdminGuardAuditFailureAndExactRetry(t *testing.T) {
 }
 
 func TestEndedSettlementPublicRouteRetainsOriginalSource(t *testing.T) {
-	for _, channel := range []string{"hosted", "cli"} {
+	for _, channel := range []string{"hosted", "cli", "cli-interrupted"} {
 		t.Run(channel, func(t *testing.T) {
 			f, a := endedSettlementFixture(t, channel)
+			if channel == "cli-interrupted" {
+				channel = "cli"
+			}
 			before := transferAuthorityRows(t, f, true)
 			// CLI partial and unconfirmed Hosted finished inventory cannot borrow
 			// explicit abandonment without the confirmed issued Hosted authority.
@@ -280,6 +287,119 @@ func TestEndedSettlementPublicRouteRetainsOriginalSource(t *testing.T) {
 			changed := hostedSettlementBody(a)
 			changed["evidence_reference"] = "different-operator-reference"
 			settlementError(t, hostedSettlementCall(t, f, a, "ended-action", changed), 409, "idempotency_conflict")
+		})
+	}
+}
+
+// A process interruption is not a complete zero review. Only an explicit
+// independently verified stop may release its original uncertain reservation.
+func TestInterruptedCLISettlementZeroFindings(t *testing.T) {
+	f, a, evidence := cliPublicationFixture(t, 0, "failed")
+	if _, err := f.e.PublishEvidence(t.Context(), attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "uncertain", "execution_interrupted", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		name    string
+		token   string
+		project string
+		body    map[string]any
+		status  int
+		code    string
+	}{
+		{"false-stop", f.admin, attemptProject, hostedAbandonmentBody(a), 409, "review_settlement_unavailable"},
+		{"writer", f.writer, attemptProject, hostedSettlementBody(a), 403, "forbidden"},
+		{"foreign-project", f.admin, otherAttemptProject, hostedSettlementBody(a), 404, "not_found"},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			before := transferAuthorityRows(t, f, true)
+			r := f.request("POST", hostedSettlementPath(check.project, a), check.token, "interrupted-"+check.name, encoded(check.body))
+			if r.Code != check.status {
+				t.Fatalf("refusal status=%d want=%d", r.Code, check.status)
+			}
+			if !reflect.DeepEqual(before, transferAuthorityRows(t, f, true)) {
+				t.Fatal("refusal mutated retained state")
+			}
+		})
+	}
+	before := transferAuthorityRows(t, f, true)
+	r := hostedSettlementCall(t, f, a, "interrupted-zero", hostedSettlementBody(a))
+	if r.Code != 200 {
+		t.Fatalf("interrupted zero settlement: %d %s", r.Code, r.Body.String())
+	}
+	after := transferAuthorityRows(t, f, true)
+	for _, table := range []string{"review_execution_evidence", "review_run_versions", "review_finding_versions", "review_execution_config", "review_round_controls", "review_round_changes", "review_round_completions"} {
+		if _, ok := before[table]; !ok {
+			t.Fatal("missing conservation table", table)
+		}
+		if !reflect.DeepEqual(before[table], after[table]) {
+			t.Fatal("interrupted settlement changed original source/counts/controls", table)
+		}
+	}
+	detail := cliPublicationDetail(t, f, 2, evidence.ID)
+	if len(detail.Findings) != 0 || detail.Run.Complete || detail.Run.Attributable || detail.Run.Finalized || detail.Run.Found != 0 {
+		t.Fatal("interruption gained findings/completion credit")
+	}
+	_, projected := projectedAttempt(t, f, Attempt{ID: a.ID})
+	if projected.State != "failed" || projected.Reason != "cli_partial_settled" {
+		t.Fatal("interrupted projection not failed")
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != 0 {
+		t.Fatal("reservation not released")
+	}
+	settled := transferAuthorityRows(t, f, true)
+	replay := hostedSettlementCall(t, f, a, "interrupted-zero", hostedSettlementBody(a))
+	if replay.Code != 200 || replay.Body.String() != r.Body.String() || !reflect.DeepEqual(settled, transferAuthorityRows(t, f, true)) {
+		t.Fatal("exact replay changed state")
+	}
+	settlementError(t, hostedSettlementCall(t, f, a, "interrupted-stale", hostedSettlementBody(a)), 409, "review_attempt_revision_conflict")
+}
+
+func TestInterruptedCLISettlementInvalidEvidence(t *testing.T) {
+	for _, mutation := range []string{"missing", "hash", "complete"} {
+		t.Run(mutation, func(t *testing.T) {
+			var f *attemptFixture
+			var a Attempt
+			if mutation == "missing" {
+				f, a, _ = evidenceFixture(t, "cli", true)
+				var err error
+				a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "uncertain", "execution_interrupted", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				mux := http.NewServeMux()
+				f.e.Register(mux)
+				f.handler = mux
+			} else {
+				f, a = endedSettlementFixture(t, "cli-interrupted")
+			}
+			switch mutation {
+			case "missing":
+				admissionSQL(t, f, `DELETE FROM review_execution_evidence WHERE attempt_id=?`, a.ID)
+			case "hash":
+				admissionSQL(t, f, `UPDATE review_execution_evidence SET fingerprint=? WHERE attempt_id=?`, strings.Repeat("e", 64), a.ID)
+			case "complete":
+				var body string
+				if err := f.store.DB().QueryRow(`SELECT body_json FROM review_execution_evidence WHERE attempt_id=?`, a.ID).Scan(&body); err != nil {
+					t.Fatal(err)
+				}
+				var record ReviewEvidence
+				if err := json.Unmarshal([]byte(body), &record); err != nil {
+					t.Fatal(err)
+				}
+				record.Capture.Review.Complete, record.Capture.Review.Outcome, record.Capture.Review.ReportedFindings = true, "completed", 4
+				digest := sha256.Sum256([]byte(encoded(record.Capture)))
+				admissionSQL(t, f, `UPDATE review_execution_evidence SET body_json=?,fingerprint=? WHERE attempt_id=?`, encoded(record), hex.EncodeToString(digest[:]), a.ID)
+			}
+			before := transferAuthorityRows(t, f, true)
+			settlementError(t, hostedSettlementCall(t, f, a, "interrupted-invalid", hostedSettlementBody(a)), 409, "review_settlement_unavailable")
+			if !reflect.DeepEqual(before, transferAuthorityRows(t, f, true)) {
+				t.Fatal("invalid interrupted evidence changed state")
+			}
 		})
 	}
 }

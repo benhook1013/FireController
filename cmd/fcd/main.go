@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"syscall"
 	"time"
@@ -415,8 +416,41 @@ func diagnostic(w io.Writer, code, message string) {
 func diagnosticError(w io.Writer, err error) {
 	var failure *core.Error
 	if errors.As(err, &failure) {
-		diagnostic(w, failure.Code, failure.Message)
+		if details := safePersistenceDetails(failure); len(details) != 0 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": failure.Code, "message": failure.Message, "details": details}})
+		} else {
+			diagnostic(w, failure.Code, failure.Message)
+		}
 	} else {
 		diagnostic(w, "internal_error", "The service could not be started.")
 	}
+}
+
+var persistenceOperationID = regexp.MustCompile(`^review_operation_[0-9a-f]{32}$`)
+var persistenceAttemptID = regexp.MustCompile(`^review_attempt_[0-9a-f]{32}$`)
+
+func safePersistenceDetails(failure *core.Error) map[string]string {
+	if failure.Code != "review_persistence_failed" {
+		return nil
+	}
+	details, ok := failure.Details.(map[string]string)
+	if !ok {
+		return nil
+	}
+	safe := make(map[string]string)
+	switch value := details["stage"]; value {
+	case "pending_read", "attempt_start", "configuration_read", "cooldown_schedule", "admission", "outcome_write":
+		safe["stage"] = value
+	}
+	switch value := details["cause"]; value {
+	case "other", "overloaded", "storage_unavailable", "review_conflict", "validation_failed", "not_found", "review_held", "review_projection_missing":
+		safe["cause"] = value
+	}
+	if value := details["operation_id"]; persistenceOperationID.MatchString(value) {
+		safe["operation_id"] = value
+	}
+	if value := details["attempt_id"]; persistenceAttemptID.MatchString(value) {
+		safe["attempt_id"] = value
+	}
+	return safe
 }
