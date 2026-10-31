@@ -47,7 +47,32 @@ func TestSupervisorPendingReadPoolExhaustionPreservesQueuedWork(t *testing.T) {
 }
 
 func TestSupervisorCooldownAdmissionContentionKeepsOriginalTimerAndSibling(t *testing.T) {
+	testSupervisorCooldownContention(t, 2250*time.Millisecond, false)
+}
+
+func TestSupervisorCooldownRolledBackDeadlineKeepsOriginalTimerAndSibling(t *testing.T) {
+	testSupervisorCooldownContention(t, 1750*time.Millisecond, true)
+}
+
+func testSupervisorCooldownContention(t *testing.T, admissionHold time.Duration, callbackDeadline bool) {
+	t.Helper()
 	f := supervisorFixture(t)
+	var publicationCalls atomic.Int32
+	if callbackDeadline {
+		publish := f.e.publishAttempt
+		f.e.publishAttempt = func(ctx context.Context, tx *sql.Tx, a Attempt) error {
+			if a.State == "held" && publicationCalls.Add(1) == 1 {
+				// Admission consumed most of this real BackgroundWrite's two-second
+				// child budget. A nonnil callback error forbids any Commit call.
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			if publish != nil {
+				return publish(ctx, tx, a)
+			}
+			return nil
+		}
+	}
 	cliEntered, cliRelease := make(chan struct{}), make(chan struct{})
 	cliCancelled := make(chan struct{})
 	writerEntered, writerRelease := make(chan struct{}), make(chan struct{})
@@ -143,13 +168,14 @@ func TestSupervisorCooldownAdmissionContentionKeepsOriginalTimerAndSibling(t *te
 			t.Fatal("Hosted preflight did not retain cooldown", supervisorOperationState(t, f, hosted.ID))
 		}
 	}
-	// Hold the real writer beyond BackgroundWrite's 2s admission deadline.
+	// Exercise both refused admission and admission that leaves too little
+	// transaction time for a callback that then reaches its actual child deadline.
 	select {
 	case err := <-done:
 		close(writerRelease)
 		<-writerDone
 		t.Fatal("refused cooldown admission killed supervisor", err)
-	case <-time.After(2250 * time.Millisecond):
+	case <-time.After(admissionHold):
 	}
 	select {
 	case <-cliCancelled:
@@ -163,6 +189,13 @@ func TestSupervisorCooldownAdmissionContentionKeepsOriginalTimerAndSibling(t *te
 		var failure *core.Error
 		if !errors.As(err, &failure) || failure.Code != "overloaded" {
 			t.Fatal(err)
+		}
+	}
+	if callbackDeadline {
+		select {
+		case err := <-done:
+			t.Fatal("rolled-back cooldown callback killed supervisor", err)
+		case <-time.After(750 * time.Millisecond):
 		}
 	}
 	waitSupervisor(t, "original cooldown timer", func() bool {
@@ -179,6 +212,9 @@ func TestSupervisorCooldownAdmissionContentionKeepsOriginalTimerAndSibling(t *te
 	}
 	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions WHERE attempt_id=?`, a.ID) != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != 0 {
 		t.Fatal("cooldown did not settle exactly once")
+	}
+	if callbackDeadline && publicationCalls.Load() != 2 {
+		t.Fatal("callback deadline did not roll back once and retry once", publicationCalls.Load())
 	}
 	close(cliRelease)
 	waitOperationState(t, f, cli.ID, "completed")

@@ -112,7 +112,9 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 			if item.State != "closed" && item.ObservedHeadSHA != "" && (item.ObservedHeadSHA != target.HeadSHA || sub.bases[i] != "" && item.ObservedBaseSHA != sub.bases[i]) {
 				item.State, item.Reason = "superseded", "ci_watch_source_changed"
 			}
-			if entry.wanted != entry.done {
+			// Newer CI hints can withhold success, but cannot undo a fresh
+			// comparison mismatch for this subscription's original source pins.
+			if entry.wanted != entry.done && item.State != "superseded" {
 				item.State, item.Reason = "pending", "ci_watch_refresh_pending"
 			}
 		}

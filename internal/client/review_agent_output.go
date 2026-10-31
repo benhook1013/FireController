@@ -23,6 +23,9 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if value.Channel == "hosted" && value.State == "uncertain" && value.Stage == "uncertain" && value.Reason == "hosted_observation_pending" && value.AttemptID != "" && value.NextAction == "contact_controller_owner" {
 		value.NextAction = "wait_for_observation"
 	}
+	if value.Channel == "hosted" && value.State == "held" && value.Reason == "target_changed" && value.PendingEvidence == nil {
+		value.NextAction = "qualify_current_target"
+	}
 	if value.Channel == "hosted" && value.State == "held" && value.Reason == "hosted_allowance_cooldown" {
 		value.NextAction = "new_request_after_cooldown"
 	}
@@ -198,6 +201,11 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 	}
 	var explanation string
 	switch reason {
+	case "target_changed":
+		if channel != "hosted" {
+			return nil
+		}
+		return &ReviewOperationDiagnostic{"Preparation held because the PR no longer matches the requested open comparison. This terminal operation will not silently follow a newer head.", "Read current queue/source facts. If the review remains authorized, qualify the current open head, respect any known cooldown, then submit one fresh review_request with a new key and current configuration revision. The old key replays this hold; queued-only pause/resume cannot reopen or rebind it. A new request rechecks provider limits and does not transfer the old timer. Configured PR queue order is unchanged."}
 	case "review_evidence_pending":
 		return &ReviewOperationDiagnostic{"Earlier native evidence in this PR/channel still needs capture, adjudication, finalization, fix proof or a routed receiving resolution. This held operation is terminal and completed no new review.", "Read this operation with diagnostics to identify the current source operation/evidence, finding and route handles. Resolve the actual retained obligation through its existing controls; an outgoing accepted route without fix proof can hold the source channel. Do not reset rounds, discard evidence or start another review to clear the hold."}
 	case "project_file_limit":

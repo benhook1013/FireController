@@ -43,7 +43,7 @@ func TestReviewOperationStatusCLIWaitsForScheduledObservation(t *testing.T) {
 }
 
 func TestReviewOperationHeldGuidanceCLICompactAndDiagnostics(t *testing.T) {
-	for _, fixture := range []string{"parent_moved", "selected_parent_moved", "predecessor_parent_moved", "parent_unavailable", "hosted_allowance_cooldown"} {
+	for _, fixture := range []string{"parent_moved", "selected_parent_moved", "predecessor_parent_moved", "parent_unavailable", "hosted_allowance_cooldown", "target_changed"} {
 		t.Run(fixture, func(t *testing.T) {
 			reason := fixture
 			if reason == "selected_parent_moved" {
@@ -68,6 +68,9 @@ func TestReviewOperationHeldGuidanceCLICompactAndDiagnostics(t *testing.T) {
 				full.SourceRefusal = status.SourceRefusal
 			}
 			wantStatus := status
+			if reason == "target_changed" {
+				wantStatus.NextAction = "qualify_current_target"
+			}
 			if reason == "hosted_allowance_cooldown" {
 				status.RetryNotBefore = "2026-10-24T00:10:00Z"
 				wantStatus = status

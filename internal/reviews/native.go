@@ -91,7 +91,7 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 	if err = preserveRetiredNativeQueueEntry(ctx, tx, write, pull.Number); err != nil {
 		return Receipt{}, err
 	}
-	body, position, err := nativePullBody(ctx, tx, scope.ProjectID, previousID, pull)
+	body, position, lifecycleChanged, err := nativePullBody(ctx, tx, scope.ProjectID, previousID, pull)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -126,8 +126,12 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 	if err = core.AppendEvent(ctx, tx, scope, "review.observed", id, next, map[string]any{"snapshot_id": id, "pull_number": pull.Number, "source": nativeSource}); err != nil {
 		return Receipt{}, err
 	}
-	if err = publicsite.Refresh(ctx, tx, scope.ProjectID, PublicSiteReviewFacts); err != nil {
-		return Receipt{}, err
+	// Public review facts contain lifecycle and finalized runs, not private
+	// attempt activity. Avoid rebuilding every selected public PR on a no-op.
+	if p.Run != nil || lifecycleChanged {
+		if err = publicsite.Refresh(ctx, tx, scope.ProjectID, PublicSiteReviewFacts); err != nil {
+			return Receipt{}, err
+		}
 	}
 	return Receipt{ID: id, Revision: next, Outcome: "observed"}, nil
 }
@@ -182,15 +186,16 @@ func retainedPullBody(ctx context.Context, tx *sql.Tx, project, previous string,
 	return body, position, err
 }
 
-func nativePullBody(ctx context.Context, tx *sql.Tx, project, previous string, pull PullInput) ([]any, int, error) {
+func nativePullBody(ctx context.Context, tx *sql.Tx, project, previous string, pull PullInput) ([]any, int, bool, error) {
 	body, position, err := retainedPullBody(ctx, tx, project, previous, pull.Number)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
 	metadataJSON, metadataErr := inheritedPullMetadata(body, pull)
 	if metadataErr != nil {
-		return nil, 0, metadataErr
+		return nil, 0, false, metadataErr
 	}
+	lifecycleChanged := errors.Is(err, sql.ErrNoRows) || body[1] != pull.State
 	body[12] = metadataJSON
 	complete := any(int64(0))
 	if err == nil && body[2] == pull.HeadSHA {
@@ -198,12 +203,12 @@ func nativePullBody(ctx context.Context, tx *sql.Tx, project, previous string, p
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		if err = tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(position),-1)+1 FROM review_current_pulls WHERE project_id=?", project).Scan(&position); err != nil {
-			return nil, 0, err
+			return nil, 0, false, err
 		}
 		body[8], body[9], body[10], body[11], body[13] = int64(0), int64(0), "[]", "[]", int64(1)
 	}
 	body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7] = pull.Title, pull.State, pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, complete
-	return body, position, nil
+	return body, position, lifecycleChanged, nil
 }
 
 func appendNativeRun(ctx context.Context, tx *sql.Tx, write *historySnapshotWrite, number int64, run RunInput) error {

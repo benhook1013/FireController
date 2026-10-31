@@ -454,3 +454,38 @@ func TestAgentCLIAllowanceUnprovenResponsePreservesOriginalHold(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentHostedTargetChangedKeepsOriginalFactsAndRequiresQualifiedNewIntent(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, state := range []string{"held", "queued", "active", "uncertain", "failed", "completed"} {
+			compact := ReviewOperationStatus{ID: "original_operation", AttemptID: "original_attempt", Channel: channel, State: state, Stage: state, Reason: "target_changed", Revision: 5, UpdatedAt: "original_time", NextAction: "read_diagnostics"}
+			full := ReviewOperation{ID: compact.ID, AttemptID: compact.AttemptID, Channel: channel, State: state, Reason: compact.Reason, HeadSHA: strings.Repeat("a", 40), Revision: compact.Revision, UpdatedAt: compact.UpdatedAt}
+			got, fullGot := AgentReviewOperationStatus(compact), AgentReviewOperation(full)
+			want := channel == "hosted" && state == "held"
+			expected := compact
+			if want {
+				expected.NextAction = "qualify_current_target"
+			}
+			if !reflect.DeepEqual(got.ReviewOperationStatus, expected) || !reflect.DeepEqual(fullGot.ReviewOperation, full) || !reflect.DeepEqual(got.Diagnostic, fullGot.Diagnostic) || (got.Diagnostic != nil) != want {
+				t.Fatal("target guidance altered retained comparison or escaped its hold", channel, state)
+			}
+			if !want {
+				continue
+			}
+			for _, phrase := range []string{"requested open comparison", "terminal", "will not silently follow"} {
+				if !strings.Contains(got.Diagnostic.Explanation, phrase) {
+					t.Fatal("lost original comparison boundary", phrase)
+				}
+			}
+			for _, phrase := range []string{"If the review remains authorized", "qualify the current open head", "known cooldown", "new key", "current configuration revision", "old key replays", "cannot reopen or rebind", "does not transfer the old timer", "queue order is unchanged"} {
+				if !strings.Contains(got.Diagnostic.NextAction, phrase) {
+					t.Fatal("missing supported recovery step", phrase)
+				}
+			}
+			body, err := json.Marshal(got)
+			if err != nil || len(body) > 2048 {
+				t.Fatal("target diagnostic exceeded compact output", len(body), err)
+			}
+		}
+	}
+}

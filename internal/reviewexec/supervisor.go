@@ -408,17 +408,23 @@ func persistenceFailureAt(stage string, cause error, operationID, attemptID stri
 }
 
 // A proven unused cooldown is already retained before this call. Retry only
-// refused local writer admission, never an entered or ambiguous transaction.
+// refused local writer admission or a callback deadline that rolled back before
+// Commit. An ambiguous commit still requires exact retained-state reconciliation.
 func (e *Engine) persistHostedCooldown(ctx context.Context, original Operation, a Attempt) (Attempt, error) {
 	local, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	var result Attempt
 	err := retryRunSelectionLocal(local, func() error {
 		entered := false
+		callbackDeadline := false
 		writeErr := e.store.BackgroundWrite(local, func(ctx context.Context, tx *sql.Tx) error {
 			entered = true
 			var err error
 			result, err = e.scheduleHostedCooldown(ctx, tx, a.ProjectID, a.ID, a.Revision)
+			// A nonnil callback error makes BackgroundWrite roll back without
+			// invoking Commit. Only its actual child deadline is retryable; a
+			// domain overload or an expired outer budget is not that proof.
+			callbackDeadline = err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && local.Err() == nil
 			return err
 		})
 		if writeErr == nil {
@@ -426,7 +432,7 @@ func (e *Engine) persistHostedCooldown(ctx context.Context, original Operation, 
 			return nil
 		}
 		var failure *core.Error
-		if !entered && errors.As(writeErr, &failure) && failure.Code == "overloaded" {
+		if (!entered || callbackDeadline) && errors.As(writeErr, &failure) && failure.Code == "overloaded" {
 			return writeErr
 		}
 		// A failed commit may already be present. Only the exact original timer

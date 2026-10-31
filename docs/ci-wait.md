@@ -1,6 +1,6 @@
 # Waiting for CI
 
-Use `reviews ci-wait` or MCP `wait_for_ci` to wait quietly for required CI on up to twenty PRs in the bound project. Every target supplies its PR number and full expected head SHA; an optional full base SHA pins the base immediately. Otherwise the watch pins the first freshly observed base. A later comparison change returns `superseded`, rather than crediting results for different code.
+Use `reviews ci-wait` or MCP `wait_for_ci` to wait quietly for required CI on up to twenty PRs in the bound project. Every target supplies its PR number and full expected head SHA; an optional full base SHA pins the base immediately. Otherwise the watch pins the first freshly observed base. A later comparison change returns `superseded`, rather than crediting results for different code. Once this subscription has a fresh observed head/base mismatch, a newer CI refresh request does not keep that superseded comparison waiting; older cached observations cannot supply this decision.
 
 ```sh
 fc reviews ci-wait --target 42:FULL_HEAD_SHA --target 43:FULL_HEAD_SHA:FULL_BASE_SHA --wait-seconds 300

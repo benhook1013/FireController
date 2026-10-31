@@ -178,7 +178,7 @@ func TestReviewOperationControlActualWriterReadAndProjectIsolation(t *testing.T)
 	}
 	_, err = peer.ControlReviewOperation(t.Context(), "cannot-resume", queued.ID, client.ReviewOperationControl{ExpectedRevision: 3, Action: "resume"})
 	var failure *client.Error
-	if !errors.As(err, &failure) || failure.Code != "review_operation_started" || !strings.Contains(failure.Action, "No provider cancellation occurred") {
+	if !errors.As(err, &failure) || failure.Code != "review_operation_started" || !strings.Contains(failure.Action, "No provider cancellation occurred") || !strings.Contains(failure.Action, "held target_changed") || !strings.Contains(failure.Action, "Do not submit a replacement for posting, active or uncertain work") {
 		t.Fatal(err)
 	}
 	done, err := reader.ReviewOperation(t.Context(), queued.ID)

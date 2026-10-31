@@ -62,7 +62,7 @@ func (c *Client) ControlReviewOperation(ctx context.Context, key, id string, v R
 		if errors.As(err, &failure) && failure.Code == "review_operation_started" && failure.Status == http.StatusConflict {
 			copy := *failure
 			copy.Message = "This operation is no longer an undispatched queued request."
-			copy.Action = "Read this same operation for its current state. No provider cancellation occurred; do not submit a replacement request."
+			copy.Action = "Read this same operation for its current state. No provider cancellation occurred. Queued-only controls cannot reopen a held target_changed; follow its recovery diagnostic. Do not submit a replacement for posting, active or uncertain work."
 			return ReviewOperationControlReceipt{}, &copy
 		}
 		return out, err

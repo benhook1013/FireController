@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"github.com/benhook1013/FireController/internal/cli"
 	"github.com/benhook1013/FireController/internal/client"
+	"github.com/benhook1013/FireController/internal/strictjson"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,8 +21,17 @@ func TestReviewOperationControlCLIActualRevisionReplayAndBinding(t *testing.T) {
 	}))
 	defer server.Close()
 	profiles := mutationProfiles(t, f, server.URL, map[string][2]string{"builder": {project, worker}})
-	queued := mutationSuccess(t, profiles, "builder", reviewRequestArgs()...)
-	id := queued["id"].(string)
+	code, out, stderr := mutationInvoke(t, profiles, "builder", reviewRequestArgs()...)
+	var queued struct {
+		ID         string                            `json:"id"`
+		State      string                            `json:"state"`
+		Revision   int64                             `json:"revision"`
+		Diagnostic *client.ReviewOperationDiagnostic `json:"diagnostic,omitempty"`
+	}
+	if code != 0 || stderr != "" || strictjson.Decode([]byte(out), &queued) != nil || queued.State != "queued" || queued.Revision != 1 || !strings.HasPrefix(queued.ID, "review_operation_") {
+		t.Fatal("invalid adapted queued receipt", code, out, stderr)
+	}
+	id := queued.ID
 	invoke := func(action, rev, key string) client.ReviewOperationControlReceipt {
 		t.Helper()
 		code, out, stderr := mutationInvoke(t, profiles, "builder", "reviews", "operation-control", id, "--action", action, "--expect-revision", rev, "--key", key)
@@ -38,7 +48,7 @@ func TestReviewOperationControlCLIActualRevisionReplayAndBinding(t *testing.T) {
 	if replay := invoke("pause", "1", "pause"); replay != paused {
 		t.Fatal("replay changed", replay)
 	}
-	code, out, stderr := mutationInvoke(t, profiles, "builder", "reviews", "operation-control", id, "--action", "resume", "--expect-revision", "1", "--key", "stale")
+	code, out, stderr = mutationInvoke(t, profiles, "builder", "reviews", "operation-control", id, "--action", "resume", "--expect-revision", "1", "--key", "stale")
 	if code != cli.ExitConflict || out != "" || !strings.Contains(stderr, "review_conflict") {
 		t.Fatal(code, out, stderr)
 	}
