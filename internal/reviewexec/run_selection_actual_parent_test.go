@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
@@ -14,16 +15,21 @@ import (
 // Branch lookup uses explicitly published head refs; queue order is deliberately
 // unavailable to the fake provider and cannot manufacture dependency identity.
 type actualParentSelectionReader struct {
+	mu    sync.Mutex
 	pulls map[int64]reviewprovider.Pull
 	calls []string
 }
 
 func (r *actualParentSelectionReader) Repository(_ context.Context, id int64) (reviewprovider.Repository, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.calls = append(r.calls, fmt.Sprintf("repository:%d", id))
 	return reviewprovider.Repository{ID: id, FullName: "owner/repo", DefaultBranch: "main"}, nil
 }
 
 func (r *actualParentSelectionReader) Pull(_ context.Context, _ string, number int64) (reviewprovider.Pull, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.calls = append(r.calls, fmt.Sprintf("pull:%d", number))
 	pull, ok := r.pulls[number]
 	if !ok {
@@ -33,6 +39,8 @@ func (r *actualParentSelectionReader) Pull(_ context.Context, _ string, number i
 }
 
 func (r *actualParentSelectionReader) ParentPull(_ context.Context, _ string, branch string) (reviewprovider.Pull, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.calls = append(r.calls, "parent:"+branch)
 	var found reviewprovider.Pull
 	for _, pull := range r.pulls {
@@ -73,9 +81,11 @@ func TestRunSelectionActualParentKeepsUnfinishedFindingLocal(t *testing.T) {
 			request, _ := selectionEnqueue(t, f, "mixed-selection", "cli", nil)
 			selectionNext(t, f, reader)
 			got := selectionRead(t, f, request.ID)
-			wantCalls := []string{"repository:801", "pull:2", "pull:4"}
+			// The initial bounded metadata window may look ahead to PR4;
+			// reaching it later requires its own fresh comparison read.
+			wantCalls := map[string]int{"repository:801": 1, "pull:2": 1, "pull:4": 2}
 			if dependent {
-				wantCalls = append(wantCalls, "parent:agent-a")
+				wantCalls["parent:agent-a"] = 1
 				if got.State != "held" || got.OperationID != "" {
 					t.Fatal("unfinished actual parent allowed dependent dispatch", got)
 				}
@@ -91,7 +101,11 @@ func TestRunSelectionActualParentKeepsUnfinishedFindingLocal(t *testing.T) {
 					t.Fatal("selected wrong independent source", op, err)
 				}
 			}
-			if !reflect.DeepEqual(reader.calls, wantCalls) {
+			gotCalls := map[string]int{}
+			for _, call := range reader.calls {
+				gotCalls[call]++
+			}
+			if !reflect.DeepEqual(gotCalls, wantCalls) {
 				t.Fatal("source reads exceeded exact selected comparisons", reader.calls, wantCalls)
 			}
 			if after := adjudicationRead(t, f, evidence); !reflect.DeepEqual(before, after) {

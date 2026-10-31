@@ -88,7 +88,7 @@ func TestRunSelectionSourceTimeoutStillProducesSourceHold(t *testing.T) {
 	}}
 	selectionNext(t, f, reader)
 	got := selectionRead(t, f, receipt.ID)
-	if got.State != "held" || got.Reason != "source_unavailable" || got.OperationID != "" || reader.calls.Load() != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+	if got.State != "held" || got.Reason != "source_fetch_timeout" || got.OperationID != "" || reader.calls.Load() != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
 		t.Fatal("source timeout lost its protective hold", got, reader.calls.Load())
 	}
 }

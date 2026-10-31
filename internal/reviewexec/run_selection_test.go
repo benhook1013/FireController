@@ -93,7 +93,7 @@ func TestRunSelectionOneChildReplayRestartAndOriginalBinding(t *testing.T) {
 	before := selectionCounts(t, f)
 	selectionNext(t, f, reader)
 	got := selectionRead(t, f, r.ID)
-	if got.State != "selected" || got.OperationID == "" || got.Revision != 3 || got.WorkerID != "selection-worker" || reader.calls.Load() != 2 {
+	if got.State != "selected" || got.OperationID == "" || got.Revision != 3 || got.WorkerID != "selection-worker" || reader.calls.Load() != 3 {
 		t.Fatal("selection did not create exactly one bounded child", got, reader.calls.Load())
 	}
 	op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), got.OperationID)
@@ -105,7 +105,7 @@ func TestRunSelectionOneChildReplayRestartAndOriginalBinding(t *testing.T) {
 		t.Fatal("no durable child")
 	}
 	worked, err := f.e.runNext(t.Context(), map[string]TargetReader{"test-capability": reader})
-	if err != nil || worked || selectionCounts(t, f) != counts || reader.calls.Load() != 2 {
+	if err != nil || worked || selectionCounts(t, f) != counts || reader.calls.Load() != 3 {
 		t.Fatal("completion autonomously repeated selection", err)
 	}
 	f.configure(t, attemptProject, "test-capability", 1, false)
@@ -196,12 +196,15 @@ func TestRunSelectionFrontPrefixAndExpectedAssertion(t *testing.T) {
 				}
 			}
 			var calls []int64
+			var callsMu sync.Mutex
 			reader := &refreshTestReader{pull: func(ctx context.Context, _ string, n int64) (reviewprovider.Pull, error) {
 				deadline, ok := ctx.Deadline()
 				if !ok || time.Until(deadline) > 15*time.Second {
 					t.Error("source lacks overall bounded context")
 				}
+				callsMu.Lock()
 				calls = append(calls, n)
+				callsMu.Unlock()
 				p := reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}
 				if n == 2 && mode == "merged-prefix" || mode == "all-merged" {
 					p.State = "closed"
@@ -221,10 +224,10 @@ func TestRunSelectionFrontPrefixAndExpectedAssertion(t *testing.T) {
 			selectionNext(t, f, reader)
 			got := selectionRead(t, f, r.ID)
 			want := int64(2)
-			wantCalls := []int64{2}
+			wantCalls := map[int64]int{2: 1, 4: 1}
 			if mode == "merged-prefix" || mode == "stopped-prefix" || mode == "closed-prefix" {
 				want = 4
-				wantCalls = []int64{2, 4}
+				wantCalls = map[int64]int{2: 1, 4: 1}
 			}
 			switch mode {
 			case "expected-mismatch":
@@ -232,7 +235,7 @@ func TestRunSelectionFrontPrefixAndExpectedAssertion(t *testing.T) {
 					t.Fatal(got)
 				}
 			case "all-merged":
-				wantCalls = []int64{2, 4}
+				wantCalls = map[int64]int{2: 1, 4: 1}
 				if got.State != "empty" || got.Reason != "queue_complete" {
 					t.Fatal(got)
 				}
@@ -242,7 +245,18 @@ func TestRunSelectionFrontPrefixAndExpectedAssertion(t *testing.T) {
 					t.Fatal(got, op, err)
 				}
 			}
-			if !reflect.DeepEqual(calls, wantCalls) || reader.calls.Load() != int64(1+len(wantCalls)) {
+			if mode == "closed-prefix" || mode == "stopped-prefix" {
+				wantCalls[4] = 2
+			}
+			gotCalls := map[int64]int{}
+			for _, number := range calls {
+				gotCalls[number]++
+			}
+			wantTotal := int64(1)
+			for _, count := range wantCalls {
+				wantTotal += int64(count)
+			}
+			if !reflect.DeepEqual(gotCalls, wantCalls) || reader.calls.Load() != wantTotal {
 				t.Fatal("selection read suffix or repeated identities", calls, reader.calls.Load())
 			}
 		})
@@ -298,28 +312,33 @@ func TestRunSelectionRechecksAfterSourceAndRollsBackLinkedChild(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			f := selectionFixture(t)
 			r, _ := selectionEnqueue(t, f, "one", "cli", nil)
+			var mutationOnce sync.Once
 			reader := &refreshTestReader{}
 			reader.pull = func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
-				switch mode {
-				case "configuration":
-					f.configure(t, attemptProject, "test-capability", 1, false)
-				case "revoked":
-					if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`); err != nil {
-						t.Fatal(err)
-					}
-				case "deleted-worker":
-					if _, err := f.store.DB().Exec(`DELETE FROM workers WHERE project_id=? AND id='selection-worker'`, attemptProject); err != nil {
-						t.Fatal(err)
-					}
-				case "round-close":
-					zero := int64(0)
-					if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "closed-during-read", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
-						t.Fatal(err)
-					}
-				case "event-failure":
-					if _, err := f.store.DB().Exec(`CREATE TRIGGER selection_fault BEFORE INSERT ON events WHEN NEW.event_type='review.selection_updated' AND json_extract(NEW.payload_json,'$.state')='selected' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END`); err != nil {
-						t.Fatal(err)
-					}
+				if n == 2 {
+					mutationOnce.Do(func() {
+						switch mode {
+						case "configuration":
+							f.configure(t, attemptProject, "test-capability", 1, false)
+						case "revoked":
+							if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`); err != nil {
+								t.Fatal(err)
+							}
+						case "deleted-worker":
+							if _, err := f.store.DB().Exec(`DELETE FROM workers WHERE project_id=? AND id='selection-worker'`, attemptProject); err != nil {
+								t.Fatal(err)
+							}
+						case "round-close":
+							zero := int64(0)
+							if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "closed-during-read", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
+								t.Fatal(err)
+							}
+						case "event-failure":
+							if _, err := f.store.DB().Exec(`CREATE TRIGGER selection_fault BEFORE INSERT ON events WHEN NEW.event_type='review.selection_updated' AND json_extract(NEW.payload_json,'$.state')='selected' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END`); err != nil {
+								t.Fatal(err)
+							}
+						}
+					})
 				}
 				return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
 			}
@@ -329,9 +348,11 @@ func TestRunSelectionRechecksAfterSourceAndRollsBackLinkedChild(t *testing.T) {
 				reader.pull = func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
 					zero := int64(0)
 					if n == 2 {
-						if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "closed-during-read", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
-							t.Fatal(err)
-						}
+						mutationOnce.Do(func() {
+							if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "closed-during-read", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
+								t.Fatal(err)
+							}
+						})
 					}
 					return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
 				}

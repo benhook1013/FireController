@@ -27,7 +27,7 @@ func TestCIWatchCLIExactTargetsAndLocalHelp(t *testing.T) {
 		}
 	}
 	var out, diag bytes.Buffer
-	if code := RunContext(t.Context(), []string{"--profiles-file", "/unavailable", "reviews", "ci-wait", "--help"}, nil, &out, &diag); code != ExitSuccess || diag.Len() != 0 || !strings.Contains(out.String(), "default 300") || !strings.Contains(out.String(), "0-900") || !strings.Contains(out.String(), "default merge branch") {
+	if code := RunContext(t.Context(), []string{"--profiles-file", "/unavailable", "reviews", "ci-wait", "--help"}, nil, &out, &diag); code != ExitSuccess || diag.Len() != 0 || !strings.Contains(out.String(), "default 300") || !strings.Contains(out.String(), "0-900") || !strings.Contains(out.String(), "default merge branch") || !strings.Contains(out.String(), "all_targets_passed") || !strings.Contains(out.String(), "wake condition") {
 		t.Fatal("offline CI watch help unavailable", code, out.String(), diag.String())
 	}
 }

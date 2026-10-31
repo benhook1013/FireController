@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
@@ -68,7 +69,7 @@ func TestRunSelectionReceivingRoutesHoldCoveredOrClosedFront(t *testing.T) {
 				t.Fatal("fixed receiving obligation still blocked", got)
 			}
 			op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), got.OperationID)
-			if err != nil || op.PullNumber != 6 || reader.calls.Load() != 3 {
+			if err != nil || op.PullNumber != 6 || reader.calls.Load() != 4 {
 				t.Fatal("did not advance exactly to suffix", op, err, reader.calls.Load())
 			}
 		})
@@ -79,13 +80,14 @@ func TestRunSelectionReceivingRouteArrivingDuringSourcePreventsChild(t *testing.
 	f, sourceID := runRouteSetup(t)
 	runRouteQueue(t, f, []int64{2, 4, 6})
 	r, _ := selectionEnqueue(t, f, "late-receiving-route", "cli", nil)
+	var routeOnce sync.Once
 	reader := &refreshTestReader{pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
 		p := reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}
 		if n == 2 {
 			p.State, p.Merged = "closed", true
 		}
 		if n == 6 {
-			routeCreate(t, f, sourceID, "late-route-write", routeRequest(0, 0, 6))
+			routeOnce.Do(func() { routeCreate(t, f, sourceID, "late-route-write", routeRequest(0, 0, 6)) })
 		}
 		return p, nil
 	}}
@@ -99,7 +101,7 @@ func TestRunSelectionReceivingRouteArrivingDuringSourcePreventsChild(t *testing.
 	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_operations`).Scan(&after); err != nil {
 		t.Fatal(err)
 	}
-	if got.State != "held" || got.Reason != "routed_findings_pending" || got.OperationID != "" || after != before || reader.calls.Load() != 4 {
+	if got.State != "held" || got.Reason != "routed_findings_pending" || got.OperationID != "" || after != before || reader.calls.Load() != 5 {
 		t.Fatal("final selection transaction missed incoming route", got, before, after, reader.calls.Load())
 	}
 }

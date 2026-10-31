@@ -61,6 +61,9 @@ func TestCIWatchSDKReadRouteResultAndLongCancellation(t *testing.T) {
 	for _, tool := range tools.Tools {
 		if tool.Name == "wait_for_ci" {
 			found = true
+			if !strings.Contains(tool.Description, "all_targets_passed") || !strings.Contains(tool.Description, "wake condition") {
+				t.Fatal("CI wait help implies batch success", tool.Description)
+			}
 			if !tool.Annotations.ReadOnlyHint || !tool.Annotations.IdempotentHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint || tool.Annotations.OpenWorldHint == nil || !*tool.Annotations.OpenWorldHint {
 				t.Fatal("dishonest CI watch annotations")
 			}
@@ -71,7 +74,7 @@ func TestCIWatchSDKReadRouteResultAndLongCancellation(t *testing.T) {
 	}
 	var result client.CIWatchOutput
 	decodeResult(t, call(t, session, "wait_for_ci", map[string]any{"targets": pins, "wait_seconds": 0}), &result)
-	if result.State != "passed" || len(result.Targets) != 2 || result.Targets[1].GateRef != "main" || result.Targets[1].Checks[0].Context != "required-build" {
+	if result.State != "passed" || result.AllTargetsPassed || len(result.Targets) != 2 || result.Targets[1].GateRef != "main" || result.Targets[1].Checks[0].Context != "required-build" {
 		t.Fatal("compact CI result lost actionable facts", result)
 	}
 	if result.Targets[0].Phase != "not_observed" || result.Targets[0].Diagnostic == nil || !strings.Contains(result.Targets[0].Diagnostic.Explanation, "unknown") || result.Targets[0].Required != 0 || result.Targets[1].Diagnostic != nil {

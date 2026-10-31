@@ -61,7 +61,9 @@ func TestFrontsSelectionPrefixCurrentPolicyAndIndependentChannels(t *testing.T) 
 	frontClose(t, f, 2, "cli", "front-close-cli-two")
 	frontSelect(t, f, "front-cli", "cli", reader)
 	frontSelect(t, f, "front-hosted", "hosted", reader)
-	if reader.calls.Load() != 5 {
+	// CLI consumes both entries and Hosted stops at PR2; each window also
+	// includes its bounded speculative metadata read. Local reads add none.
+	if reader.calls.Load() != 7 {
 		t.Fatal("extra provider reads", reader.calls.Load())
 	}
 	before := selectionCounts(t, f)
@@ -70,7 +72,7 @@ func TestFrontsSelectionPrefixCurrentPolicyAndIndependentChannels(t *testing.T) 
 	if !value.Configured || value.SnapshotID == "" || value.RepositoryID != 801 || value.ConfigurationRevision != 1 || value.PolicyRevision != 1 || len(value.Queue) != 2 || cli.State != "ready" || cli.PullNumber != 4 || hosted.State != "ready" || hosted.PullNumber != 2 || cli.CheckedAt == "" || cli.SourceObservedAt == "" || cli.HeadSHA != strings.Repeat("a", 40) || cli.BaseSHA != strings.Repeat("b", 40) || cli.BaseRef != "main" {
 		t.Fatal(value)
 	}
-	if selectionCounts(t, f) != before || reader.calls.Load() != 5 {
+	if selectionCounts(t, f) != before || reader.calls.Load() != 7 {
 		t.Fatal("read changed authority/provider counts")
 	}
 	// Local closure immediately changes the cached assessment, not its source frame.
@@ -553,7 +555,9 @@ func TestFrontsCorruptSourceObligationIsHeldAndWorkerContinues(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT revision,original_json FROM review_adoption_obligations WHERE project_id=?`, attemptProject).Scan(&revision, &after); err != nil || revision != 2 || after != original {
 		t.Fatal("selection rewrote corrupt retained obligation", revision, err)
 	}
-	if reader.calls.Load() != 4 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+	// The first two-PR selection has one joined lookahead; the second
+	// one-PR selection adds only its repository and selected pull.
+	if reader.calls.Load() != 5 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
 		t.Fatal("selection performed review work or repeated source reads", reader.calls.Load())
 	}
 }

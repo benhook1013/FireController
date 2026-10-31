@@ -231,8 +231,13 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 		t.Fatal("allowance/review executable unexpectedly invoked")
 	}
 	providerBefore := provider.inventory()
-	expectedFirst := map[string]int{"GET /repositories/991": 2, "GET /repos/synthetic/packaged-smoke/pulls/2": 1, "GET /repos/synthetic/packaged-smoke/pulls/3": 2}
-	if !reflect.DeepEqual(providerBefore, expectedFirst) {
+	// PR2 is open but its grant is closed. The four-slot source window can
+	// issue one PR3 lookahead GET before cancelling/joining unused work; the
+	// required PR3 acquisition must still happen after PR2 is evaluated. Freeze
+	// that optional request here so later reads/replays cannot spend it again.
+	lookaheadGETs := providerBefore["GET /repos/synthetic/packaged-smoke/pulls/3"] - 2
+	expectedFirst := map[string]int{"GET /repositories/991": 2, "GET /repos/synthetic/packaged-smoke/pulls/2": 1, "GET /repos/synthetic/packaged-smoke/pulls/3": 2 + lookaheadGETs}
+	if lookaheadGETs < 0 || lookaheadGETs > 1 || !reflect.DeepEqual(providerBefore, expectedFirst) {
 		t.Fatalf("first source request inventory differs: %v", providerBefore)
 	}
 	// Actual packaged provider reads update pre-existing display facts without
@@ -282,7 +287,9 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	if body, err := os.ReadFile(gitLog); err != nil || !bytes.Equal(body, gitBefore) {
 		t.Fatal("mismatched expected PR touched Git")
 	}
-	expectedProvider := map[string]int{"GET /repositories/991": 3, "GET /repos/synthetic/packaged-smoke/pulls/2": 2, "GET /repos/synthetic/packaged-smoke/pulls/3": 3}
+	// Expected PR2 caps lookahead at PR2: this mismatched selection must add
+	// only its repository and PR2 reads, never another PR3 request.
+	expectedProvider := map[string]int{"GET /repositories/991": 3, "GET /repos/synthetic/packaged-smoke/pulls/2": 2, "GET /repos/synthetic/packaged-smoke/pulls/3": 2 + lookaheadGETs}
 	if !reflect.DeepEqual(provider.inventory(), expectedProvider) {
 		t.Fatalf("bounded source request inventory differs: %v", provider.inventory())
 	}
@@ -442,14 +449,14 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 			t.Fatal("private immutable fixture input changed")
 		}
 	}
-	expectedTotal := map[string]int{"GET /repositories/991": 7, "GET /repos/synthetic/packaged-smoke/pulls/2": 2, "GET /repos/synthetic/packaged-smoke/pulls/3": 3}
+	expectedTotal := map[string]int{"GET /repositories/991": 7, "GET /repos/synthetic/packaged-smoke/pulls/2": 2, "GET /repos/synthetic/packaged-smoke/pulls/3": 2 + lookaheadGETs}
 	if provider.observerRequests.Load() != 4 || !reflect.DeepEqual(provider.totalInventory(), expectedTotal) {
 		t.Fatalf("selection and held observer total inventory differs: %v", provider.totalInventory())
 	}
 	if frontReads != 2 || unexpected.Load() != 0 || provider.forbidden.Load() != 0 {
 		t.Fatal("fixture observed unexpected method/route/origin")
 	}
-	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d local_front_reads=2 loopback_github_gets=12 selection_source_gets=8 held_observer_gets=4 git_stub_calls=1 cli_review_calls=0 native_operations=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load())
+	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d local_front_reads=2 loopback_github_gets=%d selection_source_gets=%d lookahead_gets=%d held_observer_gets=4 git_stub_calls=1 cli_review_calls=0 native_operations=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load(), 11+lookaheadGETs, 7+lookaheadGETs, lookaheadGETs)
 }
 
 func runSelectionShellQuote(value string) string {

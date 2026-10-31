@@ -154,6 +154,13 @@ func TestReviewRunCLIUsefulDefaultWaitAndPreservedHistoricalRead(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(client.ReviewRunState{Selection: client.ReviewRunSelection{ID: cliSelectionID, ProjectID: project, ActorID: "principal_one", WorkerID: worker, Channel: "hosted", ConfigurationRevision: 1, PolicyRevision: 1, ExpectedPullNumber: 0, State: "empty", Reason: "queue_complete", Revision: 2, CreatedAt: "2026-10-18T01:00:00Z", UpdatedAt: "2026-10-18T00:59:00Z"}})
 			return
 		}
+		if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/reviews/selections/"+cliSelectionID) {
+			if r.Header.Get("Prefer") != "wait=0" || r.Header.Get("Idempotency-Key") != "" {
+				t.Error("selection read changed wait or became mutation")
+			}
+			_ = json.NewEncoder(w).Encode(client.ReviewRunState{Selection: client.ReviewRunSelection{ID: cliSelectionID, ProjectID: project, ActorID: "principal_one", WorkerID: worker, Channel: "hosted", ConfigurationRevision: 1, PolicyRevision: 1, State: "held", Reason: "source_budget_exhausted", Revision: 3, CreatedAt: "2026-10-18T01:00:00Z", UpdatedAt: "2026-10-18T01:01:00Z"}})
+			return
+		}
 		// An old historical run request must still reach the original history route,
 		// not be reinterpreted as a selection or mutation.
 		if !strings.Contains(r.URL.Path, "/reviews/runs/review_run_") || r.Header.Get("Prefer") != "" {
@@ -168,6 +175,11 @@ func TestReviewRunCLIUsefulDefaultWaitAndPreservedHistoricalRead(t *testing.T) {
 	var result client.ReviewRunState
 	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &result) != nil || result.Selection.State != "empty" || posts.Load() != 1 || strings.Contains(out, `"Result"`) {
 		t.Fatal("useful response expanded/polled", code, stderr)
+	}
+	code, out, stderr = mutationInvoke(t, profiles, "builder", "reviews", "run-read", "--selection-id", cliSelectionID)
+	var held client.ReviewSelectionOutput
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &held) != nil || held.Selection.ID != cliSelectionID || held.Selection.Reason != "source_budget_exhausted" || held.Selection.OperationID != "" || held.Operation != nil || held.Diagnostic == nil || !strings.Contains(held.Diagnostic.NextAction, "new key and current configuration") || posts.Load() != 1 {
+		t.Fatal("CLI selection hold missing or changed original action", code, out, stderr)
 	}
 	code, _, stderr = mutationInvoke(t, profiles, "builder", "reviews", "run", "review_run_"+strings.Repeat("a", 32))
 	if code == cli.ExitUsage || posts.Load() != 1 || !strings.Contains(stderr, "not_found") {

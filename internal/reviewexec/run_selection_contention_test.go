@@ -129,20 +129,20 @@ func TestRunSelectionContentionAfterSourceRetainsFactsAndProgresses(t *testing.T
 	tx := selectionContentionLock(t, f)
 	close(release)
 	selectionContentionAlive(t, done, 250*time.Millisecond)
-	if got := selectionContentionRead(t, f, receipt.ID); got.State != "selecting" || got.Revision != 2 || r.calls.Load() != 2 {
+	if got := selectionContentionRead(t, f, receipt.ID); got.State != "selecting" || got.Revision != 2 || r.calls.Load() != 3 {
 		t.Fatal("pending completion changed source", got, r.calls.Load())
 	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)
 	}
 	got := selectionContentionWait(t, f, receipt.ID, "selected")
-	if got.Revision != 3 || got.OperationID == "" || r.calls.Load() != 2 {
+	if got.Revision != 3 || got.OperationID == "" || r.calls.Load() != 3 {
 		t.Fatal("completion repeated provider reads or stranded selection", got, r.calls.Load())
 	}
 	second, _ := selectionEnqueue(t, f, "next-channel", "hosted", nil)
 	selectionContentionWait(t, f, second.ID, "selected")
 	selectionContentionStop(t, cancel, done)
-	if r.calls.Load() != 4 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 2 || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.selection_updated'`) != 4 {
+	if r.calls.Load() != 6 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 2 || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.selection_updated'`) != 4 {
 		t.Fatal("later work stalled or child/event duplicated", r.calls.Load())
 	}
 }
@@ -201,7 +201,7 @@ func TestRunSelectionContentionBeforeClaimKeepsQueuedWork(t *testing.T) {
 				t.Fatal("queued claim stranded")
 			}
 			got := selectionContentionRead(t, f, receipt.ID)
-			if got.State != "selected" || got.Revision != 3 || r.calls.Load() != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
+			if got.State != "selected" || got.Revision != 3 || r.calls.Load() != 3 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
 				t.Fatal("claim retry duplicated or lost work", got, r.calls.Load())
 			}
 		})
@@ -222,7 +222,7 @@ func TestRunSelectionContentionLocalReadRetainsSourceAndRechecksBinding(t *testi
 	t.Cleanup(func() { conn.Close() })
 	close(release)
 	selectionContentionAlive(t, done, 2200*time.Millisecond)
-	if r.calls.Load() != 2 {
+	if r.calls.Load() != 3 {
 		t.Fatal("local read repeated source calls", r.calls.Load())
 	}
 	// Use the separately bounded writer while the read pool is exhausted. The
@@ -236,7 +236,7 @@ func TestRunSelectionContentionLocalReadRetainsSourceAndRechecksBinding(t *testi
 	conn.Close()
 	got := selectionContentionWait(t, f, receipt.ID, "held")
 	selectionContentionStop(t, cancel, done)
-	if got.Reason != "authorization_changed" || got.Revision != 3 || r.calls.Load() != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+	if got.Reason != "authorization_changed" || got.Revision != 3 || r.calls.Load() != 3 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
 		t.Fatal("local read reused stale binding or repeated source", got, r.calls.Load())
 	}
 }
@@ -284,7 +284,7 @@ func TestRunSelectionContentionLocalReadBeyondSourceBudgetRetainsFacts(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if state != "selecting" || revision != 2 || operation != "" || r.calls.Load() != 2 {
+	if state != "selecting" || revision != 2 || operation != "" || r.calls.Load() != 3 {
 		t.Fatal("local contention invented a terminal result or repeated source", state, revision, operation, r.calls.Load())
 	}
 	if err := conn.Close(); err != nil {
@@ -299,7 +299,7 @@ func TestRunSelectionContentionLocalReadBeyondSourceBudgetRetainsFacts(t *testin
 		t.Fatal("selection stranded after local contention cleared")
 	}
 	got := selectionContentionRead(t, f, receipt.ID)
-	if got.State != "selected" || got.Revision != 3 || got.OperationID == "" || r.calls.Load() != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.selection_updated'`) != 2 {
+	if got.State != "selected" || got.Revision != 3 || got.OperationID == "" || r.calls.Load() != 3 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.selection_updated'`) != 2 {
 		t.Fatal("prolonged local retry lost or duplicated selection authority", got, r.calls.Load())
 	}
 }
@@ -333,7 +333,7 @@ func TestRunSelectionContentionCompletionRechecksCurrentBinding(t *testing.T) {
 			}
 			got := selectionContentionWait(t, f, receipt.ID, "held")
 			selectionContentionStop(t, cancel, done)
-			if got.Reason != reason || got.Revision != 3 || r.calls.Load() != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.selection_updated'`) != 2 {
+			if got.Reason != reason || got.Revision != 3 || r.calls.Load() != 3 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.selection_updated'`) != 2 {
 				t.Fatal("completion retry used stale binding or duplicated effects", got, r.calls.Load())
 			}
 		})
@@ -354,14 +354,14 @@ func TestRunSelectionContentionCancellationRetainsSelectionForRestart(t *testing
 		t.Fatal(err)
 	}
 	got := selectionContentionRead(t, f, receipt.ID)
-	if got.State != "selecting" || got.Revision != 2 || got.OperationID != "" || r.calls.Load() != 2 {
+	if got.State != "selecting" || got.Revision != 2 || got.OperationID != "" || r.calls.Load() != 3 {
 		t.Fatal("cancellation invented terminal work", got, r.calls.Load())
 	}
 	resumed := &refreshTestReader{}
 	cancel, done = selectionContentionStart(t, f, resumed)
 	got = selectionContentionWait(t, f, receipt.ID, "selected")
 	selectionContentionStop(t, cancel, done)
-	if got.Revision != 5 || resumed.calls.Load() != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
+	if got.Revision != 5 || resumed.calls.Load() != 3 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
 		t.Fatal("startup lost or duplicated interrupted selection", got, resumed.calls.Load())
 	}
 	raw, err := f.e.EnqueueRun(t.Context(), selectionScope(t, f, attemptProject, f.writer, "write"), "cancel-selection-contention", RunRequest{Channel: "cli"})
@@ -393,7 +393,7 @@ func TestRunSelectionContentionDoesNotHideCompletionStorageFailure(t *testing.T)
 		t.Fatal("fatal storage failure swallowed or retried")
 	}
 	got := selectionContentionRead(t, f, receipt.ID)
-	if got.State != "selecting" || got.Revision != 2 || r.calls.Load() != 2 || f.e.runRunning.Load() || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+	if got.State != "selecting" || got.Revision != 2 || r.calls.Load() != 3 || f.e.runRunning.Load() || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
 		t.Fatal("fatal completion leaked a child or repeated provider work", got, r.calls.Load())
 	}
 }
@@ -429,13 +429,13 @@ func TestRunSelectionContentionAfterSourceSurvivesWriterAdmissionDeadline(t *tes
 	t.Cleanup(releaseWriter)
 	close(release)
 	selectionContentionAlive(t, done, 2200*time.Millisecond)
-	if r.calls.Load() != 2 {
+	if r.calls.Load() != 3 {
 		t.Fatal("writer admission deadline repeated source", r.calls.Load())
 	}
 	releaseWriter()
 	got := selectionContentionWait(t, f, receipt.ID, "selected")
 	selectionContentionStop(t, cancel, done)
-	if got.Revision != 3 || r.calls.Load() != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.selection_updated'`) != 2 {
+	if got.Revision != 3 || r.calls.Load() != 3 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.selection_updated'`) != 2 {
 		t.Fatal("bounded admission retry lost/duplicated completion", got, r.calls.Load())
 	}
 }

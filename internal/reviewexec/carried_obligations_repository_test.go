@@ -72,7 +72,9 @@ func TestCarriedObligationsRepositoryChangeHoldsAdmissionAndSelection(t *testing
 	if err := f.store.DB().QueryRow(`SELECT repository_id FROM review_adoption_sources WHERE project_id=?`, attemptProject).Scan(&retainedRepository); err != nil || retainedRepository != 801 {
 		t.Fatal("retained source rebound or lost", retainedRepository, err)
 	}
-	if reader.calls.Load() != 4 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+	// Both held selections perform exactly one repository read and a two-PR
+	// metadata window; neither local front inspection repeats those reads.
+	if reader.calls.Load() != 6 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
 		t.Fatal("protective hold granted work or repeated source reads", reader.calls.Load())
 	}
 }

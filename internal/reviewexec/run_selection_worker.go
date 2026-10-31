@@ -22,7 +22,7 @@ func (b *runSourceBudget) read(ctx context.Context, read func(context.Context) e
 		return err
 	}
 	if b.remaining <= 0 {
-		return context.DeadlineExceeded
+		return errRunSourceBudget
 	}
 	started := time.Now()
 	sourceCtx, cancel := context.WithTimeout(ctx, b.remaining)
@@ -36,10 +36,13 @@ func (b *runSourceBudget) read(ctx context.Context, read func(context.Context) e
 		return err
 	}
 	if sourceCtx.Err() != nil {
+		if errors.Is(sourceCtx.Err(), context.DeadlineExceeded) {
+			return errRunSourceBudget
+		}
 		return sourceCtx.Err()
 	}
 	if b.remaining <= 0 {
-		return context.DeadlineExceeded
+		return errRunSourceBudget
 	}
 	return err
 }
@@ -74,6 +77,63 @@ func (r *runReads) Pull(ctx context.Context, repo string, n int64) (reviewprovid
 		r.pulls[repo][n] = v
 	}
 	return v, err
+}
+
+type runPullResult struct {
+	pull reviewprovider.Pull
+	err  error
+}
+
+// At most four raw metadata GETs are in flight per selection (eight across its
+// two workers). Results remain ordered; only joined successes enter phase-local
+// caches. Lookahead never supplies a selection or publication by itself.
+func (r *runReads) pullWindow(ctx context.Context, repo string, repositoryID int64, numbers []int64) []runPullResult {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([]runPullResult, len(numbers))
+	completed := make([]chan struct{}, len(numbers))
+	var workers sync.WaitGroup
+	for i, number := range numbers {
+		completed[i] = make(chan struct{})
+		if value, ok := r.pulls[repo][number]; ok {
+			results[i].pull = value
+			close(completed[i])
+			continue
+		}
+		workers.Go(func() {
+			defer close(completed[i])
+			results[i].pull, results[i].err = r.reader.Pull(ctx, repo, number)
+		})
+	}
+	consumed := len(numbers)
+	for i, number := range numbers {
+		select {
+		case <-ctx.Done():
+			consumed = i
+		case <-completed[i]:
+			result := results[i]
+			if result.err == nil && sameTarget(result.pull, repositoryID, number) && result.pull.Merged && result.pull.State == "closed" {
+				continue
+			}
+			// A live/closed-unmerged candidate (or ordered error) needs local
+			// evaluation before any farther source work can matter. Cancel
+			// discarded lookahead, including a slow reader, then join it.
+			consumed = i + 1
+		}
+		cancel()
+		break
+	}
+	workers.Wait()
+	results = results[:consumed]
+	for i, result := range results {
+		if result.err == nil {
+			if r.pulls[repo] == nil {
+				r.pulls[repo] = map[int64]reviewprovider.Pull{}
+			}
+			r.pulls[repo][numbers[i]] = result.pull
+		}
+	}
+	return results
 }
 
 func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (reviewprovider.Pull, error) {
@@ -133,24 +193,16 @@ func retryRunSelectionLocal(ctx context.Context, local func() error) error {
 	}
 }
 
-func runReason(err error) string {
-	var failure *core.Error
-	if errors.As(err, &failure) {
-		if failure.Code == "review_held" {
-			if details, ok := failure.Details.(map[string]string); ok && identifier.MatchString(details["reason"]) {
-				return details["reason"]
-			}
-		}
-	}
-	return "source_unavailable"
+func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader) (runChoice, error) {
+	return e.chooseRunWithSourceBudget(ctx, r, repo, c, reader, 15*time.Second)
 }
 
-func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader) (runChoice, error) {
+func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, sourceBudget time.Duration) (runChoice, error) {
 	if len(c.Queue) == 0 {
 		return runChoice{state: "empty", reason: "queue_complete"}, nil
 	}
 	reads := &runReads{reader: reader, repos: map[int64]reviewprovider.Repository{}, pulls: map[string]map[int64]reviewprovider.Pull{}}
-	source := runSourceBudget{remaining: 15 * time.Second}
+	source := runSourceBudget{remaining: sourceBudget}
 	var repository reviewprovider.Repository
 	err := source.read(ctx, func(ctx context.Context) error {
 		var err error
@@ -164,21 +216,36 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 		return runChoice{state: "held", reason: "repository_changed", sourceReason: "repository_changed"}, nil
 	}
 	choice := runChoice{state: "empty", reason: "queue_complete"}
-	for _, n := range c.Queue {
+	sourceFailure := func(reason string) runChoice {
+		choice.state, choice.reason, choice.sourceReason = "held", reason, reason
+		return choice
+	}
+	queue := c.Queue
+	if index := slices.Index(queue, r.ExpectedPullNumber); index >= 0 {
+		queue = queue[:index+1]
+	}
+	var window []runPullResult
+	windowStart := 0
+	for i, n := range queue {
 		if err := ctx.Err(); err != nil {
 			return runChoice{}, err
 		}
-		var pull reviewprovider.Pull
-		err = source.read(ctx, func(ctx context.Context) error {
-			var err error
-			pull, err = reads.Pull(ctx, repository.FullName, n)
-			return err
-		})
+		if i >= windowStart+len(window) {
+			windowStart = i
+			err = source.read(ctx, func(ctx context.Context) error {
+				window = reads.pullWindow(ctx, repository.FullName, repository.ID, queue[i:min(i+4, len(queue))])
+				return nil
+			})
+			if err != nil {
+				return sourceFailure(runReason(err)), nil
+			}
+		}
+		pull, err := window[i-windowStart].pull, window[i-windowStart].err
 		if err != nil {
-			return runChoice{state: "held", reason: runReason(err), sourceReason: runReason(err)}, nil
+			return sourceFailure(runReason(err)), nil
 		}
 		if !sameTarget(pull, repo, n) || pull.State != "open" && pull.State != "closed" || pull.Merged && pull.State != "closed" {
-			return runChoice{state: "held", reason: "source_unavailable", sourceReason: "source_unavailable"}, nil
+			return sourceFailure("source_response_invalid"), nil
 		}
 		plan := SourcePlan{Repository: repository, Pull: pull, ParentSHA: pull.BaseSHA, ObservedAt: stamp()}
 		if !pull.Merged && pull.State == "open" {
@@ -191,7 +258,7 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 				reason := runReason(err)
 				var refusal *core.Error
 				if !errors.As(err, &refusal) || refusal.Code != "review_held" || !perPullSourceHold(reason) {
-					return runChoice{state: "held", reason: reason, sourceReason: reason}, nil
+					return sourceFailure(reason), nil
 				}
 				// The failed comparison stays an explicit held row. It supplies
 				// no coverage, but cannot block an unrelated verified candidate.

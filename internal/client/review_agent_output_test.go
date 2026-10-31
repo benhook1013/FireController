@@ -489,3 +489,48 @@ func TestAgentHostedTargetChangedKeepsOriginalFactsAndRequiresQualifiedNewIntent
 		}
 	}
 }
+
+func TestAgentSelectionSourceHoldIsBoundedAndNeverReplacesChild(t *testing.T) {
+	reasons := []string{"source_budget_exhausted", "source_fetch_timeout", "source_rate_limited", "source_unauthorized", "source_not_found", "source_response_invalid", "source_provider_unavailable", "source_unavailable", "PRIVATE_PROVIDER_DETAIL"}
+	for _, reason := range reasons {
+		for _, state := range []string{"held", "queued", "selecting", "selected", "empty"} {
+			for _, child := range []bool{false, true} {
+				raw := ReviewRunState{Selection: ReviewRunSelection{ID: "original_selection", ProjectID: "original_project", ActorID: "original_actor", WorkerID: "original_worker", Channel: "cli", State: state, Reason: reason, ConfigurationRevision: 7, PolicyRevision: 2, ExpectedPullNumber: 3365, Revision: 3, CreatedAt: "original_creation", UpdatedAt: "original_check"}}
+				if child {
+					raw.Selection.OperationID = "original_operation"
+					raw.Operation = &ReviewOperation{ID: "original_operation", State: "active", Channel: "cli"}
+				}
+				got := AgentReviewSelection(raw)
+				want := state == "held" && !child && reason != "PRIVATE_PROVIDER_DETAIL"
+				if !reflect.DeepEqual(got.ReviewRunState, raw) || (got.Diagnostic != nil) != want {
+					t.Fatal("selection explanation changed facts or suggested replacement", state, reason, child)
+				}
+				if !want {
+					continue
+				}
+				for _, phrase := range []string{"terminal and has no child", "After addressing", "if the review remains authorized", "new key and current configuration", "old key replays", "pending selections and selected child", "No round reset or extra grant"} {
+					if !strings.Contains(got.Diagnostic.NextAction, phrase) {
+						t.Fatal("unsafe selection recovery", phrase)
+					}
+				}
+				if reason == "source_unavailable" && !strings.Contains(got.Diagnostic.Explanation, "did not retain its exact failure cause") {
+					t.Fatal("historical cause was invented")
+				}
+				body, err := json.Marshal(got)
+				if err != nil || len(body) > 2048 || strings.Contains(string(body), "PRIVATE_PROVIDER_DETAIL") {
+					t.Fatal("selection output overbudget or leaked source detail", err)
+				}
+				direct := AgentReviewRunResult(ReviewRunResult{Result: &raw})
+				if !reflect.DeepEqual(direct, got) {
+					t.Fatal("start response and retained read disagree")
+				}
+			}
+		}
+	}
+	// Even malformed half-links must not produce a replacement hint.
+	for _, raw := range []ReviewRunState{{Selection: ReviewRunSelection{State: "held", Reason: "source_budget_exhausted", OperationID: "retained_child"}}, {Selection: ReviewRunSelection{State: "held", Reason: "source_budget_exhausted"}, Operation: &ReviewOperation{ID: "retained_child"}}} {
+		if AgentReviewSelection(raw).Diagnostic != nil {
+			t.Fatal("half-linked selection got replacement guidance")
+		}
+	}
+}

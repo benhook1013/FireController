@@ -322,7 +322,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Usage = "<bound launcher> reviews ci-wait --target PR:HEAD[:BASE] [--target PR:HEAD[:BASE] ...] [--wait-seconds N]"
 		out.Required = []string{"--target PR:HEAD[:BASE] (1-20 distinct PRs; full 40-character lowercase commit SHAs)"}
 		out.Optional = []string{"--wait-seconds N (0-900, default 300; zero returns available results immediately without waiting)"}
-		out.Semantics = []string{"Read-only fresh CI for exact source pins, using the repository default merge branch requirements; no enrollment, idempotency key or review request.", "Returns when the first target passes, fails, changes source, closes or has verified no required checks, or the wait expires. Required-check details identify actionable contexts. Omit completed targets from the next explicit wait.", "CI status does not grant merge permission. Cancellation leaves no durable watch or mutation."}
+		out.Semantics = []string{"Read-only fresh CI for exact source pins, using the repository default merge branch requirements; no enrollment, idempotency key or review request.", "Returns when the first target passes, fails, changes source, closes or has verified no required checks, or the wait expires. The outer state reports the wake condition; all_targets_passed is true only when every target passed. Inspect targets for individual outcomes. Required-check details identify actionable contexts. Omit completed targets from the next explicit wait.", "CI status does not grant merge permission. Cancellation leaves no durable watch or mutation."}
 		out.Example = "<bound launcher> reviews ci-wait --target 42:" + strings.Repeat("a", 40) + " --wait-seconds 300"
 		out.Documentation = "docs/ci-wait.md"
 	case "reviews fix":
@@ -356,7 +356,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Usage = "<bound launcher> reviews start --channel cli|hosted --key KEY [--expect-pr NUMBER] [--wait-seconds N]"
 		out.Required = []string{"--channel cli|hosted", "--key KEY"}
 		out.Optional = []string{"--expect-pr NUMBER", "--wait-seconds N (0-900, default 2)"}
-		out.Semantics = []string{"Selects the channel front and requests at most one review. An expected PR is an assertion, not permission to redirect selection. Does not accept --out-of-order or --override-file-limit.", "Retain the selection receipt and follow its original operation link; a pending receipt does not mean a review completed.", recovery}
+		out.Semantics = []string{"Selects the channel front and requests at most one review. An expected PR is an assertion, not permission to redirect selection. Does not accept --out-of-order or --override-file-limit.", "Retain the selection receipt and follow its original operation link; a pending receipt does not mean a review completed. A terminal held selection has no child: after addressing its source issue, a still-authorized fresh start uses a new key/current configuration. The old key replays its hold; never replace pending selections or selected child operations. Read it with reviews run-read --selection-id ID.", recovery}
 		out.Example = "<bound launcher> reviews start --channel hosted --expect-pr 42 --key next-hosted-review"
 		out.Documentation = "docs/review-round-controls.md"
 	case "reviews obligations":

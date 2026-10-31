@@ -59,7 +59,7 @@ func TestFrontsHTTPCorruptSourceObligationReturnsDiagnosticHold(t *testing.T) {
 		if got.State != "held" || got.Reason != reason || got.PullNumber != 2 {
 			t.Fatal("incorrect source hold diagnostic", got)
 		}
-		if before != selectionCounts(t, f) || reader.calls.Load() != 2 {
+		if before != selectionCounts(t, f) || reader.calls.Load() != 3 {
 			t.Fatal("local front read changed state or fetched provider facts")
 		}
 	}

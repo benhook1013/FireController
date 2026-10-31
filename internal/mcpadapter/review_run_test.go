@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -133,5 +134,33 @@ func TestReviewStartMCPActualReplayAndBackgroundWait(t *testing.T) {
 	}
 	if selections != 1 || operations != 1 || posts.Load() != 2 || f.providers.Load() != before || state.Selection.State != "queued" {
 		t.Fatal("wait/replay changed or retried provider work")
+	}
+}
+
+func TestReviewSelectionMCPSourceHoldExplainsOriginalReadOnlyResult(t *testing.T) {
+	binding := localContext()
+	value := client.ReviewRunState{Selection: client.ReviewRunSelection{ID: "review_selection_" + strings.Repeat("a", 32), ProjectID: binding.ProjectID, ActorID: "principal_original", WorkerID: binding.WorkerID, Channel: "cli", ConfigurationRevision: 7, PolicyRevision: 2, ExpectedPullNumber: 3365, State: "held", Reason: "source_unavailable", Revision: 3, CreatedAt: "2026-10-18T01:00:00Z", UpdatedAt: "2026-10-18T01:01:00Z"}}
+	var reads, unexpected atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/instance" && r.Method == "GET" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": binding.InstanceID})
+			return
+		}
+		if r.Method != "GET" || r.URL.Path != "/api/v1/projects/"+binding.ProjectID+"/reviews/selections/"+value.Selection.ID || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != binding.WorkerID {
+			unexpected.Add(1)
+			w.WriteHeader(500)
+			return
+		}
+		reads.Add(1)
+		_ = json.NewEncoder(w).Encode(value)
+	}))
+	defer service.Close()
+	binding.ServerURL = service.URL
+	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": binding}, credential(t)), "chosen")
+	var out client.ReviewSelectionOutput
+	decodeResult(t, call(t, session, "review_selection_read", map[string]any{"selection_id": value.Selection.ID}), &out)
+	if !reflect.DeepEqual(out.ReviewRunState, value) || out.Operation != nil || out.Diagnostic == nil || !strings.Contains(out.Diagnostic.Explanation, "did not retain its exact failure cause") || !strings.Contains(out.Diagnostic.NextAction, "old key replays") || reads.Load() != 1 || unexpected.Load() != 0 {
+		t.Fatal("SDK hold invented cause, changed facts or requested work", out)
 	}
 }

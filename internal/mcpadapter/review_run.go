@@ -54,14 +54,14 @@ func reviewRunDefinitions() []definition {
 	}
 	wait := map[string]any{"type": "integer", "minimum": 0, "maximum": maxToolWaitSeconds}
 	return []definition{
-		{"review_start", "Select this channel's earliest unfinished review target and request at most one review. Can consume included provider allowance. Expected PR is an assertion, never a forced target. Waits briefly for the result; pending work returns its original compact selection receipt. Retain the exact key and arguments for uncertain-output recovery; no automatic next review or retry.", schema(map[string]any{
+		{"review_start", "Select this channel's earliest unfinished review target and request at most one review. Can consume included provider allowance. Expected PR is an assertion, never a forced target. Waits briefly for the result; pending work returns its original compact selection receipt. Retain the exact key and arguments for uncertain-output recovery; no automatic next review or retry. A held selection without a child is terminal: address its source issue before a still-authorized fresh start/key/current configuration. Preserve pending or selected child identities.", schema(map[string]any{
 			"channel":                         map[string]any{"type": "string", "enum": []string{"cli", "hosted"}},
 			"expected_pull_number":            map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647},
 			"expected_configuration_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)},
 			"idempotency_key":                 map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
 			"wait_seconds":                    wait,
 		}, "channel", "idempotency_key")},
-		{"review_selection_read", "Read one retained selection and its linked review operation, with optional bounded waiting. No new provider work, retry or acknowledgment.", schema(map[string]any{
+		{"review_selection_read", "Read one retained selection and its linked review operation, with optional bounded waiting. No new provider work, retry or acknowledgment. Held source diagnostics distinguish known failures from unretained historical cause. Replaying the old key does not resume a terminal hold; any later authorized start needs a new key/current configuration after the issue is addressed.", schema(map[string]any{
 			"selection_id": map[string]any{"type": "string", "pattern": "^review_selection_[a-f0-9]{32}$", "maxLength": 128},
 			"wait_seconds": wait,
 		}, "selection_id")},

@@ -10,12 +10,14 @@ type CIWatchTargetOutput struct {
 
 type CIWatchOutput struct {
 	CIWatchResult
-	Targets []CIWatchTargetOutput `json:"targets"`
+	AllTargetsPassed bool                  `json:"all_targets_passed"`
+	Targets          []CIWatchTargetOutput `json:"targets"`
 }
 
 func AgentCIWatch(value CIWatchResult) CIWatchOutput {
-	out := CIWatchOutput{CIWatchResult: value, Targets: make([]CIWatchTargetOutput, 0, len(value.Targets))}
+	out := CIWatchOutput{CIWatchResult: value, Targets: make([]CIWatchTargetOutput, 0, len(value.Targets)), AllTargetsPassed: len(value.Targets) > 0}
 	for _, item := range value.Targets {
+		out.AllTargetsPassed = out.AllTargetsPassed && item.State == "passed"
 		phase, diagnostic := ciWatchDiagnostic(item)
 		out.Targets = append(out.Targets, CIWatchTargetOutput{item, phase, diagnostic})
 	}

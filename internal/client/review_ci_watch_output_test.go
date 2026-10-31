@@ -50,6 +50,7 @@ func TestAgentCIWatchExplainsControllerAndGitHubPendingWithoutChangingFacts(t *t
 			var got, want map[string]any
 			_ = json.Unmarshal(encoded, &got)
 			_ = json.Unmarshal(before, &want)
+			delete(got, "all_targets_passed")
 			for _, v := range got["targets"].([]any) {
 				target := v.(map[string]any)
 				delete(target, "phase")
@@ -72,6 +73,45 @@ func TestAgentCIWatchExplainsControllerAndGitHubPendingWithoutChangingFacts(t *t
 		if out.Targets[0].Diagnostic != nil || out.Targets[0].Phase != "" {
 			t.Fatal("terminal state reclassified as acquisition delay", out)
 		}
+	}
+}
+
+func TestAgentCIWatchSeparatesWakeStateFromAllTargetsPassed(t *testing.T) {
+	for _, tc := range []struct {
+		name, state string
+		targets     []string
+		all         bool
+	}{
+		{"one pass still pending", "passed", []string{"passed", "pending"}, false},
+		{"all passed", "passed", []string{"passed", "passed"}, true},
+		{"failure still pending", "failed", []string{"failed", "pending"}, false},
+		{"superseded", "superseded", []string{"superseded", "pending"}, false},
+		{"unconfigured", "unconfigured", []string{"unconfigured"}, false},
+		{"pass and unconfigured", "passed", []string{"passed", "unconfigured"}, false},
+		{"zero targets", "pending", []string{}, false},
+		{"single passed", "passed", []string{"passed"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value := client.CIWatchResult{State: tc.state, Targets: []client.CIWatchTargetResult{}}
+			for i, state := range tc.targets {
+				value.Targets = append(value.Targets, client.CIWatchTargetResult{PullNumber: int64(i + 1), State: state, Checks: []client.ReviewCIContext{}})
+			}
+			before, _ := json.Marshal(value)
+			out := client.AgentCIWatch(value)
+			encoded, _ := json.Marshal(out)
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(encoded, &fields) != nil {
+				t.Fatal("invalid projection")
+			}
+			var all bool
+			if fields["all_targets_passed"] == nil || json.Unmarshal(fields["all_targets_passed"], &all) != nil || all != tc.all || out.State != tc.state {
+				t.Fatal("wake state implied whole batch success", string(encoded))
+			}
+			after, _ := json.Marshal(value)
+			if string(after) != string(before) || !reflect.DeepEqual(out.CIWatchResult, value) {
+				t.Fatal("batch indicator changed raw facts")
+			}
+		})
 	}
 }
 
