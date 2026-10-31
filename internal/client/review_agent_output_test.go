@@ -91,6 +91,47 @@ func TestAgentOperationParentDiagnosticsPreserveCompactAndFullFacts(t *testing.T
 		}
 	}
 }
+
+func TestAgentParentComparisonRecoveryUsesCheckedPRAndPreservesFacts(t *testing.T) {
+	for _, reason := range []string{"parent_moved", "predecessor_parent_moved"} {
+		t.Run(reason, func(t *testing.T) {
+			checked := int64(3300)
+			if reason == "predecessor_parent_moved" {
+				checked = 3034
+			}
+			facts := &ReviewSourceRefusal{PullNumber: checked, ParentPullNumber: 3038, ObservedBaseSHA: strings.Repeat("a", 40), ExpectedParentSHA: strings.Repeat("b", 40)}
+			compact := ReviewOperationStatus{ID: "original_operation", PullNumber: 3300, State: "held", Reason: reason, Revision: 5, AttemptID: "original_attempt", SourceRefusal: facts, NextAction: "read_diagnostics"}
+			full := ReviewOperation{ID: compact.ID, PullNumber: compact.PullNumber, State: compact.State, Reason: compact.Reason, Revision: compact.Revision, AttemptID: compact.AttemptID, SourceRefusal: facts}
+			before, _ := json.Marshal([]any{compact, full})
+			c, f := AgentReviewOperationStatus(compact), AgentReviewOperation(full)
+			if !reflect.DeepEqual(c.ReviewOperationStatus, compact) || !reflect.DeepEqual(f.ReviewOperation, full) || !reflect.DeepEqual(c.Diagnostic, f.Diagnostic) || c.Diagnostic == nil {
+				t.Fatal("recovery guidance changed retained identity/facts or diverged across views")
+			}
+			hint := c.Diagnostic
+			for _, phrase := range []string{fmt.Sprintf("Check current PR #%d,", checked), "direct parent PR #3038", "ancestry", "Align an actually mismatched link", "If the named base already matches the parent and the child includes it", "may be stale", "same existing base branch", "returned head is unchanged and base matches the parent", "afresh under current review authorization", "terminal held operation does not resume", "This diagnostic performs no mutation or retry"} {
+				if !strings.Contains(hint.NextAction, phrase) {
+					t.Fatal("recovery omitted verified-current-source conditions or terminal boundary", phrase, hint)
+				}
+			}
+			if reason == "predecessor_parent_moved" && strings.Contains(hint.NextAction, "#3300") {
+				t.Fatal("ancestor repair targeted outer selected PR")
+			}
+			checkedLabel, prefix := "selected PR", "Preparation checked "
+			if reason == "predecessor_parent_moved" {
+				checkedLabel, prefix = "ancestor PR", "The selected PR's source check passed; preparation checked "
+			}
+			wantExplanation := fmt.Sprintf("%s%s #%d against parent PR #%d: original observed base %s differs from direct-parent head %s recorded at the check. These are retained facts, not a current observation.", prefix, checkedLabel, checked, facts.ParentPullNumber, facts.ObservedBaseSHA, facts.ExpectedParentSHA)
+			if hint.Explanation != wantExplanation || strings.Contains(hint.NextAction, "gh pr edit") || strings.Contains(hint.NextAction, "override") {
+				t.Fatal("explanation changed or guidance invented a current base/override command", hint)
+			}
+			after, _ := json.Marshal([]any{c.ReviewOperationStatus, f.ReviewOperation})
+			if string(before) != string(after) {
+				t.Fatal("recovery changed retained receipt JSON")
+			}
+		})
+	}
+}
+
 func TestAgentCIDiagnosticPreservesRefusal(t *testing.T) {
 	for _, reason := range []string{"ci_merge_identity_unproven", "ci_merge_base_mismatch", "ci_merge_pending", "ci_provider_observation_changed_assessment", "ci_observation_changed", "ci_provider_observation_changed_head_results", "ci_provider_observation_changed_merge_results", "ci_provider_observation_changed_results_recheck", "ci_provider_observation_changed_merge_results_recheck", "ci_provider_invalid_response_assessment", "ci_provider_invalid_response_head_results", "ci_provider_invalid_response_merge_results", "ci_provider_invalid_response_results_recheck", "ci_provider_invalid_response_merge_results_recheck", "other_reason"} {
 		v := ReviewSourceCIAssessment{State: "unproven", Reason: reason}
