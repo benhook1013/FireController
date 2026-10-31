@@ -14,14 +14,20 @@ type Client struct {
 
 // Connection retains string-valued local identity output for existing readers.
 type Connection struct {
-	ClientVersion        string `json:"client_version"`
-	ClientSourceRevision string `json:"client_source_revision"`
-	ClientSourceState    string `json:"client_source_state"`
+	ClientVersion                    string `json:"client_version"`
+	ClientSourceRevision             string `json:"client_source_revision"`
+	ClientSourceState                string `json:"client_source_state"`
+	ClientLaunchTargetSourceRevision string `json:"client_launch_target_source_revision,omitempty"`
+	ClientLaunchTargetSourceState    string `json:"client_launch_target_source_state,omitempty"`
 }
 
 func ConnectionInfo(version string) Connection {
 	value := Current(version)
-	return Connection{value.Version, value.SourceRevision, value.SourceState}
+	result := Connection{ClientVersion: value.Version, ClientSourceRevision: value.SourceRevision, ClientSourceState: value.SourceState}
+	if target, ok := LaunchTarget(); ok {
+		result.ClientLaunchTargetSourceRevision, result.ClientLaunchTargetSourceState = target.Revision, target.State
+	}
+	return result
 }
 
 var revision, state = executableSource()

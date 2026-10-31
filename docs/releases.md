@@ -31,6 +31,8 @@ Successful Linux qualification and Windows/macOS smoke jobs retain the binaries 
 
 Download an artifact through its Actions run page or `gh run download RUN_ID --repo benhook1013/FireController --name ARTIFACT_NAME`. Verify the adjacent `.sha256` before extracting the archive. Keep each revision's binaries and guidance together. Updating a generated launcher affects future processes; an already-running MCP session needs its normal host reconnect, preserving the same private profile. There is no automatic update of other agents' processes.
 
+A managed installation can keep bound launchers on a stable absolute executable path and atomically move that path to a verified package. This lets future processes select the installed build together and lets existing capable MCP processes report a [launch-target mismatch](agent-client.md#profiles-and-identity) without changing their authenticated binding. Retain executable files needed by running processes. A client-only output or guidance change does not require redeploying an otherwise unchanged daemon.
+
 ## Deployment boundary
 
 For the published-artifact path, pull the published digest on the target host and select it in the existing deployment. For a local Docker installation, use the [container guide](container-runtime.md); an existing Kubernetes installation updates its controller image by digest while preserving its private volumes, runtime bindings and single-writer replacement strategy. The daemon and embedded browser ship together.

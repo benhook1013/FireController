@@ -45,7 +45,7 @@ func TestCIWatchSDKReadRouteResultAndLongCancellation(t *testing.T) {
 			t.Error("immediate wait changed")
 		}
 		jsonResponse(w, client.CIWatchResult{ProjectID: identity.ProjectID, State: "passed", Targets: []client.CIWatchTargetResult{
-			{PullNumber: 2, HeadSHA: pins[0].HeadSHA, BaseSHA: pins[0].BaseSHA, State: "pending", Reason: "ci_unproven", Checks: []client.ReviewCIContext{}},
+			{PullNumber: 2, HeadSHA: pins[0].HeadSHA, BaseSHA: pins[0].BaseSHA, State: "pending", Reason: "ci_watch_check_pending", Checks: []client.ReviewCIContext{}},
 			{PullNumber: 4, HeadSHA: pins[1].HeadSHA, State: "passed", BaseRef: "stack-parent", GateRef: "main", ObservedHeadSHA: pins[1].HeadSHA, ObservedBaseSHA: strings.Repeat("b", 40), ObservedAt: "2026-11-01T00:00:00Z", Selection: "head", CICommitSHA: pins[1].HeadSHA, Required: 1, Satisfied: 1, Checks: []client.ReviewCIContext{{Context: "required-build", State: "satisfied"}}},
 		}})
 	}))
@@ -69,14 +69,17 @@ func TestCIWatchSDKReadRouteResultAndLongCancellation(t *testing.T) {
 	if !found {
 		t.Fatal("CI watch not registered")
 	}
-	var result client.CIWatchResult
+	var result client.CIWatchOutput
 	decodeResult(t, call(t, session, "wait_for_ci", map[string]any{"targets": pins, "wait_seconds": 0}), &result)
 	if result.State != "passed" || len(result.Targets) != 2 || result.Targets[1].GateRef != "main" || result.Targets[1].Checks[0].Context != "required-build" {
 		t.Fatal("compact CI result lost actionable facts", result)
 	}
+	if result.Targets[0].Phase != "not_observed" || result.Targets[0].Diagnostic == nil || !strings.Contains(result.Targets[0].Diagnostic.Explanation, "unknown") || result.Targets[0].Required != 0 || result.Targets[1].Diagnostic != nil {
+		t.Fatal("pending controller observation was unexplained or terminal facts changed", result)
+	}
 	var out, diag bytes.Buffer
 	cliArgs := []string{"--profiles-file", profilePath, "--profile", "chosen", "reviews", "ci-wait", "--target", "2:" + pins[0].HeadSHA + ":" + pins[0].BaseSHA, "--target", "4:" + pins[1].HeadSHA, "--wait-seconds", "0"}
-	var cliResult client.CIWatchResult
+	var cliResult client.CIWatchOutput
 	if code := cli.RunContext(t.Context(), cliArgs, nil, &out, &diag); code != cli.ExitSuccess || diag.Len() != 0 || json.Unmarshal(out.Bytes(), &cliResult) != nil || !reflect.DeepEqual(result, cliResult) {
 		t.Fatal("CLI route/result differs from registered MCP", code, out.String(), diag.String())
 	}
