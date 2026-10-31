@@ -55,6 +55,8 @@ The adapter exposes `wait_for_messages` for new incoming-message events after a 
 
 A normal blocking tool invocation is not equivalent to a background subscription. Background shell handles, asynchronous tool completion, automatic result injection, turn completion, and waking an idle chat are separate host behaviors. Report capability only when established for the installed host; protocol notification support alone does not establish model-visible delivery or idle wakeup.
 
+[Concurrent bounded review waits](../internal/mcpadapter/concurrent_review_wait_test.go) use their own HTTP transports; the adapter does not hold unrelated tool calls behind those waits. Host scheduling and result delivery remain separate. A yielded or “still running” tool cell is not a service receipt or evidence that a mutation is blocked; a host may collect several calls together and defer a quick result behind another pending call. Collect the original result or handle rather than resending a mutation because its cell yielded. After a genuinely unknown write outcome, retain the exact request, key and binding under the recovery rules below.
+
 The adapter bounds model-facing waits below the configured host timeout. An indefinitely pending MCP call is not a portable contract. Expiry returns an explicit timeout result; empty transport activity is suppressed where the host permits it. A persistent service subscription supplies waits without repeated provider polling.
 
 Waits and read/list calls do not mark messages seen or acknowledged. Explicit seen and acknowledge mutations own those transitions; acknowledgment also establishes seen state atomically. Returned content cannot change the authenticated profile, grant permission or authorize an unrelated operation.
