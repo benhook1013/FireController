@@ -192,7 +192,7 @@ func TestExpandedOperationHelpExplainsGuardsAndCompactReads(t *testing.T) {
 		"reviews decide-batch": {"2 MiB", "1-100", "unique", "reason", "expected_route_revision", "atomically", "rolls back", "implicit finalization", "same key, exact request"},
 		"reviews fix-batch":    {"expected_sha", "explicit empty string", "proof_note", "accepted source findings", "same key, exact request"},
 		"jobs status":          {"progress_summary", "1024", "512", "truncation flags", "evidence_count", "without brief", "jobs read"},
-		"reviews operation":    {"--diagnostics", "compact status", "stage, reason", "evidence_id", "next_action", "0-900", "bounded wait behavior is unchanged"},
+		"reviews operation":    {"--diagnostics", "compact status", "stage, reason", "evidence_id", "next_action", "0-900", "refused local database read admission", "original selected deadline"},
 		"reviews queue":        {"--active", "before pagination", "scalar", "merged/closed history", "same view", "without provider work"},
 	} {
 		help, ok := operationHelp(operation)
