@@ -17,6 +17,11 @@ func TestHealthMirrorAtomicReplacementAndBoundedPrivateReads(t *testing.T) {
 	if err := WriteMirror(path, m); err != nil {
 		t.Fatal(err)
 	}
+	// Initial publication and replacement must both report success after the
+	// atomic write, including platforms without directory-handle Sync support.
+	if first, err := ReadMirror(path); err != nil || first != m {
+		t.Fatal("initial publication did not retain the complete report", first, err)
+	}
 	m.Label = "Second backup"
 	if err := WriteMirror(path, m); err != nil {
 		t.Fatal(err)

@@ -3,6 +3,7 @@ package offsite
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -197,7 +198,7 @@ func newest(ctx context.Context, c Config) (backup.Summary, error) {
 	}
 	defer f.Close()
 	entries, err := f.ReadDir(1001)
-	if err != nil {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return backup.Summary{}, failure("offsite_source_invalid")
 	}
 	if len(entries) > 1000 {
