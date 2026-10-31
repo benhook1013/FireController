@@ -1,6 +1,7 @@
 package mcpadapter_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/benhook1013/FireController/internal/cli"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/profile"
 )
@@ -43,7 +45,7 @@ func TestReviewOperationStatusMCPWaitsForScheduledObservation(t *testing.T) {
 }
 
 func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
-	for _, fixture := range []string{"parent_moved", "selected_parent_moved", "predecessor_parent_moved", "parent_unavailable", "hosted_allowance_cooldown", "target_changed"} {
+	for _, fixture := range []string{"parent_moved", "selected_parent_moved", "predecessor_parent_moved", "parent_unavailable", "hosted_allowance_cooldown", "target_changed", "queued_hosted_cooldown", "queued_hosted_cooldown_hint"} {
 		t.Run(fixture, func(t *testing.T) {
 			reason := fixture
 			if reason == "selected_parent_moved" {
@@ -75,6 +77,13 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 				wantStatus.NextAction = "new_request_after_cooldown"
 				full.Allowance = &client.ReviewAllowanceObservation{Kind: "hosted_cooldown", ObservedAt: status.UpdatedAt, RetryNotBefore: status.RetryNotBefore}
 			}
+			queuedCooldown := strings.HasPrefix(fixture, "queued_hosted_cooldown")
+			if queuedCooldown {
+				status.State, status.Stage, status.Reason, status.AttemptID, status.NextAction = "queued", "queued", "", "", "wait"
+				status.Wait = &client.ReviewOperationWait{BaselineAttemptID: "review_attempt_" + strings.Repeat("b", 32), RetryNotBefore: "2026-10-24T00:10:00Z", Paused: false}
+				full.State, full.Reason, full.AttemptID, full.Wait = "queued", "", "", status.Wait
+				wantStatus = status
+			}
 			var compactReads, fullReads, unexpected atomic.Int64
 			base := "/api/v1/projects/" + binding.ProjectID + "/reviews/operations/" + id
 			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +92,10 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 					_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": binding.InstanceID})
 					return
 				}
-				if r.Method != "GET" || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != binding.WorkerID {
+				if fixture == "queued_hosted_cooldown_hint" {
+					w.Header().Set("X-FC-Review-Queued", "cooldown")
+				}
+				if r.Method != "GET" || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != binding.WorkerID || r.Header.Get("X-FC-Operation-Wait") != "1" {
 					t.Error("SDK diagnostic changed the read or worker binding")
 				}
 				switch r.URL.Path {
@@ -110,7 +122,8 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 			}))
 			defer service.Close()
 			binding.ServerURL = service.URL
-			session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": binding}, credential(t)), "chosen")
+			profilePath := profiles(t, map[string]profile.Context{"chosen": binding}, credential(t))
+			session := reviewControlsStdio(t, profilePath, "chosen")
 			var compactOut client.ReviewOperationStatusOutput
 			result := call(t, session, "review_operation_read", map[string]any{"operation_id": id})
 			data, _ := json.Marshal(result)
@@ -140,7 +153,46 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 					t.Fatal("legacy nil metadata invented original comparison")
 				}
 			}
-			if compactReads.Load() != 1 || fullReads.Load() != 1 || unexpected.Load() != 0 {
+			wantReads := int64(1)
+			if queuedCooldown {
+				if compactOut.Wait == nil || !reflect.DeepEqual(compactOut.Wait, status.Wait) || !reflect.DeepEqual(fullOut.Wait, status.Wait) || compactOut.AttemptID != "" || fullOut.AttemptID != "" || compactOut.NextAction != "wait" {
+					t.Fatal("queued cooldown lost original timer intent", compactOut, fullOut)
+				}
+				for _, hint := range []*client.ReviewOperationDiagnostic{compactOut.Diagnostic, fullOut.Diagnostic} {
+					if strings.Contains(hint.NextAction, "fresh key") || strings.Contains(hint.Explanation, "held operation is terminal") {
+						t.Fatal("queued timer was misreported as terminal hold", hint)
+					}
+					if fixture == "queued_hosted_cooldown" && (!strings.Contains(hint.Explanation, "automatically rechecks") || !strings.Contains(hint.NextAction, "Do not submit a replacement")) {
+						t.Fatal("automatic same-operation retry missing", hint)
+					}
+					if fixture == "queued_hosted_cooldown_hint" && (!strings.Contains(hint.Explanation, "cooldown deadline is still in the future") || !strings.Contains(hint.NextAction, "Keep the original request")) {
+						t.Fatal("current cooldown cause disagrees with retained timer", hint)
+					}
+				}
+				for _, diagnostics := range []bool{false, true} {
+					args := []string{"--profiles-file", profilePath, "--profile", "chosen", "reviews", "operation", id}
+					if diagnostics {
+						args = append(args, "--diagnostics")
+					}
+					var output, errors bytes.Buffer
+					if code := cli.RunContext(t.Context(), args, nil, &output, &errors); code != cli.ExitSuccess || errors.Len() != 0 {
+						t.Fatal("CLI queued timer read failed", code, errors.String())
+					}
+					if diagnostics {
+						var got client.ReviewOperationOutput
+						if json.Unmarshal(output.Bytes(), &got) != nil || !reflect.DeepEqual(got, fullOut) {
+							t.Fatal("CLI/MCP full queued timer drift", output.String(), fullOut)
+						}
+					} else {
+						var got client.ReviewOperationStatusOutput
+						if json.Unmarshal(output.Bytes(), &got) != nil || !reflect.DeepEqual(got, compactOut) {
+							t.Fatal("CLI/MCP compact queued timer drift", output.String(), compactOut)
+						}
+					}
+				}
+				wantReads = 2
+			}
+			if compactReads.Load() != wantReads || fullReads.Load() != wantReads || unexpected.Load() != 0 {
 				t.Fatal("SDK diagnostic polled, mutated or contacted another endpoint")
 			}
 		})
