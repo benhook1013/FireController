@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"time"
 )
 
 const CIWatchMaxTargets = 20
@@ -69,15 +71,37 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 	if err != nil {
 		return CIWatchResult{}, validation()
 	}
+	// Client setup shares the caller deadline. The requested wait is an upper
+	// bound; reserve the existing response margin before starting this read.
+	if deadline, ok := ctx.Deadline(); ok && seconds > 0 {
+		available := max(0, time.Until(deadline)-5*time.Second) / time.Second
+		seconds = min(seconds, int(available))
+	}
 	var value CIWatchResult
 	var status int
 	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: seconds, status: &status}); err != nil {
-		return CIWatchResult{}, err
+		return CIWatchResult{}, ciWatchReadError(err)
 	}
 	if value.ProjectID != c.identity.ProjectID || !validCIWatchResult(value, targets) {
 		return CIWatchResult{}, invalidResponse()
 	}
 	return value, nil
+}
+
+// Only local interruption errors receive this read-specific explanation. A
+// service refusal or connection failure keeps its existing diagnostic.
+func ciWatchReadError(err error) error {
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Status != 0 || !oneReviewOf(failure.Code, "canceled", "deadline_exceeded") {
+		return err
+	}
+	result := *failure
+	result.Message = "The CI wait was interrupted because the client context was canceled; no CI result was received."
+	if failure.Code == "deadline_exceeded" {
+		result.Message = "The client CI wait deadline expired before a CI result was received."
+	}
+	result.Action = "No retry was performed. This does not establish CI failure or a changed PR head. Start another bounded CI wait with the same PR/head/base pins only when needed; use different pins only after independently verifying the comparison."
+	return &result
 }
 
 func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
