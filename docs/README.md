@@ -13,6 +13,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Browser coordination views](browser-coordination.md): explicit note/history and worker pause/focus views over the existing read contracts.
 - [Development](development.md): implemented profile-bound CLI reads/mutations, build/check commands, and current proof limits.
 - [Managed backups](backups.md): verified local bundles, managed scheduling/retention and inactive restore, with activation limits.
+- [Offsite backups](offsite-backups.md): isolated operator transfers, scoped retention and inactive recovery through rclone.
 - [Provider resumption](provider-resumption.md): explicit operator reconciliation, retained-work abandonment and release after restore; implementation and proof status are recorded at that owner.
 - [Hosting and HTTPS](hosting.md): local/remote deployment, infrastructure-owned certificates, persistence and executed hosted proof.
 - [Quiet agent message wait](message-wait.md): selected bounded CLI/MCP subscription behavior, output and host proof limits.
@@ -49,5 +50,3 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Delivery plan](delivery.md) records implementation sequence and actual validation status.
 
 Public documentation must not contain live messages, private job briefs, credentials, installed user paths, or provider captures. Historical code references use the pinned public source snapshot.
-
-- [Offsite backups](offsite-backups.md): isolated operator transfers, scoped retention and inactive recovery through rclone.

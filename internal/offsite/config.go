@@ -126,7 +126,8 @@ func resolvePrefix(p string) string {
 }
 
 func binding(c Config) string {
-	b, _ := json.Marshal([]string{c.InstanceID, c.SourceRoot, c.Remote, c.RcloneConfig, c.RcloneBinary})
+	// Executable installation paths do not identify the storage we own.
+	b, _ := json.Marshal([]string{c.InstanceID, c.SourceRoot, c.Remote, c.RcloneConfig})
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }

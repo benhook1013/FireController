@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The optional rclone push, compact status and fetch commands are implemented. Packaged plain and encrypted round trips pass against loopback S3 and an independent Docker MinIO fixture, including cloud retention, authentication failure, corruption refusal and inactive recovery with source data removed. Focused race tests cover uncertain publication, restart, cancellation and ownership boundaries. Real OneDrive/Google Drive/MEGA authorization and cloud recovery remain pending until an account is connected. Existing local backup creation and retention remain unchanged.
+The optional rclone push, compact status and fetch commands are implemented. Packaged plain and encrypted round trips pass against loopback S3, including cloud retention, authentication failure, corruption refusal and inactive recovery with source data removed. Focused race tests cover uncertain publication, restart, cancellation and ownership boundaries. Real OneDrive/Google Drive/MEGA authorization and cloud recovery remain pending until an account is connected. Existing local backup creation and retention remain unchanged.
 
 ## One backup format, optional transport
 
@@ -29,7 +29,7 @@ fcd backup-inspect --bundle /private/recovered/backup_0123456789abcdef0123456789
 
 Omit `--id` to fetch the latest verified publication. Its independently checked `latest.json` pointer is written only after the archive and completion receipt have been verified. Fetch writes a new destination and does not activate a restored service. Use the existing [restore procedure](backups.md) after verification; its fencing, new identity, credential revocation and provider holds still apply. Status reads compact local transfer facts without contacting storage. A past verified success is not a claim that remote bytes are presently intact.
 
-The private version-one configuration selects `source_root`, `instance_id`, `state_dir`, `rclone_binary`, `rclone_config`, `remote`, `keep`, `timeout` and `max_bundle_bytes`. Use a dedicated remote subdirectory and state directory for each source instance/destination pair. `keep` is an explicit count from one through one hundred; timeout is positive and at most twenty-four hours. The byte limit bounds both the downloaded archive and expanded bundle. A new destination or instance requires a new state directory; editing provider credentials must not silently repoint a named remote to unrelated storage.
+The private version-one configuration selects `source_root`, `instance_id`, `state_dir`, `rclone_binary`, `rclone_config`, `remote`, `keep`, `timeout` and `max_bundle_bytes`. Use a dedicated remote subdirectory and state directory for each source instance/destination pair. `keep` is an explicit count from one through one hundred; timeout is positive and at most twenty-four hours. The byte limit bounds both the downloaded archive and expanded bundle. Changing the rclone executable path preserves the existing transfer ledger and remote-retention ownership. A new destination or instance requires a new state directory; editing provider credentials must not silently repoint a named remote to unrelated storage.
 
 ### Installation and authentication
 

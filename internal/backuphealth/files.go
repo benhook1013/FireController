@@ -118,7 +118,9 @@ func WriteMirror(path string, value Mirror) error {
 		return ErrInvalid
 	}
 	defer parent.Close()
-	if parent.Sync() != nil {
+	// Windows does not support syncing a directory handle. The replacement's
+	// file data was synced above; other platforms still require directory sync.
+	if err := parent.Sync(); err != nil && runtime.GOOS != "windows" {
 		return ErrInvalid
 	}
 	return nil
