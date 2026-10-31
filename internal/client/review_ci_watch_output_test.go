@@ -77,7 +77,7 @@ func TestAgentCIWatchExplainsControllerAndGitHubPendingWithoutChangingFacts(t *t
 
 func TestAgentCIWatchUsesUnchangedValidatedReadTransport(t *testing.T) {
 	pins := ciWatchPins()[:1]
-	raw := client.CIWatchResult{ProjectID: "project-one", State: "pending", TimedOut: true, Targets: []client.CIWatchTargetResult{{PullNumber: pins[0].PullNumber, HeadSHA: pins[0].HeadSHA, BaseSHA: pins[0].BaseSHA, State: "pending", Reason: "ci_watch_check_pending", Checks: []client.ReviewCIContext{}}}}
+	raw := client.CIWatchResult{ProjectID: "project-one", State: "pending", TimedOut: true, Targets: []client.CIWatchTargetResult{{PullNumber: pins[0].PullNumber, HeadSHA: pins[0].HeadSHA, BaseSHA: pins[0].BaseSHA, State: "pending", Reason: "ci_merge_base_mismatch", Checks: []client.ReviewCIContext{}}}}
 	posts := 0
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/instance" {
@@ -101,7 +101,51 @@ func TestAgentCIWatchUsesUnchangedValidatedReadTransport(t *testing.T) {
 		t.Fatal("strict typed read changed", value, err)
 	}
 	out := client.AgentCIWatch(value)
-	if posts != 1 || out.Targets[0].Phase != "not_observed" || out.Targets[0].Diagnostic == nil {
+	if posts != 1 || out.Targets[0].Phase != "observation_unproven" || out.Targets[0].Diagnostic == nil || !strings.Contains(out.Targets[0].Diagnostic.NextAction, "reconcile the PR branch") {
 		t.Fatal("output adaptation requested extra reads or failed", out, posts)
+	}
+}
+
+func TestAgentCIWatchReusesCanonicalMergeRefusalGuidance(t *testing.T) {
+	for _, reason := range []string{"ci_merge_base_mismatch", "ci_merge_identity_unproven", "ci_merge_pending"} {
+		t.Run(reason, func(t *testing.T) {
+			item := client.CIWatchTargetResult{PullNumber: 2, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), ObservedHeadSHA: strings.Repeat("a", 40), ObservedBaseSHA: strings.Repeat("c", 40), State: "pending", Reason: reason, Checks: []client.ReviewCIContext{}, ObservedAt: "2026-11-01T00:00:00Z"}
+			input := client.CIWatchResult{ProjectID: "project-one", State: "pending", TimedOut: true, Targets: []client.CIWatchTargetResult{item}}
+			before, _ := json.Marshal(input)
+			canonical := client.AgentReviewCI(client.ReviewSourceCIAssessment{State: "unproven", Reason: reason}).Diagnostic
+			out := client.AgentCIWatch(input)
+			diagnostic := out.Targets[0].Diagnostic
+			if canonical == nil || diagnostic == nil || diagnostic.Explanation != canonical.Explanation || diagnostic.NextAction != canonical.NextAction || out.Targets[0].Phase != "observation_unproven" {
+				t.Fatal("watch lost canonical actionable comparison guidance", out)
+			}
+			if !reflect.DeepEqual(out.Targets[0].CIWatchTargetResult, item) {
+				t.Fatal("guidance changed source facts")
+			}
+			text := diagnostic.Explanation + diagnostic.NextAction
+			if strings.Contains(text, item.BaseSHA) || strings.Contains(text, item.ObservedBaseSHA) {
+				t.Fatal("PR base values invented stale merge-parent/live-tip diagnostics")
+			}
+			if reason == "ci_merge_base_mismatch" && (!strings.Contains(diagnostic.NextAction, "reconcile the PR branch") || strings.Contains(diagnostic.NextAction, "Start another bounded CI wait")) {
+				t.Fatal("known mismatch still offers only another wait", diagnostic)
+			}
+			after, _ := json.Marshal(input)
+			if string(before) != string(after) {
+				t.Fatal("output mutated original response")
+			}
+		})
+	}
+	// Acquisition state remains authoritative over stale check-level reasons.
+	for _, reason := range []string{"ci_watch_check_pending", "ci_watch_refresh_pending"} {
+		item := client.CIWatchTargetResult{State: "pending", Reason: reason, Checks: []client.ReviewCIContext{{Context: "old", State: "unproven", Reason: "ci_merge_base_mismatch"}}}
+		out := client.AgentCIWatch(client.CIWatchResult{State: "pending", Targets: []client.CIWatchTargetResult{item}})
+		if out.Targets[0].Diagnostic == nil || strings.Contains(out.Targets[0].Diagnostic.Explanation, "test merge") || !strings.Contains(out.Targets[0].Diagnostic.NextAction, "another bounded CI wait") {
+			t.Fatal("old comparison refusal overrode current controller refresh", out)
+		}
+	}
+	for _, state := range []string{"passed", "failed", "closed", "superseded", "unconfigured"} {
+		out := client.AgentCIWatch(client.CIWatchResult{State: state, Targets: []client.CIWatchTargetResult{{State: state, Reason: "ci_merge_base_mismatch"}}})
+		if out.Targets[0].Diagnostic != nil {
+			t.Fatal("terminal result gained a pending refusal", out)
+		}
 	}
 }

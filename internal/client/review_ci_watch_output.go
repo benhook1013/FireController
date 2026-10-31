@@ -32,6 +32,10 @@ func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagno
 		phase, explanation = "not_observed", "The controller has not completed a fresh CI observation for this watch. Zero counts and an empty checks list mean unknown, not that no checks are required."
 	case item.Reason == "ci_watch_refresh_pending":
 		phase, explanation = "refreshing", "A newer controller check has been requested but has not completed. Any earlier counts and checks are informational until that refresh completes."
+	case oneReviewOf(item.Reason, "ci_merge_base_mismatch", "ci_merge_identity_unproven", "ci_merge_pending"):
+		if diagnostic := AgentReviewCI(ReviewSourceCIAssessment{State: "unproven", Reason: item.Reason}).Diagnostic; diagnostic != nil {
+			return "observation_unproven", &ReviewOperationDiagnostic{diagnostic.Explanation, diagnostic.NextAction}
+		}
 	case item.ObservedAt != "" && item.Pending > 0:
 		phase, explanation = "checks_pending", "The latest observation reports required GitHub checks still pending as of observed_at. Inspect the listed check contexts and statuses."
 	case item.ObservedAt != "" && item.Unproven > 0:
