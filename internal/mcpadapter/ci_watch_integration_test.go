@@ -45,7 +45,7 @@ func TestCIWatchSDKReadRouteResultAndLongCancellation(t *testing.T) {
 			t.Error("immediate wait changed")
 		}
 		jsonResponse(w, client.CIWatchResult{ProjectID: identity.ProjectID, State: "passed", Targets: []client.CIWatchTargetResult{
-			{PullNumber: 2, HeadSHA: pins[0].HeadSHA, BaseSHA: pins[0].BaseSHA, State: "pending", Reason: "ci_watch_check_pending", Checks: []client.ReviewCIContext{}},
+			{PullNumber: 2, HeadSHA: pins[0].HeadSHA, BaseSHA: pins[0].BaseSHA, State: "pending", Reason: "ci_required_checks_pending", ObservedAt: "2026-11-01T00:00:00Z", Required: 1, Pending: 1, Checks: []client.ReviewCIContext{{Context: "required-build", State: "pending", Reason: "ci_status_pending", CheckRun: &client.ReviewCICheckRun{ID: 71, Status: "completed", Conclusion: "success"}, CommitStatus: &client.ReviewCICommitStatus{ID: 91, State: "pending"}}}},
 			{PullNumber: 4, HeadSHA: pins[1].HeadSHA, State: "passed", BaseRef: "stack-parent", GateRef: "main", ObservedHeadSHA: pins[1].HeadSHA, ObservedBaseSHA: strings.Repeat("b", 40), ObservedAt: "2026-11-01T00:00:00Z", Selection: "head", CICommitSHA: pins[1].HeadSHA, Required: 1, Satisfied: 1, Checks: []client.ReviewCIContext{{Context: "required-build", State: "satisfied"}}},
 		}})
 	}))
@@ -77,8 +77,8 @@ func TestCIWatchSDKReadRouteResultAndLongCancellation(t *testing.T) {
 	if result.State != "passed" || result.AllTargetsPassed || len(result.Targets) != 2 || result.Targets[1].GateRef != "main" || result.Targets[1].Checks[0].Context != "required-build" {
 		t.Fatal("compact CI result lost actionable facts", result)
 	}
-	if result.Targets[0].Phase != "not_observed" || result.Targets[0].Diagnostic == nil || !strings.Contains(result.Targets[0].Diagnostic.Explanation, "unknown") || result.Targets[0].Required != 0 || result.Targets[1].Diagnostic != nil {
-		t.Fatal("pending controller observation was unexplained or terminal facts changed", result)
+	if result.Targets[0].Phase != "checks_pending" || result.Targets[0].Diagnostic == nil || !strings.Contains(result.Targets[0].Diagnostic.Explanation, "commit status 91") || !strings.Contains(result.Targets[0].Diagnostic.Explanation, "check run 71") || !strings.Contains(result.Targets[0].Diagnostic.Explanation, "pending, not a CI failure") || !strings.Contains(result.Targets[0].Diagnostic.NextAction, "do not rerun CI") || result.Targets[0].Required != 1 || result.Targets[0].Pending != 1 || result.Targets[1].Diagnostic != nil {
+		t.Fatal("pending commit status was unexplained or terminal facts changed", result)
 	}
 	var out, diag bytes.Buffer
 	cliArgs := []string{"--profiles-file", profilePath, "--profile", "chosen", "reviews", "ci-wait", "--target", "2:" + pins[0].HeadSHA + ":" + pins[0].BaseSHA, "--target", "4:" + pins[1].HeadSHA, "--wait-seconds", "0"}

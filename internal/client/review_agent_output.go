@@ -325,6 +325,10 @@ func agentCISummaryDiagnostic(value ReviewSourceCISummary) *ReviewCIDiagnostic {
 // AgentReviewCI explains the retained refusal; it neither refreshes nor credits CI.
 func AgentReviewCI(value ReviewSourceCIAssessment) ReviewCIOutput {
 	out := ReviewCIOutput{ReviewSourceCIAssessment: value}
+	if value.State == "pending" && value.Checks != nil {
+		out.Diagnostic = pendingCommitStatusDiagnostic(*value.Checks)
+		return out
+	}
 	if value.State != "unproven" {
 		return out
 	}
@@ -345,6 +349,37 @@ func AgentReviewCI(value ReviewSourceCIAssessment) ReviewCIOutput {
 		out.Diagnostic = &ReviewCIDiagnostic{"GitHub has not yet published a verified test-merge candidate for this observed comparison.", "Wait for the candidate to become available, then collect CI for the same comparison. No review reset is needed."}
 	}
 	return out
+}
+
+// Explain one actual required-context status, preferring the paired successful
+// check that can otherwise make its separate pending commit status confusing.
+func pendingCommitStatusDiagnostic(checks []ReviewCIContext) *ReviewCIDiagnostic {
+	var selected *ReviewCIContext
+	for i := range checks {
+		check := &checks[i]
+		if check.State != "pending" || !controlText(check.Context, 255, true) || check.CommitStatus == nil || check.CommitStatus.ID < 1 || check.CommitStatus.State != "pending" {
+			continue
+		}
+		if selected == nil {
+			selected = check
+		}
+		if check.CheckRun != nil && check.CheckRun.ID > 0 && check.CheckRun.Status == "completed" && check.CheckRun.Conclusion == "success" {
+			selected = check
+			break
+		}
+	}
+	if selected == nil {
+		return nil
+	}
+	explanation := fmt.Sprintf("One required context, %q, has pending commit status %d in this observation; this is pending, not a CI failure.", selected.Context, selected.CommitStatus.ID)
+	if check := selected.CheckRun; check != nil && check.ID > 0 {
+		if check.Status == "completed" && check.Conclusion == "success" {
+			explanation += fmt.Sprintf(" Its separate check run %d completed successfully; that does not complete the commit status.", check.ID)
+		} else {
+			explanation += fmt.Sprintf(" Its separate check run %d is also retained.", check.ID)
+		}
+	}
+	return &ReviewCIDiagnostic{explanation, "Continue other work; do not rerun CI solely to clear this pending commit status. Inspect its posting source if it persists. These are status/check IDs, not an attributed workflow run."}
 }
 
 func pendingEvidenceDiagnostic(v *ReviewPendingEvidence) *ReviewOperationDiagnostic {
