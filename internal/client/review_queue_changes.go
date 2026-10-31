@@ -101,8 +101,8 @@ func queueChangeError(err error) error {
 		e.Message = "This PR has a pending review operation; queue removal does not cancel it."
 		e.Action = "Read the retained operation identified by operation_id and let it finish or use its supported deliberate recovery. Then retry removal with the current configuration revision and a new key. No queue change was made."
 	case "review_queue_merged":
-		e.Message = "Merged PRs stay in completed queue history."
-		e.Action = "Do not remove a merged PR as routine supersession cleanup. Its history is retained; no queue change was made."
+		e.Message = "Ordinary merged PRs stay in completed queue history."
+		e.Action = "Only for an actually absorbed or superseded merged carrier, use reason=superseded with the current configuration revision and an explicit key. This retires its queue entry and preserves all history. Otherwise retain the merged PR. No queue change was made."
 	case "review_queue_target_missing":
 		e.Message = "The selected PR has no visible queue entry to retire."
 		e.Action = "Read the current configured queue and retained history before selecting a removal target. No queue change was made."

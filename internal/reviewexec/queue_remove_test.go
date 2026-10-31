@@ -100,10 +100,16 @@ func TestQueueRemovalPendingOperationAndMergedRefusals(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	q := configuredQueue(t, f)
-	merged := reviews.QueueEditRequest{ExpectedRevision: &q.Revision, RepositoryID: 801, Source: "merged-proof", Retired: []reviews.RetiredPull{}, Queue: []reviews.QueuePullInput{{Number: 4, Title: "Merged source", State: "merged", CIState: "unknown", Mergeability: "unknown"}}}
+	merged := reviews.QueueEditRequest{ExpectedRevision: &q.Revision, RepositoryID: 801, Source: "merged-proof", Retired: []reviews.RetiredPull{}, Queue: []reviews.QueuePullInput{{Number: 2, Title: "Pending merged source", State: "merged", CIState: "unknown", Mergeability: "unknown"}, {Number: 4, Title: "Merged source", State: "merged", CIState: "unknown", Mergeability: "unknown"}}}
 	edit := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/queue/edits", f.admin, "record-merged", encoded(merged))
 	if edit.Code != 201 {
 		t.Fatal(edit.Code, edit.Body.String())
+	}
+	// Explicit supersession never bypasses a pending operation, even after merge.
+	before := projectionDigest(t, f, "") + enrollmentState(t, f)
+	w = f.request("POST", route, f.writer, "remove-pending-merged", encoded(QueueChange{ExpectedConfigurationRevision: 1, PullNumber: 2, Reason: "superseded"}))
+	if w.Code != http.StatusConflict || !bytes.Contains(w.Body.Bytes(), []byte(`"operation_id":"`+op.ID+`"`)) || before != projectionDigest(t, f, "")+enrollmentState(t, f) {
+		t.Fatal("merged supersession bypassed pending operation", w.Code, w.Body.String())
 	}
 	w = f.request("POST", route, f.writer, "remove-merged", encoded(QueueChange{ExpectedConfigurationRevision: 1, PullNumber: 4, Reason: "defunct"}))
 	if w.Code != 409 || !bytes.Contains(w.Body.Bytes(), []byte("review_queue_merged")) {

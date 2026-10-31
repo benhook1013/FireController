@@ -44,7 +44,7 @@ func queueChangeDefinitions() []definition {
 		if action == "remove" {
 			properties["reason"] = map[string]any{"type": "string", "enum": []string{"superseded", "defunct"}}
 			required = append(required, "reason")
-			description = "Project-writer removal of one enrolled defunct or superseded PR from scheduling and the visible queue atomically. Requires current expected_configuration_revision, reason superseded/defunct and explicit key; accepts no ordering destination. Preserves all retained history, allowances, taper, capabilities and pause. Refuses merged PRs and pending operations (with operation_id); never cancels work or requests a review. Removing the final item leaves an empty configured queue. Retain exact arguments/key after unknown outcome."
+			description = "Project-writer removal of one enrolled defunct or superseded PR from scheduling and the visible queue atomically. Requires current expected_configuration_revision, reason superseded/defunct and explicit key; accepts no ordering destination. Ordinary merged PRs remain completed history; an actually absorbed or superseded merged carrier may be deliberately retired only with reason=superseded, preserving all history. Defunct merged PRs and pending operations (with operation_id) are refused. Preserves allowances, taper, capabilities and pause; never cancels work or requests a review. Removing the final item leaves an empty configured queue. Retain exact arguments/key after unknown outcome."
 		} else {
 			properties["before"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}
 			properties["after"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}

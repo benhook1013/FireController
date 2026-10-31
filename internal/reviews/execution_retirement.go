@@ -28,8 +28,8 @@ func RetireExecutionPull(ctx context.Context, tx *sql.Tx, scope core.Scope, pull
 	if err != nil {
 		return err
 	}
-	if body[1] == "merged" {
-		return core.Fail("review_queue_merged", "Merged PRs stay in completed queue history.", 409)
+	if body[1] == "merged" && reason != "superseded" {
+		return core.Fail("review_queue_merged", "Merged PRs stay in completed queue history unless explicitly superseded.", 409)
 	}
 	var repository, revision int64
 	if err := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, scope.ProjectID).Scan(&repository); err != nil {
