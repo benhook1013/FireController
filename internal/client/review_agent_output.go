@@ -48,6 +48,9 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if value.State == "held" && value.Reason == "parent_unavailable" {
 		hint = parentUnavailableDiagnostic(value.SourceRefusal)
 	}
+	if value.State == "held" && (value.Reason == "parent_moved" || value.Reason == "predecessor_parent_moved") && value.SourceRefusal != nil {
+		hint = parentComparisonDiagnostic(value.SourceRefusal, value.Reason)
+	}
 	if value.PendingEvidence != nil {
 		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
 		value.NextAction = "resolve_pending_evidence"
@@ -97,6 +100,9 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 	}
 	if value.State == "held" && value.Reason == "parent_unavailable" {
 		hint = parentUnavailableDiagnostic(value.SourceRefusal)
+	}
+	if value.State == "held" && (value.Reason == "parent_moved" || value.Reason == "predecessor_parent_moved") && value.SourceRefusal != nil {
+		hint = parentComparisonDiagnostic(value.SourceRefusal, value.Reason)
 	}
 	if value.PendingEvidence != nil {
 		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
@@ -314,4 +320,15 @@ func predecessorUnfinishedDiagnostic(refusal *ReviewSourceRefusal, channel strin
 		action = fmt.Sprintf("Read reviews pull %d and reviews rounds read --pr %d --channel %s for current scoped PR and channel progress; follow their retained evidence, finding and route handles when needed. For not_in_queue, also read reviews execution and inspect its configured queue. These reads perform no provider refresh.", refusal.PullNumber, refusal.PullNumber, channel)
 	}
 	return &ReviewOperationDiagnostic{explanation, action + " This held operation is terminal. Any still-authorized new request needs a fresh key/current guards. Explicit out-of-order selection only bypasses predecessor progression; the selected target's own source, evidence, policy and provider guards still apply. Do not automatically retry, reset rounds or invent historical facts."}
+}
+
+func parentComparisonDiagnostic(v *ReviewSourceRefusal, reason string) *ReviewOperationDiagnostic {
+	checked := "selected PR"
+	prefix := "Preparation checked "
+	if reason == "predecessor_parent_moved" {
+		checked = "ancestor PR"
+		prefix = "The selected PR's source check passed; preparation checked "
+	}
+	explanation := fmt.Sprintf("%s%s #%d against parent PR #%d: original observed base %s differs from direct-parent head %s recorded at the check. These are retained facts, not a current observation.", prefix, checked, v.PullNumber, v.ParentPullNumber, v.ObservedBaseSHA, v.ExpectedParentSHA)
+	return &ReviewOperationDiagnostic{explanation, "Align that parent/base link through its owning workflow, then qualify the stable selected comparison under current review authorization. Out-of-order selection still checks the selected PR's own source; do not automatically retry, reset review progress or create a no-op commit."}
 }

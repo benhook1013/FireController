@@ -6,11 +6,13 @@ import (
 	"github.com/benhook1013/FireController/internal/client"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
-func TestMissingParentSourceRefusalWireNegotiatesV3(t *testing.T) {
+func TestMissingParentSourceRefusalWireNegotiatesV4(t *testing.T) {
 	full := sampleReviewOperation()
 	full.State, full.Reason, full.AttemptID = "held", "parent_unavailable", "review_attempt_"+strings.Repeat("b", 32)
 	full.SourceRefusal = &client.ReviewSourceRefusal{PullNumber: 4, BaseRef: "codex/former-parent"}
@@ -20,7 +22,7 @@ func TestMissingParentSourceRefusalWireNegotiatesV3(t *testing.T) {
 			handshake(w)
 			return
 		}
-		if r.Header.Get("X-FC-Source-Refusal") != "v3" {
+		if r.Header.Get("X-FC-Source-Refusal") != "v4" {
 			t.Error("client did not negotiate missing-parent variant")
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -97,7 +99,7 @@ func TestPredecessorSourceRefusalV3StrictWire(t *testing.T) {
 					if compact {
 						want += "/status"
 					}
-					if r.Method != "GET" || r.URL.Path != want || r.Header.Get("X-FC-Source-Refusal") != "v3" || r.Header.Get("Authorization") != "Bearer "+testToken {
+					if r.Method != "GET" || r.URL.Path != want || r.Header.Get("X-FC-Source-Refusal") != "v4" || r.Header.Get("Authorization") != "Bearer "+testToken {
 						t.Error("source refusal read negotiation/scope changed")
 					}
 					w.Header().Set("Content-Type", "application/json")
@@ -131,5 +133,88 @@ func TestPredecessorSourceRefusalV3StrictWire(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestSelectedParentRefusalV4WireAllOperationAndRunSurfaces(t *testing.T) {
+	state := selectionSample()
+	full := *state.Operation
+	full.State, full.Reason, full.Revision, full.AttemptID = "held", "parent_moved", 3, "review_attempt_"+strings.Repeat("b", 32)
+	full.SourceRefusal = &client.ReviewSourceRefusal{PullNumber: full.PullNumber, ParentPullNumber: 4, ObservedBaseSHA: strings.Repeat("c", 40), ExpectedParentSHA: strings.Repeat("d", 40)}
+	var requests atomic.Int64
+	var malformed atomic.Bool
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			if r.Header.Get("X-FC-Source-Refusal") != "" {
+				t.Error("source option leaked to identity")
+			}
+			handshake(w)
+			return
+		}
+		requests.Add(1)
+		if r.Header.Get("X-FC-Source-Refusal") != "v4" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("X-FC-Instance") != "instance-one" || r.Header.Get("X-FC-Worker") != "worker-one" {
+			t.Error("source comparison negotiation/binding lost")
+		}
+		if r.Method == "POST" && r.Header.Get("Idempotency-Key") != "original-key" {
+			t.Error("mutation key changed")
+		}
+		operation := full
+		if malformed.Load() {
+			bad := *full.SourceRefusal
+			bad.PullNumber = 6
+			operation.SourceRefusal = &bad
+		}
+		switch r.URL.Path {
+		case "/api/v1/projects/project-one/reviews/operations/" + full.ID + "/status":
+			write(w, 200, client.ReviewOperationStatus{ID: full.ID, PullNumber: full.PullNumber, Channel: full.Channel, State: full.State, Reason: full.Reason, Revision: full.Revision, AttemptID: full.AttemptID, UpdatedAt: full.UpdatedAt, Stage: "held", NextAction: "read_diagnostics", SourceRefusal: operation.SourceRefusal})
+		case "/api/v1/projects/project-one/reviews/operations/" + full.ID, "/api/v1/projects/project-one/reviews/requests":
+			write(w, 200, operation)
+		case "/api/v1/projects/project-one/reviews/selections", "/api/v1/projects/project-one/reviews/selections/" + runSelectionID:
+			selected := state
+			selected.Operation = &operation
+			write(w, 200, selected)
+		default:
+			t.Error("unexpected request", r.URL.Path)
+		}
+	}))
+	defer service.Close()
+	c := newClient(t, service)
+	op, err := c.WaitReviewOperation(t.Context(), full.ID, 1)
+	if err != nil || !reflect.DeepEqual(op.SourceRefusal, full.SourceRefusal) {
+		t.Fatal(op, err)
+	}
+	compact, err := c.WaitReviewOperationStatus(t.Context(), full.ID, 1)
+	if err != nil || !reflect.DeepEqual(compact.SourceRefusal, full.SourceRefusal) {
+		t.Fatal(compact, err)
+	}
+	request := client.ReviewRequest{ExpectedConfigurationRevision: full.ConfigurationRevision, PullNumber: full.PullNumber, Channel: full.Channel, HeadSHA: full.HeadSHA}
+	terminal, err := c.RequestReview(t.Context(), "original-key", request, 1)
+	if err != nil || terminal.Operation == nil || !reflect.DeepEqual(terminal.Operation.SourceRefusal, full.SourceRefusal) {
+		t.Fatal(terminal, err)
+	}
+	run, err := c.RunReview(t.Context(), "original-key", selectionRequest(), 1)
+	if err != nil || run.Result == nil || !reflect.DeepEqual(run.Result.Operation.SourceRefusal, full.SourceRefusal) {
+		t.Fatal(run, err)
+	}
+	selected, err := c.WaitReviewSelection(t.Context(), runSelectionID, 1)
+	if err != nil || selected.Operation == nil || !reflect.DeepEqual(selected.Operation.SourceRefusal, full.SourceRefusal) {
+		t.Fatal(selected, err)
+	}
+	if requests.Load() != 5 {
+		t.Fatal("collection retried requests", requests.Load())
+	}
+	malformed.Store(true)
+	_, err = c.ReviewSelection(t.Context(), runSelectionID)
+	var failure *client.Error
+	if !errors.As(err, &failure) || failure.Code != "invalid_response" || failure.OutcomeUnknown {
+		t.Fatal("malformed selected read accepted", err)
+	}
+	_, err = c.RequestReview(t.Context(), "original-key", request, 1)
+	if !errors.As(err, &failure) || failure.Code != "invalid_response" || !failure.OutcomeUnknown {
+		t.Fatal("malformed terminal request accepted", err)
+	}
+	_, err = c.RunReview(t.Context(), "original-key", selectionRequest(), 1)
+	if !errors.As(err, &failure) || failure.Code != "invalid_response" || !failure.OutcomeUnknown || requests.Load() != 8 {
+		t.Fatal("malformed terminal selection accepted or retried", err, requests.Load())
 	}
 }

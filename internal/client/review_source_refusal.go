@@ -28,8 +28,12 @@ func validReviewSourceRefusal(v *ReviewSourceRefusal, state, reason string, sele
 	switch reason {
 	case "predecessor_unfinished":
 		return v.PullNumber != selected && v.ParentPullNumber == 0 && v.ObservedBaseSHA == "" && v.ExpectedParentSHA == "" && v.BaseRef == "" && oneReviewOf(v.Cause, "not_in_queue", "discovery_incomplete", "incoming_route_pending")
-	case "predecessor_parent_moved":
-		return v.Cause == "" && v.BaseRef == "" && v.PullNumber != selected && validPullNumber(v.ParentPullNumber) && v.ParentPullNumber != v.PullNumber && controlHex(v.ObservedBaseSHA, 40) && controlHex(v.ExpectedParentSHA, 40) && v.ObservedBaseSHA != v.ExpectedParentSHA
+	case "parent_moved", "predecessor_parent_moved":
+		checkedPRMatches := v.PullNumber != selected
+		if reason == "parent_moved" {
+			checkedPRMatches = v.PullNumber == selected
+		}
+		return v.Cause == "" && v.BaseRef == "" && checkedPRMatches && validPullNumber(v.ParentPullNumber) && v.ParentPullNumber != v.PullNumber && controlHex(v.ObservedBaseSHA, 40) && controlHex(v.ExpectedParentSHA, 40) && v.ObservedBaseSHA != v.ExpectedParentSHA
 	case "parent_unavailable":
 		b, err := json.Marshal(v)
 		return v.Cause == "" && v.ParentPullNumber == 0 && v.ObservedBaseSHA == "" && v.ExpectedParentSHA == "" && v.BaseRef != "" && len(v.BaseRef) <= 4096 && utf8.ValidString(v.BaseRef) && strings.IndexFunc(v.BaseRef, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) < 0 && err == nil && len(b) <= 512

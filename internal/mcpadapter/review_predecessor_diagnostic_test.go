@@ -24,7 +24,7 @@ func TestPredecessorDiagnosticSDKReadOnlyOriginalBlocker(t *testing.T) {
 			return
 		}
 		reads++
-		if r.Method != "GET" || r.URL.Path != "/api/v1/projects/"+f.project+"/reviews/operations/"+operationID+"/status" || r.Header.Get("X-FC-Source-Refusal") != "v3" {
+		if r.Method != "GET" || r.URL.Path != "/api/v1/projects/"+f.project+"/reviews/operations/"+operationID+"/status" || r.Header.Get("X-FC-Source-Refusal") != "v4" {
 			t.Error("SDK read changed scope or caused work")
 		}
 		w.Header().Set("Content-Type", "application/json")

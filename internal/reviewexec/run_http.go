@@ -71,6 +71,7 @@ func waitCapacityError(err error) bool {
 
 func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
+	w.Header().Add("Vary", "X-FC-Source-Refusal")
 	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
@@ -137,6 +138,10 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if terminal {
+			if err := e.runSourceRefusalForResponse(r, scope, &state); err != nil {
+				writeOperationWaitError(w, err)
+				return
+			}
 			if state.Operation != nil && r.Header.Get(operationWaitHeader) != "1" {
 				state.Operation.Wait = nil
 			}
@@ -149,6 +154,7 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
+	w.Header().Add("Vary", "X-FC-Source-Refusal")
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -177,8 +183,32 @@ func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	if err := e.runSourceRefusalForResponse(r, scope, &state); err != nil {
+		core.WriteError(w, err)
+		return
+	}
 	if state.Operation != nil && r.Header.Get(operationWaitHeader) != "1" {
 		state.Operation.Wait = nil
 	}
 	core.WriteJSON(w, http.StatusOK, state)
+}
+
+// Expand only retained child diagnostics under the same selected identities.
+// Reading a run never resolves source or starts another operation.
+func (e *Engine) runSourceRefusalForResponse(r *http.Request, scope core.Scope, state *RunState) error {
+	header := r.Header.Get("X-FC-Source-Refusal")
+	if state.Operation == nil || !sourceRefusalRequested(header) {
+		return nil
+	}
+	op, err := e.readOperationProjection(r.Context(), scope, state.Selection.OperationID, false, true, header == "v2" || header == "v3" || header == "v4")
+	if err != nil {
+		return err
+	}
+	run := state.Selection
+	if op.ProjectID != run.ProjectID || op.ActorID != run.ActorID || op.WorkerID != run.WorkerID || op.Channel != run.Channel || op.ConfigurationRevision != run.ConfigurationRevision || op.PolicyRevision != run.PolicyRevision {
+		return core.Fail("storage_unavailable", "The retained selection link is unavailable.", 500)
+	}
+	op.SourceRefusal = sourceRefusalForResponse(op.SourceRefusal, header, op.Reason)
+	state.Operation = &op
+	return nil
 }

@@ -338,7 +338,7 @@ type sourceWaitOptions struct {
 	operationWait      bool
 	hostedQuery        bool
 	hostedObserver     bool
-	sourceRefusalV3    bool
+	sourceRefusalV4    bool
 	seconds            int
 	status             *int
 	budget             time.Duration // Optional domain-owned budget; zero preserves existing waits.
@@ -387,8 +387,8 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		if wait.reviewBlockers {
 			r.Header.Set("X-FC-Review-Blockers", "true")
 		}
-		if wait.sourceRefusalV3 {
-			r.Header.Set("X-FC-Source-Refusal", "v3")
+		if wait.sourceRefusalV4 {
+			r.Header.Set("X-FC-Source-Refusal", "v4")
 		}
 		if wait.operationWait {
 			r.Header.Set("X-FC-Operation-Wait", "1")
@@ -401,7 +401,7 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		}
 		if wait.operationEvidence {
 			r.Header.Set("X-FC-Operation-Evidence", "true")
-			r.Header.Set("X-FC-Source-Refusal", "v3")
+			r.Header.Set("X-FC-Source-Refusal", "v4")
 		}
 	}
 	if len(body) != 0 {

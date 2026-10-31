@@ -43,12 +43,20 @@ func TestReviewOperationStatusMCPWaitsForScheduledObservation(t *testing.T) {
 }
 
 func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
-	for _, reason := range []string{"parent_moved", "predecessor_parent_moved", "parent_unavailable", "hosted_allowance_cooldown"} {
-		t.Run(reason, func(t *testing.T) {
+	for _, fixture := range []string{"parent_moved", "selected_parent_moved", "predecessor_parent_moved", "parent_unavailable", "hosted_allowance_cooldown"} {
+		t.Run(fixture, func(t *testing.T) {
+			reason := fixture
+			if reason == "selected_parent_moved" {
+				reason = "parent_moved"
+			}
 			binding := localContext()
 			id := "review_operation_" + strings.Repeat("a", 32)
 			status := client.ReviewOperationStatus{ID: id, PullNumber: 3300, Channel: "hosted", State: "held", Stage: "held", Reason: reason, AttemptID: "review_attempt_" + strings.Repeat("b", 32), Revision: 5, UpdatedAt: "2026-10-24T00:00:00Z", NextAction: "read_diagnostics"}
 			full := client.ReviewOperation{ID: id, ProjectID: binding.ProjectID, ActorID: "principal_original", WorkerID: binding.WorkerID, ConfigurationRevision: 12, PolicyRevision: 2, CapabilityFingerprint: strings.Repeat("c", 64), PullNumber: 3300, Channel: "hosted", HeadSHA: strings.Repeat("d", 40), State: "held", Revision: 5, Reason: reason, AttemptID: status.AttemptID, CreatedAt: status.UpdatedAt, UpdatedAt: status.UpdatedAt}
+			if fixture == "selected_parent_moved" {
+				status.SourceRefusal = &client.ReviewSourceRefusal{PullNumber: status.PullNumber, ParentPullNumber: 3299, ObservedBaseSHA: strings.Repeat("e", 40), ExpectedParentSHA: strings.Repeat("f", 40)}
+				full.SourceRefusal = status.SourceRefusal
+			}
 			if reason == "predecessor_parent_moved" {
 				status.SourceRefusal = &client.ReviewSourceRefusal{PullNumber: 3298, ParentPullNumber: 3297, ObservedBaseSHA: strings.Repeat("e", 40), ExpectedParentSHA: strings.Repeat("f", 40)}
 				full.SourceRefusal = status.SourceRefusal
@@ -77,8 +85,8 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 				}
 				switch r.URL.Path {
 				case base + "/status":
-					if r.Header.Get("X-FC-Source-Refusal") != "v3" {
-						t.Error("compact source refusal metadata was not requested with v3 negotiation")
+					if r.Header.Get("X-FC-Source-Refusal") != "v4" {
+						t.Error("compact source refusal metadata was not requested with v4 negotiation")
 					}
 					compactReads.Add(1)
 					fields := map[string]any{}
@@ -87,8 +95,8 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 					fields["future_metadata"] = map[string]any{"private": "PRIVATE_IGNORED_METADATA"}
 					_ = json.NewEncoder(w).Encode(fields)
 				case base:
-					if r.Header.Get("X-FC-Source-Refusal") != "v3" || r.Header.Get("X-FC-Operation-Evidence") != "true" {
-						t.Error("full source refusal v3 metadata or original operation evidence was not requested")
+					if r.Header.Get("X-FC-Source-Refusal") != "v4" || r.Header.Get("X-FC-Operation-Evidence") != "true" {
+						t.Error("full source refusal v4 metadata or original operation evidence was not requested")
 					}
 					fullReads.Add(1)
 					_ = json.NewEncoder(w).Encode(full)
@@ -114,6 +122,20 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 			decodeResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": id, "diagnostics": true}), &fullOut)
 			if !reflect.DeepEqual(fullOut.ReviewOperation, full) || !reflect.DeepEqual(fullOut.Diagnostic, compactOut.Diagnostic) {
 				t.Fatal("full MCP parent guidance missing, changed retained facts or disagreed", fullOut)
+			}
+			if fixture == "selected_parent_moved" {
+				for _, hint := range []*client.ReviewOperationDiagnostic{compactOut.Diagnostic, fullOut.Diagnostic} {
+					for _, fact := range []string{"selected PR #3300", "parent PR #3299", strings.Repeat("e", 40), strings.Repeat("f", 40), "not a current observation"} {
+						if !strings.Contains(hint.Explanation, fact) {
+							t.Fatal("selected parent diagnostic lost original comparison", fact, hint)
+						}
+					}
+				}
+			}
+			if fixture == "parent_moved" {
+				if compactOut.SourceRefusal != nil || fullOut.SourceRefusal != nil || !strings.Contains(compactOut.Diagnostic.Explanation, "does not identify the affected comparison") || strings.Contains(compactOut.Diagnostic.Explanation, "#3300") || strings.Contains(compactOut.Diagnostic.Explanation, "#3299") {
+					t.Fatal("legacy nil metadata invented original comparison")
+				}
 			}
 			if compactReads.Load() != 1 || fullReads.Load() != 1 || unexpected.Load() != 0 {
 				t.Fatal("SDK diagnostic polled, mutated or contacted another endpoint")

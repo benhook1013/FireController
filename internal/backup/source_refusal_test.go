@@ -17,6 +17,7 @@ func TestSourceRefusalBackupPreservesOriginalComparison(t *testing.T) {
 		{"predecessor_parent_moved", reviewexec.SourceRefusal{PullNumber: 4, ParentPullNumber: 6, ObservedBaseSHA: strings.Repeat("a", 40), ExpectedParentSHA: strings.Repeat("b", 40)}},
 		{"parent_unavailable", reviewexec.SourceRefusal{PullNumber: 2, BaseRef: "codex/former-parent"}},
 		{"predecessor_unfinished", reviewexec.SourceRefusal{PullNumber: 4, Cause: "discovery_incomplete"}},
+		{"parent_moved", reviewexec.SourceRefusal{PullNumber: 2, ParentPullNumber: 4, ObservedBaseSHA: strings.Repeat("a", 40), ExpectedParentSHA: strings.Repeat("b", 40)}},
 	} {
 		t.Run(variant.reason, func(t *testing.T) { sourceRefusalBackup(t, variant.reason, variant.value) })
 	}
@@ -46,11 +47,14 @@ func sourceRefusalBackup(t *testing.T, reason string, value reviewexec.SourceRef
 	if _, err := f.store.DB().Exec(`UPDATE review_execution_transitions SET source_refusal_json=? WHERE attempt_id=? AND state='held'`, string(body), attempt); err != nil {
 		t.Fatal(err)
 	}
-	if reason == "parent_unavailable" || reason == "predecessor_unfinished" {
+	if reason == "parent_unavailable" || reason == "predecessor_unfinished" || reason == "parent_moved" {
 		oldVersion := "1"
 		wantVersion = "2"
 		if reason == "predecessor_unfinished" {
 			oldVersion, wantVersion = "2", "3"
+		}
+		if reason == "parent_moved" {
+			oldVersion, wantVersion = "3", "4"
 		}
 		if _, err := f.store.DB().Exec(`UPDATE metadata SET value=? WHERE key='schema:review_source_refusals'`, oldVersion); err != nil {
 			t.Fatal(err)

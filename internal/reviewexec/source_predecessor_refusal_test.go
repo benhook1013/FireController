@@ -137,7 +137,7 @@ func TestPredecessorRefusalSchemaMigrationSnapshotAndRollback(t *testing.T) {
 	if err = EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}
-	if err = f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_source_refusals'`).Scan(&version); err != nil || version != "3" {
+	if err = f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_source_refusals'`).Scan(&version); err != nil || version != "4" {
 		t.Fatal(version, err)
 	}
 	if err = f.store.DB().QueryRow(`SELECT source_refusal_json FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&body); err != nil || body != original {

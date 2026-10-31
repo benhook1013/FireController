@@ -1,6 +1,8 @@
 package client
 
 import (
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -72,6 +74,47 @@ func TestPredecessorUnfinishedDiagnosticUsesOnlyRetainedFacts(t *testing.T) {
 				if cause == "discovery_incomplete" && !strings.Contains(hint.Explanation, "not necessarily findings") {
 					t.Fatal("incomplete discovery misrepresented as findings")
 				}
+			}
+		}
+	}
+}
+
+func TestSelectedParentRefusalStrictBindingAndOriginalDiagnostics(t *testing.T) {
+	selected := ReviewSourceRefusal{PullNumber: 2, ParentPullNumber: 6, ObservedBaseSHA: strings.Repeat("a", 40), ExpectedParentSHA: strings.Repeat("b", 40)}
+	if !validReviewSourceRefusal(&selected, "held", "parent_moved", 2) || !validReviewSourceRefusal(nil, "held", "parent_moved", 2) {
+		t.Fatal("valid selected mismatch or historical omission refused")
+	}
+	for _, mutate := range []func(*ReviewSourceRefusal){
+		func(v *ReviewSourceRefusal) { v.PullNumber = 4 }, func(v *ReviewSourceRefusal) { v.ParentPullNumber = 2 }, func(v *ReviewSourceRefusal) { v.ParentPullNumber = 0 }, func(v *ReviewSourceRefusal) { v.ObservedBaseSHA = "short" }, func(v *ReviewSourceRefusal) { v.ExpectedParentSHA = strings.Repeat("A", 40) }, func(v *ReviewSourceRefusal) { v.ExpectedParentSHA = v.ObservedBaseSHA }, func(v *ReviewSourceRefusal) { v.BaseRef = "branch" }, func(v *ReviewSourceRefusal) { v.Cause = "discovery_incomplete" },
+	} {
+		v := selected
+		mutate(&v)
+		if validReviewSourceRefusal(&v, "held", "parent_moved", 2) {
+			t.Fatal("invalid selected comparison accepted", v)
+		}
+	}
+	if validReviewSourceRefusal(&selected, "held", "predecessor_parent_moved", 2) || validReviewSourceRefusal(&selected, "active", "parent_moved", 2) {
+		t.Fatal("metadata crossed refusal/state")
+	}
+	for _, reason := range []string{"parent_moved", "predecessor_parent_moved"} {
+		v := selected
+		checked := "selected PR #2"
+		if reason == "predecessor_parent_moved" {
+			v.PullNumber = 4
+			checked = "ancestor PR #4"
+		}
+		full := ReviewOperation{ID: "original-operation", PullNumber: 2, Channel: "hosted", State: "held", Reason: reason, SourceRefusal: &v, HeadSHA: strings.Repeat("c", 40)}
+		compact := ReviewOperationStatus{ID: full.ID, PullNumber: 2, Channel: full.Channel, State: full.State, Reason: reason, SourceRefusal: &v}
+		f, c := AgentReviewOperation(full), AgentReviewOperationStatus(compact)
+		if !reflect.DeepEqual(f.ReviewOperation, full) || !reflect.DeepEqual(c.ReviewOperationStatus, compact) || !reflect.DeepEqual(f.Diagnostic, c.Diagnostic) {
+			t.Fatal("original comparison or view changed", f, c)
+		}
+		if f.Diagnostic == nil {
+			t.Fatal("missing diagnostic")
+		}
+		for _, phrase := range []string{checked, fmt.Sprintf("parent PR #%d", v.ParentPullNumber), v.ObservedBaseSHA, v.ExpectedParentSHA, "original observed base", "direct-parent head", "recorded at the check", "not a current observation"} {
+			if !strings.Contains(f.Diagnostic.Explanation, phrase) {
+				t.Fatal("retained comparison not explained", reason, f.Diagnostic)
 			}
 		}
 	}
