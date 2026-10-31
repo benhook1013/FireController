@@ -19,10 +19,12 @@ func TestCIWatchFreshSupersessionSurvivesPendingGeneration(t *testing.T) {
 		version                                                                   uint64
 	}{
 		{"head moved", moved, base, base, base, "pending", "superseded", "ci_watch_source_changed", 2},
+		{"failed head moved", moved, base, base, base, "failed", "superseded", "ci_watch_source_changed", 2},
 		{"explicit base moved", head, moved, base, base, "pending", "superseded", "ci_watch_source_changed", 2},
 		{"implicit base moved", head, moved, "", base, "pending", "superseded", "ci_watch_source_changed", 2},
 		{"old cached mismatch", moved, base, base, base, "pending", "pending", "ci_watch_check_pending", 1},
 		{"green awaits refresh", head, base, base, base, "passed", "pending", "ci_watch_refresh_pending", 2},
+		{"failed awaits refresh", head, base, base, base, "failed", "pending", "ci_watch_refresh_pending", 2},
 		{"unknown source", "", "", base, base, "pending", "pending", "ci_watch_refresh_pending", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

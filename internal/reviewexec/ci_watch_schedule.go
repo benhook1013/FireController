@@ -301,6 +301,9 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 	case "not_required":
 		item.State = "unconfigured"
 	}
+	if ciWatchRequiredFailure(observation) {
+		item.State, item.Reason = "failed", "ci_required_checks_failed"
+	}
 	return nil
 }
 
