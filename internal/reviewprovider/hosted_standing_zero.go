@@ -492,7 +492,8 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 }
 
 func standingFinishedAck(body string) bool {
-	return standingCommandReply(body, "✅ Action performed", "Full review finished.")
+	return standingCommandReply(body, "✅ Action performed", "Full review finished.") ||
+		standingCommandReply(body, "Action performed", "Full review finished.")
 }
 
 // Recognize closed provider reply envelopes without stripping arbitrary HTML.
